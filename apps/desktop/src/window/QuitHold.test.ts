@@ -295,4 +295,38 @@ describe("makeQuitHoldHandler", () => {
     await harness.send(makeInput({ type: "keyUp", meta: false, control: true }));
     expect(harness.quit).toHaveBeenCalledTimes(1);
   });
+  it("does not count auto-repeat as a second press", async () => {
+    const harness = makeHarness();
+    await harness.send(makeInput({}));
+    await harness.holdFor(QUIT_DOUBLE_TAP_MS - 100);
+
+    expect(harness.quit).not.toHaveBeenCalled();
+    expect(harness.notifications).toEqual(["down"]);
+  });
+
+  it("does not count a released tap after another shortcut interrupts it", async () => {
+    const harness = makeHarness();
+    await harness.send(makeInput({}));
+    await harness.send(makeInput({ type: "keyUp" }));
+    await harness.send(makeInput({ key: "c" }));
+    vi.advanceTimersByTime(100);
+    await harness.send(makeInput({}));
+
+    expect(harness.quit).not.toHaveBeenCalled();
+    expect(harness.notifications).toEqual(["down", "up", "down"]);
+  });
+
+  it("accepts a second full shortcut after the modifier is released and pressed again", async () => {
+    const harness = makeHarness();
+    await harness.send(makeInput({}));
+    await harness.send(makeInput({ type: "keyUp" }));
+    await harness.send(makeInput({ type: "keyUp", key: "Meta", meta: false }));
+    vi.advanceTimersByTime(100);
+
+    await harness.send(makeInput({ key: "Meta" }));
+    await harness.send(makeInput({}));
+
+    expect(harness.quit).toHaveBeenCalledTimes(1);
+    expect(harness.notifications).toEqual(["down", "up"]);
+  });
 });

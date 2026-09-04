@@ -15,7 +15,7 @@ export const QUIT_DOUBLE_TAP_MS = 500;
 // tap release can go completely unseen and a release-based timer would quit
 // anyway. Once held, quitting waits for Q keyUp or a quiet grace period after
 // repeats stop so they cannot reach the next app. Keyboards with
-// auto-repeat disabled fall back to the application menu Quit action.
+// auto-repeat disabled use two quick presses or the application menu Quit action.
 export const QUIT_HOLD_RELEASE_GRACE_MS = 600;
 // A slow repeat rate can exceed the fixed grace. Waiting for two observed
 // cadences keeps the timer behind the next repeat without slowing normal rates.
@@ -83,6 +83,7 @@ export function makeQuitHoldHandler(
   // renderer must not be left with a stuck "Hold to Quit" hint.
   const quitNow = () => {
     release();
+    lastPressAt = 0;
     options.quit();
   };
 
@@ -132,13 +133,10 @@ export function makeQuitHoldHandler(
     }
 
     if (!modifierDown || input.alt || input.shift || key !== "q") {
-      // Any other key (or an extra modifier) pressed mid-hold breaks the
-      // gesture; without this the hold timer keeps running through the
-      // interruption and the next qualifying repeat would quit early. The
-      // interrupted press also stops counting toward a double tap — but only
-      // here, not in release(), which runs mid-restart on an unseen-release
-      // re-press and must not wipe that press's own tap timestamp.
-      if (holding && !input.isAutoRepeat) {
+      // Re-pressing the platform modifier starts a second full shortcut.
+      if (key === modifierKey && !input.alt && !input.shift) return;
+      // Other keys cancel the first tap even if its release already arrived.
+      if (!input.isAutoRepeat) {
         lastPressAt = 0;
         release();
       }

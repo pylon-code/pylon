@@ -2492,7 +2492,7 @@ export function GeneralSettingsPanel() {
         {isElectron ? (
           <SettingsRow
             {...searchableSetting("quit-confirmation")}
-            description="Require holding the quit shortcut before the desktop app quits. A quick tap shows a hint instead."
+            description="Hold the quit shortcut or press it twice quickly. A single quick tap shows a hint."
             resetAction={
               settings.confirmQuit !== DEFAULT_UNIFIED_SETTINGS.confirmQuit ? (
                 <SettingResetButton
