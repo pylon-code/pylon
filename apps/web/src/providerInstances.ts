@@ -19,16 +19,17 @@ import {
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
-  PROVIDER_DISPLAY_NAMES,
-  providerInstancePrioritySortKey,
-  resolveProviderInstanceEnabled,
+  isBuiltInDriverKind,
   type ModelSelection,
+  PROVIDER_DISPLAY_NAMES,
   type ProviderDriverKind,
   ProviderInstanceId,
+  resolveProviderInstanceEnabled,
+  providerInstancePrioritySortKey,
   type ServerProvider,
   type ServerProviderModel,
-  type ServerSettings,
   type ServerProviderState,
+  type ServerSettings,
 } from "@t3tools/contracts";
 
 import { formatProviderDriverKindLabel } from "./providerModels";
@@ -273,8 +274,13 @@ export function applyProviderInstanceSettings(
       : undefined;
     const enabled = explicitInstance
       ? resolveProviderInstanceEnabled(explicitInstance)
-      : entry.isDefault && legacyProvider
-        ? (legacyProvider.enabled ?? entry.enabled)
+      : entry.isDefault && isBuiltInDriverKind(entry.driverKind)
+        ? // A default instance for a built-in driver is real even when the
+          // legacy `providers` blob has no entry for it, which is the case for
+          // Pylon's Prime Agent. Absence is only evidence of deletion for a
+          // driver the schema does not know, which is what #8337 was guarding:
+          // `providers["constructor"]` must not resolve through the prototype.
+          (legacyProvider?.enabled ?? entry.enabled)
         : false;
     const priority = explicitInstance?.priority;
     if (enabled === entry.enabled && priority === entry.priority) return entry;
