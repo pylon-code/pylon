@@ -55,7 +55,6 @@ import { useEnvironmentQuery } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { DiffPanelLoadingState } from "../DiffPanelShell";
-import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
 import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { StyledDiffCodeView } from "../diffs/StyledDiffCodeView";
 import { Button } from "../ui/button";
@@ -1246,128 +1245,124 @@ export function PullRequestCodeTab({
     );
 
   return (
-    <DiffWorkerPoolProvider>
-      <div className="flex h-full min-h-0 flex-col">
-        {toolbar}
-        {/* Above the code, closed, and counted: these belong to the change rather than to any
+    <div className="flex h-full min-h-0 flex-col">
+      {toolbar}
+      {/* Above the code, closed, and counted: these belong to the change rather than to any
             line of it, and in the stream they read as cards dropped into the patch. */}
-        {orphanFiles.size > 0 ? (
-          <Collapsible
-            className="shrink-0 border-b border-border/60"
-            open={orphansOpen}
-            onOpenChange={setOrphansOpen}
-          >
-            {/* Still a heading, so the section keeps its place in a screen reader's outline;
-                the count is spelled out there rather than left as a bare number. */}
-            <h2>
-              <CollapsibleTrigger className="flex w-full items-center gap-1.5 px-4 py-2 text-left text-xs text-muted-foreground">
-                {/* While slices are still arriving a conversation may simply belong to a file
-                    that has not landed yet, which is not the same as being off the diff. */}
-                <span>
-                  {nextCursor === null
-                    ? "Conversations not on the current diff"
-                    : "Conversations not on the diff loaded so far"}
-                </span>
-                <ChevronRightIcon
-                  aria-hidden
-                  className={cn("size-3.5 transition-transform", orphansOpen && "rotate-90")}
-                />
-                <span aria-hidden className="tabular-nums">
-                  {orphanThreads.length}
-                </span>
-                <span className="sr-only">
-                  {orphanThreads.length === 1
-                    ? "1 conversation"
-                    : `${orphanThreads.length} conversations`}
-                </span>
-              </CollapsibleTrigger>
-            </h2>
-            <CollapsiblePanel>
-              {/* Capped: opened on a change with dozens of them, this would otherwise leave no
-                  room for the diff it sits above. */}
-              <div className="max-h-64 space-y-3 overflow-auto px-4 pb-3">
-                {[...orphanFiles].map(([path, threads]) => (
-                  <div key={path}>
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <p className="truncate px-3 text-xs text-muted-foreground">{path}</p>
-                        }
-                      />
-                      <TooltipPopup side="top">{path}</TooltipPopup>
-                    </Tooltip>
-                    <div className="mt-1 space-y-2">
-                      {threads.map((thread) => (
-                        <div key={thread.id}>
-                          {thread.line === null ? null : (
-                            <p className="px-3 text-xs text-muted-foreground">Line {thread.line}</p>
-                          )}
-                          {renderThreadCard(thread)}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </CollapsiblePanel>
-          </Collapsible>
-        ) : null}
-        {/* Relative wrapper so the review overlay floats over the diff rather than pushing it
-            up; the viewer inside still owns its own scrolling. */}
-        <div
-          className="relative min-h-0 flex-1"
-          // The chevron answers this too, but the whole header row is the target a reader
-          // actually aims for. The header lives in the viewer's shadow tree, so the capture
-          // listener walks `composedPath` — the only way to see through the shadow boundary.
-          onClickCapture={(event) => {
-            const composedPath = event.nativeEvent.composedPath?.() ?? [];
-            for (const node of composedPath) {
-              if (!(node instanceof HTMLElement)) continue;
-              // A control inside the header — the collapse chevron — handles itself, and
-              // this capture listener fires before its own click does. Leave it alone or
-              // the two toggles cancel out.
-              if (node instanceof HTMLButtonElement || node instanceof HTMLAnchorElement) {
-                return;
-              }
-              if (node.hasAttribute("data-diffs-header")) {
-                const filePath = node.querySelector("[data-title]")?.textContent?.trim();
-                if (filePath === undefined || filePath === "") return;
-                const item = items.find(
-                  (candidate) => resolveFileDiffPath(candidate.fileDiff) === filePath,
-                );
-                if (item !== undefined) toggleFile(item.id);
-                return;
-              }
-            }
-          }}
+      {orphanFiles.size > 0 ? (
+        <Collapsible
+          className="shrink-0 border-b border-border/60"
+          open={orphansOpen}
+          onOpenChange={setOrphansOpen}
         >
-          {/* The viewer virtualizes against the element it is told is scrolling and places its
+          {/* Still a heading, so the section keeps its place in a screen reader's outline;
+                the count is spelled out there rather than left as a bare number. */}
+          <h2>
+            <CollapsibleTrigger className="flex w-full items-center gap-1.5 px-4 py-2 text-left text-xs text-muted-foreground">
+              {/* While slices are still arriving a conversation may simply belong to a file
+                    that has not landed yet, which is not the same as being off the diff. */}
+              <span>
+                {nextCursor === null
+                  ? "Conversations not on the current diff"
+                  : "Conversations not on the diff loaded so far"}
+              </span>
+              <ChevronRightIcon
+                aria-hidden
+                className={cn("size-3.5 transition-transform", orphansOpen && "rotate-90")}
+              />
+              <span aria-hidden className="tabular-nums">
+                {orphanThreads.length}
+              </span>
+              <span className="sr-only">
+                {orphanThreads.length === 1
+                  ? "1 conversation"
+                  : `${orphanThreads.length} conversations`}
+              </span>
+            </CollapsibleTrigger>
+          </h2>
+          <CollapsiblePanel>
+            {/* Capped: opened on a change with dozens of them, this would otherwise leave no
+                  room for the diff it sits above. */}
+            <div className="max-h-64 space-y-3 overflow-auto px-4 pb-3">
+              {[...orphanFiles].map(([path, threads]) => (
+                <div key={path}>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={<p className="truncate px-3 text-xs text-muted-foreground">{path}</p>}
+                    />
+                    <TooltipPopup side="top">{path}</TooltipPopup>
+                  </Tooltip>
+                  <div className="mt-1 space-y-2">
+                    {threads.map((thread) => (
+                      <div key={thread.id}>
+                        {thread.line === null ? null : (
+                          <p className="px-3 text-xs text-muted-foreground">Line {thread.line}</p>
+                        )}
+                        {renderThreadCard(thread)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CollapsiblePanel>
+        </Collapsible>
+      ) : null}
+      {/* Relative wrapper so the review overlay floats over the diff rather than pushing it
+            up; the viewer inside still owns its own scrolling. */}
+      <div
+        className="relative min-h-0 flex-1"
+        // The chevron answers this too, but the whole header row is the target a reader
+        // actually aims for. The header lives in the viewer's shadow tree, so the capture
+        // listener walks `composedPath` — the only way to see through the shadow boundary.
+        onClickCapture={(event) => {
+          const composedPath = event.nativeEvent.composedPath?.() ?? [];
+          for (const node of composedPath) {
+            if (!(node instanceof HTMLElement)) continue;
+            // A control inside the header — the collapse chevron — handles itself, and
+            // this capture listener fires before its own click does. Leave it alone or
+            // the two toggles cancel out.
+            if (node instanceof HTMLButtonElement || node instanceof HTMLAnchorElement) {
+              return;
+            }
+            if (node.hasAttribute("data-diffs-header")) {
+              const filePath = node.querySelector("[data-title]")?.textContent?.trim();
+              if (filePath === undefined || filePath === "") return;
+              const item = items.find(
+                (candidate) => resolveFileDiffPath(candidate.fileDiff) === filePath,
+              );
+              if (item !== undefined) toggleFile(item.id);
+              return;
+            }
+          }
+        }}
+      >
+        {/* The viewer virtualizes against the element it is told is scrolling and places its
               rows absolutely, so it has to own that element — the thread diff panel hands it the
               same one. Scrolling from a parent instead leaves it painting over its neighbours. */}
-          <StyledDiffCodeView<ReviewAnnotationGroup>
-            // Keep scrollbar space stable so file metadata and line numbers do not shift as a
-            // diff crosses the overflow boundary. The viewer is itself focusable for keyboard
-            // interaction, but its native host outline clips and competes with the focus
-            // indicators on its actual controls.
-            className="h-full overflow-auto [scrollbar-gutter:stable]"
-            items={items}
-            selectedLines={selectedLines}
-            onSelectedLinesChange={setSelectedLines}
-            options={diffViewOptions}
-            // The viewer owns the scroll container, so the sentinel that asks for the next slice
-            // has to live inside it — at the end of the files, where reaching it means the reader
-            // is running out of diff.
-            renderCodeViewFooter={renderCodeViewFooter}
-            renderHeaderPrefix={renderHeaderPrefix}
-            renderHeaderMetadata={renderHeaderMetadata}
-            renderAnnotation={renderAnnotation}
-            unsafeCSSExtra={REPLACE_FILE_COUNTS_CSS}
-          />
-          {reviewOverlay}
-        </div>
-        {unstructured}
+        <StyledDiffCodeView<ReviewAnnotationGroup>
+          // Keep scrollbar space stable so file metadata and line numbers do not shift as a
+          // diff crosses the overflow boundary. The viewer is itself focusable for keyboard
+          // interaction, but its native host outline clips and competes with the focus
+          // indicators on its actual controls.
+          className="h-full overflow-auto [scrollbar-gutter:stable]"
+          items={items}
+          selectedLines={selectedLines}
+          onSelectedLinesChange={setSelectedLines}
+          options={diffViewOptions}
+          // The viewer owns the scroll container, so the sentinel that asks for the next slice
+          // has to live inside it — at the end of the files, where reaching it means the reader
+          // is running out of diff.
+          renderCodeViewFooter={renderCodeViewFooter}
+          renderHeaderPrefix={renderHeaderPrefix}
+          renderHeaderMetadata={renderHeaderMetadata}
+          renderAnnotation={renderAnnotation}
+          unsafeCSSExtra={REPLACE_FILE_COUNTS_CSS}
+        />
+        {reviewOverlay}
       </div>
-    </DiffWorkerPoolProvider>
+      {unstructured}
+    </div>
   );
 }
 
