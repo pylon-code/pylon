@@ -7,6 +7,7 @@ import * as NodeURL from "node:url";
 import { describe, expect, it } from "vite-plus/test";
 
 import { isEntrypoint } from "./entrypoint.ts";
+import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 
 // realpath the fixture root: macOS resolves os.tmpdir() to /var/folders/... while
 // /var is itself a symlink to /private/var, so realpathSync() below would resolve
@@ -50,21 +51,24 @@ describe("isEntrypoint", () => {
     ).toBe(true);
   });
 
-  it("matches through a symlinked entrypoint, as npm and npx install it", () => {
-    const dir = makeTempDir();
-    const real = NodePath.join(dir, "bin.mjs");
-    const link = NodePath.join(dir, "t3");
-    NodeFS.writeFileSync(real, "");
-    NodeFS.symlinkSync(real, link);
+  it.skipIf(!symlinksSupported)(
+    "matches through a symlinked entrypoint, as npm and npx install it",
+    () => {
+      const dir = makeTempDir();
+      const real = NodePath.join(dir, "bin.mjs");
+      const link = NodePath.join(dir, "t3");
+      NodeFS.writeFileSync(real, "");
+      NodeFS.symlinkSync(real, link);
 
-    expect(
-      isEntrypoint({
-        moduleUrl: NodeURL.pathToFileURL(real).href,
-        entryPath: link,
-        runtimeMain: undefined,
-      }),
-    ).toBe(true);
-  });
+      expect(
+        isEntrypoint({
+          moduleUrl: NodeURL.pathToFileURL(real).href,
+          entryPath: link,
+          runtimeMain: undefined,
+        }),
+      ).toBe(true);
+    },
+  );
 
   it("stays false for an imported module that is not the entrypoint", () => {
     // This is what keeps `bin.test.ts` from launching the CLI on import.
