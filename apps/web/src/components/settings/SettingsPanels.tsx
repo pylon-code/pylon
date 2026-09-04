@@ -1194,33 +1194,18 @@ export function AppearanceSettingsPanel() {
   );
 }
 
-function probeFontDefaultFamilies() {
-  return {
-    sans: resolveDefaultFamilyLabel(DEFAULT_SANS_FONT_STACK) ?? "System default",
-    code: resolveDefaultFamilyLabel(DEFAULT_CODE_FONT_STACK) ?? "System monospace",
-  };
-}
-
 function useFontDefaultFamilies() {
   const settings = usePrimarySettings();
-  // An unset preference shows the font it resolves to on this machine, so the
-  // name is probed rather than hardcoded. Pylon's sans default is a bundled
-  // face, which loads asynchronously: a probe on first mount can miss it and
-  // report the system fallback instead, so re-probe once font loading settles.
-  const [defaults, setDefaults] = useState(probeFontDefaultFamilies);
-  useEffect(() => {
-    let cancelled = false;
-    void document.fonts?.ready.then(() => {
-      if (cancelled) return;
-      setDefaults((current) => {
-        const next = probeFontDefaultFamilies();
-        return current.sans === next.sans && current.code === next.code ? current : next;
-      });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // An unset preference shows the font it resolves to on this machine; the
+  // default stacks are the platform's own faces, so the name is probed, not
+  // hardcoded.
+  const defaults = useMemo(
+    () => ({
+      sans: resolveDefaultFamilyLabel(DEFAULT_SANS_FONT_STACK) ?? "System default",
+      code: resolveDefaultFamilyLabel(DEFAULT_CODE_FONT_STACK) ?? "System monospace",
+    }),
+    [],
+  );
   return {
     sans: defaults.sans,
     code: defaults.code,
