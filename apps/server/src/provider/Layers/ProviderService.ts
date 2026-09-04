@@ -178,6 +178,7 @@ function toRuntimePayloadFromSession(
   session: ProviderSession,
   extra?: {
     readonly modelSelection?: unknown;
+    readonly continueAfterServerUpdate?: TurnId;
     readonly lastRuntimeEvent?: string;
     readonly lastRuntimeEventAt?: string;
   },
@@ -188,6 +189,9 @@ function toRuntimePayloadFromSession(
     activeTurnId: session.activeTurnId ?? null,
     sessionIncarnationId: session.sessionIncarnationId ?? null,
     lastError: session.lastError ?? null,
+    ...(extra?.continueAfterServerUpdate !== undefined
+      ? { continueAfterServerUpdate: extra.continueAfterServerUpdate }
+      : {}),
     ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
     ...(extra?.lastRuntimeEvent !== undefined ? { lastRuntimeEvent: extra.lastRuntimeEvent } : {}),
     ...(extra?.lastRuntimeEventAt !== undefined
@@ -593,6 +597,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     threadId: ThreadId,
     extra?: {
       readonly modelSelection?: unknown;
+      readonly continueAfterServerUpdate?: TurnId;
       readonly lastRuntimeEvent?: string;
       readonly lastRuntimeEventAt?: string;
       readonly runtimeFence?: import("../ProviderDriver.ts").ProviderRuntimeFence | undefined;
@@ -1602,6 +1607,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           runtimePayload: {
             ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
             activeTurnId: turn.turnId,
+            continueAfterServerUpdate: null,
+            continueAfterServerUpdatePrepared: null,
             ...(input.admissionRequestId !== undefined
               ? { activeTurnRequestId: input.admissionRequestId }
               : {}),
@@ -2714,6 +2721,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               status: "stopped",
               runtimePayload: {
                 activeTurnId: null,
+                continueAfterServerUpdate: null,
+                continueAfterServerUpdatePrepared: null,
               },
             },
             routed.adapter.runtimeFence === undefined
@@ -3181,6 +3190,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   );
 
   const runStopAll = Effect.fn("runStopAll")(function* () {
+    const continueAfterRestart = yield* serverSettings.getSettings.pipe(
+      Effect.map((settings) => settings.continueThreadsAfterServerUpdate),
+      Effect.orElseSucceed(() => false),
+    );
     const threadIds = yield* directory.listThreadIds();
     const currentAdapters = yield* getAdapterEntries;
     const activeSessions = yield* Effect.forEach(currentAdapters, ([instanceId, adapter]) =>
@@ -3196,6 +3209,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     yield* Effect.forEach(activeSessions, (session) =>
       Effect.flatMap(nowIso, (lastRuntimeEventAt) =>
         upsertSessionBinding(session, session.threadId, {
+          ...(continueAfterRestart && session.status === "running" && session.activeTurnId
+            ? { continueAfterServerUpdate: session.activeTurnId }
+            : {}),
           lastRuntimeEvent: "provider.stopAll",
           lastRuntimeEventAt,
         }),
