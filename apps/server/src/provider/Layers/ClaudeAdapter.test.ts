@@ -1315,6 +1315,145 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("ignores system/status lifecycle notices that arrive between turns", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "session.exited"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // Inside the turn: a real lifecycle signal for the running turn.
+      harness.query.emit({
+        type: "system",
+        subtype: "status",
+        status: "requesting",
+        session_id: "sdk-session-status",
+        uuid: "status-in-turn",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        num_turns: 1,
+        session_id: "sdk-session-status",
+        uuid: "result-status",
+      } as unknown as SDKMessage);
+      // After the turn: the CLI reports its own request cycle (a background
+      // task finishing re-invokes the model). No turn exists for it, and the
+      // assistant output that follows opens its own synthetic turn.
+      harness.query.emit({
+        type: "system",
+        subtype: "status",
+        status: "requesting",
+        session_id: "sdk-session-status",
+        uuid: "status-between-turns",
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const statusChanges = runtimeEvents.filter(
+        (event) =>
+          event.type === "session.state.changed" &&
+          typeof event.payload.reason === "string" &&
+          event.payload.reason.startsWith("status:"),
+      );
+      assert.equal(statusChanges.length, 1);
+      assert.equal(String(statusChanges[0]?.turnId), String(turn.turnId));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps the real turn open when the resume handshake result lands inside it", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "session.exited"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello again",
+        attachments: [],
+      });
+
+      // A resumed session replays its handshake (system/init +
+      // result(num_turns: 0)) after the first prompt is already in flight.
+      // Nothing ran, so nothing may complete.
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        session_id: "sdk-session-resume",
+        uuid: "result-resume-handshake",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-resume",
+        uuid: "assistant-resume-1",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-resume-1",
+          content: [{ type: "text", text: "Picking up where we left off." }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        num_turns: 1,
+        session_id: "sdk-session-resume",
+        uuid: "result-resume-real",
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const turnStarts = runtimeEvents.filter((event) => event.type === "turn.started");
+      const completions = runtimeEvents.filter((event) => event.type === "turn.completed");
+      assert.equal(turnStarts.length, 1);
+      assert.equal(completions.length, 1);
+      assert.equal(String(completions[0]?.turnId), String(turn.turnId));
+      const assistantItem = runtimeEvents.find(
+        (event) =>
+          event.type === "item.completed" && event.payload.itemType === "assistant_message",
+      );
+      assert.equal(String(assistantItem?.turnId), String(turn.turnId));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("steers a running turn instead of opening a new one on mid-turn sendTurn", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
