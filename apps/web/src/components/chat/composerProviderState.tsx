@@ -6,6 +6,7 @@ import {
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
+  buildExplicitProviderOptionSelectionsFromDescriptors,
   buildProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
@@ -105,7 +106,15 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
   return {
     provider,
     promptEffort,
-    modelOptionsForDispatch: buildProviderOptionSelectionsFromDescriptors(descriptors),
+    // #9164 stopped dispatching descriptor defaults as overrides, so a composer
+    // turn only carries options the user actually chose. Background text
+    // generation is the other way round: it has no composer to choose in, and
+    // Pylon normalizes a backend's controls (Prime's thinking level) from the
+    // descriptors, so defaults are the whole point there.
+    modelOptionsForDispatch:
+      capabilityContext === "background-text-generation"
+        ? buildProviderOptionSelectionsFromDescriptors(descriptors)
+        : buildExplicitProviderOptionSelectionsFromDescriptors(descriptors, modelOptions),
     ...(ultrathinkActive
       ? {
           composerFrameClassName: "ultrathink-frame",

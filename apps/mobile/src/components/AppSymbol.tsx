@@ -77,6 +77,7 @@ import {
   IconUserCircle,
   IconWifiOff,
   IconWorld,
+  IconFilterFilled,
   IconX,
   type Icon,
 } from "@tabler/icons-react-native";
@@ -129,7 +130,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "info.circle": IconInfoCircle,
   link: IconLink,
   "line.3.horizontal.decrease.circle": IconFilter,
-  "line.3.horizontal.decrease.circle.fill": IconFilter,
+  "line.3.horizontal.decrease.circle.fill": IconFilterFilled,
   magnifyingglass: IconSearch,
   paintbrush: IconPalette,
   "person.crop.circle": IconUserCircle,

@@ -112,6 +112,7 @@ import {
   TYPOGRAPHY_ADVANCED_STORAGE_KEY,
 } from "../../appearanceFonts";
 import { CodeFontPreview, PromptFontPreview, TerminalFontPreview } from "./SettingsFontPreviews";
+import { SharedSettingsMismatchAlert } from "./SharedSettingsMismatchAlert";
 import { discoverInstalledFonts, FontFamilyPicker, useFontEnumeration } from "./FontFamilyPicker";
 import {
   NumberField,
@@ -1848,6 +1849,7 @@ function LegacyFeaturesSection() {
               }
             />
             <SettingsRow
+              serverScoped
               {...searchableSetting("legacy-token-streaming")}
               description="Paints assistant output token by token instead of in complete chunks. Not recommended: it is significantly slower, and long responses become harder to follow. Kept only for compatibility with the old behavior."
               control={
@@ -1954,6 +1956,7 @@ export function GeneralSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SharedSettingsMismatchAlert />
       <SettingsSection title="General">
         <SettingsRow
           {...searchableSetting("project-grouping")}
@@ -1994,6 +1997,7 @@ export function GeneralSettingsPanel() {
         {supportsAutoSettlement ? (
           <>
             <SettingsRow
+              serverScoped
               {...searchableSetting("auto-settle-merged-threads")}
               description="Settle a thread when its pull request merges. Closed pull requests still settle automatically."
               resetAction={
@@ -2021,6 +2025,7 @@ export function GeneralSettingsPanel() {
             />
 
             <SettingsRow
+              serverScoped
               {...searchableSetting("auto-settle-inactive-threads")}
               description="Sidebar threads with no activity for this long settle automatically."
               resetAction={
@@ -2051,6 +2056,7 @@ export function GeneralSettingsPanel() {
             />
             {settings.sidebarAutoSettleAfterDays !== null ? (
               <SettingsRow
+                serverScoped
                 title={searchableSetting("days-before-auto-settle").title}
                 description="Any new activity un-settles a thread automatically."
                 control={
@@ -2159,6 +2165,7 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          serverScoped
           {...searchableSetting("provider-update-checks")}
           description="Check installed provider CLIs for newer available versions."
           resetAction={
@@ -2214,6 +2221,7 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          serverScoped
           id={searchableSetting("background-activity").id}
           title={
             <span className="inline-flex items-center gap-1.5">
@@ -2297,6 +2305,7 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          serverScoped
           {...searchableSetting("new-threads")}
           description="Pick the default workspace mode for newly created draft threads."
           resetAction={
@@ -2343,6 +2352,7 @@ export function GeneralSettingsPanel() {
 
         {settings.defaultThreadEnvMode === "worktree" ? (
           <SettingsRow
+            serverScoped
             className="bg-muted/20 sm:pl-9"
             title={searchableSetting("start-from-origin").title}
             description="Creates the worktree from the latest matching branch on origin instead of your local branch."
@@ -2373,6 +2383,7 @@ export function GeneralSettingsPanel() {
         ) : null}
 
         <SettingsRow
+          serverScoped
           {...searchableSetting("add-project-starts-in")}
           description='Leave empty to use "~/" when the Add Project browser opens.'
           resetAction={
@@ -2503,6 +2514,7 @@ export function GeneralSettingsPanel() {
         ) : null}
 
         <SettingsRow
+          serverScoped
           {...searchableSetting("text-generation-model")}
           description="Default model for generated text like thread titles and source control content. Source control settings can override it with a dedicated source control writer model."
           resetAction={

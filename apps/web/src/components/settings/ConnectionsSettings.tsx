@@ -117,6 +117,7 @@ import { useUiStateStore } from "~/uiStateStore";
 import {
   resolveServerConfigVersionMismatch,
   resolveServerSelfUpdateCapability,
+  supportsDesktopAppUpdate,
 } from "~/versionSkew";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
 import { useCloudLinkController } from "~/cloud/useCloudLinkController";
@@ -1506,6 +1507,7 @@ function SavedBackendListRow({
               environmentId={environmentId}
               serverLabel={`${environment.label} server`}
               selfUpdate={resolveServerSelfUpdateCapability(environment.serverConfig)}
+              desktopAppUpdate={supportsDesktopAppUpdate(environment.serverConfig)}
               targetVersion={versionMismatch.clientVersion}
               label={serverUpdateState.status === "failed" ? "Retry" : "Update"}
             />
@@ -3112,8 +3114,11 @@ export function ConnectionsSettings() {
                   primaryServerUpdateState.status !== "running" ? (
                     <ServerUpdateAction
                       environmentId={primaryEnvironmentId}
-                      serverLabel={primaryEnvironment?.label ?? "this server"}
+                      serverLabel={
+                        primaryEnvironment ? `${primaryEnvironment.label} server` : "server"
+                      }
                       selfUpdate={resolveServerSelfUpdateCapability(primaryServerConfig)}
+                      desktopAppUpdate={supportsDesktopAppUpdate(primaryServerConfig)}
                       targetVersion={primaryVersionMismatch.clientVersion}
                       label={primaryServerUpdateState.status === "failed" ? "Retry" : "Update"}
                     />

@@ -52,6 +52,12 @@ successful pick; its hover glow and badge preview the element and color family t
 `rightPanel.toggleMaximized` maximizes or restores the open right panel. It has no default shortcut,
 so add one in **Settings** → **Keybindings** if you want to use it.
 
+`rightPanel.close` closes the active right panel tab and defaults to `mod+w`. Press it again to close
+the next tab. With the terminal focused, `mod+w` closes the terminal instead, and with nothing left
+to close it closes the desktop window as before. Browsers reserve `mod+w` for closing their own tab
+and never pass it to the page, so in a browser rebind this command (and `terminal.close`) to a
+shortcut the browser leaves alone, such as `alt+w`.
+
 `thread.settle` settles the active thread or restores it when it is already settled. Its default
 shortcut is `mod+shift+s`, and it does not run while the terminal has focus.
 

@@ -56,6 +56,10 @@ const DESKTOP_RENDERER_ORIGINS = [
   "t3code-dev://app",
 ];
 const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+// HTML previews are agent output, not the app. The sandbox gives the document an
+// opaque origin: scripts run, but same-origin cookies, storage, and API calls are
+// out of reach. Relative sibling assets still load through their signed URLs.
+const HTML_CONTENT_SECURITY_POLICY = "sandbox allow-scripts allow-forms allow-popups allow-modals";
 
 // Types a browser may render as a document if a proxy strips the disposition
 // header. Downloads of these fall back to octet-stream.
@@ -110,7 +114,10 @@ export function assetResponseHeaders(
       : inlineVideoMimeType !== undefined && isSafeInlineVideoMimeType(inlineVideoMimeType)
         ? { "Content-Type": inlineVideoMimeType }
         : lowerPath.endsWith(".html") || lowerPath.endsWith(".htm")
-          ? { "Content-Type": "text/html; charset=utf-8" }
+          ? {
+              "Content-Type": "text/html; charset=utf-8",
+              "Content-Security-Policy": HTML_CONTENT_SECURITY_POLICY,
+            }
           : {}),
     ...(!options?.download && lowerPath.endsWith(".svg")
       ? { "Content-Security-Policy": SVG_CONTENT_SECURITY_POLICY }

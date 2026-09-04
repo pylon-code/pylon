@@ -63,6 +63,7 @@ import Migration0049 from "./Migrations/049_ProjectionThreadSessionPendingStop.t
 import Migration0050 from "./Migrations/050_PrimeAgentRecoveryLedger.ts";
 import Migration0051 from "./Migrations/051_DurableRollbackSagas.ts";
 import Migration0052 from "./Migrations/052_ProjectionThreadsSourceEpoch.ts";
+import Migration0053 from "./Migrations/053_ClearAutomaticProjectModelDefaults.ts";
 /**
  * Migration loader with all migrations defined inline.
  *
@@ -149,6 +150,9 @@ export const migrationEntries = [
   [50, "PrimeAgentRecoveryLedger", Migration0050],
   [51, "DurableRollbackSagas", Migration0051],
   [52, "ProjectionThreadsSourceEpoch", Migration0052],
+  // Upstream shipped this as 44 (pingdotgg/t3code#9164). Pylon already holds 44
+  // through 52, so it lands here instead.
+  [53, "ClearAutomaticProjectModelDefaults", Migration0053],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

@@ -1,4 +1,5 @@
 import {
+  type AssistantCitation,
   type ApprovalRequestId,
   type ChatFileAttachment,
   DEFAULT_MODEL,
@@ -77,13 +78,17 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { flushSync } from "react-dom";
-import { useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
+import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
+import { assistantCitationFromLocation } from "../lib/assistantCitationNavigation";
+import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
 import { useShallow } from "zustand/react/shallow";
 import { getProviderAdmissionUnavailableReason } from "@t3tools/client-runtime/providerAvailability";
 import {
@@ -332,10 +337,12 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import {
   ComposerSessionInteractionPanel,
   SessionPresentationArea,
@@ -473,6 +480,7 @@ import {
   resolveServerConfigVersionMismatch,
   resolveServerSelfUpdateCapability,
   serverUpdateGuidance,
+  supportsDesktopAppUpdate,
 } from "../versionSkew";
 import { useAssetUrls } from "../assets/assetUrls";
 import {
@@ -1499,6 +1507,8 @@ function ChatViewContent(props: ChatViewProps) {
     }
     return {
       loading: routeThreadState.page._tag === "Some" && routeThreadState.page.value.loadingOlder,
+      cursor:
+        routeThreadState.page._tag === "Some" ? routeThreadState.page.value.beforeCursor : null,
       onLoadEarlier: () => {
         requestOlderThreadTurns(routeThreadRef.environmentId, routeThreadRef.threadId);
       },
@@ -1515,6 +1525,18 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const timestampFormat = settings.timestampFormat;
   const navigate = useNavigate();
+  const citationLocation = useLocation({
+    select: (location) => ({
+      href: location.href,
+      key: location.state.assistantCitationActivation ?? location.state.__TSR_key,
+    }),
+  });
+  const citationRequest = useMemo<AssistantCitationRequest | null>(() => {
+    const citation = assistantCitationFromLocation(citationLocation.href);
+    return citation && citation.environmentId === environmentId && citation.threadId === threadId
+      ? { citation, key: citationLocation.key ?? citationLocation.href }
+      : null;
+  }, [citationLocation.href, citationLocation.key, environmentId, threadId]);
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
   const composerRuntimeMode = useComposerDraftStore(
@@ -1573,6 +1595,21 @@ function ChatViewContent(props: ChatViewProps) {
   const composerElementContextsRef = useRef<ElementContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
+  const citeAssistantText = useCallback(
+    (citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) => {
+      const inserted = composerRef.current?.citeAssistantText(citation, sourceAnchor) ?? false;
+      if (!inserted) {
+        toastManager.add({
+          type: "warning",
+          title: "The composer is not ready",
+          description:
+            "Try citing the selection after the connection or pending input is resolved.",
+        });
+      }
+      return inserted;
+    },
+    [composerRef],
+  );
   const [isWorkspaceFileDragActive, setIsWorkspaceFileDragActive] = useState(false);
   const routeThreadKeyRef = useRef(routeThreadKey);
   routeThreadKeyRef.current = routeThreadKey;
@@ -2321,6 +2358,7 @@ function ChatViewContent(props: ChatViewProps) {
       : "server";
   const serverUpdateEnvironmentId = activeThread?.environmentId ?? null;
   const versionMismatchSelfUpdate = resolveServerSelfUpdateCapability(serverConfig);
+  const versionMismatchDesktopAppUpdate = supportsDesktopAppUpdate(serverConfig);
   const serverUpdateState = useAtomValue(
     serverEnvironment.updateStateAtom(serverUpdateEnvironmentId),
   );
@@ -2441,19 +2479,25 @@ function ChatViewContent(props: ChatViewProps) {
             "Server update available"
           ),
         description:
-          !updateInProgress && !updateFailed && versionMismatchSelfUpdate === "desktop-managed"
+          !updateInProgress &&
+          !updateFailed &&
+          versionMismatchSelfUpdate === "desktop-managed" &&
+          !versionMismatchDesktopAppUpdate
             ? serverUpdateGuidance(versionMismatchSelfUpdate, versionMismatchServerLabel)
             : undefined,
         // The desktop-managed guidance is already the description; the action
-        // slot would only repeat it.
+        // slot would only repeat it. When the desktop app accepts remote
+        // update requests, the action button takes over instead.
         actions:
           updateInProgress ||
           !versionMismatch ||
-          versionMismatchSelfUpdate === "desktop-managed" ? undefined : (
+          (versionMismatchSelfUpdate === "desktop-managed" &&
+            !versionMismatchDesktopAppUpdate) ? undefined : (
             <ServerUpdateAction
               environmentId={serverUpdateEnvironmentId}
               serverLabel={versionMismatchServerLabel}
               selfUpdate={versionMismatchSelfUpdate}
+              desktopAppUpdate={versionMismatchDesktopAppUpdate}
               targetVersion={versionMismatch.clientVersion}
               label={updateFailed ? "Retry" : "Update"}
             />
@@ -2491,6 +2535,7 @@ function ChatViewContent(props: ChatViewProps) {
     versionMismatchDismissKey,
     serverUpdateEnvironmentId,
     versionMismatchSelfUpdate,
+    versionMismatchDesktopAppUpdate,
     versionMismatchServerLabel,
   ]);
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
@@ -4439,6 +4484,38 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [composerOverlayHeight],
   );
+  const pageScrollControllerRef = useRef<ReturnType<typeof createPageScrollController> | null>(
+    null,
+  );
+  const handlePageScrollStart = useEffectEvent((key: PageScrollKey) => {
+    if (key === "PageUp" && timelineRealContentOverflowsViewport()) {
+      cancelTimelineLiveFollowForUserNavigation();
+    }
+  });
+  useEffect(() => {
+    const controller = createPageScrollController({
+      getContainer: () => legendListRef.current?.getScrollableNode() ?? null,
+      getScrollPaddingBottomPx: () => composerOverlayElement?.getBoundingClientRect().height ?? 0,
+      onScrollStart: handlePageScrollStart,
+    });
+    pageScrollControllerRef.current = controller;
+
+    return () => {
+      controller.dispose();
+      if (pageScrollControllerRef.current === controller) {
+        pageScrollControllerRef.current = null;
+      }
+    };
+  }, [composerOverlayElement]);
+  const onComposerPageScrollKeyDown = useCallback((key: PageScrollKey) => {
+    pageScrollControllerRef.current?.handleKeyDown(key);
+  }, []);
+  const onComposerPageScrollKeyUp = useCallback((key: string) => {
+    pageScrollControllerRef.current?.handleKeyUp(key);
+  }, []);
+  const onComposerPageScrollRelease = useCallback(() => {
+    pageScrollControllerRef.current?.releaseActiveKey();
+  }, []);
   // Live-follow stays active after send/thread-open until an actual list scroll
   // gesture opts out.
   const scrollToEnd = useCallback((animated = false) => {
@@ -5741,6 +5818,16 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
+      if (command === "rightPanel.close") {
+        // Nothing open: leave the event alone so the shortcut keeps its
+        // native meaning (close window on desktop, close tab in a browser).
+        if (!activeRightPanelSurface) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) closeRightPanelSurface(activeRightPanelSurface);
+        return;
+      }
+
       if (command === "terminal.split") {
         event.preventDefault();
         event.stopPropagation();
@@ -5829,6 +5916,7 @@ function ChatViewContent(props: ChatViewProps) {
     terminalUiState.terminalOpen,
     terminalUiState.activeTerminalId,
     activeThreadId,
+    closeRightPanelSurface,
     requestCloseTerminal,
     requestClosePanelTerminal,
     createNewTerminal,
@@ -6449,7 +6537,7 @@ function ChatViewContent(props: ChatViewProps) {
         firstComposerImageName = firstComposerImage.name;
       }
     }
-    let titleSeed = trimmed;
+    let titleSeed = assistantCitationsToPlainText(trimmed);
     if (!titleSeed) {
       if (firstComposerImageName) {
         titleSeed = `Image: ${firstComposerImageName}`;
@@ -8371,6 +8459,9 @@ function ChatViewContent(props: ChatViewProps) {
             <div className="relative flex min-h-0 flex-1 flex-col">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
+                citationRequest={citationRequest}
+                citationHistoryLoading={threadDetailLoading}
+                onCiteAssistantText={citeAssistantText}
                 agentPanelModel={agentPanelModel}
                 onOpenAgents={addAgentsSurface}
                 key={activeThread.id}
@@ -8574,6 +8665,9 @@ function ChatViewContent(props: ChatViewProps) {
                             composerFilesRef={composerFilesRef}
                             composerTerminalContextsRef={composerTerminalContextsRef}
                             composerElementContextsRef={composerElementContextsRef}
+                            onPageScrollKeyDown={onComposerPageScrollKeyDown}
+                            onPageScrollKeyUp={onComposerPageScrollKeyUp}
+                            onPageScrollRelease={onComposerPageScrollRelease}
                             onSend={onSend}
                             onQueueFollowUp={() =>
                               onSend(undefined, "foreground", undefined, "follow-up")

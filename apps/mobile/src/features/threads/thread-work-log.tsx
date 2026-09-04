@@ -17,6 +17,7 @@ import { AppText as Text } from "../../components/AppText";
 import { cn } from "../../lib/cn";
 import type { ThreadFeedActivity } from "../../lib/threadActivity";
 import type { ToolGroupSummaryKind } from "@t3tools/client-runtime/work-log/presentation";
+import { workEntryViewedImagePath } from "@t3tools/client-runtime/work-log/presentation";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -339,7 +340,9 @@ export function ThreadWorkLog(props: {
           const expanded = props.expandedRows[row.id] ?? false;
           const canExpand = row.canExpand;
           const fullDetail = expanded ? row.getFullDetail() : null;
-          const displayText = row.detail ? `${row.summary} ${row.detail}` : row.summary;
+          const viewedImagePath = workEntryViewedImagePath(row.workEntry);
+          const previewText = row.detail ?? row.summary;
+          const displayText = expanded && row.workEntry.command?.trim() ? "Command" : previewText;
           // Warnings are not errors. Web reserves destructive red for
           // runtime.error and orchestration *.failed rows and paints warnings
           // amber; mobile matches that split rather than colouring both rose.
@@ -363,7 +366,7 @@ export function ThreadWorkLog(props: {
             >
               <Pressable
                 accessibilityRole={canExpand ? "button" : undefined}
-                accessibilityLabel={failed ? `${displayText}, tool call failed` : displayText}
+                accessibilityLabel={failed ? `${previewText}, tool call failed` : previewText}
                 accessibilityHint={
                   canExpand
                     ? "Double tap to show full details. Long press to copy."

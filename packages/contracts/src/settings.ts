@@ -811,6 +811,14 @@ export const providerInstanceConfigEnabledFlag = (config: unknown): boolean | un
  * through `DEFAULT_SERVER_SETTINGS`, so the schema's decoding default stays
  * the single source of truth. Unknown (fork) drivers default to enabled.
  */
+/**
+ * Whether the settings schema knows this driver. Used to tell a real built-in
+ * default instance apart from a fork driver or a prototype key such as
+ * `constructor`, which must never resolve through `Object.prototype`.
+ */
+export const isBuiltInDriverKind = (driver: ProviderDriverKind): boolean =>
+  Object.hasOwn(DEFAULT_SERVER_SETTINGS.providers, driver);
+
 export const defaultEnabledForDriver = (driver: ProviderDriverKind): boolean => {
   const legacyDefaults = DEFAULT_SERVER_SETTINGS.providers as Record<
     string,
