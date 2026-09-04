@@ -341,6 +341,12 @@ interface OpenCodeSessionContext {
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
+  /**
+   * Last emitted plan fingerprint. OpenCode re-emits `todo.updated` on every
+   * mutation, so without this each step transition writes a duplicate plan
+   * activity.
+   */
+  lastPlanFingerprint: string | undefined;
   cancellation: OpenCodeCancellation | undefined;
   interruptedTurnId: TurnId | undefined;
   reconcileIdleStatus: boolean;
@@ -414,10 +420,43 @@ type EventBaseInput = {
   readonly raw?: unknown;
 };
 
+type OpenCodePlanStep = {
+  readonly step: string;
+  readonly status: "pending" | "inProgress" | "completed";
+};
+
+/**
+ * Maps an OpenCode `todo.updated` payload onto Pylon plan steps. `Todo.status`
+ * is typed as a bare string by the SDK, so anything unrecognized settles to
+ * `pending` rather than inventing progress. Cancelled entries are dropped
+ * outright: reporting them as `completed` would claim work that never happened,
+ * and Pylon's plan contract has no cancelled state to carry them into.
+ */
+function extractOpenCodePlanSteps(todos: ReadonlyArray<unknown>): OpenCodePlanStep[] {
+  return todos
+    .filter((todo): todo is Record<string, unknown> => todo !== null && typeof todo === "object")
+    .filter((todo) => todo.status !== "cancelled")
+    .map((todo) => ({
+      step: trimText(typeof todo.content === "string" ? todo.content : undefined) ?? "Task",
+      status:
+        todo.status === "completed"
+          ? ("completed" as const)
+          : todo.status === "in_progress"
+            ? ("inProgress" as const)
+            : ("pending" as const),
+    }));
+}
+
 function toToolLifecycleItemType(toolName: string): ToolLifecycleItemType {
   const normalized = toolName.toLowerCase();
   if (normalized.includes("bash") || normalized.includes("command")) {
     return "command_execution";
+  }
+  // Ahead of the write/edit branch: `todowrite` contains "write" but changes no
+  // file, and classifying it as `file_change` files it into the edit tool group
+  // and inflates the work log's edit count.
+  if (normalized.includes("todo")) {
+    return "dynamic_tool_call";
   }
   if (
     normalized.includes("edit") ||
@@ -2109,6 +2148,37 @@ export function makeOpenCodeAdapter(
           break;
         }
 
+        case "todo.updated": {
+          // Only the parent session owns the thread's plan; a delegated child
+          // session's todos would otherwise overwrite it.
+          if (!isParentEvent) {
+            break;
+          }
+          const plan = extractOpenCodePlanSteps(event.properties.todos);
+          if (plan.length === 0) {
+            break;
+          }
+          // Control-character delimiters keep this deterministic without JSON;
+          // todo text realistically never contains them.
+          const fingerprint = `${turnId ?? "no-turn"}:${plan
+            .map((entry) => `${entry.status}\u0000${entry.step}`)
+            .join("\u0001")}`;
+          if (context.lastPlanFingerprint === fingerprint) {
+            break;
+          }
+          context.lastPlanFingerprint = fingerprint;
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              ...(turnId ? { turnId } : {}),
+              raw: event,
+            })),
+            type: "turn.plan.updated",
+            payload: { plan },
+          });
+          break;
+        }
+
         case "session.status": {
           if (event.properties.status.type === "busy") {
             if (turnId === undefined) {
@@ -2500,6 +2570,7 @@ export function makeOpenCodeAdapter(
           cancellation: undefined,
           interruptedTurnId: undefined,
           reconcileIdleStatus: false,
+          lastPlanFingerprint: undefined,
           awaitingBusyAfterInterruption: false,
           pendingIdleReconciliation: undefined,
           pendingRequestRecovery: undefined,
