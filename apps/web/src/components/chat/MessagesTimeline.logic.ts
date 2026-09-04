@@ -685,8 +685,8 @@ function workEntryIsActiveTurnActivity(entry: WorkLogEntry): boolean {
 
 /**
  * Settled turns fold activity before their terminal assistant message behind
- * a "Worked for ..." row. Work that lands after that message stays visible so
- * failed or interrupted turns do not hide their trailing tool-call summary.
+ * a "Worked for ..." row. A single ordinary activity after that message joins
+ * the fold, while larger groups and failures stay visible as a trailing summary.
  */
 function deriveTurnFolds(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
@@ -779,7 +779,13 @@ function deriveTurnFolds(input: {
       if (entry.id === group.terminalEntry?.id || entry.id === firstAssistantEntry?.id) {
         continue;
       }
-      if (index > terminalEntryIndex) {
+      const isCompaction =
+        entry.kind === "work" && entry.entry.sourceActivityKind === "context-compaction";
+      const isSingleTrailingActivity =
+        group.entries.length === terminalEntryIndex + 2 &&
+        entry.kind === "work" &&
+        !workEntryDisplayIndicatesToolFailure(entry.entry);
+      if (!isCompaction && index > terminalEntryIndex && !isSingleTrailingActivity) {
         continue;
       }
       // Agent-spawn CTA rows never fold: workflows outlive their launching

@@ -1333,7 +1333,7 @@ describe("MessagesTimeline", () => {
               label: "Ran command",
               tone: "tool",
               itemType: "command_execution",
-              toolLifecycleStatus: "completed",
+              toolLifecycleStatus: "failed",
             },
           },
         ]}

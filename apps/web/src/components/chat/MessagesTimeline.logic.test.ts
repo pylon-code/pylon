@@ -1254,11 +1254,10 @@ describe("deriveMessagesTimelineRows", () => {
       })),
     ];
 
-    const rows = deriveMessagesTimelineRows({
-      timelineEntries,
+    const input = {
       latestTurn: {
         turnId,
-        state: "error",
+        state: "error" as const,
         startedAt: "2026-01-01T00:00:00Z",
         completedAt: "2026-01-01T00:00:10Z",
       },
@@ -1266,7 +1265,9 @@ describe("deriveMessagesTimelineRows", () => {
       activeTurnStartedAt: null,
       turnDiffSummaryByAssistantMessageId: new Map(),
       revertTurnCountByUserMessageId: new Map(),
-    });
+      reportedTurnCosts: new Map([[turnId, 0.123456]]),
+    };
+    const rows = deriveMessagesTimelineRows({ ...input, timelineEntries });
 
     expect(rows.map((row) => row.id)).toEqual([
       "turn-fold:turn-1",
@@ -1283,12 +1284,18 @@ describe("deriveMessagesTimelineRows", () => {
       kind: "assistant-meta",
       message: { id: "assistant-final" },
       showAssistantCopyButton: true,
+      reportedCostLabel: "Reported cost $0.1235",
     });
     expect(rows.at(-3)).toMatchObject({
       kind: "message",
       showAssistantMeta: false,
       showAssistantCopyButton: false,
     });
+    expect(
+      deriveMessagesTimelineRows({ ...input, timelineEntries: timelineEntries.slice(0, 3) }).map(
+        (row) => row.id,
+      ),
+    ).toEqual(["turn-fold:turn-1", "assistant-final-entry"]);
   });
 
   it("folds all assistant messages before the terminal message", () => {
