@@ -27,7 +27,8 @@ function isLatestTurnSettled(
   if (!latestTurn?.startedAt) return false;
   if (!latestTurn.completedAt) return false;
   if (!session) return true;
-  return session.status !== "running";
+  // A running session with no active turn has nothing in flight.
+  return !(session.status === "running" && session.activeTurnId != null);
 }
 
 /**
@@ -62,7 +63,7 @@ export function resolveThreadStatus(
     };
   }
 
-  if (thread.session?.status === "running") {
+  if (thread.session?.status === "running" && thread.session.activeTurnId != null) {
     return {
       kind: "working",
       label: "Working",

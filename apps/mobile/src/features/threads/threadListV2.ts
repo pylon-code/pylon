@@ -133,7 +133,8 @@ function isThreadListV2LatestTurnSettled(
   thread: Pick<EnvironmentThreadShell, "latestTurn" | "session">,
 ): boolean {
   if (!thread.latestTurn?.startedAt || !thread.latestTurn.completedAt) return false;
-  return thread.session?.status !== "running";
+  // A running session with no active turn has nothing in flight.
+  return !(thread.session?.status === "running" && thread.session.activeTurnId != null);
 }
 
 export function resolveThreadListV2Status(
@@ -153,7 +154,12 @@ export function resolveThreadListV2Status(
   if (thread.hasPendingUserInput) {
     return "input";
   }
-  if (thread.session?.status === "running" || thread.session?.status === "starting") {
+  // "running" alone is not work: a provider can report it between turns
+  // (Claude system/status) with nothing in flight. Only an active turn is.
+  if (
+    thread.session?.status === "starting" ||
+    (thread.session?.status === "running" && thread.session.activeTurnId != null)
+  ) {
     return "working";
   }
   if (thread.session?.status === "error") {

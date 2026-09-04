@@ -837,6 +837,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.connectionState === "connected" &&
     composerAuthority.providerAdmissionAvailable &&
     props.selectedThread.session?.status === "running" &&
+    props.selectedThread.session.activeTurnId != null &&
     !props.sessionInputBlocked &&
     props.localOutboxCount === 0 &&
     supportsSessionInputQueueFollowUp(activeSessionProviderStatus);

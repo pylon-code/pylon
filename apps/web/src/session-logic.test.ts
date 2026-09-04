@@ -2223,6 +2223,15 @@ describe("isLatestTurnSettled", () => {
     ).toBe(false);
   });
 
+  it("returns true when the session reports running but tracks no turn", () => {
+    expect(
+      isLatestTurnSettled(latestTurn, {
+        status: "running",
+        activeTurnId: null,
+      }),
+    ).toBe(true);
+  });
+
   it("returns true once the session is no longer running that turn", () => {
     expect(
       isLatestTurnSettled(latestTurn, {
