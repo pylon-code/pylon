@@ -1631,9 +1631,11 @@ const make = Effect.gen(function* () {
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
-  const resolveThreadShell = Effect.fn("resolveThreadShell")(function* (threadId: ThreadId) {
+  const resolveThreadRuntimeContext = Effect.fn("resolveThreadRuntimeContext")(function* (
+    threadId: ThreadId,
+  ) {
     return yield* projectionSnapshotQuery
-      .getThreadShellById(threadId)
+      .getThreadRuntimeContext(threadId)
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
@@ -2253,7 +2255,7 @@ const make = Effect.gen(function* () {
         );
       }
 
-      let thread = yield* resolveThreadShell(event.threadId);
+      let thread = yield* resolveThreadRuntimeContext(event.threadId);
       if (!thread) return;
 
       const pendingStopSession = thread.session;
@@ -2408,7 +2410,7 @@ const make = Effect.gen(function* () {
         });
         if ((dispatched.eventCount ?? 0) === 0) return;
         admissionAcceptedByCas = true;
-        const acceptedThread = yield* resolveThreadShell(event.threadId);
+        const acceptedThread = yield* resolveThreadRuntimeContext(event.threadId);
         if (!acceptedThread) return;
         thread = acceptedThread;
       } else if (

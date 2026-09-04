@@ -135,6 +135,11 @@ const ProjectionPendingTurnAdmissionRowSchema = Schema.Struct({
 const ProjectionThreadActivityIdRowSchema = Schema.Struct({
   activityId: ProjectionThreadActivity.fields.activityId,
 });
+const ProjectionThreadRuntimeContextDbRowSchema = Schema.Struct({
+  id: ThreadId,
+  title: Schema.String,
+  session: Schema.NullOr(ProjectionThreadSessionDbRowSchema),
+});
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
     files: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
@@ -1287,6 +1292,59 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ORDER BY created_at DESC, operation_id DESC
         LIMIT 1
       `,
+  });
+
+  const getThreadRuntimeContextRow = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadRuntimeContextDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          threads.thread_id AS id,
+          threads.title,
+          sessions.thread_id AS "threadId",
+          sessions.status,
+          sessions.provider_name AS "providerName",
+          sessions.provider_instance_id AS "providerInstanceId",
+          sessions.provider_session_id AS "providerSessionId",
+          sessions.provider_thread_id AS "providerThreadId",
+          sessions.runtime_mode AS "runtimeMode",
+          sessions.restored,
+          sessions.started_at AS "startedAt",
+          sessions.session_incarnation_id AS "sessionIncarnationId",
+          sessions.harness_refinement_status AS "harnessRefinementStatus",
+          sessions.pending_turn_request_id AS "pendingTurnRequestId",
+          sessions.pending_turn_request_ambiguous AS "pendingTurnRequestAmbiguous",
+          sessions.pending_turn_message_id AS "pendingTurnMessageId",
+          sessions.pending_turn_requested_at AS "pendingTurnRequestedAt",
+          sessions.pending_turn_deadline_at AS "pendingTurnDeadlineAt",
+          sessions.pending_turn_session_id AS "pendingTurnSessionId",
+          sessions.active_turn_request_id AS "activeTurnRequestId",
+          sessions.failed_turn_request_id AS "failedTurnRequestId",
+          sessions.pending_stop_request_id AS "pendingStopRequestId",
+          sessions.pending_stop_provider_instance_id AS "pendingStopProviderInstanceId",
+          sessions.pending_stop_session_incarnation_id AS "pendingStopSessionIncarnationId",
+          sessions.pending_stop_turn_request_id AS "pendingStopTurnRequestId",
+          sessions.pending_stop_turn_id AS "pendingStopTurnId",
+          sessions.active_turn_id AS "activeTurnId",
+          sessions.last_error AS "lastError",
+          sessions.updated_at AS "updatedAt"
+        FROM projection_threads AS threads
+        LEFT JOIN projection_thread_sessions AS sessions
+          ON sessions.thread_id = threads.thread_id
+        WHERE threads.thread_id = ${threadId}
+          AND threads.deleted_at IS NULL
+          AND threads.archived_at IS NULL
+        LIMIT 1
+      `.pipe(
+        Effect.map((rows) =>
+          rows.map((row) => ({
+            id: row.id,
+            title: row.title,
+            session: row.threadId === null ? null : row,
+          })),
+        ),
+      ),
   });
 
   const listThreadMessageRowsByThread = SqlSchema.findAll({
@@ -3119,6 +3177,23 @@ pending_approval_requests AS (
       } satisfies OrchestrationThreadShell);
     });
 
+  const getThreadRuntimeContext: ProjectionSnapshotQueryShape["getThreadRuntimeContext"] =
+    Effect.fn("ProjectionSnapshotQuery.getThreadRuntimeContext")(function* (threadId) {
+      const context = yield* getThreadRuntimeContextRow({ threadId }).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.getThreadRuntimeContext:query",
+            "ProjectionSnapshotQuery.getThreadRuntimeContext:decodeRow",
+          ),
+        ),
+      );
+      return Option.map(context, (row) => ({
+        id: row.id,
+        title: row.title,
+        session: row.session === null ? null : mapSessionRow(row.session),
+      }));
+    });
+
   // Contiguous turn range bounding a windowed detail read; undefined loads the
   // full thread. Resolved from a window request inside the snapshot
   // transaction (see getThreadDetailSnapshot).
@@ -3573,6 +3648,7 @@ pending_approval_requests AS (
     getThreadCheckpointContext,
     getFullThreadDiffContext,
     getThreadShellById,
+    getThreadRuntimeContext,
     getThreadDetailById,
     getThreadDetailSnapshot,
   } satisfies ProjectionSnapshotQueryShape;
