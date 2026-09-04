@@ -102,7 +102,7 @@ import {
 } from "./thread-outbox";
 import { removeThreadOutboxMessageIfCurrent } from "./thread-outbox-removal";
 import { recoverPendingSendToComposer } from "./thread-outbox-recovery";
-import { useThreadOutboxMessages } from "./use-thread-outbox";
+import { dispatchingQueuedMessageIdAtom, useThreadOutboxMessages } from "./use-thread-outbox";
 import { useAtomCommand } from "./use-atom-command";
 import {
   composerAttachmentUploadBlockReason,
@@ -171,6 +171,7 @@ export function useThreadComposerState() {
         ) ?? null);
   const composerDrafts = useAtomValue(composerDraftsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
+  const dispatchingQueuedMessageId = useAtomValue(dispatchingQueuedMessageIdAtom);
   const [feedbackSubmissionsByThreadKey, setFeedbackSubmissionsByThreadKey] = useState<
     Record<string, ReadonlyArray<CodexFeedbackSubmission>>
   >({});
@@ -548,6 +549,48 @@ export function useThreadComposerState() {
       activeTurnId: selectedThread.session.activeTurnId ?? undefined,
     };
   }, [selectedThreadDetail, selectedThreadShell]);
+
+  const isCompacting = useMemo(() => {
+    const queuedMessage = selectedThreadQueuedMessages.findLast(
+      (message) =>
+        message.messageId === dispatchingQueuedMessageId &&
+        message.text.trim().toLowerCase() === "/compact" &&
+        message.attachments.length === 0,
+    );
+    const latestCompactMessage = selectedThreadDetail?.messages.findLast(
+      (message) =>
+        message.role === "user" &&
+        message.text.trim().toLowerCase() === "/compact" &&
+        !message.attachments?.length,
+    );
+    const compactRequestIsActive =
+      latestCompactMessage !== undefined &&
+      (latestCompactMessage.createdAt >
+        (selectedThread?.latestTurn?.requestedAt ?? latestCompactMessage.createdAt) ||
+        (selectedThread?.latestTurn?.state === "running" &&
+          latestCompactMessage.createdAt === selectedThread.latestTurn.requestedAt));
+    const compactionSettled = selectedThreadDetail?.activities.some((activity) => {
+      if (!["context-compaction", "provider.turn.start.failed"].includes(activity.kind))
+        return false;
+      const payload =
+        typeof activity.payload === "object" && activity.payload !== null
+          ? (activity.payload as { readonly requestId?: unknown })
+          : null;
+      return payload?.requestId === latestCompactMessage?.id;
+    });
+    return (
+      queuedMessage !== undefined ||
+      ((selectedThread?.session?.status === "starting" ||
+        selectedThread?.session?.status === "running") &&
+        compactRequestIsActive &&
+        !compactionSettled)
+    );
+  }, [
+    dispatchingQueuedMessageId,
+    selectedThread,
+    selectedThreadDetail,
+    selectedThreadQueuedMessages,
+  ]);
 
   const activeWorkStartedAt = useMemo(() => {
     const selectedThread = selectedThreadDetail ?? selectedThreadShell;
@@ -1551,6 +1594,7 @@ export function useThreadComposerState() {
     selectedThreadQueueCount,
     selectedThreadQueueHold: selectedThreadQueuedMessages[0]?.deliveryHold ?? null,
     activeWorkStartedAt,
+    isCompacting,
     draftMessage,
     draftAttachments,
     modelSelection,

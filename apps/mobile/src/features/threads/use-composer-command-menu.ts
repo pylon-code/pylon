@@ -84,6 +84,7 @@ export function buildComposerCommandItems({
   providerSlashCommands,
   showInteractionModeToggle,
   hasThread,
+  hasCompactableConversation,
   pathEntries,
 }: {
   readonly trigger: ComposerTrigger | null;
@@ -91,6 +92,7 @@ export function buildComposerCommandItems({
   readonly providerSlashCommands: ReadonlyArray<ServerProviderSlashCommand>;
   readonly showInteractionModeToggle: boolean;
   readonly hasThread: boolean;
+  readonly hasCompactableConversation: boolean;
   readonly pathEntries: ReadonlyArray<ComposerPathSearchEntry>;
 }): ComposerCommandItem[] {
   if (!trigger) return [];
@@ -146,6 +148,8 @@ export function buildComposerCommandItems({
     for (const cmd of expandableCommands) {
       if (!cmd.name.toLowerCase().includes(q)) continue;
       if (!hasThread && cmd.localAction === "usage-limits") continue;
+      // Nothing to summarize before the thread has a compactable exchange.
+      if (cmd.name === "compact" && !hasCompactableConversation) continue;
       // Codex `/feedback` uploads an existing thread's session and logs, so it
       // has nothing to send before the thread exists.
       if (!hasThread && selectedProviderStatus?.driver === "codex" && cmd.name === "feedback") {
@@ -307,6 +311,7 @@ export function useComposerCommandMenu({
   sessionResources,
   showInteractionModeToggle,
   hasThread,
+  hasCompactableConversation,
   enabled = true,
   onChangeDraftMessage,
   onUpdateInteractionMode,
@@ -319,6 +324,7 @@ export function useComposerCommandMenu({
   readonly sessionResources: SessionResourcesSnapshot | null;
   readonly showInteractionModeToggle: boolean;
   readonly hasThread: boolean;
+  readonly hasCompactableConversation: boolean;
   readonly enabled?: boolean;
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onUpdateInteractionMode?: (mode: ProviderInteractionMode) => void;
@@ -441,10 +447,12 @@ export function useComposerCommandMenu({
         showInteractionModeToggle:
           showInteractionModeToggle && onUpdateInteractionMode !== undefined,
         hasThread,
+        hasCompactableConversation,
         pathEntries: pathSearch.entries,
       }),
     [
       hasThread,
+      hasCompactableConversation,
       onUpdateInteractionMode,
       pathSearch.entries,
       providerSlashCommands,

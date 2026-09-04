@@ -982,6 +982,7 @@ function ThreadRouteContent(
           sessionCompactionScopeKey={composer.sessionCompactionScopeKey}
           sessionCompactionPendingAction={composer.sessionCompactionPendingAction}
           activeWorkStartedAt={composer.activeWorkStartedAt}
+          isCompacting={composer.isCompacting}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
           activePendingUserInput={requests.activePendingUserInput}

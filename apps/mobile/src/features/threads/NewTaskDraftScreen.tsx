@@ -330,6 +330,7 @@ export function NewTaskDraftScreen(props: {
     sessionResources: null,
     showInteractionModeToggle: flow.showInteractionModeToggle,
     hasThread: false,
+    hasCompactableConversation: false,
     enabled: isComposerFocused && !isComposerInteractionLocked,
     onChangeDraftMessage: flow.setPrompt,
     onUpdateInteractionMode: flow.setInteractionMode,

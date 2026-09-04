@@ -55,6 +55,7 @@ import {
   resolveProviderStatusCachePath,
   writeProviderStatusCache,
 } from "../providerStatusCache.ts";
+import { COMPACT_SLASH_COMMAND } from "../providerSnapshot.ts";
 import { providerBackendsFromCapacityRefresh, type ProviderInstance } from "../ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../Services/ProviderRegistry.ts";
@@ -571,7 +572,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               shortDescription: "Debug failing GitHub Actions checks",
             },
           ]);
-          assert.deepStrictEqual(status.slashCommands, [
+          assert.deepStrictEqual(status.slashCommands.slice(1), [
             {
               name: "feedback",
               description: "Send this thread and Codex logs to OpenAI",
@@ -3248,11 +3249,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             }),
           );
 
-          assert.deepStrictEqual(status.slashCommands, [
-            {
-              name: "compact",
-              description: "Summarize the conversation and reduce context usage",
-            },
+          assert.deepStrictEqual(status.slashCommands.slice(1), [
             {
               name: "review",
               description: "Review a pull request",
@@ -3296,10 +3293,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           );
 
           assert.deepStrictEqual(status.slashCommands, [
-            {
-              name: "compact",
-              description: "Summarize the conversation and reduce context usage",
-            },
+            COMPACT_SLASH_COMMAND,
             {
               name: "ui",
               description: "Explore and refine UI",

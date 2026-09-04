@@ -213,6 +213,7 @@ export interface ThreadComposerProps {
   readonly connectionState: RemoteClientConnectionState;
   readonly environmentLabel: string | null;
   readonly selectedThread: OrchestrationThreadShell;
+  readonly hasCompactableConversation: boolean;
   readonly serverConfig: T3ServerConfig | null;
   readonly localOutboxCount: number;
   readonly onManagePendingSends: () => void;
@@ -1243,6 +1244,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     sessionResources: props.sessionResources,
     showInteractionModeToggle,
     hasThread: true,
+    hasCompactableConversation: props.hasCompactableConversation,
     enabled: !props.sessionInputBlocked,
     onChangeDraftMessage: props.onChangeDraftMessage,
     onUpdateInteractionMode: props.onUpdateInteractionMode,

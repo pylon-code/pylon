@@ -262,6 +262,8 @@ project or worktree. Web, desktop, and mobile request this list from the connect
 so remote projects use their remote skills. Discovery can take a moment after you switch
 providers or workspaces. If discovery fails, later typing retries after a short cooldown.
 
+In a thread with prior conversation context, send `/compact` to reduce context usage. Web and desktop also offer this action from the context meter, and the work log records token counts when the provider reports them.
+
 By default, the `/` menu includes skills. To keep this menu command-only, turn off **Show skills in
 slash menu** in **Settings → General** in the web or desktop app. Skill results use the
 `/skill:Skill Name` label and add the same `$name` skill token to your message. The original skill

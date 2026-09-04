@@ -222,6 +222,15 @@ export type ThreadFeedLatestTurn = Pick<
   "turnId" | "state" | "startedAt" | "completedAt"
 >;
 
+export function isContextCompactionActivityGroup(
+  entry: Extract<ThreadFeedEntry, { readonly type: "activity-group" }>,
+): boolean {
+  return (
+    entry.activities.length === 1 &&
+    entry.activities[0]?.workEntry.sourceActivityKind === "context-compaction"
+  );
+}
+
 type ThreadFeedActivityGroup = Extract<ThreadFeedEntry, { readonly type: "activity-group" }>;
 
 // These keys are immutable inputs. Weak caches release old histories with their source data.
@@ -1528,7 +1537,11 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
       continue;
     }
 
-    const isStandalone = entry.activity.terminalResponseNotice === true;
+    // Terminal response notices and context compaction each own their card, so
+    // neither joins the surrounding tool group.
+    const isStandalone =
+      entry.activity.terminalResponseNotice === true ||
+      entry.activity.workEntry.sourceActivityKind === "context-compaction";
     if (isStandalone || firstActivityEntry?.turnId !== entry.turnId) {
       flushGroup();
     }
@@ -1600,6 +1613,9 @@ function deriveThreadFeedTurnFolds(
   for (const entry of feed) {
     if (entry.type === "message" && entry.message.role === "user") {
       pendingUserBoundary = entry.message.createdAt;
+      continue;
+    }
+    if (entry.type === "activity-group" && isContextCompactionActivityGroup(entry)) {
       continue;
     }
     const turnId =
@@ -1813,6 +1829,10 @@ function appendPresentedFeedEntry(
   activeTail: boolean,
 ): void {
   if (entry.type !== "activity-group") {
+    result.push(entry);
+    return;
+  }
+  if (isContextCompactionActivityGroup(entry)) {
     result.push(entry);
     return;
   }

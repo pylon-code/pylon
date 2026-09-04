@@ -1249,9 +1249,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       sessionModelSwitch: "in-session",
       conversationRollback: BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES.antigravity,
     },
-    // Antigravity declares `compaction: { type: "slash-command", command: "/compact" }`
-    // upstream. `ProviderAdapterShape` only grows that field with #10112, which is a
-    // separate concern; restore this line when that lands.
+    compaction: { type: "slash-command", command: "/compact" },
     startSession,
     sendTurn,
     interruptTurn,
