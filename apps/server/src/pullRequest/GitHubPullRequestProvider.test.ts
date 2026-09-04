@@ -170,8 +170,12 @@ describe("gitHubViewerPermissions", () => {
               mergeCapabilities: { merge: true, squash: true, rebase: true },
             }),
           getViewerAccess: () =>
-            Effect.succeed({ canTriage: false,
-        canWrite: false, canUpdate: true, didAuthor: false }),
+            Effect.succeed({
+              canTriage: false,
+              canWrite: false,
+              canUpdate: true,
+              didAuthor: false,
+            }),
         }),
       ),
     ),
@@ -218,8 +222,8 @@ describe("getViewerPermissions", () => {
     Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
       getPullRequestDetail: () => Effect.succeed(openDetail),
       getPullRequestBaseComparison: () => comparison,
-      getViewerAccess: () => Effect.succeed({ canTriage: false,
-        canWrite: true, canUpdate: true, didAuthor: false }),
+      getViewerAccess: () =>
+        Effect.succeed({ canTriage: false, canWrite: true, canUpdate: true, didAuthor: false }),
     });
 
   it.effect("offers update-branch when the comparison grants it", () =>
@@ -265,8 +269,7 @@ describe("getViewerPermissions", () => {
           getViewerAccess: (input) =>
             Effect.sync(() => {
               viewerAllowReserve = input.allowReserve;
-              return { canTriage: false,
-        canWrite: true, canUpdate: true, didAuthor: false };
+              return { canTriage: false, canWrite: true, canUpdate: true, didAuthor: false };
             }),
         }),
       ),
@@ -301,8 +304,7 @@ describe("getViewerPermissions", () => {
               }),
             ),
           getViewerAccess: () =>
-            Effect.succeed({ canTriage: false,
-        canWrite: true, canUpdate: true, didAuthor: false }),
+            Effect.succeed({ canTriage: false, canWrite: true, canUpdate: true, didAuthor: false }),
         }),
       ),
     ),
