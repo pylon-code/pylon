@@ -778,7 +778,7 @@ export const PrimeAgentDriver: ProviderDriver<
       const snapshot = yield* makeManagedServerProvider<
         ProviderSnapshotSettings<PrimeAgentSettings>
       >({
-        maintenanceCapabilities,
+        resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
         commitGuard: runtimeFence.isCurrent,
         getSettings: snapshotSettings.getSettings,
         streamSettings: snapshotSettings.streamSettings,
