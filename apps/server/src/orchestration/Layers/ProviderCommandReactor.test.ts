@@ -65,7 +65,6 @@ import type { OrchestrationDispatchError } from "../Errors.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import {
-  providerErrorLabel,
   providerErrorLabelFromInstanceHint,
   providerFollowUpInputFromMessage,
   PROVIDER_TURN_ADMISSION_TIMEOUT_MS,
@@ -171,10 +170,6 @@ describe("ProviderCommandReactor", () => {
           instanceId: "claude_openrouter",
         }),
       ).toBe("claude_openrouter");
-    });
-
-    it("uses the unknown driver kind when the resolved driver is not registered locally", () => {
-      expect(providerErrorLabel("third_party_driver")).toBe("third_party_driver");
     });
   });
 
