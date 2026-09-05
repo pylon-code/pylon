@@ -1,3 +1,4 @@
+import { buildRollbackTurnCountByMessageId } from "./ChatView.logic";
 import {
   type AssistantCitation,
   type ApprovalRequestId,
@@ -3173,16 +3174,15 @@ function ChatViewContent(props: ChatViewProps) {
       activeThread ? deriveRollbackTargets(activeThread) : new Map<MessageId, RollbackTarget>(),
     [activeThread],
   );
-  const revertTurnCountByUserMessageId = useMemo(
-    () =>
-      new Map(
-        [...rollbackTargetsByUserMessageId].map(([messageId, target]) => [
-          messageId,
-          target.targetTurnCount,
-        ]),
-      ),
-    [rollbackTargetsByUserMessageId],
-  );
+  const lastRevertTurnCountRef = useRef<Map<MessageId, number> | null>(null);
+  const revertTurnCountByUserMessageId = useMemo(() => {
+    const counts = buildRollbackTurnCountByMessageId(
+      rollbackTargetsByUserMessageId,
+      lastRevertTurnCountRef.current,
+    );
+    lastRevertTurnCountRef.current = counts;
+    return counts;
+  }, [rollbackTargetsByUserMessageId]);
   const rollbackActive = isRollbackActive(activeThread?.rollbackStatus);
   const rollbackTargetIdle =
     activeThread?.session !== null &&

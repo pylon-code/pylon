@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { MessageId, TurnId } from "@t3tools/contracts";
+import { CheckpointRef, MessageId, TurnId } from "@t3tools/contracts";
 import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
@@ -15,6 +15,8 @@ import {
   deriveTimelineEntriesWithState,
   type WorkLogEntry,
 } from "../../session-logic";
+import { buildRollbackTurnCountByMessageId } from "../ChatView.logic";
+import { deriveRollbackTargets } from "@t3tools/client-runtime/rollback";
 import { isImageAttachment, type ChatMessage, type TurnDiffSummary } from "../../types";
 
 describe("streaming row projection", () => {
@@ -236,6 +238,85 @@ describe("streaming row projection", () => {
       }
     },
   );
+
+  it("reuses streamed rows while preserving exact rollback proof and revocation", () => {
+    const initial = fixture("Partial");
+    const checkpoint: TurnDiffSummary = {
+      turnId: initial.historyTurnId,
+      checkpointTurnCount: 1,
+      checkpointRef: CheckpointRef.make("refs/pylon/checkpoints/history"),
+      status: "ready",
+      files: [],
+      assistantMessageId: MessageId.make("history-assistant"),
+      completedAt: initial.time(4),
+    };
+    const baseline: TurnDiffSummary = {
+      ...checkpoint,
+      checkpointTurnCount: 0,
+      assistantMessageId: null,
+      rollbackAvailability: { state: "available", reason: "Exact anchor verified." },
+    };
+    const summaries = new Map([[checkpoint.assistantMessageId!, checkpoint]]);
+    let counts: Map<MessageId, number> | null = null;
+    const build = (
+      messages: ChatMessage[],
+      timelineEntries: typeof initial.timeline.entries,
+      verified = true,
+    ) => {
+      counts = buildRollbackTurnCountByMessageId(
+        deriveRollbackTargets({
+          messages,
+          checkpoints: [
+            {
+              ...baseline,
+              rollbackAvailability: verified ? baseline.rollbackAvailability : undefined,
+            },
+            checkpoint,
+          ],
+        }),
+        counts,
+      );
+      return {
+        ...initial.input,
+        timelineEntries,
+        turnDiffSummaryByAssistantMessageId: summaries,
+        revertTurnCountByUserMessageId: counts,
+      };
+    };
+    const previous = deriveMessagesTimelineRowsWithState(
+      build(initial.messages, initial.timeline.entries),
+    );
+    expect(
+      previous.rows.find(
+        (row) => row.kind === "message" && row.message.id === initial.messages[0]!.id,
+      ),
+    ).toMatchObject({ revertTurnCount: 0 });
+    const last = initial.messages.at(-1)!;
+    const messages = [...initial.messages.slice(0, -1), { ...last, text: "Partial token" }];
+    const timeline = deriveTimelineEntriesWithState(messages, [], initial.work, initial.timeline);
+    const nextInput = build(messages, timeline.entries);
+    const next = deriveMessagesTimelineRowsWithState(nextInput, previous);
+    expect(next.rows).toEqual(deriveMessagesTimelineRows(nextInput));
+    for (const [index, row] of previous.rows.entries()) {
+      if ((row.kind === "message" || row.kind === "assistant-meta") && row.message === last) {
+        expect(next.rows[index]).toMatchObject({ message: { text: "Partial token" } });
+      } else expect(next.rows[index]).toBe(row);
+    }
+    const revoked = deriveMessagesTimelineRowsWithState(
+      build(messages, timeline.entries, false),
+      next,
+    );
+    expect(
+      revoked.rows.find(
+        (row) => row.kind === "message" && row.message.id === initial.messages[0]!.id,
+      ),
+    ).toMatchObject({ revertTurnCount: undefined });
+    expect(
+      previous.rows.find(
+        (row) => row.kind === "message" && row.message.id === initial.messages[0]!.id,
+      ),
+    ).toMatchObject({ revertTurnCount: 0 });
+  });
 
   it.each(["completion", "turn", "role", "ordering"] as const)(
     "rebuilds row structure for a %s change with otherwise unchanged controls",
