@@ -44,6 +44,7 @@ import {
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import {
+  filterSharedServerPatch,
   findSharedSettingsMismatches,
   pickSharedServerSettings,
 } from "@t3tools/client-runtime/state/shared-settings";
@@ -587,11 +588,13 @@ function AutoSettleSettingsRows() {
   const mismatches = findSharedSettingsMismatches({
     primaryEnvironmentId: reference.environmentId,
     primarySettings: referenceSettings,
+    primaryCapabilities: reference.serverConfig?.environment.capabilities,
     environments: environments.map((environment) => ({
       environmentId: environment.environmentId,
       label: environment.label,
       connected: environment.connection.phase === "connected",
       settings: environment.serverConfig?.settings ?? null,
+      capabilities: environment.serverConfig?.environment.capabilities,
     })),
   });
 
@@ -655,11 +658,22 @@ function AutoSettleSettingsRows() {
           <Pressable
             accessibilityRole="button"
             onPress={() => {
-              const patch = pickSharedServerSettings(referenceSettings);
+              const patch = pickSharedServerSettings(
+                referenceSettings,
+                reference.serverConfig?.environment.capabilities,
+              );
               for (const mismatch of mismatches) {
+                const target = environments.find(
+                  (candidate) => candidate.environmentId === mismatch.environmentId,
+                );
                 void updateSettings({
                   environmentId: mismatch.environmentId,
-                  input: { patch },
+                  input: {
+                    patch: filterSharedServerPatch(
+                      patch,
+                      target?.serverConfig?.environment.capabilities,
+                    ),
+                  },
                 });
               }
             }}

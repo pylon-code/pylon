@@ -27,6 +27,7 @@ import {
 } from "@t3tools/contracts/settings";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
+  filterSharedServerPatch,
   findSharedSettingsMismatches,
   pickSharedServerSettings,
   splitSharedServerPatch,
@@ -335,26 +336,13 @@ export function usePrimarySettingsAvailable(): boolean {
 }
 
 /**
- * Whether an environment can hold every shared key right now. Gated on the
- * auto-settlement capability because it is the newest of the shared keys: a
- * server that has it has all of them. Older servers drop unknown keys on
- * write, so a mismatch against them could never clear, and their decoded
- * defaults must not be treated as real values.
+ * Whether an environment supports the shared-settings baseline. Newer
+ * preferences are filtered separately against each target capability.
  */
 function supportsSharedSettings(environment: EnvironmentPresentation): boolean {
   return (
     environment.connection.phase === "connected" &&
     environment.serverConfig?.environment.capabilities.threadAutoSettlement === true
-  );
-}
-
-/** Environments that can receive a shared settings write right now. */
-function useConnectedEnvironmentIds(): ReadonlyArray<EnvironmentId> {
-  const { environments } = useEnvironments();
-  return useMemo(
-    () =>
-      environments.filter(supportsSharedSettings).map((environment) => environment.environmentId),
-    [environments],
   );
 }
 
@@ -379,7 +367,7 @@ function useUpdateSettingsTarget(
     serverEnvironment.mutateProviderInstances,
     "provider instance update",
   );
-  const connectedEnvironmentIds = useConnectedEnvironmentIds();
+  const { environments } = useEnvironments();
   const updateSettings = useCallback(
     (patch: UnifiedSettingsPatch) => {
       const { serverPatch, clientPatch } = splitPatch(patch);
@@ -402,11 +390,11 @@ function useUpdateSettingsTarget(
         } else {
           const { sharedPatch, localPatch } = splitSharedServerPatch(serverPatch);
           // Dropping the write silently leaves the control looking saved.
-          const warnUnsaved = () =>
+          const warnUnsaved = (description = PRIMARY_SETTINGS_UNAVAILABLE_MESSAGE) =>
             toastManager.add({
               type: "warning",
               title: "Setting not saved",
-              description: PRIMARY_SETTINGS_UNAVAILABLE_MESSAGE,
+              description,
             });
           if (Object.keys(localPatch).length > 0) {
             if (environmentId) {
@@ -419,18 +407,28 @@ function useUpdateSettingsTarget(
             }
           }
           if (Object.keys(sharedPatch).length > 0) {
-            const targets = new Set(connectedEnvironmentIds);
-            if (environmentId) {
-              targets.add(environmentId);
-            }
-            if (targets.size === 0) {
-              warnUnsaved();
-            }
+            const targets = new Set(
+              environments.filter(supportsSharedSettings).map((target) => target.environmentId),
+            );
+            if (environmentId) targets.add(environmentId);
+            let wroteToTarget = false;
             for (const targetId of targets) {
+              const target = environments.find((candidate) => candidate.environmentId === targetId);
+              const targetPatch = filterSharedServerPatch(
+                sharedPatch,
+                target?.serverConfig?.environment.capabilities,
+              );
+              if (Object.keys(targetPatch).length === 0) continue;
+              wroteToTarget = true;
               void persistServerSettings({
                 environmentId: targetId,
-                input: { patch: sharedPatch },
+                input: { patch: targetPatch },
               });
+            }
+            if (!wroteToTarget) {
+              warnUnsaved(
+                targets.size > 0 ? "Update older servers to save this setting." : undefined,
+              );
             }
           }
         }
@@ -443,7 +441,7 @@ function useUpdateSettingsTarget(
       }
     },
     [
-      connectedEnvironmentIds,
+      environments,
       currentSettings.providerInstances,
       environmentId,
       mutateProviderInstances,
@@ -463,6 +461,7 @@ function useUpdateSettingsTarget(
 export function useSharedSettingsSync() {
   const primaryEnvironment = usePrimaryEnvironment();
   const primaryEnvironmentId = primaryEnvironment?.environmentId ?? null;
+  const primaryCapabilities = primaryEnvironment?.serverConfig?.environment.capabilities;
   // Read the loaded config, not `primaryServerSettingsAtom`: that atom falls
   // back to defaults while the primary is disconnected, and "apply to all"
   // must never push defaults over real values. Same for a primary too old to
@@ -482,28 +481,35 @@ export function useSharedSettingsSync() {
       findSharedSettingsMismatches({
         primaryEnvironmentId,
         primarySettings,
+        primaryCapabilities,
         environments: environments.map((environment) => ({
           environmentId: environment.environmentId,
           label: environment.label,
           connected: supportsSharedSettings(environment),
           settings: environment.serverConfig?.settings ?? null,
+          capabilities: environment.serverConfig?.environment.capabilities,
         })),
       }),
-    [environments, primaryEnvironmentId, primarySettings],
+    [environments, primaryEnvironmentId, primarySettings, primaryCapabilities],
   );
 
   const applyToAll = useCallback(() => {
     if (primarySettings === null) {
       return;
     }
-    const patch = pickSharedServerSettings(primarySettings);
+    const patch = pickSharedServerSettings(primarySettings, primaryCapabilities);
     for (const mismatch of mismatches) {
+      const target = environments.find(
+        (candidate) => candidate.environmentId === mismatch.environmentId,
+      );
       void persistServerSettings({
         environmentId: mismatch.environmentId,
-        input: { patch },
+        input: {
+          patch: filterSharedServerPatch(patch, target?.serverConfig?.environment.capabilities),
+        },
       });
     }
-  }, [mismatches, persistServerSettings, primarySettings]);
+  }, [environments, mismatches, persistServerSettings, primarySettings, primaryCapabilities]);
 
   return { mismatches, applyToAll };
 }

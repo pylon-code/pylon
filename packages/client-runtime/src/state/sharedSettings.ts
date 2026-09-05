@@ -8,12 +8,18 @@
  * environment, and warn when a connected environment still holds a different
  * value so the user can push their current value out.
  */
-import type { EnvironmentId, ServerSettings, ServerSettingsPatch } from "@t3tools/contracts";
+import type {
+  ExecutionEnvironmentCapabilities,
+  EnvironmentId,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "@t3tools/contracts";
 import * as Equal from "effect/Equal";
 import * as Struct from "effect/Struct";
 
 /** Server keys that hold a user preference rather than machine config. */
 const SHARED_SERVER_SETTING_KEYS = [
+  "continueThreadsAfterServerUpdate",
   "sidebarAutoSettleAfterDays",
   "sidebarAutoSettleOnMerge",
   "defaultThreadEnvMode",
@@ -45,9 +51,22 @@ export function splitSharedServerPatch(patch: ServerSettingsPatch): {
   };
 }
 
-/** The shared subset of one environment's settings, as a patch that can be written elsewhere. */
-export function pickSharedServerSettings(settings: ServerSettings): ServerSettingsPatch {
-  return Struct.pick(settings, SHARED_SERVER_SETTING_KEYS);
+/** Omit restart recovery on servers that cannot persist its preference. */
+export function filterSharedServerPatch(
+  patch: ServerSettingsPatch,
+  capabilities: Pick<ExecutionEnvironmentCapabilities, "threadRestartContinuation"> | undefined,
+): ServerSettingsPatch {
+  return capabilities?.threadRestartContinuation === true
+    ? patch
+    : Struct.omit(patch, ["continueThreadsAfterServerUpdate"]);
+}
+
+/** The shared subset supported by one environment. */
+export function pickSharedServerSettings(
+  settings: ServerSettings,
+  capabilities?: Pick<ExecutionEnvironmentCapabilities, "threadRestartContinuation">,
+): ServerSettingsPatch {
+  return filterSharedServerPatch(Struct.pick(settings, SHARED_SERVER_SETTING_KEYS), capabilities);
 }
 
 export interface SharedSettingsEnvironment {
@@ -55,6 +74,9 @@ export interface SharedSettingsEnvironment {
   readonly label: string;
   readonly connected: boolean;
   readonly settings: ServerSettings | null;
+  readonly capabilities?:
+    | Pick<ExecutionEnvironmentCapabilities, "threadRestartContinuation">
+    | undefined;
 }
 
 /**
@@ -68,12 +90,18 @@ export interface SharedSettingsEnvironment {
 export function findSharedSettingsMismatches(input: {
   readonly primaryEnvironmentId: EnvironmentId | null;
   readonly primarySettings: ServerSettings | null;
+  readonly primaryCapabilities?:
+    | Pick<ExecutionEnvironmentCapabilities, "threadRestartContinuation">
+    | undefined;
   readonly environments: ReadonlyArray<SharedSettingsEnvironment>;
 }): ReadonlyArray<{ readonly environmentId: EnvironmentId; readonly label: string }> {
   if (input.primaryEnvironmentId === null || input.primarySettings === null) {
     return [];
   }
-  const expected = pickSharedServerSettings(input.primarySettings);
+  const primarySettings = pickSharedServerSettings(
+    input.primarySettings,
+    input.primaryCapabilities,
+  );
   return input.environments.flatMap((environment) => {
     if (
       environment.environmentId === input.primaryEnvironmentId ||
@@ -82,7 +110,11 @@ export function findSharedSettingsMismatches(input: {
     ) {
       return [];
     }
-    const actual = pickSharedServerSettings(environment.settings);
+    const expected = filterSharedServerPatch(primarySettings, environment.capabilities);
+    const actual = filterSharedServerPatch(
+      pickSharedServerSettings(environment.settings, environment.capabilities),
+      input.primaryCapabilities,
+    );
     return Equal.equals(actual, expected)
       ? []
       : [{ environmentId: environment.environmentId, label: environment.label }];
