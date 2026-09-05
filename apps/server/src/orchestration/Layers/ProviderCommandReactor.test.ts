@@ -42,7 +42,11 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@t3tools/contracts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import {
+  ProviderAdapterRequestError,
+  ProviderWorkspaceMissingError,
+  type ProviderServiceError,
+} from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -194,13 +198,14 @@ describe("ProviderCommandReactor", () => {
     readonly stopSessionEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly startSessionEffect?: (
       session: ProviderSession,
-    ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
+    ) => Effect.Effect<ProviderSession, ProviderServiceError>;
     readonly sendTurnEffect?: () => Effect.Effect<
       { readonly threadId: ThreadId; readonly turnId: TurnId },
       ProviderAdapterRequestError
     >;
     readonly publishTurnStartedSynchronously?: boolean;
     readonly beforeAdmissionFailureDispatch?: Effect.Effect<void>;
+    readonly afterAdmissionFailureDispatch?: Effect.Effect<void>;
     readonly beforeAdmissionBindDispatch?: Effect.Effect<void>;
     readonly beforeReactorStart?: Effect.Effect<
       void,
@@ -535,6 +540,14 @@ describe("ProviderCommandReactor", () => {
               return input.beforeAdmissionFailureDispatch.pipe(
                 Effect.andThen(engine.dispatch(command)),
               );
+            }
+            if (
+              command.type === "thread.turn.admission.fail" &&
+              input?.afterAdmissionFailureDispatch !== undefined
+            ) {
+              return engine
+                .dispatch(command)
+                .pipe(Effect.tap(() => input.afterAdmissionFailureDispatch!));
             }
             if (
               command.type === "thread.session.bind-pending" &&
@@ -1999,6 +2012,56 @@ describe("ProviderCommandReactor", () => {
       expect(thread?.session?.status).toBe("error");
       expect(thread?.session?.failedTurnRequestId).toBe(requestId);
       expect(harness.listSessionsForInstance).toHaveBeenCalledTimes(1);
+    }),
+  );
+
+  effectIt.effect("shows the missing workspace message without a provider stack trace", () =>
+    Effect.gen(function* () {
+      const settled = yield* Deferred.make<void>();
+      const missingCwd = "/missing/project/worktree";
+      const missingWorkspace = new ProviderWorkspaceMissingError({
+        threadId: ThreadId.make("thread-1"),
+        cwd: missingCwd,
+      });
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          startSessionEffect: () => Effect.fail(missingWorkspace),
+          afterAdmissionFailureDispatch: Deferred.succeed(settled, undefined).pipe(Effect.asVoid),
+        }),
+      );
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-missing-workspace"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-missing-workspace"),
+          role: "user",
+          text: "continue",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* Deferred.await(settled);
+      yield* Effect.promise(() => harness.drain());
+
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      expect(thread?.session).toMatchObject({
+        status: "error",
+        activeTurnId: null,
+        lastError: missingWorkspace.message,
+      });
+      const failure = thread?.activities.find(
+        (activity) => activity.kind === "provider.turn.start.failed",
+      );
+      expect(failure?.payload).toMatchObject({ detail: missingWorkspace.message });
+      expect(harness.runtimeSessions).toEqual([]);
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect(thread?.session?.pendingTurnRequestId).toBeUndefined();
     }),
   );
 
