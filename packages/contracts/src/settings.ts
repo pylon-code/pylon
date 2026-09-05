@@ -819,7 +819,7 @@ export const providerInstanceConfigEnabledFlag = (config: unknown): boolean | un
 export const isBuiltInDriverKind = (driver: ProviderDriverKind): boolean =>
   Object.hasOwn(DEFAULT_SERVER_SETTINGS.providers, driver);
 
-export const defaultEnabledForDriver = (driver: ProviderDriverKind): boolean => {
+const defaultEnabledForDriver = (driver: ProviderDriverKind): boolean => {
   const legacyDefaults = DEFAULT_SERVER_SETTINGS.providers as Record<
     string,
     { readonly enabled?: boolean } | undefined
