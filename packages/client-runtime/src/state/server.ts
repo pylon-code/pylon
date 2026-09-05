@@ -525,10 +525,7 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
   },
 );
 
-export function serverConfigStateChanges(
-  environmentId: EnvironmentId,
-  environmentThemes?: boolean,
-) {
+function serverConfigStateChanges(environmentId: EnvironmentId, environmentThemes?: boolean) {
   return followStreamInEnvironment(
     environmentId,
     Stream.unwrap(
