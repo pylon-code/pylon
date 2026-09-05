@@ -86,9 +86,10 @@ function mapDpopSocketError(error: RemoteEnvironmentAuthError | ConnectionAttemp
 
 const fetchDescriptor = Effect.fn("clientRuntime.connection.remote.fetchDescriptor")(function* (
   httpBaseUrl: string,
+  connectionMethod: ClientConnectionMethod,
 ) {
   return yield* fetchRemoteEnvironmentDescriptor({ httpBaseUrl }).pipe(
-    Effect.mapError(mapRemoteEnvironmentError),
+    Effect.mapError((error) => mapRemoteEnvironmentError(error, connectionMethod)),
   );
 });
 
@@ -142,7 +143,7 @@ export const make = Effect.gen(function* () {
         cachedDescriptor.validatedAtEpochMs + BEARER_DESCRIPTOR_CACHE_TTL_MS > now;
       const descriptor = canReuseDescriptor
         ? cachedDescriptor.descriptor
-        : yield* fetchDescriptor(input.httpBaseUrl).pipe(
+        : yield* fetchDescriptor(input.httpBaseUrl, "direct").pipe(
             Effect.provideService(HttpClient.HttpClient, httpClient),
           );
       if (descriptor.environmentId !== input.expectedEnvironmentId) {
@@ -276,7 +277,7 @@ export const make = Effect.gen(function* () {
       identity: ClientCapabilities.CloudSessionIdentity,
     ) {
       const bootstrap = yield* obtainBootstrap(environmentId, identity);
-      const descriptor = yield* fetchDescriptor(bootstrap.endpoint.httpBaseUrl).pipe(
+      const descriptor = yield* fetchDescriptor(bootstrap.endpoint.httpBaseUrl, "relay").pipe(
         Effect.provideService(HttpClient.HttpClient, httpClient),
         Effect.withSpan("environment.authorization.descriptor"),
       );
