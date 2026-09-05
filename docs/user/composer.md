@@ -107,6 +107,19 @@ readable and T3 Code shows a warning.
 Mobile shows the full saved quote and its comment in sent messages. It does not offer
 **Cite in composer** or navigation to a quote's source.
 
+## Recall a sent prompt
+
+Press `ArrowUp` in an empty composer to bring back the last prompt you sent in this thread. Press
+`ArrowUp` again to go further back, and `ArrowDown` to come forward. Moving forward past the newest
+prompt clears the composer. Recall walks the prompts loaded in the thread. Attachments, terminal
+context, and other extras from the original message are not restored, only the text you typed. A
+composer that holds an attachment or a picked element does not count as empty.
+
+When the composer has text, the arrow keys move the caret as usual. Recall takes over only while
+the text is an unedited recalled prompt, with the caret on the first visual line for `ArrowUp` or
+the last visual line for `ArrowDown`, counting wrapped lines. Editing a recalled prompt turns it
+into a normal draft.
+
 ## Browser preview annotations
 
 On desktop, pick an element in the browser preview to attach an annotation or send it to the
