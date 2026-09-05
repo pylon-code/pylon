@@ -287,7 +287,7 @@ describe("ModelManifest service", () => {
       yield* service.refresh;
       assert.strictEqual(
         fetchedUrl,
-        "https://raw.githubusercontent.com/pylon-code/pylon-releases/main/model-manifest.json",
+        "https://raw.githubusercontent.com/pylon-code/pylon-releases/main/model-catalog.json",
       );
     }).pipe(
       Effect.scoped,

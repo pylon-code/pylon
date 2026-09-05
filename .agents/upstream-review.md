@@ -15,6 +15,29 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-05 — targeted Astra model classification
+
+The maintainer directed completing the Astra integration after review identified
+upstream `bc03c3640d6d3bb44e5fb477bfd78d7484cd0e00` / `#9762`. Adopted on
+`upstream/2026-09-05-astra`: add `gpt-6-astra` to the current Codex models.
+Upstream's `updatedAt` field is omitted because Pylon's schema does not accept it.
+The separate default-selection proposal `#9957` closed unmerged and is not part
+of this classification change.
+
+The end-to-end check found that Pylon's publisher had failed since September 2:
+it still rejected the `providers` field adopted with `#9084`. Publication now
+uses the server decoder and emits a complete `model-catalog.json` plus the
+original classification-only `model-manifest.json` for older strict readers.
+Current servers fetch the catalog; both feeds receive the Astra classification.
+
+This is a filtered review at upstream head
+`f8b4c464b4760d73e0ece7e68011c738803d8b69`; `reviewed-through` remains unchanged.
+DEF-8 is due (Expo 57 is merged and its September 5 floor is reached); DEF-7
+has not reached its November 1 floor. WATCH-1's upstream issue `#5760` is closed,
+Pylon `#178` remains open, and upstream `#8097` remains open. WATCH-2 and WATCH-3
+remain closed-unmerged upstream efforts with November 1 revisit floors. No
+register or owner-issue decisions are implied by this targeted Astra change.
+
 ## 2026-09-05 — first catch-up batch and watch recheck (partial)
 
 The maintainer approved A1–A4 after reviewing the bounded upstream head

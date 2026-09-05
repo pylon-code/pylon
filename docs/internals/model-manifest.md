@@ -1,7 +1,8 @@
 # Model manifest
 
 `apps/server/src/provider/model-manifest.json` is bundled for offline startup and fetched from
-`main` at runtime. A remote fetch replaces the in-memory and on-disk cache only after generic
+`model-catalog.json` on Pylon's public releases repository at runtime. A remote fetch replaces
+the in-memory and on-disk cache only after generic
 catalog references and provider-owned adapter data validate. A failed or invalid fetch keeps the
 last successful remote manifest. The bundle is used only when no valid remote cache exists.
 
@@ -17,6 +18,10 @@ a capability combination that does not already exist.
 `currentModels.claudeAgent` is retained as a frozen compatibility field for releases that predate
 catalog discovery. New Claude models do not need to be added there. Codex still discovers models
 from its app server and uses `currentModels.codex` only as a legacy-classification overlay.
+
+Publication also produces `model-manifest.json` with only `version` and `currentModels` for
+older releases whose strict schemas reject provider catalogs. Both files are generated from
+the same validated source and published in one commit. See the [publishing runbook](../operations/model-manifest.md).
 
 Claude model entries support:
 
