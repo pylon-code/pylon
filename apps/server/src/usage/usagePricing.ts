@@ -103,14 +103,6 @@ function normalizeRateKey(model: string): string {
   return model.trim().toLowerCase();
 }
 
-/**
- * The bare model name a lookup falls back to: a `provider/` prefix stripped and
- * lowercased, since transcripts are inconsistent about both.
- */
-export function normalizeModelName(model: string): string {
-  return bareModelName(normalizeRateKey(model));
-}
-
 function bareModelName(key: string): string {
   const slash = key.lastIndexOf("/");
   return slash === -1 ? key : key.slice(slash + 1);
