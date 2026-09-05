@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { createAssetEnvironmentAtoms, resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
-import type { AssetResource, EnvironmentId } from "@t3tools/contracts";
+import type { AssetImageDimensions, AssetResource, EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback } from "react";
 
@@ -17,7 +17,11 @@ const EMPTY_ASSET_URL_ATOM = Atom.make(AsyncResult.initial<never, never>(false))
 export type AssetUrlState =
   | { readonly _tag: "Loading" }
   | { readonly _tag: "Failure" }
-  | { readonly _tag: "Success"; readonly url: string };
+  | {
+      readonly _tag: "Success";
+      readonly url: string;
+      readonly imageDimensions?: AssetImageDimensions;
+    };
 
 export function useAssetUrlState(
   environmentId: EnvironmentId | null,
@@ -36,7 +40,15 @@ export function useAssetUrlState(
     return { _tag: "Loading" };
   }
   const url = resolveAssetUrl(preparedConnection.value.httpBaseUrl, result.value.relativeUrl);
-  return url === null ? { _tag: "Failure" } : { _tag: "Success", url };
+  return url === null
+    ? { _tag: "Failure" }
+    : {
+        _tag: "Success",
+        url,
+        ...(result.value.imageDimensions !== undefined
+          ? { imageDimensions: result.value.imageDimensions }
+          : {}),
+      };
 }
 
 export function useAssetUrl(

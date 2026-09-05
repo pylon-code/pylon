@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { AssetResource, EnvironmentId } from "@t3tools/contracts";
+import type { AssetImageDimensions, AssetResource, EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useMemo } from "react";
 
@@ -14,7 +14,12 @@ export { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 export type AssetUrlState =
   | { readonly _tag: "Loading" }
   | { readonly _tag: "Failure" }
-  | { readonly _tag: "Success"; readonly url: string; readonly sourcePath?: string };
+  | {
+      readonly _tag: "Success";
+      readonly url: string;
+      readonly sourcePath?: string;
+      readonly imageDimensions?: AssetImageDimensions;
+    };
 
 export function useAssetUrlState(
   environmentId: EnvironmentId,
@@ -40,6 +45,9 @@ export function useAssetUrlState(
         _tag: "Success",
         url,
         ...(result.value.sourcePath !== undefined ? { sourcePath: result.value.sourcePath } : {}),
+        ...(result.value.imageDimensions !== undefined
+          ? { imageDimensions: result.value.imageDimensions }
+          : {}),
       };
 }
 
