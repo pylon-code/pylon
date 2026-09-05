@@ -246,7 +246,6 @@ export const DesktopServerExposureSetModeError = Schema.Union([
   DesktopServerExposureModePersistenceError,
 ]);
 export type DesktopServerExposureSetModeError = typeof DesktopServerExposureSetModeError.Type;
-export const isDesktopServerExposureSetModeError = Schema.is(DesktopServerExposureSetModeError);
 
 export const DesktopServerExposureError = Schema.Union([
   DesktopServerExposureNoNetworkAddressError,
@@ -254,7 +253,6 @@ export const DesktopServerExposureError = Schema.Union([
   DesktopTailscaleServePersistenceError,
 ]);
 export type DesktopServerExposureError = typeof DesktopServerExposureError.Type;
-export const isDesktopServerExposureError = Schema.is(DesktopServerExposureError);
 
 export interface DesktopServerExposureBackendConfig {
   readonly port: number;
