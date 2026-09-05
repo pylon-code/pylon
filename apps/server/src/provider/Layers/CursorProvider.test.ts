@@ -16,7 +16,6 @@ import {
   buildCursorCapabilitiesFromConfigOptions,
   checkCursorProviderStatus,
   discoverCursorModelsViaAcp,
-  getCursorFallbackModels,
   makeCursorModelDiscovery,
   getCursorParameterizedModelPickerUnsupportedMessage,
   parseCursorAboutOutput,
@@ -462,16 +461,6 @@ describe("Cursor skills", () => {
     expect(rewriteCursorSkillMentions("please $review this", new Set(["review"]))).toBe(
       "please /review this",
     );
-  });
-});
-
-describe("getCursorFallbackModels", () => {
-  it("does not publish any built-in cursor models before ACP discovery", () => {
-    expect(
-      getCursorFallbackModels({
-        customModels: ["internal/cursor-model"],
-      }).map((model) => model.slug),
-    ).toEqual(["internal/cursor-model"]);
   });
 });
 
