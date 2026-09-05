@@ -419,10 +419,12 @@ export async function startBrowserRecording(
   activeRecordings.set(tabId, recording);
   publishActiveRecordingTabIds();
   try {
-    const frameRatePromise = ensureClientSettingsHydrated().then(
-      () => getClientSettings().browserRecordingFrameRate,
-    );
-    const [frameRate] = await Promise.all([frameRatePromise, waitForBrowserRecordingPaint()]);
+    await ensureClientSettingsHydrated().catch((cause: unknown) => {
+      clearActiveRecording(recording);
+      throw cause;
+    });
+    const frameRate = getClientSettings().browserRecordingFrameRate;
+    await waitForBrowserRecordingPaint();
     let source: DesktopPreviewRecordingSource;
     try {
       source = await bridge.recording.startScreencast(tabId);

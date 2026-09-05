@@ -32,7 +32,8 @@ export type ProviderStatusKey = keyof typeof PROVIDER_STATUS_STYLES;
  * settings page. Prefers `provider.message` for server-supplied detail and
  * falls back to generic phrasing when the server has not yet reported any
  * state — which happens before the first probe or when an instance names a
- * driver this build does not ship.
+ * driver this build does not ship. A ready provider without account metadata
+ * remains available and does not imply an authentication failure.
  */
 export function getProviderSummary(provider: ServerProvider | undefined) {
   if (!provider) {
@@ -43,7 +44,7 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
   }
   const unavailable = getProviderUnavailablePresentation(provider);
   if (unavailable) return unavailable;
-  if (!provider.enabled) {
+  if (!provider.enabled || provider.status === "disabled") {
     return {
       headline: "Disabled",
       detail:
@@ -54,13 +55,6 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
     return {
       headline: "Not found",
       detail: provider.message ?? "CLI not detected on PATH.",
-    };
-  }
-  if (provider.auth.status === "authenticated") {
-    const authLabel = provider.auth.label ?? provider.auth.type;
-    return {
-      headline: authLabel ? `Authenticated · ${authLabel}` : "Authenticated",
-      detail: provider.message ?? null,
     };
   }
   if (provider.auth.status === "unauthenticated") {
@@ -82,9 +76,16 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
       detail: provider.message ?? "The provider failed its startup checks.",
     };
   }
+  if (provider.auth.status === "authenticated") {
+    const authLabel = provider.auth.label ?? provider.auth.type;
+    return {
+      headline: authLabel ? `Authenticated · ${authLabel}` : "Authenticated",
+      detail: provider.message ?? null,
+    };
+  }
   return {
     headline: "Available",
-    detail: provider.message ?? "Installed and ready, but authentication could not be verified.",
+    detail: provider.message ?? null,
   };
 }
 

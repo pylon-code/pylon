@@ -1,6 +1,8 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { ensureClientSettingsHydrated } from "~/hooks/useSettings";
+
 const { clientSettings, events, getUserMedia, registrySet, save, startScreencast, stopScreencast } =
   vi.hoisted(() => {
     const events: string[] = [];
@@ -227,6 +229,37 @@ describe("browser recording", () => {
       },
     });
     await stopBrowserRecording("recording-tab");
+  });
+
+  it("clears a failed settings read before retrying recording", async () => {
+    const tabId = "settings-read-failure-tab";
+    const error = new Error("Settings read failed");
+    vi.mocked(ensureClientSettingsHydrated).mockRejectedValueOnce(error);
+
+    await expect(startBrowserRecording(tabId)).rejects.toBe(error);
+
+    expect(readActiveBrowserRecordingTabIds()).toEqual(new Set());
+    expect(useBrowserSurfaceStore.getState().activityByTabId[tabId]).toBeUndefined();
+    expect(animationFrameCount).toBe(0);
+    expect(startScreencast).not.toHaveBeenCalled();
+    expect(stopScreencast).not.toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(FakeMediaRecorder.instances).toHaveLength(0);
+
+    clientSettings.browserRecordingFrameRate = 60;
+    await startBrowserRecording(tabId);
+
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: false,
+      video: {
+        mandatory: expect.objectContaining({ maxFrameRate: 60 }),
+      },
+    });
+    await stopBrowserRecording(tabId);
+
+    expect(startScreencast).toHaveBeenCalledOnce();
+    expect(readActiveBrowserRecordingTabIds()).toEqual(new Set());
+    expect(useBrowserSurfaceStore.getState().activityByTabId[tabId]).toBeUndefined();
   });
 
   it("stops the native stream when MediaRecorder cleanup fails", async () => {
