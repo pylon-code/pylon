@@ -16,13 +16,6 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 
-it("uses the canonical Codex default for the auto-bootstrapped welcome thread", () => {
-  assert.deepStrictEqual(ServerRuntimeStartup.getAutoBootstrapThreadModelSelection(), {
-    instanceId: ProviderInstanceId.make("codex"),
-    model: DEFAULT_MODEL,
-  });
-});
-
 it.effect("enqueueCommand waits for readiness and then drains queued work", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -160,7 +153,10 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
               id: bootstrapProjectId,
               title: "Startup Project",
               workspaceRoot: "/tmp/startup-project",
-              defaultModelSelection: ServerRuntimeStartup.getAutoBootstrapThreadModelSelection(),
+              defaultModelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: DEFAULT_MODEL,
+              },
               scripts: [],
               createdAt: "2026-01-01T00:00:00.000Z",
               updatedAt: "2026-01-01T00:00:00.000Z",
@@ -258,10 +254,10 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
       ["project.create", "thread.create"],
     );
     assert.equal("defaultModelSelection" in commands[0]!, false);
-    assert.deepStrictEqual(
-      commands[1]?.modelSelection,
-      ServerRuntimeStartup.getAutoBootstrapThreadModelSelection(),
-    );
+    assert.deepStrictEqual(commands[1]?.modelSelection, {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: DEFAULT_MODEL,
+    });
   }),
 );
 
