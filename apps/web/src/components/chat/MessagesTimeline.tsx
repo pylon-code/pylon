@@ -1959,21 +1959,33 @@ function LiveActivityRow({
   iconName,
   failed = false,
   active = false,
+  shimmer = false,
 }: {
   label: string;
   iconName?: WorkEntryIconName;
   failed?: boolean;
   active?: boolean;
+  shimmer?: boolean;
 }) {
+  const animated = active && !failed;
+  const showShimmer = animated && shimmer;
   return (
-    <div className="min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed">
+    <div
+      ref={animated ? observeVisibleAnimation : undefined}
+      className="relative min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed"
+    >
       <LiveActivityContent
         label={label}
         iconName={iconName}
         failed={failed}
         announceFailure={failed}
-        active={active}
+        active={animated && !shimmer}
       />
+      {showShimmer ? (
+        <ActivityShimmerOverlay>
+          <LiveActivityContent label={label} iconName={iconName} toolIcon={toolIcon} highlighted />
+        </ActivityShimmerOverlay>
+      ) : null}
     </div>
   );
 }
@@ -1984,12 +1996,14 @@ function LiveActivityContent({
   failed = false,
   announceFailure = false,
   active = false,
+  highlighted = false,
 }: {
   label: string;
   iconName: WorkEntryIconName | undefined;
   failed?: boolean;
   announceFailure?: boolean;
   active?: boolean;
+  highlighted?: boolean;
 }) {
   const labelRef = useRef<HTMLSpanElement>(null);
   useEffect(() => {

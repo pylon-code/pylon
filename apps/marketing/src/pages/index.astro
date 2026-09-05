@@ -292,6 +292,7 @@ const screenshot = await getImage({
 
 <script>
   import { fetchLatestRelease, RELEASES_URL, type ReleaseAsset } from "../lib/releases";
+  import { startHomeMotion } from "../lib/homeMotion";
 
   type Platform = { os: "mac" | "win" | "linux"; label: string };
 
@@ -356,6 +357,14 @@ const screenshot = await getImage({
   }
 
   init();
+
+  const hero = document.querySelector<HTMLElement>(".hero");
+  const field = document.querySelector<HTMLElement>(".hero-float");
+  const endorsements = document.querySelector<HTMLElement>(".endorsement-carousel");
+  const caret = document.querySelector<HTMLElement>(".caret");
+  if (hero && field && endorsements && caret) {
+    startHomeMotion({ hero, field, endorsements, caret });
+  }
 </script>
 
 <style>
@@ -562,6 +571,8 @@ const screenshot = await getImage({
     inset: 0;
     pointer-events: none;
     z-index: 1;
+    --px: 0px;
+    --py: 0px;
   }
 
   .hero-float-mark {
@@ -578,6 +589,7 @@ const screenshot = await getImage({
     box-shadow:
       0 20px 48px -16px rgba(0, 0, 0, 0.65),
       0 2px 0 0 rgba(255, 255, 255, 0.04) inset;
+
   }
 
   .hero-float-mark img {
@@ -926,6 +938,7 @@ const screenshot = await getImage({
     background: rgba(0, 0, 0, 0.1);
     padding: 2px 6px; border-radius: 4px;
   }
+
 
   /* ── Final CTA ────────────────────────────────────────── */
   .sec-cta {
