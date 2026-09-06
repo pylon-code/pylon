@@ -63,3 +63,9 @@ pill** fallback because their colors are not controlled by Pylon.
 To generate a fresh title from the conversation, open a thread's context menu and choose
 **Regenerate title**. While Pylon is generating it, the action reads **Regenerating…** and cannot
 be selected again. The option is hidden when the connected environment needs a server update.
+
+## Settle finished work
+
+Manually settling an idle thread dismisses unanswered async questions without
+sending an answer or restarting the agent. Questions that pause the agent still
+need an answer or an interrupted turn.
