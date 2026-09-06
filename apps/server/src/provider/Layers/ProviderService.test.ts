@@ -88,7 +88,10 @@ import {
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
-import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
+import {
+  makeAdapterRegistryMock,
+  makeInstanceAdapterRegistryMock,
+} from "../testUtils/providerAdapterRegistryMock.ts";
 
 const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
 const serverConfigTestLayer = ServerConfig.layerTest(process.cwd(), process.cwd()).pipe(
@@ -205,17 +208,18 @@ function makeFakeCodexAdapter(
       Effect.void,
   );
 
-  const compactThread = vi.fn((threadId: ThreadId) =>
-    Effect.sync(() =>
-      emit({
-        type: "thread.state.changed",
-        eventId: asEventId("evt-native-compact"),
-        provider,
-        createdAt: "2026-01-01T00:00:00.000Z",
-        threadId,
-        payload: { state: "compacted" },
-      }),
-    ),
+  const compactThread = vi.fn(
+    (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
+      Effect.sync(() =>
+        emit({
+          type: "thread.state.changed",
+          eventId: asEventId("evt-native-compact"),
+          provider,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          threadId,
+          payload: { state: "compacted" },
+        }),
+      ),
   );
   const respondToRequest = vi.fn(
     (
@@ -453,7 +457,13 @@ function makeFakeCodexAdapter(
     startSession,
     sendTurn,
     followUp,
-    ...(provider === CODEX_DRIVER ? { compaction: { type: "native", start: compactThread } } : {}),
+    ...(provider === CODEX_DRIVER
+      ? { compaction: { type: "native", start: compactThread } }
+      : provider === CURSOR_DRIVER
+        ? { compaction: { type: "slash-command", command: "/compress" } }
+        : provider === CLAUDE_AGENT_DRIVER
+          ? { compaction: { type: "slash-command", command: "/compact" } }
+          : {}),
     interruptTurn,
     respondToRequest,
     respondToUserInput,
@@ -579,17 +589,20 @@ const hasMetricSnapshot = (
 function makeProviderServiceLayer(
   input: {
     readonly directory?: ProviderSessionDirectory.ProviderSessionDirectory["Service"];
+    readonly registry?: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"];
   } = {},
 ) {
   const startReservationCounts: number[] = [];
   const codex = makeFakeCodexAdapter();
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER, { supportsSideQuestions: false });
-  const registry = makeAdapterRegistryMock({
-    [ProviderDriverKind.make("codex")]: codex.adapter,
-    [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
-    [ProviderDriverKind.make("cursor")]: cursor.adapter,
-  });
+  const registry =
+    input.registry ??
+    makeAdapterRegistryMock({
+      [ProviderDriverKind.make("codex")]: codex.adapter,
+      [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
+      [ProviderDriverKind.make("cursor")]: cursor.adapter,
+    });
 
   const providerAdapterLayer = Layer.succeed(
     ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -1043,6 +1056,125 @@ it.effect("ProviderServiceLive rejects new sessions for disabled custom instance
 );
 
 const routing = makeProviderServiceLayer();
+
+const customCompactionDriver = ProviderDriverKind.make("custom-compaction-provider");
+const nativeCompactionInstanceId = ProviderInstanceId.make("native-compaction");
+const slashCompactionInstanceId = ProviderInstanceId.make("slash-compaction");
+const unsupportedCompactionInstanceId = ProviderInstanceId.make("unsupported-compaction");
+const customNativeCompaction = makeFakeCodexAdapter(customCompactionDriver);
+const customSlashCompaction = makeFakeCodexAdapter(customCompactionDriver);
+const unsupportedCompaction = makeFakeCodexAdapter(customCompactionDriver);
+const declaredCompaction = makeProviderServiceLayer({
+  registry: makeInstanceAdapterRegistryMock([
+    [
+      nativeCompactionInstanceId,
+      {
+        ...customNativeCompaction.adapter,
+        compaction: { type: "native", start: customNativeCompaction.compactThread },
+      },
+    ],
+    [
+      slashCompactionInstanceId,
+      {
+        ...customSlashCompaction.adapter,
+        compaction: { type: "slash-command", command: "/reduce-context" },
+      },
+    ],
+    [unsupportedCompactionInstanceId, unsupportedCompaction.adapter],
+  ]),
+});
+
+declaredCompaction.layer("ProviderService declared compaction", (it) => {
+  it.effect("starts declared native compaction instead of sending a prompt", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("custom-native-compaction");
+      const requestId = MessageId.make("custom-native-request");
+      yield* provider.startSession(threadId, {
+        providerInstanceId: nativeCompactionInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const compactedEventFiber = yield* provider.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.threadId === threadId && event.type === "thread.state.changed",
+        ),
+        Stream.runHead,
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* advanceTestClock(50);
+      yield* provider.compactThread(threadId, undefined, requestId);
+      const compacted = Option.getOrThrow(yield* Fiber.join(compactedEventFiber));
+      assert.equal(compacted.requestId, String(requestId));
+      assert.equal(customNativeCompaction.compactThread.mock.calls.length, 1);
+      assert.equal(customNativeCompaction.sendTurn.mock.calls.length, 0);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("sends the declared slash command as the compaction turn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("custom-slash-compaction");
+      const requestId = MessageId.make("custom-slash-request");
+      const modelSelection = createModelSelection(slashCompactionInstanceId, "custom-model");
+      yield* provider.startSession(threadId, {
+        providerInstanceId: slashCompactionInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const compactedEventFiber = yield* provider.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.threadId === threadId && event.type === "thread.state.changed",
+        ),
+        Stream.runHead,
+        Effect.forkChild({ startImmediately: true }),
+      );
+      const compactFiber = yield* provider
+        .compactThread(threadId, modelSelection, requestId)
+        .pipe(Effect.forkChild);
+      yield* advanceTestClock(50);
+      customSlashCompaction.emit({
+        type: "turn.completed",
+        eventId: asEventId("custom-slash-completed"),
+        provider: customCompactionDriver,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId: asTurnId(`turn-${threadId}`),
+        payload: { state: "completed" },
+      });
+      yield* Fiber.join(compactFiber);
+      const compacted = Option.getOrThrow(yield* Fiber.join(compactedEventFiber));
+      assert.equal(compacted.requestId, String(requestId));
+      assert.equal(customSlashCompaction.compactThread.mock.calls.length, 0);
+      assert.equal(customSlashCompaction.sendTurn.mock.calls.length, 1);
+      assert.equal(customSlashCompaction.sendTurn.mock.calls[0]?.[0].input, "/reduce-context");
+      assert.deepEqual(
+        customSlashCompaction.sendTurn.mock.calls[0]?.[0].modelSelection,
+        modelSelection,
+      );
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("rejects compaction for adapters without a declared strategy", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("custom-unsupported-compaction");
+      yield* provider.startSession(threadId, {
+        providerInstanceId: unsupportedCompactionInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const failure = yield* provider.compactThread(threadId).pipe(Effect.flip);
+      assert.instanceOf(failure, ProviderValidationError);
+      assert.include(failure.message, "does not support context compaction");
+      assert.equal(unsupportedCompaction.sendTurn.mock.calls.length, 0);
+      assert.equal(unsupportedCompaction.compactThread.mock.calls.length, 0);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+});
 
 it.effect(
   "ProviderServiceLive uploads feedback through the adapter that recovered the session",

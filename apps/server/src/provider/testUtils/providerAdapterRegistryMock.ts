@@ -72,3 +72,41 @@ export const makeAdapterRegistryMock = (adapters: KindAdapterMap): ProviderAdapt
     ),
   };
 };
+
+/**
+ * Build a `ProviderAdapterRegistryShape` from explicit instance ids, for tests
+ * that need several instances of one driver kind with different adapters.
+ */
+export const makeInstanceAdapterRegistryMock = (
+  entries: ReadonlyArray<readonly [ProviderInstanceId, ProviderAdapterShape<ProviderAdapterError>]>,
+): ProviderAdapterRegistryShape => {
+  const byInstanceId = new Map(entries);
+  const unsupported = (instanceId: ProviderInstanceId) =>
+    new ProviderUnsupportedError({ provider: ProviderDriverKind.make(instanceId) });
+
+  return {
+    getByInstance: (instanceId) => {
+      const adapter = byInstanceId.get(instanceId);
+      return adapter ? Effect.succeed(adapter) : Effect.fail(unsupported(instanceId));
+    },
+    getInstanceInfo: (instanceId) => {
+      const adapter = byInstanceId.get(instanceId);
+      if (!adapter) return Effect.fail(unsupported(instanceId));
+      const driverKind = ProviderDriverKind.make(adapter.provider);
+      return Effect.succeed({
+        instanceId,
+        driverKind,
+        displayName: undefined,
+        enabled: true,
+        continuationIdentity: {
+          driverKind,
+          continuationKey: `${adapter.provider}:instance:${instanceId}`,
+        },
+      });
+    },
+    listInstances: () => Effect.succeed(Array.from(byInstanceId.keys())),
+    subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
+      PubSub.subscribe(pubsub),
+    ),
+  };
+};
