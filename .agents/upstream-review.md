@@ -15,19 +15,6 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
-## 2026-09-05 — relay client validation (A4, partial)
-
-The maintainer approved A4 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
-Adopted #9880 (`2c301fd0c4fc58c1612be47c3856fa4ad547429d`) as `f6eb6d547a`
-on `upstream/2026-09-05-cloudflared-validation`, awaiting merge. Validate the
-downloaded cloudflared executable with `version`; the pinned Windows binary
-rejects `--version`. Clean port affecting relay setup on server/desktop and the
-clients connecting through it, independent of provider. Other modes are unchanged.
-Focused relay tests, shared-package typecheck, lint, and formatting pass.
-
-The cursor is unchanged for this partial selection. Deferred/watch results
-are recorded with #268; no register or watch row changes in this PR.
-
 ## 2026-09-02 — `9b2d04317c68233782e0630464ac86d77d0686f3..beae2147a9487ec47ac992319f2216914b4cb62d`
 
 The maintainer's standing instruction for this batch was to stop escalating
