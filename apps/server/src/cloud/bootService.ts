@@ -520,9 +520,19 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         yield* fs.makeDirectory(directory, { recursive: true });
         const tempPath = yield* fs.makeTempFileScoped({ directory, prefix: ".service-write-" });
         yield* fs.writeFileString(tempPath, contents, { mode: 0o600 });
-        yield* (yield* fs.open(tempPath, { flag: "r" })).sync;
+        // Opened read-write: Windows refuses to flush a handle without write access.
+        yield* (yield* fs.open(tempPath, { flag: "r+" })).sync;
         yield* fs.rename(tempPath, filePath);
-        yield* (yield* fs.open(directory, { flag: "r" })).sync;
+        // Windows has no directory fsync (EPERM); NTFS journals the rename.
+        yield* fs.open(directory, { flag: "r" }).pipe(
+          Effect.flatMap((handle) => handle.sync),
+          Effect.catchIf(
+            (error) =>
+              platform === "win32" &&
+              (error.reason.cause as NodeJS.ErrnoException | undefined)?.code === "EPERM",
+            () => Effect.void,
+          ),
+        );
       }),
     ).pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
   const plan: BootServicePlan = {
