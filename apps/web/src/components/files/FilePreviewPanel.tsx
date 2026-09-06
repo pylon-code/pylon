@@ -1167,7 +1167,7 @@ export default function FilePreviewPanel({
               // switch needs a new key or the previous file's disclosure and
               // wrap state carries into the next document.
               <RenderedMarkdownSurface
-                key={relativePath}
+                key={JSON.stringify([environmentId, cwd, relativePath])}
                 environmentId={environmentId}
                 cwd={cwd}
                 relativePath={relativePath}
