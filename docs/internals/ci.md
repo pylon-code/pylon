@@ -22,7 +22,7 @@ would not be enough — most changes there are TypeScript the native linters nev
 `paths:` list whenever the check learns to read something new, or it will silently stop running.
 
 [`.github/workflows/windows-tests.yml`](../../.github/workflows/windows-tests.yml) runs a selected
-workspace package on a GitHub Windows 2025 runner. It is manual and does not change the required
+workspace package on a GitHub Windows runner. It is manual and does not change the required
 checks. For a focused run, dispatch `gh workflow run windows-tests.yml --ref <branch>
 -f package=apps/server -f files="src/bootstrap.test.ts"`. File paths are relative to the selected
 package; omitting `files` runs that package's tests. The package defaults to `apps/server`.
