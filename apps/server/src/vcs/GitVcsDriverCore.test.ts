@@ -1493,6 +1493,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       Effect.gen(function* () {
         const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
         const removalStarted = yield* Deferred.make<void>();
+        const allowRemoval = yield* Deferred.make<void>();
         const delayedRemovalSpawner = ChildProcessSpawner.make((command) =>
           Effect.gen(function* () {
             if (
@@ -1501,7 +1502,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
               command.args[1] === "remove"
             ) {
               yield* Deferred.succeed(removalStarted, undefined);
-              yield* Effect.sleep("31 seconds");
+              yield* Deferred.await(allowRemoval);
             }
             return yield* delegate.spawn(command);
           }),
@@ -1528,6 +1529,8 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Deferred.await(removalStarted);
         yield* TestClock.adjust("31 seconds");
+        assert.equal(removal.pollUnsafe(), undefined);
+        yield* Deferred.succeed(allowRemoval, undefined);
         yield* Fiber.join(removal);
 
         assert.equal(yield* fileSystem.exists(worktreePath), false);
