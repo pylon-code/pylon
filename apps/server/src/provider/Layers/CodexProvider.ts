@@ -516,7 +516,7 @@ export const probeCodexSkillsForCwd = Effect.fn("probeCodexSkillsForCwd")(functi
   readonly cwd: string;
   readonly environment?: NodeJS.ProcessEnv;
 }) {
-  const resolvedHomePath = input.homePath ? expandHomePath(input.homePath) : undefined;
+  const resolvedHomePath = input.homePath ? resolveProviderHomePath(input.homePath) : undefined;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const environment = {
     ...input.environment,

@@ -79,7 +79,7 @@ import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/Provid
 import { resolveCursorAcpBaseModelId } from "./CursorProvider.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
-  discoverCursorSkills,
+  probeCursorSkills,
   hasCursorSkillMention,
   rewriteCursorSkillMentions,
 } from "../Drivers/CursorSkills.ts";
@@ -1011,19 +1011,19 @@ export function makeCursorAdapter(
           if (rawPrompt) {
             let cursorSkillNames = ctx.cursorSkillNames;
             if (hasCursorSkillMention(rawPrompt) && cursorSkillNames === undefined) {
-              const skills = yield* discoverCursorSkills(
-                ctx.session.cwd,
-                options?.environment,
-              ).pipe(
+              const skills = yield* probeCursorSkills(ctx.session.cwd, options?.environment).pipe(
                 Effect.provideService(FileSystem.FileSystem, fileSystem),
                 Effect.provideService(Path.Path, path),
+                Effect.option,
               );
-              cursorSkillNames = new Set(
-                skills
-                  .filter((skill) => skill.enabled && skill.userInvocable !== false)
-                  .map((skill) => skill.name),
-              );
-              ctx.cursorSkillNames = cursorSkillNames;
+              if (Option.isSome(skills)) {
+                cursorSkillNames = new Set(
+                  skills.value
+                    .filter((skill) => skill.enabled && skill.userInvocable !== false)
+                    .map((skill) => skill.name),
+                );
+                ctx.cursorSkillNames = cursorSkillNames;
+              }
             }
             const prompt = cursorSkillNames
               ? rewriteCursorSkillMentions(rawPrompt, cursorSkillNames)

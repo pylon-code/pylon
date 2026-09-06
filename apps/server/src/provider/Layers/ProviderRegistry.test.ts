@@ -1208,10 +1208,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             displayName: undefined,
             enabled: true,
             snapshot: {
-              maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
-                provider: driver,
-                packageName: null,
-              }),
+              resolveMaintenance: () =>
+                Effect.succeed(
+                  makeManualOnlyProviderMaintenanceCapabilities({
+                    provider: driver,
+                    packageName: null,
+                  }),
+                ),
               getSnapshot: Effect.succeed(provider),
               refresh: Effect.succeed(provider),
               streamChanges: Stream.empty,
@@ -1277,17 +1280,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             yield* Ref.set(returnPendingSnapshot, false);
             const workspaceUpdate = yield* registry.streamChanges.pipe(
               Stream.runHead,
-              Effect.forkChild,
+              Effect.forkChild({ startImmediately: true }),
             );
-            yield* Effect.yieldNow;
             const firstRefresh = yield* registry
               .refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" })
-              .pipe(Effect.forkChild);
+              .pipe(Effect.forkChild({ startImmediately: true }));
             yield* Deferred.await(probeStarted);
             const duplicateRefresh = yield* registry
               .refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" })
-              .pipe(Effect.forkChild);
-            yield* Effect.yieldNow;
+              .pipe(Effect.forkChild({ startImmediately: true }));
             assert.strictEqual(yield* Ref.get(snapshotCalls), 2);
             yield* Deferred.succeed(releaseProbe, undefined);
             yield* Fiber.join(firstRefresh);
@@ -1303,17 +1304,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
             assert.strictEqual(yield* Ref.get(snapshotCalls), 2);
 
+            const rebuildUpdate = yield* registry.streamChanges.pipe(
+              Stream.filter((providers) => providers[0]?.checkedAt === rebuiltProvider.checkedAt),
+              Stream.runHead,
+              Effect.forkChild({ startImmediately: true }),
+            );
             yield* Ref.set(instancesRef, [rebuiltInstance]);
             yield* PubSub.publish(registryChanges, undefined);
-            let rebuilt = yield* registry.getProviders;
-            for (
-              let attempt = 0;
-              attempt < 50 && rebuilt[0]?.checkedAt !== rebuiltProvider.checkedAt;
-              attempt += 1
-            ) {
-              yield* Effect.yieldNow;
-              rebuilt = yield* registry.getProviders;
-            }
+            const rebuilt = Option.getOrThrow(yield* Fiber.join(rebuildUpdate));
             assert.strictEqual(rebuilt[0]?.checkedAt, rebuiltProvider.checkedAt);
             assert.strictEqual(rebuilt[0]?.workspaceSnapshots, undefined);
           }).pipe(Effect.provide(runtimeServices));

@@ -196,6 +196,11 @@ such as System, Personal, Project, or App.
 On mobile, these menus are also available on the **New task** screen before you start a thread.
 They use the skills and commands from the selected environment and provider.
 
+For Codex, Claude, Cursor, Grok, and OpenCode, the skill list includes skills from the current
+project or worktree. Web, desktop, and mobile request this list from the connected environment,
+so remote projects use their remote skills. Discovery can take a moment after you switch
+providers or workspaces. If discovery fails, later typing retries after a short cooldown.
+
 By default, the `/` menu includes skills. To keep this menu command-only, turn off **Show skills in
 slash menu** in **Settings → General** in the web or desktop app. Skill results use the
 `/skill:Skill Name` label and add the same `$name` skill token to your message. The original skill
