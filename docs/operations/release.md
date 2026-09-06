@@ -473,3 +473,11 @@ Checklist:
 - Build fails with signing error:
   - Retry with secrets removed to confirm unsigned path still works.
   - Re-check certificate/profile names and tenant/client credentials.
+- macOS certificate import succeeds, then `set-key-partition-list` fails with
+  `SecKeychainUnlock`:
+  - The temporary keychain password differs from the certificate password.
+    Pylon patches `app-builder-lib@26.15.6` to use the generated keychain password
+    for key permissions while retaining each certificate's password for import.
+  - Keep `patches/app-builder-lib@26.15.6.patch` registered in the workspace and
+    lockfile. When upgrading the packager, run `vp test run scripts/desktop-keychain.test.ts`
+    and verify the replacement keeps both application and installer imports working.
