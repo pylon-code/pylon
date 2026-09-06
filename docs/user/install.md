@@ -140,6 +140,13 @@ them on in **Settings** → the provider's card when you want to use them.
 Cursor is the one to watch: install Cursor CLI, which provides the `cursor-agent` binary that
 Pylon looks for, but authenticate with `agent login`, not `cursor-agent login`.
 
+When a provider CLI is behind its latest release, its provider card shows the
+available version. **Update now** appears only when Pylon can tell which
+installer owns the CLI (its own update command, Homebrew, or a global npm, pnpm,
+bun, or Vite+ install) and runs that installer. Otherwise update the CLI the same
+way you installed it. Homebrew installs compare against the version Homebrew
+offers, which can trail the npm release by a few hours.
+
 Grok models that support adjustable reasoning show a **Reasoning** control beside the model picker.
 The available levels and default come from the installed Grok Build CLI, so they can vary by model
 and CLI version.
