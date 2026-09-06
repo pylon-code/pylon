@@ -14,9 +14,12 @@ export const QUIT_DOUBLE_TAP_MS = 500;
 // release: macOS suppresses a letter keyUp while the command key is down, so a
 // tap release can go completely unseen and a release-based timer would quit
 // anyway. Once held, quitting waits for Q keyUp or a quiet grace period after
-// modifier keyUp so repeats cannot reach the next app. Keyboards with
-// auto-repeat disabled fall back to the application menu Quit action.
+// repeats stop so they cannot reach the next app. Keyboards with
+// auto-repeat disabled use two quick presses or the application menu Quit action.
 export const QUIT_HOLD_RELEASE_GRACE_MS = 600;
+// A slow repeat rate can exceed the fixed grace. Waiting for two observed
+// cadences keeps the timer behind the next repeat without slowing normal rates.
+const QUIT_HOLD_REPEAT_CADENCE_MULTIPLIER = 2;
 
 export type QuitHoldState = "down" | "up";
 
@@ -34,6 +37,7 @@ export interface QuitHoldOptions {
   readonly platform: NodeJS.Platform;
   readonly isEnabled: () => Promise<boolean>;
   readonly notify: (state: QuitHoldState) => void;
+  readonly concealWindow: () => void;
   readonly quit: () => void;
 }
 
@@ -48,6 +52,8 @@ export function makeQuitHoldHandler(
   let quitOnRelease = false;
   let heldSince = 0;
   let lastPressAt = 0;
+  let lastRepeatAt = 0;
+  let repeatCadenceMs = 0;
   // Incremented on every new press and every release/quit so a pending
   // isEnabled() resolution from a superseded press cannot arm (or quit for)
   // the current one.
@@ -67,6 +73,8 @@ export function makeQuitHoldHandler(
     holding = false;
     armed = false;
     quitOnRelease = false;
+    lastRepeatAt = 0;
+    repeatCadenceMs = 0;
     clearWatchdog();
     if (shouldNotify) options.notify("up");
   };
@@ -75,7 +83,17 @@ export function makeQuitHoldHandler(
   // renderer must not be left with a stuck "Hold to Quit" hint.
   const quitNow = () => {
     release();
+    lastPressAt = 0;
     options.quit();
+  };
+
+  const quitAfterQuietPeriod = () => {
+    clearWatchdog();
+    const quietPeriodMs = Math.max(
+      QUIT_HOLD_RELEASE_GRACE_MS,
+      repeatCadenceMs * QUIT_HOLD_REPEAT_CADENCE_MULTIPLIER,
+    );
+    watchdog = setTimeout(quitNow, quietPeriodMs);
   };
 
   return (event, input) => {
@@ -89,28 +107,36 @@ export function makeQuitHoldHandler(
         if (!quitOnRelease) {
           release();
         } else {
-          watchdog = setTimeout(quitNow, QUIT_HOLD_RELEASE_GRACE_MS);
+          quitAfterQuietPeriod();
         }
       }
       return;
     }
     if (input.type !== "keyDown") return;
 
-    if (quitOnRelease && input.isAutoRepeat && key === "q") {
+    const modifierDown = options.platform === "darwin" ? input.meta : input.control;
+    if (input.isAutoRepeat && modifierDown && key === "q") {
+      const now = Date.now();
+      repeatCadenceMs = now - (lastRepeatAt === 0 ? heldSince : lastRepeatAt);
+      lastRepeatAt = now;
+    }
+    if (quitOnRelease) {
       event.preventDefault();
-      clearWatchdog();
+      if (key === "q") {
+        if (modifierDown) {
+          quitAfterQuietPeriod();
+        } else {
+          clearWatchdog();
+        }
+      }
       return;
     }
 
-    const modifierDown = options.platform === "darwin" ? input.meta : input.control;
     if (!modifierDown || input.alt || input.shift || key !== "q") {
-      // Any other key (or an extra modifier) pressed mid-hold breaks the
-      // gesture; without this the hold timer keeps running through the
-      // interruption and the next qualifying repeat would quit early. The
-      // interrupted press also stops counting toward a double tap — but only
-      // here, not in release(), which runs mid-restart on an unseen-release
-      // re-press and must not wipe that press's own tap timestamp.
-      if (holding && !input.isAutoRepeat) {
+      // Re-pressing the platform modifier starts a second full shortcut.
+      if (key === modifierKey && !input.alt && !input.shift) return;
+      // Other keys cancel the first tap even if its release already arrived.
+      if (!input.isAutoRepeat) {
         lastPressAt = 0;
         release();
       }
@@ -123,7 +149,8 @@ export function makeQuitHoldHandler(
       if (armed && Date.now() - heldSince >= QUIT_HOLD_DURATION_MS) {
         armed = false;
         quitOnRelease = true;
-        clearWatchdog();
+        options.concealWindow();
+        quitAfterQuietPeriod();
       }
       return;
     }
