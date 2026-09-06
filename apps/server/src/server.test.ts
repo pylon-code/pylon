@@ -62,6 +62,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -1633,14 +1634,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const staticDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-static-cache-" });
-      const indexPath = path.join(staticDir, "index.html");
-      yield* fileSystem.writeFileString(indexPath, "<html>first build</html>");
+      const assetPath = path.join(staticDir, "app.js");
+      yield* fileSystem.writeFileString(assetPath, 'export const build = "first";');
       yield* buildAppUnderTest({ config: { staticDir } });
 
-      const initial = yield* HttpClient.get("/");
+      const initial = yield* HttpClient.get("/app.js");
       assert.equal(initial.status, 200);
       assert.equal(initial.headers["cache-control"], "no-cache");
-      assert.include(yield* initial.text, "first build");
+      assert.include(yield* initial.text, "first");
       const etag = initial.headers.etag;
       assert.isDefined(etag);
       assert.isDefined(initial.headers["last-modified"]);
@@ -1651,27 +1652,67 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         { "if-none-match": "*" },
         { "if-modified-since": initial.headers["last-modified"]! },
       ]) {
-        const response = yield* HttpClient.get("/", { headers });
+        const response = yield* HttpClient.get("/app.js", { headers });
         assert.equal(response.status, 304);
         assert.equal(response.headers.etag, etag);
         assert.equal(response.headers["cache-control"], "no-cache");
         assert.equal(yield* response.text, "");
       }
 
-      const mismatched = yield* HttpClient.get("/", {
+      const mismatched = yield* HttpClient.get("/app.js", {
         headers: {
           "if-none-match": '"another-build"',
           "if-modified-since": initial.headers["last-modified"]!,
         },
       });
       assert.equal(mismatched.status, 200);
-      assert.include(yield* mismatched.text, "first build");
+      assert.include(yield* mismatched.text, "first");
 
-      yield* fileSystem.writeFileString(indexPath, "<html>the next build is available</html>");
-      const changed = yield* HttpClient.get("/", { headers: { "if-none-match": etag! } });
+      yield* fileSystem.writeFileString(assetPath, 'export const build = "the next build";');
+      const changed = yield* HttpClient.get("/app.js", { headers: { "if-none-match": etag! } });
       assert.equal(changed.status, 200);
       assert.notEqual(changed.headers.etag, etag);
       assert.include(yield* changed.text, "next build");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("serves changed HTML with the same size and timestamp", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const staticDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-static-html-" });
+      const indexPath = path.join(staticDir, "index.html");
+      const modifiedAt = DateTime.toDateUtc(DateTime.makeUnsafe("1985-10-26T08:15:00.000Z"));
+      yield* fileSystem.writeFileString(indexPath, "<html>old build</html>");
+      yield* fileSystem.utimes(indexPath, modifiedAt, modifiedAt);
+      yield* buildAppUnderTest({ config: { staticDir } });
+
+      const initial = yield* HttpClient.get("/");
+      assert.equal(yield* initial.text, "<html>old build</html>");
+      const previousEtag = initial.headers.etag ?? '"previous-html"';
+      const nextHtml = "<html>new build</html>";
+      yield* fileSystem.writeFileString(indexPath, nextHtml);
+      yield* fileSystem.utimes(indexPath, modifiedAt, modifiedAt);
+
+      for (const [resource, headers] of [
+        ["/", { "if-none-match": previousEtag }],
+        ["/threads/example", { "if-modified-since": modifiedAt.toUTCString() }],
+        ["/", { "if-none-match": "*" }],
+      ] as const) {
+        const response = yield* HttpClient.get(resource, { headers });
+        assert.equal(response.status, 200);
+        assert.equal(yield* response.text, nextHtml);
+        assert.equal(response.headers["cache-control"], "no-cache");
+        assert.isUndefined(response.headers.etag);
+        assert.isUndefined(response.headers["last-modified"]);
+      }
+
+      const head = yield* HttpClient.head("/", {
+        headers: { "if-none-match": previousEtag, "accept-encoding": "identity" },
+      });
+      assert.equal(head.status, 200);
+      assert.equal(head.headers["content-length"], String(Buffer.byteLength(nextHtml)));
+      assert.equal(yield* head.text, "");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -1853,8 +1894,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const staticDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-static-close-" });
-      const filePath = path.join(staticDir, "index.html");
-      const body = "<p>file content</p>".repeat(1024);
+      const filePath = path.join(staticDir, "app.txt");
+      const body = "file content\n".repeat(1024);
       yield* fileSystem.writeFileString(filePath, body);
       const closed = yield* Queue.unbounded<FileSystem.File>();
       const blocked = yield* Deferred.make<void>();
@@ -1899,14 +1940,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         Effect.provideService(FileSystem.FileSystem, trackedFileSystem),
       );
 
-      const get = yield* HttpClient.get("/");
+      const get = yield* HttpClient.get("/app.txt");
       assert.equal(yield* get.text, body);
       yield* Queue.take(closed);
       assert.equal(active.size, 0);
       assert.isAbove(bodyReads, 0);
       const readsAfterGet = bodyReads;
 
-      const head = yield* HttpClient.head("/", { headers: { "accept-encoding": "gzip" } });
+      const head = yield* HttpClient.head("/app.txt", { headers: { "accept-encoding": "gzip" } });
       assert.equal(head.status, 200);
       assert.equal(head.headers["content-encoding"], "gzip");
       assert.equal(yield* head.text, "");
@@ -1914,7 +1955,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(active.size, 0);
       assert.equal(bodyReads, readsAfterGet);
 
-      const unchanged = yield* HttpClient.get("/", {
+      const unchanged = yield* HttpClient.get("/app.txt", {
         headers: { "if-none-match": get.headers.etag! },
       });
       assert.equal(unchanged.status, 304);
@@ -1923,7 +1964,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(bodyReads, readsAfterGet);
 
       blockAfterOpen = true;
-      const cancelled = yield* HttpClient.get("/").pipe(Effect.forkChild);
+      const cancelled = yield* HttpClient.get("/app.txt").pipe(Effect.forkChild);
       yield* Deferred.await(blocked);
       assert.equal(active.size, 1);
       yield* Fiber.interrupt(cancelled);
