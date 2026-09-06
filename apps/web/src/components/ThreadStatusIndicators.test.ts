@@ -154,6 +154,63 @@ describe("resolveDisplayedThreadPr + nextThreadChangeRequestSnapshot", () => {
     baseUrl: "https://github.com",
   };
 
+  it("clears stale checkout and cached PRs when the server clears its branch link", () => {
+    const input = {
+      threadBranch: featureBranch,
+      gitStatus: status({ sourceControlProvider: provider }),
+      snapshot: snapshotFor(featureBranch, mergedPr, provider),
+      retainTerminalOnBranchMismatch: true,
+      branchPullRequest: null,
+    };
+    expect(resolveDisplayedThreadPr(input)).toBeNull();
+    expect(resolveDisplayedThreadPrProvider(input)).toBeUndefined();
+    expect(nextThreadChangeRequestSnapshot(input)).toBeNull();
+  });
+
+  it("retains checkout discovery when an older server omits branch links", () => {
+    const gitStatus = status({ sourceControlProvider: provider });
+    const input = {
+      threadBranch: featureBranch,
+      gitStatus,
+      snapshot: undefined,
+      retainTerminalOnBranchMismatch: false,
+    };
+    expect(resolveDisplayedThreadPr(input)).toBe(gitStatus.pr);
+    expect(resolveDisplayedThreadPrProvider(input)).toEqual(provider);
+    expect(nextThreadChangeRequestSnapshot(input)?.pr).toBe(gitStatus.pr);
+  });
+
+  it("keeps a server-discovered branch PR visible while its checkout is elsewhere", () => {
+    const input = {
+      threadBranch: "feature/other",
+      gitStatus: status({ refName: "feature/other", pr: null }),
+      snapshot: { ...snapshotFor(featureBranch, mergedPr, provider), linkedPullRequest },
+      retainTerminalOnBranchMismatch: false,
+      branchPullRequest: linkedPullRequest,
+    };
+    expect(resolveDisplayedThreadPr(input)).toBe(mergedPr);
+    expect(resolveDisplayedThreadPrProvider(input)).toEqual(provider);
+    expect(nextThreadChangeRequestSnapshot(input)).toBeUndefined();
+  });
+
+  it("keeps a manual link authoritative over a different server-discovered PR", () => {
+    const input = {
+      threadBranch: featureBranch,
+      gitStatus: null,
+      snapshot: { ...snapshotFor(featureBranch, mergedPr, provider), linkedPullRequest },
+      retainTerminalOnBranchMismatch: false,
+      linkedPullRequest,
+      branchPullRequest: {
+        ...linkedPullRequest,
+        number: 43,
+        url: "https://github.com/pingdotgg/t3code/pull/43",
+      },
+    };
+    expect(resolveDisplayedThreadPr(input)).toBe(mergedPr);
+    expect(resolveDisplayedThreadPrProvider(input)).toEqual(provider);
+    expect(nextThreadChangeRequestSnapshot(input)).toBeUndefined();
+  });
+
   it("returns the live merged PR when the checkout matches the feature branch", () => {
     const gitStatus = status({
       refName: featureBranch,

@@ -406,7 +406,7 @@ export function resolveDisplayedThreadPrProvider(input: {
     linkedPullRequestStatus,
   } = input;
   const linkedPullRequest = manualPullRequest ?? input.branchPullRequest;
-  if (input.branchPullRequest !== undefined && linkedPullRequest == null) return null;
+  if (input.branchPullRequest !== undefined && linkedPullRequest == null) return undefined;
   if (linkedPullRequest != null) {
     return (
       linkedPullRequestStatus?.sourceControlProvider ??
