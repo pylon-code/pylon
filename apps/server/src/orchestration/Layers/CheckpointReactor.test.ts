@@ -27,6 +27,9 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
+import { it as effectIt } from "@effect/vitest";
+import * as RuntimeReceiptBus from "../Services/RuntimeReceiptBus.ts";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -399,8 +402,21 @@ describe("CheckpointReactor", () => {
     const checkpointStore = await runtime.runPromise(
       Effect.service(CheckpointStore.CheckpointStore),
     );
-    scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
+    const receiptBus = await runtime.runPromise(
+      Effect.service(RuntimeReceiptBus.RuntimeReceiptBus),
+    );
+    const testScope = await Effect.runPromise(Scope.make("sequential"));
+    scope = testScope;
+    const receipts = await Effect.runPromise(
+      Effect.gen(function* () {
+        const receipts = yield* Queue.unbounded<RuntimeReceiptBus.OrchestrationRuntimeReceipt>();
+        yield* Stream.runForEach(receiptBus.streamEventsForTest, (receipt) =>
+          Queue.offer(receipts, receipt),
+        ).pipe(Effect.forkIn(testScope, { startImmediately: true }));
+        yield* reactor.start().pipe(Scope.provide(testScope));
+        return receipts;
+      }),
+    );
     const drain = () => Effect.runPromise(reactor.drain);
 
     const createdAt = "2026-01-01T00:00:00.000Z";
@@ -490,6 +506,7 @@ describe("CheckpointReactor", () => {
       workspaceRefresh,
       cwd,
       drain,
+      nextReceipt: Queue.take(receipts),
     };
   }
 
