@@ -104,6 +104,27 @@ describe("hasMarkdownFilePrimaryAction", () => {
   });
 });
 
+describe("ChatMarkdown skill chips", () => {
+  it("labels known digit-leading skills while preserving monetary amounts", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        text="Use $2spec with a $20k budget."
+        skills={[
+          { name: "2spec", displayName: "2Spec" },
+          { name: "20k", displayName: "MoneySkill" },
+        ]}
+      />,
+    );
+    expect(html).toContain("2Spec");
+    expect(html).toContain("$20k");
+    expect(html).not.toContain("MoneySkill");
+    const unknown = renderToStaticMarkup(<ChatMarkdown cwd="/tmp/project" text="Use $2spec." />);
+    expect(unknown).toContain("$2spec");
+    expect(unknown).not.toContain("2Spec");
+  });
+});
+
 describe("ChatMarkdown file option chips", () => {
   it("keeps the fallback button text selectable", () => {
     const html = renderToStaticMarkup(
