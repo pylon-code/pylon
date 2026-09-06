@@ -1,4 +1,5 @@
 import { buildRollbackTurnCountByMessageId } from "./ChatView.logic";
+import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
 import {
   type AssistantCitation,
   type ApprovalRequestId,
@@ -115,8 +116,6 @@ import {
 import type { SessionHarnessRefinementOutcome } from "../sessionHarnessRefinement";
 import {
   createMessageAttachmentPreviewProjector,
-  derivePendingApprovals,
-  derivePendingUserInputs,
   derivePhase,
   deriveTimelineEntriesWithState,
   deriveActiveWorkStartedAt,
@@ -2733,12 +2732,8 @@ export default function ChatView(props: ChatViewProps) {
       return next.size === current.size ? current : next;
     });
   }, [runtimeSubagents]);
-  const pendingApprovals = useMemo(
-    () => derivePendingApprovals(threadActivities),
-    [threadActivities],
-  );
-  const pendingUserInputs = useMemo(
-    () => derivePendingUserInputs(threadActivities),
+  const { approvals: pendingApprovals, userInputs: pendingUserInputs } = useMemo(
+    () => derivePendingRequests(threadActivities),
     [threadActivities],
   );
   const activePendingUserInput = pendingUserInputs[0] ?? null;

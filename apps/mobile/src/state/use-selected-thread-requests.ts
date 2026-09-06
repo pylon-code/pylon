@@ -1,3 +1,4 @@
+import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -15,10 +16,8 @@ import { threadEnvironment } from "../state/threads";
 import { scopedRequestKey } from "../lib/scopedEntities";
 import {
   buildPendingUserInputAnswers,
-  derivePendingApprovals,
-  derivePendingUserInputs,
-  setPendingUserInputCustomAnswer,
   sortThreadActivities,
+  setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
 } from "../lib/threadActivity";
@@ -116,7 +115,7 @@ export function useSelectedThreadRequests() {
   const interactionSubmissionLockRef = useRef<SessionInteractionRequestId | null>(null);
   const interactionSubmissionAttemptRef = useRef(0);
 
-  // Sort once; both derivations expect the same lifecycle ordering.
+  // Prime interactions retain their own ordered lifecycle reducer.
   const sortedActivities = useMemo(
     () => (selectedThread ? sortThreadActivities(selectedThread.activities) : []),
     [selectedThread],
@@ -133,15 +132,11 @@ export function useSelectedThreadRequests() {
     sessionInteractionState.failures.find(
       (failure) => failure.requestId === activePendingInteraction?.requestId,
     ) ?? null;
-  const activePendingApprovals = useMemo(
-    () => derivePendingApprovals(sortedActivities),
-    [sortedActivities],
+  const { approvals: activePendingApprovals, userInputs: activePendingUserInputs } = useMemo(
+    () => derivePendingRequests(selectedThread?.activities ?? []),
+    [selectedThread?.activities],
   );
   const activePendingApproval = activePendingApprovals[0] ?? null;
-  const activePendingUserInputs = useMemo(
-    () => derivePendingUserInputs(sortedActivities),
-    [sortedActivities],
-  );
   const activePendingUserInput = activePendingUserInputs[0] ?? null;
   const activePendingUserInputDrafts =
     activePendingUserInput && selectedThreadShell
