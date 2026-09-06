@@ -162,7 +162,7 @@ const withEntryPresentation = (
   displayName: entry.displayName,
   accentColor: entry.accentColor,
   snapshot: {
-    maintenanceCapabilities: instance.snapshot.maintenanceCapabilities,
+    resolveMaintenance: instance.snapshot.resolveMaintenance,
     getSnapshot: instance.snapshot.getSnapshot.pipe(
       Effect.map((provider) => applyEntryPresentation(provider, entry, metadata)),
     ),

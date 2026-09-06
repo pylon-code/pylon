@@ -36,7 +36,7 @@ const windowsHost = HostProcessPlatform.defaultValue() === "win32";
 const makeTempDir = (name: string) =>
   Crypto.Crypto.pipe(
     Effect.flatMap((crypto) => crypto.randomUUIDv4),
-    Effect.map((id) => NodePath.join(NodeOS.tmpdir(), `${name}-${id}`)),
+    Effect.map((id) => NodePath.join(NodeFS.realpathSync(NodeOS.tmpdir()), `${name}-${id}`)),
   );
 const isNativeTestCommandPath =
   (expectedPathSegment: string) =>
@@ -240,44 +240,39 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     ),
   );
 
-  it.effect.skipIf(!symlinksSupported)(
-    "pins npm updates to the global prefix that owns the package",
-    () =>
-      Effect.gen(function* () {
-        const tempDir = yield* makeTempDir("t3-npm-capabilities");
-        const link = linkIntoPackage(tempDir, "package-tool", [
-          "lib",
-          "node_modules",
-          "@example",
-          "package-tool",
-        ]);
+  it.effect.skipIf(windowsHost)("pins npm updates to the global prefix that owns the package", () =>
+    Effect.gen(function* () {
+      const tempDir = yield* makeTempDir("t3-npm-capabilities");
+      const link = linkIntoPackage(tempDir, "package-tool", [
+        "lib",
+        "node_modules",
+        "@example",
+        "package-tool",
+      ]);
 
-        const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
-          packageToolUpdate,
-          {
-            binaryPath: link,
-            env: { PATH: "" },
-          },
-        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+      const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(packageToolUpdate, {
+        binaryPath: link,
+        env: { PATH: "" },
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
 
-        expect(capabilities).toEqual({
-          provider: driver("packageTool"),
-          packageName: "@example/package-tool",
-          update: {
-            command: `npm install -g --prefix ${tempDir} --allow-scripts=@example/package-tool @example/package-tool@latest`,
-            executable: "npm",
-            args: [
-              "install",
-              "-g",
-              "--prefix",
-              tempDir,
-              "--allow-scripts=@example/package-tool",
-              "@example/package-tool@latest",
-            ],
-            lockKey: `npm-global:${normalizeCommandPath(tempDir)}`,
-          },
-        });
-      }),
+      expect(capabilities).toEqual({
+        provider: driver("packageTool"),
+        packageName: "@example/package-tool",
+        update: {
+          command: `npm install -g --prefix ${tempDir} --allow-scripts=@example/package-tool @example/package-tool@latest`,
+          executable: "npm",
+          args: [
+            "install",
+            "-g",
+            "--prefix",
+            tempDir,
+            "--allow-scripts=@example/package-tool",
+            "@example/package-tool@latest",
+          ],
+          lockKey: `npm-global:${normalizeCommandPath(tempDir)}`,
+        },
+      });
+    }),
   );
 
   it("derives the npm prefix only from the global lib/node_modules layout", () => {
@@ -350,7 +345,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     }),
   );
 
-  it.effect.skipIf(!symlinksSupported)(
+  it.effect.skipIf(windowsHost)(
     "switches to pnpm updates when the real path lives in pnpm's global store",
     () =>
       Effect.gen(function* () {
@@ -470,7 +465,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     }),
   );
 
-  it.effect.skipIf(!symlinksSupported)(
+  it.effect.skipIf(windowsHost)(
     "prefers npm ownership over the Node keg the package lives under",
     () =>
       Effect.gen(function* () {
@@ -664,7 +659,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           },
         });
       }),
-    { skip: !symlinksSupported },
+    { skip: windowsHost },
   );
 
   it.effect.skipIf(windowsHost)(

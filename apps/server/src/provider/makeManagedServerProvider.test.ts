@@ -284,7 +284,7 @@ describe("makeManagedServerProvider", () => {
         const initialCheckDone = yield* Deferred.make<void>();
         const secondCheckDone = yield* Deferred.make<void>();
         yield* makeManagedServerProvider<TestSettings>({
-          maintenanceCapabilities,
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
           getSettings: Effect.succeed({ enabled: true }),
           streamSettings: Stream.empty,
           haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
@@ -338,7 +338,7 @@ describe("makeManagedServerProvider", () => {
         const checkCalls = yield* Ref.make(0);
         const initialCheckDone = yield* Deferred.make<void>();
         yield* makeManagedServerProvider<TestSettings>({
-          maintenanceCapabilities,
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
           getSettings: Effect.succeed({ enabled: true }),
           streamSettings: Stream.empty,
           haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
@@ -809,7 +809,7 @@ describe("makeManagedServerProvider", () => {
           message: "Model discovery failed; using fallback models.",
         };
         const provider = yield* makeManagedServerProvider<TestSettings>({
-          maintenanceCapabilities,
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
           getSettings: Effect.succeed({ enabled: true }),
           streamSettings: Stream.empty,
           haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
@@ -862,7 +862,7 @@ describe("makeManagedServerProvider", () => {
           const fallbackMessage = "Model discovery failed; using fallback models.";
           let publishEnrichment: ((snapshot: ServerProvider) => Effect.Effect<void>) | undefined;
           const provider = yield* makeManagedServerProvider<TestSettings>({
-            maintenanceCapabilities,
+            resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
             getSettings: Effect.succeed({ enabled: true }),
             streamSettings: Stream.empty,
             haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,

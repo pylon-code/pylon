@@ -17,7 +17,6 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { layerTest as codexResetCreditLayerTest } from "../Layers/codexResetCredit.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import {
@@ -33,7 +32,6 @@ const testLayer = ServerConfig.layerTest(process.cwd(), {
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(ServerSettingsService.layerTest()),
   Layer.provideMerge(ModelManifest.layerTest),
-  Layer.provideMerge(codexResetCreditLayerTest),
   Layer.provideMerge(
     Layer.mock(BackgroundPolicy.BackgroundPolicy)({
       shouldRunScopeWork: () => Effect.succeed(false),
@@ -61,7 +59,9 @@ it.layer(testLayer)("CodexDriver", (it) => {
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-driver-" });
+        const tempDir = yield* fs
+          .makeTempDirectoryScoped({ prefix: "t3-codex-driver-" })
+          .pipe(Effect.flatMap(fs.realPath));
         const sharedHome = NodePath.join(tempDir, "codex-home");
         const shadowHome = NodePath.join(tempDir, "codex-shadow");
         const binaryPath = NodePath.join(sharedHome, "packages", "standalone", "bin", "codex");
@@ -136,7 +136,9 @@ it.layer(testLayer)("CodexDriver", (it) => {
     it.effect.skipIf(windowsHost)(fixture.name, () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-installer-" });
+        const tempDir = yield* fs
+          .makeTempDirectoryScoped({ prefix: "t3-codex-installer-" })
+          .pipe(Effect.flatMap(fs.realPath));
         const installPath = NodePath.join(tempDir, ...fixture.installSegments);
         const realBinaryPath = NodePath.join(
           installPath,
@@ -193,7 +195,9 @@ it.layer(testLayer)("CodexDriver", (it) => {
     it.effect.skipIf(windowsHost)(`leaves a mise ${layout} installation manual-only`, () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: `t3-codex-mise-${layout}-` });
+        const tempDir = yield* fs
+          .makeTempDirectoryScoped({ prefix: `t3-codex-mise-${layout}-` })
+          .pipe(Effect.flatMap(fs.realPath));
         const binaryPath =
           layout === "direct"
             ? NodePath.join(tempDir, "mise", "installs", "codex", "0.110.0", "codex")
@@ -268,7 +272,9 @@ it.layer(testLayer)("CodexDriver", (it) => {
     (fixture) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-mise-shim-" });
+        const tempDir = yield* fs
+          .makeTempDirectoryScoped({ prefix: "t3-codex-mise-shim-" })
+          .pipe(Effect.flatMap(fs.realPath));
         const brewPrefix = NodePath.join(tempDir, "homebrew");
         const brewPath = NodePath.join(brewPrefix, "bin", "brew");
         const misePath = NodePath.join(brewPrefix, "Cellar", "mise", "2026.9.1", "bin", "mise");

@@ -79,11 +79,7 @@ import {
   PRIME_AGENT_MULTIPLE_INSTANCES_GRADUATION_REASON,
   PRIME_AGENT_SUPPORTED_INSTANCE_LIMIT,
 } from "../providerInstanceSettingsValidation.ts";
-import {
-  makeManualOnlyProviderMaintenanceCapabilities,
-  makeStaticProviderMaintenanceResolver,
-  resolveProviderMaintenanceCapabilitiesEffect,
-} from "../providerMaintenance.ts";
+import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import {
   haveProviderSnapshotSettingsChanged,
   makeProviderSnapshotSettingsSource,
@@ -205,12 +201,10 @@ function unsupportedPlatformMessage(platform: NodeJS.Platform): string {
     : `Prime Agent is unavailable on '${platform}'. Run the Pylon server and Prime Agent on macOS, Linux, or WSL2.`;
 }
 
-const UPDATE = makeStaticProviderMaintenanceResolver(
-  makeManualOnlyProviderMaintenanceCapabilities({
-    provider: DRIVER_KIND,
-    packageName: null,
-  }),
-);
+const MAINTENANCE_CAPABILITIES = makeManualOnlyProviderMaintenanceCapabilities({
+  provider: DRIVER_KIND,
+  packageName: null,
+});
 
 export type PrimeAgentDriverEnv =
   | BackgroundPolicy.BackgroundPolicy
@@ -534,10 +528,7 @@ export const PrimeAgentDriver: ProviderDriver<
           Effect.provideService(Path.Path, path),
         );
       };
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-      });
+      const maintenanceCapabilities = MAINTENANCE_CAPABILITIES;
 
       const recoveryDistribution = yield* Effect.result(
         Effect.gen(function* () {
