@@ -54,6 +54,7 @@ import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCi
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -81,6 +82,7 @@ import {
   type ProviderAdapterError,
   ProviderUnsupportedError,
   ProviderValidationError,
+  ProviderWorkspaceMissingError,
 } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
@@ -341,6 +343,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
   const revokeMcpCredential =
     options?.revokeMcpCredential ?? McpSessionRegistry.revokeActiveMcpThread;
+  const fileSystem = yield* FileSystem.FileSystem;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const currentSessionIncarnations = new Map<
     ThreadId,
@@ -1236,6 +1239,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                     : "none",
               "provider.cwd.effective": effectiveCwd ?? "",
             });
+            if (effectiveCwd !== undefined) {
+              // Report missing workspaces before allocating an incarnation or MCP session.
+              // Other filesystem failures remain the adapter's diagnostic to report.
+              const workspaceIsDirectory = yield* fileSystem.stat(effectiveCwd).pipe(
+                Effect.map((workspaceStat) => workspaceStat.type === "Directory"),
+                Effect.catch((statError) => Effect.succeed(statError.reason._tag !== "NotFound")),
+              );
+              if (!workspaceIsDirectory) {
+                return yield* new ProviderWorkspaceMissingError({ threadId, cwd: effectiveCwd });
+              }
+            }
             const adapter = yield* registry.getByInstance(resolvedInstanceId);
             yield* requireAdapterGenerationCurrent(adapter, "ProviderService.startSession");
             const sessionIncarnationId = RuntimeSessionId.make(NodeCrypto.randomUUID());
