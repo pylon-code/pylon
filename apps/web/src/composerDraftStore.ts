@@ -53,15 +53,16 @@ import {
   newElementContextId,
 } from "./lib/elementContext";
 import { create } from "zustand";
-import { createJSONStorage, persist } from "zustand/middleware";
+import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 import { useShallow } from "zustand/react/shallow";
-import { createDebouncedStorage, createMemoryStorage } from "./lib/storage";
+import { createDeferredStorage, createMemoryStorage } from "./lib/storage";
 import { getDefaultServerModel } from "./providerModels";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 import { ReviewCommentContextSchema, type ReviewCommentContext } from "./reviewCommentContext";
 const isRuntimeMode = Schema.is(RuntimeMode);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isReviewCommentContext = Schema.is(ReviewCommentContextSchema);
+const isPreviewAnnotationPayload = Schema.is(PreviewAnnotationPayloadSchema);
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
 const COMPOSER_DRAFT_STORAGE_VERSION = 10;
@@ -73,10 +74,38 @@ export type DraftId = typeof DraftId.Type;
 
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 
-const composerDebouncedStorage = createDebouncedStorage(
+// Keep the immutable state until flush. Migration writebacks already have the persisted shape.
+type ComposerPersistState =
+  | { capturedState: ComposerDraftStoreState }
+  | PersistedComposerDraftStoreState;
+
+const composerDebouncedStorage = createDeferredStorage<StorageValue<ComposerPersistState>>(
   typeof localStorage !== "undefined" ? localStorage : createMemoryStorage(),
+  (value) =>
+    JSON.stringify({
+      state:
+        "capturedState" in value.state
+          ? partializeComposerDraftStoreState(value.state.capturedState)
+          : value.state,
+      version: value.version,
+    }),
   COMPOSER_PERSIST_DEBOUNCE_MS,
 );
+
+const composerPersistStorage: PersistStorage<ComposerPersistState> = {
+  getItem: (name) => {
+    // The base storage is localStorage (or in-memory), which is synchronous.
+    const raw = composerDebouncedStorage.getItem(name);
+    if (typeof raw !== "string") {
+      return null;
+    }
+    // Parsed persisted JSON. `migrate` and `merge` normalize it from unknown,
+    // so the cast mirrors the one zustand's createJSONStorage performs.
+    return JSON.parse(raw) as StorageValue<ComposerPersistState>;
+  },
+  setItem: (name, value) => composerDebouncedStorage.setItem(name, value),
+  removeItem: (name) => composerDebouncedStorage.removeItem(name),
+};
 
 // Flush pending composer draft writes before page unload to prevent data loss.
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
@@ -1913,6 +1942,11 @@ function normalizePersistedDraftsByThreadId(
           return normalized ? [normalized] : [];
         })
       : [];
+    const previewAnnotations = Array.isArray(draftCandidate.previewAnnotations)
+      ? draftCandidate.previewAnnotations
+          .filter(isPreviewAnnotationPayload)
+          .map((annotation) => ({ ...annotation }) as DeepMutable<PreviewAnnotationPayload>)
+      : [];
     const reviewComments = Array.isArray(draftCandidate.reviewComments)
       ? draftCandidate.reviewComments.filter(isReviewCommentContext)
       : [];
@@ -1996,6 +2030,7 @@ function normalizePersistedDraftsByThreadId(
       files.length === 0 &&
       terminalContexts.length === 0 &&
       elementContexts.length === 0 &&
+      previewAnnotations.length === 0 &&
       reviewComments.length === 0 &&
       !hasModelData &&
       providerBindingConflict === undefined &&
@@ -2022,6 +2057,7 @@ function normalizePersistedDraftsByThreadId(
       ...(files.length > 0 ? { files } : {}),
       ...(terminalContexts.length > 0 ? { terminalContexts } : {}),
       ...(elementContexts.length > 0 ? { elementContexts } : {}),
+      ...(previewAnnotations.length > 0 ? { previewAnnotations } : {}),
       ...(reviewComments.length > 0 ? { reviewComments } : {}),
       ...(hasModelData
         ? {
@@ -2090,7 +2126,8 @@ function migratePersistedComposerDraftStoreState(
   };
 }
 
-function partializeComposerDraftStoreState(
+/** Select the persisted draft fields when the storage write is ready to flush. */
+export function partializeComposerDraftStoreState(
   state: ComposerDraftStoreState,
 ): PersistedComposerDraftStoreState {
   // Draft sessions worth persisting: mapped (a new-thread flow targets
@@ -4142,9 +4179,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
     {
       name: COMPOSER_DRAFT_STORAGE_KEY,
       version: COMPOSER_DRAFT_STORAGE_VERSION,
-      storage: createJSONStorage(() => composerDebouncedStorage),
+      storage: composerPersistStorage,
       migrate: migratePersistedComposerDraftStoreState,
-      partialize: partializeComposerDraftStoreState,
+      // Defer the draft walk and serialization until the storage write flushes.
+      partialize: (state): ComposerPersistState => ({ capturedState: state }),
       merge: (persistedState, currentState) => {
         const normalizedPersisted =
           normalizeCurrentPersistedComposerDraftStoreState(persistedState);

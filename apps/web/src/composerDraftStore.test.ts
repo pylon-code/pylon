@@ -74,6 +74,8 @@ import {
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   composerFileNeedsReattach,
+  partializeComposerDraftStoreState,
+  flushComposerDraftStore,
   useComposerDraftStore,
   DraftId,
 } from "./composerDraftStore";
@@ -83,7 +85,7 @@ import {
   insertInlineTerminalContextPlaceholder,
   type TerminalContextDraft,
 } from "./lib/terminalContext";
-import { createDebouncedStorage } from "./lib/storage";
+import { createDeferredStorage } from "./lib/storage";
 
 function makeImage(input: {
   id: string;
@@ -195,37 +197,42 @@ describe("composerDraftStore assistant citations", () => {
   beforeEach(resetComposerDraftStore);
   afterEach(resetComposerDraftStore);
 
-  it("keeps quotes, comments, and remote source IDs through persistence and removes them on clear", () => {
-    const threadId = ThreadId.make("citation-draft");
-    const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
-    const citation = {
-      version: 1 as const,
-      environmentId: EnvironmentId.make("remote-source"),
-      threadId: ThreadId.make("source-thread"),
-      messageId: MessageId.make("source-message"),
-      text: "Preserve the selected text after reload.",
-      comment: "Why is this important?\nPlease show an example.",
-      start: 12,
-      end: 52,
-      prefix: "Before. ",
-      suffix: " After.",
-    };
-    const prompt = `Explain ${serializeAssistantCitation(citation)} further.`;
-    useComposerDraftStore.getState().setPrompt(threadRef, prompt);
-    const options = useComposerDraftStore.persist.getOptions();
-    const saved = JSON.parse(
-      JSON.stringify(options.partialize!(useComposerDraftStore.getState())),
-    ) as unknown;
-    resetComposerDraftStore();
-    const hydrated = options.merge!(saved, useComposerDraftStore.getState());
-    useComposerDraftStore.setState(hydrated);
-    const restored = draftFor(threadId, TEST_ENVIRONMENT_ID)?.prompt ?? "";
-    expect(restored).toBe(prompt);
-    expect(collectAssistantCitations(restored).map((entry) => entry.citation)).toEqual([citation]);
-    useComposerDraftStore.getState().clearComposerContent(threadRef);
-    expect(
-      collectAssistantCitations(draftFor(threadId, TEST_ENVIRONMENT_ID)?.prompt ?? ""),
-    ).toEqual([]);
+  it("keeps quotes, comments, and remote source IDs through persistence and removes them on clear", async () => {
+    await useComposerDraftStore.persist.clearStorage();
+    vi.useFakeTimers();
+    try {
+      const threadId = ThreadId.make("citation-draft");
+      const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
+      const citation = {
+        version: 1 as const,
+        environmentId: EnvironmentId.make("remote-source"),
+        threadId: ThreadId.make("source-thread"),
+        messageId: MessageId.make("source-message"),
+        text: "Preserve the selected text after reload.",
+        comment: "Why is this important?\nPlease show an example.",
+        start: 12,
+        end: 52,
+        prefix: "Before. ",
+        suffix: " After.",
+      };
+      const prompt = `Explain ${serializeAssistantCitation(citation)} further.`;
+      useComposerDraftStore.getState().setPrompt(threadRef, prompt);
+      await vi.advanceTimersByTimeAsync(300);
+      resetComposerDraftStore();
+      await useComposerDraftStore.persist.rehydrate();
+      const restored = draftFor(threadId, TEST_ENVIRONMENT_ID)?.prompt ?? "";
+      expect(restored).toBe(prompt);
+      expect(collectAssistantCitations(restored).map((entry) => entry.citation)).toEqual([
+        citation,
+      ]);
+      useComposerDraftStore.getState().clearComposerContent(threadRef);
+      expect(
+        collectAssistantCitations(draftFor(threadId, TEST_ENVIRONMENT_ID)?.prompt ?? ""),
+      ).toEqual([]);
+    } finally {
+      await useComposerDraftStore.persist.clearStorage();
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -362,7 +369,6 @@ describe("composerDraftStore file attachments", () => {
 
     const persistApi = useComposerDraftStore.persist as unknown as {
       getOptions: () => {
-        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
         merge: (
           persistedState: unknown,
           currentState: ReturnType<typeof useComposerDraftStore.getState>,
@@ -370,9 +376,7 @@ describe("composerDraftStore file attachments", () => {
       };
     };
     const options = persistApi.getOptions();
-    const persisted = options.partialize(useComposerDraftStore.getState()) as {
-      draftsByThreadKey: Record<string, { files?: Array<Record<string, unknown>> }>;
-    };
+    const persisted = partializeComposerDraftStoreState(useComposerDraftStore.getState());
 
     expect(persisted.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]?.files).toEqual(
       [
@@ -410,7 +414,6 @@ describe("composerDraftStore file attachments", () => {
 
     const persistApi = useComposerDraftStore.persist as unknown as {
       getOptions: () => {
-        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
         merge: (
           persistedState: unknown,
           currentState: ReturnType<typeof useComposerDraftStore.getState>,
@@ -418,9 +421,7 @@ describe("composerDraftStore file attachments", () => {
       };
     };
     const options = persistApi.getOptions();
-    const persisted = options.partialize(useComposerDraftStore.getState()) as {
-      draftsByThreadKey: Record<string, { files?: Array<Record<string, unknown>> }>;
-    };
+    const persisted = partializeComposerDraftStoreState(useComposerDraftStore.getState());
 
     expect(persisted.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]?.files).toEqual(
       [
@@ -809,12 +810,9 @@ describe("composerDraftStore terminal contexts", () => {
       .getState()
       .addTerminalContext(threadRef, makeTerminalContext({ id: "ctx-persist" }));
 
-    const persistApi = useComposerDraftStore.persist as unknown as {
-      getOptions: () => {
-        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
-      };
-    };
-    const persistedState = persistApi.getOptions().partialize(useComposerDraftStore.getState()) as {
+    const persistedState = partializeComposerDraftStoreState(
+      useComposerDraftStore.getState(),
+    ) as unknown as {
       draftsByThreadKey?: Record<string, { terminalContexts?: Array<Record<string, unknown>> }>;
     };
 
@@ -983,12 +981,9 @@ describe("composerDraftStore element contexts", () => {
 
   it("persists element contexts via the partializer (round-trippable)", () => {
     useComposerDraftStore.getState().addElementContext(threadRef, baseSelection);
-    const persistApi = useComposerDraftStore.persist as unknown as {
-      getOptions: () => {
-        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
-      };
-    };
-    const persisted = persistApi.getOptions().partialize(useComposerDraftStore.getState()) as {
+    const persisted = partializeComposerDraftStoreState(
+      useComposerDraftStore.getState(),
+    ) as unknown as {
       draftsByThreadKey?: Record<string, { elementContexts?: Array<Record<string, unknown>> }>;
     };
     const entry =
@@ -1041,12 +1036,9 @@ describe("composerDraftStore review comments", () => {
   it("persists review comments and clears them with composer content", () => {
     const store = useComposerDraftStore.getState();
     store.addReviewComment(threadRef, comment);
-    const persistApi = useComposerDraftStore.persist as unknown as {
-      getOptions: () => {
-        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
-      };
-    };
-    const persisted = persistApi.getOptions().partialize(useComposerDraftStore.getState()) as {
+    const persisted = partializeComposerDraftStoreState(
+      useComposerDraftStore.getState(),
+    ) as unknown as {
       draftsByThreadKey?: Record<string, { reviewComments?: Array<Record<string, unknown>> }>;
     };
 
@@ -1657,7 +1649,8 @@ describe("composerDraftStore modelSelection", () => {
     resetComposerDraftStore();
   });
 
-  it("durably blocks a cross-client binding without changing content or explicit routing", () => {
+  it("durably blocks a cross-client binding without changing content or explicit routing", async () => {
+    await useComposerDraftStore.persist.clearStorage();
     const store = useComposerDraftStore.getState();
     const image = makeImage({ id: "binding-image", previewUrl: "data:image/png;base64,AQ==" });
     const file = makeFile("binding-file");
@@ -1700,19 +1693,10 @@ describe("composerDraftStore modelSelection", () => {
     expect(draft?.files.map((entry) => entry.id)).toEqual([file.id]);
     expect(draft?.modelSelectionByProvider[CODEX_INSTANCE]).toEqual(originalSelection);
 
-    const persistApi = useComposerDraftStore.persist as unknown as {
-      getOptions: () => {
-        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
-        merge: (
-          persistedState: unknown,
-          currentState: ReturnType<typeof useComposerDraftStore.getState>,
-        ) => ReturnType<typeof useComposerDraftStore.getState>;
-      };
-    };
-    const options = persistApi.getOptions();
-    const persisted = options.partialize(useComposerDraftStore.getState());
-    const hydrated = options.merge(persisted, useComposerDraftStore.getState());
-    const hydratedDraft = hydrated.getComposerDraft(threadRef);
+    flushComposerDraftStore();
+    resetComposerDraftStore();
+    await useComposerDraftStore.persist.rehydrate();
+    const hydratedDraft = useComposerDraftStore.getState().getComposerDraft(threadRef);
     expect(hydratedDraft?.providerBindingConflict).toEqual(draft?.providerBindingConflict);
     expect(hydratedDraft?.prompt).toBe("keep this prompt");
     expect(hydratedDraft?.images.map((entry) => entry.id)).toEqual([image.id]);
@@ -1743,7 +1727,8 @@ describe("composerDraftStore modelSelection", () => {
     ).toEqual(boundSelection);
   });
 
-  it("atomically transfers a complete blocked composer snapshot with its exact selection", () => {
+  it("atomically transfers a complete blocked composer snapshot with its exact selection", async () => {
+    await useComposerDraftStore.persist.clearStorage();
     const store = useComposerDraftStore.getState();
     const destinationDraftId = DraftId.make("draft-provider-conflict-destination");
     const destinationThreadId = ThreadId.make("thread-provider-conflict-destination");
@@ -1867,21 +1852,12 @@ describe("composerDraftStore modelSelection", () => {
     expect(source?.modelSelectionByProvider[CODEX_INSTANCE]).toBeUndefined();
     expect(source?.modelSelectionByProvider[CLAUDE_AGENT_INSTANCE]).toEqual(boundSelection);
 
-    const persistApi = useComposerDraftStore.persist as unknown as {
-      getOptions: () => {
-        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
-        merge: (
-          persistedState: unknown,
-          currentState: ReturnType<typeof useComposerDraftStore.getState>,
-        ) => ReturnType<typeof useComposerDraftStore.getState>;
-      };
-    };
-    const options = persistApi.getOptions();
-    const hydrated = options.merge(
-      options.partialize(useComposerDraftStore.getState()),
-      useComposerDraftStore.getInitialState(),
-    );
-    const hydratedDestination = hydrated.getComposerDraft(destinationDraftId);
+    flushComposerDraftStore();
+    resetComposerDraftStore();
+    await useComposerDraftStore.persist.rehydrate();
+    const hydratedDestination = useComposerDraftStore
+      .getState()
+      .getComposerDraft(destinationDraftId);
     expect(hydratedDestination?.files).toMatchObject([
       {
         id: file.id,
@@ -2757,7 +2733,7 @@ describe("composerDraftStore runtime and interaction settings", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createDebouncedStorage
+// createDeferredStorage
 // ---------------------------------------------------------------------------
 
 function createMockStorage() {
@@ -2773,9 +2749,119 @@ function createMockStorage() {
   };
 }
 
-describe("createDebouncedStorage", () => {
+describe("composer draft persistence", () => {
+  it("restores annotation-only drafts and ignores malformed saved annotations", async () => {
+    await useComposerDraftStore.persist.clearStorage();
+    const threadId = ThreadId.make("annotation-only-draft");
+    const threadKey = threadKeyFor(threadId, TEST_ENVIRONMENT_ID);
+    const annotation = {
+      id: "saved-preview-annotation",
+      pageUrl: "https://example.com/dashboard",
+      pageTitle: "Dashboard",
+      comment: "Keep the primary action visible.",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: "2026-09-02T10:00:00.000Z",
+    };
+    try {
+      const storage = useComposerDraftStore.persist.getOptions().storage!;
+      storage.setItem(COMPOSER_DRAFT_STORAGE_KEY, {
+        version: 10,
+        state: {
+          draftsByThreadKey: {
+            [threadKey]: {
+              prompt: "",
+              attachments: [],
+              previewAnnotations: [annotation, { ...annotation, pageUrl: 42 }],
+            },
+          },
+          draftThreadsByThreadKey: {},
+          logicalProjectDraftThreadKeyByLogicalProjectKey: {},
+          stickyModelSelectionByProvider: {},
+          stickyActiveProvider: null,
+        },
+      } as never);
+      flushComposerDraftStore();
+      resetComposerDraftStore();
+      await useComposerDraftStore.persist.rehydrate();
+      expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.previewAnnotations).toEqual([annotation]);
+    } finally {
+      await useComposerDraftStore.persist.clearStorage();
+      resetComposerDraftStore();
+    }
+  });
+
+  it("defers attachment reads and serialization until typing stops, then restores the last draft", async () => {
+    await useComposerDraftStore.persist.clearStorage();
+    vi.useFakeTimers();
+    const stringify = vi.spyOn(JSON, "stringify");
+    try {
+      resetComposerDraftStore();
+      const heavyThreadId = ThreadId.make("heavy-draft");
+      const typingThreadId = ThreadId.make("typing-draft");
+      const heavyRef = scopeThreadRef(TEST_ENVIRONMENT_ID, heavyThreadId);
+      const typingRef = scopeThreadRef(TEST_ENVIRONMENT_ID, typingThreadId);
+      const heavyKey = scopedThreadKey(heavyRef);
+      useComposerDraftStore.getState().setPrompt(heavyRef, "Keep this image");
+      const attachments = [
+        {
+          id: "heavy-image",
+          name: "image.png",
+          mimeType: "image/png",
+          sizeBytes: 49_152,
+          dataUrl: `data:image/png;base64,${"AQID".repeat(16_384)}`,
+        },
+      ];
+      let attachmentReads = 0;
+      useComposerDraftStore.setState((state) => ({
+        draftsByThreadKey: {
+          ...state.draftsByThreadKey,
+          [heavyKey]: {
+            ...state.draftsByThreadKey[heavyKey]!,
+            get persistedAttachments() {
+              attachmentReads += 1;
+              return attachments;
+            },
+          },
+        },
+      }));
+      attachmentReads = 0;
+      stringify.mockClear();
+
+      for (let index = 1; index <= 20; index++) {
+        useComposerDraftStore.getState().setPrompt(typingRef, `Draft ${index}`);
+      }
+      expect(attachmentReads).toBe(0);
+      expect(stringify).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(300);
+      expect(attachmentReads).toBe(1);
+      expect(stringify).toHaveBeenCalledTimes(1);
+
+      resetComposerDraftStore();
+      await useComposerDraftStore.persist.rehydrate();
+      expect(draftFor(typingThreadId, TEST_ENVIRONMENT_ID)?.prompt).toBe("Draft 20");
+      expect(draftFor(heavyThreadId, TEST_ENVIRONMENT_ID)?.persistedAttachments).toEqual(
+        attachments,
+      );
+    } finally {
+      stringify.mockRestore();
+      await useComposerDraftStore.persist.clearStorage();
+      vi.useRealTimers();
+      resetComposerDraftStore();
+    }
+  });
+});
+
+describe("createDeferredStorage", () => {
+  const serialize = vi.fn((value: string) => `s:${value}`);
+
   beforeEach(() => {
     vi.useFakeTimers();
+    serialize.mockClear();
   });
 
   afterEach(() => {
@@ -2785,69 +2871,74 @@ describe("createDebouncedStorage", () => {
   it("delegates getItem immediately", () => {
     const base = createMockStorage();
     base.getItem.mockReturnValueOnce("value");
-    const storage = createDebouncedStorage(base);
+    const storage = createDeferredStorage(base, serialize);
 
     expect(storage.getItem("key")).toBe("value");
     expect(base.getItem).toHaveBeenCalledWith("key");
   });
 
-  it("does not write to base storage until the debounce fires", () => {
+  it("neither serializes nor writes until the debounce fires", () => {
     const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
+    const storage = createDeferredStorage(base, serialize);
 
     storage.setItem("key", "v1");
+    expect(serialize).not.toHaveBeenCalled();
     expect(base.setItem).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(299);
+    expect(serialize).not.toHaveBeenCalled();
     expect(base.setItem).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(1);
-    expect(base.setItem).toHaveBeenCalledWith("key", "v1");
+    expect(base.setItem).toHaveBeenCalledWith("key", "s:v1");
   });
 
-  it("only writes the last value when setItem is called rapidly", () => {
+  it("serializes and writes only the last value when setItem is called rapidly", () => {
     const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
+    const storage = createDeferredStorage(base, serialize);
 
     storage.setItem("key", "v1");
     storage.setItem("key", "v2");
     storage.setItem("key", "v3");
 
     vi.advanceTimersByTime(300);
+    expect(serialize).toHaveBeenCalledTimes(1);
     expect(base.setItem).toHaveBeenCalledTimes(1);
-    expect(base.setItem).toHaveBeenCalledWith("key", "v3");
+    expect(base.setItem).toHaveBeenCalledWith("key", "s:v3");
   });
 
   it("removeItem cancels a pending setItem write", () => {
     const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
+    const storage = createDeferredStorage(base, serialize);
 
     storage.setItem("key", "v1");
     storage.removeItem("key");
 
     vi.advanceTimersByTime(300);
+    expect(serialize).not.toHaveBeenCalled();
     expect(base.setItem).not.toHaveBeenCalled();
     expect(base.removeItem).toHaveBeenCalledWith("key");
   });
 
-  it("flush writes the pending value immediately", () => {
+  it("flush serializes and writes the pending value immediately", () => {
     const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
+    const storage = createDeferredStorage(base, serialize);
 
     storage.setItem("key", "v1");
     expect(base.setItem).not.toHaveBeenCalled();
 
     storage.flush();
-    expect(base.setItem).toHaveBeenCalledWith("key", "v1");
+    expect(base.setItem).toHaveBeenCalledWith("key", "s:v1");
 
     // Timer should be cancelled; no duplicate write.
     vi.advanceTimersByTime(300);
+    expect(serialize).toHaveBeenCalledTimes(1);
     expect(base.setItem).toHaveBeenCalledTimes(1);
   });
 
   it("flush is a no-op when nothing is pending", () => {
     const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
+    const storage = createDeferredStorage(base, serialize);
 
     storage.flush();
     expect(base.setItem).not.toHaveBeenCalled();
@@ -2855,7 +2946,7 @@ describe("createDebouncedStorage", () => {
 
   it("flush after removeItem is a no-op", () => {
     const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
+    const storage = createDeferredStorage(base, serialize);
 
     storage.setItem("key", "v1");
     storage.removeItem("key");
@@ -2866,7 +2957,7 @@ describe("createDebouncedStorage", () => {
 
   it("setItem works normally after removeItem cancels a pending write", () => {
     const base = createMockStorage();
-    const storage = createDebouncedStorage(base);
+    const storage = createDeferredStorage(base, serialize);
 
     storage.setItem("key", "v1");
     storage.removeItem("key");
@@ -2874,6 +2965,6 @@ describe("createDebouncedStorage", () => {
 
     vi.advanceTimersByTime(300);
     expect(base.setItem).toHaveBeenCalledTimes(1);
-    expect(base.setItem).toHaveBeenCalledWith("key", "v2");
+    expect(base.setItem).toHaveBeenCalledWith("key", "s:v2");
   });
 });
