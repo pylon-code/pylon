@@ -232,6 +232,32 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect(
+    "accepts the caller's canonical path when native realpath uses a different spelling",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "pylon-media-realpath-" });
+        const filePath = path.join(root, "recording.mp4");
+        yield* fs.writeFileString(filePath, "video");
+        const canonicalPath = yield* fs.realPath(filePath);
+        const originalRealpath = (yield* Effect.promise(() =>
+          vi.importActual<typeof NodeFSP>("node:fs/promises"),
+        )).realpath;
+        // Windows' native binding can expand an 8.3 name that FileSystem.realPath retains.
+        const nativeRealpath = vi
+          .mocked(NodeFSP.realpath)
+          .mockResolvedValue(`${canonicalPath}-expanded`);
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => nativeRealpath.mockReset().mockImplementation(originalRealpath)),
+        );
+        const opened = yield* openMediaFile(canonicalPath);
+        expect(opened).not.toBeNull();
+        expect(yield* Effect.promise(() => opened!.handle.readFile("utf8"))).toBe("video");
+      }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("closes a descriptor rejected when its path changes during open", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
