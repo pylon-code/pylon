@@ -245,12 +245,11 @@ function buildProps() {
     listRef: createRef<LegendListRef | null>(),
     latestTurn: null,
     runningTurnId: null,
-    turnDiffSummaryByAssistantMessageId: new Map(),
+    turnDiffSummaries: [],
     routeThreadKey: "environment-local:thread-1",
     onOpenTurnDiff: () => {},
-    revertTurnCountByUserMessageId: new Map(),
-    onRevertUserMessage: () => {},
     supportsConversationRollback: true,
+    onRevertUserMessage: () => {},
     isRevertingCheckpoint: false,
     onImageExpand: () => {},
     activeThreadEnvironmentId: ACTIVE_THREAD_ENVIRONMENT_ID,
@@ -530,22 +529,17 @@ describe("MessagesTimeline", () => {
             },
           },
         ]}
-        turnDiffSummaryByAssistantMessageId={
-          new Map([
-            [
-              assistantMessageId,
-              {
-                turnId,
-                checkpointTurnCount: 1,
-                checkpointRef: CheckpointRef.make("checkpoint-with-files"),
-                status: "ready",
-                files: [{ path: "README.md", kind: "modified", additions: 2, deletions: 1 }],
-                assistantMessageId,
-                completedAt: MESSAGE_CREATED_AT,
-              },
-            ],
-          ])
-        }
+        turnDiffSummaries={[
+          {
+            turnId,
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("checkpoint-with-files"),
+            status: "ready",
+            files: [{ path: "README.md", kind: "modified", additions: 2, deletions: 1 }],
+            assistantMessageId,
+            completedAt: MESSAGE_CREATED_AT,
+          },
+        ]}
       />,
     );
 
@@ -716,13 +710,45 @@ describe("MessagesTimeline", () => {
     expect(onAnchorReady).not.toHaveBeenCalled();
   });
 
+  function buildRevertibleTimeline() {
+    const turnId = TurnId.make("turn-revertible");
+    const assistantMessageId = MessageId.make("message-assistant-revertible");
+    const userEntry = buildUserTimelineEntry("Hello");
+    const assistantEntry = {
+      id: "entry-assistant-revertible",
+      kind: "message" as const,
+      createdAt: MESSAGE_CREATED_AT,
+      message: {
+        id: assistantMessageId,
+        role: "assistant" as const,
+        text: "Done.",
+        turnId,
+        createdAt: MESSAGE_CREATED_AT,
+        updatedAt: MESSAGE_CREATED_AT,
+        streaming: false,
+      },
+    };
+    const checkpoint = (checkpointTurnCount: number, messageId: MessageId | null) => ({
+      turnId,
+      checkpointTurnCount,
+      checkpointRef: CheckpointRef.make(`checkpoint-${checkpointTurnCount}`),
+      status: "ready" as const,
+      files: [],
+      assistantMessageId: messageId,
+      rollbackAvailability: { state: "available" as const, reason: "Exact anchor verified." },
+      completedAt: MESSAGE_CREATED_AT,
+    });
+    return {
+      timelineEntries: [userEntry, assistantEntry],
+      turnDiffSummaries: [checkpoint(0, null), checkpoint(1, assistantMessageId)],
+    };
+  }
+
   it("hides checkpoint revert when the provider capability is unavailable", () => {
-    const messageId = MessageId.make("message-1");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
-        timelineEntries={[buildUserTimelineEntry("Hello")]}
-        revertTurnCountByUserMessageId={new Map([[messageId, 0]])}
+        {...buildRevertibleTimeline()}
         supportsConversationRollback={false}
       />,
     );
@@ -731,13 +757,8 @@ describe("MessagesTimeline", () => {
   });
 
   it("renders checkpoint revert only when the provider capability is explicit", () => {
-    const messageId = MessageId.make("message-1");
     const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[buildUserTimelineEntry("Hello")]}
-        revertTurnCountByUserMessageId={new Map([[messageId, 0]])}
-      />,
+      <MessagesTimeline {...buildProps()} {...buildRevertibleTimeline()} />,
     );
 
     expect(markup).toContain('aria-label="Revert to this message"');

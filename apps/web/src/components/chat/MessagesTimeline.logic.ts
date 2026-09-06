@@ -15,6 +15,7 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
+import { deriveRollbackTargets } from "@t3tools/client-runtime/rollback";
 import { formatReportedTurnCost } from "@t3tools/client-runtime/state/turn-costs";
 import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
@@ -977,10 +978,26 @@ export function deriveMessagesTimelineRows(input: {
   expandedWorkGroupIds?: ReadonlySet<string>;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
-  turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
+  turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
   reportedTurnCosts?: ReadonlyMap<TurnId, number>;
-  revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
+  supportsConversationRollback: boolean;
 }): MessagesTimelineRow[] {
+  const turnDiffSummaryByAssistantMessageId = new Map<MessageId, TurnDiffSummary>();
+  for (const summary of input.turnDiffSummaries) {
+    if (summary.assistantMessageId) {
+      turnDiffSummaryByAssistantMessageId.set(summary.assistantMessageId, summary);
+    }
+  }
+  // Pylon's rollback proof: a user message is revertible only when the
+  // checkpoint before its response is ready and verified as available.
+  const rollbackTargets = input.supportsConversationRollback
+    ? deriveRollbackTargets({
+        messages: input.timelineEntries.flatMap((entry) =>
+          entry.kind === "message" ? [entry.message] : [],
+        ),
+        checkpoints: input.turnDiffSummaries,
+      })
+    : null;
   const nextRows: MessagesTimelineRow[] = [];
   const durationStartByMessageId = computeMessageDurationStart(
     input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
@@ -1336,11 +1353,11 @@ export function deriveMessagesTimelineRows(input: {
           : undefined,
       assistantTurnDiffSummary:
         timelineEntry.message.role === "assistant"
-          ? input.turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
+          ? turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
           : undefined,
       revertTurnCount:
         timelineEntry.message.role === "user"
-          ? input.revertTurnCountByUserMessageId.get(timelineEntry.message.id)
+          ? rollbackTargets?.get(timelineEntry.message.id)?.targetTurnCount
           : undefined,
     });
   }
@@ -1370,9 +1387,30 @@ function replaceStreamingMessageRows(
   input: MessagesTimelineRowsInput,
   previous: MessagesTimelineRowsProjection,
 ): MessagesTimelineRow[] | null {
-  const { timelineEntries: previousEntries, ...previousContext } = previous.input;
-  const { timelineEntries, ...context } = input;
-  if (timelineEntries.length !== previousEntries.length || !shallow(previousContext, context)) {
+  const {
+    timelineEntries: previousEntries,
+    turnDiffSummaries: previousSummaries,
+    latestTurn: previousLatestTurn,
+    expandedTurnIds: previousExpandedTurns,
+    expandedWorkGroupIds: previousExpandedGroups,
+    ...previousContext
+  } = previous.input;
+  const {
+    timelineEntries,
+    turnDiffSummaries,
+    latestTurn,
+    expandedTurnIds,
+    expandedWorkGroupIds,
+    ...context
+  } = input;
+  if (
+    timelineEntries.length !== previousEntries.length ||
+    !shallow(previousContext, context) ||
+    !shallow(previousSummaries, turnDiffSummaries) ||
+    !shallow(previousLatestTurn, latestTurn) ||
+    !shallow(previousExpandedTurns, expandedTurnIds) ||
+    !shallow(previousExpandedGroups, expandedWorkGroupIds)
+  ) {
     return null;
   }
   const replacements = new Map<ChatMessage, ChatMessage>();

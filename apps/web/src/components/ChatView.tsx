@@ -1,5 +1,4 @@
 import { videoMimeType } from "@t3tools/shared/video";
-import { buildRollbackTurnCountByMessageId } from "./ChatView.logic";
 import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
 import {
   type AssistantCitation,
@@ -164,11 +163,9 @@ import {
   isImageAttachment,
   type SessionPhase,
   type Thread,
-  type TurnDiffSummary,
 } from "../types";
 import { useTheme } from "../hooks/useTheme";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
-import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -3281,29 +3278,6 @@ export default function ChatView(props: ChatViewProps) {
     attachDraftHeroComposerAnchorRef,
     captureDraftHeroComposerRect,
   ] = useDraftHeroLayoutTransition(isDraftHeroState);
-  const { turnDiffSummaries } = useTurnDiffSummaries(activeThread);
-  const turnDiffSummaryByAssistantMessageId = useMemo(() => {
-    const byMessageId = new Map<MessageId, TurnDiffSummary>();
-    for (const summary of turnDiffSummaries) {
-      if (!summary.assistantMessageId) continue;
-      byMessageId.set(summary.assistantMessageId, summary);
-    }
-    return byMessageId;
-  }, [turnDiffSummaries]);
-  const rollbackTargetsByUserMessageId = useMemo(
-    () =>
-      activeThread ? deriveRollbackTargets(activeThread) : new Map<MessageId, RollbackTarget>(),
-    [activeThread],
-  );
-  const lastRevertTurnCountRef = useRef<Map<MessageId, number> | null>(null);
-  const revertTurnCountByUserMessageId = useMemo(() => {
-    const counts = buildRollbackTurnCountByMessageId(
-      rollbackTargetsByUserMessageId,
-      lastRevertTurnCountRef.current,
-    );
-    lastRevertTurnCountRef.current = counts;
-    return counts;
-  }, [rollbackTargetsByUserMessageId]);
   const rollbackActive = isRollbackActive(activeThread?.rollbackStatus);
   const rollbackTargetIdle =
     activeThread?.session !== null &&
@@ -8689,14 +8663,17 @@ export default function ChatView(props: ChatViewProps) {
     },
     [activeThreadRef, isServerThread, onDiffPanelOpen],
   );
-  // Both the Map and the revert handler are read from refs at call-time so
-  // the callback reference is fully stable and never busts context identity.
-  const rollbackTargetsRef = useRef(rollbackTargetsByUserMessageId);
-  rollbackTargetsRef.current = rollbackTargetsByUserMessageId;
+  // The thread and revert handler are read from refs at call-time so the
+  // callback reference is fully stable and never busts context identity. The
+  // rollback target is derived from server messages only when a revert is
+  // requested; the timeline projection owns the per-row lookups.
+  const rollbackThreadRef = useRef(activeThread);
+  rollbackThreadRef.current = activeThread;
   const onRevertToTurnCountRef = useRef(onRevertToTurnCount);
   onRevertToTurnCountRef.current = onRevertToTurnCount;
   const onRevertUserMessage = useCallback((messageId: MessageId) => {
-    const target = rollbackTargetsRef.current.get(messageId);
+    const thread = rollbackThreadRef.current;
+    const target = thread ? deriveRollbackTargets(thread).get(messageId) : undefined;
     if (!target) return;
     void onRevertToTurnCountRef.current(target);
   }, []);
@@ -9076,16 +9053,13 @@ export default function ChatView(props: ChatViewProps) {
                 timelineEntries={timelineEntries}
                 latestTurn={activeLatestTurn}
                 runningTurnId={activeRunningTurnId}
-                turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
+                turnDiffSummaries={activeThread.checkpoints}
                 reportedTurnCosts={reportedTurnCosts}
                 activeThreadEnvironmentId={activeThread.environmentId}
                 routeThreadKey={routeThreadKey}
                 onOpenTurnDiff={onOpenTurnDiff}
-                revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
+                supportsConversationRollback={rollbackTargetIdle}
                 onRevertUserMessage={onRevertUserMessage}
-                supportsConversationRollback={
-                  rollbackTargetIdle && rollbackTargetsByUserMessageId.size > 0
-                }
                 onUseArtifactTemplate={useArtifactTemplate}
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}

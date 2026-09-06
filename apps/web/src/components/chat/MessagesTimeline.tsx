@@ -210,7 +210,6 @@ interface TimelineRowSharedState {
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
-  supportsConversationRollback: boolean;
   revertDisabledReason?: string;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
@@ -324,13 +323,12 @@ interface MessagesTimelineProps {
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   latestTurn: TimelineLatestTurn | null;
   runningTurnId: TurnId | null;
-  turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
+  turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
   reportedTurnCosts?: ReadonlyMap<TurnId, number>;
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
-  revertTurnCountByUserMessageId: Map<MessageId, number>;
-  onRevertUserMessage: (messageId: MessageId) => void;
   supportsConversationRollback: boolean;
+  onRevertUserMessage: (messageId: MessageId) => void;
   revertDisabledReason?: string;
   onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   isRevertingCheckpoint: boolean;
@@ -387,13 +385,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timelineEntries,
   latestTurn,
   runningTurnId,
-  turnDiffSummaryByAssistantMessageId,
+  turnDiffSummaries,
   reportedTurnCosts,
   routeThreadKey,
   onOpenTurnDiff,
-  revertTurnCountByUserMessageId,
-  onRevertUserMessage,
   supportsConversationRollback,
+  onRevertUserMessage,
   revertDisabledReason,
   onUseArtifactTemplate = NOOP_USE_ARTIFACT_TEMPLATE,
   isRevertingCheckpoint,
@@ -564,9 +561,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         expandedWorkGroupIds,
         isWorking,
         activeTurnStartedAt,
-        turnDiffSummaryByAssistantMessageId,
+        turnDiffSummaries,
         ...(reportedTurnCosts === undefined ? {} : { reportedTurnCosts }),
-        revertTurnCountByUserMessageId,
+        supportsConversationRollback,
       },
       previous?.threadKey === routeThreadKey && previous.workspaceRoot === workspaceRoot
         ? previous.projection
@@ -585,9 +582,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     expandedWorkGroupIds,
     isWorking,
     activeTurnStartedAt,
-    turnDiffSummaryByAssistantMessageId,
+    turnDiffSummaries,
     reportedTurnCosts,
-    revertTurnCountByUserMessageId,
+    supportsConversationRollback,
   ]);
   const rows = useStableRows(rawRows);
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
@@ -752,7 +749,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
-      supportsConversationRollback,
       ...(revertDisabledReason ? { revertDisabledReason } : {}),
       onUseArtifactTemplate,
       onImageExpand,
@@ -777,7 +773,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
-      supportsConversationRollback,
       revertDisabledReason,
       onUseArtifactTemplate,
       onImageExpand,
@@ -1332,8 +1327,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   ];
   const previewImages = userImages.filter((image) => image.name.startsWith("preview-annotation-"));
   const regularImages = userImages.filter((image) => !image.name.startsWith("preview-annotation-"));
-  const canRevertAgentWork =
-    ctx.supportsConversationRollback && typeof row.revertTurnCount === "number";
+  const canRevertAgentWork = typeof row.revertTurnCount === "number";
 
   return (
     <div className="group flex flex-col items-end gap-1">
