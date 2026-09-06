@@ -38,7 +38,7 @@ import bundledManifestJson from "./model-manifest.json" with { type: "json" };
 import type { ServerProviderDraft } from "./providerSnapshot.ts";
 
 const MODEL_MANIFEST_URL =
-  "https://raw.githubusercontent.com/pylon-code/pylon-releases/main/model-manifest.json";
+  "https://raw.githubusercontent.com/pylon-code/pylon-releases/main/model-catalog.json";
 
 /** How long a fetched manifest stays fresh before the next probe re-fetches. */
 const MANIFEST_TTL_MS = 60 * 60 * 1000;
@@ -48,7 +48,7 @@ const MANIFEST_TTL_MS = 60 * 60 * 1000;
 const MANIFEST_RETRY_MS = 5 * 60 * 1000;
 
 const FETCH_TIMEOUT_MS = 10_000;
-const MODEL_MANIFEST_MAX_BYTES = 32 * 1024;
+export const MODEL_MANIFEST_MAX_BYTES = 32 * 1024;
 const MODEL_MANIFEST_MAX_PROVIDERS = 8;
 const MODEL_MANIFEST_MAX_MODELS_PER_PROVIDER = 256;
 const MODEL_MANIFEST_MAX_SLUG_LENGTH = 256;
@@ -148,7 +148,7 @@ const decodeManifestJsonSchema = Schema.decodeUnknownEffect(
     ModelManifestSchema as unknown as Schema.Codec<typeof ModelManifestSchema.Type>,
   ),
 );
-const decodeManifestJson = (input: string) =>
+export const decodeManifestJson = (input: string) =>
   decodeManifestJsonSchema(input).pipe(Effect.flatMap(validateManifestDrivers));
 
 export const BUNDLED_MODEL_MANIFEST: ModelManifestData =

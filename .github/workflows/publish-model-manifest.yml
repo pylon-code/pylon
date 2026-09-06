@@ -7,6 +7,8 @@ on:
     paths:
       - apps/server/src/provider/model-manifest.json
       - .github/workflows/publish-model-manifest.yml
+      - apps/server/scripts/prepare-model-manifests.ts
+      - apps/server/src/provider/modelManifestPublication.ts
 
 permissions:
   contents: read
@@ -19,8 +21,28 @@ jobs:
   publish:
     name: Publish public manifest
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
+      - name: Checkout approved source revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Validate and prepare public manifests
+        run: node apps/server/scripts/prepare-model-manifests.ts /tmp/pylon-model-manifests
+
       - name: Check source revision is current
         id: source_revision
         shell: bash
@@ -76,79 +98,6 @@ jobs:
             exit 1
           fi
 
-      - name: Fetch exact approved Pylon manifest
-        if: steps.source_revision.outputs.should_publish == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_REPOSITORY: ${{ github.repository }}
-          SOURCE_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          curl \
-            --proto '=https' \
-            --tlsv1.2 \
-            --fail \
-            --silent \
-            --show-error \
-            --location \
-            --connect-timeout 10 \
-            --max-time 30 \
-            --max-filesize 32768 \
-            --retry 2 \
-            --retry-all-errors \
-            --retry-delay 1 \
-            --header "Accept: application/vnd.github.raw+json" \
-            --header "Authorization: Bearer ${GH_TOKEN}" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            --output /tmp/pylon-source-model-manifest.json \
-            "${GITHUB_API_URL}/repos/${SOURCE_REPOSITORY}/contents/apps/server/src/provider/model-manifest.json?ref=${SOURCE_SHA}"
-
-      - name: Validate source manifest
-        if: steps.source_revision.outputs.should_publish == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          node <<'NODE'
-          const fs = require("node:fs");
-          const sourcePath = "/tmp/pylon-source-model-manifest.json";
-          const publicPath = "/tmp/pylon-model-manifest.json";
-          const maxBytes = 32 * 1024;
-          const maxModelsPerProvider = 256;
-          const maxSlugLength = 256;
-          const supportedDrivers = new Set(["codex", "claudeAgent"]);
-          const source = fs.readFileSync(sourcePath);
-          if (source.byteLength > maxBytes) {
-            throw new Error("Model manifest exceeds its public byte limit");
-          }
-          const manifest = JSON.parse(source.toString("utf8"));
-          const topLevelFields = Object.keys(manifest).sort();
-          if (JSON.stringify(topLevelFields) !== JSON.stringify(["currentModels", "version"])) {
-            throw new Error("Model manifest has unsupported top-level fields");
-          }
-          if (manifest.version !== 1 || typeof manifest.currentModels !== "object" || manifest.currentModels === null || Array.isArray(manifest.currentModels)) {
-            throw new Error("Unsupported model manifest schema");
-          }
-          const currentModels = Object.entries(manifest.currentModels);
-          if (currentModels.length > supportedDrivers.size || currentModels.some(([driver]) => !supportedDrivers.has(driver))) {
-            throw new Error("Model manifest has an unsupported driver kind");
-          }
-          for (const [driver, models] of currentModels) {
-            if (!Array.isArray(models) || models.length > maxModelsPerProvider || new Set(models).size !== models.length || models.some((model) => typeof model !== "string" || !model || model.length > maxSlugLength)) {
-              throw new Error(`Invalid model list for ${driver}`);
-            }
-          }
-          const publicManifest = {
-            version: manifest.version,
-            currentModels: Object.fromEntries(currentModels),
-          };
-          const serialized = `${JSON.stringify(publicManifest, null, 2)}\n`;
-          if (Buffer.byteLength(serialized) > maxBytes) {
-            throw new Error("Serialized public model manifest exceeds its byte limit");
-          }
-          fs.writeFileSync(publicPath, serialized);
-          NODE
-
       - name: Checkout public releases repository
         if: steps.source_revision.outputs.should_publish == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -164,14 +113,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp /tmp/pylon-model-manifest.json public/model-manifest.json
+          cp /tmp/pylon-model-manifests/model-manifest.json public/model-manifest.json
+          cp /tmp/pylon-model-manifests/model-catalog.json public/model-catalog.json
           cd public
-          if [[ -z "$(git status --porcelain -- model-manifest.json)" ]]; then
+          if [[ -z "$(git status --porcelain -- model-manifest.json model-catalog.json)" ]]; then
             echo "The public manifest is already current."
             exit 0
           fi
           git config user.name "pylon-release-bot"
           git config user.email "release-bot@users.noreply.github.com"
-          git add model-manifest.json
+          git add model-manifest.json model-catalog.json
           git commit -m "chore: update model manifest"
           git push origin HEAD:main
