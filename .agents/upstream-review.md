@@ -15,6 +15,56 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-06 — complete the approved UI adoptions
+
+The maintainer approved the remaining isolated browser verification. This closes
+the PR hub and scroll-to-end work left pending in the preceding recovery batch.
+No previously unselected upstream change was implicitly adopted.
+
+| Concern                                             | Upstream commits                                                                                                                                     | Merged Pylon outcome                                   |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| PR hub actions, retained details, and narrow header | #9188 `443b4ebfe83fcfe64c34b09ecb5a5fffdebb85c7`; #9334 `2a3cfe456375fd34b906f849b04706109dc74170`; #9294 `d897641d738c67dd7c12cbb3a273b43fe17a5eb1` | #269, merge `056968e4099bbad88600b0ad5be22e1b5e2b6b85` |
+| Scroll-to-end visibility above the composer         | #9280 `c742edd46c5b6792ec8647f934a4703f9103aa82`                                                                                                     | #282, merge `cb0705eb65b11456ad50aad4ceb84a733f6f7462` |
+
+Both PRs passed their complete CI checks before merging. The previous focused
+validation remains applicable: 612 PR-hub tests and six package typechecks;
+44 timeline tests and web typecheck. The integrated browser pass compared
+`08ba8b118e` with the combined changes on an isolated validation branch.
+Providers were disabled and the visible conversation was synthetic. Live runtime
+data was read only to snapshot a disposable fixture; no live provider session or
+production database was changed.
+
+At the same 140-pixel distance from the conversation bottom, the baseline hides
+the scroll-to-end button and the candidate shows it. Clicking returns to distance
+zero and hides the button; the reverse path was repeated. At 980×960, PR controls
+fit without horizontal overflow, the selected sort survives leaving and returning,
+and cached details remain visible when reopening and refreshing the panel. No real
+GitHub workflow-approval or revert operation was executed; focused tests cover those
+action and permission branches. Screenshots and short videos are attached to both
+PR descriptions on GitHub, outside the source tree. The baseline's Base UI warning
+and the shared LegendList recycling warning were recorded during verification.
+
+Upstream was fetched through `b2e15185aee22bfdee78806f2734b0a4de9c2c77`.
+Seven commits arrived after the preceding `bfba778168` bound. The inventory now
+contains 567 commits: 94 earlier patch/trailer matches, ten first-batch adoptions,
+and eight further completed adoptions, leaving 455 unselected for assessment.
+The older OpenCode #9005 dependency remains outside that range. These are review
+signals, not 455 required changes. The full review cursor remains unchanged because
+this is a subset review.
+
+Deferred register: DEF-8 remains due after Expo 57 #171, merged as
+`eff44d0cfa4961b56b77e119b63035a575282a49`. Its development-loop half still needs
+explicit selection and a native rebuild, separately from native-menu/product/shared
+connection work. Preserve Pylon schemes and runtime fingerprints; reconcile #9355
+before any Tailwind 4.3.3 adoption. DEF-7 is not yet due: the November 1 floor remains
+unmet and the newly fetched range has no preview-workflow change.
+
+Watch list: #8097 remains open/unmerged (WATCH-1); #283 already closed the older
+OpenCode gap and owner #114 records it. #6573 and #7986 remain closed unmerged,
+and #7966 remains closed (WATCH-2/3). No replacement appeared in the newly checked
+paths, and their November 1 floors remain. No register row, watch row, or owner
+issue decision changed in this pass.
+
 ## 2026-09-06 — finish earlier approved adoption (partial)
 
 The maintainer asked to finish earlier adopted work and continue the catch-up.
