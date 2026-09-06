@@ -1061,7 +1061,7 @@ function replaceStreamingMessageRows(
   }
   if (replacements.size === 0) return previous.rows;
   return previous.rows.map((row) => {
-    if (row.kind !== "message" && row.kind !== "assistant-meta") return row;
+    if (row.kind !== "message") return row;
     const message = replacements.get(row.message);
     return message ? { ...row, message } : row;
   });

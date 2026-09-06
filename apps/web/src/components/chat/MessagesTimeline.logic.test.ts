@@ -126,7 +126,7 @@ describe("streaming row projection", () => {
       }),
     );
     for (const [index, row] of previous.rows.entries()) {
-      if ((row.kind === "message" || row.kind === "assistant-meta") && row.message === last) {
+      if (row.kind === "message" && row.message === last) {
         expect(next.rows[index]).toMatchObject({ message: { text: after } });
         expect(row.message.text).toBe(before);
       } else {
@@ -209,11 +209,7 @@ describe("streaming row projection", () => {
       expect(nextMessages[0]).toBe(firstMessages[0]);
       expect(next.rows).toEqual(deriveMessagesTimelineRows(nextInput));
       for (const [index, row] of previous.rows.entries()) {
-        if (
-          (row.kind === "message" || row.kind === "assistant-meta") &&
-          row.message.id === source.at(-1)?.id
-        )
-          continue;
+        if (row.kind === "message" && row.message.id === source.at(-1)?.id) continue;
         expect(next.rows[index]).toBe(row);
       }
       expect(previous.rows).toEqual(saved);
@@ -298,7 +294,7 @@ describe("streaming row projection", () => {
     const next = deriveMessagesTimelineRowsWithState(nextInput, previous);
     expect(next.rows).toEqual(deriveMessagesTimelineRows(nextInput));
     for (const [index, row] of previous.rows.entries()) {
-      if ((row.kind === "message" || row.kind === "assistant-meta") && row.message === last) {
+      if (row.kind === "message" && row.message === last) {
         expect(next.rows[index]).toMatchObject({ message: { text: "Partial token" } });
       } else expect(next.rows[index]).toBe(row);
     }
