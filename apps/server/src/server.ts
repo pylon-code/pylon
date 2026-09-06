@@ -124,7 +124,10 @@ import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as CodexResetCredit from "./provider/Layers/codexResetCredit.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as UsageService from "./usage/UsageService.ts";
-import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import {
+  OrchestrationInfrastructureLayerLive,
+  OrchestrationLayerLive,
+} from "./orchestration/runtimeLayer.ts";
 import * as RollbackAdmission from "./rollback/RollbackAdmission.ts";
 import * as RollbackWorkspace from "./rollback/RollbackWorkspace.ts";
 import {
@@ -309,6 +312,10 @@ const ProviderLayerLive = ProviderAuthServiceLive.pipe(
       Layer.provide(ProviderAdapterRegistryLive),
       Layer.provideMerge(ProviderSessionDirectoryLayerLive),
       Layer.provideMerge(RollbackSagaRepositoryLive),
+      // Project browser-access overrides resolve a thread's project through the
+      // optional projection query. Rollback admission builds this layer before
+      // orchestration, so provide the shared (memoized) projection infrastructure.
+      Layer.provide(OrchestrationInfrastructureLayerLive),
     ),
   ),
 );
@@ -340,7 +347,7 @@ const PullRequestServiceLive = PullRequestService.layer.pipe(
 );
 
 const GitManagerLayerLive = GitManager.layer.pipe(
-  Layer.provideMerge(ProjectSetupScriptRunner.layer),
+  Layer.provideMerge(ProjectSetupScriptRunner.layer.pipe(Layer.provide(ServerSettingsLayerLive))),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
   Layer.provideMerge(TextGeneration.layer),
@@ -377,7 +384,9 @@ const VcsLayerLive = Layer.empty.pipe(
   Layer.provideMerge(
     VcsStatusBroadcaster.layer.pipe(
       Layer.provide(GitWorkflowLayerLive),
-      Layer.provide(VcsStatusBroadcaster.autoPullPolicyLayer),
+      Layer.provide(
+        VcsStatusBroadcaster.autoPullPolicyLayer.pipe(Layer.provide(ServerSettingsLayerLive)),
+      ),
     ),
   ),
 );

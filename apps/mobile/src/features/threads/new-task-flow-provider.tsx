@@ -430,7 +430,10 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   // server status for remediation and require a new pick instead of silently
   // switching providers. Project and sticky defaults also reject legacy models.
   const storedDraftModelSelection = selectedProjectDraft.modelSelection ?? null;
-  const storedProjectDefaultModelSelection = selectedProject?.defaultModelSelection ?? null;
+  const storedProjectDefaultModelSelection =
+    selectedProject?.defaultModelSelection ??
+    selectedEnvironmentServerConfig?.settings.defaultModelSelection ??
+    null;
   const storedStickyModelSelection = useStickyComposerModelSelection();
   const unavailablePreferredProvider = resolveNewTaskUnavailableProvider(
     selectedEnvironmentServerConfig,

@@ -19,7 +19,7 @@ const OrchestrationProjectionPipelineLayerLive = OrchestrationProjectionPipeline
   Layer.provide(OrchestrationEventStoreLive),
 );
 
-const OrchestrationInfrastructureLayerLive = Layer.mergeAll(
+export const OrchestrationInfrastructureLayerLive = Layer.mergeAll(
   OrchestrationProjectionSnapshotQueryLive,
   OrchestrationEventInfrastructureLayerLive,
   OrchestrationProjectionPipelineLayerLive,
