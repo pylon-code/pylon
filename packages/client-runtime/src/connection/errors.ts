@@ -1,4 +1,4 @@
-import type { ClientConnectionMethod, EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId } from "@t3tools/contracts";
 import type { RelayProtectedError } from "@t3tools/contracts/relay";
 import type { ManagedRelayClientError } from "../relay/managedRelay.ts";
 import { dpopFailureMessage, relayProtectedErrorMessage } from "../relay/errorPresentation.ts";
@@ -114,7 +114,7 @@ export function mapManagedRelayError(error: ManagedRelayClientError): Connection
 
 export function mapRemoteEnvironmentError(
   error: RemoteEnvironmentAuthError,
-  connectionMethod: ClientConnectionMethod = "direct",
+  connectionMethod: "direct" | "relay" = "direct",
 ): ConnectionAttemptError {
   const networkHint = connectionMethod === "relay" ? ` ${NETWORK_BLOCKING_HINT}` : "";
   switch (error._tag) {

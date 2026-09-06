@@ -86,7 +86,7 @@ function mapDpopSocketError(error: RemoteEnvironmentAuthError | ConnectionAttemp
 
 const fetchDescriptor = Effect.fn("clientRuntime.connection.remote.fetchDescriptor")(function* (
   httpBaseUrl: string,
-  connectionMethod: ClientConnectionMethod,
+  connectionMethod: "direct" | "relay",
 ) {
   return yield* fetchRemoteEnvironmentDescriptor({ httpBaseUrl }).pipe(
     Effect.mapError((error) => mapRemoteEnvironmentError(error, connectionMethod)),
