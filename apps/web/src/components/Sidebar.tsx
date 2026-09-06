@@ -805,7 +805,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   const gitCwd = thread.worktreePath ?? props.projectCwd;
   const linkedPullRequestStatus = useLinkedThreadPullRequest(
     leaseLiveStatus ? thread.environmentId : null,
-    leaseLiveStatus ? thread.linkedPullRequest : null,
+    leaseLiveStatus ? (thread.linkedPullRequest ?? thread.branchPullRequest) : null,
   );
   const gitStatus = useEnvironmentQuery(
     leaseLiveStatus && (thread.branch != null || thread.worktreePath !== null) && gitCwd !== null
@@ -826,6 +826,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     snapshot: changeRequestSnapshot,
     retainTerminalOnBranchMismatch,
     linkedPullRequest: thread.linkedPullRequest,
+    branchPullRequest: thread.branchPullRequest,
     linkedPullRequestStatus,
   });
 
@@ -909,6 +910,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     snapshot: changeRequestSnapshot,
     retainTerminalOnBranchMismatch,
     linkedPullRequest: thread.linkedPullRequest,
+    branchPullRequest: thread.branchPullRequest,
     linkedPullRequestStatus,
   });
   const prStatus = prStatusIndicator(pr, prProvider);
@@ -920,6 +922,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       snapshot: changeRequestSnapshot,
       retainTerminalOnBranchMismatch,
       linkedPullRequest: thread.linkedPullRequest,
+      branchPullRequest: thread.branchPullRequest,
       linkedPullRequestStatus,
     });
     if (nextSnapshot === undefined) return;
@@ -932,6 +935,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     retainTerminalOnBranchMismatch,
     thread.branch,
     thread.linkedPullRequest,
+    thread.branchPullRequest,
     threadKey,
   ]);
 

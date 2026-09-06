@@ -2,6 +2,8 @@ import { ProjectId, ThreadId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
 import * as Stream from "effect/Stream";
 
 import { CheckpointStore } from "../../checkpointing/CheckpointStore.ts";
@@ -106,6 +108,7 @@ it.effect("clears stale owners and enqueues every nonterminal rollback during st
       }),
       Effect.provideService(WorkspaceEntries, {} as never),
       Effect.provideService(VcsStatusBroadcaster, {} as never),
+      Effect.provide(Layer.mock(PullRequestService)({ refreshAfterTurn: Effect.void })),
       Effect.provideService(RollbackSagaRepository, repository as never),
       Effect.provideService(RollbackSagaRunner, runner),
       Effect.provideService(RollbackWorkspace, {} as never),

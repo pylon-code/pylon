@@ -274,6 +274,7 @@ export function nextThreadChangeRequestSnapshot(input: {
   snapshot: ThreadChangeRequestSnapshot | null | undefined;
   retainTerminalOnBranchMismatch: boolean;
   linkedPullRequest?: ThreadLinkedPullRequest | null | undefined;
+  branchPullRequest?: ThreadLinkedPullRequest | null | undefined;
   linkedPullRequestStatus?: LinkedThreadPullRequestStatus | null | undefined;
 }): ThreadChangeRequestSnapshot | null | undefined {
   const {
@@ -281,9 +282,11 @@ export function nextThreadChangeRequestSnapshot(input: {
     gitStatus,
     snapshot,
     retainTerminalOnBranchMismatch,
-    linkedPullRequest,
+    linkedPullRequest: manualPullRequest,
     linkedPullRequestStatus,
   } = input;
+  const linkedPullRequest = manualPullRequest ?? input.branchPullRequest;
+  if (input.branchPullRequest !== undefined && linkedPullRequest == null) return null;
   if (linkedPullRequest != null) {
     if (linkedPullRequestStatus === null || linkedPullRequestStatus === undefined) {
       return linkedPullRequestsEqual(snapshot?.linkedPullRequest, linkedPullRequest)
@@ -342,6 +345,7 @@ export function resolveDisplayedThreadPr(input: {
   snapshot: ThreadChangeRequestSnapshot | null | undefined;
   retainTerminalOnBranchMismatch: boolean;
   linkedPullRequest?: ThreadLinkedPullRequest | null | undefined;
+  branchPullRequest?: ThreadLinkedPullRequest | null | undefined;
   linkedPullRequestStatus?: LinkedThreadPullRequestStatus | null | undefined;
 }): ThreadPr | null {
   const {
@@ -349,9 +353,11 @@ export function resolveDisplayedThreadPr(input: {
     gitStatus,
     snapshot,
     retainTerminalOnBranchMismatch,
-    linkedPullRequest,
+    linkedPullRequest: manualPullRequest,
     linkedPullRequestStatus,
   } = input;
+  const linkedPullRequest = manualPullRequest ?? input.branchPullRequest;
+  if (input.branchPullRequest !== undefined && linkedPullRequest == null) return null;
   if (linkedPullRequest != null) {
     return (
       linkedPullRequestStatus?.pr ??
@@ -388,6 +394,7 @@ export function resolveDisplayedThreadPrProvider(input: {
   snapshot: ThreadChangeRequestSnapshot | null | undefined;
   retainTerminalOnBranchMismatch: boolean;
   linkedPullRequest?: ThreadLinkedPullRequest | null | undefined;
+  branchPullRequest?: ThreadLinkedPullRequest | null | undefined;
   linkedPullRequestStatus?: LinkedThreadPullRequestStatus | null | undefined;
 }): VcsStatusResult["sourceControlProvider"] | undefined {
   const {
@@ -395,9 +402,11 @@ export function resolveDisplayedThreadPrProvider(input: {
     gitStatus,
     snapshot,
     retainTerminalOnBranchMismatch,
-    linkedPullRequest,
+    linkedPullRequest: manualPullRequest,
     linkedPullRequestStatus,
   } = input;
+  const linkedPullRequest = manualPullRequest ?? input.branchPullRequest;
+  if (input.branchPullRequest !== undefined && linkedPullRequest == null) return null;
   if (linkedPullRequest != null) {
     return (
       linkedPullRequestStatus?.sourceControlProvider ??
@@ -534,6 +543,8 @@ export function ThreadStatusLabel({
  * thread status dot, matching the sidebar's leading indicators.
  */
 export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummary }) {
+  const reference = thread.linkedPullRequest ?? thread.branchPullRequest ?? null;
+  const legacyDiscovery = thread.branchPullRequest === undefined;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const lastVisitedAt = useUiStateStore(
     (state) => state.threadLastVisitedAtById[scopedThreadKey(threadRef)],
@@ -546,12 +557,10 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
   );
   const threadProjectCwd = threadProject?.workspaceRoot ?? null;
   const gitCwd = thread.worktreePath ?? threadProjectCwd;
-  const linkedPullRequest = useLinkedThreadPullRequest(
-    thread.environmentId,
-    thread.linkedPullRequest,
-  );
+  const linkedPullRequest = useLinkedThreadPullRequest(thread.environmentId, reference);
   const gitStatus = useEnvironmentQuery(
-    thread.linkedPullRequest == null &&
+    legacyDiscovery &&
+      reference === null &&
       (thread.branch != null || thread.worktreePath !== null) &&
       gitCwd !== null
       ? vcsEnvironment.status({
@@ -561,8 +570,10 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
       : null,
   );
   const pr =
-    thread.linkedPullRequest == null
-      ? resolveThreadPr({ threadBranch: thread.branch, gitStatus: gitStatus.data })
+    reference === null
+      ? legacyDiscovery
+        ? resolveThreadPr({ threadBranch: thread.branch, gitStatus: gitStatus.data })
+        : null
       : (linkedPullRequest?.pr ?? null);
   const prStatus = prStatusIndicator(
     pr,

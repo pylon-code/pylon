@@ -463,7 +463,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
     }),
   );
 
-  it.effect("round-trips a linked pull request through the thread row", () =>
+  it.effect("round-trips manual and branch pull requests through the thread row", () =>
     Effect.gen(function* () {
       const threads = yield* ProjectionThreadRepository;
       const linkedPullRequest = {
@@ -471,6 +471,11 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         repository: "pingdotgg/t3code",
         number: 42,
         url: "https://github.com/pingdotgg/t3code/pull/42",
+      };
+      const branchPullRequest = {
+        ...linkedPullRequest,
+        number: 43,
+        url: "https://github.com/pingdotgg/t3code/pull/43",
       };
 
       yield* threads.upsert({
@@ -486,6 +491,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         branch: null,
         worktreePath: null,
         linkedPullRequest,
+        branchPullRequest,
         latestTurnId: null,
         sourceEpoch: 0,
         createdAt: "2026-03-24T00:00:00.000Z",
@@ -506,6 +512,10 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
 
       const persisted = yield* threads.getById({ threadId: ThreadId.make("thread-linked-pr") });
       assert.deepStrictEqual(Option.getOrNull(persisted)?.linkedPullRequest, linkedPullRequest);
+      assert.deepStrictEqual(Option.getOrNull(persisted)?.branchPullRequest, branchPullRequest);
+
+      const listed = yield* threads.listByProjectId({ projectId: linkedPullRequest.projectId });
+      assert.deepStrictEqual(listed[0]?.branchPullRequest, branchPullRequest);
 
       const row = Option.getOrNull(persisted);
       if (row === null) return yield* Effect.die("Expected linked thread row to exist.");
@@ -513,6 +523,12 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
 
       const cleared = yield* threads.getById({ threadId: ThreadId.make("thread-linked-pr") });
       assert.strictEqual(Option.getOrNull(cleared)?.linkedPullRequest, null);
+      assert.deepStrictEqual(Option.getOrNull(cleared)?.branchPullRequest, branchPullRequest);
+
+      yield* threads.upsert({ ...row, branchPullRequest: null });
+      const branchCleared = yield* threads.getById({ threadId: row.threadId });
+      assert.strictEqual(Option.getOrNull(branchCleared)?.branchPullRequest, null);
+      assert.deepStrictEqual(Option.getOrNull(branchCleared)?.linkedPullRequest, linkedPullRequest);
     }),
   );
 });
