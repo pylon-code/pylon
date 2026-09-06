@@ -55,8 +55,10 @@ upstream change belongs in Pylon.
 
 The preceding catch-up batch shipped successfully as Nightly
 `0.0.33-nightly.20260906.120` from `9a4b54165743dd55376c45043ea071bc1c1bfc96`
-(release run 34007254669); this closes the earlier publication check. Release run 34011039725 is publishing the new server/build changes from
-`fa6da65b1444321810e77a9aa714d72c1920ba80`; verify its result before claiming delivery.
+(release run 34007254669); this closes the earlier publication check. Nightly
+`0.0.33-nightly.20260906.121` targets the new server/build changes from
+`fa6da65b1444321810e77a9aa714d72c1920ba80`. Its build and publication receipts
+are tracked by release run 34011039725 and #284; the two pending UI PRs are excluded.
 
 Deferred/watch recheck: DEF-7 remains not yet (November 1 floor; no preview-workflow
 changes). DEF-8 is due after Expo 57 #171. Recommend its dev-loop half first, keeping
