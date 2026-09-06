@@ -15,6 +15,161 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-05 — first catch-up batch and watch recheck (partial)
+
+The maintainer approved A1–A4 after reviewing the bounded upstream head
+`f12d39359f0f76a64ff2d77959c5baf821df15be`. The range from
+`beae2147a9487ec47ac992319f2216914b4cb62d` contains 555 commits: 44 have
+patch-equivalence evidence and 50 additional commits have cherry-pick trailers.
+Those are inventory signals, not proof that every port remains effective.
+Only the following 10 upstream commits were selected in this first batch.
+The full cursor stays unchanged; the remaining range is not silently deferred
+or treated as reviewed.
+
+A September 6 UTC refresh reached `b438447f67b6b61bbe6f564d8b78fd90702117c5`:
+four further commits arrived after the selected head. All 10 selected commits
+were unmatched in the original inventory, leaving 451 from that range plus
+these four new commits (455 total) for later assessment. This is a review
+backlog, not a count of changes Pylon must adopt.
+
+| Approved concern              | Upstream PRs and commits                                                                                                                             | Pylon PR |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| A1 Claude failures and pauses | #9135 `560afffdea82000d757c98ea79678aee75f8648c`; #8853 `a5bbad910f78cc14eef8baa94fe6f46676f78d5a`; #7165 `940e8233c227a186044078e99e45e1933eb525e4` | #268     |
+| A1 Codex rate-limit history   | #8897 `75ab5ab3fb6ad35117da754644c404a31b2fed84`                                                                                                     | #272     |
+| A2 live subscription startup  | #9521 `9c9ae3dc0e94a957d9c4a61bb211caf914828054`                                                                                                     | #273     |
+| A3 mobile saved work          | #9710 `7839140e5e93d3f401d7eb45b86cf1a234eb3609`                                                                                                     | #274     |
+| A4 managed SSH runner         | #9843 `f33fdc992488e36ccb70cbb71d55e630b5184cbd`; #10088 `39802c06117fae0b3da43624b0d54309c5437c72`                                                  | #276     |
+| A4 relay binary validation    | #9880 `2c301fd0c4fc58c1612be47c3856fa4ad547429d`                                                                                                     | #277     |
+| A4 LAN/Tailscale pairing      | #9882 `60e1b73948debac845c3dc72aac35c9adbd4cd64`                                                                                                     | #278     |
+
+The implementation records below preserve each PR's adaptations and verification.
+They are consolidated here so independent code PRs do not compete to insert at
+the same ledger location.
+All seven implementation PRs merged with green checks after explicit maintainer
+approval on September 5 (September 6 UTC). Separate Pylon release repairs #271
+(temporary signing-keychain password) and #275 (pin the existing patched Expo
+versions for fresh resolution) also merged with green checks. The combined
+product tree matches the locally verified integration branch: 342 focused tests,
+server typecheck, frozen installation, and release smoke passed. The signed
+Nightly workflow remains the final publication check.
+
+Deferred register: DEF-7 remains **not yet**; its November 1 floor is unreached
+and this range has no macOS-preview workflow changes. DEF-8 is **due**: Expo 57
+merged as #171 (`eff44d0cfa`) and September 5 has arrived. Keep its required split
+between dev-loop work and product/shared-runtime changes; it was not included
+in the approved first batch. Its original deferral date remains intact.
+
+Watch list: WATCH-1 is rewritten to stop watching closed upstream issue #5760;
+Pylon #178 still owns the unfixed OpenCode task work. #8097 is open, no longer
+a draft, and unmerged; the existing merge-and-divergence condition remains.
+Owner #114 is updated with this state and #279. WATCH-2 and
+WATCH-3 stay **not yet**: #6573 and #7986 remain closed unmerged, no replacement
+landed in their watched paths (only #9129 dead-toolkit cleanup), and both retain
+November 1 revisit floors. No new deferrals or watch entries were added.
+
+## 2026-09-05 — approved Claude reliability follow-ups (A1, partial)
+
+Reviewed against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+The maintainer approved the recommended A1–A4 catch-up batch. PR #268 completes
+the Claude portion of A1; the cursor stays at `beae2147a9487ec47ac992319f2216914b4cb62d`
+because the 555-commit inventory was only partly assessed and selected.
+
+| Upstream                                           | Decision                        | Pylon reference    | Adaptation and validation                                                                                                                                                                                                   |
+| -------------------------------------------------- | ------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `560afffdea82000d757c98ea79678aee75f8648c` / #9135 | adopted, merged                 | #268, `d066551673` | Reused the existing SDK and terminal-failure fix.                                                                                                                                                                           |
+| `a5bbad910f78cc14eef8baa94fe6f46676f78d5a` / #8853 | adopted, merged                 | #268, `09040d3386` | Show Claude model-fallback notices through Pylon's existing warning events.                                                                                                                                                 |
+| `940e8233c227a186044078e99e45e1933eb525e4` / #7165 | adopted with adaptation, merged | #268, `015f653538` | Announce rejected usage windows once per turn/window, retain raw telemetry and incarnation/admission metadata. Use the generic model bucket because Pylon has no probed scoped-limit names. Server clock supplies the wait. |
+
+Validation: 96 Claude adapter tests and 81 runtime-ingestion tests pass; server
+typecheck and targeted lint pass. The mobile diff-highlighter test that failed
+on the old PR run passes locally (4 tests) and passed in the subsequent CI run.
+Existing warnings feed web, desktop, and mobile for local and remote servers.
+No other provider's adapter or Prime recovery changes.
+
+## 2026-09-05 — Codex quota history (A1, partial)
+
+Approved by the maintainer as part of A1–A4 against upstream
+`f12d39359f0f76a64ff2d77959c5baf821df15be`. Adopted #8897
+(`75ab5ab3fb6ad35117da754644c404a31b2fed84`) as `aac9a2a098` on
+`upstream/2026-09-05-codex-rate-limit`, merged in #272.
+
+Thread read, resume, and rollback now accept `rateLimitExceeded` in Codex
+history. The generator retains the compatibility extension. Kept Pylon's
+account-plan coverage and excluded unrelated upstream async-question fixtures.
+Four schema tests, package typecheck, and targeted lint pass. This changes the
+server's Codex protocol decoder; all clients and connection modes benefit,
+with no Pylon wire-contract or other-provider changes.
+
+## 2026-09-05 — thread subscription startup (A2, partial)
+
+The maintainer approved A2 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+Adopted #9521 (`9c9ae3dc0e94a957d9c4a61bb211caf914828054`) as `c1ca02c6dd`
+on `upstream/2026-09-05-thread-subscription`, merged in #273. Clean port:
+attach the live consumer immediately before reading the snapshot, preserving
+events emitted during snapshot loading. Applies to all providers and clients,
+including local, remote, relay, and tunnel WebSocket connections.
+
+All 154 server-router tests pass; server typecheck and targeted lint pass.
+The legacy rollback-filter test now waits for the client synchronization receipt
+before publishing live events, so it does not depend on fiber scheduling. The new
+regression fails deterministically with the old consumer startup and passes with
+the fix, using the synchronized marker rather than sleeps.
+No client contract or Prime admission/recovery change.
+
+## 2026-09-05 — mobile saved-work protection (A3, partial)
+
+The maintainer approved A3 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+Adopted #9710 (`7839140e5e93d3f401d7eb45b86cf1a234eb3609`) as `75197386f0`
+on `upstream/2026-09-05-mobile-storage`, merged in #274. Failed draft or outbox
+reads now stop overwrites and attachment cleanup. Final flush can retry a failed
+debounced read while preserving both saved drafts and new in-memory edits.
+
+Clean port preserving Pylon's draft fields and environment ownership. Mobile
+only (iOS and Android), all providers/environments; no native dependencies,
+contracts, or web/desktop changes. Both focused files pass (103 tests), as do
+mobile typecheck, targeted lint, and formatting. No simulator/UI was launched.
+
+## 2026-09-05 — managed SSH process ownership (A4, partial)
+
+The maintainer approved A4 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+Adopted #9843 (`f33fdc992488e36ccb70cbb71d55e630b5184cbd`, `e4b0b66e1e`)
+and its diagnostic follow-up #10088 (`39802c06117fae0b3da43624b0d54309c5437c72`,
+`a346798f15`) on `upstream/2026-09-05-ssh-runner`, merged in #276.
+The installed CLI replaces the shell directly, preserving the recorded PID
+and graceful shutdown. Failed package installs retain npm's actual diagnostic
+and cannot run an executable path printed alongside a failure.
+
+Clean port preserving package selection and Pylon runtime-home/identity rules.
+Affects SSH-managed environments for all providers and their connected clients;
+local, relay, and tunnel launch paths are unchanged. 33 focused runner/tunnel
+tests, SSH typecheck, targeted lint, and formatting pass. Tests cover real owned
+fixture processes, graceful stop/rebind, both npm fallbacks, and seven installer
+outcomes per fallback. Unix fixture tests are skipped on Windows.
+
+## 2026-09-05 — relay client validation (A4, partial)
+
+The maintainer approved A4 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+Adopted #9880 (`2c301fd0c4fc58c1612be47c3856fa4ad547429d`) as `cc434b9de2`
+on `upstream/2026-09-05-cloudflared-validation`, merged in #277. Validate the
+downloaded cloudflared executable with `version`; the pinned Windows binary
+rejects `--version`. Clean port affecting relay setup on server/desktop and the
+clients connecting through it, independent of provider. Other modes are unchanged.
+Focused relay tests, shared-package typecheck, lint, and formatting pass.
+
+## 2026-09-05 — LAN and Tailscale pairing (A4, partial)
+
+The maintainer approved A4 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+Adopted #9882 (`60e1b73948debac845c3dc72aac35c9adbd4cd64`) as `6de83796db`
+on `upstream/2026-09-05-pairing-endpoints`, merged in #278. Clean port: do not
+advertise a Tailscale interface as LAN, retain network access on Tailscale-only
+hosts, and preserve explicit host overrides. The bootstrap warning now reflects
+an actual local-only fallback. Pylon identity and runtime-home boundaries remain.
+
+Focused exposure tests, desktop typecheck, targeted lint, and formatting pass.
+Applies to desktop-hosted environments and web/mobile pairing over LAN/Tailscale,
+independent of provider; local-only and explicit HTTPS endpoint behavior stay
+covered. No UI layout, protocol, or other launcher changes.
+
 ## 2026-09-04 (targeted) — `beae2147a9487ec47ac992319f2216914b4cb62d..95103905f5`, lifecycle reliability only
 
 **Cursor deliberately not advanced.** This was a targeted review, not a full
@@ -3235,8 +3390,8 @@ an entry comes due, is rewritten, or is retired, update the owning issue in the
 same change. An owner that disagrees with this table is the failure this list
 exists to prevent.
 
-| ID      | Owner                                                                                                                                                         | Upstream                                                                                                                                         | Added      | Current signal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Revisit when                                                                                                                                                                                                                                                                                                                                                                                                                       | Response to evaluate                                                                                                                                                                                                                                                                                                                                                                                  |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| WATCH-1 | [`#114`](https://github.com/pylon-code/pylon/issues/114) — Prime provider parity                                                                              | `#5760` (issue, open) OpenCode `todowrite` updates do not reach the task sidebar; `#8097` (PR, open draft) restore composer tasks after relaunch | 2026-08-29 | `#5760` is a real defect **present in Pylon**: `OpenCodeAdapter.ts` emits no `turn.plan.updated`, so the composer Tasks tab, inline plan chip, and sidebar working line are dead on OpenCode, and every `todowrite` is misclassified `file_change` and inflates the edit count. Pylon is fixing this itself against the v2 SDK's structured `todo.updated` event; there is no upstream patch to take. That Pylon-side fix is open as [`#178`](https://github.com/pylon-code/pylon/pull/178) (`fix/opencode-plan-parity`), so `#5760` stays listed only because the upstream issue is still open. **`#8097` is superseded** — Pylon shipped the same fix in `#137` (`8698a69e`) before the draft opened, via the `latest_plan_activity` CTE in `ProjectionSnapshotQuery.ts`, and with waiting-step retention the draft's settled-turn gate would regress. | For `#5760`: nothing to watch upstream — Pylon owns the fix. For `#8097`: only if it merges AND diverges from Pylon's approach. Check `gh pr view 8097 --repo pingdotgg/t3code --json state,mergedAt`. Its migration id 42 is unusable here (Pylon's 42 is `ProjectionProjectFaviconPath`; the manifest runs through 47, so any new migration is 048). Upstream's own trunk has a 42 collision between `#8097` and merged `#8160`. | Do not port `#8097`. Two fragments stand alone on their merits: its partial plan-activity index as a Pylon-numbered `048`, but only if `EXPLAIN QUERY PLAN` shows Pylon's CTE actually reverse-scans; and a Pylon-voiced Tasks section for `docs/user/composer.md`, which has none today. Its `turn.aborted` reducer hunks are an unrelated concern — investigate separately, do not smuggle them in. |
-| WATCH-2 | [`#174`](https://github.com/pylon-code/pylon/issues/174) — cross-thread messaging design; context in [`#114`](https://github.com/pylon-code/pylon/issues/114) | `#6573` (PR) — authenticated cross-thread MCP tools                                                                                              | 2026-08-29 | **Premise gone.** Closed unmerged 2026-08-28 without adding permission splitting or bounded read-only tools. Nothing upstream to compare against today.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | A replacement lands. Check `git log --oneline <cursor>..t3code-upstream/main -- apps/server/src/mcp/toolkits/` and `gh pr list --repo pingdotgg/t3code --search 'mcp thread tools' --state merged`. Not before 2026-11-01 — upstream abandoned this once and a rewrite is not a weekly event.                                                                                                                                      | Compare with Pylon's scoped read-only context/checkpoint MCP design before adoption. Do not revive `#6573` itself.                                                                                                                                                                                                                                                                                    |
-| WATCH-3 | [`#177`](https://github.com/pylon-code/pylon/issues/177) — scheduled-run safety contract; context in [`#114`](https://github.com/pylon-code/pylon/issues/114) | `#7966` (issue) / `#7986` (PR) — server-side scheduled agent runs                                                                                | 2026-08-29 | **Premise gone.** Both closed 2026-08-28; `#7986` closed unmerged. The implementation Pylon declined to cherry-pick no longer exists upstream.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | A replacement scheduling implementation merges. Check `git log --oneline <cursor>..t3code-upstream/main -- apps/server/src/orchestration/Layers/TaskFireReactor.ts apps/server/src/orchestration/Layers/OrchestrationReactor.ts`. Not before 2026-11-01.                                                                                                                                                                           | Fresh review only. Pylon's own canonical scheduled-turn ownership question in `#114` is unblocked by upstream's retreat, not answered by it.                                                                                                                                                                                                                                                          |
+| ID      | Owner                                                                                                                                                         | Upstream                                                                      | Added      | Current signal                                                                                                                                                                                                                                                                                                                                          | Revisit when                                                                                                                                                                                                                                                                                  | Response to evaluate                                                                                                                                            |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| WATCH-1 | [#114](https://github.com/pylon-code/pylon/issues/114) — Prime provider parity                                                                                | #8097 (PR, open and ready for review) — restore composer tasks after relaunch | 2026-08-29 | Rechecked 2026-09-05. Upstream #5760 closed on September 4 without an identified linked fix; closing it does not resolve Pylon's OpenCode task gap, still owned by open Pylon #178. Retire that closed issue as an upstream watch target. #8097 remains unmerged and is superseded in Pylon by #137, whose task restoration also retains waiting steps. | Revisit only if #8097 merges and diverges from Pylon's approach: `gh pr view 8097 --repo pingdotgg/t3code --json state,mergedAt`. Review any migration against Pylon's current manifest; never reuse upstream numbering.                                                                      | Do not port #8097 wholesale. Consider a plan-activity index only if current query plans demonstrate a need. Review unrelated `turn.aborted` changes separately. |
+| WATCH-2 | [`#174`](https://github.com/pylon-code/pylon/issues/174) — cross-thread messaging design; context in [`#114`](https://github.com/pylon-code/pylon/issues/114) | `#6573` (PR) — authenticated cross-thread MCP tools                           | 2026-08-29 | **Premise gone.** Closed unmerged 2026-08-28 without adding permission splitting or bounded read-only tools. Nothing upstream to compare against today.                                                                                                                                                                                                 | A replacement lands. Check `git log --oneline <cursor>..t3code-upstream/main -- apps/server/src/mcp/toolkits/` and `gh pr list --repo pingdotgg/t3code --search 'mcp thread tools' --state merged`. Not before 2026-11-01 — upstream abandoned this once and a rewrite is not a weekly event. | Compare with Pylon's scoped read-only context/checkpoint MCP design before adoption. Do not revive `#6573` itself.                                              |
+| WATCH-3 | [`#177`](https://github.com/pylon-code/pylon/issues/177) — scheduled-run safety contract; context in [`#114`](https://github.com/pylon-code/pylon/issues/114) | `#7966` (issue) / `#7986` (PR) — server-side scheduled agent runs             | 2026-08-29 | **Premise gone.** Both closed 2026-08-28; `#7986` closed unmerged. The implementation Pylon declined to cherry-pick no longer exists upstream.                                                                                                                                                                                                          | A replacement scheduling implementation merges. Check `git log --oneline <cursor>..t3code-upstream/main -- apps/server/src/orchestration/Layers/TaskFireReactor.ts apps/server/src/orchestration/Layers/OrchestrationReactor.ts`. Not before 2026-11-01.                                      | Fresh review only. Pylon's own canonical scheduled-turn ownership question in `#114` is unblocked by upstream's retreat, not answered by it.                    |
