@@ -483,7 +483,7 @@ export function PullRequestDetailPanel({
    */
   composerDraftTarget?: ScopedThreadRef | DraftId;
 }) {
-  const pullRequestKey = `${reference.projectId}:${reference.repository}#${reference.number}`;
+  const pullRequestKey = `${environmentId}:${reference.projectId}:${reference.repository}#${reference.number}`;
   const [tab, setTab] = useState<DetailTab>("summary");
   const [timelineOrder, setTimelineOrder] = useState<"newest" | "oldest">("newest");
   const [codeCommitScope, setCodeCommitScope] = useState<{
@@ -560,31 +560,20 @@ export function PullRequestDetailPanel({
   const activityQuery = useEnvironmentQuery(
     pullRequestEnvironment.activity({ environmentId, input: reference }),
   );
-  const [cachedDetail, setCachedDetail] = useState(() =>
-    readPullRequestDetailSnapshot(
-      typeof window === "undefined" ? undefined : window.localStorage,
-      environmentId,
-      reference,
-    ),
-  );
+  const [cachedDetail, setCachedDetail] = useState(() => ({
+    environmentId,
+    detail: readPullRequestDetailSnapshot(undefined, environmentId, reference),
+  }));
   useEffect(() => {
-    setCachedDetail(
-      readPullRequestDetailSnapshot(
-        typeof window === "undefined" ? undefined : window.localStorage,
-        environmentId,
-        reference,
-      ),
-    );
+    setCachedDetail({
+      environmentId,
+      detail: readPullRequestDetailSnapshot(undefined, environmentId, reference),
+    });
   }, [environmentId, pullRequestKey, reference.projectId, reference.repository, reference.number]);
   useEffect(() => {
     if (detailQuery.data === null) return;
-    writePullRequestDetailSnapshot(
-      typeof window === "undefined" ? undefined : window.localStorage,
-      environmentId,
-      reference,
-      detailQuery.data,
-    );
-    setCachedDetail(detailQuery.data);
+    writePullRequestDetailSnapshot(undefined, environmentId, reference, detailQuery.data);
+    setCachedDetail({ environmentId, detail: detailQuery.data });
   }, [
     detailQuery.data,
     environmentId,
@@ -596,6 +585,7 @@ export function PullRequestDetailPanel({
   const coreDetail = resolveDisplayedPullRequestDetail({
     live: detailQuery.data,
     cached: cachedDetail,
+    environmentId,
     reference,
   });
   const activity = activityQuery.data;

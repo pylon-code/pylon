@@ -1049,7 +1049,8 @@ export function readPullRequestDetailSnapshot(
   reference: PullRequestDetailSnapshotRef,
 ): PullRequestDetail | null {
   try {
-    const raw = storage?.getItem(pullRequestDetailSnapshotKey(environmentId, reference));
+    const target = storage ?? (typeof window === "undefined" ? undefined : window.localStorage);
+    const raw = target?.getItem(pullRequestDetailSnapshotKey(environmentId, reference));
     if (!raw) return null;
     const decoded = decodeDetailSnapshot(JSON.parse(raw));
     return decoded._tag === "Some" ? decoded.value : null;
@@ -1065,10 +1066,8 @@ export function writePullRequestDetailSnapshot(
   detail: PullRequestDetail,
 ): void {
   try {
-    storage?.setItem(
-      pullRequestDetailSnapshotKey(environmentId, reference),
-      JSON.stringify(detail),
-    );
+    const target = storage ?? (typeof window === "undefined" ? undefined : window.localStorage);
+    target?.setItem(pullRequestDetailSnapshotKey(environmentId, reference), JSON.stringify(detail));
   } catch {
     // Quota or a private-mode store: the next open waits on the live read, which is the
     // cold start this snapshot exists to avoid, not a failure of its own.
@@ -1078,17 +1077,19 @@ export function writePullRequestDetailSnapshot(
 /** Live host state wins; a snapshot is only the same change request, never a neighbour's. */
 export function resolveDisplayedPullRequestDetail(input: {
   readonly live: PullRequestDetail | null;
-  readonly cached: PullRequestDetail | null;
+  readonly cached: { readonly environmentId: string; readonly detail: PullRequestDetail | null };
+  readonly environmentId: string;
   readonly reference: PullRequestDetailSnapshotRef;
 }): PullRequestDetail | null {
   if (input.live !== null) return input.live;
   if (
-    input.cached !== null &&
-    input.cached.projectId === input.reference.projectId &&
-    input.cached.repository.toLowerCase() === input.reference.repository.toLowerCase() &&
-    input.cached.number === input.reference.number
+    input.cached.environmentId === input.environmentId &&
+    input.cached.detail !== null &&
+    input.cached.detail.projectId === input.reference.projectId &&
+    input.cached.detail.repository.toLowerCase() === input.reference.repository.toLowerCase() &&
+    input.cached.detail.number === input.reference.number
   ) {
-    return input.cached;
+    return input.cached.detail;
   }
   return null;
 }

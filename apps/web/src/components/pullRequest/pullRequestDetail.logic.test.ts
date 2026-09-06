@@ -6,7 +6,7 @@ import {
   type PullRequestDetailView,
   type PullRequestReviewThread,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   buildAddSelectionToAgentHandoff,
@@ -1422,23 +1422,55 @@ describe("cached pull request detail", () => {
   });
 
   it("keeps a cached tab painted while the live read replaces the counts", () => {
-    const cached = detail();
+    const cached = { environmentId: "env-1", detail: detail() };
+    const environmentId = "env-1";
     const live = detail({ additions: 40, deletions: 9, title: "Cache the title" });
-    expect(resolveDisplayedPullRequestDetail({ live, cached, reference })?.additions).toBe(40);
-    expect(resolveDisplayedPullRequestDetail({ live: null, cached, reference })?.additions).toBe(
-      12,
-    );
+    expect(
+      resolveDisplayedPullRequestDetail({ live, cached, reference, environmentId })?.additions,
+    ).toBe(40);
+    expect(
+      resolveDisplayedPullRequestDetail({ live: null, cached, reference, environmentId })
+        ?.additions,
+    ).toBe(12);
   });
 
   it("does not paint another change request's snapshot", () => {
     expect(
       resolveDisplayedPullRequestDetail({
         live: null,
-        cached: detail({ number: 8 }),
+        cached: { environmentId: "env-1", detail: detail({ number: 8 }) },
+        environmentId: "env-1",
         reference,
       }),
     ).toBeNull();
     expect(readPullRequestDetailSnapshot(makeStorage(), "env-2", reference)).toBeNull();
+  });
+
+  it("does not carry a cached detail into another environment before its read settles", () => {
+    expect(
+      resolveDisplayedPullRequestDetail({
+        live: null,
+        cached: { environmentId: "env-1", detail: detail() },
+        environmentId: "env-2",
+        reference,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps the panel usable when the browser denies access to localStorage itself", () => {
+    vi.stubGlobal("window", {
+      get localStorage() {
+        throw new Error("Storage access denied");
+      },
+    });
+    try {
+      expect(readPullRequestDetailSnapshot(undefined, "env-1", reference)).toBeNull();
+      expect(() =>
+        writePullRequestDetailSnapshot(undefined, "env-1", reference, detail()),
+      ).not.toThrow();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shrugs off corrupt storage and no storage at all", () => {
