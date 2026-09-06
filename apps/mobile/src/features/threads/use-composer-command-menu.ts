@@ -1,4 +1,7 @@
+import { useAtomCommand } from "../../state/use-atom-command";
+import { serverEnvironment } from "../../state/server";
 import {
+  resolveProviderSkillsForCwd,
   dedupeProviderSkillsByName,
   getProviderSkillsForSlashMenu,
   getProviderSlashCommandsForSlashMenu,
@@ -33,6 +36,8 @@ import type { ComposerEditorSelection } from "../../components/ComposerEditor";
 import { useComposerPathSearch } from "../../state/queries";
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
 import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
+
+const WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS = 10_000;
 
 /**
  * The slice of a provider snapshot the menu reads. Narrower than `ServerProvider`
@@ -336,6 +341,71 @@ export function useComposerCommandMenu({
     setSelection(composerSelectionAtEnd(draftMessage));
   }, [draftMessage, ownerKey]);
 
+  const skills = useMemo(
+    () =>
+      selectedProviderStatus ? resolveProviderSkillsForCwd(selectedProviderStatus, projectCwd) : [],
+    [projectCwd, selectedProviderStatus],
+  );
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
+  const selectedProviderInstanceId = selectedProviderStatus?.instanceId;
+  const hasWorkspaceSnapshot = Boolean(
+    projectCwd &&
+    selectedProviderStatus?.workspaceSnapshots?.some((snapshot) => snapshot.cwd === projectCwd),
+  );
+  const workspaceRefreshKeyRef = useRef<string | null>(null);
+  const workspaceRefreshRetryRef = useRef<{ key: string; notBefore: number } | null>(null);
+  const hadWorkspaceSnapshotRef = useRef(false);
+  useEffect(() => {
+    if (hadWorkspaceSnapshotRef.current && !hasWorkspaceSnapshot) {
+      workspaceRefreshKeyRef.current = null;
+      workspaceRefreshRetryRef.current = null;
+    }
+    hadWorkspaceSnapshotRef.current = hasWorkspaceSnapshot;
+  }, [hasWorkspaceSnapshot]);
+  useEffect(() => {
+    if (!environmentId || !projectCwd || !selectedProviderInstanceId) return;
+    const key = `${environmentId}:${selectedProviderInstanceId}:${projectCwd}`;
+    if (workspaceRefreshKeyRef.current === key) return;
+    if (hasWorkspaceSnapshot) {
+      workspaceRefreshKeyRef.current = key;
+      workspaceRefreshRetryRef.current = null;
+      return;
+    }
+    const retry = workspaceRefreshRetryRef.current;
+    if (retry?.key === key && Date.now() < retry.notBefore) return;
+    workspaceRefreshKeyRef.current = key;
+    const retryLater = () => {
+      if (workspaceRefreshKeyRef.current !== key) return;
+      workspaceRefreshKeyRef.current = null;
+      workspaceRefreshRetryRef.current = {
+        key,
+        notBefore: Date.now() + WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS,
+      };
+    };
+    void refreshProviders({
+      environmentId,
+      input: { instanceId: selectedProviderInstanceId, cwd: projectCwd },
+    }).then((result) => {
+      const refreshed =
+        result._tag === "Success" &&
+        result.value.providers
+          .find((provider) => provider.instanceId === selectedProviderInstanceId)
+          ?.workspaceSnapshots?.some((snapshot) => snapshot.cwd === projectCwd);
+      if (!refreshed && workspaceRefreshKeyRef.current === key) {
+        retryLater();
+      }
+    }, retryLater);
+  }, [
+    draftMessage,
+    environmentId,
+    hasWorkspaceSnapshot,
+    projectCwd,
+    refreshProviders,
+    selectedProviderInstanceId,
+  ]);
+
   const trigger = useMemo<ComposerTrigger | null>(() => {
     if (!enabled || selection.start !== selection.end) {
       return null;
@@ -358,7 +428,9 @@ export function useComposerCommandMenu({
     () =>
       buildComposerCommandItems({
         trigger,
-        selectedProviderStatus,
+        selectedProviderStatus: selectedProviderStatus
+          ? { ...selectedProviderStatus, skills }
+          : null,
         providerSlashCommands,
         showInteractionModeToggle:
           showInteractionModeToggle && onUpdateInteractionMode !== undefined,
@@ -371,6 +443,7 @@ export function useComposerCommandMenu({
       pathSearch.entries,
       providerSlashCommands,
       selectedProviderStatus,
+      skills,
       showInteractionModeToggle,
       trigger,
     ],
@@ -401,6 +474,7 @@ export function useComposerCommandMenu({
     onSelectionChange,
     trigger,
     items,
+    skills,
     isLoading: pathSearch.isPending,
     onSelect,
   };

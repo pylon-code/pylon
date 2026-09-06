@@ -168,6 +168,13 @@ export const ServerProviderBackend = Schema.Struct({
   usageLimits: Schema.optional(ServerProviderUsageLimits),
 });
 export type ServerProviderBackend = typeof ServerProviderBackend.Type;
+export const ServerProviderWorkspaceSnapshot = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  checkedAt: IsoDateTime,
+  slashCommands: Schema.Array(ServerProviderSlashCommand),
+  skills: Schema.Array(ServerProviderSkill),
+});
+export type ServerProviderWorkspaceSnapshot = typeof ServerProviderWorkspaceSnapshot.Type;
 
 /**
  * Availability of a configured provider instance from the runtime's POV.
@@ -421,6 +428,7 @@ export const ServerProvider = Schema.Struct({
   usageLimits: Schema.optional(ServerProviderUsageLimits),
   backends: Schema.optional(Schema.Array(ServerProviderBackend)),
   rateLimit: Schema.optional(ServerProviderRateLimit),
+  workspaceSnapshots: Schema.optionalKey(Schema.Array(ServerProviderWorkspaceSnapshot)),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   distribution: Schema.optionalKey(ServerProviderDistribution),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
