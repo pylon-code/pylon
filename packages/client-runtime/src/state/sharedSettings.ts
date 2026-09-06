@@ -13,7 +13,7 @@ import * as Equal from "effect/Equal";
 import * as Struct from "effect/Struct";
 
 /** Server keys that hold a user preference rather than machine config. */
-export const SHARED_SERVER_SETTING_KEYS = [
+const SHARED_SERVER_SETTING_KEYS = [
   "sidebarAutoSettleAfterDays",
   "sidebarAutoSettleOnMerge",
   "defaultThreadEnvMode",
