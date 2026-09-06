@@ -11,7 +11,8 @@ Install it with the latest Pylon release:
 npx t3@latest service install
 ```
 
-Check whether it is installed:
+Check whether it is installed. On Linux this also checks whether the service is running, enabled
+at startup, and allowed to keep running after logout:
 
 ```sh
 npx t3@latest service status
@@ -23,7 +24,7 @@ Update or repair it:
 npx t3@latest service update
 ```
 
-The service uses the same T3 Code version as the CLI you run. To install a nightly or an exact
+The service uses the same Pylon version as the CLI you run. To install a nightly or an exact
 version, use that version of the CLI:
 
 ```sh
@@ -32,7 +33,7 @@ npx t3@1.2.3 service update
 ```
 
 The install and update commands refuse to replace a newer service with an older version. Setup
-through T3 Connect leaves a newer service unchanged. To downgrade, select the exact older version
+through Pylon Connect leaves a newer service unchanged. To downgrade, select the exact older version
 and pass `--allow-downgrade`:
 
 ```sh
@@ -58,6 +59,8 @@ updates roll back with the server version. An older launcher may require one loc
 
 **Linux** uses a systemd user unit at `~/.config/systemd/user/t3code.service`. The service starts
 when the machine boots and keeps running after you log out (lingering is enabled during install).
+Setup checks the systemd user manager and enables lingering before installing a runtime or stopping
+an existing service. If that requires administrator permission, setup stops with a recovery command.
 
 **macOS** uses a launch agent at `~/Library/LaunchAgents/com.t3tools.t3code.service.plist`. It
 starts when you log in, not when the Mac boots, and it stops when you log out; macOS has no
@@ -86,5 +89,36 @@ Pylon Connect may offer to install the service during setup so the host stays re
 background. This is only an onboarding shortcut: the service and Pylon Connect are managed
 separately.
 
-Signing out of Pylon Connect does not remove the service. Use `t3 service uninstall` when you no
-longer want Pylon to start in the background.
+Signing out of Pylon Connect does not remove the service. Use `t3 service uninstall` when you no longer
+want Pylon to start in the background.
+
+## Troubleshooting
+
+Run `t3 service status` on the server machine. An installed version alone does not mean the service
+is running or will survive logout. Linux status reports these problems:
+
+| Code                       | What it means                                                                    | Recovery                                                                                                                                   |
+| -------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `linger-disabled`          | The service stops after your last login session ends and does not start at boot. | Run `sudo loginctl enable-linger "$(id -un)"`, then retry setup as your normal user.                                                       |
+| `linger-unavailable`       | Pylon could not verify the logout setting.                                       | Run `loginctl show-user "$(id -un)" --property=Linger` and check that systemd-logind is available.                                         |
+| `user-manager-unavailable` | Pylon cannot reach your systemd user manager.                                    | Run `systemctl --user status` in a login session for the service user. Install your distribution's systemd user-session support if needed. |
+| `service-disabled`         | The service is not enabled to start automatically.                               | Run the repair command shown by `t3 service status`.                                                                                       |
+| `service-stopped`          | The service is installed but is not running.                                     | Read the service log and `systemctl --user status t3code.service`, then run the displayed repair command.                                  |
+
+For an SSH host, run the administrator command in an interactive terminal so sudo can prompt for
+your password:
+
+```sh
+ssh -t your-server 'sudo loginctl enable-linger "$(id -un)"'
+```
+
+Run only the `loginctl` command with sudo. Running `t3` with sudo creates a separate installation and
+Connect identity for root. If an administrator is unavailable, run `t3 serve` in a terminal and
+keep that session open.
+
+The repair command shown by status uses the CLI version, or the installed service version if that
+is newer. An older stable CLI therefore does not recommend downgrading a nightly installation.
+Setup leaves an existing service running if the user-manager or lingering check fails.
+
+`t3 service status` prints the log path. The adjacent `server.trace.ndjson` file contains detailed
+server traces. For failures after authorization, see [Pylon Connect troubleshooting](./remote-access.md#pylon-connect-troubleshooting).
