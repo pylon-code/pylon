@@ -28,6 +28,14 @@ Start Metro for the dev client:
 vp run dev:client
 ```
 
+Metro preserves its transform cache between normal starts. Run `vp run dev:client:reset`
+once after changing the Uniwind dependency patch, or when stale transforms require a reset.
+
+Connection-runtime edits replace the active Effect layer through a stable atom runtime.
+Replaced registries and managed runtimes dispose their resources. Unchanged generated styles
+skip global invalidation; actual stylesheet changes still refresh. See the
+[mobile development lifecycle](../../docs/internals/mobile-development.md) for ownership details.
+
 Build and run the local iOS dev client:
 
 ```bash
@@ -89,7 +97,7 @@ The native lint task runs SwiftLint for Swift plus ktlint and detekt for Kotlin.
 
 ## EAS Builds
 
-CI uses Expo fingerprinting with the `preview:dev` profile to reuse an existing compatible build when possible, or start a new internal EAS build when native runtime inputs change. Production and default local builds continue to use the `appVersion` runtime policy.
+CI uses Expo fingerprinting with the `preview:dev` profile to reuse an existing compatible build when possible, or start a new internal EAS build when native runtime inputs change. All Pylon variants default to the `fingerprint` runtime policy. Native dependencies, config plugins, and patches remain part of OTA compatibility; this development optimization does not relax that boundary.
 
 ### EAS environment variables
 
