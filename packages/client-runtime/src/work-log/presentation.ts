@@ -212,6 +212,13 @@ export function workLogEntryIsLocalCodeSearch(entry: WorkLogPresentationEntry): 
 
 export function toolGroupAction(entry: WorkLogPresentationEntry): ToolGroupAction {
   if (
+    entry.sourceActivityKind === "approval.requested" ||
+    entry.sourceActivityKind === "approval.resolved" ||
+    entry.sourceActivityKind === "provider.approval.respond.failed"
+  ) {
+    return "update";
+  }
+  if (
     entry.requestKind === "file-read" ||
     entry.itemType === "image_view" ||
     entry.viewedImagePath !== undefined ||
