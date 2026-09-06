@@ -15,22 +15,6 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
-## 2026-09-05 — mobile saved-work protection (A3, partial)
-
-The maintainer approved A3 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
-Adopted #9710 (`7839140e5e93d3f401d7eb45b86cf1a234eb3609`) as `3be71f7e54`
-on `upstream/2026-09-05-mobile-storage`, awaiting merge. Failed draft or outbox
-reads now stop overwrites and attachment cleanup. Final flush can retry a failed
-debounced read while preserving both saved drafts and new in-memory edits.
-
-Clean port preserving Pylon's draft fields and environment ownership. Mobile
-only (iOS and Android), all providers/environments; no native dependencies,
-contracts, or web/desktop changes. Both focused files pass (103 tests), as do
-mobile typecheck, targeted lint, and formatting. No simulator/UI was launched.
-
-The cursor is unchanged for this partial selection. Deferred/watch results
-are recorded with #268; no register or watch row changes in this PR.
-
 ## 2026-09-02 — `9b2d04317c68233782e0630464ac86d77d0686f3..beae2147a9487ec47ac992319f2216914b4cb62d`
 
 The maintainer's standing instruction for this batch was to stop escalating
