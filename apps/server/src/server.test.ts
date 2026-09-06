@@ -7162,6 +7162,104 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  for (const subscription of ["thread", "shell"] as const) {
+    it.effect("delivers large raw tool results through the " + subscription + " stream", () =>
+      Effect.gen(function* () {
+        const eventThreadId =
+          subscription === "thread" ? defaultThreadId : ThreadId.make("other-live-thread");
+        const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+        const baseEvent = makeLiveToolActivityEvent(2, "tool.completed");
+        const event: OrchestrationEvent = {
+          ...baseEvent,
+          aggregateId: eventThreadId,
+          payload: {
+            threadId: eventThreadId,
+            activity: {
+              ...baseEvent.payload.activity,
+              summary: "Build complete",
+              payload: {
+                itemType: "command_execution",
+                toolCallId: "call-build",
+                status: "completed",
+                title: "Build complete",
+                data: {
+                  item: {
+                    command: "build",
+                    aggregatedOutput: "Build complete\n" + "x".repeat(9 * 1024 * 1024),
+                  },
+                },
+              },
+            },
+          },
+        };
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              streamDomainEvents: Stream.concat(Stream.make(event), Stream.never),
+            },
+            projectionSnapshotQuery: {
+              getThreadDetailSnapshot: () =>
+                Effect.succeed(Option.some({ snapshotSequence: 1, thread })),
+              getThreadShellById: (threadId) =>
+                Effect.succeed(
+                  Option.some({
+                    ...makeDefaultOrchestrationThreadShell(),
+                    id: threadId,
+                    title: "Build complete",
+                  }),
+                ),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items =
+          subscription === "thread"
+            ? yield* Effect.scoped(
+                withWsRpcClient(wsUrl, (client) =>
+                  client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+                    threadId: defaultThreadId,
+                    requestCompletionMarker: true,
+                  }).pipe(
+                    Stream.takeUntil((item) => item.kind === "synchronized"),
+                    Stream.runCollect,
+                  ),
+                ),
+              )
+            : yield* Effect.scoped(
+                withWsRpcClient(wsUrl, (client) =>
+                  client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+                    requestCompletionMarker: true,
+                  }).pipe(
+                    Stream.takeUntil((item) => item.kind === "synchronized"),
+                    Stream.runCollect,
+                  ),
+                ),
+              );
+
+        assert.equal(items[0]?.kind, "snapshot");
+        const update = items[1];
+        if (subscription === "thread") {
+          assertTrue(update?.kind === "event" && update.event.type === "thread.activity-appended");
+          assert.equal(update.event.sequence, 2);
+          assert.deepEqual(update.event.payload.activity.payload, {
+            itemType: "command_execution",
+            toolCallId: "call-build",
+            status: "completed",
+            title: "Build complete",
+            data: { item: { command: "build", aggregatedOutput: "Build complete" } },
+          });
+        } else {
+          assertTrue(update?.kind === "thread-upserted");
+          assert.equal(update.sequence, 2);
+          assert.equal(update.thread.id, eventThreadId);
+          assert.equal(update.thread.title, "Build complete");
+        }
+        assert.deepEqual(items[2], { kind: "synchronized" });
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
+  }
+
   it.effect("coalesces buffered live tool updates to the latest state", () =>
     Effect.gen(function* () {
       const thread = makeDefaultOrchestrationReadModel().threads[0]!;
