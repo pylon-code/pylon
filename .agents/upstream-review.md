@@ -26,6 +26,12 @@ Only the following 10 upstream commits were selected in this first batch.
 The full cursor stays unchanged; the remaining range is not silently deferred
 or treated as reviewed.
 
+A September 6 UTC refresh reached `b438447f67b6b61bbe6f564d8b78fd90702117c5`:
+four further commits arrived after the selected head. All 10 selected commits
+were unmatched in the original inventory, leaving 451 from that range plus
+these four new commits (455 total) for later assessment. This is a review
+backlog, not a count of changes Pylon must adopt.
+
 | Approved concern              | Upstream PRs and commits                                                                                                                             | Pylon PR |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
 | A1 Claude failures and pauses | #9135 `560afffdea82000d757c98ea79678aee75f8648c`; #8853 `a5bbad910f78cc14eef8baa94fe6f46676f78d5a`; #7165 `940e8233c227a186044078e99e45e1933eb525e4` | #268     |
@@ -36,7 +42,9 @@ or treated as reviewed.
 | A4 relay binary validation    | #9880 `2c301fd0c4fc58c1612be47c3856fa4ad547429d`                                                                                                     | #277     |
 | A4 LAN/Tailscale pairing      | #9882 `60e1b73948debac845c3dc72aac35c9adbd4cd64`                                                                                                     | #278     |
 
-Each implementation PR carries its own adaptations and verification record.
+The implementation records below preserve each PR's adaptations and verification.
+They are consolidated here so independent code PRs do not compete to insert at
+the same ledger location.
 All are awaiting merge at the time of this ledger update. Separate Pylon release
 repairs #271 (temporary signing-keychain password) and #275 (pin the existing
 patched Expo versions for fresh resolution) address publication and CI blockers.
@@ -50,10 +58,138 @@ in the approved first batch. Its original deferral date remains intact.
 Watch list: WATCH-1 is rewritten to stop watching closed upstream issue #5760;
 Pylon #178 still owns the unfixed OpenCode task work. #8097 is open, no longer
 a draft, and unmerged; the existing merge-and-divergence condition remains.
-Owner #114 is updated with this state and the ledger PR reference. WATCH-2 and
+Owner #114 is updated with this state and #279. WATCH-2 and
 WATCH-3 stay **not yet**: #6573 and #7986 remain closed unmerged, no replacement
 landed in their watched paths (only #9129 dead-toolkit cleanup), and both retain
 November 1 revisit floors. No new deferrals or watch entries were added.
+
+## 2026-09-05 — approved Claude reliability follow-ups (A1, partial)
+
+Reviewed against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+The maintainer approved the recommended A1–A4 catch-up batch. This PR completes
+the Claude portion of A1; the cursor stays at `beae2147a9487ec47ac992319f2216914b4cb62d`
+because the 555-commit inventory was only partly assessed and selected.
+
+| Upstream                                           | Decision                                | Pylon reference    | Adaptation and validation                                                                                                                                                                                                   |
+| -------------------------------------------------- | --------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `560afffdea82000d757c98ea79678aee75f8648c` / #9135 | adopted, awaiting merge                 | #268, `742751694b` | Reused the existing SDK and terminal-failure fix.                                                                                                                                                                           |
+| `a5bbad910f78cc14eef8baa94fe6f46676f78d5a` / #8853 | adopted, awaiting merge                 | #268, `f29e17e851` | Show Claude model-fallback notices through Pylon's existing warning events.                                                                                                                                                 |
+| `940e8233c227a186044078e99e45e1933eb525e4` / #7165 | adopted with adaptation, awaiting merge | #268, `1e7ca23109` | Announce rejected usage windows once per turn/window, retain raw telemetry and incarnation/admission metadata. Use the generic model bucket because Pylon has no probed scoped-limit names. Server clock supplies the wait. |
+
+Validation: 96 Claude adapter tests and 81 runtime-ingestion tests pass; server
+typecheck and targeted lint pass. The mobile diff-highlighter test that failed
+on the old PR run passes locally (4 tests); the new CI run must confirm it.
+Existing warnings feed web, desktop, and mobile for local and remote servers.
+No other provider's adapter or Prime recovery changes.
+
+Deferred/watch recheck: DEF-7 remains before its November 1 revisit date.
+DEF-8 is due after Expo 57 adoption and needs a separate split review; it is
+outside this approved first batch. WATCH-1's upstream #5760 issue is now closed,
+while #8097 remains open; its owner #114 needs a corresponding watch rewrite.
+WATCH-2 and WATCH-3 still await replacement work, with November 1 checks.
+The register rows are retained until that separate review records their outcomes.
+
+## 2026-09-05 — Codex quota history (A1, partial)
+
+Approved by the maintainer as part of A1–A4 against upstream
+`f12d39359f0f76a64ff2d77959c5baf821df15be`. Adopted #8897
+(`75ab5ab3fb6ad35117da754644c404a31b2fed84`) as `eaca53d47f` on
+`upstream/2026-09-05-codex-rate-limit`, awaiting PR merge.
+
+Thread read, resume, and rollback now accept `rateLimitExceeded` in Codex
+history. The generator retains the compatibility extension. Kept Pylon's
+account-plan coverage and excluded unrelated upstream async-question fixtures.
+Four schema tests, package typecheck, and targeted lint pass. This changes the
+server's Codex protocol decoder; all clients and connection modes benefit,
+with no Pylon wire-contract or other-provider changes.
+
+The full review cursor is unchanged: this is one selected item from the
+555-commit inventory. Deferred/watch outcomes are recorded with the Claude
+portion of this batch (#268); no register or watch row is changed here.
+
+## 2026-09-05 — thread subscription startup (A2, partial)
+
+The maintainer approved A2 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+Adopted #9521 (`9c9ae3dc0e94a957d9c4a61bb211caf914828054`) as `10a7fc4113`
+on `upstream/2026-09-05-thread-subscription`, awaiting merge. Clean port:
+attach the live consumer immediately before reading the snapshot, preserving
+events emitted during snapshot loading. Applies to all providers and clients,
+including local, remote, relay, and tunnel WebSocket connections.
+
+All 154 server-router tests pass; server typecheck and targeted lint pass.
+The legacy rollback-filter test now waits for the client synchronization receipt
+before publishing live events, so it does not depend on fiber scheduling. The new regression fails deterministically with the old consumer
+startup and passes with the fix, using the synchronized marker rather than sleeps.
+No client contract or Prime admission/recovery change.
+
+The cursor is unchanged for this partial selection. Deferred/watch results
+are recorded with #268; no register or watch row changes in this PR.
+
+## 2026-09-05 — mobile saved-work protection (A3, partial)
+
+The maintainer approved A3 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+Adopted #9710 (`7839140e5e93d3f401d7eb45b86cf1a234eb3609`) as `3be71f7e54`
+on `upstream/2026-09-05-mobile-storage`, awaiting merge. Failed draft or outbox
+reads now stop overwrites and attachment cleanup. Final flush can retry a failed
+debounced read while preserving both saved drafts and new in-memory edits.
+
+Clean port preserving Pylon's draft fields and environment ownership. Mobile
+only (iOS and Android), all providers/environments; no native dependencies,
+contracts, or web/desktop changes. Both focused files pass (103 tests), as do
+mobile typecheck, targeted lint, and formatting. No simulator/UI was launched.
+
+The cursor is unchanged for this partial selection. Deferred/watch results
+are recorded with #268; no register or watch row changes in this PR.
+
+## 2026-09-05 — managed SSH process ownership (A4, partial)
+
+The maintainer approved A4 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+Adopted #9843 (`f33fdc992488e36ccb70cbb71d55e630b5184cbd`, `b1773679e6`)
+and its diagnostic follow-up #10088 (`39802c06117fae0b3da43624b0d54309c5437c72`,
+`cab00ec792`) on `upstream/2026-09-05-ssh-runner`, awaiting merge.
+The installed CLI replaces the shell directly, preserving the recorded PID
+and graceful shutdown. Failed package installs retain npm's actual diagnostic
+and cannot run an executable path printed alongside a failure.
+
+Clean port preserving package selection and Pylon runtime-home/identity rules.
+Affects SSH-managed environments for all providers and their connected clients;
+local, relay, and tunnel launch paths are unchanged. 33 focused runner/tunnel
+tests, SSH typecheck, targeted lint, and formatting pass. Tests cover real owned
+fixture processes, graceful stop/rebind, both npm fallbacks, and seven installer
+outcomes per fallback. Unix fixture tests are skipped on Windows.
+
+The cursor is unchanged for this partial selection. Deferred/watch results
+are recorded with #268; no register or watch row changes in this PR.
+
+## 2026-09-05 — relay client validation (A4, partial)
+
+The maintainer approved A4 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+Adopted #9880 (`2c301fd0c4fc58c1612be47c3856fa4ad547429d`) as `f6eb6d547a`
+on `upstream/2026-09-05-cloudflared-validation`, awaiting merge. Validate the
+downloaded cloudflared executable with `version`; the pinned Windows binary
+rejects `--version`. Clean port affecting relay setup on server/desktop and the
+clients connecting through it, independent of provider. Other modes are unchanged.
+Focused relay tests, shared-package typecheck, lint, and formatting pass.
+
+The cursor is unchanged for this partial selection. Deferred/watch results
+are recorded with #268; no register or watch row changes in this PR.
+
+## 2026-09-05 — LAN and Tailscale pairing (A4, partial)
+
+The maintainer approved A4 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+Adopted #9882 (`60e1b73948debac845c3dc72aac35c9adbd4cd64`) as `c76159b31a`
+on `upstream/2026-09-05-pairing-endpoints`, awaiting merge. Clean port: do not
+advertise a Tailscale interface as LAN, retain network access on Tailscale-only
+hosts, and preserve explicit host overrides. The bootstrap warning now reflects
+an actual local-only fallback. Pylon identity and runtime-home boundaries remain.
+
+Focused exposure tests, desktop typecheck, targeted lint, and formatting pass.
+Applies to desktop-hosted environments and web/mobile pairing over LAN/Tailscale,
+independent of provider; local-only and explicit HTTPS endpoint behavior stay
+covered. No UI layout, protocol, or other launcher changes.
+
+The cursor is unchanged for this partial selection. Deferred/watch results
+are recorded with #268; no register or watch row changes in this PR.
 
 ## 2026-09-04 (targeted) — `beae2147a9487ec47ac992319f2216914b4cb62d..95103905f5`, lifecycle reliability only
 
