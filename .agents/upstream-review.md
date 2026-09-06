@@ -15,6 +15,64 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-06 — approved thread diagnostics and Settings fixes (partial)
+
+The maintainer explicitly selected N1/N2/N3 and requested a larger next batch.
+Upstream was refreshed through `a495385584276d0e568df23646a49ce8b40a4707`.
+The bounded range contains 586 commits: 112 earlier matches/adoptions, three
+newly selected commits below, and 471 still unselected. Two selected changes
+are implemented but not yet merged; selection is not a claim of publication.
+The full review cursor remains unchanged because this is a filtered review.
+
+| Selected concern                                     | Upstream commit                                   | Pylon outcome                                                                                                                                                                      |
+| ---------------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| N1 — retain failed thread-load diagnostics           | #10216 `bd16b86d50c1df49afeb7c0a7568a4908ade4048` | #286 merged as `56c4445aab4d22234b3415709260b7629edbcbc4` after green CI.                                                                                                          |
+| N2 — let Authorized Clients scrolling reach Settings | #10080 `3da9399b1ac4e015f8db29c49718a74c57e62e83` | #287, branch `upstream/2026-09-06-settings-scroll`, head `640fdf9554d50165a836a3fc5e1ed9344e93c1f4`; green CI and integrated browser checks. Draft pending GitHub evidence upload. |
+| N3 — respect reduced motion in shared disclosures    | #10258 `84aebb72f306f17bed680e1241dab9ab8e8df741` | #288, branch `upstream/2026-09-06-reduced-motion`, head `ff0bfe644bf055ce21310f99252d1c489cf77d27`; green CI and integrated browser checks. Draft pending GitHub evidence upload.  |
+
+N1 was manually adapted to Pylon's simpler subscription helper and shared
+thread state. It observes initializer/protocol defects and retains diagnostics
+through connection notifications and buffered events. Pylon adds a deletion
+guard so a late failure cannot resurrect a deleted thread. Rollback capability,
+pagination epochs, watermarks and retry behavior are retained. Existing mobile
+error presentation benefits; this change does not restart providers or introduce
+new web error UI. All 49 focused RPC/thread-state tests, client-runtime and mobile
+typechecks, scoped lint and formatting pass. The combined UI branch also passes
+web typecheck and lint.
+
+The authorized isolated Chromium pass used a synthetic visible workspace with
+providers disabled. For N2, a three-client list trapped the baseline page at
+scroll position 40; the repaired page reaches 212.5. With eleven clients, both
+versions scroll inside the list normally, but only the repair transfers a wheel
+gesture at the bottom to the outer page (40 to 280) and at the top (40 to 0).
+The eight synthetic client credentials were revoked after verification.
+For N3, reduced motion changes the computed transition from height to none;
+normal motion retains the 0.2-second height transition. Keyboard open/close,
+aria-expanded and focus retention pass. Before/after images and short videos
+were captured outside the source tree. The Mac was locked when native GitHub
+upload was attempted, so #287/#288 remain drafts until the evidence is attached.
+The disposable development environment was returned to loopback-only binding.
+
+The preceding approved UI batch was published successfully in Nightly
+`0.0.33-nightly.20260906.123` from `056968e4099bbad88600b0ad5be22e1b5e2b6b85`
+by run 34014742988. Both Mac builds were notarized; the published updater
+manifests and hosted web version were checked. N1/N2/N3 are newer than that
+release and are not claimed shipped in it.
+
+Deferred register: DEF-8 remains due after Expo 57 #171
+(`eff44d0cfa4961b56b77e119b63035a575282a49`) and its September 5 floor.
+Recommend a separate decision and native rebuild for #8694's development-loop
+half, reconciled with #9355, retaining Pylon schemes and production/preview
+fingerprints. Keep native-menu/product/shared-runtime changes separate. DEF-7
+is not yet due: November 1 remains in the future and no newly fetched preview
+workflow change alters its premise.
+
+Watch list: WATCH-1 #8097 remains open/unmerged. WATCH-2 #6573 and WATCH-3 #7986
+remain closed unmerged; #7966 remains closed. No replacement appeared in the
+newly fetched watched paths, and WATCH-2/3 keep their November 1 floors. No
+register row or owner issue changed in this pass. The larger 27-commit candidate
+review is awaiting a separate maintainer selection and is not recorded as adopted.
+
 ## 2026-09-06 — complete the approved UI adoptions
 
 The maintainer approved the remaining isolated browser verification. This closes
