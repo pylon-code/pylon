@@ -3557,8 +3557,7 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         ),
         directoryLayer,
         runtimeRepositoryLayer,
-        NodeServices.layer,
-      );
+      ).pipe(Layer.provideMerge(NodeServices.layer));
       const scope = yield* Scope.make();
       const services = yield* Layer.build(providerLayer).pipe(Scope.provide(scope));
       const provider = yield* ProviderService.ProviderService.pipe(Effect.provide(services));
