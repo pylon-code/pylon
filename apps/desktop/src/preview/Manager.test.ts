@@ -2296,7 +2296,7 @@ describe("PreviewManager", () => {
     withManager((manager) =>
       Effect.gen(function* () {
         const capturePage = vi.fn(() => new Promise<TestCapturedPreviewImage>(() => {}));
-        const wc = makeTestPreviewWebContents(capturePage);
+        const wc = makeTestPreviewWebContents(capturePage) as Electron.WebContents;
         Object.assign(wc, { isDevToolsOpened: () => false });
         Object.assign(wc.debugger, {
           sendCommand: vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -2319,7 +2319,7 @@ describe("PreviewManager", () => {
             return method === "Accessibility.getFullAXTree" ? { nodes: [] } : undefined;
           }),
         });
-        fromId.mockReturnValue(wc);
+        fromId.mockReturnValue(wc as never);
         yield* manager.createTab("tab_1");
         yield* manager.registerWebview("tab_1", 42);
 
@@ -3221,6 +3221,7 @@ describe("PreviewManager", () => {
           },
           navigationHistory: { canGoBack: () => false, canGoForward: () => false },
           setWindowOpenHandler: vi.fn(),
+          setIgnoreMenuShortcuts: vi.fn(),
           debugger: {
             isAttached: () => false,
             attach: vi.fn(),
@@ -3311,6 +3312,7 @@ describe("PreviewManager", () => {
           },
           navigationHistory: { canGoBack: () => false, canGoForward: () => false },
           setWindowOpenHandler: vi.fn(),
+          setIgnoreMenuShortcuts: vi.fn(),
           debugger: {
             isAttached: () => false,
             attach: vi.fn(),

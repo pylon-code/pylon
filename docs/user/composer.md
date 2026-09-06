@@ -86,6 +86,13 @@ readable and T3 Code shows a warning.
 Mobile shows the full saved quote and its comment in sent messages. It does not offer
 **Cite in composer** or navigation to a quote's source.
 
+## Browser preview annotations
+
+On desktop, pick an element in the browser preview to attach an annotation or send it to the
+composer. If its screenshot cannot be captured, Pylon keeps the annotation without the screenshot
+and shows a warning. Capture failures release the composer so you can continue working. Cancelling
+or replacing a pick discards its late capture results.
+
 ## Images and videos in messages
 
 On web, desktop, and mobile, select a link to an image or video to open it inside Pylon.
