@@ -155,7 +155,7 @@ function TaskSummary({
           className={progress.completedSteps >= progress.totalSteps ? "text-success" : undefined}
           data-composer-task-progress="true"
         >
-          {progress.completedSteps}/{progress.totalSteps}
+          {progress.completedSteps}/{progress.totalSteps} complete
         </ComposerBanner.Count>
         {delegatesLabel ? (
           <span
@@ -291,7 +291,6 @@ export const ComposerTasksContent = memo(function ComposerTasksContent({
                     waitingOn={step.status === "waiting" ? step.waitingOn : undefined}
                   />
                 </ComposerBanner.Icon>
-                <span className="sr-only">{TASK_PROGRESS_STATUS_LABEL[step.status]}: </span>
                 <ComposerBanner.Content
                   className={cn(
                     step.status === "completed"
@@ -306,6 +305,9 @@ export const ComposerTasksContent = memo(function ComposerTasksContent({
                   {step.step}
                 </ComposerBanner.Content>
                 <ComposerBanner.Actions>
+                  <span className="text-[10px] text-muted-foreground">
+                    {TASK_PROGRESS_STATUS_LABEL[step.status]}
+                  </span>
                   <span
                     className="w-10 text-right text-[10px] text-muted-foreground/45 tabular-nums"
                     data-composer-task-duration="true"

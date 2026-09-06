@@ -41,7 +41,7 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain("Tasks");
     expect(markup).toContain("Attach task progress");
     expect(markup).not.toContain("·");
-    expect(markup).toContain("1/3");
+    expect(markup).toContain("1/3 complete");
     expect(markup).toContain("Current task: Attach task progress");
     expect(markup).toContain("lucide-list-todo");
     expect(markup).toContain('aria-label="Dismiss tasks for this turn"');
@@ -67,7 +67,7 @@ describe("ComposerTasksBadge", () => {
       />,
     );
 
-    expect(markup).toContain("1/3");
+    expect(markup).toContain("1/3 complete");
     expect(markup).not.toContain("data-composer-shoulder-tab");
   });
 
@@ -114,9 +114,11 @@ describe("ComposerTasksBadge", () => {
     expect(markup).toContain("text-primary");
     expect(markup).toContain("text-muted-foreground/40");
     expect(markup).not.toContain('data-slot="dot-matrix"');
-    expect(markup).toContain("Completed:");
-    expect(markup).toContain("In progress:");
-    expect(markup).toContain("Pending:");
+    // Each row names its state in text, so status never rests on glyph color alone.
+    expect(markup).toContain(">Completed</span>");
+    expect(markup).toContain(">Running</span>");
+    expect(markup).toContain(">Pending</span>");
+    expect(markup).not.toContain('class="sr-only"');
   });
 
   it("does not render an empty task count", () => {

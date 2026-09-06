@@ -44,7 +44,7 @@ function segmentTone(status: TaskProgressStatus, waitingOn?: TaskProgressWaiting
 
 export const TASK_PROGRESS_STATUS_LABEL: Record<TaskProgressStatus, string> = {
   pending: "Pending",
-  inProgress: "In progress",
+  inProgress: "Running",
   waiting: "Waiting",
   completed: "Completed",
 };
