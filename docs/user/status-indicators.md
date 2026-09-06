@@ -22,3 +22,7 @@ green liveness halo. Reduce Motion hides both halos.
 Task lists use `✓` for completed steps, `●` for the current step, and `○` for
 pending or passive waiting steps. A step that is specifically waiting for you
 uses an amber `●`.
+
+On mobile, a thread that cannot load may show **Could not synchronize the
+thread.** This can happen while the environment still shows connected. The
+message remains until Pylon starts another attempt to load that thread.
