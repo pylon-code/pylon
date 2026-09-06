@@ -15,6 +15,14 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-06 — stream and cache static responses without stale HTML (partial source)
+
+Adopts upstream #9669, `27e6cc27fe0f3cff53a44905e40615b7db99c80c`, plus the HTML validator correction from #9799, `ce4712d5b04fb998f79fe132245289191147e5d5`, under the maintainer's standing approval. Complete source patches, PR descriptions, and relevant reviews were read. #9799 is one source commit shared with the separately adopted live-stream fix; its remaining mobile, highlighting, animation, marketing, and CI concerns are not included. The full review cursor remains unchanged.
+
+Static responses stream bounded chunks from one request-scoped handle, using that same handle for metadata. Immutable caching requires both a hashed asset name and membership in the Vite build manifest. Mutable assets can revalidate; HTML always returns the current shell without size/mtime validators, including SPA fallback and conditional HEAD requests. This preserves Pylon authentication, routing, compression, desktop identity, and remote origins. Hosted clients use their hosting layer; the bundled and standalone Pylon servers share this route. No mobile native dependency changes.
+
+Verification: the same-size/same-timestamp HTML regression failed with a stale 304 before the correction. All 174 server routing tests pass after integration, including atomic file replacement, GET/HEAD/304/cancellation handle cleanup, manifest lookalikes, authentication, and live streams. Server and web typechecks, targeted lint, formatting, and diff checks pass. Implementation branch: `upstream/2026-09-06-static-response-caching` based on `origin/pylon` at `1e7ffff246bf6ad4c31236e6b242a91d5c2275b0`.
+
 ## 2026-09-06 — project live updates before applying buffer limits (partial source)
 
 Adopted the live-stream portion of upstream #9799, `ce4712d5b04fb998f79fe132245289191147e5d5`, under the maintainer's standing approval for compatible fixes. The complete upstream patch, PR description, and review context were read. This port changes only the live budget/coalescer, shell stream metadata, and focused WebSocket regression tests. The upstream HTML, mobile outbox, highlighting, animation, marketing, and CI changes are separate concerns and are not claimed as adopted here. The full range cursor remains unchanged.
