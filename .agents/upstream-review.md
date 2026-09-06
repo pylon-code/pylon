@@ -15,26 +15,6 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
-## 2026-09-05 — managed SSH process ownership (A4, partial)
-
-The maintainer approved A4 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
-Adopted #9843 (`f33fdc992488e36ccb70cbb71d55e630b5184cbd`, `b1773679e6`)
-and its diagnostic follow-up #10088 (`39802c06117fae0b3da43624b0d54309c5437c72`,
-`cab00ec792`) on `upstream/2026-09-05-ssh-runner`, awaiting merge.
-The installed CLI replaces the shell directly, preserving the recorded PID
-and graceful shutdown. Failed package installs retain npm's actual diagnostic
-and cannot run an executable path printed alongside a failure.
-
-Clean port preserving package selection and Pylon runtime-home/identity rules.
-Affects SSH-managed environments for all providers and their connected clients;
-local, relay, and tunnel launch paths are unchanged. 33 focused runner/tunnel
-tests, SSH typecheck, targeted lint, and formatting pass. Tests cover real owned
-fixture processes, graceful stop/rebind, both npm fallbacks, and seven installer
-outcomes per fallback. Unix fixture tests are skipped on Windows.
-
-The cursor is unchanged for this partial selection. Deferred/watch results
-are recorded with #268; no register or watch row changes in this PR.
-
 ## 2026-09-02 — `9b2d04317c68233782e0630464ac86d77d0686f3..beae2147a9487ec47ac992319f2216914b4cb62d`
 
 The maintainer's standing instruction for this batch was to stop escalating
