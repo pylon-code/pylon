@@ -13,7 +13,10 @@ import {
   appendCodexArtifactTemplateUsePrompt,
   type CodexArtifactTemplate,
 } from "@t3tools/client-runtime/codex-artifact-templates";
-import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
+import type {
+  CodexFeedbackSubmission,
+  EnvironmentThreadStatus,
+} from "@t3tools/client-runtime/state/threads";
 import { isRollbackActive, type RollbackTarget } from "@t3tools/client-runtime/rollback";
 import { getMobileRollbackStatusPresentation } from "./rollback-status-presentation";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
@@ -94,6 +97,7 @@ import type {
   SessionInteractionPresentationState,
 } from "../../lib/sessionInteractions";
 import { PendingApprovalCard } from "./PendingApprovalCard";
+import { ComposerFeedback } from "./ComposerFeedback";
 import { PendingUserInputCard } from "./PendingUserInputCard";
 import { PendingSessionInteractionCard } from "./PendingSessionInteractionCard";
 import { SessionPresentationSurface } from "./SessionPresentationSurface";
@@ -125,6 +129,8 @@ export interface ThreadDetailScreenProps {
   readonly screenTone: StatusTone;
   readonly connectionError: string | null;
   readonly environmentLabel: string | null;
+  readonly feedbackSubmissions: ReadonlyArray<CodexFeedbackSubmission>;
+  readonly onDismissFeedback: (id: MessageId) => void;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
   readonly sessionAgents: ReadonlyArray<RuntimeSubagent>;
   readonly contextWindow: ContextWindowSnapshot | null;
@@ -966,6 +972,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onScrollToEnd={handleScrollToEnd}
               />
               <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
+                {props.feedbackSubmissions.map((submission) => (
+                  <ComposerFeedback
+                    key={submission.id}
+                    submission={submission}
+                    onDismiss={() => props.onDismissFeedback(submission.id)}
+                  />
+                ))}
                 {hasAboveEditorPresentation ? (
                   <View className="px-4">
                     <SessionPresentationSurface
