@@ -15,6 +15,23 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-05 — LAN and Tailscale pairing (A4, partial)
+
+The maintainer approved A4 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+Adopted #9882 (`60e1b73948debac845c3dc72aac35c9adbd4cd64`) as `c76159b31a`
+on `upstream/2026-09-05-pairing-endpoints`, awaiting merge. Clean port: do not
+advertise a Tailscale interface as LAN, retain network access on Tailscale-only
+hosts, and preserve explicit host overrides. The bootstrap warning now reflects
+an actual local-only fallback. Pylon identity and runtime-home boundaries remain.
+
+Focused exposure tests, desktop typecheck, targeted lint, and formatting pass.
+Applies to desktop-hosted environments and web/mobile pairing over LAN/Tailscale,
+independent of provider; local-only and explicit HTTPS endpoint behavior stay
+covered. No UI layout, protocol, or other launcher changes.
+
+The cursor is unchanged for this partial selection. Deferred/watch results
+are recorded with #268; no register or watch row changes in this PR.
+
 ## 2026-09-02 — `9b2d04317c68233782e0630464ac86d77d0686f3..beae2147a9487ec47ac992319f2216914b4cb62d`
 
 The maintainer's standing instruction for this batch was to stop escalating
