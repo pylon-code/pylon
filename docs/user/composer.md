@@ -44,6 +44,9 @@ the system share options. On Android, use **Save or share video** inside the pre
 On web and desktop, if you reload before a file finishes uploading, the draft keeps the file's name
 and shows **Attach again** next to it. Attach the file again or remove it, then send.
 
+Preview annotations in an unsent web or desktop draft survive a reload, including when you move
+the draft into a new thread to resolve a provider conflict.
+
 On web and desktop, HEIC and HEIF photos are automatically converted to JPEG when you drag them into
 the composer or paste them into a message. On iOS, selecting them from **Photo Library** also
 converts them to JPEG. The 10 MB image limit applies to the converted photo.

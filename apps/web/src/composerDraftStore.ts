@@ -62,6 +62,7 @@ import { ReviewCommentContextSchema, type ReviewCommentContext } from "./reviewC
 const isRuntimeMode = Schema.is(RuntimeMode);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isReviewCommentContext = Schema.is(ReviewCommentContextSchema);
+const isPreviewAnnotationPayload = Schema.is(PreviewAnnotationPayloadSchema);
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
 const COMPOSER_DRAFT_STORAGE_VERSION = 10;
@@ -1941,6 +1942,11 @@ function normalizePersistedDraftsByThreadId(
           return normalized ? [normalized] : [];
         })
       : [];
+    const previewAnnotations = Array.isArray(draftCandidate.previewAnnotations)
+      ? draftCandidate.previewAnnotations
+          .filter(isPreviewAnnotationPayload)
+          .map((annotation) => ({ ...annotation }) as DeepMutable<PreviewAnnotationPayload>)
+      : [];
     const reviewComments = Array.isArray(draftCandidate.reviewComments)
       ? draftCandidate.reviewComments.filter(isReviewCommentContext)
       : [];
@@ -2024,6 +2030,7 @@ function normalizePersistedDraftsByThreadId(
       files.length === 0 &&
       terminalContexts.length === 0 &&
       elementContexts.length === 0 &&
+      previewAnnotations.length === 0 &&
       reviewComments.length === 0 &&
       !hasModelData &&
       providerBindingConflict === undefined &&
@@ -2050,6 +2057,7 @@ function normalizePersistedDraftsByThreadId(
       ...(files.length > 0 ? { files } : {}),
       ...(terminalContexts.length > 0 ? { terminalContexts } : {}),
       ...(elementContexts.length > 0 ? { elementContexts } : {}),
+      ...(previewAnnotations.length > 0 ? { previewAnnotations } : {}),
       ...(reviewComments.length > 0 ? { reviewComments } : {}),
       ...(hasModelData
         ? {

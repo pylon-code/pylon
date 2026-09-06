@@ -75,6 +75,7 @@ import {
   type ComposerImageAttachment,
   composerFileNeedsReattach,
   partializeComposerDraftStoreState,
+  flushComposerDraftStore,
   useComposerDraftStore,
   DraftId,
 } from "./composerDraftStore";
@@ -1648,7 +1649,8 @@ describe("composerDraftStore modelSelection", () => {
     resetComposerDraftStore();
   });
 
-  it("durably blocks a cross-client binding without changing content or explicit routing", () => {
+  it("durably blocks a cross-client binding without changing content or explicit routing", async () => {
+    await useComposerDraftStore.persist.clearStorage();
     const store = useComposerDraftStore.getState();
     const image = makeImage({ id: "binding-image", previewUrl: "data:image/png;base64,AQ==" });
     const file = makeFile("binding-file");
@@ -1691,19 +1693,10 @@ describe("composerDraftStore modelSelection", () => {
     expect(draft?.files.map((entry) => entry.id)).toEqual([file.id]);
     expect(draft?.modelSelectionByProvider[CODEX_INSTANCE]).toEqual(originalSelection);
 
-    const persistApi = useComposerDraftStore.persist as unknown as {
-      getOptions: () => {
-        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
-        merge: (
-          persistedState: unknown,
-          currentState: ReturnType<typeof useComposerDraftStore.getState>,
-        ) => ReturnType<typeof useComposerDraftStore.getState>;
-      };
-    };
-    const options = persistApi.getOptions();
-    const persisted = options.partialize(useComposerDraftStore.getState());
-    const hydrated = options.merge(persisted, useComposerDraftStore.getState());
-    const hydratedDraft = hydrated.getComposerDraft(threadRef);
+    flushComposerDraftStore();
+    resetComposerDraftStore();
+    await useComposerDraftStore.persist.rehydrate();
+    const hydratedDraft = useComposerDraftStore.getState().getComposerDraft(threadRef);
     expect(hydratedDraft?.providerBindingConflict).toEqual(draft?.providerBindingConflict);
     expect(hydratedDraft?.prompt).toBe("keep this prompt");
     expect(hydratedDraft?.images.map((entry) => entry.id)).toEqual([image.id]);
@@ -1734,7 +1727,8 @@ describe("composerDraftStore modelSelection", () => {
     ).toEqual(boundSelection);
   });
 
-  it("atomically transfers a complete blocked composer snapshot with its exact selection", () => {
+  it("atomically transfers a complete blocked composer snapshot with its exact selection", async () => {
+    await useComposerDraftStore.persist.clearStorage();
     const store = useComposerDraftStore.getState();
     const destinationDraftId = DraftId.make("draft-provider-conflict-destination");
     const destinationThreadId = ThreadId.make("thread-provider-conflict-destination");
@@ -1858,21 +1852,12 @@ describe("composerDraftStore modelSelection", () => {
     expect(source?.modelSelectionByProvider[CODEX_INSTANCE]).toBeUndefined();
     expect(source?.modelSelectionByProvider[CLAUDE_AGENT_INSTANCE]).toEqual(boundSelection);
 
-    const persistApi = useComposerDraftStore.persist as unknown as {
-      getOptions: () => {
-        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
-        merge: (
-          persistedState: unknown,
-          currentState: ReturnType<typeof useComposerDraftStore.getState>,
-        ) => ReturnType<typeof useComposerDraftStore.getState>;
-      };
-    };
-    const options = persistApi.getOptions();
-    const hydrated = options.merge(
-      options.partialize(useComposerDraftStore.getState()),
-      useComposerDraftStore.getInitialState(),
-    );
-    const hydratedDestination = hydrated.getComposerDraft(destinationDraftId);
+    flushComposerDraftStore();
+    resetComposerDraftStore();
+    await useComposerDraftStore.persist.rehydrate();
+    const hydratedDestination = useComposerDraftStore
+      .getState()
+      .getComposerDraft(destinationDraftId);
     expect(hydratedDestination?.files).toMatchObject([
       {
         id: file.id,
@@ -2765,6 +2750,50 @@ function createMockStorage() {
 }
 
 describe("composer draft persistence", () => {
+  it("restores annotation-only drafts and ignores malformed saved annotations", async () => {
+    await useComposerDraftStore.persist.clearStorage();
+    const threadId = ThreadId.make("annotation-only-draft");
+    const threadKey = threadKeyFor(threadId, TEST_ENVIRONMENT_ID);
+    const annotation = {
+      id: "saved-preview-annotation",
+      pageUrl: "https://example.com/dashboard",
+      pageTitle: "Dashboard",
+      comment: "Keep the primary action visible.",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: "2026-09-02T10:00:00.000Z",
+    };
+    try {
+      const storage = useComposerDraftStore.persist.getOptions().storage!;
+      storage.setItem(COMPOSER_DRAFT_STORAGE_KEY, {
+        version: 10,
+        state: {
+          draftsByThreadKey: {
+            [threadKey]: {
+              prompt: "",
+              attachments: [],
+              previewAnnotations: [annotation, { ...annotation, pageUrl: 42 }],
+            },
+          },
+          draftThreadsByThreadKey: {},
+          logicalProjectDraftThreadKeyByLogicalProjectKey: {},
+          stickyModelSelectionByProvider: {},
+          stickyActiveProvider: null,
+        },
+      } as never);
+      flushComposerDraftStore();
+      resetComposerDraftStore();
+      await useComposerDraftStore.persist.rehydrate();
+      expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.previewAnnotations).toEqual([annotation]);
+    } finally {
+      await useComposerDraftStore.persist.clearStorage();
+      resetComposerDraftStore();
+    }
+  });
+
   it("defers attachment reads and serialization until typing stops, then restores the last draft", async () => {
     await useComposerDraftStore.persist.clearStorage();
     vi.useFakeTimers();
