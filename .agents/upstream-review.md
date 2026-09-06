@@ -24,8 +24,9 @@ attach the live consumer immediately before reading the snapshot, preserving
 events emitted during snapshot loading. Applies to all providers and clients,
 including local, remote, relay, and tunnel WebSocket connections.
 
-Eight focused subscription/buffering tests pass; server typecheck and targeted
-lint pass. The new regression fails deterministically with the old consumer
+All 154 server-router tests pass; server typecheck and targeted lint pass.
+The legacy rollback-filter test now waits for the client synchronization receipt
+before publishing live events, so it does not depend on fiber scheduling. The new regression fails deterministically with the old consumer
 startup and passes with the fix, using the synchronized marker rather than sleeps.
 No client contract or Prime admission/recovery change.
 

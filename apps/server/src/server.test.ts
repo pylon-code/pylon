@@ -7507,12 +7507,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
         } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
 
+        const readyForLiveEvents = yield* Deferred.make<void>();
         yield* buildAppUnderTest({
           layers: {
             orchestrationEngine: {
               latestSequence: Effect.succeed(3),
               readEvents: () => Stream.empty,
-              streamDomainEvents: Stream.make(rollbackEvent, laterEvent),
+              streamDomainEvents: Stream.fromEffect(Deferred.await(readyForLiveEvents)).pipe(
+                Stream.flatMap(() => Stream.make(rollbackEvent, laterEvent)),
+              ),
             },
           },
         });
@@ -7523,7 +7526,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               threadId: defaultThreadId,
               afterSequence: 3,
               requestCompletionMarker: true,
-            }).pipe(Stream.take(2), Stream.runCollect),
+            }).pipe(
+              Stream.tap((item) =>
+                item.kind === "synchronized"
+                  ? Deferred.succeed(readyForLiveEvents, undefined)
+                  : Effect.void,
+              ),
+              Stream.take(2),
+              Stream.runCollect,
+            ),
           ),
         );
         assert.deepEqual(
