@@ -472,9 +472,20 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const ingestionProjectionSnapshotLayer = Layer.effect(
+      ProjectionSnapshotQuery,
+      Effect.gen(function* () {
+        const query = yield* ProjectionSnapshotQuery;
+        return ProjectionSnapshotQuery.of({
+          ...query,
+          getThreadDetailById: () =>
+            Effect.die("provider runtime ingestion must not hydrate thread detail"),
+        });
+      }),
+    ).pipe(Layer.provide(projectionSnapshotLayer));
     const layer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(orchestrationLayer),
-      Layer.provideMerge(projectionSnapshotLayer),
+      Layer.provideMerge(ingestionProjectionSnapshotLayer),
       // Single shared liveness instance across ingestion (writer), the
       // engine, and the snapshot query (reader).
       Layer.provideMerge(ThreadBackgroundLiveness.layer),
@@ -1724,6 +1735,89 @@ describe("ProviderRuntimeIngestion", () => {
       }),
     ]);
   });
+
+  it.each(["turn.completed", "turn.aborted"] as const)(
+    "finalizes old buffered text on late %s without stopping the newer turn",
+    async (terminalType) => {
+      const harness = await createHarness({
+        serverSettings: { enableLegacyTokenStreaming: false },
+      });
+      const threadId = asThreadId("thread-1");
+      const oldTurnId = asTurnId("old-buffered-turn");
+      const newTurnId = asTurnId("new-active-turn");
+      const base = {
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+      };
+      await harness.emitAndDrain([
+        {
+          ...base,
+          type: "turn.started",
+          eventId: asEventId("old-buffered-started"),
+          turnId: oldTurnId,
+        },
+        {
+          ...base,
+          type: "content.delta",
+          eventId: asEventId("old-buffered-delta"),
+          turnId: oldTurnId,
+          itemId: asItemId("old-buffered-message"),
+          payload: { streamKind: "assistant_text", delta: "Keep the old answer." },
+        },
+      ]);
+      await harness.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("start-new-while-old-finishes"),
+        threadId,
+        message: {
+          messageId: asMessageId("new-turn-prompt"),
+          role: "user",
+          text: "Continue",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: base.createdAt,
+      });
+      harness.setProviderSession({
+        provider: base.provider,
+        status: "running",
+        runtimeMode: "approval-required",
+        threadId,
+        createdAt: base.createdAt,
+        updatedAt: base.createdAt,
+        activeTurnId: newTurnId,
+      });
+      await harness.emitAndDrain([
+        {
+          ...base,
+          type: "turn.started",
+          eventId: asEventId("new-active-started"),
+          turnId: newTurnId,
+        },
+        {
+          ...base,
+          type: terminalType,
+          eventId: asEventId("old-buffered-terminal"),
+          turnId: oldTurnId,
+          payload:
+            terminalType === "turn.completed"
+              ? { state: "completed" }
+              : { reason: "Interrupted by user." },
+        },
+      ]);
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      expect(thread?.session).toMatchObject({ activeTurnId: newTurnId, status: "running" });
+      expect(thread?.messages).toContainEqual(
+        expect.objectContaining({
+          turnId: oldTurnId,
+          text: "Keep the old answer.",
+          streaming: false,
+        }),
+      );
+    },
+  );
 
   it.each([
     { source: "the previous turn", turnId: asTurnId("opencode-stopped-turn") },
@@ -3266,6 +3360,31 @@ describe("ProviderRuntimeIngestion", () => {
     ).toMatchObject({
       implementationThreadId: "thread-implement",
     });
+    const implementedPlan = sourceThreadAfterStart.proposedPlans.find(
+      (entry) => entry.id === sourcePlan.id,
+    );
+    await harness.emitAndDrain([
+      {
+        type: "turn.proposed.completed",
+        eventId: asEventId("evt-plan-source-late-completion"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:01:00.000Z",
+        threadId: sourceThreadId,
+        turnId: sourceTurnId,
+        payload: { planMarkdown: "# Source plan with late details" },
+      },
+    ]);
+    const sourceAfterLateCompletion = (await harness.readModel()).threads.find(
+      (entry) => entry.id === sourceThreadId,
+    );
+    expect(
+      sourceAfterLateCompletion?.proposedPlans.find((entry) => entry.id === sourcePlan.id),
+    ).toMatchObject({
+      planMarkdown: "# Source plan with late details",
+      createdAt: sourcePlan.createdAt,
+      implementedAt: implementedPlan?.implementedAt,
+      implementationThreadId: targetThreadId,
+    });
   });
 
   it("does not mark the source proposed plan implemented for a rejected turn.started event", async () => {
@@ -3696,7 +3815,7 @@ describe("ProviderRuntimeIngestion", () => {
       type: "turn.proposed.delta",
       eventId: asEventId("evt-plan-delta-1"),
       provider: ProviderDriverKind.make("codex"),
-      createdAt: now,
+      createdAt: "",
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-plan-buffer"),
       payload: {
@@ -3707,7 +3826,7 @@ describe("ProviderRuntimeIngestion", () => {
       type: "turn.proposed.delta",
       eventId: asEventId("evt-plan-delta-2"),
       provider: ProviderDriverKind.make("codex"),
-      createdAt: now,
+      createdAt: "",
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-plan-buffer"),
       payload: {
@@ -3737,6 +3856,42 @@ describe("ProviderRuntimeIngestion", () => {
         entry.id === "plan:thread-1:turn:turn-plan-buffer",
     );
     expect(proposedPlan?.planMarkdown).toBe("## Buffered plan\n\n- first\n- second");
+    expect(proposedPlan?.createdAt).toBe(now);
+  });
+
+  it("releases a blank completed plan before a late replacement", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("blank-plan-turn");
+    const base = { provider: ProviderDriverKind.make("codex"), threadId, turnId };
+    const replacementTime = "2026-01-01T00:00:02.000Z";
+    await harness.emitAndDrain([
+      {
+        ...base,
+        type: "turn.proposed.delta",
+        eventId: asEventId("blank-plan-delta"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: { delta: " \n " },
+      },
+      {
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("blank-plan-completed"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        payload: { state: "completed" },
+      },
+      {
+        ...base,
+        type: "turn.proposed.completed",
+        eventId: asEventId("late-plan-completed"),
+        createdAt: replacementTime,
+        payload: { planMarkdown: "# Replacement plan" },
+      },
+    ]);
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.proposedPlans).toEqual([
+      expect.objectContaining({ planMarkdown: "# Replacement plan", createdAt: replacementTime }),
+    ]);
   });
 
   it("buffers assistant deltas with one lifecycle query per event until completion", async () => {
