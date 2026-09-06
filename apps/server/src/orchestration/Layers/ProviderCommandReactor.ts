@@ -1492,10 +1492,13 @@ const make = Effect.gen(function* () {
     const key = turnStartKeyForEvent(event);
     if (yield* hasHandledTurnStartRecently(key)) return;
 
-    const thread = yield* resolveThreadDetail(event.payload.threadId);
+    const thread = yield* resolveThreadShell(event.payload.threadId);
     if (!thread) return;
-    const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
-    if (!message || message.role !== "user") {
+    const turnStart = yield* projectionSnapshotQuery.getTurnStartMessage({
+      threadId: thread.id,
+      messageId: event.payload.messageId,
+    });
+    if (Option.isNone(turnStart) || turnStart.value.message.role !== "user") {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.start.failed",
@@ -1506,6 +1509,8 @@ const make = Effect.gen(function* () {
       });
       return;
     }
+
+    const { message, hasOtherUserMessages } = turnStart.value;
 
     const requestId = event.commandId ?? CommandId.make(`event:${event.eventId}`);
     const admissionRequestedAt =
@@ -1593,9 +1598,7 @@ const make = Effect.gen(function* () {
     const admissionStopToken = admissionStopTokenForRequest(requestId);
     const admissionEffect = Effect.gen(function* () {
       yield* ensureThreadWorktree(thread);
-      const isFirstUserMessageTurn =
-        thread.messages.filter((entry) => entry.role === "user").length === 1;
-      if (isFirstUserMessageTurn) {
+      if (!hasOtherUserMessages) {
         const project = yield* resolveProject(thread.projectId);
         const generationCwd =
           resolveThreadWorkspaceCwd({
