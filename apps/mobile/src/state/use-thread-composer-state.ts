@@ -66,7 +66,7 @@ import {
 } from "../lib/composerImages";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { prepareTurnAttachments, validateDraftFileAttachments } from "../lib/attachmentUpload";
-import { scopedProjectKey, scopedThreadKey } from "../lib/scopedEntities";
+import { scopedThreadKey } from "../lib/scopedEntities";
 import {
   canSendToModelSelection,
   resolveModelSelectionRuntimeMode,
@@ -84,6 +84,7 @@ import {
   ensureComposerDraftsLoaded,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
+  newTaskDraftKey,
   removeComposerDraftAttachment,
   scheduleUnusedComposerAttachmentCleanup,
   setComposerDraftText,
@@ -1423,6 +1424,7 @@ export function useThreadComposerState() {
             params: {
               environmentId: String(queuedMessage.environmentId),
               projectId: String(destination.projectId),
+              draftId: input.draftKey,
             },
           });
         }
@@ -1518,13 +1520,19 @@ export function useThreadComposerState() {
         });
       }
       if (newThreadDestination) {
-        const newThreadDraftKey = `new-task:${scopedProjectKey(
-          queuedMessage.environmentId,
-          newThreadDestination.projectId,
-        )}`;
+        // Its own new-task draft, keyed by the held message so a retried
+        // recovery lands on the same draft instead of minting another.
+        const newThreadDraftKey = newTaskDraftKey(`restored-${queuedMessage.messageId}`);
         actions.push({
           text: "Start a new thread",
           onPress: () => {
+            updateComposerDraftSettings(newThreadDraftKey, {
+              project: {
+                environmentId: queuedMessage.environmentId,
+                projectId: newThreadDestination.projectId,
+                createdAt: queuedMessage.createdAt,
+              },
+            });
             void recover({ draftKey: newThreadDraftKey, startNewThread: true });
           },
         });
