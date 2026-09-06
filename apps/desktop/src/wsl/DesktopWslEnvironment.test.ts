@@ -144,10 +144,11 @@ describe("WSL runtime cache", () => {
   it.each([
     [
       "install",
-      (id: string) => buildWslRuntimeInstallScript("/runtime.tar.gz", id, "b".repeat(64)),
+      (id: string) =>
+        buildWslRuntimeInstallScript("/runtime.tar.gz", id, "b".repeat(64), "pylon-code"),
     ],
-    ["prune", buildWslRuntimePruneScript],
-    ["invalidate", buildWslRuntimeInvalidateScript],
+    ["prune", (id: string) => buildWslRuntimePruneScript(id, "pylon-code")],
+    ["invalidate", (id: string) => buildWslRuntimeInvalidateScript(id, "pylon-code")],
   ] as const)("sanitizes cache ids in the %s script", (_, buildScript) => {
     const runtimeId = "1.2.3/x64; touch /tmp/nope";
     const script = buildScript(runtimeId);
