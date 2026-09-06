@@ -15,6 +15,24 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-05 — Codex quota history (A1, partial)
+
+Approved by the maintainer as part of A1–A4 against upstream
+`f12d39359f0f76a64ff2d77959c5baf821df15be`. Adopted #8897
+(`75ab5ab3fb6ad35117da754644c404a31b2fed84`) as `eaca53d47f` on
+`upstream/2026-09-05-codex-rate-limit`, awaiting PR merge.
+
+Thread read, resume, and rollback now accept `rateLimitExceeded` in Codex
+history. The generator retains the compatibility extension. Kept Pylon's
+account-plan coverage and excluded unrelated upstream async-question fixtures.
+Four schema tests, package typecheck, and targeted lint pass. This changes the
+server's Codex protocol decoder; all clients and connection modes benefit,
+with no Pylon wire-contract or other-provider changes.
+
+The full review cursor is unchanged: this is one selected item from the
+555-commit inventory. Deferred/watch outcomes are recorded with the Claude
+portion of this batch (#268); no register or watch row is changed here.
+
 ## 2026-09-02 — `9b2d04317c68233782e0630464ac86d77d0686f3..beae2147a9487ec47ac992319f2216914b4cb62d`
 
 The maintainer's standing instruction for this batch was to stop escalating
