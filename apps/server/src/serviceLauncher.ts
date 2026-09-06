@@ -81,17 +81,22 @@ async function syncFile(filePath: string): Promise<void> {
   }
 }
 
-// Flushes a directory entry so a rename into it survives power loss. Windows
-// has no directory fsync: the handle opens but sync fails with EPERM, and
-// NTFS journals the rename on its own.
-async function syncDirectory(directory: string): Promise<void> {
-  const handle = await NodeFSP.open(directory, "r");
+// Flushes a directory entry after a rename. Windows can reject either opening
+// or flushing directory handles; preserve permission failures on other hosts.
+export async function syncDirectory(
+  directory: string,
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher bundles only Node built-ins; tests inject the platform.
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
   try {
-    await handle.sync();
+    const handle = await NodeFSP.open(directory, "r");
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
-  } finally {
-    await handle.close();
+    if (platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
   }
 }
 

@@ -1,10 +1,15 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import { afterEach, describe, expect, vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
-import { Launcher, readServiceState, writeServiceState } from "./serviceLauncher.ts";
+import { Launcher, readServiceState, syncDirectory, writeServiceState } from "./serviceLauncher.ts";
 import {
   compareExactServiceVersions,
   decodeServiceState,
@@ -12,6 +17,11 @@ import {
   SERVICE_LAUNCHER_PROTOCOL,
   SERVICE_STOP_MARKER_FILE,
 } from "./cloud/serviceProtocol.ts";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
 
 it("accepts only exact semantic versions", () => {
   for (const version of ["0.0.0", "1.2.3", "1.2.3-alpha.1", "1.2.3-0", "1.2.3+001"]) {
@@ -289,4 +299,48 @@ if (context.update?.status === "pending") {
       assert.isFalse(yield* fs.exists(path.join(root, "runtime", "db-backup", updateId)));
     }),
   );
+});
+
+describe("directory durability", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  for (const stage of ["open", "sync"] as const) {
+    for (const platform of ["win32", "darwin", "linux"] as const) {
+      it(`handles ${stage} EPERM only on Windows (${platform})`, async () => {
+        const denied = Object.assign(new Error("directory handle denied"), { code: "EPERM" });
+        const open = vi.mocked(NodeFSP.open);
+        if (stage === "open") {
+          open.mockRejectedValueOnce(denied);
+        } else {
+          const directory = await NodeFSP.mkdtemp(
+            NodePath.join(NodeOS.tmpdir(), "pylon-directory-sync-"),
+          );
+          const fixture = NodePath.join(directory, "handle-fixture");
+          await NodeFSP.writeFile(fixture, "");
+          const handle = await NodeFSP.open(fixture, "r+");
+          const close = vi.spyOn(handle, "close");
+          vi.spyOn(handle, "sync").mockRejectedValueOnce(denied);
+          open.mockResolvedValueOnce(handle);
+          try {
+            const operation = syncDirectory(directory, platform);
+            if (platform === "win32") await expect(operation).resolves.toBeUndefined();
+            else await expect(operation).rejects.toBe(denied);
+            expect(close).toHaveBeenCalledOnce();
+          } finally {
+            await NodeFSP.rm(directory, { recursive: true });
+          }
+          return;
+        }
+        const operation = syncDirectory("unused-directory", platform);
+        if (platform === "win32") await expect(operation).resolves.toBeUndefined();
+        else await expect(operation).rejects.toBe(denied);
+      });
+    }
+  }
+
+  it("preserves other directory failures on Windows", async () => {
+    const failure = Object.assign(new Error("storage failed"), { code: "EIO" });
+    vi.mocked(NodeFSP.open).mockRejectedValueOnce(failure);
+    await expect(syncDirectory("unused-directory", "win32")).rejects.toBe(failure);
+  });
 });

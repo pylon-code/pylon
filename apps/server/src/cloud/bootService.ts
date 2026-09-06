@@ -524,9 +524,12 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         yield* (yield* fs.open(tempPath, { flag: "r+" })).sync;
         yield* fs.rename(tempPath, filePath);
         // Windows has no directory fsync (EPERM); NTFS journals the rename.
-        yield* (yield* fs.open(directory, { flag: "r" })).sync.pipe(
+        yield* fs.open(directory, { flag: "r" }).pipe(
+          Effect.flatMap((handle) => handle.sync),
           Effect.catchIf(
-            (error) => (error.reason.cause as NodeJS.ErrnoException | undefined)?.code === "EPERM",
+            (error) =>
+              platform === "win32" &&
+              (error.reason.cause as NodeJS.ErrnoException | undefined)?.code === "EPERM",
             () => Effect.void,
           ),
         );
