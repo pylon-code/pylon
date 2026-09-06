@@ -91,6 +91,10 @@ The endpoint you pick in the panel applies to that share only. The saved default
 decides which endpoint a row offers first, and that preference is stored by endpoint type, so
 choosing the local LAN endpoint survives normal IP address changes when you move between networks.
 
+After an app restart, the desktop app replaces its previous
+local credential. Old local desktop entries are removed from **Authorized clients**
+automatically. Paired phones, browsers, and remote desktop clients keep their access.
+
 When no user default is saved, the app uses the built-in LAN endpoint for pairing links when
 available. You can set another endpoint as the default from the expanded endpoint list.
 
