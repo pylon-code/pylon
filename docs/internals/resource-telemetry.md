@@ -81,10 +81,12 @@ line on stdout:
 - `setStreaming`
 - `sampleNow`
 - `readHistory`
+- `processTable`
 - `shutdown`
 - `hello`
 - `snapshot`
 - `historyChunk`
+- `processTableResult`
 - `error`
 
 The protocol version is defined by
@@ -125,6 +127,19 @@ can have coarser platform resolution.
 
 The process list is emitted in depth-first tree order so renderer collapse and
 expansion preserves complete subtrees.
+
+### Terminal process polling
+
+The terminal manager requests one PID, parent PID, and bounded process-name table
+per polling pass and shares it across all active terminals. The native monitor
+uses a separate `sysinfo::System` for these requests so they cannot reset the CPU
+measurement baseline used by resource snapshots.
+
+If the sidecar is unavailable, the manager falls back to one platform process
+query per pass. Consecutive native failures double the polling interval up to
+60 seconds, even when the fallback query succeeds. A successful native request
+restores the normal interval. With no running terminals, it makes no process
+table request.
 
 ### Native history and streaming
 

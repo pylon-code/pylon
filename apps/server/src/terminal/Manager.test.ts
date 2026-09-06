@@ -10,6 +10,9 @@ import {
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Data from "effect/Data";
+import * as Clock from "effect/Clock";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
@@ -29,6 +32,7 @@ import { expect } from "vite-plus/test";
 
 import * as ProcessRunner from "../processRunner.ts";
 import * as TerminalManager from "./Manager.ts";
+import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
 import * as PtyAdapter from "./PtyAdapter.ts";
 
 class WaitForConditionError extends Data.TaggedError("WaitForConditionError")<{
@@ -210,6 +214,7 @@ interface CreateManagerOptions {
     readonly childCommand: string | null;
     readonly processIds: ReadonlyArray<number>;
   }>;
+  processTable?: NativeTelemetryClient.NativeTelemetryClient["Service"]["processTable"];
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
@@ -252,6 +257,7 @@ const createManager = (
         ...(options.subprocessInspector !== undefined
           ? { subprocessInspector: options.subprocessInspector }
           : {}),
+        ...(options.processTable !== undefined ? { processTable: options.processTable } : {}),
         ...(options.subprocessPollIntervalMs !== undefined
           ? { subprocessPollIntervalMs: options.subprocessPollIntervalMs }
           : {}),
@@ -1174,6 +1180,81 @@ it.layer(
       expect(activityEvents.length).toBeGreaterThan(0);
       expect(activityEvents.every((event) => event.hasRunningSubprocess === true)).toBe(true);
     }),
+  );
+
+  it.effect.each(["linux", "win32"] as const)(
+    "shares native snapshots and backs off fallback polling on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const ticks = yield* Queue.unbounded<number>();
+        const events = yield* Queue.unbounded<TerminalEvent>();
+        const fallbackCalls: number[] = [];
+        let nativeReady = false;
+        const processRunner: ProcessRunner.ProcessRunner["Service"] = {
+          run: () =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => {
+                fallbackCalls.push(now);
+                return {
+                  stdout:
+                    platform === "win32"
+                      ? "100|9000|vim.exe\n101|9001|ping.exe"
+                      : "100 9000 vim\n101 9001 ping",
+                  stderr: "",
+                  code: ChildProcessSpawner.ExitCode(0),
+                  timedOut: false,
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                  stdoutInvalidUtf8: false,
+                  stderrInvalidUtf8: false,
+                };
+              }),
+            ),
+        };
+        const { manager } = yield* createManager(5, {
+          subprocessPollIntervalMs: 20,
+          processKillGraceMs: 0,
+          processTable: Effect.gen(function* () {
+            yield* Queue.offer(ticks, yield* Clock.currentTimeMillis);
+            if (!nativeReady)
+              return yield* new NativeTelemetryClient.NativeTelemetryUnavailable({
+                reason: "test sidecar unavailable",
+              });
+            return [
+              { pid: 100, ppid: 9000, name: "vim" },
+              { pid: 101, ppid: 9001, name: "ping" },
+            ];
+          }),
+        }).pipe(
+          Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
+          Effect.provide(withHostPlatform(platform)),
+        );
+        const unsubscribe = yield* manager.subscribe((event) => Queue.offer(events, event));
+        yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+        yield* manager.open(openInput());
+        yield* manager.open(openInput({ threadId: "thread-2" }));
+        const observedTicks: number[] = [];
+        for (const delay of [20, 40, 80, 160]) {
+          yield* TestClock.adjust(delay);
+          observedTicks.push(yield* Queue.take(ticks));
+        }
+        expect(observedTicks).toEqual([20, 60, 140, 300]);
+        expect(fallbackCalls).toEqual(observedTicks);
+        const activity = yield* Stream.fromQueue(events).pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "activity" && event.hasRunningSubprocess && event.label === "vim",
+          ),
+          Stream.runHead,
+        );
+        expect(Option.isSome(activity)).toBe(true);
+        nativeReady = true;
+        yield* TestClock.adjust(320);
+        expect(yield* Queue.take(ticks)).toBe(620);
+        yield* TestClock.adjust(20);
+        expect(yield* Queue.take(ticks)).toBe(640);
+        expect(fallbackCalls).toEqual([20, 60, 140, 300]);
+      }).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("caps persisted history to configured line limit", () =>
