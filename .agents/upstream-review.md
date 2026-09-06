@@ -15,6 +15,70 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-06 — approved unused-helper cleanup (partial range)
+
+The maintainer authorized compatible upstream adoption in larger batches and routine Pylon adaptations. This batch adopts 49 reviewed commits from the range ending at `223ff4490f764a74ff911589e97b9bbcd595fee8`. The full cursor stays at `beae2147a9487ec47ac992319f2216914b4cb62d`: the 614-commit range has not all been reviewed.
+
+Complete patches, upstream PR descriptions and review comments were checked against current Pylon callers. These changes remove unused helpers and redundant implementation assertions, keep module internals private, and move retained scenarios onto public APIs. Active behavior, Pylon identity, native bindings, provider recovery, state schemas, and connection protocols remain intact. The Tailscale diagnostic classifier is referenced by a Pylon comment but has no external runtime caller; its structured public diagnostic type remains available to dev sharing.
+
+Outcome: integrated on `upstream/2026-09-06-unused-helper-cleanup` from `origin/pylon` at `c145a1be76cfe577faceae16cc5e68d70d52278e`. Each source commit is cited by its cherry-pick trailer. Focused verification passed: 738 tests across 58 files; shared, client-runtime, Codex app-server, Tailscale, server, web, mobile, desktop and relay package typechecks; lint and formatting on 98 surviving changed files. No visible layout or motion changes require screenshots. No device build or deployment is claimed.
+
+| Upstream concern                                                              | Source commit                              | Decision                      |
+| ----------------------------------------------------------------------------- | ------------------------------------------ | ----------------------------- |
+| test(web): keep provider field readers private (#9952)                        | `07d2497db89014ccd71aa077fc809aff47e4af91` | Adopted on the cleanup branch |
+| test(client-runtime): keep scoped key implementation private (#9955)          | `f530d7b618c12332774c0d79d3747c468369e648` | Adopted on the cleanup branch |
+| chore(mobile): remove obsolete widget wiring script (#9960)                   | `2759ef05bb1cccc55fb2ac747bf8769de8d745e1` | Adopted on the cleanup branch |
+| test(server): remove Azure permissions constant snapshot (#9973)              | `32142cff186c607c8cae644927cee8d6c9cba757` | Adopted on the cleanup branch |
+| refactor(shared): remove unused viewport formatters (#9970)                   | `1568b3fd083e198a08bb12353820c1ef99fb3420` | Adopted on the cleanup branch |
+| refactor(mobile): remove unused provider option summary (#9971)               | `c1e279eca52e02ee3fb9c8d133057a30526f282c` | Adopted on the cleanup branch |
+| refactor(client-runtime): remove unused connection phase message (#9972)      | `1782a2af44a7630f184a05dbcf788e6121da2554` | Adopted on the cleanup branch |
+| refactor(mobile): remove unused font size steppers (#9975)                    | `5fe29c89456c151529a63ddcbf132b4c518f1838` | Adopted on the cleanup branch |
+| test(server): cover thread lookup through command invariants (#9978)          | `b3f8dd979af2bb089f94e6f1006ebbb2cf748db4` | Adopted on the cleanup branch |
+| refactor(web): remove unused pull request state label (#9984)                 | `ea0487cc9adf9f51c865fe39128102afc532bcfc` | Adopted on the cleanup branch |
+| refactor(shared): remove unused mention path serializer (#9990)               | `c6410d37d7ff1bdb65b38f0e9c30da392a4de804` | Adopted on the cleanup branch |
+| refactor(web): test the live usage column builder (#9993)                     | `487d1766caba52579f07a3e5ebc6f276227e4382` | Adopted on the cleanup branch |
+| refactor(web): remove unused aspect ratio reconciler (#9994)                  | `c7e93f520bbd1ba4b795a5fb1aad14778aa1d047` | Adopted on the cleanup branch |
+| test(relay): keep the stage slug helper private (#9998)                       | `ac93fbfad01ecd99f818d9964463afb6c35a8f4a` | Adopted on the cleanup branch |
+| refactor(mobile): keep project selection helper private (#9999)               | `1e24b43d3f6eea6333a3c8da6946eb614d00a662` | Adopted on the cleanup branch |
+| refactor(mobile): keep review default ID helper private (#10000)              | `1c59d3b72cbddefa186ce18bea5cd7e6e0ae4874` | Adopted on the cleanup branch |
+| refactor(mobile): remove unused native style constants (#10001)               | `3382b26c4f29bcbc709edf135c5486b7f1e0e211` | Adopted on the cleanup branch |
+| refactor(mobile): test terminal palettes through public theme API (#10002)    | `393d1ffc9ee52696e4b5f226a956e9d4c65b2f6a` | Adopted on the cleanup branch |
+| refactor(mobile): remove unused file tree walkers (#10003)                    | `8d48a3134f4d789f54128ccbb65919812ffc7921` | Adopted on the cleanup branch |
+| refactor(shared): keep persisted settings helpers private (#10004)            | `1584076d7651278863f7ee90f5bf70c2aba981b3` | Adopted on the cleanup branch |
+| test(mobile): remove mocked UUID shape assertions (#10006)                    | `4e5e17fd9e2454a7b828a19f0b46e48cde0c7a90` | Adopted on the cleanup branch |
+| refactor(mobile): test final connection status presentation (#10007)          | `1449deca0afb98a422ea54b0d0fbed56da9f9f8f` | Adopted on the cleanup branch |
+| test(web): keep pull request menu items private (#10016)                      | `4e59b06b84fdfa36f78b4fc9079dff88b4ff3dc4` | Adopted on the cleanup branch |
+| refactor(web): remove unused desktop update visibility helper (#10014)        | `93d4dfa2064dc4a598a3e66543c3b90ffb138609` | Adopted on the cleanup branch |
+| refactor(web): remove obsolete provider update helpers (#10015)               | `c9b76e6f5d382fb83caafe419f75ead87a3dbabb` | Adopted on the cleanup branch |
+| refactor(web): remove unused terminal context preview formatter (#10009)      | `b7fc81dea2b7c963c34a365b82644ce963df19a2` | Adopted on the cleanup branch |
+| refactor(shared): remove unused Clerk hostname predicate (#10008)             | `cb58dfd6453171a88183fc7bf1587bae6929c0e4` | Adopted on the cleanup branch |
+| refactor(tailscale): keep package internals private (#10011)                  | `1d58f2ecc4b2f6cea9897dcf46734af6210d053e` | Adopted on the cleanup branch |
+| refactor(mobile): remove unused awareness relay URL normalizer (#10029)       | `37bf4e6ec4f18fb94e7ec04436a947d14642a5b6` | Adopted on the cleanup branch |
+| refactor(shared): keep search ranking comparator private (#10031)             | `86f079964b9c3d2a087907d2ef8273c3dbcb960b` | Adopted on the cleanup branch |
+| refactor(server): keep telemetry identity errors private (#10032)             | `68aa7aa8305e9dfc0d98543f607d88bd37fb66e2` | Adopted on the cleanup branch |
+| refactor(web): remove unused xterm link range helpers (#10040)                | `07fb04dc63694876b531a7bb5492a72b8282009d` | Adopted on the cleanup branch |
+| refactor(mobile): remove obsolete review list builder (#10039)                | `c059d09b9b585d0c9562527e338e2f95cd2220f0` | Adopted on the cleanup branch |
+| test(server): remove duplicate VCS error constructor checks (#10042)          | `a21c0d724684fe3e1775014fa0dad14e483c8315` | Adopted on the cleanup branch |
+| refactor(web): remove unused sidebar menu action (#10044)                     | `5a4287cd63aefef93c0fd15fe79f63a2f2657211` | Adopted on the cleanup branch |
+| refactor(web): test live Ghostty link resolution directly (#10041)            | `6615d3d70ba399c4b274d17f19487d94afac17ed` | Adopted on the cleanup branch |
+| refactor(web): remove unused preview thread reset helper (#10049)             | `91ba05e870603b6bc0649e33973f73d86cbf58c3` | Adopted on the cleanup branch |
+| refactor(desktop): remove test-only error predicates (#10047)                 | `56a2f42b8ce27f5deefaa85a02ae9c1d3b61f309` | Adopted on the cleanup branch |
+| refactor(mobile): keep review reset hashing private (#10048)                  | `c2aff911c37f94558ab273ca3d44bb4854d01714` | Adopted on the cleanup branch |
+| test(web): remove AppRoot element order snapshot (#10052)                     | `a98dad77e15ef37d7fd6fc21e73434527a1fb21d` | Adopted on the cleanup branch |
+| refactor(codex): keep app-server client internals private (#10035)            | `62e4ae400555e62a42d5cb401d744ba6dd0b401b` | Adopted on the cleanup branch |
+| refactor(server): simplify native telemetry error internals (#10057)          | `45f5a5ffb3257d510f249b14c36a514beff2868a` | Adopted on the cleanup branch |
+| refactor(mobile): remove write-only terminal font cache (#10058)              | `5b7f6bcfbcd5f150a67f323e0ec5aeb70b3c4009` | Adopted on the cleanup branch |
+| test(server): cover CLI runner detection through command suggestions (#10066) | `0acf05f4f561b873853587f8629ca691b18a613a` | Adopted on the cleanup branch |
+| refactor(mobile): remove unused cloud relay URL normalizer (#10068)           | `ee150e178be5e0484a588a8fe7ad98fd6b858973` | Adopted on the cleanup branch |
+| refactor(web): keep pending action labels private (#10075)                    | `688e5948046e14be7f2bfd48d1c91b7e94d79267` | Adopted on the cleanup branch |
+| refactor(mobile): remove unused pairing redaction wrapper (#10147)            | `6a8f4d3b8f1c73df33fb6ac3f1ff89e38b4cf633` | Adopted on the cleanup branch |
+| refactor(client-runtime): remove unused relay token waiter (#10151)           | `29c3a54a4e64cbfcb42a6545e9c66482e3549522` | Adopted on the cleanup branch |
+| test(web): drop sidebar artwork styling snapshots (#10152)                    | `a324cabc04019be14e8b66ec983fabf510ae2b2e` | Adopted on the cleanup branch |
+
+Two deletions are deferred because Pylon still uses their implementations: #9956 depends on the persistent changed-files tree, and #9989 depends on replacement terminal-link targeting. Their helpers and tests stay in Pylon; DEF-11 and DEF-12 record concrete revisit conditions.
+
+Existing register review: DEF-8 is due following Expo 57 and its September 5 floor; its native dev-loop adoption remains separate and must preserve Pylon fingerprints and schemes. DEF-7 is not due before November 1, and no preview-workflow change alters that condition. WATCH-1 #8097 remains open/unmerged; WATCH-2 #6573 and WATCH-3 #7986/#7966 remain closed without an adopted replacement. No existing watch row or owner issue changes in this batch.
+
 ## 2026-09-06 — approved 25-fix reliability batch (partial range)
 
 The maintainer approved B1–B14 together and authorized routine Pylon adaptations. Preserve important Pylon product decisions; a material reversal requires a separate decision. The bounded upstream head remains `a495385584276d0e568df23646a49ce8b40a4707`. Of its 586 commits, 112 were earlier matches/adoptions, three were selected as N1–N3, and 25 are selected here. The remaining 446 are unselected candidates, not a count of required missing fixes. The full review cursor is unchanged.
@@ -3581,6 +3645,9 @@ the outcome. See Phase 2.5 of the `review-t3-upstream` skill.
 | ----- | ----------------------------------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | DEF-7 | `33b650a5b` / `#8243` — anonymous macOS preview DMG downloads           | 2026-08-27  | Either premise changes. (a) Pylon decides to distribute unsigned preview builds publicly — an external tester programme, or a contributor who cannot use `gh run download`. (b) Upstream lifts the same-repo restriction or drops the `contents: write` publish job: check with `git log --oneline <cursor>..t3code-upstream/main -- .github/workflows/desktop-macos-preview.yml` and read any hit touching the `if:` guards or job permissions. Not before 2026-11-01 — neither premise moves on a weekly timescale, and this should not be re-litigated every review.                                                                                                    | Adopted as `#111`, then reverted by `#113` the same day. The port was sound and its four review findings were fixed; the feature does not earn its cost here. Fork PRs cannot trigger it, `gh run download` covers the headless case, and Pylon Nightly covers merged builds — leaving one maintainer-only use against 210 lines of race-prone YAML, a `contents: write` token on a PR-triggered workflow, a publicly hosted unsigned binary, and a Releases widget on a repository that otherwise has none. If revived, start from `#111` plus the fixes in `9d112329e`, not from upstream. |
 | DEF-8 | `1f8ed54ad` / `#8694` — mobile dev-client reload and Metro startup cost | 2026-08-29  | `#171` (Expo SDK 57) has merged: `git log --oneline origin/pylon --grep "Expo SDK 57"` returns a commit. Then split it: the dev-loop half (`--clear` removal, dev `appVersion` runtime policy, uniwind 1.11 plus its patch, hot-swappable atom runtime, fast-refresh hooks, docs) and the product half (ControlPill long-press with the `@react-native-menu/menu` native patch, `home-thread-navigation`, `remote-environment-projections`, and the `client-runtime` `connection/registry.ts` scope change that also affects web). Drop upstream's `AGENTS.md` and `test-t3-mobile` skill hunks; keep the `pylon-code-*` schemes in `package.json`. Not before 2026-09-05. | Its lockfile was generated on Expo 57 and RN 0.86 and only verified there; on `pylon` today it conflicts on `pnpm-workspace.yaml` (4.25.2 versus the 4.26.2 screens patch), `apps/mobile/package.json` scheme identity, the lock, and Pylon-owned docs. Both halves need a native rebuild. Reviewed 2026-08-29; not a fit to land ahead of the SDK upgrade it was built on.                                                                                                                                                                                                                  |
+
+| DEF-11 | `eae770b125553275e1ccfe4aebd88df28e818aed` / #9956 — remove changed-files preview helpers | 2026-09-06 | Revisit when #9821 or an equivalent persistent changed-files tree is adopted. Check imports of `changedFilesPresentation` in `apps/web/src/components/ChatView.tsx` and `apps/web/src/components/chat/ChangedFilesTree.tsx`; delete only after no live caller remains. | Pylon still uses these helpers for its current changed-files UI. Removing them now breaks live callers. |
+| DEF-12 | `aca2afc0b5400e4cf88c42d59b214240833ed9cd` / #9989 — remove loopback preview predicate | 2026-09-06 | Revisit when #9339 or an equivalent terminal-link target selector replaces the call in `openTerminalLinkInPreview`. Check `rg isPreviewableUrl apps packages` before removal. | Pylon still uses the predicate to decide which terminal URLs open in the preview. |
 
 ## Upstream watch list
 
