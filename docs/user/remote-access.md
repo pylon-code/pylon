@@ -67,6 +67,24 @@ shell actions when the environment is remote or its location is still being reso
 a remote browser from opening a file manager on an unattended server. Integrated preview, browser,
 and copy-path actions remain available when supported.
 
+## Balance New Threads Across Machines
+
+When a project is grouped across several connected environments, Pylon can choose a machine for
+each new thread. Auto balance is off by default. On web and desktop, turn it on in
+**Settings** → **Connections** → **Load balancing**.
+
+Each machine starts at **Normal**. Choose **Prefer** to favor it when it has CPU and memory
+available, **Less often** to reduce its share, or **Manual only** to exclude it from automatic
+selection. These are preferences, not fixed traffic percentages, and each client saves its own.
+
+A machine is only chosen when it is connected, has the project, and can run the selected provider:
+the provider must be installed, enabled, signed in, and available there. The composer checks those
+machines when it picks a draft's environment, then keeps that choice. Choose **Auto balance** again
+to check current resources, or choose a specific machine to override it. Choosing a branch or
+worktree also keeps the draft on that machine. Existing threads stay where they started. If
+resource checks fail or every eligible machine is busy, choose a machine yourself to continue.
+The mobile app keeps its manual environment selection.
+
 ## Enabling Network Access
 
 There are three ways to reach your server from another device: expose the desktop app's backend,
