@@ -36,6 +36,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import { it as effectIt } from "@effect/vitest";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -124,7 +125,10 @@ async function waitFor(
 
 describe("ProviderCommandReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderCommandReactor | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | ProviderCommandReactor
+    | ProjectionSnapshotQuery
+    | SqlClient.SqlClient,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -615,7 +619,7 @@ describe("ProviderCommandReactor", () => {
         input?.clock === undefined ? Layer.empty : Layer.succeed(Clock.Clock, input.clock),
       ),
     );
-    runtime = ManagedRuntime.make(layer);
+    runtime = ManagedRuntime.make(layer.pipe(Layer.provideMerge(SqlitePersistenceMemory)));
 
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
@@ -930,9 +934,14 @@ describe("ProviderCommandReactor", () => {
   effectIt.effect("retains a turn dispatched immediately after start until activation", () =>
     Effect.gen(function* () {
       const activation = yield* Deferred.make<void>();
+      const sent = yield* Deferred.make<void>();
       const started = yield* Deferred.make<ProviderSession>();
       const harness = yield* Effect.promise(() =>
         createHarness({
+          sendTurnEffect: () =>
+            Deferred.succeed(sent, undefined).pipe(
+              Effect.as({ threadId: ThreadId.make("thread-1"), turnId: asTurnId("turn-1") }),
+            ),
           serverActivation: Deferred.await(activation),
           startSessionEffect: (session) =>
             Deferred.succeed(started, session).pipe(Effect.as(session)),
@@ -957,6 +966,7 @@ describe("ProviderCommandReactor", () => {
 
       yield* Deferred.succeed(activation, undefined);
       const session = yield* Deferred.await(started);
+      yield* Deferred.await(sent);
       yield* Effect.promise(() => harness.drain());
       expect(session.threadId).toBe(ThreadId.make("thread-1"));
       expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
@@ -968,10 +978,15 @@ describe("ProviderCommandReactor", () => {
 
   effectIt.effect("starts a turn and generates its title without loading old message bodies", () =>
     Effect.gen(function* () {
+      const sent = yield* Deferred.make<void>();
       const started = yield* Deferred.make<void>();
       const titleGenerated = yield* Deferred.make<void>();
       const harness = yield* Effect.promise(() =>
         createHarness({
+          sendTurnEffect: () =>
+            Deferred.succeed(sent, undefined).pipe(
+              Effect.as({ threadId: ThreadId.make("thread-1"), turnId: asTurnId("turn-1") }),
+            ),
           unreadableHistory: true,
           startSessionEffect: (session) =>
             Deferred.succeed(started, undefined).pipe(Effect.as(session)),
@@ -997,6 +1012,7 @@ describe("ProviderCommandReactor", () => {
       });
       yield* Deferred.await(started);
       yield* Deferred.await(titleGenerated);
+      yield* Deferred.await(sent);
       yield* Effect.promise(() => harness.drain());
 
       expect(harness.sendTurn).toHaveBeenCalledWith(

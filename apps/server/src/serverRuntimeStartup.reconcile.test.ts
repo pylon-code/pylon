@@ -326,6 +326,9 @@ it.effect("runs restart adoption before taking the orphan inventory", () => {
     }),
     Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
       readEvents: () => Stream.empty,
+      readThreadEvents: () => Stream.empty,
+      getThreadReplayStats: () => Effect.die("unused"),
+      subscribeDomainEvents: Effect.succeed(Stream.empty),
       dispatch: () => Effect.die("recovered thread must not be orphaned"),
       streamDomainEvents: Stream.empty,
       latestSequence: Effect.succeed(0),
