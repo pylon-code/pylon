@@ -15,32 +15,6 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
-## 2026-09-05 — approved Claude reliability follow-ups (A1, partial)
-
-Reviewed against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
-The maintainer approved the recommended A1–A4 catch-up batch. This PR completes
-the Claude portion of A1; the cursor stays at `beae2147a9487ec47ac992319f2216914b4cb62d`
-because the 555-commit inventory was only partly assessed and selected.
-
-| Upstream                                           | Decision                                | Pylon reference    | Adaptation and validation                                                                                                                                                                                                   |
-| -------------------------------------------------- | --------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `560afffdea82000d757c98ea79678aee75f8648c` / #9135 | adopted, awaiting merge                 | #268, `742751694b` | Reused the existing SDK and terminal-failure fix.                                                                                                                                                                           |
-| `a5bbad910f78cc14eef8baa94fe6f46676f78d5a` / #8853 | adopted, awaiting merge                 | #268, `f29e17e851` | Show Claude model-fallback notices through Pylon's existing warning events.                                                                                                                                                 |
-| `940e8233c227a186044078e99e45e1933eb525e4` / #7165 | adopted with adaptation, awaiting merge | #268, `1e7ca23109` | Announce rejected usage windows once per turn/window, retain raw telemetry and incarnation/admission metadata. Use the generic model bucket because Pylon has no probed scoped-limit names. Server clock supplies the wait. |
-
-Validation: 96 Claude adapter tests and 81 runtime-ingestion tests pass; server
-typecheck and targeted lint pass. The mobile diff-highlighter test that failed
-on the old PR run passes locally (4 tests); the new CI run must confirm it.
-Existing warnings feed web, desktop, and mobile for local and remote servers.
-No other provider's adapter or Prime recovery changes.
-
-Deferred/watch recheck: DEF-7 remains before its November 1 revisit date.
-DEF-8 is due after Expo 57 adoption and needs a separate split review; it is
-outside this approved first batch. WATCH-1's upstream #5760 issue is now closed,
-while #8097 remains open; its owner #114 needs a corresponding watch rewrite.
-WATCH-2 and WATCH-3 still await replacement work, with November 1 checks.
-The register rows are retained until that separate review records their outcomes.
-
 ## 2026-09-04 (targeted) — `beae2147a9487ec47ac992319f2216914b4cb62d..95103905f5`, lifecycle reliability only
 
 **Cursor deliberately not advanced.** This was a targeted review, not a full
