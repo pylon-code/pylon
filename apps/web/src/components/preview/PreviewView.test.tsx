@@ -558,8 +558,11 @@ describe("PreviewView navigation", () => {
       screenshot: null,
       createdAt: "2026-07-27T00:00:00.000Z",
     };
-    const sent = Promise.withResolvers<void>();
-    const onSendAnnotation = vi.fn(() => sent.resolve());
+    let markSent!: () => void;
+    const sent = new Promise<void>((resolve) => {
+      markSent = resolve;
+    });
+    const onSendAnnotation = vi.fn(() => markSent());
     mocks.pickElement.mockResolvedValue({ annotation, submission: "send", screenshotFailed: true });
 
     renderToStaticMarkup(
@@ -572,7 +575,7 @@ describe("PreviewView navigation", () => {
     );
     mocks.toggleAnnotation?.();
 
-    await sent.promise;
+    await sent;
     expect(onSendAnnotation).toHaveBeenCalledWith(annotation, null);
     // A null screenshot alone looks like a comment-only pick; the flag is what
     // separates "no crop requested" from "crop lost to a timeout".
