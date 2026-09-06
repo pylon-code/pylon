@@ -2659,7 +2659,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         const opened = Option.getOrThrow(yield* Fiber.join(openedFiber));
         NodeAssert.ok(opened.type === "request.opened");
         NodeAssert.equal(opened.payload.requestType, "command_execution_approval");
-        NodeAssert.equal(opened.payload.detail, permission.replaceAll("_", " "));
+        NodeAssert.equal(
+          opened.payload.detail,
+          `${permission.replaceAll("_", " ")}\n\nAllow for workspace also permits matching requests in other OpenCode sessions in this workspace.`,
+        );
         NodeAssert.deepEqual(
           opened.payload.options?.map((option) => option.label),
           ["Allow once", "Allow for workspace", "Deny"],
@@ -5762,6 +5765,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         { content: "Fix OpenCode", status: "in_progress", priority: "high" },
         { content: "Run tests", status: "pending", priority: "medium" },
         { content: "Old task", status: "cancelled", priority: "low" },
+        { content: "Unknown task", status: "future-status", priority: "low" },
       ];
       const todoEvent = {
         id: "evt-todos",
@@ -5770,6 +5774,15 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       } satisfies OpenCodeEvent;
       runtimeMock.state.subscribedEvents = [
         startProgress.promise,
+        { ...todoEvent, id: "evt-duplicate-todos" },
+        {
+          ...todoEvent,
+          id: "evt-child-todos",
+          properties: {
+            sessionID: "child-session",
+            todos: [{ content: "Child task", status: "pending", priority: "low" }],
+          },
+        },
         ...["todowrite", "bash"].map(
           (tool) =>
             ({
@@ -5832,6 +5845,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         { step: "Read files", status: "completed" },
         { step: "Fix OpenCode", status: "inProgress" },
         { step: "Run tests", status: "pending" },
+        { step: "Unknown task", status: "pending" },
       ]);
       const tools = events.filter((event) => event.type === "item.completed");
       NodeAssert.equal(tools[0]?.payload.itemType, "dynamic_tool_call");

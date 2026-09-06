@@ -1663,6 +1663,27 @@ describe("ProviderRuntimeIngestion", () => {
       turnId: stoppedTurnId,
       payload: { reason: "Interrupted by user." },
     });
+    await harness.drain();
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("opencode-next-request"),
+      threadId,
+      message: {
+        messageId: asMessageId("opencode-next-message"),
+        role: "user",
+        text: "Start the next turn.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: base.createdAt,
+    });
+    harness.emit({
+      ...base,
+      type: "session.state.changed",
+      eventId: asEventId("opencode-next-starting"),
+      payload: { state: "starting" },
+    });
     harness.emit({
       ...base,
       type: "turn.started",
@@ -1691,7 +1712,7 @@ describe("ProviderRuntimeIngestion", () => {
     const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
     expect(thread?.session).toMatchObject({ status: "running", activeTurnId: nextTurnId });
     expect(thread?.latestTurn).toMatchObject({ turnId: nextTurnId, state: "running" });
-    expect(thread?.messages).toEqual([
+    expect(thread?.messages.filter((message) => message.role === "assistant")).toEqual([
       expect.objectContaining({
         turnId: nextTurnId,
         text: "The next turn is running.",

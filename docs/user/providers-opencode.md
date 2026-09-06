@@ -41,7 +41,8 @@ If a connection error prevents the reply, the approval stays available so you ca
 ## Progress
 
 Pylon shows OpenCode's response text and tool results while work runs. The web and desktop apps
-also show its task-list progress. A task-list update does not require approval.
+also show its task-list progress in the Tasks tab, turn summary, and sidebar working line.
+Cancelled steps disappear from the list. A task-list update does not require approval.
 
 If the OpenCode connection closes unexpectedly, Pylon shows an error. Send another prompt to
 reconnect to the same OpenCode session.

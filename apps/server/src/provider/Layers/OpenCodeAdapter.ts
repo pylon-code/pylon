@@ -58,6 +58,8 @@ import {
 } from "../opencodeRuntime.ts";
 import * as Option from "effect/Option";
 
+const encodePlanFingerprint = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
 const PROVIDER = ProviderDriverKind.make("opencode");
 
 /**
@@ -344,6 +346,7 @@ interface OpenCodeSessionContext {
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
+  lastPlanFingerprint: string | undefined;
   cancellation: OpenCodeCancellation | undefined;
   interruptedTurnId: TurnId | undefined;
   reconcileIdleStatus: boolean;
@@ -1681,14 +1684,13 @@ export function makeOpenCodeAdapter(
         type: "request.opened",
         payload: {
           requestType: mapPermissionToRequestType(request.permission),
-          detail,
+          detail: `${detail}\n\nAllow for workspace also permits matching requests in other OpenCode sessions in this workspace.`,
           args: request.metadata,
           options: [
             { decision: "accept", label: "Allow once" },
             {
               decision: "acceptForSession",
               label: "Allow for workspace",
-              warning: "Applies to matching requests in other OpenCode sessions in this workspace.",
             },
             { decision: "decline", label: "Deny" },
           ],
@@ -2426,29 +2428,30 @@ export function makeOpenCodeAdapter(
 
         case "todo.updated": {
           if (turnId === undefined) break;
+          const plan = event.properties.todos
+            .filter((todo) => todo.status !== "cancelled")
+            .map((todo) => ({
+              step: trimText(todo.content) ?? "Task",
+              status:
+                todo.status === "completed"
+                  ? ("completed" as const)
+                  : todo.status === "in_progress"
+                    ? ("inProgress" as const)
+                    : ("pending" as const),
+            }));
+          const fingerprint = encodePlanFingerprint([turnId, plan]);
           const base = yield* buildEventBase({
             threadId: context.session.threadId,
             turnId,
             raw: event,
           });
           // Session-wide task updates must not reopen progress after a turn ends.
-          if (context.activeTurnId !== turnId) break;
+          if (context.activeTurnId !== turnId || context.lastPlanFingerprint === fingerprint) break;
+          context.lastPlanFingerprint = fingerprint;
           emitUnsafe(context.sessionIncarnationId, {
             ...base,
             type: "turn.plan.updated",
-            payload: {
-              plan: event.properties.todos
-                .filter((todo) => todo.status !== "cancelled")
-                .map((todo) => ({
-                  step: trimText(todo.content) ?? "Task",
-                  status:
-                    todo.status === "completed"
-                      ? "completed"
-                      : todo.status === "in_progress"
-                        ? "inProgress"
-                        : "pending",
-                })),
-            },
+            payload: { plan },
           });
           break;
         }
@@ -2889,6 +2892,7 @@ export function makeOpenCodeAdapter(
           activeTurnId: undefined,
           activeAgent: undefined,
           activeVariant: undefined,
+          lastPlanFingerprint: undefined,
           cancellation: undefined,
           interruptedTurnId: undefined,
           reconcileIdleStatus: false,
