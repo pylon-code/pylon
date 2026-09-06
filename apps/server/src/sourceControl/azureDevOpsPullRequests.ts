@@ -38,6 +38,7 @@ const AzureDevOpsPullRequestSchema = Schema.Struct({
   sourceRefName: TrimmedNonEmptyString,
   targetRefName: TrimmedNonEmptyString,
   status: Schema.String,
+  isDraft: Schema.optional(Schema.Boolean),
   creationDate: Schema.optional(Schema.OptionFromNullOr(Schema.DateTimeUtcFromString)),
   closedDate: Schema.optional(Schema.OptionFromNullOr(Schema.DateTimeUtcFromString)),
   _links: Schema.optional(

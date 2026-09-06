@@ -65,6 +65,7 @@ describe("GitHubCli.layer", () => {
               baseRefName: "main",
               headRefName: "feature/pr-threads",
               state: "OPEN",
+              isDraft: true,
               mergedAt: null,
               updatedAt: "2026-08-24T12:34:56Z",
               isCrossRepository: true,

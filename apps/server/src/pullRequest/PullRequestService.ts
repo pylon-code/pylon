@@ -2290,6 +2290,7 @@ export const make = Effect.gen(function* () {
     title: detail.title,
     url: detail.url,
     state: detail.state,
+    ...(detail.isDraft === true ? { isDraft: true } : {}),
     headBranch: detail.headBranch,
     baseBranch: detail.baseBranch,
     closedAt: detail.closedAt,

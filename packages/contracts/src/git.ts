@@ -198,6 +198,8 @@ const VcsStatusChangeRequest = Schema.Struct({
   baseRef: TrimmedNonEmptyStringSchema,
   headRef: TrimmedNonEmptyStringSchema,
   state: VcsStatusChangeRequestState,
+  /** Optional for compatibility with older servers and providers. */
+  isDraft: Schema.optional(Schema.Boolean),
   /**
    * Last provider-side activity (ISO), including comments and metadata edits.
    * This is not the time a change request closed or merged. Optional for old
