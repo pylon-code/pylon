@@ -598,7 +598,21 @@ export function PullRequestDetailPanel({
     () =>
       resolvedCoreDetail === null || sharedSummary === null || sharedSummary === resolvedCoreDetail
         ? resolvedCoreDetail
-        : { ...resolvedCoreDetail, ...sharedSummary },
+        : {
+            ...resolvedCoreDetail,
+            ...sharedSummary,
+            closedAt:
+              sharedSummary.closedAt === undefined
+                ? resolvedCoreDetail.closedAt
+                : sharedSummary.closedAt,
+            mergedAt:
+              sharedSummary.mergedAt === undefined
+                ? resolvedCoreDetail.mergedAt
+                : sharedSummary.mergedAt,
+            // A summary may come from an older server that does not report draft state. Keep the
+            // detail's required value instead of making the complete detail shape partial.
+            isDraft: sharedSummary.isDraft ?? resolvedCoreDetail.isDraft,
+          },
     [resolvedCoreDetail, sharedSummary],
   );
   const activity = activityQuery.data;

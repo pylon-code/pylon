@@ -1257,8 +1257,11 @@ export const make = Effect.gen(function* () {
               title: changeRequest.title,
               url: changeRequest.url,
               state: changeRequest.state,
+              ...(changeRequest.isDraft === true ? { isDraft: true } : {}),
               headBranch: changeRequest.headBranch,
               baseBranch: changeRequest.baseBranch,
+              closedAt: changeRequest.closedAt ?? null,
+              mergedAt: changeRequest.mergedAt ?? null,
               updatedAt: changeRequest.updatedAt,
             }),
           ),
@@ -2289,6 +2292,8 @@ export const make = Effect.gen(function* () {
     state: detail.state,
     headBranch: detail.headBranch,
     baseBranch: detail.baseBranch,
+    closedAt: detail.closedAt,
+    mergedAt: detail.mergedAt,
     updatedAt: detail.updatedAt,
   });
   const shouldReplaceHeldSummary = (key: string, next: PullRequestSummary) => {
