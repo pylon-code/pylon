@@ -49,6 +49,7 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
@@ -120,6 +121,13 @@ const RECORDING_SOURCE_MEASURE_TIMEOUT_MS = 2_000;
 const RECORDING_SOURCE_WARM_TIMEOUT_MS = 2_000;
 const PICTURE_IN_PICTURE_FRAME_INTERVAL_MS = Math.ceil(1_000 / 12);
 const PICTURE_IN_PICTURE_JPEG_QUALITY = 80;
+/**
+ * Cold guests can reject capturePage with UnknownVizError or never settle it.
+ * Bound each attempt so snapshots release control even when Chromium stalls.
+ */
+const CAPTURE_PAGE_RETRY_ATTEMPTS = 3;
+const CAPTURE_PAGE_RETRY_DELAY_MS = 120;
+const CAPTURE_PAGE_ATTEMPT_TIMEOUT_MS = 1_000;
 const PICTURE_IN_PICTURE_INITIAL_WIDTH = 480;
 const PICTURE_IN_PICTURE_INITIAL_HEIGHT = 320;
 const PICTURE_IN_PICTURE_MIN_WIDTH = 240;
@@ -311,13 +319,24 @@ const normalizeCaptureRect = (value: unknown): PreviewAnnotationRect | null => {
   };
 };
 
+/** `capturePage` never settles when the guest's compositor is wedged. */
+const ANNOTATION_SCREENSHOT_TIMEOUT = "5 seconds";
+
+/**
+ * Crops the guest for a picked annotation. A stalled `capturePage` resolves to
+ * `null` after the timeout: the annotation is still sendable without its
+ * screenshot, and the pick session must settle either way.
+ */
 const captureAnnotationScreenshot = (
   tabId: string,
   wc: Electron.WebContents,
   cropRect: PreviewAnnotationRect | null,
 ): Effect.Effect<PreviewAnnotationPayload["screenshot"], PreviewManagerError> =>
   Effect.tryPromise({
-    try: () =>
+    // The unused abort signal is what makes this interruptible, and therefore
+    // what lets the timeout below fire. Drop the parameter and a stalled
+    // capture strands the pick session again.
+    try: (_signal) =>
       wc.capturePage(
         cropRect
           ? {
@@ -336,7 +355,7 @@ const captureAnnotationScreenshot = (
         cause,
       }),
   }).pipe(
-    Effect.map((image) => {
+    Effect.map((image): PreviewAnnotationPayload["screenshot"] => {
       const size = image.getSize();
       return {
         dataUrl: image.toDataURL(),
@@ -345,6 +364,15 @@ const captureAnnotationScreenshot = (
         cropRect: cropRect ?? { x: 0, y: 0, width: size.width, height: size.height },
       };
     }),
+    Effect.timeoutOption(ANNOTATION_SCREENSHOT_TIMEOUT),
+    Effect.flatMap((screenshot) =>
+      Option.isSome(screenshot)
+        ? Effect.succeed(screenshot.value)
+        : Effect.logWarning("preview annotation screenshot timed out").pipe(
+            Effect.annotateLogs({ tabId, webContentsId: wc.id }),
+            Effect.as(null),
+          ),
+    ),
   );
 
 const findZoomStep = (current: number): number => {
@@ -440,22 +468,6 @@ interface ExpectedAgentInput {
   readonly signal: PreviewInputSignal;
   readonly expiresAt: number;
 }
-
-const APP_FORWARDED_SHORTCUTS: ReadonlyArray<{
-  key: string;
-  meta: boolean;
-  shift: boolean;
-  control: boolean;
-}> = Object.freeze([
-  // mod+shift+J → preview.toggle
-  { key: "j", meta: true, shift: true, control: false },
-  // mod+K → command palette
-  { key: "k", meta: true, shift: false, control: false },
-  // mod+, → settings (macOS convention)
-  { key: ",", meta: true, shift: false, control: false },
-  // mod+W → close tab/panel
-  { key: "w", meta: true, shift: false, control: false },
-]);
 
 /**
  * Protocols a preview page may open in a real popup window.
@@ -631,6 +643,42 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       try: evaluate,
       catch: (cause) => new PreviewOperationError({ ...errorContext, cause }),
     });
+  const capturePageWithRetry = Effect.fn("PreviewManager.capturePageWithRetry")(function* (
+    errorContext: PreviewOperationContext,
+    tabId: string,
+    wc: Electron.WebContents,
+  ) {
+    const requireCurrentGuest = Effect.gen(function* () {
+      const tabs = yield* SynchronizedRef.get(tabsRef);
+      if (wc.isDestroyed() || tabs.get(tabId)?.webContentsId !== wc.id) {
+        return yield* new PreviewWebContentsNotFoundError({ tabId, webContentsId: wc.id });
+      }
+    });
+    const capture = Effect.gen(function* () {
+      // Check after the retry delay, and again before accepting its result.
+      yield* requireCurrentGuest;
+      const image = yield* Effect.tryPromise({
+        // An abort-signal parameter makes a stalled promise interruptible.
+        try: (_signal) => wc.capturePage(),
+        catch: (cause) => new PreviewOperationError({ ...errorContext, cause }),
+      }).pipe(
+        Effect.timeout(CAPTURE_PAGE_ATTEMPT_TIMEOUT_MS),
+        Effect.catchTags({
+          TimeoutError: (cause) =>
+            Effect.fail(new PreviewOperationError({ ...errorContext, cause })),
+        }),
+      );
+      yield* requireCurrentGuest;
+      return image;
+    });
+    return yield* capture.pipe(
+      Effect.retry({
+        times: CAPTURE_PAGE_RETRY_ATTEMPTS - 1,
+        schedule: Schedule.spaced(CAPTURE_PAGE_RETRY_DELAY_MS),
+        while: isPreviewOperationError,
+      }),
+    );
+  });
   const currentIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const currentMillis = Clock.currentTimeMillis;
   const encodeJson = (errorContext: PreviewOperationContext, value: unknown) =>
@@ -1448,16 +1496,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     }
   });
 
-  const isAppShortcut = (input: Electron.Input): boolean =>
-    input.type === "keyDown" &&
-    APP_FORWARDED_SHORTCUTS.some(
-      (shortcut) =>
-        shortcut.key.toLowerCase() === input.key.toLowerCase() &&
-        shortcut.meta === input.meta &&
-        shortcut.shift === input.shift &&
-        shortcut.control === input.control,
-    );
-
   const computeNavStatus = (wc: Electron.WebContents): PreviewNavStatus => {
     const url = wc.getURL();
     const title = wc.getTitle();
@@ -1732,30 +1770,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         }).pipe(Effect.ignore),
       );
     };
-    const forwardShortcut = Effect.fn("PreviewManager.forwardShortcut")(function* (
-      event: Electron.Event,
-      input: Electron.Input,
-    ) {
-      const mainWindow = yield* Ref.get(mainWindowRef);
-      if (!isAppShortcut(input) || Option.isNone(mainWindow) || mainWindow.value.isDestroyed()) {
-        return;
-      }
-      event.preventDefault();
-      mainWindow.value.webContents.sendInputEvent({
-        type: "keyDown",
-        keyCode: input.key,
-        modifiers: [
-          ...(input.meta ? (["meta"] as const) : []),
-          ...(input.shift ? (["shift"] as const) : []),
-          ...(input.control ? (["control"] as const) : []),
-          ...(input.alt ? (["alt"] as const) : []),
-        ],
-      });
-    });
     // A popup opens with Electron's default handler, so the page inside it could
     // otherwise spawn native windows without limit. Nothing in an OAuth flow
     // opens a second popup, so the chain stops at the first one.
     const windowCreated = (window: Electron.BrowserWindow): void => {
+      window.webContents.setIgnoreMenuShortcuts(true);
       window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     };
     const beforeInput = (event: Electron.Event, input: Electron.Input): void => {
@@ -1768,7 +1787,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         );
         return;
       }
-      runFork(forwardShortcut(event, input));
     };
     yield* Scope.addFinalizer(
       scope,
@@ -1791,6 +1809,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
     const install = Effect.fn("PreviewManager.installWebContentsListeners")(function* () {
       yield* attempt({ operation: "attachListeners", tabId, webContentsId: wc.id }, () => {
+        // Preview input belongs to the page, including keys injected through CDP.
+        // Never let it invoke the host application's menu accelerators.
+        wc.setIgnoreMenuShortcuts(true);
         wc.on("did-start-navigation", navigationStarted);
         wc.on("did-navigate", syncNavigation);
         wc.on("did-navigate-in-page", syncInPageNavigation);
@@ -2307,30 +2328,52 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const annotationTheme = yield* Ref.get(annotationThemeRef);
     return yield* Effect.callback<PreviewAnnotationSubmissionResult | null, PreviewManagerError>(
       (resume) => {
+        // Declared first so cleanup can check slot ownership by identity
+        // without a type cycle through the cancel effect it builds.
+        const session: PickSession = { cancel: Effect.suspend(() => cancelPickSession()) };
         const cleanup = Effect.fn("PreviewManager.cleanupPickElement")(function* () {
           yield* attempt({ operation: "pickElement.cleanup", tabId, webContentsId: wc.id }, () => {
             wc.ipc.removeListener(ELEMENT_PICKED_CHANNEL, onMessage);
             wc.off("destroyed", onDestroyed);
             wc.off("did-start-navigation", onNavigated);
           }).pipe(Effect.ignore);
+          // Only drop the slot while it is still ours. A newer session may
+          // already have swapped itself in before cancelling this one.
           yield* Ref.update(pickSessionsRef, (sessions) =>
-            replaceMap(sessions, (copy) => {
-              copy.delete(tabId);
-            }),
+            sessions.get(tabId) === session
+              ? replaceMap(sessions, (copy) => {
+                  copy.delete(tabId);
+                })
+              : sessions,
           );
+        });
+        // Every exit from this session runs through `claimSettle`, so the
+        // renderer's `pickElement` promise resolves exactly once. The previous
+        // identity check let a cancelled or replaced session return without
+        // resuming, which left the composer waiting forever.
+        let settled = false;
+        const claimSettle = (): boolean => {
+          if (settled) return false;
+          settled = true;
+          return true;
+        };
+        const finishPick = Effect.fn("PreviewManager.finishPickElement")(function* (
+          payload: PreviewAnnotationSubmissionResult | null,
+        ) {
+          yield* cleanup();
+          resume(Effect.succeed(payload));
         });
         const settlePick = Effect.fn("PreviewManager.settlePickElement")(function* (
           payload: PreviewAnnotationSubmissionResult | null,
         ) {
-          const active = (yield* Ref.get(pickSessionsRef)).get(tabId);
-          if (!active || active.cancel !== cancel) return;
-          yield* cleanup();
-          resume(Effect.succeed(payload));
+          if (!claimSettle()) return;
+          yield* finishPick(payload);
         });
         const settle = (payload: PreviewAnnotationSubmissionResult | null) => {
           runFork(settlePick(payload));
         };
         const cancelPickSession = Effect.fn("PreviewManager.cancelPickSession")(function* () {
+          if (!claimSettle()) return;
           yield* cleanup();
           const tabs = yield* SynchronizedRef.get(tabsRef);
           const activeTab = tabs.get(tabId);
@@ -2349,7 +2392,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           }
           resume(Effect.succeed(null));
         });
-        const cancel = cancelPickSession();
         const onMessage = (_event: Electron.IpcMainEvent, ...args: unknown[]): void => {
           const payload = args[0];
           if (!isPreviewAnnotationPayload(payload)) {
@@ -2360,19 +2402,32 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           const submission = args[2] === "send" ? "send" : "attach";
           runFork(
             captureAnnotationScreenshot(tabId, wc, cropRect).pipe(
-              Effect.matchEffect({
-                onFailure: () => Effect.sync(() => settle({ annotation: payload, submission })),
-                onSuccess: (screenshot) =>
-                  Effect.sync(() => settle({ annotation: { ...payload, screenshot }, submission })),
+              // The renderer cannot tell a dropped crop from a comment-only
+              // pick by the null alone, so a failed or timed-out capture is
+              // flagged on the result.
+              Effect.match({
+                onFailure: (): PreviewAnnotationSubmissionResult => ({
+                  annotation: payload,
+                  submission,
+                  screenshotFailed: true,
+                }),
+                onSuccess: (screenshot): PreviewAnnotationSubmissionResult =>
+                  screenshot === null
+                    ? { annotation: payload, submission, screenshotFailed: true }
+                    : { annotation: { ...payload, screenshot }, submission },
               }),
-              Effect.ensuring(
-                attempt(
+              Effect.flatMap((result) => {
+                // A capture that outlives its session must not touch the
+                // overlay: the preload tears down on the captured signal, and
+                // by now it may be running a newer pick.
+                if (!claimSettle()) return Effect.void;
+                return attempt(
                   { operation: "pickElement.captureComplete", tabId, webContentsId: wc.id },
                   () => {
                     if (!wc.isDestroyed()) wc.send(ANNOTATION_CAPTURED_CHANNEL);
                   },
-                ).pipe(Effect.ignore),
-              ),
+                ).pipe(Effect.ignore, Effect.andThen(finishPick(result)));
+              }),
             ),
           );
         };
@@ -2386,6 +2441,21 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           if (isMainFrame) settle(null);
         };
         const registerPickElement = Effect.fn("PreviewManager.registerPickElement")(function* () {
+          // Two picks on one tab can overlap. Swap this session in and cancel
+          // the previous holder in one step, so no third pick can slip into an
+          // empty slot in between and the session we push out still resumes
+          // its renderer.
+          const replaced = yield* Ref.modify(pickSessionsRef, (sessions) => [
+            sessions.get(tabId) ?? null,
+            replaceMap(sessions, (copy) => {
+              copy.set(tabId, session);
+            }),
+          ]);
+          if (replaced) yield* replaced.cancel;
+          // A newer pick may have cancelled this session while the previous
+          // one was torn down. Cleanup already ran, so attaching listeners now
+          // would leak them and start an overlay nobody is waiting on.
+          if (settled) return;
           yield* attempt({ operation: "pickElement.register", tabId, webContentsId: wc.id }, () => {
             wc.ipc.on(ELEMENT_PICKED_CHANNEL, onMessage);
             wc.once("destroyed", onDestroyed);
@@ -2393,21 +2463,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             if (!wc.isFocused()) wc.focus();
             wc.send(START_PICK_CHANNEL, annotationTheme);
           });
-          yield* Ref.update(pickSessionsRef, (sessions) =>
-            replaceMap(sessions, (copy) => {
-              copy.set(tabId, { cancel });
-            }),
-          );
         });
         runFork(
           registerPickElement().pipe(
             Effect.catch((error: PreviewManagerError) => {
+              if (!claimSettle()) return Effect.void;
               resume(Effect.fail(error));
               return cleanup();
             }),
           ),
         );
-        return cancel;
+        return session.cancel;
       },
     );
   });
@@ -2555,13 +2621,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const [createdAt, millis, image] = yield* Effect.all([
       currentIso,
       currentMillis,
-      attemptPromise(
+      capturePageWithRetry(
         {
           operation: "captureScreenshot.capturePage",
           tabId,
           webContentsId: wc.id,
         },
-        () => wc.capturePage(),
+        tabId,
+        wc,
       ),
     ]);
     const id = `browser-screenshot-${artifactSiteSlug(wc.getURL())}-${millis.toString(36)}`;
@@ -3345,13 +3412,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       );
       const [accessibility, sourceImage, diagnostics, timelines] = yield* Effect.all([
         send("Accessibility.getFullAXTree"),
-        attemptPromise(
+        capturePageWithRetry(
           {
             operation: "automationSnapshot.capturePage",
             tabId,
             webContentsId: wc.id,
           },
-          () => wc.capturePage(),
+          tabId,
+          wc,
         ),
         Ref.get(diagnosticsRef),
         Ref.get(actionTimelineRef),
