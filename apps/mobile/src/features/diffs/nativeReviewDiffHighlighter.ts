@@ -189,10 +189,6 @@ const NATIVE_REVIEW_DIFF_LANGUAGES = [
 let nativeHighlighterPromise: Promise<NativeReviewDiffHighlighterHandle> | null = null;
 let javascriptHighlighterPromise: Promise<NativeReviewDiffHighlighterHandle> | null = null;
 
-function waitForNextFrame(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
-
 function normalizeTokens(
   tokenLines: ReadonlyArray<ReadonlyArray<{ content: string; color?: string; fontStyle?: number }>>,
 ): ReadonlyArray<ReadonlyArray<NativeReviewDiffToken>> {

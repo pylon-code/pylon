@@ -6,9 +6,7 @@ import {
   foldSubagentActivities,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
-  isAgentAttributedToolActivity,
   isSessionAgentMessageDeliveryUnknown,
-  isSubagentActivityKind,
   supportsSessionAgentCancel,
   supportsSessionAgentMessage,
 } from "./subagentRuntime.ts";
