@@ -87,6 +87,7 @@ minimumReleaseAgeExclude:
   - expo-updates@57.0.19
   - expo@57.0.18
   - expo-widgets@57.0.15
+  - "@anthropic-ai/claude-agent-sdk@0.3.260"
 
 overrides:
   # Fresh release installs must resolve the versions our native patches target.
