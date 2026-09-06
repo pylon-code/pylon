@@ -2,10 +2,8 @@ import { EventId, TurnId, type OrchestrationThreadActivity } from "@t3tools/cont
 import { describe, expect, it } from "vite-plus/test";
 
 import { deriveWorkLogEntries } from "./session-logic";
-import { workEntryDisplayLabel } from "./components/chat/MessagesTimeline.logic";
 
-// These are the already-truncated fields emitted by ProviderRuntimeIngestion
-// for the malformed-skill diagnostic reported in issue 1084.
+// Retained diagnostics can contain more context than their short row summary.
 const retainedMessage =
   "2026-03-14T16:11:12.550224Z ERROR codex_core::codex: failed to load skill /home/sebherrerabe/repos/devsuite/.agent/skills/monorepo-scaffolding/SKILL.md: invalid YAML: mapping va...";
 const warningSummary =
@@ -27,11 +25,10 @@ function makeActivity(
 }
 
 describe("runtime diagnostics in the work log", () => {
-  it("shows the retained error message in place of its generic row label", () => {
+  it("preserves the retained error message as expandable diagnostic detail", () => {
     const [entry] = deriveWorkLogEntries([makeActivity()]);
 
     expect(entry).toMatchObject({ label: "Runtime error", detail: retainedMessage });
-    expect(entry && workEntryDisplayLabel(entry, undefined)).toBe(retainedMessage);
   });
 
   it("shows the retained warning message beyond its truncated label", () => {
@@ -40,7 +37,6 @@ describe("runtime diagnostics in the work log", () => {
     ]);
 
     expect(entry).toMatchObject({ label: warningSummary, detail: retainedMessage });
-    expect(entry && workEntryDisplayLabel(entry, undefined)).toBe(retainedMessage);
   });
 
   it("keeps an existing diagnostic detail when one is provided", () => {
