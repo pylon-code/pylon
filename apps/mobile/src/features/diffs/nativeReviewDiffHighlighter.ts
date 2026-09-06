@@ -61,26 +61,6 @@ interface IndexedNativeReviewDiffLineRow {
   readonly rowIndex: number;
 }
 
-export interface NativeReviewDiffTokenChunk {
-  readonly chunkIndex: number;
-  readonly fileId: string;
-  readonly filePath: string;
-  readonly language: NativeReviewDiffLanguage;
-  readonly lineCount: number;
-  readonly durationMs: number;
-  readonly tokensByRowId: Record<string, ReadonlyArray<NativeReviewDiffToken>>;
-}
-
-export interface StreamNativeReviewDiffTokenInput {
-  readonly rows: ReadonlyArray<NativeReviewDiffRow>;
-  readonly files: ReadonlyArray<NativeReviewDiffFile>;
-  readonly scheme: NativeReviewDiffHighlightScheme;
-  readonly engine?: NativeReviewDiffHighlightEngine;
-  readonly chunkSize?: number;
-  readonly signal?: AbortSignal;
-  readonly onChunk: (chunk: NativeReviewDiffTokenChunk) => void;
-}
-
 export interface HighlightNativeReviewDiffVisibleRowsInput {
   readonly rows: ReadonlyArray<NativeReviewDiffRow>;
   readonly files: ReadonlyArray<NativeReviewDiffFile>;
@@ -94,7 +74,6 @@ export interface HighlightNativeReviewDiffVisibleRowsInput {
   readonly signal?: AbortSignal;
 }
 
-const NATIVE_REVIEW_DIFF_HIGHLIGHT_CHUNK_SIZE = 500;
 const NATIVE_REVIEW_DIFF_VISIBLE_OVERSCAN_ROWS = 160;
 const NATIVE_REVIEW_DIFF_VISIBLE_MAX_ROWS = 360;
 
@@ -209,10 +188,6 @@ const NATIVE_REVIEW_DIFF_LANGUAGES = [
 
 let nativeHighlighterPromise: Promise<NativeReviewDiffHighlighterHandle> | null = null;
 let javascriptHighlighterPromise: Promise<NativeReviewDiffHighlighterHandle> | null = null;
-
-function waitForNextFrame(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
 
 function normalizeTokens(
   tokenLines: ReadonlyArray<ReadonlyArray<{ content: string; color?: string; fontStyle?: number }>>,
@@ -365,20 +340,6 @@ function canShareGrammarContext(
   );
 }
 
-function groupLineRowsByFileId(rows: ReadonlyArray<NativeReviewDiffRow>) {
-  const rowsByFileId = new Map<string, NativeReviewDiffLineRow[]>();
-  for (const row of rows) {
-    if (!isHighlightableLineRow(row)) {
-      continue;
-    }
-
-    const fileRows = rowsByFileId.get(row.fileId) ?? [];
-    fileRows.push(row);
-    rowsByFileId.set(row.fileId, fileRows);
-  }
-  return rowsByFileId;
-}
-
 function createFileMap(files: ReadonlyArray<NativeReviewDiffFile>) {
   return new Map(files.map((file) => [file.id, file]));
 }
@@ -483,48 +444,4 @@ export async function highlightNativeReviewDiffVisibleRows(
     rowCount: selectedRows.length,
     durationMs: Math.round(performance.now() - startedAt),
   };
-}
-
-export async function streamNativeReviewDiffTokens(
-  input: StreamNativeReviewDiffTokenInput,
-): Promise<NativeReviewDiffHighlightEngine> {
-  const highlighter = await getNativeReviewDiffHighlighter(input.engine ?? "native");
-  const rowsByFileId = groupLineRowsByFileId(input.rows);
-  const theme = NATIVE_REVIEW_DIFF_THEME_NAME_BY_SCHEME[input.scheme];
-  const chunkSize = input.chunkSize ?? NATIVE_REVIEW_DIFF_HIGHLIGHT_CHUNK_SIZE;
-  let chunkIndex = 0;
-
-  for (const file of input.files) {
-    const fileRows = rowsByFileId.get(file.id) ?? [];
-    for (let startIndex = 0; startIndex < fileRows.length; startIndex += chunkSize) {
-      if (input.signal?.aborted) {
-        return highlighter.engine;
-      }
-
-      const startedAt = performance.now();
-      const chunkRows = fileRows.slice(startIndex, startIndex + chunkSize);
-      const code = chunkRows.map((row) => row.content).join("\n");
-      const tokenLines = highlighter.tokenize(code, { lang: file.language, theme });
-      const tokensByRowId: Record<string, ReadonlyArray<NativeReviewDiffToken>> = {};
-
-      chunkRows.forEach((row, rowIndex) => {
-        tokensByRowId[row.id] = tokenLines[rowIndex] ?? makePlainTokenFallback(row);
-      });
-
-      input.onChunk({
-        chunkIndex,
-        fileId: file.id,
-        filePath: file.path,
-        language: file.language,
-        lineCount: chunkRows.length,
-        durationMs: Math.round(performance.now() - startedAt),
-        tokensByRowId,
-      });
-
-      chunkIndex += 1;
-      await waitForNextFrame();
-    }
-  }
-
-  return highlighter.engine;
 }

@@ -103,14 +103,6 @@ function normalizeRateKey(model: string): string {
   return model.trim().toLowerCase();
 }
 
-/**
- * The bare model name a lookup falls back to: a `provider/` prefix stripped and
- * lowercased, since transcripts are inconsistent about both.
- */
-export function normalizeModelName(model: string): string {
-  return bareModelName(normalizeRateKey(model));
-}
-
 function bareModelName(key: string): string {
   const slash = key.lastIndexOf("/");
   return slash === -1 ? key : key.slice(slash + 1);
@@ -147,7 +139,7 @@ export function countKnownModels(table: RateTable): number {
 
 export function lookupRate(table: RateTable, model: string): ModelRate | null {
   const key = normalizeRateKey(model);
-  const bareName = normalizeModelName(model);
+  const bareName = bareModelName(key);
   if (bareName.length === 0 || UNPRICEABLE_MODELS.has(bareName)) return null;
   // Exact first, so a reseller's own key keeps its own rate. Then the bare name,
   // because transcripts record gateway-proxied ids LiteLLM has no key for —

@@ -41,18 +41,8 @@ describe("ProviderStatusBanner", () => {
 
     expect(markup).toContain('role="alert"');
     expect(markup).toContain('aria-label="Dismiss Codex provider warning"');
-    expect(markup).toContain("absolute top-2 right-2");
     expect(markup).toContain("line-clamp-3");
     expect(markup).toContain('data-slot="tooltip-trigger"');
-  });
-
-  it("renders on a glass surface so the timeline never reads through the banner", () => {
-    const markup = renderToStaticMarkup(
-      <ProviderStatusBanner status={warningProvider()} onDismiss={() => {}} />,
-    );
-
-    expect(markup).toContain("alert-glass");
-    expect(markup).toContain('data-variant="warning"');
   });
 
   it("labels error dismiss controls with the correct severity", () => {

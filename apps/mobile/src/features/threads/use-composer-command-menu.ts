@@ -284,7 +284,7 @@ export function composerCommandReplacement(item: ComposerCommandItem): string | 
   }
 }
 
-export function composerSelectionAtEnd(draftMessage: string): ComposerEditorSelection {
+function composerSelectionAtEnd(draftMessage: string): ComposerEditorSelection {
   return { start: draftMessage.length, end: draftMessage.length };
 }
 

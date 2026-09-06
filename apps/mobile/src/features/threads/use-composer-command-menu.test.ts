@@ -18,7 +18,7 @@ vi.mock("../../state/use-atom-command", () => ({
 
 import type { ComposerCommandMenuProvider } from "./use-composer-command-menu";
 
-const { buildComposerCommandItems, composerCommandReplacement, composerSelectionAtEnd } =
+const { buildComposerCommandItems, composerCommandReplacement } =
   await import("./use-composer-command-menu");
 
 function skill(overrides: Partial<ServerProviderSkill> & { name: string }): ServerProviderSkill {
@@ -233,11 +233,5 @@ describe("composerCommandReplacement", () => {
         description: "",
       }),
     ).toBe("/model ");
-  });
-});
-
-describe("composerSelectionAtEnd", () => {
-  it("resets a changed draft owner to the new draft end", () => {
-    expect(composerSelectionAtEnd("queued task 🧪")).toEqual({ start: 14, end: 14 });
   });
 });

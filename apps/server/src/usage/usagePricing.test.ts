@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { lookupRate, normalizeModelName, parseRateTable } from "./usagePricing.ts";
+import { lookupRate, parseRateTable } from "./usagePricing.ts";
 
 const rate = (input: number, cacheRead?: number) => ({
   input_cost_per_token: input,
@@ -9,10 +9,6 @@ const rate = (input: number, cacheRead?: number) => ({
 });
 
 describe("usage pricing", () => {
-  it("keeps the existing model-name normalization contract", () => {
-    expect(normalizeModelName(" Anthropic/Claude-Opus-5 ")).toBe("claude-opus-5");
-  });
-
   it("keeps the canonical Fable rate separate from DeepInfra in either order", () => {
     const canonical = ["claude-fable-5", rate(1e-5, 1e-6)] as const;
     const deepInfra = ["deepinfra/anthropic/claude-fable-5", rate(1e-5)] as const;
