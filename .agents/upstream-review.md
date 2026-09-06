@@ -15,6 +15,23 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-05 — thread subscription startup (A2, partial)
+
+The maintainer approved A2 against upstream `f12d39359f0f76a64ff2d77959c5baf821df15be`.
+Adopted #9521 (`9c9ae3dc0e94a957d9c4a61bb211caf914828054`) as `10a7fc4113`
+on `upstream/2026-09-05-thread-subscription`, awaiting merge. Clean port:
+attach the live consumer immediately before reading the snapshot, preserving
+events emitted during snapshot loading. Applies to all providers and clients,
+including local, remote, relay, and tunnel WebSocket connections.
+
+Eight focused subscription/buffering tests pass; server typecheck and targeted
+lint pass. The new regression fails deterministically with the old consumer
+startup and passes with the fix, using the synchronized marker rather than sleeps.
+No client contract or Prime admission/recovery change.
+
+The cursor is unchanged for this partial selection. Deferred/watch results
+are recorded with #268; no register or watch row changes in this PR.
+
 ## 2026-09-02 — `9b2d04317c68233782e0630464ac86d77d0686f3..beae2147a9487ec47ac992319f2216914b4cb62d`
 
 The maintainer's standing instruction for this batch was to stop escalating
