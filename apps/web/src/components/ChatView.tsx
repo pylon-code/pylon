@@ -22,6 +22,7 @@ import {
   type SessionCompactionUpdatedPayload,
   type SessionInteractionResponse,
   type ThreadId,
+  type ThreadLinkedPullRequest,
   type TurnId,
   type KeybindingCommand,
   OrchestrationThreadActivity,
@@ -412,6 +413,7 @@ import {
   isBranchMismatchDismissedForSession,
   shouldDockDraftHeroForSubmission,
   shouldReleaseTimelineAnchorForToolActivity,
+  shouldRetargetThreadPullRequestPanel,
   shouldShowBranchMismatchBanner,
   shouldShowPlanFollowUpPrompt,
   getStartedThreadModelChangeBlockReason,
@@ -1880,6 +1882,7 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadEnvironmentId, activeThreadId],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
   const changeRequestSnapshotByKey = useAtomValue(threadChangeRequestSnapshotsAtom);
   const [timelineAnchor, setTimelineAnchor] = useState<{
     readonly threadKey: string | null;
@@ -3980,7 +3983,29 @@ function ChatViewContent(props: ChatViewProps) {
   );
   // The thread's own change request, placed against the project it belongs to. Without a
   // project there is nothing to resolve it against, so the caller falls back to the browser.
-  const linkedThreadPullRequest = activeThread?.linkedPullRequest ?? null;
+  const activeThreadMetadata = activeThreadShell ?? activeThread;
+  const linkedThreadPullRequest =
+    activeThreadMetadata?.linkedPullRequest ?? activeThreadMetadata?.branchPullRequest ?? null;
+  const observedThreadPullRequestRef = useRef<{
+    readonly threadKey: string;
+    readonly reference: ThreadLinkedPullRequest | null;
+  } | null>(null);
+  useEffect(() => {
+    const previous = observedThreadPullRequestRef.current;
+    observedThreadPullRequestRef.current =
+      activeThreadKey === null
+        ? null
+        : { threadKey: activeThreadKey, reference: linkedThreadPullRequest };
+    if (activeThreadRef === null || previous?.threadKey !== activeThreadKey) return;
+    const panels = useRightPanelStore.getState();
+    const surface = selectActiveRightPanelSurface(panels.byThreadKey, activeThreadRef);
+    if (
+      linkedThreadPullRequest !== null &&
+      shouldRetargetThreadPullRequestPanel(previous.reference, linkedThreadPullRequest, surface)
+    ) {
+      panels.openPullRequest(activeThreadRef, linkedThreadPullRequest);
+    }
+  }, [activeThreadKey, activeThreadRef, linkedThreadPullRequest]);
   const activeProjectRepository = activeProject?.repositoryIdentity?.displayName ?? null;
   const threadRepository = linkedThreadPullRequest?.repository ?? activeProjectRepository;
   const openThreadPullRequest = useCallback(
@@ -4909,7 +4934,6 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadBranch, activeWorktreePath, envMode, gitStatusQuery.data?.refName, isServerThread],
   );
   // The server-projected settled state keeps the banner and sidebar in sync.
-  const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
   const activeComposerPlan =
     activePlan && activePlan.turnId === activeLatestTurn?.turnId ? activePlan : null;
   const activeComposerCurrentStep =
@@ -4974,6 +4998,7 @@ function ChatViewContent(props: ChatViewProps) {
     snapshot: activeThreadKey ? changeRequestSnapshotByKey.get(activeThreadKey) : undefined,
     retainTerminalOnBranchMismatch: activeThread?.worktreePath === null,
     linkedPullRequest: linkedThreadPullRequest,
+    branchPullRequest: activeThreadMetadata?.branchPullRequest,
     linkedPullRequestStatus,
   });
   // The right panel offers the thread's own change request, so it can only offer it once the

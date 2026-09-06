@@ -12,7 +12,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useEnvironment, usePrimaryEnvironmentId } from "../state/environments";
 import { useProject } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
-import { linkedPullRequestDetailAtom } from "../state/pullRequests";
+import { linkedPullRequestDetailAtom, useSharedPullRequestSummary } from "../state/pullRequests";
 import { useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { vcsEnvironment } from "../state/vcs";
 import { useUiStateStore } from "../uiStateStore";
@@ -48,7 +48,7 @@ export function useLinkedThreadPullRequest(
   environmentId: EnvironmentId | null,
   linkedPullRequest: ThreadLinkedPullRequest | null | undefined,
 ): LinkedThreadPullRequestStatus | null {
-  const detail = useEnvironmentQuery(
+  const queried = useEnvironmentQuery(
     environmentId === null || linkedPullRequest == null
       ? null
       : linkedPullRequestDetailAtom({
@@ -60,6 +60,7 @@ export function useLinkedThreadPullRequest(
           },
         }),
   ).data;
+  const detail = useSharedPullRequestSummary(environmentId, linkedPullRequest ?? null, queried);
 
   return useMemo(
     () =>
@@ -77,9 +78,15 @@ export function useLinkedThreadPullRequest(
   );
 }
 
-export function settledPrHoverColorClass(state: NonNullable<ThreadPr>["state"]): string {
+export function settledPrHoverColorClass(
+  state: NonNullable<ThreadPr>["state"],
+  isDraft = false,
+): string {
   switch (state) {
     case "open":
+      if (isDraft) {
+        return "group-hover/v2-row:text-zinc-500 dark:group-hover/v2-row:text-zinc-400/80";
+      }
       return "group-hover/v2-row:text-emerald-600 dark:group-hover/v2-row:text-emerald-300/90";
     case "merged":
       return "group-hover/v2-row:text-violet-600 dark:group-hover/v2-row:text-violet-300/90";
@@ -92,12 +99,13 @@ export function prStatusIndicator(
   pr: ThreadPr,
   provider: VcsStatusResult["sourceControlProvider"] | null | undefined,
 ): PrStatusIndicator | null {
-  function formatPrState(state: NonNullable<ThreadPr>["state"]): string {
-    return state.charAt(0).toUpperCase() + state.slice(1);
+  function formatPrState(pr: NonNullable<ThreadPr>): string {
+    if (pr.state === "open" && pr.isDraft === true) return "Draft";
+    return pr.state.charAt(0).toUpperCase() + pr.state.slice(1);
   }
 
   function formatPrStatusLead(pr: NonNullable<ThreadPr>, changeRequestShortName: string): string {
-    return `${changeRequestShortName} #${pr.number} - ${formatPrState(pr.state)}`;
+    return `${changeRequestShortName} #${pr.number} - ${formatPrState(pr)}`;
   }
   if (!pr) return null;
   const presentation = resolveChangeRequestPresentation(provider);
@@ -106,9 +114,12 @@ export function prStatusIndicator(
   const tooltip = `${tooltipLead}: ${pr.title}`;
 
   if (pr.state === "open") {
+    const isDraft = pr.isDraft === true;
     return {
-      label: `${presentation.shortName} open`,
-      colorClass: "text-emerald-600 dark:text-emerald-300/90",
+      label: `${presentation.shortName} ${isDraft ? "draft" : "open"}`,
+      colorClass: isDraft
+        ? "text-zinc-500 dark:text-zinc-400/80"
+        : "text-emerald-600 dark:text-emerald-300/90",
       tooltip,
       tooltipLead,
       tooltipTitle: pr.title,
@@ -223,6 +234,7 @@ export function threadChangeRequestSnapshotsEqual(
     left.pr.baseRef === right.pr.baseRef &&
     left.pr.headRef === right.pr.headRef &&
     left.pr.state === right.pr.state &&
+    left.pr.isDraft === right.pr.isDraft &&
     (left.pr.updatedAt ?? null) === (right.pr.updatedAt ?? null) &&
     sourceControlProvidersEqual(left.sourceControlProvider, right.sourceControlProvider) &&
     linkedPullRequestsEqual(left.linkedPullRequest, right.linkedPullRequest)
@@ -262,6 +274,7 @@ export function nextThreadChangeRequestSnapshot(input: {
   snapshot: ThreadChangeRequestSnapshot | null | undefined;
   retainTerminalOnBranchMismatch: boolean;
   linkedPullRequest?: ThreadLinkedPullRequest | null | undefined;
+  branchPullRequest?: ThreadLinkedPullRequest | null | undefined;
   linkedPullRequestStatus?: LinkedThreadPullRequestStatus | null | undefined;
 }): ThreadChangeRequestSnapshot | null | undefined {
   const {
@@ -269,9 +282,11 @@ export function nextThreadChangeRequestSnapshot(input: {
     gitStatus,
     snapshot,
     retainTerminalOnBranchMismatch,
-    linkedPullRequest,
+    linkedPullRequest: manualPullRequest,
     linkedPullRequestStatus,
   } = input;
+  const linkedPullRequest = manualPullRequest ?? input.branchPullRequest;
+  if (input.branchPullRequest !== undefined && linkedPullRequest == null) return null;
   if (linkedPullRequest != null) {
     if (linkedPullRequestStatus === null || linkedPullRequestStatus === undefined) {
       return linkedPullRequestsEqual(snapshot?.linkedPullRequest, linkedPullRequest)
@@ -330,6 +345,7 @@ export function resolveDisplayedThreadPr(input: {
   snapshot: ThreadChangeRequestSnapshot | null | undefined;
   retainTerminalOnBranchMismatch: boolean;
   linkedPullRequest?: ThreadLinkedPullRequest | null | undefined;
+  branchPullRequest?: ThreadLinkedPullRequest | null | undefined;
   linkedPullRequestStatus?: LinkedThreadPullRequestStatus | null | undefined;
 }): ThreadPr | null {
   const {
@@ -337,9 +353,11 @@ export function resolveDisplayedThreadPr(input: {
     gitStatus,
     snapshot,
     retainTerminalOnBranchMismatch,
-    linkedPullRequest,
+    linkedPullRequest: manualPullRequest,
     linkedPullRequestStatus,
   } = input;
+  const linkedPullRequest = manualPullRequest ?? input.branchPullRequest;
+  if (input.branchPullRequest !== undefined && linkedPullRequest == null) return null;
   if (linkedPullRequest != null) {
     return (
       linkedPullRequestStatus?.pr ??
@@ -376,6 +394,7 @@ export function resolveDisplayedThreadPrProvider(input: {
   snapshot: ThreadChangeRequestSnapshot | null | undefined;
   retainTerminalOnBranchMismatch: boolean;
   linkedPullRequest?: ThreadLinkedPullRequest | null | undefined;
+  branchPullRequest?: ThreadLinkedPullRequest | null | undefined;
   linkedPullRequestStatus?: LinkedThreadPullRequestStatus | null | undefined;
 }): VcsStatusResult["sourceControlProvider"] | undefined {
   const {
@@ -383,9 +402,11 @@ export function resolveDisplayedThreadPrProvider(input: {
     gitStatus,
     snapshot,
     retainTerminalOnBranchMismatch,
-    linkedPullRequest,
+    linkedPullRequest: manualPullRequest,
     linkedPullRequestStatus,
   } = input;
+  const linkedPullRequest = manualPullRequest ?? input.branchPullRequest;
+  if (input.branchPullRequest !== undefined && linkedPullRequest == null) return undefined;
   if (linkedPullRequest != null) {
     return (
       linkedPullRequestStatus?.sourceControlProvider ??
@@ -522,6 +543,8 @@ export function ThreadStatusLabel({
  * thread status dot, matching the sidebar's leading indicators.
  */
 export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummary }) {
+  const reference = thread.linkedPullRequest ?? thread.branchPullRequest ?? null;
+  const legacyDiscovery = thread.branchPullRequest === undefined;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const lastVisitedAt = useUiStateStore(
     (state) => state.threadLastVisitedAtById[scopedThreadKey(threadRef)],
@@ -534,12 +557,10 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
   );
   const threadProjectCwd = threadProject?.workspaceRoot ?? null;
   const gitCwd = thread.worktreePath ?? threadProjectCwd;
-  const linkedPullRequest = useLinkedThreadPullRequest(
-    thread.environmentId,
-    thread.linkedPullRequest,
-  );
+  const linkedPullRequest = useLinkedThreadPullRequest(thread.environmentId, reference);
   const gitStatus = useEnvironmentQuery(
-    thread.linkedPullRequest == null &&
+    legacyDiscovery &&
+      reference === null &&
       (thread.branch != null || thread.worktreePath !== null) &&
       gitCwd !== null
       ? vcsEnvironment.status({
@@ -549,8 +570,10 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
       : null,
   );
   const pr =
-    thread.linkedPullRequest == null
-      ? resolveThreadPr({ threadBranch: thread.branch, gitStatus: gitStatus.data })
+    reference === null
+      ? legacyDiscovery
+        ? resolveThreadPr({ threadBranch: thread.branch, gitStatus: gitStatus.data })
+        : null
       : (linkedPullRequest?.pr ?? null);
   const prStatus = prStatusIndicator(
     pr,

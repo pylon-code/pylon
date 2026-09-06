@@ -14,10 +14,14 @@ request merges if **Auto-settle merged threads** is enabled.
 Each server stores its own copy of the automatic settlement settings and checks them even when no
 web, desktop, or mobile client is connected. By default, it settles threads after three days without
 activity and when their pull request merges. An eligible idle thread also settles when its pull
-request closes. An open pull request blocks inactivity settlement. Active work, pending input, and
-live background work keep the thread active. Pylon settles from a closed or merged pull request
-only when its timestamp is not older than the user's latest activity. If that timestamp is not
-available, the inactivity rule still applies. A manual un-settle also keeps the thread active.
+request closes. An open pull request does not block inactivity settlement. Active work, pending
+input, and live background work keep the thread active. Pylon settles from a closed or merged
+pull request only when its timestamp is not older than the user's latest activity. If that timestamp
+is not available, the inactivity rule still applies. A manual un-settle also keeps the thread active.
+
+**Settled** lists threads by when their work finished, newest first. A thread you settle yourself
+sorts by the moment you settled it. A thread that settled on its own sorts by its last message or
+turn, not by when the server noticed it was inactive.
 
 Change these rules in **Settings > General**. The change is written to every environment you are
 connected to at that moment. An environment that is offline keeps its old value. When a connected
@@ -31,9 +35,13 @@ by older clients on one device no longer control this behavior.
 When you un-settle a thread, it returns to the top of the active list so you can find it right
 away. Its timestamps do not change. Other threads keep their positions.
 
-Right-click a pull request link in a thread and choose **Link to thread** to show that pull request
-in the sidebar. The thread settles when the linked pull request merges if **Auto-settle merged
-threads** is enabled. Right-click the same link and choose **Unlink from thread** to remove it.
+The server finds the pull request for each unsettled thread’s saved branch, even while your apps
+are closed. Settled threads keep their saved links. Older servers retain client-side discovery
+while the thread is visible; update them to discover and save links without an open client.
+
+Right-click a pull request link in a thread and choose **Link to thread** to select a different
+pull request. **Unlink from thread** returns to the branch pull request, if one exists. The linked
+pull request participates in automatic settlement.
 
 On web and desktop, drag a pinned thread to change its position. On mobile, open the thread's menu
 and choose **Move up** or **Move down**. The order is stored by the server and appears on your

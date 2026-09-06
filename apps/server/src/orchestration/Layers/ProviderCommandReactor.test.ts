@@ -598,6 +598,8 @@ describe("ProviderCommandReactor", () => {
           refreshLocalStatus: () =>
             Effect.die("refreshLocalStatus should not be called in this test"),
           refreshStatus,
+          refreshPullRequestStatus: () =>
+            Effect.die("refreshPullRequestStatus should not be called in this test"),
           streamStatus: () => Stream.die("streamStatus should not be called in this test"),
         }),
       ),
@@ -5402,6 +5404,7 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-auto-settle-with-session"),
         threadId: ThreadId.make("thread-1"),
         snapshotSequence: beforeSettlement.snapshotSequence,
+        settledAt: now,
       });
 
       yield* Deferred.await(sessionStopped);

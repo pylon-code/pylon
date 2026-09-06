@@ -46,9 +46,11 @@ export function useThreadPr(
   projectCwd: string | null,
 ): ThreadPrPresentation | null {
   const cwd = thread.worktreePath ?? projectCwd;
+  const reference = thread.linkedPullRequest ?? thread.branchPullRequest ?? null;
+  const legacyDiscovery = thread.branchPullRequest === undefined;
   const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
   const snapshotIdentity = JSON.stringify(
-    thread.linkedPullRequest ?? { branch: thread.branch, cwd },
+    reference ?? (legacyDiscovery ? { branch: thread.branch, cwd } : null),
   );
   // Select this row's entry so writes for other rows do not re-render it.
   const snapshotEntry = useAtomValue(
@@ -60,7 +62,7 @@ export function useThreadPr(
   );
   const snapshot = snapshotEntry?.identity === snapshotIdentity ? snapshotEntry.presentation : null;
   const gitStatus = useEnvironmentQuery(
-    thread.linkedPullRequest == null && thread.branch !== null && cwd !== null
+    legacyDiscovery && reference === null && thread.branch !== null && cwd !== null
       ? vcsEnvironment.status({
           environmentId: thread.environmentId,
           input: { cwd },
@@ -68,20 +70,20 @@ export function useThreadPr(
       : null,
   );
   const linkedPullRequest = useEnvironmentQuery(
-    thread.linkedPullRequest == null
+    reference == null
       ? null
       : linkedPullRequestDetailAtom({
           environmentId: thread.environmentId,
           input: {
-            projectId: thread.linkedPullRequest.projectId,
-            repository: thread.linkedPullRequest.repository,
-            number: thread.linkedPullRequest.number,
+            projectId: reference.projectId,
+            repository: reference.repository,
+            number: reference.number,
           },
         }),
   );
 
   const live = useMemo<ThreadPrPresentation | null | undefined>(() => {
-    if (thread.linkedPullRequest != null) {
+    if (reference != null) {
       const detail = linkedPullRequest.data;
       return detail === null
         ? undefined
@@ -92,12 +94,13 @@ export function useThreadPr(
           });
     }
 
+    if (!legacyDiscovery) return null;
     const status = gitStatus.data;
     if (thread.branch === null) return null;
     if (status === null) return undefined;
     if (status.refName !== thread.branch || !status.pr) return null;
     return presentThreadPr(status.pr, status.sourceControlProvider);
-  }, [gitStatus.data, linkedPullRequest.data, thread.branch, thread.linkedPullRequest]);
+  }, [gitStatus.data, linkedPullRequest.data, thread.branch, reference, legacyDiscovery]);
 
   useEffect(() => {
     if (live === undefined) return;

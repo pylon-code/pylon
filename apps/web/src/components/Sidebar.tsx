@@ -22,6 +22,7 @@ import {
   effectiveSnoozed,
   threadWokeAt,
 } from "@t3tools/client-runtime/state/thread-settled";
+import { resolveSettledThreadTimestamp } from "@t3tools/client-runtime/state/thread-sort";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
   scopeProjectRef,
@@ -134,7 +135,6 @@ import {
   planPinnedReorder,
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
-  resolveSettledTimestamp,
   resolveSidebarThreadActivityVisual,
   resolveSidebarThreadStatus,
   searchSidebarThreadsByTitle,
@@ -222,10 +222,10 @@ function threadTimeLabel(thread: SidebarThreadSummary): string {
 }
 
 // Settled rows read "how long ago did this wrap up", matching their sort
-// key: both go through resolveSettledTimestamp so label and order can't
+// key: both go through resolveSettledThreadTimestamp so label and order can't
 // disagree.
 function settledTimeLabel(thread: SidebarThreadSummary): string {
-  const timestamp = resolveSettledTimestamp(thread);
+  const timestamp = resolveSettledThreadTimestamp(thread);
   return timestamp === null ? "" : compactSidebarTimeLabel(formatRelativeTimeLabel(timestamp));
 }
 
@@ -805,7 +805,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   const gitCwd = thread.worktreePath ?? props.projectCwd;
   const linkedPullRequestStatus = useLinkedThreadPullRequest(
     leaseLiveStatus ? thread.environmentId : null,
-    leaseLiveStatus ? thread.linkedPullRequest : null,
+    leaseLiveStatus ? (thread.linkedPullRequest ?? thread.branchPullRequest) : null,
   );
   const gitStatus = useEnvironmentQuery(
     leaseLiveStatus && (thread.branch != null || thread.worktreePath !== null) && gitCwd !== null
@@ -826,6 +826,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     snapshot: changeRequestSnapshot,
     retainTerminalOnBranchMismatch,
     linkedPullRequest: thread.linkedPullRequest,
+    branchPullRequest: thread.branchPullRequest,
     linkedPullRequestStatus,
   });
 
@@ -909,10 +910,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     snapshot: changeRequestSnapshot,
     retainTerminalOnBranchMismatch,
     linkedPullRequest: thread.linkedPullRequest,
+    branchPullRequest: thread.branchPullRequest,
     linkedPullRequestStatus,
   });
   const prStatus = prStatusIndicator(pr, prProvider);
-  const settledPrHoverClass = pr ? settledPrHoverColorClass(pr.state) : undefined;
+  const settledPrHoverClass = pr ? settledPrHoverColorClass(pr.state, pr.isDraft) : undefined;
   useEffect(() => {
     const nextSnapshot = nextThreadChangeRequestSnapshot({
       threadBranch: thread.branch,
@@ -920,6 +922,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       snapshot: changeRequestSnapshot,
       retainTerminalOnBranchMismatch,
       linkedPullRequest: thread.linkedPullRequest,
+      branchPullRequest: thread.branchPullRequest,
       linkedPullRequestStatus,
     });
     if (nextSnapshot === undefined) return;
@@ -932,6 +935,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     retainTerminalOnBranchMismatch,
     thread.branch,
     thread.linkedPullRequest,
+    thread.branchPullRequest,
     threadKey,
   ]);
 

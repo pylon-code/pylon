@@ -599,6 +599,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
             linkedPullRequest: null,
+            branchPullRequest: null,
             latestTurnId: null,
             rollbackStatus: null,
             rollbackUpdatedAt: null,
@@ -802,6 +803,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             ...(event.payload.linkedPullRequest !== undefined
               ? { linkedPullRequest: event.payload.linkedPullRequest }
+              : {}),
+            ...(event.payload.branchPullRequest !== undefined
+              ? { branchPullRequest: event.payload.branchPullRequest }
               : {}),
             updatedAt: event.payload.updatedAt,
           });

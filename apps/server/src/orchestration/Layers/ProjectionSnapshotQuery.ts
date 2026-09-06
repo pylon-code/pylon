@@ -113,6 +113,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
     linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
+    branchPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -617,6 +618,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           branch,
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
+          branch_pull_request_json AS "branchPullRequest",
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
@@ -659,6 +661,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           branch,
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
+          branch_pull_request_json AS "branchPullRequest",
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
@@ -703,6 +706,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           branch,
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
+          branch_pull_request_json AS "branchPullRequest",
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
@@ -1250,6 +1254,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           branch,
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
+          branch_pull_request_json AS "branchPullRequest",
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
@@ -2339,6 +2344,7 @@ pending_approval_requests AS (
                 interactionMode: row.interactionMode,
                 branch: row.branch,
                 worktreePath: row.worktreePath,
+                branchPullRequest: row.branchPullRequest,
                 ...(row.linkedPullRequest === null
                   ? {}
                   : { linkedPullRequest: row.linkedPullRequest }),
@@ -2556,6 +2562,7 @@ pending_approval_requests AS (
                   interactionMode: row.interactionMode,
                   branch: row.branch,
                   worktreePath: row.worktreePath,
+                  branchPullRequest: row.branchPullRequest,
                   ...(row.linkedPullRequest === null
                     ? {}
                     : { linkedPullRequest: row.linkedPullRequest }),
@@ -2702,6 +2709,7 @@ pending_approval_requests AS (
                       interactionMode: row.interactionMode,
                       branch: row.branch,
                       worktreePath: row.worktreePath,
+                      branchPullRequest: row.branchPullRequest,
                       ...(row.linkedPullRequest === null
                         ? {}
                         : { linkedPullRequest: row.linkedPullRequest }),
@@ -2857,6 +2865,7 @@ pending_approval_requests AS (
                   interactionMode: row.interactionMode,
                   branch: row.branch,
                   worktreePath: row.worktreePath,
+                  branchPullRequest: row.branchPullRequest,
                   ...(row.linkedPullRequest === null
                     ? {}
                     : { linkedPullRequest: row.linkedPullRequest }),
@@ -3175,6 +3184,7 @@ pending_approval_requests AS (
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
+        branchPullRequest: threadRow.value.branchPullRequest,
         ...(threadRow.value.linkedPullRequest === null
           ? {}
           : { linkedPullRequest: threadRow.value.linkedPullRequest }),
@@ -3474,6 +3484,7 @@ pending_approval_requests AS (
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
+        branchPullRequest: threadRow.value.branchPullRequest,
         ...(threadRow.value.linkedPullRequest === null
           ? {}
           : { linkedPullRequest: threadRow.value.linkedPullRequest }),

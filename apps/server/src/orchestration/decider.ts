@@ -1,5 +1,6 @@
 import {
   EventId,
+  ThreadLinkedPullRequest,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -9,6 +10,7 @@ import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
+import * as Schema from "effect/Schema";
 import type * as PlatformError from "effect/PlatformError";
 
 import {
@@ -30,6 +32,7 @@ import { projectEvent } from "./projector.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+const threadPullRequestLinksEqual = Schema.toEquivalence(Schema.NullOr(ThreadLinkedPullRequest));
 
 /**
  * Blocked-on-you work derived from the thread's retained activities: an
@@ -483,7 +486,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.settled" as const,
         payload: {
           threadId: command.threadId,
-          settledAt: alreadySettled ? thread.settledAt : occurredAt,
+          settledAt: alreadySettled
+            ? thread.settledAt
+            : command.type === "thread.auto-settle"
+              ? command.settledAt
+              : occurredAt,
           // A re-emission is a projected no-op: keep the existing updatedAt
           // so duplicate settles neither rewind nor churn ordering. A fresh
           // settle stamps the command time.
@@ -856,6 +863,63 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? { linkedPullRequest: command.linkedPullRequest }
             : {}),
           updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.pull-request.sync": {
+      const thread = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.deletedAt !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `thread ${command.threadId} was deleted before pull request discovery`,
+        });
+      }
+      if (
+        thread.projectId !== command.projectId ||
+        thread.branch !== command.expected.branch ||
+        thread.worktreePath !== command.expected.worktreePath ||
+        !threadPullRequestLinksEqual(
+          thread.linkedPullRequest ?? null,
+          command.expected.linkedPullRequest,
+        ) ||
+        !threadPullRequestLinksEqual(
+          thread.branchPullRequest ?? null,
+          command.expected.branchPullRequest,
+        )
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `thread ${command.threadId} changed before pull request discovery`,
+        });
+      }
+      const project = yield* requireProject({ readModel, command, projectId: command.projectId });
+      if (project.deletedAt !== null || project.workspaceRoot !== command.expected.workspaceRoot) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `project ${command.projectId} changed before pull request discovery`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: command.threadId,
+          branchPullRequest: command.branchPullRequest,
+          ...(command.linkedPullRequest !== undefined
+            ? { linkedPullRequest: command.linkedPullRequest }
+            : {}),
+          updatedAt: thread.updatedAt,
         },
       };
     }

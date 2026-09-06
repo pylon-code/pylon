@@ -41,6 +41,7 @@ import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import { RollbackSagaRepository } from "../../persistence/Services/RollbackSagas.ts";
 import { RollbackSagaRunner } from "../../rollback/RollbackSagaRunner.ts";
 import { RollbackWorkspace } from "../../rollback/RollbackWorkspace.ts";
+import * as PullRequestService from "../../pullRequest/PullRequestService.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const rollbackUnavailable = {
@@ -112,6 +113,8 @@ export const make = Effect.gen(function* () {
   const startedTurns = new Map<ThreadId, TurnId>();
   const rollbackRunner = yield* Effect.serviceOption(RollbackSagaRunner);
   const rollbackWorkspace = yield* Effect.serviceOption(RollbackWorkspace);
+  const pullRequests = yield* PullRequestService.PullRequestService;
+  const pending = new Set<ThreadId>();
 
   const appendRevertFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -617,7 +620,40 @@ export const make = Effect.gen(function* () {
         cwd: sessionRuntime.value.cwd,
         local,
       });
+      yield* refreshPullRequestAfterTurn({
+        threadId: event.threadId,
+        turnId: toTurnId(event.turnId),
+        cwd: sessionRuntime.value.cwd,
+        local,
+      });
     }
+  });
+
+  // Retry a missing PR after the agent finishes its push and PR creation.
+  // Re-read the projected branch after drift adoption. A rejected metadata
+  // update must not let this thread refresh another thread's checkout.
+  const refreshPullRequestAfterTurn = Effect.fn("refreshPullRequestAfterTurn")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly cwd: string;
+    readonly local: VcsStatusLocalResult;
+  }) {
+    const checkedOutBranch = input.local.refName;
+    if (checkedOutBranch === null || input.local.isDefaultRef) return;
+    const thread = yield* projectionSnapshotQuery
+      .getThreadShellById(input.threadId)
+      .pipe(Effect.map(Option.getOrUndefined));
+    if (!thread || thread.branch !== checkedOutBranch) return;
+    if (thread.session?.activeTurnId && !sameId(thread.session.activeTurnId, input.turnId)) return;
+    yield* vcsStatusBroadcaster.refreshPullRequestStatus(input.cwd).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("failed to refresh pull request status after turn completion", {
+          threadId: input.threadId,
+          cwd: input.cwd,
+          detail: error.message,
+        }),
+      ),
+    );
   });
 
   // A `git checkout` run inside a thread's dedicated worktree (by an agent or
@@ -689,6 +725,23 @@ export const make = Effect.gen(function* () {
       }),
     );
   });
+
+  // Refreshing git status ends in a remote PR lookup under the vcs status
+  // write lock. Run it on its own worker so file capture for this turn (and
+  // checkpoints for other threads) never wait behind that network call.
+  const statusRefreshWorker = yield* makeDrainableWorker(
+    (event: Extract<ProviderRuntimeEvent, { type: "turn.completed" }>) =>
+      refreshLocalGitStatusFromTurnCompletion(event).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("failed to refresh git status after turn completion", {
+                threadId: event.threadId,
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      ),
+  );
 
   const ensurePreTurnBaselineFromDomainTurnStart = Effect.fn(
     "ensurePreTurnBaselineFromDomainTurnStart",
@@ -829,6 +882,7 @@ export const make = Effect.gen(function* () {
 
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (event: OrchestrationEvent) {
     if (event.type === "thread.turn-start-requested" || event.type === "thread.message-sent") {
+      if (event.type === "thread.turn-start-requested") pending.add(event.payload.threadId);
       yield* ensurePreTurnBaselineFromDomainTurnStart(event);
       return;
     }
@@ -853,10 +907,25 @@ export const make = Effect.gen(function* () {
   const processRuntimeEvent = Effect.fn("processRuntimeEvent")(function* (
     event: ProviderRuntimeEvent,
   ) {
+    if (event.type === "session.exited") {
+      startedTurns.delete(event.threadId);
+      pending.delete(event.threadId);
+      return;
+    }
+
     if (event.type === "turn.started") {
       const turnId = toTurnId(event.turnId);
-      if (turnId && (yield* resolveThreadDetail(event.threadId))) {
+      const activeTurnId = (yield* providerService.listSessions()).find((session) =>
+        sameId(session.threadId, event.threadId),
+      )?.activeTurnId;
+      const mayReplace = pending.has(event.threadId) && sameId(activeTurnId, turnId);
+      if (
+        turnId !== null &&
+        (!startedTurns.has(event.threadId) || mayReplace) &&
+        (yield* resolveThreadDetail(event.threadId))
+      ) {
         startedTurns.set(event.threadId, turnId);
+        pending.delete(event.threadId);
       }
       yield* ensurePreTurnBaselineFromTurnStart(event);
       return;
@@ -869,7 +938,17 @@ export const make = Effect.gen(function* () {
       const isTrackedTurn = sameId(startedTurnId, turnId);
       if (isTrackedTurn) startedTurns.delete(event.threadId);
       if (event.type === "turn.completed") {
-        yield* refreshLocalGitStatusFromTurnCompletion(event);
+        yield* statusRefreshWorker.enqueue(event);
+      }
+      if (
+        turnId !== null &&
+        thread !== undefined &&
+        (isTrackedTurn ||
+          sameId(thread.session?.activeTurnId, turnId) ||
+          (startedTurnId === undefined && !thread.session?.activeTurnId))
+      ) {
+        pending.delete(event.threadId);
+        yield* pullRequests.refreshAfterTurn;
       }
       if (
         event.type === "turn.aborted" &&
@@ -964,7 +1043,8 @@ export const make = Effect.gen(function* () {
         if (
           event.type !== "turn.started" &&
           event.type !== "turn.completed" &&
-          event.type !== "turn.aborted"
+          event.type !== "turn.aborted" &&
+          event.type !== "session.exited"
         ) {
           return Effect.void;
         }
@@ -975,7 +1055,7 @@ export const make = Effect.gen(function* () {
 
   return {
     start,
-    drain: worker.drain,
+    drain: worker.drain.pipe(Effect.andThen(statusRefreshWorker.drain)),
   } satisfies CheckpointReactorShape;
 });
 

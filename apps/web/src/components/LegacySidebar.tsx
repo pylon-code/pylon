@@ -419,8 +419,14 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
   );
   const threadProjectCwd = threadProject?.workspaceRoot ?? null;
   const gitCwd = thread.worktreePath ?? threadProjectCwd ?? props.projectCwd;
+  const reference = thread.linkedPullRequest ?? thread.branchPullRequest ?? null;
+  const legacyDiscovery = thread.branchPullRequest === undefined;
   const gitStatus = useEnvironmentQuery(
-    leaseLiveStatus && thread.linkedPullRequest == null && thread.branch != null && gitCwd !== null
+    leaseLiveStatus &&
+      legacyDiscovery &&
+      reference === null &&
+      thread.branch != null &&
+      gitCwd !== null
       ? vcsEnvironment.status({
           environmentId: thread.environmentId,
           input: { cwd: gitCwd },
@@ -463,21 +469,21 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
   });
   const linkedPullRequestStatus = useLinkedThreadPullRequest(
     leaseLiveStatus ? thread.environmentId : null,
-    leaseLiveStatus ? thread.linkedPullRequest : null,
+    leaseLiveStatus ? reference : null,
   );
   const visibleGitStatus = useRetainedValue(
     JSON.stringify([thread.environmentId, gitCwd]),
     gitStatus.data,
   );
   const visibleLinkedPullRequestStatus = useRetainedValue(
-    thread.linkedPullRequest === null
-      ? null
-      : JSON.stringify([thread.environmentId, thread.linkedPullRequest]),
+    reference === null ? null : JSON.stringify([thread.environmentId, reference]),
     linkedPullRequestStatus,
   );
   const pr =
-    thread.linkedPullRequest == null
-      ? resolveThreadPr({ threadBranch: thread.branch, gitStatus: visibleGitStatus })
+    reference === null
+      ? legacyDiscovery
+        ? resolveThreadPr({ threadBranch: thread.branch, gitStatus: visibleGitStatus })
+        : null
       : (visibleLinkedPullRequestStatus?.pr ?? null);
   const prStatus = prStatusIndicator(
     pr,

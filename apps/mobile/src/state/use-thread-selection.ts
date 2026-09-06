@@ -54,6 +54,10 @@ function threadDetailToShell(
     interactionMode: thread.interactionMode,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    linkedPullRequest: thread.linkedPullRequest ?? null,
+    ...(thread.branchPullRequest !== undefined
+      ? { branchPullRequest: thread.branchPullRequest }
+      : {}),
     latestTurn: thread.latestTurn,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
