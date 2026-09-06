@@ -15,6 +15,14 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-06 — project live updates before applying buffer limits (partial source)
+
+Adopted the live-stream portion of upstream #9799, `ce4712d5b04fb998f79fe132245289191147e5d5`, under the maintainer's standing approval for compatible fixes. The complete upstream patch, PR description, and review context were read. This port changes only the live budget/coalescer, shell stream metadata, and focused WebSocket regression tests. The upstream HTML, mobile outbox, highlighting, animation, marketing, and CI changes are separate concerns and are not claimed as adopted here. The full range cursor remains unchanged.
+
+A raw 9 MiB tool result reproduced `OrchestrationGetSnapshotError: The live event buffer is full` in both thread and shell subscriptions on the Pylon baseline, despite a small client projection. Thread queues now charge the already-projected activity payload; shell queues retain event identity and refetch the current aggregate. Existing item/byte bounds, sequence ordering, completion markers, replay, and actual overflow recovery remain intact. Provider/runtime state and persisted tool output are unchanged; this is a provider-independent client stream fix.
+
+Verification: both new regression cases failed before the port; all 183 tests across server routing, live budget, event coalescing, and activity projection passed afterward. The scoped server typecheck, targeted lint, and formatting passed. No UI layout or native dependency changes. Implementation branch: `upstream/2026-09-06-projected-live-stream-budget` from `origin/pylon` at `71b11a43bef90229c255c704dbbd8b368080b97c`.
+
 ## 2026-09-06 — approved Pylon cleanup adaptations (partial range)
 
 The maintainer approved broad compatible adoption and routine Pylon adaptations. This batch adopts 36 source commits after reading their complete patches, PR descriptions, review context, and Pylon callers. The bounded upstream head is `223ff4490f764a74ff911589e97b9bbcd595fee8`; the full review cursor remains unchanged because the complete 614-commit range is not yet classified.
