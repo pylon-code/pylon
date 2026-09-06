@@ -90,6 +90,22 @@ and thread synchronization are independent data states. A healthy RPC transport
 with a failed shell subscription is shown as connected with a synchronization
 error, not as a reconnect that is not actually scheduled.
 
+## HTTP Authorization
+
+Web, desktop, and mobile share one environment authorization service between
+connection establishment and HTTP snapshot loaders. RPC sessions authenticate
+at socket upgrade. HTTP requests resolve current credentials and endpoints for
+each request, renew near expiry, and retry a rejected credential once.
+
+Renewal is shared per environment and bounded to 30 seconds. The request deadline
+includes authorization time. Cloud account or signing-key changes prevent stale
+credentials from being reused or persisted; removing an environment prevents a
+late renewal from restoring its saved token.
+
+Credential expiry does not close a healthy socket or change its generation.
+Unrevoked connected sessions remain visible in access management after expiry,
+but new HTTP requests and socket upgrades still require valid credentials.
+
 ## Data Boundary
 
 Finite requests, durable subscriptions, and commands are separate APIs:

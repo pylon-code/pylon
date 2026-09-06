@@ -183,6 +183,11 @@ With mise, asdf, fnm, or nodenv, make sure the tool's shim directory is installe
 
 If reconnecting after an app update fails, retry the SSH launch once. The launcher now compares its generated runner script, stops stale launcher-managed remote servers, clears the SSH launch PID/port state, and starts a fresh remote server. You should not normally need to delete `~/.pylon-code/ssh-launch` or kill `t3` processes manually.
 
+Pylon Connect renews access credentials without disconnecting a healthy
+conversation. Pull request diffs and provider settings use fresh credentials
+after expiry. If renewal fails, that request reports an error while a healthy
+conversation stays connected.
+
 ## Updating a Remote Server
 
 When the Pylon web or desktop app and a remote server use different versions, a warning appears in
@@ -235,6 +240,9 @@ Typical uses:
 - revoke old pairing links or sessions
 
 Use `t3 auth --help` and the nested subcommand help pages for the full reference.
+
+A session with an open connection stays listed after its access credential
+expires, so you can still inspect or revoke it.
 
 ### Deregister a Pylon Connect Environment
 
