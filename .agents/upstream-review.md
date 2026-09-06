@@ -17,9 +17,9 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## 2026-09-06 — approved Pylon cleanup adaptations (partial range)
 
-The maintainer approved broad compatible adoption and routine Pylon adaptations. This batch adopts 35 source commits after reading their complete patches, PR descriptions, review context, and Pylon callers. The bounded upstream head is `223ff4490f764a74ff911589e97b9bbcd595fee8`; the full review cursor remains unchanged because the complete 614-commit range is not yet classified.
+The maintainer approved broad compatible adoption and routine Pylon adaptations. This batch adopts 36 source commits after reading their complete patches, PR descriptions, review context, and Pylon callers. The bounded upstream head is `223ff4490f764a74ff911589e97b9bbcd595fee8`; the full review cursor remains unchanged because the complete 614-commit range is not yet classified.
 
-Outcome: integrated on `upstream/2026-09-06-cleanup-pylon-adaptations`, based on `origin/pylon` at `562298f3b316ae963cf7f13d95e5365e24e88eda`. Verification: 1,125 focused tests across 36 files passed, including the corrected pricing adaptation; all seven affected package typechecks (shared, contracts, client-runtime, server, web, mobile, desktop), targeted lint, and formatting passed. No layout, motion, protocol, persistence version, or native dependency changes are introduced.
+Outcome: integrated on `upstream/2026-09-06-cleanup-pylon-adaptations`, based on `origin/pylon` at `72db9134920efdf4209a006e409f6117d839066c`. Verification: 1,125 focused tests across 36 files passed, including the corrected pricing adaptation; all seven affected package typechecks (shared, contracts, client-runtime, server, web, mobile, desktop), targeted lint, and formatting passed. After rebasing onto the merged workspace-skill changes, 89 focused provider tests and the server typecheck passed, including the newly adopted Grok discovery cleanup. No layout, motion, protocol, persistence version, or native dependency changes are introduced.
 
 Pylon adaptations preserve Prime and other provider choices, account-scoped capacity retention, Cursor discovery caching, held-send recovery and explicit model routing, preview URL focus, and product identity assertions. Composer cleanup keeps the real reload/annotation recovery fix from Pylon #330. Removed HSL theme helpers have no production callers; the editor already uses the vivid OKLCH generator, whose semantic contrast tests remain. Obsolete diff helpers are removed without importing upstream's separate long-line/performance changes. Real worker tests in Pylon remain. Pricing keeps the same bare-model lookup by using its existing normalized key directly.
 
@@ -60,8 +60,9 @@ Pylon adaptations preserve Prime and other provider choices, account-scoped capa
 | refactor(mobile): remove unused cloud pending-status mapper (#10071)          | `b92a8122876458a67cc225f75c1d31bd3e33dc30` | Adopted with Pylon-first adaptation |
 | refactor(web): remove unused model picker hint helpers (#10072)               | `ab0933a41ae3a69632ea68809700a040bde26c22` | Adopted with Pylon-first adaptation |
 | test(web): drop provider banner styling assertions (#10148)                   | `47e250a842ee254cd2230949f8575093da6a7adf` | Adopted with Pylon-first adaptation |
+| test(server): cover Grok skill parsing through discovery (#10070)             | `25cbcd62d9750d3e8903fd752078e66c7943ecdb` | Adopted after Pylon #310 merged     |
 
-Reviewed exceptions: #9959, #9976, and #9983 still have live Pylon callers and are deferred in DEF-13 through DEF-15. #9986 is skipped: Pylon retains explicit desktop product-identity regression coverage. #9996, #9997, #10005, #10028, and #10059 target helpers/tests already absent from Pylon and require no port; these are not counted among the 35 adoptions. #10070 waits for the workspace Grok discovery implementation in Pylon #310 (DEF-16).
+Reviewed exceptions: #9959, #9976, and #9983 still have live Pylon callers and are deferred in DEF-13 through DEF-15. #9986 is skipped: Pylon retains explicit desktop product-identity regression coverage. #9996, #9997, #10005, #10028, and #10059 target helpers/tests already absent from Pylon and require no port; these are not counted among the 36 adoptions. DEF-16 was re-evaluated after Pylon #310 merged: #10070 now applies cleanly, keeps the live typed discovery failures, and is adopted here. DEF-16 is retired and must not be reused.
 
 DEF-7/DEF-8 and WATCH-1 through WATCH-3 retain the decisions recorded in the preceding batch. This cleanup does not change their revisit conditions or owner issues. DEF-11/DEF-12 remain deferred because their Pylon callers still exist.
 
@@ -3701,7 +3702,6 @@ the outcome. See Phase 2.5 of the `review-t3-upstream` skill.
 | DEF-13 | `4a42fc62e15018973b0088667d037b2a35c4c261` / #9959 — remove web UI and provider helpers | 2026-09-06 | Revisit after ColorSelector, PROVIDER_OPTIONS, and getProviderInteractionModeToggle have no live Pylon callers; check ProviderAccentColorPicker, providerIconUtils, and ChatComposer. | These helpers still implement Pylon provider customization and interaction controls. |
 | DEF-14 | `044a6e168ad1eb213c2c7c277034e65c638cc937` / #9976 — remove conventional file-position predicate | 2026-09-06 | Revisit only after web and mobile markdown link parsing no longer imports isConventionalFilePosition. | Both Pylon markdown clients still use this parser. |
 | DEF-15 | `ba873b8181c3741603a365e75785457064a52ffd` / #9983 — remove pull-request opener helper | 2026-09-06 | Revisit after GitActionsControl no longer calls openPullRequestLink or a reviewed replacement handles its connection modes. | Pylon still uses this action to open pull requests. |
-| DEF-16 | `25cbcd62d9750d3e8903fd752078e66c7943ecdb` / #10070 — keep Grok skill parser private | 2026-09-06 | Revisit after Pylon #310 merges workspace Grok discovery; compare the resulting runtime error handling before applying the parser visibility/test cleanup. | The upstream parent assumes discovery behavior not yet merged in Pylon. |
 
 ## Upstream watch list
 
