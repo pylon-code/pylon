@@ -214,6 +214,11 @@ const ProviderRuntimeEventType = Schema.Literals([
   "deprecation.notice",
   "files.persisted",
   "session.resources.updated",
+  "session.agent-depth.updated",
+  "session.input-queue.updated",
+  "session.compaction.updated",
+  "session.harness-refinement.updated",
+  "session.goal.updated",
   "runtime.warning",
   "runtime.error",
 ]);
