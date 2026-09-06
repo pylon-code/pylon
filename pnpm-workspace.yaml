@@ -89,6 +89,9 @@ minimumReleaseAgeExclude:
   - expo-widgets@57.0.15
 
 overrides:
+  # Fresh release installs must resolve the versions our native patches target.
+  expo-modules-jsi: 57.0.7
+  expo-sharing: 57.0.17
   # The SDK always receives the user's Claude executable, so its bundled binaries are unused.
   "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-darwin-arm64": "-"
   "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-darwin-x64": "-"
