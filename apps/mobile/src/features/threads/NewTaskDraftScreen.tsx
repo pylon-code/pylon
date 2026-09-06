@@ -44,6 +44,7 @@ import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStri
 import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
 import {
   composerAttachmentUploadBlockReason,
+  composerAttachmentsStillUploading,
   composerAttachmentUploadsAtom,
 } from "../../state/composer-attachment-uploads";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
@@ -198,6 +199,18 @@ export function NewTaskDraftScreen(props: {
         states: uploadStates,
       })
     : null;
+  // A connected composer with uploads still in flight queues the task rather
+  // than making the user wait: the outbox drain finishes the upload and sends.
+  const attachmentsUploading =
+    environmentConnected &&
+    selectedProject !== null &&
+    composerAttachmentsStillUploading({
+      environmentId: selectedProject.environmentId,
+      attachments: flow.attachments,
+      serverConfig: selectedEnvironmentServerConfig,
+      states: uploadStates,
+    });
+  const queuesInsteadOfStarting = !environmentConnected || attachmentsUploading;
   const promptInputRef = useRef<ComposerEditorHandle>(null);
   const loadedBranchesProjectKeyRef = useRef<string | null>(null);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
@@ -976,10 +989,12 @@ export function NewTaskDraftScreen(props: {
     const retryTurnMetadata =
       editingPendingTask?.deliveryHold === undefined ? null : makeTurnCommandMetadata();
 
-    if (!environmentConnected) {
-      // Offline: park the task in the outbox; the drain sends it when the
-      // environment reconnects. Ordinary edits preserve their identifiers;
-      // explicitly submitting a held retarget uses the fresh metadata above.
+    if (queuesInsteadOfStarting) {
+      // Offline, or an attachment is still uploading: park the task in the
+      // outbox and let the drain send it once the environment is reachable
+      // and the bytes are on the server. Ordinary edits preserve their
+      // identifiers; explicitly submitting a held retarget uses the fresh
+      // metadata above.
       const metadata =
         retryTurnMetadata ??
         (editingPendingTask
@@ -1259,7 +1274,7 @@ export function NewTaskDraftScreen(props: {
 
   const workspaceControls = (
     <View className="flex-row items-center gap-1 px-2">
-      {flow.submitting && environmentConnected && flow.workspaceMode === "worktree" ? (
+      {flow.submitting && !queuesInsteadOfStarting && flow.workspaceMode === "worktree" ? (
         <View
           accessible
           accessibilityLabel="Setting up worktree…"
@@ -1446,12 +1461,14 @@ export function NewTaskDraftScreen(props: {
                           ? "Starting task"
                           : !canStart
                             ? "Start unavailable. Add a message and complete the task setup."
-                            : environmentConnected
-                              ? "Start task"
-                              : "Queue task. The environment is disconnected; this task will remain queued."))
+                            : attachmentsUploading
+                              ? "Queue task, sends when uploads finish"
+                              : environmentConnected
+                                ? "Start task"
+                                : "Queue task. The environment is disconnected; this task will remain queued."))
                   }
                   disabled={!canStart}
-                  icon={environmentConnected ? "arrow.up" : "tray.and.arrow.up"}
+                  icon={queuesInsteadOfStarting ? "tray.and.arrow.up" : "arrow.up"}
                   onPress={() => void handleStart()}
                   variant="primary"
                 />

@@ -86,6 +86,7 @@ import {
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
 import {
   composerAttachmentUploadBlockReason,
+  composerAttachmentsStillUploading,
   composerAttachmentUploadsAtom,
 } from "../../state/composer-attachment-uploads";
 import Animated, {
@@ -479,6 +480,20 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     serverConfig: props.serverConfig,
     states: uploadStates,
   });
+  // An in-flight upload no longer blocks a send: the message waits in the
+  // outbox and the drain delivers it once the bytes are on the server.
+  const attachmentsUploading =
+    props.connectionState === "connected" &&
+    composerAttachmentsStillUploading({
+      environmentId: props.environmentId,
+      attachments: props.draftAttachments,
+      serverConfig: props.serverConfig,
+      states: uploadStates,
+    });
+  // A provider follow-up bypasses the outbox and uploads its files itself, so
+  // it still waits for the background transfer instead of starting another.
+  const followUpBlockReason =
+    attachmentBlockReason ?? (attachmentsUploading ? "Attachment still uploading" : null);
   const canSend =
     hasContent &&
     !props.sessionInputBlocked &&
@@ -750,7 +765,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       ? "Queue follow-up"
       : props.connectionState !== "connected"
         ? `Save pending send. ${composerAdmissionReason ?? "The environment is disconnected."}`
-        : props.localOutboxCount > 0
+        : props.localOutboxCount > 0 || attachmentsUploading
           ? "Save pending send"
           : "Send";
 
@@ -1787,10 +1802,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     />
                     {canQueueFollowUp ? (
                       <ControlPill
-                        accessibilityLabel={attachmentBlockReason ?? "Queue follow-up"}
+                        accessibilityLabel={followUpBlockReason ?? "Queue follow-up"}
                         icon="arrow.up"
                         variant="primary"
-                        disabled={!canSend || isMutatingSessionInputQueue}
+                        disabled={
+                          !canSend || followUpBlockReason !== null || isMutatingSessionInputQueue
+                        }
                         onPress={handleQueueFollowUp}
                       />
                     ) : null}
@@ -2044,10 +2061,17 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       the user with no way to send until they dismiss the error. */}
                   {voicePresentation.showsSend ? (
                     <ComposerToolbarButton
-                      accessibilityLabel={attachmentBlockReason ?? sendLabel}
+                      accessibilityLabel={
+                        (canQueueFollowUp ? followUpBlockReason : attachmentBlockReason) ??
+                        sendLabel
+                      }
                       icon="arrow.up"
                       variant="primary"
-                      disabled={!canSend || (canQueueFollowUp && isMutatingSessionInputQueue)}
+                      disabled={
+                        !canSend ||
+                        (canQueueFollowUp &&
+                          (isMutatingSessionInputQueue || followUpBlockReason !== null))
+                      }
                       onPress={canQueueFollowUp ? handleQueueFollowUp : handleSend}
                       showChevron={false}
                     />

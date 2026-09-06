@@ -104,6 +104,7 @@ import { dispatchingQueuedMessageIdAtom, useThreadOutboxMessages } from "./use-t
 import { useAtomCommand } from "./use-atom-command";
 import {
   composerAttachmentUploadBlockReason,
+  composerAttachmentsStillUploading,
   composerAttachmentUploadsAtom,
 } from "./composer-attachment-uploads";
 import { threadEnvironment } from "./threads";
@@ -810,17 +811,20 @@ export function useThreadComposerState() {
     const attachments = draft.attachments;
     if (text.length === 0 && attachments.length === 0) return null;
 
-    // Same gate onSendMessage applies: queueing while an upload is still in
-    // flight would start a second transfer of the same bytes alongside the
-    // background worker's.
+    // Stricter than onSendMessage: a follow-up skips the outbox and uploads
+    // its files here, so queueing while an upload is still in flight would
+    // start a second transfer of the same bytes alongside the background
+    // worker's.
+    const uploadInput = {
+      environmentId: selectedThreadShell.environmentId,
+      attachments,
+      connected: selectedEnvironmentRuntime?.connectionState === "connected",
+      serverConfig: selectedEnvironmentRuntime?.serverConfig ?? null,
+      states: appAtomRegistry.get(composerAttachmentUploadsAtom),
+    };
     if (
-      composerAttachmentUploadBlockReason({
-        environmentId: selectedThreadShell.environmentId,
-        attachments,
-        connected: selectedEnvironmentRuntime?.connectionState === "connected",
-        serverConfig: selectedEnvironmentRuntime?.serverConfig ?? null,
-        states: appAtomRegistry.get(composerAttachmentUploadsAtom),
-      }) !== null
+      composerAttachmentUploadBlockReason(uploadInput) !== null ||
+      (uploadInput.connected && composerAttachmentsStillUploading(uploadInput))
     ) {
       return null;
     }
