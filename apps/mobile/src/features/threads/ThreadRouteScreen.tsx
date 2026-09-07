@@ -1042,6 +1042,7 @@ function ThreadRouteContent(
           onSubmitUserInput={requests.onSubmitUserInput}
           onRespondToInteraction={requests.onRespondToInteraction}
           onRetryInteraction={requests.onRetryInteraction}
+          onDismissUserInput={requests.onDismissUserInput}
         />
       </View>
     </>

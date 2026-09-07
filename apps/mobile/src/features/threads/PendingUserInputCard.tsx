@@ -66,6 +66,8 @@ export interface PendingUserInputCardProps {
     customAnswer: string,
   ) => void;
   readonly onSubmit: () => Promise<unknown>;
+  /** Closes an async question without a reply. Hidden for native callback questions. */
+  readonly onDismiss: () => Promise<unknown>;
 }
 
 /**
@@ -337,6 +339,18 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       >
         <Text className="font-t3-extrabold text-sm text-white">Submit answers</Text>
       </Pressable>
+      {props.pendingUserInput.dismissible ? (
+        <Pressable
+          accessibilityRole="button"
+          className="items-center justify-center rounded-2xl px-4 py-2.5 active:opacity-70"
+          disabled={props.respondingUserInputId === props.pendingUserInput.requestId}
+          onPress={() => void props.onDismiss()}
+        >
+          <Text className="font-t3-bold text-sm text-foreground-muted">
+            Dismiss without answering
+          </Text>
+        </Pressable>
+      ) : null}
     </Animated.View>
   ) : null;
   return (
