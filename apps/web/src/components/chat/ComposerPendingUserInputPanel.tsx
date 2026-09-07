@@ -15,8 +15,9 @@ interface PendingUserInputPanelProps {
   respondingRequestIds: ApprovalRequestId[];
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
-  onToggleOption: (questionId: string, optionLabel: string) => void;
+  onToggleOption: (questionId: string, optionValue: string) => void;
   onAdvance: () => void;
+  onDismiss: (requestId: ApprovalRequestId) => void;
 }
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
@@ -26,6 +27,7 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   questionIndex,
   onToggleOption,
   onAdvance,
+  onDismiss,
 }: PendingUserInputPanelProps) {
   if (pendingUserInputs.length === 0) return null;
   const activePrompt = pendingUserInputs[0];
@@ -40,6 +42,7 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
       questionIndex={questionIndex}
       onToggleOption={onToggleOption}
       onAdvance={onAdvance}
+      onDismiss={onDismiss}
     />
   );
 });
@@ -51,13 +54,15 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   questionIndex,
   onToggleOption,
   onAdvance,
+  onDismiss,
 }: {
   prompt: PendingUserInput;
   isResponding: boolean;
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
-  onToggleOption: (questionId: string, optionLabel: string) => void;
+  onToggleOption: (questionId: string, optionValue: string) => void;
   onAdvance: () => void;
+  onDismiss: (requestId: ApprovalRequestId) => void;
 }) {
   const progress = derivePendingUserInputProgress(prompt.questions, answers, questionIndex);
   const activeQuestion = progress.activeQuestion;
@@ -65,7 +70,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   const onAdvanceRef = useRef(onAdvance);
   const [optimisticSingleSelect, setOptimisticSingleSelect] = useState<{
     questionId: string;
-    optionLabel: string;
+    optionValue: string;
   } | null>(null);
   // Collapsing hides everything but the header so a tall prompt stops covering
   // the thread the user is trying to read. Scoped to a single question: the card
@@ -90,7 +95,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
     }
     if (
       progress.customAnswer.trim().length === 0 &&
-      progress.selectedOptionLabels.includes(optimisticSingleSelect.optionLabel)
+      progress.selectedOptionValues.includes(optimisticSingleSelect.optionValue)
     ) {
       setOptimisticSingleSelect(null);
     }
@@ -98,7 +103,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
     activeQuestion,
     optimisticSingleSelect,
     progress.customAnswer,
-    progress.selectedOptionLabels,
+    progress.selectedOptionValues,
   ]);
 
   // Clear auto-advance timer on unmount
@@ -111,13 +116,13 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   }, []);
 
   const handleOptionSelection = useCallback(
-    (questionId: string, optionLabel: string) => {
+    (questionId: string, optionValue: string) => {
       if (activeQuestion?.multiSelect) {
-        onToggleOption(questionId, optionLabel);
+        onToggleOption(questionId, optionValue);
         return;
       }
-      setOptimisticSingleSelect({ questionId, optionLabel });
-      onToggleOption(questionId, optionLabel);
+      setOptimisticSingleSelect({ questionId, optionValue });
+      onToggleOption(questionId, optionValue);
       if (autoAdvanceTimerRef.current !== null) {
         window.clearTimeout(autoAdvanceTimerRef.current);
       }
@@ -154,7 +159,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
       const option = activeQuestion.options[optionIndex];
       if (!option) return;
       event.preventDefault();
-      handleOptionSelection(activeQuestion.id, option.label);
+      handleOptionSelection(activeQuestion.id, option.value ?? option.label);
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
@@ -173,33 +178,49 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
         setCollapsedQuestionId(open ? null : activeQuestion.id);
       }}
     >
-      <CollapsibleTrigger
-        render={<ComposerBanner.Row render={<button type="button" />} />}
-        title={
-          isCollapsed ? "Show the question and its options" : "Hide the question and its options"
-        }
-        data-pending-user-input-toggle={isCollapsed ? "collapsed" : "expanded"}
-      >
-        <ComposerBanner.Icon />
-        <ComposerBanner.Content>
-          <span className="shrink-0 font-medium text-muted-foreground">
-            {activeQuestion.header}
-          </span>
-          {isCollapsed ? (
-            <span className="min-w-0 flex-1 truncate text-secondary-label">
-              {activeQuestion.question}
+      <div className="flex min-w-0 items-center gap-1">
+        <CollapsibleTrigger
+          render={<ComposerBanner.Row render={<button type="button" />} />}
+          className="flex-1"
+          title={
+            isCollapsed ? "Show the question and its options" : "Hide the question and its options"
+          }
+          data-pending-user-input-toggle={isCollapsed ? "collapsed" : "expanded"}
+        >
+          <ComposerBanner.Icon />
+          <ComposerBanner.Content>
+            <span className="shrink-0 font-medium text-muted-foreground">
+              {activeQuestion.header}
             </span>
-          ) : null}
-        </ComposerBanner.Content>
-        <ComposerBanner.Actions>
-          {prompt.questions.length > 1 ? (
-            <span className="text-[10px] font-medium text-muted-foreground tabular-nums">
-              {questionIndex + 1}/{prompt.questions.length}
-            </span>
-          ) : null}
-          <ComposerBanner.ToggleIcon expanded={!isCollapsed} />
-        </ComposerBanner.Actions>
-      </CollapsibleTrigger>
+            {isCollapsed ? (
+              <span className="min-w-0 flex-1 truncate text-secondary-label">
+                {activeQuestion.question}
+              </span>
+            ) : null}
+          </ComposerBanner.Content>
+          <ComposerBanner.Actions>
+            {prompt.questions.length > 1 ? (
+              <span className="text-[10px] font-medium text-muted-foreground tabular-nums">
+                {questionIndex + 1}/{prompt.questions.length}
+              </span>
+            ) : null}
+            <ComposerBanner.ToggleIcon expanded={!isCollapsed} />
+          </ComposerBanner.Actions>
+        </CollapsibleTrigger>
+        {prompt.dismissible ? (
+          <ComposerBanner.Dismiss
+            aria-label="Dismiss question without answering"
+            title="Dismiss question without answering"
+            disabled={isResponding}
+            data-pending-user-input-dismiss
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onDismiss(prompt.requestId);
+            }}
+          />
+        ) : null}
+      </div>
       <CollapsiblePanel>
         <ComposerBanner.Body className="pe-1 pb-1">
           <p className="text-sm text-foreground/85">{activeQuestion.question}</p>
@@ -208,12 +229,13 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
           ) : null}
           <div className="mt-2 space-y-0.5">
             {activeQuestion.options.map((option, index) => {
+              const optionValue = option.value ?? option.label;
               const isOptimisticallySelected =
                 optimisticSingleSelect?.questionId === activeQuestion.id &&
-                optimisticSingleSelect.optionLabel === option.label;
+                optimisticSingleSelect.optionValue === optionValue;
               const isSelected =
                 isOptimisticallySelected ||
-                (!customAnswerActive && progress.selectedOptionLabels.includes(option.label));
+                (!customAnswerActive && progress.selectedOptionValues.includes(optionValue));
               const shortcutKey = index < 9 ? index + 1 : null;
               const className = cn(
                 "group flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left outline-none transition-colors duration-150 focus-visible:ring-1 focus-visible:ring-primary/25",
@@ -246,11 +268,11 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
               );
               return (
                 <button
-                  key={`${activeQuestion.id}:${option.label}`}
+                  key={`${activeQuestion.id}:${optionValue}`}
                   type="button"
                   disabled={isResponding}
                   onClick={() => {
-                    handleOptionSelection(activeQuestion.id, option.label);
+                    handleOptionSelection(activeQuestion.id, optionValue);
                   }}
                   className={className}
                 >

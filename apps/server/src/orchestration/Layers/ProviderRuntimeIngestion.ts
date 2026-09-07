@@ -844,6 +844,7 @@ export function runtimeEventToActivities(
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             questions: event.payload.questions,
+            ...(event.payload.responseMode ? { responseMode: event.payload.responseMode } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -2678,7 +2679,7 @@ const make = Effect.gen(function* () {
 
       const pauseForUserTurnId =
         event.type === "request.opened" ||
-        event.type === "user-input.requested" ||
+        (event.type === "user-input.requested" && event.payload.responseMode !== "message") ||
         event.type === "interaction.requested"
           ? toTurnId(event.turnId)
           : undefined;

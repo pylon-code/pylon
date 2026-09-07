@@ -1,4 +1,5 @@
 import { buildRollbackTurnCountByMessageId } from "./ChatView.logic";
+import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
 import {
   type AssistantCitation,
   type ApprovalRequestId,
@@ -115,8 +116,6 @@ import {
 import type { SessionHarnessRefinementOutcome } from "../sessionHarnessRefinement";
 import {
   createMessageAttachmentPreviewProjector,
-  derivePendingApprovals,
-  derivePendingUserInputs,
   derivePhase,
   deriveTimelineEntriesWithState,
   deriveActiveWorkStartedAt,
@@ -1468,6 +1467,9 @@ export default function ChatView(props: ChatViewProps) {
   const respondToThreadInteraction = useAtomCommand(threadEnvironment.respondToInteraction, {
     reportFailure: false,
   });
+  const dismissThreadUserInput = useAtomCommand(threadEnvironment.dismissUserInput, {
+    reportFailure: false,
+  });
   const revertThreadCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
     reportFailure: false,
   });
@@ -2733,12 +2735,8 @@ export default function ChatView(props: ChatViewProps) {
       return next.size === current.size ? current : next;
     });
   }, [runtimeSubagents]);
-  const pendingApprovals = useMemo(
-    () => derivePendingApprovals(threadActivities),
-    [threadActivities],
-  );
-  const pendingUserInputs = useMemo(
-    () => derivePendingUserInputs(threadActivities),
+  const { approvals: pendingApprovals, userInputs: pendingUserInputs } = useMemo(
+    () => derivePendingRequests(threadActivities),
     [threadActivities],
   );
   const activePendingUserInput = pendingUserInputs[0] ?? null;
@@ -7324,6 +7322,32 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
+  // Closes an async question without messaging the agent. The server records
+  // the dismissal so every client releases the composer.
+  const onDismissUserInput = useCallback(
+    async (requestId: ApprovalRequestId) => {
+      if (!activeThreadId) return;
+
+      setRespondingUserInputRequestIds((existing) =>
+        existing.includes(requestId) ? existing : [...existing, requestId],
+      );
+      const result = await dismissThreadUserInput({
+        environmentId,
+        input: { threadId: activeThreadId, requestId },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThreadId,
+          error instanceof Error ? error.message : "Failed to dismiss the question.",
+        );
+      }
+      setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
+      return result;
+    },
+    [activeThreadId, dismissThreadUserInput, environmentId, setThreadError],
+  );
+
   const setActivePendingUserInputQuestionIndex = useCallback(
     (nextQuestionIndex: number) => {
       if (!activePendingUserInput) {
@@ -7379,6 +7403,10 @@ export default function ChatView(props: ChatViewProps) {
       _cursorAdjacentToMention: boolean,
     ) => {
       if (!activePendingUserInput) {
+        return;
+      }
+      const question = activePendingUserInput.questions.find((entry) => entry.id === questionId);
+      if (!question || question.allowCustomAnswer === false) {
         return;
       }
       promptRef.current = value;
@@ -8718,6 +8746,7 @@ export default function ChatView(props: ChatViewProps) {
                               onSelectActivePendingUserInputOption
                             }
                             onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
+                            onDismissActivePendingUserInput={onDismissUserInput}
                             onPreviousActivePendingUserInputQuestion={
                               onPreviousActivePendingUserInputQuestion
                             }

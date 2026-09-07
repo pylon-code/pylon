@@ -206,6 +206,27 @@ Grok includes it when explicitly selected for the turn. Claude's session-level c
 change during a session. OpenCode variants are not assumed to be reasoning-effort levels.
 Prime keeps its native managed instructions and submitted prompt unchanged. Its daemon admission recovery compares the exact submitted text and ordered attachments with a native user-message completion; adding an ACP text block is not an equivalent integration at that boundary. Any Prime runtime-guidance extension must use a supported native instruction hook and verify that recovery proof. Antigravity is not currently a Pylon provider; its runtime-guidance integration belongs with adoption of that provider.
 
+## Codex async questions
+
+Codex 0.153 exposes `request_user_input_async` through `item/started` and `item/completed`
+notifications. The item has `type: "agentMessage"`, `delivery: "async"`, and a `questions` array.
+Each question has a `title` and an optional `options` array of strings. The tool returns `{"accepted":true}`
+without waiting. This is separate from the `item/tool/requestUserInput` server request.
+See the [Codex tool handler](https://github.com/openai/codex/blob/d979df154cf60e13eafb5453e75b6d84f21c67bf/codex-rs/core/src/tools/handlers/request_user_input_async.rs).
+
+The Codex adapter maps completed question items to `user-input.requested` with
+`responseMode: "message"` and stable request and event IDs. Questions use the existing web,
+desktop, and mobile panels. They stay pending while the turn runs and after it finishes.
+
+The engine reads the request's latest stored activity before deciding a reply. This works after
+startup, when the command snapshot has no activities, and after a resolution leaves the recent
+activity window. The query returns one activity, not the full thread history.
+
+For these requests, the decider saves the resolution and a user message in one transaction.
+The standard turn path delivers the message, including session resume and active-turn input.
+It does not send a JSON-RPC response to Codex. Other providers and blocking Codex questions
+keep their existing response paths.
+
 ## Registry and routing
 
 Two registries separate configuration from live processes:

@@ -1,9 +1,8 @@
 import {
-  ApprovalRequestId,
-  isToolLifecycleItemType,
-  ProviderApprovalOption,
-  ProviderRequestKind,
-} from "@t3tools/contracts";
+  requestKindFromRequestType,
+  type PendingApproval,
+} from "@t3tools/client-runtime/pending-requests";
+import { isToolLifecycleItemType } from "@t3tools/contracts";
 import type {
   OrchestrationLatestTurn,
   OrchestrationThread,
@@ -31,28 +30,11 @@ import { commandProgramName } from "@t3tools/client-runtime/work-log/command-lab
 
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
-import * as Schema from "effect/Schema";
 
-export interface PendingApproval {
-  readonly requestId: ApprovalRequestId;
-  readonly requestKind: ProviderRequestKind;
-  readonly createdAt: string;
-  readonly detail?: string;
-  readonly appName?: string;
-  readonly options?: ReadonlyArray<ProviderApprovalOption>;
-}
-
-const isProviderRequestKind = Schema.is(ProviderRequestKind);
-const isProviderApprovalOption = Schema.is(ProviderApprovalOption);
-
-export interface PendingUserInput {
-  readonly requestId: ApprovalRequestId;
-  readonly createdAt: string;
-  readonly questions: ReadonlyArray<UserInputQuestion>;
-}
+export type { PendingApproval, PendingUserInput } from "@t3tools/client-runtime/pending-requests";
 
 export interface PendingUserInputDraftAnswer {
-  readonly selectedOptionLabels?: ReadonlyArray<string>;
+  readonly selectedOptionValues?: ReadonlyArray<string>;
   readonly customAnswer?: string;
 }
 
@@ -197,90 +179,6 @@ const turnFoldRowsCache = new WeakMap<
   Extract<ThreadFeedEntry, { readonly type: "turn-fold" }>
 >();
 
-function requestKindFromRequestType(requestType: unknown): PendingApproval["requestKind"] | null {
-  switch (requestType) {
-    case "command_execution_approval":
-    case "exec_command_approval":
-      return "command";
-    case "file_read_approval":
-      return "file-read";
-    case "file_change_approval":
-    case "apply_patch_approval":
-      return "file-change";
-    case "mcp_elicitation_approval":
-      return "mcp-elicitation";
-    default:
-      return null;
-  }
-}
-
-function isStalePendingRequestFailureDetail(detail: string | undefined): boolean {
-  const normalized = detail?.toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  return (
-    normalized.includes("stale pending approval request") ||
-    normalized.includes("stale pending user-input request") ||
-    normalized.includes("unknown pending approval request") ||
-    normalized.includes("unknown pending permission request") ||
-    normalized.includes("unknown pending user-input request")
-  );
-}
-
-function parseApprovalRequestId(value: unknown): ApprovalRequestId | null {
-  return typeof value === "string" && value.length > 0 ? ApprovalRequestId.make(value) : null;
-}
-
-function parseUserInputQuestions(
-  payload: Record<string, unknown> | null,
-): ReadonlyArray<UserInputQuestion> | null {
-  const questions = payload?.questions;
-  if (!Array.isArray(questions)) {
-    return null;
-  }
-
-  const parsed = questions
-    .map<UserInputQuestion | null>((entry) => {
-      if (!entry || typeof entry !== "object") return null;
-      const question = entry as Record<string, unknown>;
-      if (
-        typeof question.id !== "string" ||
-        typeof question.header !== "string" ||
-        typeof question.question !== "string" ||
-        !Array.isArray(question.options)
-      ) {
-        return null;
-      }
-      const options = question.options
-        .map<UserInputQuestion["options"][number] | null>((option) => {
-          if (!option || typeof option !== "object") return null;
-          const record = option as Record<string, unknown>;
-          if (typeof record.label !== "string" || typeof record.description !== "string") {
-            return null;
-          }
-          return {
-            label: record.label,
-            description: record.description,
-          };
-        })
-        .filter((option): option is UserInputQuestion["options"][number] => option !== null);
-      if (options.length === 0) {
-        return null;
-      }
-      return {
-        id: question.id,
-        header: question.header,
-        question: question.question,
-        options,
-        multiSelect: question.multiSelect === true,
-      };
-    })
-    .filter((question): question is UserInputQuestion => question !== null);
-
-  return parsed.length > 0 ? parsed : null;
-}
-
 function normalizeDraftAnswer(value: string | undefined): string | null {
   if (typeof value !== "string") {
     return null;
@@ -289,7 +187,23 @@ function normalizeDraftAnswer(value: string | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function normalizeSelectedOptionLabels(
+function resolvePendingUserInputOptionValue(
+  question: UserInputQuestion,
+  value: string,
+): string | null {
+  if (question.options.some((option) => option.value === value)) {
+    return value;
+  }
+
+  const label = value.trim();
+  return label.length > 0 &&
+    question.options.some((option) => option.value === undefined && option.label.trim() === label)
+    ? label
+    : null;
+}
+
+function normalizeSelectedOptionValues(
+  question: UserInputQuestion,
   value: ReadonlyArray<string> | undefined,
 ): ReadonlyArray<string> {
   if (!Array.isArray(value)) {
@@ -297,7 +211,11 @@ function normalizeSelectedOptionLabels(
   }
 
   return Array.from(
-    new Set(value.map((entry) => entry.trim()).filter((entry) => entry.length > 0)),
+    new Set(
+      value
+        .map((entry) => resolvePendingUserInputOptionValue(question, entry))
+        .filter((entry): entry is string => entry !== null),
+    ),
   );
 }
 
@@ -305,16 +223,17 @@ function resolvePendingUserInputAnswer(
   question: UserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
 ): string | ReadonlyArray<string> | null {
-  const customAnswer = normalizeDraftAnswer(draft?.customAnswer);
+  const customAnswer =
+    question.allowCustomAnswer === false ? null : normalizeDraftAnswer(draft?.customAnswer);
   if (customAnswer) {
     return customAnswer;
   }
 
-  const selectedOptionLabels = normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
+  const selectedOptionValues = normalizeSelectedOptionValues(question, draft?.selectedOptionValues);
   if (question.multiSelect) {
-    return selectedOptionLabels.length > 0 ? selectedOptionLabels : null;
+    return selectedOptionValues.length > 0 ? selectedOptionValues : null;
   }
-  return selectedOptionLabels[0] ?? null;
+  return selectedOptionValues[0] ?? null;
 }
 
 /** Codex children settle via task.updated (idle/failed/interrupted), never
@@ -1691,165 +1610,73 @@ function liveToolActivitySummary(activity: ThreadFeedActivity): string {
   return activity.detail ?? activity.summary;
 }
 
-/**
- * Sorts activities into lifecycle order. `derivePendingApprovals` and
- * `derivePendingUserInputs` both expect this ordering; sorting once and
- * passing the result to both avoids re-sorting the full activity history
- * per derivation.
- */
-export function sortThreadActivities(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
-): ReadonlyArray<OrchestrationThreadActivity> {
-  return Arr.sort(activities, activityOrder);
-}
-
-export function derivePendingApprovals(
-  sortedActivities: ReadonlyArray<OrchestrationThreadActivity>,
-): PendingApproval[] {
-  const openByRequestId = new Map<ApprovalRequestId, PendingApproval>();
-
-  for (const activity of sortedActivities) {
-    const payload =
-      activity.payload && typeof activity.payload === "object"
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const requestId = parseApprovalRequestId(payload?.requestId);
-    const requestKind = isProviderRequestKind(payload?.requestKind)
-      ? payload.requestKind
-      : requestKindFromRequestType(payload?.requestType);
-    const detail = typeof payload?.detail === "string" ? payload.detail : undefined;
-    const appName = typeof payload?.appName === "string" ? payload.appName : undefined;
-    const options = Array.isArray(payload?.options)
-      ? payload.options.filter(isProviderApprovalOption)
-      : undefined;
-
-    if (
-      activity.kind === "approval.requested" &&
-      requestId &&
-      payload?.requestType !== "tool_user_input" &&
-      payload?.requestType !== "auth_tokens_refresh"
-    ) {
-      openByRequestId.set(requestId, {
-        requestId,
-        // Older OpenCode requests can have no recognized approval kind.
-        requestKind: requestKind ?? "command",
-        createdAt: activity.createdAt,
-        ...(detail ? { detail } : {}),
-        ...(appName ? { appName } : {}),
-        ...(options && options.length > 0 ? { options } : {}),
-      });
-      continue;
-    }
-
-    if (activity.kind === "approval.resolved" && requestId) {
-      openByRequestId.delete(requestId);
-      continue;
-    }
-
-    if (
-      activity.kind === "provider.approval.respond.failed" &&
-      requestId &&
-      isStalePendingRequestFailureDetail(detail)
-    ) {
-      openByRequestId.delete(requestId);
-    }
-  }
-
-  return Arr.sortWith([...openByRequestId.values()], (s) => new Date(s.createdAt), Order.Date);
-}
-
-export function derivePendingUserInputs(
-  sortedActivities: ReadonlyArray<OrchestrationThreadActivity>,
-): PendingUserInput[] {
-  const openByRequestId = new Map<ApprovalRequestId, PendingUserInput>();
-
-  for (const activity of sortedActivities) {
-    const payload =
-      activity.payload && typeof activity.payload === "object"
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const requestId = parseApprovalRequestId(payload?.requestId);
-    const detail = typeof payload?.detail === "string" ? payload.detail : undefined;
-
-    if (activity.kind === "user-input.requested" && requestId) {
-      const questions = parseUserInputQuestions(payload);
-      if (!questions) {
-        continue;
-      }
-      openByRequestId.set(requestId, {
-        requestId,
-        createdAt: activity.createdAt,
-        questions,
-      });
-      continue;
-    }
-
-    if (activity.kind === "user-input.resolved" && requestId) {
-      openByRequestId.delete(requestId);
-      continue;
-    }
-
-    if (
-      activity.kind === "provider.user-input.respond.failed" &&
-      requestId &&
-      isStalePendingRequestFailureDetail(detail)
-    ) {
-      openByRequestId.delete(requestId);
-    }
-  }
-
-  return Arr.sortWith(openByRequestId.values(), (s) => new Date(s.createdAt), Order.Date);
-}
-
 export function setPendingUserInputCustomAnswer(
+  question: UserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
   customAnswer: string,
 ): PendingUserInputDraftAnswer {
-  const selectedOptionLabels =
+  if (question.allowCustomAnswer === false) {
+    return draft ?? {};
+  }
+
+  const selectedOptionValues =
     customAnswer.trim().length > 0
       ? undefined
-      : normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
+      : normalizeSelectedOptionValues(question, draft?.selectedOptionValues);
   return {
     customAnswer,
-    ...(selectedOptionLabels && selectedOptionLabels.length > 0 ? { selectedOptionLabels } : {}),
+    ...(selectedOptionValues && selectedOptionValues.length > 0 ? { selectedOptionValues } : {}),
   };
 }
 
 export function isPendingUserInputOptionSelected(
+  question: UserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
-  optionLabel: string,
+  optionValue: string,
 ): boolean {
-  if (normalizeDraftAnswer(draft?.customAnswer)) {
+  if (question.allowCustomAnswer !== false && normalizeDraftAnswer(draft?.customAnswer)) {
     return false;
   }
 
-  return normalizeSelectedOptionLabels(draft?.selectedOptionLabels).includes(optionLabel.trim());
+  const resolvedOptionValue = resolvePendingUserInputOptionValue(question, optionValue);
+  return (
+    resolvedOptionValue !== null &&
+    normalizeSelectedOptionValues(question, draft?.selectedOptionValues).includes(
+      resolvedOptionValue,
+    )
+  );
 }
 
 export function togglePendingUserInputOptionSelection(
   question: UserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
-  optionLabel: string,
+  optionValue: string,
 ): PendingUserInputDraftAnswer {
-  const normalizedOptionLabel = optionLabel.trim();
+  const resolvedOptionValue = resolvePendingUserInputOptionValue(question, optionValue);
+  if (resolvedOptionValue === null) {
+    return draft ?? {};
+  }
 
   if (question.multiSelect) {
-    const selectedOptionLabels = normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
-    const nextSelectedOptionLabels = selectedOptionLabels.includes(normalizedOptionLabel)
-      ? selectedOptionLabels.filter((label) => label !== normalizedOptionLabel)
-      : [...selectedOptionLabels, normalizedOptionLabel];
+    const selectedOptionValues = normalizeSelectedOptionValues(
+      question,
+      draft?.selectedOptionValues,
+    );
+    const nextSelectedOptionValues = selectedOptionValues.includes(resolvedOptionValue)
+      ? selectedOptionValues.filter((value) => value !== resolvedOptionValue)
+      : [...selectedOptionValues, resolvedOptionValue];
 
     return {
       customAnswer: "",
-      ...(nextSelectedOptionLabels.length > 0
-        ? { selectedOptionLabels: nextSelectedOptionLabels }
+      ...(nextSelectedOptionValues.length > 0
+        ? { selectedOptionValues: nextSelectedOptionValues }
         : {}),
     };
   }
 
   return {
     customAnswer: "",
-    selectedOptionLabels: [normalizedOptionLabel],
+    selectedOptionValues: [resolvedOptionValue],
   };
 }
 
@@ -1861,7 +1688,7 @@ export function buildPendingUserInputAnswers(
 
   for (const question of questions) {
     const answer = resolvePendingUserInputAnswer(question, draftAnswers[question.id]);
-    if (!answer) {
+    if (answer === null) {
       return null;
     }
     answers[question.id] = answer;
@@ -1970,4 +1797,11 @@ function toThreadFeedActivityEntry(
       workEntry: entry,
     },
   };
+}
+
+/** Orders Pylon session-interaction activities before reducing their lifecycle. */
+export function sortThreadActivities(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyArray<OrchestrationThreadActivity> {
+  return Arr.sort(activities, activityOrder);
 }

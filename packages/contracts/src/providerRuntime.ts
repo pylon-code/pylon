@@ -503,7 +503,8 @@ export type RequestResolvedPayload = typeof RequestResolvedPayload.Type;
 
 const UserInputQuestionOption = Schema.Struct({
   label: TrimmedNonEmptyStringSchema,
-  description: TrimmedNonEmptyStringSchema,
+  description: Schema.String,
+  value: Schema.optional(Schema.String),
 });
 export type UserInputQuestionOption = typeof UserInputQuestionOption.Type;
 
@@ -512,14 +513,16 @@ export const UserInputQuestion = Schema.Struct({
   header: TrimmedNonEmptyStringSchema,
   question: TrimmedNonEmptyStringSchema,
   options: Schema.Array(UserInputQuestionOption),
+  allowCustomAnswer: Schema.optional(Schema.Boolean),
   multiSelect: Schema.optional(Schema.Boolean).pipe(
     Schema.withConstructorDefault(Effect.succeed(false)),
   ),
 });
 export type UserInputQuestion = typeof UserInputQuestion.Type;
 
-const UserInputRequestedPayload = Schema.Struct({
+export const UserInputRequestedPayload = Schema.Struct({
   questions: Schema.Array(UserInputQuestion),
+  responseMode: Schema.optional(Schema.Literal("message")),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 

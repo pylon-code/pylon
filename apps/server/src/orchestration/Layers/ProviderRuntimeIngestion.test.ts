@@ -4207,8 +4207,8 @@ describe("ProviderRuntimeIngestion", () => {
     const unresolved = userInputEvent("old-turn", "old-question");
     const newer = userInputEvent("new-turn", "new-question");
     const child = userInputEvent("child-turn", "child-question");
-    // Pylon does not expose upstream's message-mode runtime API. Preserve an
-    // explicitly stored message-mode activity without importing that feature.
+    // Preserve an explicitly stored async question when a different native
+    // request completes.
     await harness.dispatch({
       type: "thread.activity.append",
       commandId: CommandId.make("stored-async-question"),
@@ -4274,6 +4274,56 @@ describe("ProviderRuntimeIngestion", () => {
       },
       { turnId: unresolved.turnId, payload: { requestId: unresolved.requestId } },
     ]);
+  });
+
+  it("keeps streaming while an async question is pending", async () => {
+    const harness = await createHarness({ serverSettings: { enableLegacyTokenStreaming: true } });
+    const base = {
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-async"),
+    };
+    harness.emit({ ...base, type: "turn.started", eventId: asEventId("async-start") });
+    harness.emit({
+      ...base,
+      type: "content.delta",
+      eventId: asEventId("async-before"),
+      itemId: asItemId("message-1"),
+      payload: { streamKind: "assistant_text", delta: "Before. " },
+    });
+    harness.emit({
+      ...base,
+      type: "user-input.requested",
+      eventId: asEventId("async-request"),
+      requestId: ApprovalRequestId.make("codex-async:question-1"),
+      payload: {
+        responseMode: "message",
+        questions: [
+          {
+            id: "0",
+            header: "Question",
+            question: "Which name?",
+            options: [],
+            allowCustomAnswer: true,
+          },
+        ],
+      },
+    });
+    harness.emit({
+      ...base,
+      type: "content.delta",
+      eventId: asEventId("async-after"),
+      itemId: asItemId("message-1"),
+      payload: { streamKind: "assistant_text", delta: "After." },
+    });
+    await harness.drain();
+    const thread = (await harness.readModel()).threads[0];
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.messages).toMatchObject([{ text: "Before. After.", streaming: true }]);
+    expect(
+      thread?.activities.find((activity) => activity.kind === "user-input.requested")?.payload,
+    ).toMatchObject({ responseMode: "message", requestId: "codex-async:question-1" });
   });
 
   it("does not create assistant segments for whitespace-only buffered text at approval boundaries", async () => {

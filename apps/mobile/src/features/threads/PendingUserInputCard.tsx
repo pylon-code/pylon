@@ -58,7 +58,7 @@ export interface PendingUserInputCardProps {
   readonly onSelectOption: (
     requestId: ApprovalRequestId,
     question: UserInputQuestion,
-    label: string,
+    value: string,
   ) => void;
   readonly onChangeCustomAnswer: (
     requestId: ApprovalRequestId,
@@ -66,6 +66,8 @@ export interface PendingUserInputCardProps {
     customAnswer: string,
   ) => void;
   readonly onSubmit: () => Promise<unknown>;
+  /** Closes an async question without a reply. Hidden for native callback questions. */
+  readonly onDismiss: () => Promise<unknown>;
 }
 
 /**
@@ -267,12 +269,13 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
               </Text>
               <View className="gap-2">
                 {question.options.map((option) => {
-                  const selected = isPendingUserInputOptionSelected(draft, option.label);
+                  const optionValue = option.value ?? option.label.trim();
+                  const selected = isPendingUserInputOptionSelected(question, draft, optionValue);
                   const description =
                     option.description !== option.label ? option.description : undefined;
                   return (
                     <Pressable
-                      key={option.label}
+                      key={optionValue}
                       className={cn(
                         "min-h-12 w-full rounded-2xl border px-3.5 py-3",
                         selected
@@ -283,7 +286,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                         props.onSelectOption(
                           props.pendingUserInput.requestId,
                           question,
-                          option.label,
+                          optionValue,
                         )
                       }
                     >
@@ -308,16 +311,18 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                   );
                 })}
               </View>
-              <TextInput
-                value={draft?.customAnswer ?? ""}
-                onChangeText={(value) =>
-                  props.onChangeCustomAnswer(props.pendingUserInput.requestId, question.id, value)
-                }
-                onFocus={() => props.onInputFocusChange?.(true)}
-                onBlur={() => props.onInputFocusChange?.(false)}
-                placeholder="Or type a custom answer"
-                className="min-h-[54px] rounded-2xl border border-adaptive-neutral-200-white-a8 bg-adaptive-white-neutral-950-a70 px-3.5 py-3 font-sans text-base text-adaptive-neutral-950-50"
-              />
+              {question.allowCustomAnswer !== false ? (
+                <TextInput
+                  value={draft?.customAnswer ?? ""}
+                  onChangeText={(value) =>
+                    props.onChangeCustomAnswer(props.pendingUserInput.requestId, question.id, value)
+                  }
+                  onFocus={() => props.onInputFocusChange?.(true)}
+                  onBlur={() => props.onInputFocusChange?.(false)}
+                  placeholder="Or type a custom answer"
+                  className="min-h-[54px] rounded-2xl border border-adaptive-neutral-200-white-a8 bg-adaptive-white-neutral-950-a70 px-3.5 py-3 font-sans text-base text-adaptive-neutral-950-50"
+                />
+              ) : null}
             </View>
           );
         })}
@@ -334,6 +339,18 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       >
         <Text className="font-t3-extrabold text-sm text-white">Submit answers</Text>
       </Pressable>
+      {props.pendingUserInput.dismissible ? (
+        <Pressable
+          accessibilityRole="button"
+          className="items-center justify-center rounded-2xl px-4 py-2.5 active:opacity-70"
+          disabled={props.respondingUserInputId === props.pendingUserInput.requestId}
+          onPress={() => void props.onDismiss()}
+        >
+          <Text className="font-t3-bold text-sm text-foreground-muted">
+            Dismiss without answering
+          </Text>
+        </Pressable>
+      ) : null}
     </Animated.View>
   ) : null;
   return (

@@ -40,6 +40,16 @@ In an existing Codex thread, send `/feedback` or `/feedback` followed by a descr
 issue. Pylon uploads the thread and Codex logs to OpenAI and shows a thread ID that you can copy
 and share with OpenAI employees.
 
+## Answer questions while Codex works
+
+Codex can ask questions without stopping its work. Choose a suggested answer or enter your own
+in the question panel. Questions without suggested answers accept text.
+
+Your answers are sent as a new message. They reach the current turn while Codex is working, or
+start a new turn if it has finished. Unanswered questions stay available after you reconnect.
+To close an unanswered question without sending a message, choose its dismiss action.
+This works in the web, desktop, and mobile apps. Codex must support async questions.
+
 ## Sub-agent models
 
 The web and desktop Agents panel shows each sub-agent's model and reasoning effort when Codex

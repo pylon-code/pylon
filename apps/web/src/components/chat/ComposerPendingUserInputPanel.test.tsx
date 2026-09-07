@@ -20,17 +20,22 @@ const prompt: PendingUserInput = {
       multiSelect: false,
     },
   ],
+  dismissible: true,
 };
 
-function renderPanel() {
+function renderPanel(
+  pendingUserInput: PendingUserInput = prompt,
+  respondingRequestIds: ApprovalRequestId[] = [],
+) {
   return renderToStaticMarkup(
     <ComposerPendingUserInputPanel
-      pendingUserInputs={[prompt]}
-      respondingRequestIds={[]}
+      pendingUserInputs={[pendingUserInput]}
+      respondingRequestIds={respondingRequestIds}
       answers={{}}
       questionIndex={0}
       onToggleOption={() => {}}
       onAdvance={() => {}}
+      onDismiss={() => {}}
     />,
   );
 }
@@ -48,6 +53,24 @@ describe("ComposerPendingUserInputPanel", () => {
     const controlledId = toggle?.match(/aria-controls="([^"]+)"/)?.[1];
     expect(controlledId).toBeDefined();
     expect(markup).toMatch(new RegExp(`<div[^>]*\\sid="${controlledId}"`));
+  });
+
+  it("offers dismiss only for async questions", () => {
+    expect(renderPanel()).toContain("data-pending-user-input-dismiss");
+    expect(renderPanel({ ...prompt, dismissible: false })).not.toContain(
+      "data-pending-user-input-dismiss",
+    );
+  });
+
+  it("uses a separate disabled native dismiss button while a response is pending", () => {
+    const markup = renderPanel(prompt, [prompt.requestId]);
+    const dismiss = markup.match(/<button[^>]*data-pending-user-input-dismiss[^>]*>/)?.[0];
+    expect(dismiss).toBeDefined();
+    expect(dismiss).toContain("disabled");
+    const toggleStart = markup.indexOf("data-pending-user-input-toggle");
+    const toggleEnd = markup.indexOf("</button>", toggleStart);
+    expect(markup.indexOf("data-pending-user-input-dismiss")).toBeGreaterThan(toggleEnd);
+    expect(markup).not.toContain('role="button"');
   });
 
   it("starts expanded so the question and its options are visible", () => {

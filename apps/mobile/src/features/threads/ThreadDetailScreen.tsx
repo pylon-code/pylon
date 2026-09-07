@@ -223,6 +223,7 @@ export interface ThreadDetailScreenProps {
     response: SessionInteractionResponse,
   ) => Promise<unknown>;
   readonly onRetryInteraction: () => Promise<unknown>;
+  readonly onDismissUserInput: () => Promise<unknown>;
   readonly showContent?: boolean;
 }
 
@@ -994,6 +995,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                         onSelectOption={props.onSelectUserInputOption}
                         onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
                         onSubmit={props.onSubmitUserInput}
+                        onDismiss={props.onDismissUserInput}
                       />
                     ) : null}
                     {props.activePendingInteraction ? (

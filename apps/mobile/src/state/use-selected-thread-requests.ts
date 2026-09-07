@@ -1,3 +1,4 @@
+import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -15,10 +16,8 @@ import { threadEnvironment } from "../state/threads";
 import { scopedRequestKey } from "../lib/scopedEntities";
 import {
   buildPendingUserInputAnswers,
-  derivePendingApprovals,
-  derivePendingUserInputs,
-  setPendingUserInputCustomAnswer,
   sortThreadActivities,
+  setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
 } from "../lib/threadActivity";
@@ -49,7 +48,7 @@ const userInputDraftsByRequestKeyAtom = Atom.make<
 function setUserInputDraftOption(
   requestKey: string,
   question: UserInputQuestion,
-  label: string,
+  value: string,
 ): void {
   const current = appAtomRegistry.get(userInputDraftsByRequestKeyAtom);
   appAtomRegistry.set(userInputDraftsByRequestKeyAtom, {
@@ -59,7 +58,7 @@ function setUserInputDraftOption(
       [question.id]: togglePendingUserInputOptionSelection(
         question,
         current[requestKey]?.[question.id],
-        label,
+        value,
       ),
     },
   });
@@ -67,7 +66,7 @@ function setUserInputDraftOption(
 
 function setUserInputDraftCustomAnswer(
   requestKey: string,
-  questionId: string,
+  question: UserInputQuestion,
   customAnswer: string,
 ): void {
   const current = appAtomRegistry.get(userInputDraftsByRequestKeyAtom);
@@ -75,8 +74,9 @@ function setUserInputDraftCustomAnswer(
     ...current,
     [requestKey]: {
       ...current[requestKey],
-      [questionId]: setPendingUserInputCustomAnswer(
-        current[requestKey]?.[questionId],
+      [question.id]: setPendingUserInputCustomAnswer(
+        question,
+        current[requestKey]?.[question.id],
         customAnswer,
       ),
     },
@@ -103,6 +103,10 @@ export function useSelectedThreadRequests() {
     label: "thread interaction response",
     reportFailure: false,
   });
+  const dismissUserInput = useAtomCommand(
+    threadEnvironment.dismissUserInput,
+    "thread user input dismissal",
+  );
   const { selectedThread: selectedThreadShell } = useThreadSelection();
   const selectedThread = useSelectedThreadDetail();
   const userInputDraftsByRequestKey = useAtomValue(userInputDraftsByRequestKeyAtom);
@@ -115,7 +119,7 @@ export function useSelectedThreadRequests() {
   const interactionSubmissionLockRef = useRef<SessionInteractionRequestId | null>(null);
   const interactionSubmissionAttemptRef = useRef(0);
 
-  // Sort once; both derivations expect the same lifecycle ordering.
+  // Prime interactions retain their own ordered lifecycle reducer.
   const sortedActivities = useMemo(
     () => (selectedThread ? sortThreadActivities(selectedThread.activities) : []),
     [selectedThread],
@@ -132,15 +136,11 @@ export function useSelectedThreadRequests() {
     sessionInteractionState.failures.find(
       (failure) => failure.requestId === activePendingInteraction?.requestId,
     ) ?? null;
-  const activePendingApprovals = useMemo(
-    () => derivePendingApprovals(sortedActivities),
-    [sortedActivities],
+  const { approvals: activePendingApprovals, userInputs: activePendingUserInputs } = useMemo(
+    () => derivePendingRequests(selectedThread?.activities ?? []),
+    [selectedThread?.activities],
   );
   const activePendingApproval = activePendingApprovals[0] ?? null;
-  const activePendingUserInputs = useMemo(
-    () => derivePendingUserInputs(sortedActivities),
-    [sortedActivities],
-  );
   const activePendingUserInput = activePendingUserInputs[0] ?? null;
   const activePendingUserInputDrafts =
     activePendingUserInput && selectedThreadShell
@@ -153,27 +153,30 @@ export function useSelectedThreadRequests() {
     : null;
 
   const onSelectUserInputOption = useCallback(
-    (requestId: ApprovalRequestId, question: UserInputQuestion, label: string) => {
+    (requestId: ApprovalRequestId, question: UserInputQuestion, value: string) => {
       if (!selectedThreadShell) {
         return;
       }
 
       const requestKey = scopedRequestKey(selectedThreadShell.environmentId, requestId);
-      setUserInputDraftOption(requestKey, question, label);
+      setUserInputDraftOption(requestKey, question, value);
     },
     [selectedThreadShell],
   );
 
   const onChangeUserInputCustomAnswer = useCallback(
     (requestId: ApprovalRequestId, questionId: string, customAnswer: string) => {
-      if (!selectedThreadShell) {
+      const question = activePendingUserInputs
+        .find((request) => request.requestId === requestId)
+        ?.questions.find((entry) => entry.id === questionId);
+      if (!selectedThreadShell || !question) {
         return;
       }
 
       const requestKey = scopedRequestKey(selectedThreadShell.environmentId, requestId);
-      setUserInputDraftCustomAnswer(requestKey, questionId, customAnswer);
+      setUserInputDraftCustomAnswer(requestKey, question, customAnswer);
     },
-    [selectedThreadShell],
+    [activePendingUserInputs, selectedThreadShell],
   );
 
   const onRespondToApproval = useCallback(
@@ -313,6 +316,25 @@ export function useSelectedThreadRequests() {
     interactionSubmission,
     activePendingInteraction?.requestId ?? null,
   );
+  // Closes an async question without messaging the agent.
+  const onDismissUserInput = useCallback(async () => {
+    if (!selectedThreadShell || !activePendingUserInput) {
+      return;
+    }
+
+    setRespondingUserInputId(activePendingUserInput.requestId);
+    const result = await dismissUserInput({
+      environmentId: selectedThreadShell.environmentId,
+      input: {
+        threadId: selectedThreadShell.id,
+        requestId: activePendingUserInput.requestId,
+      },
+    });
+    setRespondingUserInputId((current) =>
+      current === activePendingUserInput.requestId ? null : current,
+    );
+    return result;
+  }, [activePendingUserInput, dismissUserInput, selectedThreadShell]);
 
   return {
     activePendingApproval,
@@ -335,5 +357,6 @@ export function useSelectedThreadRequests() {
     onSubmitUserInput,
     onRespondToInteraction,
     onRetryInteraction,
+    onDismissUserInput,
   };
 }

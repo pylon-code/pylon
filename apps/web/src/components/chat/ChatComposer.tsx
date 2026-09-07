@@ -796,7 +796,11 @@ export interface ChatComposerProps {
     isLastQuestion: boolean;
     canAdvance: boolean;
     customAnswer: string;
-    activeQuestion: { id: string; multiSelect?: boolean | undefined } | null;
+    activeQuestion: {
+      id: string;
+      multiSelect?: boolean | undefined;
+      allowCustomAnswer?: boolean | undefined;
+    } | null;
   } | null;
   activePendingResolvedAnswers: Record<string, unknown> | null;
   activePendingIsResponding: boolean;
@@ -891,6 +895,7 @@ export interface ChatComposerProps {
   ) => Promise<unknown>;
   onSelectActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;
   onAdvanceActivePendingUserInput: () => void;
+  onDismissActivePendingUserInput: (requestId: ApprovalRequestId) => void;
   onPreviousActivePendingUserInputQuestion: () => void;
   onChangeActivePendingUserInputCustomAnswer: (
     questionId: string,
@@ -1002,6 +1007,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onRespondToApproval,
     onSelectActivePendingUserInputOption,
     onAdvanceActivePendingUserInput,
+    onDismissActivePendingUserInput,
     onPreviousActivePendingUserInputQuestion,
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
@@ -2267,7 +2273,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
 
   const isComposerApprovalState = activePendingApproval !== null;
+  const isChoiceOnlyPendingQuestion =
+    activePendingProgress?.activeQuestion?.allowCustomAnswer === false;
   const activePendingUserInput = pendingUserInputs[0] ?? null;
+  const pendingQuestionPlaceholder = isChoiceOnlyPendingQuestion
+    ? "Choose an option above"
+    : activePendingUserInput?.questions[activePendingProgress?.questionIndex ?? 0]?.options
+          .length === 0
+      ? "Type your answer"
+      : "Type your own answer, or leave this blank to use the selected option";
   const showComposerTopDrawer =
     isComposerApprovalState ||
     pendingUserInputs.length > 0 ||
@@ -4489,11 +4503,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   ) : !isComposerCollapsedMobile && pendingUserInputs.length > 0 ? (
                     <ComposerPendingUserInputPanel
                       pendingUserInputs={pendingUserInputs}
-                      respondingRequestIds={respondingRequestIds}
+                      respondingRequestIds={
+                        activePendingIsResponding && activePendingUserInput
+                          ? [activePendingUserInput.requestId]
+                          : []
+                      }
                       answers={activePendingDraftAnswers}
                       questionIndex={activePendingQuestionIndex}
                       onToggleOption={onSelectActivePendingUserInputOption}
                       onAdvance={onAdvanceActivePendingUserInput}
+                      onDismiss={onDismissActivePendingUserInput}
                     />
                   ) : !isComposerCollapsedMobile && showPlanFollowUpPrompt && activeProposedPlan ? (
                     <ComposerPlanFollowUpBanner
@@ -4504,11 +4523,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     <div data-chat-composer-collapsed-controls="true">
                       <ComposerPendingUserInputPanel
                         pendingUserInputs={pendingUserInputs}
-                        respondingRequestIds={respondingRequestIds}
+                        respondingRequestIds={
+                          activePendingIsResponding && activePendingUserInput
+                            ? [activePendingUserInput.requestId]
+                            : []
+                        }
                         answers={activePendingDraftAnswers}
                         questionIndex={activePendingQuestionIndex}
                         onToggleOption={onSelectActivePendingUserInputOption}
                         onAdvance={onAdvanceActivePendingUserInput}
+                        onDismiss={onDismissActivePendingUserInput}
                       />
                       <ComposerBanner.Body>
                         <div
@@ -4518,21 +4542,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                             !activePendingProgress?.activeQuestion?.multiSelect && "p-0",
                           )}
                         >
-                          <button
-                            type="button"
-                            className={cn(
-                              "min-w-0 flex-1 truncate bg-transparent py-1.5 text-left text-sm",
-                              activePendingProgress?.customAnswer
-                                ? "text-foreground"
-                                : "text-placeholder",
-                              !activePendingProgress?.activeQuestion?.multiSelect && "px-3 py-2",
-                            )}
-                            onPointerDown={(event) => event.preventDefault()}
-                            onClick={expandMobileComposer}
-                            aria-label="Write custom answer"
-                          >
-                            {activePendingProgress?.customAnswer || "Write custom answer"}
-                          </button>
+                          {!isChoiceOnlyPendingQuestion && (
+                            <button
+                              type="button"
+                              className={cn(
+                                "min-w-0 flex-1 truncate bg-transparent py-1.5 text-left text-sm",
+                                activePendingProgress?.customAnswer
+                                  ? "text-foreground"
+                                  : "text-placeholder",
+                                !activePendingProgress?.activeQuestion?.multiSelect && "px-3 py-2",
+                              )}
+                              onPointerDown={(event) => event.preventDefault()}
+                              onClick={expandMobileComposer}
+                              aria-label="Write custom answer"
+                            >
+                              {activePendingProgress?.customAnswer || "Write custom answer"}
+                            </button>
+                          )}
                           {activePendingProgress?.activeQuestion?.multiSelect ? (
                             <ComposerPrimaryActions
                               compact
@@ -4632,8 +4658,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     aria-label="Expand composer"
                   >
                     {activePendingProgress
-                      ? activePendingProgress.customAnswer ||
-                        "Type your own answer, or leave this blank to use the selected option"
+                      ? activePendingProgress.customAnswer || pendingQuestionPlaceholder
                       : prompt.trim() ||
                         (providerSelectionBlocked
                           ? "Select another provider to send"
@@ -5084,7 +5109,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         ? (activePendingApproval?.detail ??
                           "Resolve this approval request to continue")
                         : activePendingProgress
-                          ? "Type your own answer, or leave this blank to use the selected option"
+                          ? pendingQuestionPlaceholder
                           : showPlanFollowUpPrompt && activeProposedPlan
                             ? "Add feedback to refine the plan, or leave this blank to implement it"
                             : projectSelectionRequired
@@ -5097,7 +5122,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                     ? DISCONNECTED_COMPOSER_PLACEHOLDER
                                     : "Ask anything, @tag files/folders, $use skills, or / for commands"
                     }
-                    disabled={isConnecting || isComposerApprovalState || projectSelectionRequired}
+                    disabled={
+                      isConnecting ||
+                      isComposerApprovalState ||
+                      isChoiceOnlyPendingQuestion ||
+                      projectSelectionRequired
+                    }
                   />
                   {showMobilePendingAnswerActions ? (
                     <div

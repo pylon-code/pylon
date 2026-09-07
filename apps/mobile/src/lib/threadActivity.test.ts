@@ -1,3 +1,4 @@
+import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
 import { describe, expect, it } from "vite-plus/test";
 import { codexFeedbackMessage } from "@t3tools/client-runtime/state/threads";
 
@@ -15,7 +16,6 @@ import {
 import {
   buildPendingUserInputAnswers,
   buildThreadFeed,
-  derivePendingApprovals,
   deriveThreadFeedPresentation,
   isPendingUserInputOptionSelected,
   setPendingUserInputCustomAnswer,
@@ -74,15 +74,72 @@ const multiSelectQuestion = {
   multiSelect: true,
 } as const;
 
+const nativeQuestion = {
+  id: "choice",
+  header: "File",
+  question: "Which file should be used?",
+  options: [
+    { label: "Use this", description: "First file", value: " choice " },
+    { label: "Use this", description: "Second file", value: "choice" },
+  ],
+  multiSelect: false,
+  allowCustomAnswer: false,
+} as const;
+
 describe("pending user input answers", () => {
+  it("accepts free-text answers to async questions without options", () => {
+    const question = {
+      id: "0",
+      header: "Question",
+      question: "What should it be named?",
+      options: [],
+      allowCustomAnswer: true,
+      multiSelect: false,
+    };
+    const requested = makeActivity({
+      id: EventId.make("async-question"),
+      kind: "user-input.requested",
+      summary: "User input requested",
+      createdAt: "2026-09-03T00:00:00.000Z",
+      payload: { requestId: "async-1", responseMode: "message", questions: [question] },
+    });
+    const questions = derivePendingRequests([requested]).userInputs[0]?.questions;
+    expect(questions).toEqual([question]);
+    expect(buildPendingUserInputAnswers(questions!, { "0": { customAnswer: "Example" } })).toEqual({
+      "0": "Example",
+    });
+  });
+
+  it("preserves native choice values and custom-answer rules from activities", () => {
+    const requested = makeActivity({
+      id: EventId.make("native-question"),
+      kind: "user-input.requested",
+      summary: "User input requested",
+      createdAt: "2026-09-02T00:00:00.000Z",
+      payload: {
+        requestId: "interaction_1",
+        questions: [nativeQuestion, singleSelectQuestion],
+      },
+    });
+
+    expect(derivePendingRequests([requested]).userInputs).toEqual([
+      {
+        requestId: "interaction_1",
+        createdAt: requested.createdAt,
+        dismissible: false,
+        questions: [nativeQuestion, singleSelectQuestion],
+      },
+    ]);
+  });
+
   it("replaces single-select options and toggles multi-select options", () => {
     expect(
       togglePendingUserInputOptionSelection(
         singleSelectQuestion,
-        { selectedOptionLabels: ["Go"] },
+        { selectedOptionValues: ["Go"] },
         "Node.js",
       ),
-    ).toEqual({ customAnswer: "", selectedOptionLabels: ["Node.js"] });
+    ).toEqual({ customAnswer: "", selectedOptionValues: ["Node.js"] });
 
     const orders = togglePendingUserInputOptionSelection(multiSelectQuestion, undefined, "Orders");
     const ordersAndListings = togglePendingUserInputOptionSelection(
@@ -92,18 +149,18 @@ describe("pending user input answers", () => {
     );
     expect(ordersAndListings).toEqual({
       customAnswer: "",
-      selectedOptionLabels: ["Orders", "Listings"],
+      selectedOptionValues: ["Orders", "Listings"],
     });
     expect(
       togglePendingUserInputOptionSelection(multiSelectQuestion, ordersAndListings, "Orders"),
-    ).toEqual({ customAnswer: "", selectedOptionLabels: ["Listings"] });
+    ).toEqual({ customAnswer: "", selectedOptionValues: ["Listings"] });
 
     const paddedOrders = togglePendingUserInputOptionSelection(
       multiSelectQuestion,
       undefined,
       "  Orders  ",
     );
-    expect(paddedOrders).toEqual({ customAnswer: "", selectedOptionLabels: ["Orders"] });
+    expect(paddedOrders).toEqual({ customAnswer: "", selectedOptionValues: ["Orders"] });
     expect(
       togglePendingUserInputOptionSelection(multiSelectQuestion, paddedOrders, "  Orders  "),
     ).toEqual({ customAnswer: "" });
@@ -112,8 +169,8 @@ describe("pending user input answers", () => {
   it("builds array answers for multi-select questions", () => {
     expect(
       buildPendingUserInputAnswers([singleSelectQuestion, multiSelectQuestion], {
-        runtime: { selectedOptionLabels: ["Go"] },
-        scope: { selectedOptionLabels: ["Orders", "Listings"] },
+        runtime: { selectedOptionValues: ["Go"] },
+        scope: { selectedOptionValues: ["Orders", "Listings"] },
       }),
     ).toEqual({
       runtime: "Go",
@@ -124,137 +181,84 @@ describe("pending user input answers", () => {
   it("clears selected options while a custom answer is active", () => {
     expect(
       setPendingUserInputCustomAnswer(
-        { selectedOptionLabels: ["Orders", "Listings"] },
+        multiSelectQuestion,
+        { selectedOptionValues: ["Orders", "Listings"] },
         "Orders first",
       ),
     ).toEqual({ customAnswer: "Orders first" });
   });
 
-  it("matches selected chips against normalized option labels", () => {
+  it("matches selected options against normalized legacy labels", () => {
     expect(
-      isPendingUserInputOptionSelected({ selectedOptionLabels: ["Orders"] }, "  Orders  "),
+      isPendingUserInputOptionSelected(
+        multiSelectQuestion,
+        { selectedOptionValues: ["Orders"] },
+        "  Orders  ",
+      ),
     ).toBe(true);
     expect(
       isPendingUserInputOptionSelected(
-        { selectedOptionLabels: ["Orders"], customAnswer: "Orders first" },
+        multiSelectQuestion,
+        { selectedOptionValues: ["Orders"], customAnswer: "Orders first" },
         "  Orders  ",
       ),
     ).toBe(false);
   });
-});
 
-describe("pending approvals", () => {
-  it.each([{}, { requestType: "unknown" }])(
-    "exposes legacy OpenCode approvals without a known request kind: %j",
-    (legacyPayload) => {
-      const requested = makeActivity({
-        id: EventId.make("approval-legacy"),
-        kind: "approval.requested",
-        summary: "Approval requested",
-        createdAt: "2026-08-24T00:00:00.000Z",
-        payload: { requestId: "per-legacy", detail: "*", ...legacyPayload },
-      });
-
-      expect(derivePendingApprovals([requested])).toEqual([
-        {
-          requestId: "per-legacy",
-          requestKind: "command",
-          createdAt: requested.createdAt,
-          detail: "*",
-        },
-      ]);
-    },
-  );
-
-  it.each(["tool_user_input", "auth_tokens_refresh"])(
-    "does not turn %s into an approval",
-    (requestType) => {
-      const activity = makeActivity({
-        id: EventId.make("approval-non-approval"),
-        kind: "approval.requested",
-        summary: "Approval requested",
-        createdAt: "2026-08-24T00:00:00.000Z",
-        payload: { requestId: "not-an-approval", requestType },
-      });
-
-      expect(derivePendingApprovals([activity])).toEqual([]);
-    },
-  );
-
-  it.each(["approval.resolved", "provider.approval.respond.failed"])(
-    "removes legacy approvals after %s",
-    (kind) => {
-      const requested = makeActivity({
-        id: EventId.make("approval-legacy-open"),
-        kind: "approval.requested",
-        summary: "Approval requested",
-        createdAt: "2026-08-24T00:00:00.000Z",
-        payload: { requestId: "per-legacy", requestType: "unknown" },
-      });
-      const resolved = makeActivity({
-        id: EventId.make("approval-legacy-resolved"),
-        kind,
-        summary: "Approval resolved",
-        createdAt: "2026-08-24T00:00:01.000Z",
-        payload: {
-          requestId: "per-legacy",
-          detail: "Unknown pending permission request: per-legacy",
-        },
-      });
-
-      expect(derivePendingApprovals([requested, resolved])).toEqual([]);
-    },
-  );
-
-  it("keeps app access approvals and persistence choices from remote environments", () => {
-    const options = [
-      { decision: "decline", label: "Decline" },
-      { decision: "acceptAlways", label: "Always allow Safari" },
-      { decision: "accept", label: "Approve" },
-    ];
-    const activity = makeActivity({
-      id: EventId.make("approval-safari"),
-      kind: "approval.requested",
-      summary: "App access approval requested",
-      createdAt: "2026-08-24T00:00:00.000Z",
-      payload: {
-        requestId: "req-safari",
-        requestType: "mcp_elicitation_approval",
-        detail: "Allow ChatGPT to use Safari?",
-        appName: "Safari",
-        options,
-      },
-    });
-
-    expect(derivePendingApprovals([activity])).toEqual([
-      {
-        requestId: "req-safari",
-        requestKind: "mcp-elicitation",
-        createdAt: "2026-08-24T00:00:00.000Z",
-        detail: "Allow ChatGPT to use Safari?",
-        appName: "Safari",
-        options,
-      },
-    ]);
+  it("keeps custom answers enabled for legacy questions", () => {
+    expect(
+      buildPendingUserInputAnswers([singleSelectQuestion], {
+        runtime: { selectedOptionValues: ["Go"], customAnswer: "  Use Bun  " },
+      }),
+    ).toEqual({ runtime: "Use Bun" });
   });
 
-  it("removes an app access approval after a remote client rejects it", () => {
-    const requested = makeActivity({
-      id: EventId.make("approval-safari-open"),
-      kind: "approval.requested",
-      summary: "App access approval requested",
-      createdAt: "2026-08-24T00:00:00.000Z",
-      payload: { requestId: "req-safari", requestKind: "mcp-elicitation" },
-    });
-    const resolved = makeActivity({
-      id: EventId.make("approval-safari-resolved"),
-      kind: "approval.resolved",
-      summary: "Approval resolved",
-      createdAt: "2026-08-24T00:00:01.000Z",
-      payload: { requestId: "req-safari", decision: "decline" },
+  it("keeps duplicate labels and whitespace-sensitive native values separate", () => {
+    const first = togglePendingUserInputOptionSelection(nativeQuestion, undefined, " choice ");
+    expect(isPendingUserInputOptionSelected(nativeQuestion, first, " choice ")).toBe(true);
+    expect(isPendingUserInputOptionSelected(nativeQuestion, first, "choice")).toBe(false);
+    expect(buildPendingUserInputAnswers([nativeQuestion], { choice: first })).toEqual({
+      choice: " choice ",
     });
 
-    expect(derivePendingApprovals([requested, resolved])).toEqual([]);
+    const second = togglePendingUserInputOptionSelection(nativeQuestion, first, "choice");
+    expect(isPendingUserInputOptionSelected(nativeQuestion, second, " choice ")).toBe(false);
+    expect(isPendingUserInputOptionSelected(nativeQuestion, second, "choice")).toBe(true);
+    expect(buildPendingUserInputAnswers([nativeQuestion], { choice: second })).toEqual({
+      choice: "choice",
+    });
+  });
+
+  it("keeps exact native values in multi-select answers", () => {
+    const question = { ...nativeQuestion, multiSelect: true };
+    const first = togglePendingUserInputOptionSelection(question, undefined, " choice ");
+    const both = togglePendingUserInputOptionSelection(question, first, "choice");
+    expect(buildPendingUserInputAnswers([question], { choice: both })).toEqual({
+      choice: [" choice ", "choice"],
+    });
+
+    const second = togglePendingUserInputOptionSelection(question, both, " choice ");
+    expect(buildPendingUserInputAnswers([question], { choice: second })).toEqual({
+      choice: ["choice"],
+    });
+  });
+
+  it("ignores custom answers when a question only accepts choices", () => {
+    const draft = { selectedOptionValues: [" choice "], customAnswer: "Other" };
+    expect(setPendingUserInputCustomAnswer(nativeQuestion, draft, "Custom text")).toBe(draft);
+    expect(isPendingUserInputOptionSelected(nativeQuestion, draft, " choice ")).toBe(true);
+    expect(buildPendingUserInputAnswers([nativeQuestion], { choice: draft })).toEqual({
+      choice: " choice ",
+    });
+  });
+
+  it.each([
+    { customAnswer: "Other" },
+    { selectedOptionValues: ["Use this"] },
+    { selectedOptionValues: ["not offered"] },
+    { selectedOptionValues: ["  choice  "] },
+  ])("requires an offered value for a choice-only question: %j", (draft) => {
+    expect(buildPendingUserInputAnswers([nativeQuestion], { choice: draft })).toBeNull();
   });
 });
 
