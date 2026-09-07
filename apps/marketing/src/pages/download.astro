@@ -210,11 +210,15 @@ import { RELEASES_URL } from "../lib/releases";
     opacity: 0;
     animation: fade-in 1s ease-out 0.1s forwards;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
+    justify-content: center;
     gap: 0.75rem;
+    text-align: center;
   }
 
   .changelog-link {
+    white-space: nowrap;
     color: var(--fg-muted);
     font-size: 0.8rem;
     text-decoration: underline;
