@@ -12,9 +12,6 @@ export interface RollbackTarget {
   readonly label: string;
 }
 
-export const EXACT_ROLLBACK_UNAVAILABLE_REASON =
-  "Exact rollback requires an idle Pylon-managed native Prime session with a matching immutable checkpoint anchor.";
-
 export function isRollbackActive(status: OrchestrationRollbackStatus | null | undefined): boolean {
   return (
     status?.state === "pending" ||

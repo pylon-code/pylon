@@ -11,7 +11,7 @@ export interface TaskProgressStep {
   readonly waitingOn?: TaskProgressWaitingOn;
 }
 
-export function taskProgressStatusVisual(
+function taskProgressStatusVisual(
   status: TaskProgressStatus,
   waitingOn?: TaskProgressWaitingOn,
 ): { readonly glyph: "✓" | "●" | "○"; readonly className: string } {

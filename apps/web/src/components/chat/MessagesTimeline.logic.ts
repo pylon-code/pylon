@@ -280,7 +280,7 @@ export function normalizeCompactToolLabel(value: string): string {
 type ToolGroupAction = "read" | "edit" | "command" | "code-search" | "search" | "other" | "update";
 type ToolGroupSummaryKind = ToolGroupAction | "dynamic-tool" | "agent-tool" | "tone-tool" | "mixed";
 
-export function workLogEntryIsLocalCodeSearch(entry: WorkLogEntry): boolean {
+function workLogEntryIsLocalCodeSearch(entry: WorkLogEntry): boolean {
   return (
     entry.itemType === "web_search" &&
     /\bgrep\b/i.test(normalizeCompactToolLabel(entry.toolTitle ?? entry.label))

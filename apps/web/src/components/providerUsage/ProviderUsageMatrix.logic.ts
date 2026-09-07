@@ -13,7 +13,7 @@ import type { ServerProviderUsageWindow } from "@t3tools/contracts";
 import type { ProviderUsageAccount } from "./ProviderUsageAccounts";
 
 /** Older than this and a reading is labelled rather than shown as current. */
-export const USAGE_STALE_AFTER_MS = 3 * 60_000;
+const USAGE_STALE_AFTER_MS = 3 * 60_000;
 
 export interface ProviderUsageCell {
   readonly accountId: string;
@@ -98,7 +98,7 @@ export function isUsageReadingStale(input: {
  * again (`USAGE_PROBE_SUCCESS_TTL` in `ClaudeDriver`). The usage endpoints
  * are rate limited, so refreshes inside this window are served from cache.
  */
-export const USAGE_READING_CACHE_MS = 5 * 60_000;
+const USAGE_READING_CACHE_MS = 5 * 60_000;
 
 /**
  * How old a reading may get before the popover and strip call it stale, given
