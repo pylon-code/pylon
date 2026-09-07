@@ -69,6 +69,11 @@ Pylon works with the platforms your team already uses:
   brought in from the base branch
 - While working in a thread, open linked reviews in the same compact right-panel tabs without
   leaving the conversation
+- Show a file tree next to a review’s **Code** tab or a thread’s **Diff** panel to browse folders
+  and jump to a changed file. The toolbar remembers whether the tree is visible. In narrow panels,
+  the tree moves below the code.
+- Choose **Settings → General → Diff layout** to use stacked or side-by-side diffs. Changing the
+  layout in either diff toolbar updates this preference too.
 - Enable **Settings → General → Proactive panels** to open a newly linked review automatically and
   switch to the completed turn's diff when agent work changes files. An open review stays in front, and manual panel choices take priority
 - Open the review directly in your browser with one click

@@ -108,7 +108,6 @@ import { useAssetUrls } from "../../assets/assetUrls";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { SessionNotificationRow } from "./ComposerSessionInteractionPanel";
 import { ChangedFilesCard } from "./ChangedFilesTree";
-import { shouldAutoExpandChangedFiles } from "./changedFilesPresentation";
 import {
   CHAT_TIMELINE_ANCHOR_OFFSET,
   timelineContentOverflowsViewport,
@@ -2150,30 +2149,21 @@ function AssistantChangedFilesSectionInner({
   resolvedTheme: "light" | "dark";
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
 }) {
-  const activity = use(TimelineRowActivityCtx);
-  const isLatestTurn = activity.latestTurnId === turnSummary.turnId;
   const persistedExpanded = useUiStateStore(
     (store) => store.threadChangedFilesExpandedById[routeThreadKey]?.[turnSummary.turnId],
   );
   const setExpanded = useUiStateStore((store) => store.setThreadChangedFilesExpanded);
-  const [autoExpanded] = useState(() =>
-    shouldAutoExpandChangedFiles(checkpointFiles, isLatestTurn),
-  );
-  const [allDirectoriesExpanded, setAllDirectoriesExpanded] = useState(autoExpanded);
-  const expanded = persistedExpanded ?? (isLatestTurn && autoExpanded);
+  const allDirectoriesExpanded = persistedExpanded ?? false;
 
   return (
     <ChangedFilesCard
       turnId={turnSummary.turnId}
       files={checkpointFiles}
-      expanded={expanded}
-      showCompactPreview={isLatestTurn}
       allDirectoriesExpanded={allDirectoriesExpanded}
       resolvedTheme={resolvedTheme}
-      onExpandedChange={(nextExpanded) =>
-        setExpanded(routeThreadKey, turnSummary.turnId, nextExpanded)
+      onToggleAllDirectories={() =>
+        setExpanded(routeThreadKey, turnSummary.turnId, !allDirectoriesExpanded)
       }
-      onToggleAllDirectories={() => setAllDirectoriesExpanded((current) => !current)}
       onOpenTurnDiff={onOpenTurnDiff}
     />
   );

@@ -27,6 +27,7 @@ const clientSettings: ClientSettings = {
   composerCollapseOnScroll: true,
   dismissedProviderUpdateNotificationKeys: [],
   diffIgnoreWhitespace: true,
+  diffLayout: "stacked",
   environmentIdentificationMode: "artwork",
   favorites: [],
   fontFamilyCode: "",
