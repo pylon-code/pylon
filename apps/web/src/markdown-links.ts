@@ -2,6 +2,7 @@ import {
   inlineCodeFilePathCandidate,
   isConventionalFilePosition,
 } from "@t3tools/client-runtime/markdown-links";
+import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
 import {
@@ -274,10 +275,9 @@ function workspaceRelativePath(path: string, workspaceRoot: string | undefined):
     workspaceRoot.replaceAll("\\", "/"),
   );
   const normalizedRoot = normalizedRootWithTrailingSlash.replace(/\/+$/, "");
-  const useCaseInsensitiveComparison =
-    (WINDOWS_DRIVE_PATH_PATTERN.test(normalizedPath) &&
-      WINDOWS_DRIVE_PATH_PATTERN.test(normalizedRootWithTrailingSlash)) ||
-    (normalizedPath.startsWith("//") && normalizedRootWithTrailingSlash.startsWith("//"));
+  const useCaseInsensitiveComparison = isWindowsAbsolutePath(
+    normalizeWindowsDrivePath(workspaceRoot),
+  );
   const pathForCompare = useCaseInsensitiveComparison
     ? normalizedPath.toLowerCase()
     : normalizedPath;
