@@ -97,8 +97,6 @@ interface DiffPanelProps {
   workspaceMutationId: string | null;
 }
 
-export { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
-
 export default function DiffPanel({
   mode = "inline",
   composerDraftTarget,
