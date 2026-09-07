@@ -34,6 +34,10 @@ When you set this field, Pylon points Claude Code at that directory with the
 `CLAUDE_CONFIG_DIR` environment variable. It does not change `HOME`, so your system keychain and
 the rest of your environment stay as they are.
 
+Claude Code’s verbose mode can stay enabled when you use Claude for text generation, including
+thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
+Pylon uses the Claude configuration on the connected server.
+
 ## Reduce Context Usage
 
 In Settings, open your Claude provider and set **Auto-compact after** to a token count between
