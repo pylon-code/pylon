@@ -148,6 +148,10 @@ files outside the workspace open the same way as ones inside it. Because such a 
 its own, an HTML page outside the workspace cannot load scripts, styles, or images from files beside
 it.
 
+POSIX paths retain their capitalization when Pylon checks whether a file belongs to the workspace.
+For example, `/work/Project` and `/work/project` are different locations. Windows drive paths and
+backslash UNC paths continue to match without regard to capitalization.
+
 ## HTML and PDF files in the file viewer
 
 On web and desktop, the file viewer shows HTML and PDF files as a rendered page. Use the
