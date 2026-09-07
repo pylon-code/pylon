@@ -3,6 +3,15 @@
 The Pylon web or desktop app and the server it connects to work best when they use the same
 version. If they do not match, Pylon shows a warning with the right update option for that server.
 
+## Choosing a desktop download
+
+On the [Pylon download page](https://pylon-code.com/download), choose **Stable** or **Nightly**.
+Stable selects the latest stable release; Nightly selects a recent preview build. The platform
+links and release notes follow your choice. You can share a direct
+[Nightly download link](https://pylon-code.com/download?channel=nightly).
+
+Mobile availability is separate from the desktop release channel.
+
 ## Where to Find the Update
 
 You may see the warning in either of these places:
