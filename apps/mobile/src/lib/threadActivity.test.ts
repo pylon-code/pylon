@@ -3290,6 +3290,37 @@ describe("quiet timeline: nested agents", () => {
       summary: { title: "Agent a", status: "Working", tone: "working" },
     });
 
+    const staleFeed = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-spawn-card"),
+        projectId: ProjectId.make("project-1"),
+        title: "Spawn card",
+        latestTurn,
+        activities: [agent("a-start", "task.started", "a", 1)],
+      }),
+    );
+    const manuallySettled = deriveThreadFeedPresentation(
+      staleFeed,
+      latestTurn,
+      new Set(),
+      new Set(),
+      null,
+    );
+    expect(manuallySettled[0]).toMatchObject({ type: "agent-spawn", live: false });
+    expect(manuallySettled.some((row) => row.type === "thinking")).toBe(false);
+    const completedTurn = deriveThreadFeedPresentation(
+      staleFeed,
+      { ...latestTurn, state: "completed", completedAt: "2026-04-01T00:00:10.000Z" },
+      new Set([turnId]),
+      new Set(),
+      latestTurn.startedAt,
+    );
+    expect(completedTurn.find((row) => row.type === "agent-spawn")).toMatchObject({
+      type: "agent-spawn",
+      live: false,
+    });
+    expect(completedTurn.some((row) => row.type === "thinking")).toBe(false);
+
     // The server upserts the progress row with a new createdAt each tick;
     // the card keeps its identity and only the status line changes.
     const tick = (seconds: number, detail: string) =>

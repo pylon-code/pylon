@@ -22,7 +22,6 @@ import {
   type ColorValue,
   Pressable,
   ScrollView,
-  StyleSheet,
   View,
 } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";

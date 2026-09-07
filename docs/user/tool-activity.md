@@ -16,3 +16,5 @@ Group summaries count browser actions separately, such as "Used browser 18 times
 
 Command summaries show the program inside a shell wrapper, such as "Running vp" for
 `/bin/zsh -lc 'vp test run'`. Expanded rows keep the full command.
+
+While a turn is active, Thinking appears when no tool call or subagent card owns the live activity row. Completed calls keep their outcome labels. A subagent card groups the agents launched in that turn; expand it to see each agent's latest reported status and details, and collapse it to return to the summary. Identically named agents remain separate.
