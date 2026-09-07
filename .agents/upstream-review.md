@@ -26,11 +26,11 @@ Under the maintainer's standing approval, two upstream sources are resolved with
 
 Complete patches, PR descriptions and relevant review context were read. The work-log decision was compared against Pylon's existing lifecycle tests and the prepared #396 adaptation. The reporting pointer was checked against current Pylon documentation and repository reporting configuration; this review creates no new reporting channel or policy.
 
-DEF-12 (#9989) and DEF-14 (#9976) were rechecked: `openTerminalLinkInPreview` still calls `isPreviewableUrl`, and web/native markdown parsing still calls `isConventionalFilePosition`. Their deletion patches cannot be applied while those callers remain. DEF-12 still depends on the separately reviewed terminal-link selector; the register conditions remain unchanged. Other deferred and watched work retains the same bounded-head assessment recorded above.
+DEF-12 (#9989) and DEF-14 (#9976) were rechecked: `openTerminalLinkInPreview` still calls `isPreviewableUrl`, and web/native markdown parsing still calls `isConventionalFilePosition`. Their deletion patches cannot be applied while those callers remain. DEF-12 still depends on the separate terminal-link selector candidate; the register conditions remain unchanged. Other deferred and watched work retains the same bounded-head assessment recorded above.
 
 Pylon-only release repair [#395](https://github.com/pylon-code/pylon/pull/395) merged at `30f6b39d115f9cf7df3c0008b1a360c9efaa123a` after green CI. It disables Shiki's time deadline only inside the grammar test wrapper. A controlled clock reproduced the failure before the change and passed after it; all 14 focused tests pass. Production tokenization and performance limits remain unchanged. This adds no upstream adoption count.
 
-Release run `34118829461` failed its quality gate and did not publish. Replacement run `34121368130` passed all four platform builds and release quality checks and is publishing from the #395 merge. Publication and hosted web deployment are not yet claimed verified. The last fully verified Nightly remains `0.0.33-nightly.20260907.135`; no installed-app update is claimed.
+Release run `34118829461` failed its quality gate and did not publish. Replacement run `34121368130` passed all four platform builds and release quality checks and published [Nightly `0.0.33-nightly.20260907.137`](https://github.com/pylon-code/pylon-releases/releases/tag/v0.0.33-nightly.20260907.137) from the #395 merge, including all 101 adopted sources. All 15 public release assets are present. Hosted web deployment is still in progress; no installed-app update is claimed.
 
 ## 2026-09-07 — tooling adoption, test-only follow-ups and verified Nightly (partial range)
 
