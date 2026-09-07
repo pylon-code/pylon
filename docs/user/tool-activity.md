@@ -22,3 +22,5 @@ While a turn is active, Thinking appears when no tool call or subagent card owns
 A single finished tool call shows its command or action instead of a one-call count. Failed tool rows open to show their full error, even when the error arrived only as a short row label. Repeated labels are omitted from expanded details. Command output is retained even when it matches the command.
 
 Long run durations include hours, such as "Worked for 6h 59m 50s". Live timers use the same hour format.
+
+On web and desktop, only the active tool label shines. It stays still when offscreen, in a background tab or unfocused window, or with reduced motion or forced colors. Loading and server-update icons and the ultrathink border use static colors.

@@ -1438,7 +1438,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Working for");
     expect(markup).toContain("Running pnpm");
-    expect(markup).toContain("live-activity-focus");
+    expect(markup).toContain("live-tool-shine");
   });
 
   it("scopes a live row failure to the tool named by the row", () => {
@@ -1556,7 +1556,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Ran pnpm");
     expect(markup).toContain("lucide-terminal");
-    expect(markup).toContain("live-activity-focus");
+    expect(markup).toContain("live-tool-shine");
     expect(markup).not.toContain("Running pnpm");
     expect(markup).not.toContain("Thinking");
     expect(markup).not.toContain('data-timeline-row-kind="thinking"');
