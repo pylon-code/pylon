@@ -1,3 +1,7 @@
+import * as Scope from "effect/Scope";
+import * as Scheduler from "effect/Scheduler";
+import * as Exit from "effect/Exit";
+import * as Context from "effect/Context";
 import {
   type DesktopSshEnvironmentTarget,
   EnvironmentId,
@@ -421,6 +425,28 @@ function awaitConnectionState(
 }
 
 describe("EnvironmentRegistry", () => {
+  it.effect("does not acquire a session after the registry scope has already closed", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([TARGET]);
+      const registryScope = yield* Scope.make();
+      const context = yield* Layer.build(harness.layer).pipe(Scope.provide(registryScope));
+      const registry = Context.get(context, EnvironmentRegistry.EnvironmentRegistry);
+      const dispatcher = new Scheduler.MixedScheduler("sync", () => () => {}).makeDispatcher();
+      const scheduler: Scheduler.Scheduler = {
+        executionMode: "sync",
+        shouldYield: () => false,
+        makeDispatcher: () => dispatcher,
+      };
+
+      yield* Scope.close(registryScope, Exit.void);
+      yield* registry.start.pipe(Effect.provideService(Scheduler.Scheduler, scheduler));
+      dispatcher.flush();
+
+      expect(yield* Ref.get(harness.sessions)).toHaveLength(0);
+      expect(yield* Ref.get(harness.releasedSessions)).toBe(0);
+    }),
+  );
+
   it.effect("replays connected state when arming a desktop commit observer", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness([TARGET]);
