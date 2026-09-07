@@ -177,6 +177,28 @@ describe("deriveLatestSessionResources", () => {
     ).toBe(fallback);
   });
 
+  it("retains local actions beside live commands, with native names taking priority", () => {
+    const local = { name: "usage-limits", localAction: "usage-limits" as const };
+    const snapshot = {
+      provider: ProviderDriverKind.make("primeAgent"),
+      providerInstanceId: ProviderInstanceId.make("prime-work"),
+      available: true,
+      skills: [],
+      prompts: [],
+      commands: [],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(resolveSessionSlashCommands(snapshot, [local, { name: "stale-native" }])).toEqual([
+      local,
+    ]);
+    expect(
+      resolveSessionSlashCommands(
+        { ...snapshot, commands: [{ name: "USAGE-LIMITS", source: "prompt" }] },
+        [local],
+      ),
+    ).toEqual([{ name: "USAGE-LIMITS" }]);
+  });
+
   it("ignores inventory retained from a previous session incarnation", () => {
     const activities = [
       makeActivity({

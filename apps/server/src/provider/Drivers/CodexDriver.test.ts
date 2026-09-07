@@ -1,3 +1,4 @@
+import * as CodexResetCredit from "../Layers/codexResetCredit.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeOS from "node:os";
@@ -9,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Sink from "effect/Sink";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
@@ -25,6 +27,10 @@ import {
   resolveLatestProviderVersion,
 } from "../providerMaintenance.ts";
 import { CodexDriver } from "./CodexDriver.ts";
+import { writeFakeCli } from "../../testUtils/fakeCli.ts";
+import { SHARED_USAGE_CACHE_DIR_ENV } from "../sharedUsageReadCache.ts";
+
+const encodeFixtureString = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 
 const testLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-codex-driver-maintenance-",
@@ -32,6 +38,7 @@ const testLayer = ServerConfig.layerTest(process.cwd(), {
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(ServerSettingsService.layerTest()),
   Layer.provideMerge(ModelManifest.layerTest),
+  Layer.provideMerge(CodexResetCredit.layerTest),
   Layer.provideMerge(
     Layer.mock(BackgroundPolicy.BackgroundPolicy)({
       shouldRunScopeWork: () => Effect.succeed(false),
@@ -54,6 +61,76 @@ const noSpawn = ChildProcessSpawner.make(() =>
 );
 
 it.layer(testLayer)("CodexDriver", (it) => {
+  for (const readFails of [false, true]) {
+    it.effect(
+      `redeems through the initialized CLI and ${readFails ? "preserves a confirmed result when refresh fails" : "reads fresh limits before returning"}`,
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const directory = yield* fs.makeTempDirectoryScoped({ prefix: "pylon-reset-credit-" });
+          const logPath = NodePath.join(directory, "requests.jsonl");
+          const priorCache = process.env[SHARED_USAGE_CACHE_DIR_ENV];
+          yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              process.env[SHARED_USAGE_CACHE_DIR_ENV] = NodePath.join(directory, "usage-cache");
+            }),
+            () =>
+              Effect.sync(() => {
+                if (priorCache === undefined) delete process.env[SHARED_USAGE_CACHE_DIR_ENV];
+                else process.env[SHARED_USAGE_CACHE_DIR_ENV] = priorCache;
+              }),
+          );
+          const quotedLogPath = yield* encodeFixtureString(logPath);
+          const quotedDirectory = yield* encodeFixtureString(directory);
+          const binaryPath = writeFakeCli({
+            directory,
+            name: "codex",
+            source: `
+          import { appendFileSync } from "node:fs";
+          import { createInterface } from "node:readline";
+          const lines = createInterface({ input: process.stdin });
+          lines.on("line", line => {
+            const request = JSON.parse(line);
+            appendFileSync(${quotedLogPath}, line + "\\n");
+            if (request.id === undefined) return;
+            let result;
+            if (request.method === "initialize") result = { userAgent: "codex/1.0", codexHome: ${quotedDirectory}, platformFamily: "unix", platformOs: "macos" };
+            else if (request.method === "account/rateLimitResetCredit/consume") result = { outcome: "reset" };
+            else if (request.method === "account/rateLimits/read") {
+              if (${readFails}) {
+                process.stdout.write(JSON.stringify({ id: request.id, error: { code: -32000, message: "read failed" } }) + "\\n");
+                return;
+              }
+              result = { rateLimits: { limitId: "codex", primary: { usedPercent: 0, windowDurationMins: 300, resetsAt: 1800000000 } } };
+            } else throw new Error("Unexpected request " + request.method);
+            process.stdout.write(JSON.stringify({ id: request.id, result }) + "\\n");
+          });
+        `,
+          });
+          const instance = yield* CodexDriver.create({
+            instanceId: ProviderInstanceId.make("codex-reset-test"),
+            displayName: "Reset test",
+            enabled: false,
+            environment: [],
+            config: { ...CodexDriver.defaultConfig(), binaryPath, homePath: directory },
+          });
+          const result = yield* instance.consumeResetCredit!({ requestId: "stable-reset-attempt" });
+          expect(result.outcome).toBe("reset");
+          if (readFails) expect(result.warning).toContain("updated limits could not be read");
+          else expect(result.warning).toBeUndefined();
+          const requests = yield* fs.readFileString(logPath);
+          expect(requests).toContain('"method":"initialized"');
+          expect(requests).toContain('"idempotencyKey":"stable-reset-attempt"');
+          expect(requests.indexOf('"method":"initialize"')).toBeLessThan(
+            requests.indexOf('"method":"account/rateLimitResetCredit/consume"'),
+          );
+          expect(requests.indexOf('"method":"account/rateLimitResetCredit/consume"')).toBeLessThan(
+            requests.indexOf('"method":"account/rateLimits/read"'),
+          );
+        }).pipe(Effect.scoped),
+    );
+  }
+
   it.effect.skipIf(windowsHost)(
     "runs the standalone updater against the shared home, not the shadow home",
     () =>

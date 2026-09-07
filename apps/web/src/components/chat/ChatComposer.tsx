@@ -445,6 +445,7 @@ import {
   getProviderSlashCommandsForSlashMenu,
   getProviderSkillsForSlashMenu,
   resolveProviderSkillsForCwd,
+  resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -746,6 +747,7 @@ export interface ChatComposerHandle {
     selectedProvider: ProviderDriverKind;
     selectedModel: string;
     selectedProviderModels: ReadonlyArray<ServerProvider["models"][number]>;
+    providerSlashCommands: ServerProvider["slashCommands"];
   };
   /** Validate the fully composed text immediately before a provider turn starts. */
   validateProviderInput: (providerInput: string) => boolean;
@@ -1862,14 +1864,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           activeSessionResources?.providerInstanceId === selectedInstanceId
           ? activeSessionResources
           : null,
-        selectedProviderStatus?.slashCommands ?? [],
+        selectedProviderStatus
+          ? resolveProviderSlashCommandsForCwd(selectedProviderStatus, gitCwd)
+          : [],
       ),
-    [
-      selectedProviderStatus?.featureCapabilities?.resources?.operations,
-      selectedProviderStatus?.slashCommands,
-      activeSessionResources,
-      selectedInstanceId,
-    ],
+    [selectedProviderStatus, gitCwd, activeSessionResources, selectedInstanceId],
   );
   const selectedProviderSkills = selectedProviderStatus
     ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd)
@@ -4345,6 +4344,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         selectedProvider,
         selectedModel,
         selectedProviderModels,
+        providerSlashCommands,
       }),
       validateProviderInput: (providerInput: string) => {
         const validationMessage = getComposerSubmissionValidationMessage({
@@ -4390,6 +4390,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedPromptEffort,
       selectedProvider,
       selectedProviderModels,
+      providerSlashCommands,
       compactThreadContext,
     ],
   );

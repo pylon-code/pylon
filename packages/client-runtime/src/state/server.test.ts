@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  UsageLimitSourceId,
   type ServerConfig,
   type ServerConfigStreamEvent,
   type ServerLifecycleWelcomePayload,
@@ -493,6 +494,54 @@ describe("server state projection", () => {
     expect(Option.getOrThrow(downgraded).config.environmentThemes).toBeUndefined();
   });
 
+  it("keeps live hub sources across reconnects and clears removals and downgrades", () => {
+    const config = {
+      ...CONFIG,
+      environment: {
+        ...CONFIG.environment,
+        capabilities: { ...CONFIG.environment.capabilities, usageLimitSources: true },
+      },
+    };
+    const sources = [
+      {
+        id: UsageLimitSourceId.make("hub"),
+        kind: "cliproxy" as const,
+        label: "Team",
+        checkedAt: "2026-09-07T00:00:00.000Z",
+        accounts: [],
+      },
+    ];
+    const initial = applyServerConfigProjection(Option.none(), {
+      version: 1,
+      type: "snapshot",
+      config,
+    });
+    const published = applyServerConfigProjection(initial, {
+      version: 1,
+      type: "usageLimitSourcesUpdated",
+      payload: { sources },
+    });
+    expect(Option.getOrThrow(published).config.usageLimitSources).toEqual(sources);
+    const reconnected = applyServerConfigProjection(published, {
+      version: 1,
+      type: "snapshot",
+      config,
+    });
+    expect(Option.getOrThrow(reconnected).config.usageLimitSources).toEqual(sources);
+    const removed = applyServerConfigProjection(published, {
+      version: 1,
+      type: "usageLimitSourcesUpdated",
+      payload: { sources: [] },
+    });
+    expect(Option.getOrThrow(removed).config.usageLimitSources).toBeUndefined();
+    const downgraded = applyServerConfigProjection(published, {
+      version: 1,
+      type: "snapshot",
+      config: CONFIG,
+    });
+    expect(Option.getOrThrow(downgraded).config.usageLimitSources).toBeUndefined();
+  });
+
   it("retains welcome when a ready event follows in the same stream chunk", () => {
     const welcome = {
       environment: {} as ServerLifecycleWelcomePayload["environment"],
@@ -578,7 +627,30 @@ describe("server state projection", () => {
         loadThread: () => Effect.succeed(Option.none()),
         saveThread: () => Effect.void,
         removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeed(Option.some(CONFIG)),
+        loadServerConfig: () =>
+          Effect.succeed(
+            Option.some({
+              ...CONFIG,
+              environmentThemes: [
+                {
+                  id: "old",
+                  name: "Old",
+                  appearance: "dark",
+                  canvas: "#111111",
+                  accent: "#ffffff",
+                },
+              ],
+              usageLimitSources: [
+                {
+                  id: UsageLimitSourceId.make("old"),
+                  kind: "cliproxy",
+                  label: "Old",
+                  checkedAt: "2026-09-07T00:00:00.000Z",
+                  accounts: [],
+                },
+              ],
+            }),
+          ),
         saveServerConfig: (_environmentId, config) => Queue.offer(savedConfigs, config),
         loadVcsRefs: () => Effect.succeed(Option.none()),
         saveVcsRefs: () => Effect.void,
@@ -593,7 +665,7 @@ describe("server state projection", () => {
             Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
             Effect.provideService(Persistence.EnvironmentCacheStore, cache),
           );
-          expect(Option.getOrThrow(yield* SubscriptionRef.get(state)).config).toBe(CONFIG);
+          expect(Option.getOrThrow(yield* SubscriptionRef.get(state)).config).toEqual(CONFIG);
 
           const providers: ServerConfig["providers"] = [];
           yield* Queue.offer(events, {
@@ -614,7 +686,10 @@ describe("server state projection", () => {
         }),
       );
 
-      expect((yield* Queue.take(savedConfigs)).providers).toEqual([]);
+      const persisted = yield* Queue.take(savedConfigs);
+      expect(persisted.providers).toEqual([]);
+      expect(persisted.environmentThemes).toBeUndefined();
+      expect(persisted.usageLimitSources).toBeUndefined();
     }),
   );
 

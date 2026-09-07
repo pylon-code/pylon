@@ -722,6 +722,8 @@ describe("ProviderRuntimeIngestion", () => {
           observedAt: "2026-08-04T18:30:00.000Z",
           windows: [
             {
+              id: "five_hour",
+              kind: "session",
               label: "Session",
               usedPercent: 83,
               windowDurationMins: 300,
@@ -762,8 +764,20 @@ describe("ProviderRuntimeIngestion", () => {
           source: "codexAppServerPush",
           observedAt: "2026-08-04T18:31:00.000Z",
           windows: [
-            { label: "Session", usedPercent: 12, windowDurationMins: 300 },
-            { label: "Weekly", usedPercent: 55, windowDurationMins: 10_080 },
+            {
+              id: "primary",
+              kind: "session",
+              label: "Session",
+              usedPercent: 12,
+              windowDurationMins: 300,
+            },
+            {
+              id: "secondary",
+              kind: "weekly",
+              label: "Weekly",
+              usedPercent: 55,
+              windowDurationMins: 10_080,
+            },
           ],
         },
       ]);

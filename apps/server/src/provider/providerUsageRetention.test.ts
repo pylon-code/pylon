@@ -8,6 +8,7 @@ import {
   isRetainedUsageFresh,
   retainSnapshotUsageLimits,
   retainUsageLimits,
+  preferFreshUsageReading,
 } from "./providerUsageRetention.ts";
 
 const NOW = Date.parse("2026-08-06T12:00:00.000Z");
@@ -16,6 +17,38 @@ const usage = (checkedAt: string): ServerProviderUsageLimits => ({
   source: "claudeOAuth",
   checkedAt,
   windows: [{ label: "Session", usedPercent: 20 }],
+});
+
+describe("direct reset readings", () => {
+  const auth = { status: "authenticated" as const };
+  it("keeps the direct read when a pre-reset probe returns late", () => {
+    const before = { auth, usageLimits: usage("2026-08-06T11:50:00.000Z") };
+    const reset = { ...usage("2026-08-06T11:59:00.000Z"), resetCredits: { availableCount: 0 } };
+    assert.strictEqual(preferFreshUsageReading(before, reset, NOW).usageLimits, reset);
+  });
+  it("accepts a genuinely newer probe", () => {
+    const current = { auth, usageLimits: usage("2026-08-06T12:00:00.000Z") };
+    assert.strictEqual(
+      preferFreshUsageReading(current, usage("2026-08-06T11:59:00.000Z"), NOW),
+      current,
+    );
+  });
+  it("does not retain reset data after sign-out or past its age bound", () => {
+    const signedOut = { auth: { status: "unauthenticated" as const } };
+    assert.strictEqual(
+      preferFreshUsageReading(signedOut, usage("2026-08-06T11:59:00.000Z"), NOW),
+      signedOut,
+    );
+    const pending = { auth };
+    assert.strictEqual(
+      preferFreshUsageReading(pending, usage("2026-08-06T11:00:00.000Z"), NOW),
+      pending,
+    );
+    assert.strictEqual(
+      preferFreshUsageReading(pending, usage("2026-08-06T13:00:00.000Z"), NOW),
+      pending,
+    );
+  });
 });
 
 describe("isRetainedUsageFresh", () => {

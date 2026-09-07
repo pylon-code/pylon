@@ -23,6 +23,8 @@ import { RuntimeMode } from "./orchestration.ts";
 import { ProviderFeatureCapabilities } from "./providerCapabilities.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerSettings } from "./settings.ts";
+import { ServerProviderUsageLimits, UsageLimitSourceSnapshots } from "./providerUsageLimits.ts";
+export { ServerProviderUsageLimits, ServerProviderUsageWindow } from "./providerUsageLimits.ts";
 
 const KeybindingsMalformedConfigIssue = Schema.Struct({
   kind: Schema.Literal("keybindings.malformed-config"),
@@ -93,6 +95,8 @@ export type ServerProviderSlashCommandInput = typeof ServerProviderSlashCommandI
 
 export const ServerProviderSlashCommand = Schema.Struct({
   name: TrimmedNonEmptyString,
+  /** Present only for a client action injected by Pylon. Provider commands keep their meaning. */
+  localAction: Schema.optional(Schema.Literal("usage-limits")),
   description: Schema.optional(TrimmedNonEmptyString),
   input: Schema.optional(ServerProviderSlashCommandInput),
 });
@@ -120,34 +124,6 @@ export const ServerProviderSkill = Schema.Struct({
   userInvocable: Schema.optional(Schema.Boolean),
 });
 export type ServerProviderSkill = typeof ServerProviderSkill.Type;
-
-const ServerProviderUsagePercent = Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)).check(
-  Schema.isLessThanOrEqualTo(100),
-);
-
-export const ServerProviderUsageWindow = Schema.Struct({
-  label: TrimmedNonEmptyString,
-  usedPercent: ServerProviderUsagePercent,
-  resetsAt: Schema.optional(IsoDateTime),
-  windowDurationMins: Schema.optional(NonNegativeInt),
-});
-export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
-
-export const ServerProviderUsageLimits = Schema.Struct({
-  /**
-   * Where the reading came from (`codexAppServer`, `claudeOAuth`,
-   * `claudePrint`, …). Provenance only — nothing renders it.
-   *
-   * An open string rather than a closed union: a provider gaining a new usage
-   * source must not fail an older client's snapshot decode. `ServerProviders`
-   * drops members it cannot decode, so a closed union here would make the
-   * whole provider vanish from the picker over a field no one reads.
-   */
-  source: TrimmedNonEmptyString,
-  checkedAt: IsoDateTime,
-  windows: Schema.Array(ServerProviderUsageWindow),
-});
-export type ServerProviderUsageLimits = typeof ServerProviderUsageLimits.Type;
 
 /**
  * A backend an agent provider brings its own sign-in for.
@@ -856,6 +832,12 @@ export const ServerConfig = Schema.Struct({
    * and it stays absent for subscribers that did not opt in.
    */
   environmentThemes: Schema.optional(Schema.Array(EnvironmentTheme)),
+  /**
+   * Quota reported by configured `usageLimitSources`. Like themes, never in
+   * a snapshot: the source stream emits the current set on subscribe, and it
+   * stays absent for subscribers that did not opt in.
+   */
+  usageLimitSources: Schema.optional(UsageLimitSourceSnapshots),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 
@@ -955,12 +937,28 @@ export const ServerConfigStreamEnvironmentThemesUpdatedEvent = Schema.Struct({
 export type ServerConfigStreamEnvironmentThemesUpdatedEvent =
   typeof ServerConfigStreamEnvironmentThemesUpdatedEvent.Type;
 
+export const ServerConfigUsageLimitSourcesUpdatedPayload = Schema.Struct({
+  /** The full set; empty once no source is configured. */
+  sources: UsageLimitSourceSnapshots,
+});
+export type ServerConfigUsageLimitSourcesUpdatedPayload =
+  typeof ServerConfigUsageLimitSourcesUpdatedPayload.Type;
+
+export const ServerConfigStreamUsageLimitSourcesUpdatedEvent = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("usageLimitSourcesUpdated"),
+  payload: ServerConfigUsageLimitSourcesUpdatedPayload,
+});
+export type ServerConfigStreamUsageLimitSourcesUpdatedEvent =
+  typeof ServerConfigStreamUsageLimitSourcesUpdatedEvent.Type;
+
 export const ServerConfigStreamEvent = Schema.Union([
   ServerConfigStreamSnapshotEvent,
   ServerConfigStreamKeybindingsUpdatedEvent,
   ServerConfigStreamProviderStatusesEvent,
   ServerConfigStreamSettingsUpdatedEvent,
   ServerConfigStreamEnvironmentThemesUpdatedEvent,
+  ServerConfigStreamUsageLimitSourcesUpdatedEvent,
 ]);
 export type ServerConfigStreamEvent = typeof ServerConfigStreamEvent.Type;
 

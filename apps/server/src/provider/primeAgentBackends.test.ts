@@ -314,7 +314,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, UnreachableHttpClient))(
             usageLimits: {
               source: "primeAgentCodex",
               checkedAt: backends[1]?.usageLimits?.checkedAt ?? "",
-              windows: [{ label: "Weekly", usedPercent: 40, windowDurationMins: 10_080 }],
+              windows: [
+                {
+                  id: "primary",
+                  kind: "weekly",
+                  label: "Weekly",
+                  usedPercent: 40,
+                  windowDurationMins: 10_080,
+                },
+              ],
             },
           },
         ]);

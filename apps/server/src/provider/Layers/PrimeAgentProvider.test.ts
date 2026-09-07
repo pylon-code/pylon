@@ -895,6 +895,8 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
             checkedAt: "2026-08-06T12:00:00.000Z",
             windows: [
               {
+                id: "primary",
+                kind: "weekly",
                 label: "Weekly",
                 usedPercent: 44,
                 windowDurationMins: 10_080,

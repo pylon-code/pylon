@@ -11,6 +11,25 @@ import * as RefModule from "effect/Ref";
  */
 export const USAGE_RETENTION_MAX_AGE = Duration.minutes(30);
 
+/** A direct reset read wins over an older probe or cached response, within the normal retention bound. */
+export function preferFreshUsageReading<
+  Snapshot extends {
+    readonly auth: ServerProviderAuth;
+    readonly usageLimits?: ServerProviderUsageLimits | undefined;
+  },
+>(snapshot: Snapshot, reading: ServerProviderUsageLimits | undefined, nowMs: number): Snapshot {
+  if (
+    !reading ||
+    snapshot.auth.status === "unauthenticated" ||
+    !isRetainedUsageFresh({ checkedAt: reading.checkedAt, nowMs }) ||
+    (snapshot.usageLimits &&
+      Date.parse(snapshot.usageLimits.checkedAt) >= Date.parse(reading.checkedAt))
+  ) {
+    return snapshot;
+  }
+  return { ...snapshot, usageLimits: reading };
+}
+
 /**
  * Decide whether a retained reading is still worth showing.
  *

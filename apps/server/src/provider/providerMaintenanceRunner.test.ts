@@ -201,6 +201,7 @@ function makeRegistry(
       mergeProviderUsageWindows: () => Ref.get(providersRef),
       refreshProviderCapacity: () => Effect.void,
       streamChanges: Stream.empty,
+      subscribeChanges: Effect.succeed(Stream.empty),
     };
 
     return {
