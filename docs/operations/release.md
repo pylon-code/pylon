@@ -34,6 +34,17 @@ Set a variable to the literal string `true` to enable it.
   - push tag matching `v*.*.*` for stable releases
   - scheduled nightly check every three hours
   - manual `workflow_dispatch` for either channel
+- Manual stable releases build the source commit of the latest published nightly. The version
+  defaults to the version that nightly previewed; the `version` input can override it. The first
+  job names the selected nightly tag and full commit, so confirm they match the build you verified.
+  A newer nightly published before that job starts becomes the selected build.
+- Tag-triggered stable releases build the exact tagged commit. Use this path for a specific hotfix.
+- Scheduled nightlies require a commit strictly ahead of the last published nightly. An older,
+  identical, or diverged queued commit is skipped. Pylon keeps its three-hour schedule, and manual
+  nightlies remain available immediately.
+- When `PYLON_DESKTOP_UPDATE_REPOSITORY` is set, release metadata comes from that repository and
+  the selected tag resolves against Pylon's source repository. A missing mirrored tag fails the
+  release before building.
 - Runs lint, typecheck, and tests alongside artifact builds. Publishing waits for every check.
 - Reads the shared production Pylon Connect relay URL and Clerk client configuration before packaging clients.
 - Builds four artifacts in parallel for both channels:
@@ -371,7 +382,7 @@ risk, manually dispatch `channel=nightly`; this still publishes a real nightly n
 prerelease, desktop updater release, and hosted nightly alias, but it does not update stable aliases or
 commit a version bump to the product branch. Only run it when a real nightly release is acceptable.
 
-Manual `channel=stable` with a version input is also a real stable-channel release. Omitting signing
+Manual `channel=stable` is also a real stable-channel release, including when the version is omitted. Omitting signing
 secrets only makes platform artifacts unsigned; it does not prevent publication.
 
 ## 2) Apple signing + notarization setup (macOS)
@@ -450,10 +461,11 @@ Checklist:
 
 ## 4) Ongoing release checklist
 
-1. Ensure `main` is green in CI.
-2. Bump app version as needed.
-3. Create release tag: `vX.Y.Z`.
-4. Push tag.
+1. Verify the latest nightly's artifacts and behavior.
+2. Dispatch the Release workflow with `channel=stable`. Leave `version` empty to use the nightly's
+   target stable version, or supply an override.
+3. Confirm **Resolve release commit** names the nightly and source commit you verified.
+4. To release another exact commit, create and push a `vX.Y.Z` tag on that commit instead.
 5. Verify workflow steps:
    - preflight passes
    - release quality checks pass
