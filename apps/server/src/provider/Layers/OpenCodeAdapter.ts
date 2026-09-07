@@ -41,6 +41,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
+import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
 import {
@@ -3104,6 +3105,11 @@ export function makeOpenCodeAdapter(
                 model: parsedModel,
                 ...(context.activeAgent ? { agent: context.activeAgent } : {}),
                 ...(context.activeVariant ? { variant: context.activeVariant } : {}),
+                // OpenCode appends this after its own agent/provider prompts.
+                system: buildRuntimeInstructions({
+                  harness: "OpenCode",
+                  model: `${parsedModel.providerID}/${parsedModel.modelID}`,
+                }),
                 parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
               },
               { signal },
