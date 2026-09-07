@@ -4,9 +4,14 @@ import { RELEASES_URL } from "../lib/releases";
 ---
 
 <Layout title="Download — Pylon" description="Download Pylon for macOS, Windows, or Linux.">
-  <div class="download-page">
+  <div class="download-page" id="download-page" data-channel="stable">
   <h1 class="heading">Download Pylon</h1>
-  <p class="subheading">
+  <div class="channel-toggle" role="group" aria-label="Release channel">
+    <button type="button" data-channel="stable" aria-pressed="true">Stable</button>
+    <button type="button" data-channel="nightly" aria-pressed="false">Nightly</button>
+  </div>
+  <p class="channel-description" id="channel-description">The latest stable Pylon release.</p>
+  <p class="subheading" aria-live="polite">
     <span id="version-label">Loading latest release&hellip;</span>
     <a id="changelog-link" class="changelog-link" href="#" target="_blank" rel="noopener noreferrer" style="display:none">View changelog<span aria-hidden="true"> &#8599;</span></a>
   </p>
@@ -78,7 +83,7 @@ import { RELEASES_URL } from "../lib/releases";
 
   <p class="releases-link">
     Looking for older versions? Check the{" "}
-    <a href={RELEASES_URL} target="_blank" rel="noopener noreferrer">
+    <a id="releases-page-link" href={RELEASES_URL} target="_blank" rel="noopener noreferrer">
       GitHub releases page<span aria-hidden="true"> &#8599;</span>
     </a>
   </p>
@@ -86,48 +91,62 @@ import { RELEASES_URL } from "../lib/releases";
 </Layout>
 
 <script>
-  import { fetchLatestRelease, RELEASES_URL } from "../lib/releases";
+  import { fetchLatestRelease, RELEASES_URL, NIGHTLY_RELEASES_URL, type ReleaseChannel } from "../lib/releases";
 
-  async function init() {
-    const versionLabel = document.getElementById("version-label");
-    // Only release-asset links; mobile store cards have no data-asset and keep their href.
-    const cards = document.querySelectorAll<HTMLAnchorElement>("a[data-asset]");
+  const page = document.getElementById("download-page")!;
+  const versionLabel = document.getElementById("version-label")!;
+  const description = document.getElementById("channel-description")!;
+  const changelogLink = document.getElementById("changelog-link") as HTMLAnchorElement;
+  const releasesPageLink = document.getElementById("releases-page-link") as HTMLAnchorElement;
+  const buttons = page.querySelectorAll<HTMLButtonElement>(".channel-toggle button");
+  const cards = page.querySelectorAll<HTMLAnchorElement>("a[data-asset]");
+  let request = 0;
+
+  function readChannel(): ReleaseChannel {
+    return new URLSearchParams(location.search).get("channel") === "nightly" ? "nightly" : "stable";
+  }
+
+  async function load(channel: ReleaseChannel) {
+    const currentRequest = ++request;
+    const fallback = channel === "nightly" ? NIGHTLY_RELEASES_URL : RELEASES_URL;
+    page.dataset.channel = channel;
+    buttons.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.channel === channel)));
+    description.textContent = channel === "nightly"
+      ? "Recent Pylon changes, published as preview builds."
+      : "The latest stable Pylon release.";
+    versionLabel.textContent = `Loading latest ${channel} release…`;
+    changelogLink.style.display = "none";
+    changelogLink.href = fallback;
+    releasesPageLink.href = fallback;
+    cards.forEach((card) => { card.href = fallback; });
 
     try {
-      const release = await fetchLatestRelease();
-
-      if (versionLabel && release.tag_name) {
-        versionLabel.textContent = `Latest (${release.tag_name})`;
-      }
-
-      const changelogLink = document.getElementById("changelog-link") as HTMLAnchorElement | null;
-      if (changelogLink && release.html_url) {
-        changelogLink.href = release.html_url;
-        changelogLink.style.display = "";
-      }
-
+      const release = await fetchLatestRelease(channel);
+      if (currentRequest !== request) return;
+      versionLabel.textContent = `Latest (${release.tag_name})`;
+      changelogLink.href = release.html_url;
+      changelogLink.style.display = "";
       cards.forEach((card) => {
-        const suffix = card.dataset.asset;
-        if (!suffix) return;
-
-        const match = (release.assets ?? []).find((a) => a.name.endsWith(`-${suffix}`));
-        if (match) {
-          card.href = match.browser_download_url;
-        } else {
-          card.href = RELEASES_URL;
-        }
+        const match = release.assets.find((asset) => asset.name.endsWith(`-${card.dataset.asset}`));
+        card.href = match?.browser_download_url ?? fallback;
       });
     } catch {
-      if (versionLabel) {
-        versionLabel.textContent = "Could not load release info.";
-      }
-      cards.forEach((card) => {
-        card.href = RELEASES_URL;
-      });
+      if (currentRequest === request) versionLabel.textContent = `Could not load ${channel} release info. Use the release links below.`;
     }
   }
 
-  init();
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const channel = button.dataset.channel === "nightly" ? "nightly" : "stable";
+      const url = new URL(location.href);
+      if (channel === "nightly") url.searchParams.set("channel", "nightly");
+      else url.searchParams.delete("channel");
+      history.replaceState(null, "", url);
+      void load(channel);
+    });
+  });
+  window.addEventListener("popstate", () => { void load(readChannel()); });
+  void load(readChannel());
 </script>
 
 <style>
@@ -137,6 +156,38 @@ import { RELEASES_URL } from "../lib/releases";
     flex-direction: column;
     align-items: center;
     padding: 8vh 1.5rem 4rem;
+  }
+
+  .channel-toggle {
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    margin: 1rem 0 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+
+  .channel-toggle button {
+    border: 0;
+    border-radius: 999px;
+    padding: 7px 18px;
+    background: transparent;
+    color: var(--fg-muted);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .channel-toggle button[aria-pressed="true"] {
+    background: var(--fg);
+    color: var(--bg);
+  }
+
+  .channel-description {
+    margin-bottom: 0.75rem;
+    color: var(--fg-muted);
+    font-size: 0.85rem;
+    text-align: center;
   }
 
   /* ── Heading ── */
