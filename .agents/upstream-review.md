@@ -15,6 +15,16 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-07 — provider runtime identity and Markdown media guidance (partial range)
+
+The maintainer's standing approval covers two selectively adapted sources: `61a91b6ef1bd45424169c6650362b358d49bbe34` (#9597), shared provider runtime/media instructions, and the remaining POSIX/file-URI image regression coverage from `652515a349741d234111b85f27597be3265d1ffc` (#9126). The intermediate #9126 behavior that forced image tools outside groups and automatically opened previews was undone upstream by #9460 and #9597; Pylon keeps its existing grouping/disclosure model. #9460's image-only expansion prerequisite remains accounted for separately with prepared #396, not counted here.
+
+Complete source patches, PR descriptions and relevant review discussions were read. Codex retains Pylon's plan/default mode and native-browser guidance while sharing the Pylon runtime identity block. Claude appends it to the SDK's own system preset and omits session-stale model/effort claims. OpenCode supplies a per-turn system field and does not call arbitrary variants reasoning effort. Cursor and Grok append request-only ACP text; focused tests prove stored prompt history remains the submitted content, including Pylon's incomplete-skill-discovery retry. Grok follows the current turn's model and explicit effort. No prompt is replayed, no lifecycle ownership changes, and no new wire fields or migrations are introduced.
+
+Prime retains its native managed instructions and exact submitted prompt. Its daemon admission recovery compares that prompt and ordered attachments against a native acknowledgement; an added ACP text block is not the corresponding native instruction integration. Future Prime guidance must use a supported native hook and preserve that proof. Antigravity is absent from Pylon, and its instruction call site belongs with the separate provider adoption. These explicit provider decisions preserve Pylon's existing recovery behavior.
+
+Validation: 340 focused tests across the runtime helper and five provider suites, plus 24 Markdown workspace-image tests, pass. Server typecheck and scoped lint pass; POSIX absolute and file-URI images resolve through the existing signed media-file asset route. Web, desktop and mobile receive the same provider-generated messages through existing contracts; image paths resolve on the environment, including remote connections. This change adds prompt guidance and regression coverage without changing client presentation. The bounded upstream head and full review cursor remain unchanged; unmerged work stays out of adopted totals.
+
 ## 2026-09-07 — work-log compatibility decisions and release test repair (partial range)
 
 Under the maintainer's standing approval, two upstream sources are resolved without a port. Against bounded upstream head `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f`, the totals are **101 adopted sources across 48 adoption PRs**, **28 reconciled without a port**, and **273 remaining sources**. Nineteen sources in prepared PRs #383, #391, #392 and #396 are still excluded from adopted counts. The full review cursor is unchanged.

@@ -27,6 +27,7 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { makeCursorAdapter } from "./CursorAdapter.ts";
@@ -327,6 +328,13 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           input: "please $review this",
           attachments: [],
         });
+        const snapshot = yield* adapter.readThread(threadId);
+        assert.deepStrictEqual(
+          snapshot.turns.map((turn) => turn.items),
+          ["please $review this", "please /review this"].map((text) => [
+            { prompt: [{ type: "text", text }], result: { stopReason: "end_turn" } },
+          ]),
+        );
         yield* adapter.stopSession(threadId);
 
         const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
@@ -336,8 +344,14 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             (request) => (request.params as Record<string, unknown> | undefined)?.prompt,
           ),
           [
-            [{ type: "text", text: "please $review this" }],
-            [{ type: "text", text: "please /review this" }],
+            [
+              { type: "text", text: "please $review this" },
+              { type: "text", text: buildRuntimeInstructions({ harness: "Cursor" }) },
+            ],
+            [
+              { type: "text", text: "please /review this" },
+              { type: "text", text: buildRuntimeInstructions({ harness: "Cursor" }) },
+            ],
           ],
         );
       }),

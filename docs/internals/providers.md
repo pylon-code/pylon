@@ -193,6 +193,19 @@ changed since the advisory, and refreshes the provider before reporting success.
 a missing version after a successful install remains an unknown version, as required by Cursor’s transient probe behavior.
 Prime retains Pylon’s managed-distribution inspection and manual maintenance capability.
 
+## Runtime context
+
+Codex, Claude, Cursor, Grok and OpenCode use `apps/server/src/provider/RuntimeInstructions.ts` to identify Pylon and
+the harness, and describe Markdown image/video embeds. Codex includes it in developer
+instructions; Claude appends it to its system preset; OpenCode sends it in each prompt's
+`system` field. Cursor and Grok append a separate text block to ACP prompts,
+which have no system-message field. This does not change the stored user message.
+
+Per-turn context includes the current model when known. Codex includes reasoning effort;
+Grok includes it when explicitly selected for the turn. Claude's session-level context omits model and effort because they can
+change during a session. OpenCode variants are not assumed to be reasoning-effort levels.
+Prime keeps its native managed instructions and submitted prompt unchanged. Its daemon admission recovery compares the exact submitted text and ordered attachments with a native user-message completion; adding an ACP text block is not an equivalent integration at that boundary. Any Prime runtime-guidance extension must use a supported native instruction hook and verify that recovery proof. Antigravity is not currently a Pylon provider; its runtime-guidance integration belongs with adoption of that provider.
+
 ## Registry and routing
 
 Two registries separate configuration from live processes:
