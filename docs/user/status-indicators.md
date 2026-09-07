@@ -26,3 +26,8 @@ uses an amber `●`.
 On mobile, a thread that cannot load may show **Could not synchronize the
 thread.** This can happen while the environment still shows connected. The
 message remains until Pylon starts another attempt to load that thread.
+
+A Cursor turn that returns only a recognized transport failure is marked failed.
+Its diagnostic remains in the conversation so you can inspect it before retrying.
+Pylon does not retry the prompt automatically, because the turn may already have
+changed files or run commands.
