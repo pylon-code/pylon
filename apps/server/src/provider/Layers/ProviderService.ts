@@ -18,6 +18,7 @@ import {
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   RuntimeSessionId,
   ThreadId,
+  TurnId,
   ProviderAbortSessionCompactionInput,
   ProviderAskSessionSideQuestionInput,
   ProviderCancelSessionAgentInput,
@@ -178,6 +179,7 @@ function toRuntimePayloadFromSession(
   session: ProviderSession,
   extra?: {
     readonly modelSelection?: unknown;
+    readonly continueAfterServerUpdate?: TurnId;
     readonly lastRuntimeEvent?: string;
     readonly lastRuntimeEventAt?: string;
   },
@@ -188,6 +190,9 @@ function toRuntimePayloadFromSession(
     activeTurnId: session.activeTurnId ?? null,
     sessionIncarnationId: session.sessionIncarnationId ?? null,
     lastError: session.lastError ?? null,
+    ...(extra?.continueAfterServerUpdate !== undefined
+      ? { continueAfterServerUpdate: extra.continueAfterServerUpdate }
+      : {}),
     ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
     ...(extra?.lastRuntimeEvent !== undefined ? { lastRuntimeEvent: extra.lastRuntimeEvent } : {}),
     ...(extra?.lastRuntimeEventAt !== undefined
@@ -593,6 +598,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     threadId: ThreadId,
     extra?: {
       readonly modelSelection?: unknown;
+      readonly continueAfterServerUpdate?: TurnId;
       readonly lastRuntimeEvent?: string;
       readonly lastRuntimeEventAt?: string;
       readonly runtimeFence?: import("../ProviderDriver.ts").ProviderRuntimeFence | undefined;
@@ -1404,7 +1410,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     yield* assertNotRollbackFenced(parsed.threadId, "ProviderService.sendTurn");
 
     const attachments = parsed.attachments ?? [];
-    if (!parsed.input && attachments.length === 0) {
+    if (!parsed.input && attachments.length === 0 && parsed.continuation !== true) {
       return yield* toValidationError(
         "ProviderService.sendTurn",
         "Either input text or at least one attachment is required",
@@ -1459,11 +1465,29 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           }
         }
       }
-      const routed = yield* resolveRoutableSession({
+      let routed = yield* resolveRoutableSession({
         threadId: input.threadId,
         operation: "ProviderService.sendTurn",
-        allowRecovery: true,
+        allowRecovery: false,
       });
+      if (
+        input.continuation === true &&
+        !input.input &&
+        attachments.length === 0 &&
+        routed.adapter.capabilities.promptlessTurnContinuation !== true
+      ) {
+        return yield* toValidationError(
+          "ProviderService.sendTurn",
+          `Provider '${routed.adapter.provider}' requires an explicit continuation prompt`,
+        );
+      }
+      if (!routed.isActive) {
+        routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.sendTurn",
+          allowRecovery: true,
+        });
+      }
       metricProvider = routed.adapter.provider;
       metricModel = input.modelSelection?.model;
       if (
@@ -1584,6 +1608,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           runtimePayload: {
             ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
             activeTurnId: turn.turnId,
+            continueAfterServerUpdate: null,
+            continueAfterServerUpdatePrepared: null,
             ...(input.admissionRequestId !== undefined
               ? { activeTurnRequestId: input.admissionRequestId }
               : {}),
@@ -2696,6 +2722,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               status: "stopped",
               runtimePayload: {
                 activeTurnId: null,
+                continueAfterServerUpdate: null,
+                continueAfterServerUpdatePrepared: null,
               },
             },
             routed.adapter.runtimeFence === undefined
@@ -3163,6 +3191,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   );
 
   const runStopAll = Effect.fn("runStopAll")(function* () {
+    const continueAfterRestart = yield* serverSettings.getSettings.pipe(
+      Effect.map((settings) => settings.continueThreadsAfterServerUpdate),
+      Effect.orElseSucceed(() => false),
+    );
     const threadIds = yield* directory.listThreadIds();
     const currentAdapters = yield* getAdapterEntries;
     const activeSessions = yield* Effect.forEach(currentAdapters, ([instanceId, adapter]) =>
@@ -3178,6 +3210,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     yield* Effect.forEach(activeSessions, (session) =>
       Effect.flatMap(nowIso, (lastRuntimeEventAt) =>
         upsertSessionBinding(session, session.threadId, {
+          ...(continueAfterRestart && session.status === "running" && session.activeTurnId
+            ? { continueAfterServerUpdate: session.activeTurnId }
+            : {}),
           lastRuntimeEvent: "provider.stopAll",
           lastRuntimeEventAt,
         }),
@@ -3218,6 +3253,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     if (currentAdapters.every(([, adapter]) => adapter.shutdown === undefined)) {
       return yield* runStopAll();
     }
+    const continueAfterRestart = yield* serverSettings.getSettings.pipe(
+      Effect.map((settings) => settings.continueThreadsAfterServerUpdate),
+      Effect.orElseSucceed(() => false),
+    );
     const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
     yield* Effect.forEach(
       currentAdapters,
@@ -3232,6 +3271,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                     { ...session, providerInstanceId: instanceId },
                     session.threadId,
                     {
+                      ...(continueAfterRestart &&
+                      session.status === "running" &&
+                      session.activeTurnId
+                        ? { continueAfterServerUpdate: session.activeTurnId }
+                        : {}),
                       lastRuntimeEvent: "provider.stopAll",
                       lastRuntimeEventAt,
                     },

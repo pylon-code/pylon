@@ -2108,6 +2108,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     capabilities: {
       sessionModelSwitch: "in-session",
       conversationRollback: BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES.codex,
+      promptlessTurnContinuation: true,
     },
     startSession,
     sendTurn,

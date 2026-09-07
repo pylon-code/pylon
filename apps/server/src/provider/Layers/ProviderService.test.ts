@@ -436,6 +436,7 @@ function makeFakeCodexAdapter(
     provider,
     capabilities: {
       sessionModelSwitch: "in-session",
+      ...(provider === CODEX_DRIVER ? { promptlessTurnContinuation: true } : {}),
     },
     startSession,
     sendTurn,
@@ -624,6 +625,135 @@ function makeProviderServiceLayer(
     layer,
     startReservationCounts,
   };
+}
+
+for (const [enabled, completed, retainedDaemon] of [
+  [false, false, false],
+  [true, false, false],
+  [true, true, false],
+  [false, false, true],
+  [true, false, true],
+  [true, true, true],
+] as const) {
+  it.effect(
+    `persists shutdown recovery before stopping providers when enabled=${enabled}, completed=${completed}, retainedDaemon=${retainedDaemon}`,
+    () =>
+      Effect.gen(function* () {
+        const codex = makeFakeCodexAdapter();
+        const prime = makeFakeCodexAdapter(ProviderDriverKind.make("primeAgent"));
+        const shutdown = vi.fn(() => Effect.void);
+        const persistence = yield* Layer.build(
+          ProviderSessionDirectoryLive.pipe(
+            Layer.provide(
+              ProviderSessionRuntime.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
+            ),
+          ),
+        );
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory.pipe(
+          Effect.provide(persistence),
+        );
+        const threadId = asThreadId("shutdown-recovery");
+        const turnId = asTurnId("shutdown-recovery-turn");
+        const scope = yield* Scope.make();
+        const services = yield* Layer.build(
+          makeProviderServiceLive().pipe(
+            Layer.provide(
+              Layer.succeed(ProviderSessionDirectory.ProviderSessionDirectory, directory),
+            ),
+            Layer.provide(
+              Layer.succeed(
+                ProviderAdapterRegistry.ProviderAdapterRegistry,
+                makeAdapterRegistryMock({
+                  [CODEX_DRIVER]: codex.adapter,
+                  ...(retainedDaemon ? { primeAgent: { ...prime.adapter, shutdown } } : {}),
+                }),
+              ),
+            ),
+            Layer.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: enabled })),
+            Layer.provide(serverConfigTestLayer),
+            Layer.provide(AnalyticsService.layerTest),
+            Layer.provide(
+              Layer.succeed(
+                ProviderEventLoggers.ProviderEventLoggers,
+                ProviderEventLoggers.NoOpProviderEventLoggers,
+              ),
+            ),
+          ),
+        ).pipe(Scope.provide(scope));
+        const provider = yield* ProviderService.ProviderService.pipe(Effect.provide(services));
+        const session = yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+        codex.listSessions.mockReturnValue(
+          Effect.succeed([
+            {
+              ...session,
+              status: completed ? "ready" : "running",
+              activeTurnId: completed ? undefined : turnId,
+            },
+          ]),
+        );
+        const pending = yield* directory.getBinding(threadId);
+        assert(Option.isSome(pending));
+        yield* directory.upsert({
+          ...pending.value,
+          runtimePayload: { activeTurnId: null, continueAfterServerUpdate: turnId },
+        });
+        const accepted = yield* provider.sendTurn({ threadId, continuation: true });
+        const admitted = yield* directory.getBinding(threadId);
+        assert(Option.isSome(admitted));
+        assert.propertyVal(admitted.value.runtimePayload, "activeTurnId", accepted.turnId);
+        assert.propertyVal(admitted.value.runtimePayload, "continueAfterServerUpdate", null);
+        if (completed) {
+          // Updates can mark an already-admitted turn immediately before it finishes.
+          yield* directory.upsert({
+            ...admitted.value,
+            runtimePayload: {
+              continueAfterServerUpdate: accepted.turnId,
+              continueAfterServerUpdatePrepared: null,
+            },
+          });
+        }
+        const markers: unknown[] = [];
+        codex.stopAll.mockImplementation(() =>
+          Effect.gen(function* () {
+            const binding = yield* directory.getBinding(threadId);
+            assert(Option.isSome(binding));
+            markers.push(binding.value.runtimePayload);
+          }).pipe(Effect.orDie),
+        );
+        yield* Scope.close(scope, Exit.void);
+        const binding = yield* directory.getBinding(threadId);
+        assert(Option.isSome(binding));
+        assert.equal(codex.stopAll.mock.calls.length, 1);
+        assert.equal(shutdown.mock.calls.length, retainedDaemon ? 1 : 0);
+        assert.equal(prime.stopAll.mock.calls.length, 0);
+        assert.deepStrictEqual(binding.value.resumeCursor, session.resumeCursor);
+        assert.equal(binding.value.status, "stopped");
+        assert.propertyVal(markers[0], "activeTurnId", completed ? null : turnId);
+        if (enabled && !completed) {
+          assert.propertyVal(markers[0], "continueAfterServerUpdate", turnId);
+          assert.propertyVal(binding.value.runtimePayload, "continueAfterServerUpdate", turnId);
+        } else if (completed) {
+          assert.propertyVal(
+            binding.value.runtimePayload,
+            "continueAfterServerUpdate",
+            accepted.turnId,
+          );
+          assert.propertyVal(
+            binding.value.runtimePayload,
+            "continueAfterServerUpdatePrepared",
+            null,
+          );
+        } else {
+          assert.propertyVal(markers[0], "continueAfterServerUpdate", null);
+          assert.propertyVal(binding.value.runtimePayload, "continueAfterServerUpdate", null);
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
 }
 
 it.effect("ProviderServiceLive catches stopAll failures during shutdown", () =>
@@ -1625,6 +1755,56 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
       assert.equal(routing.codex.startSession.mock.calls.length, 0);
       yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("allows promptless continuation only for capable providers", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const codexThreadId = asThreadId("thread-promptless-continuation");
+      yield* provider.startSession(codexThreadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId: codexThreadId,
+        runtimeMode: "full-access",
+      });
+
+      yield* provider.sendTurn({ threadId: codexThreadId, continuation: true });
+      assert.deepEqual(routing.codex.sendTurn.mock.calls.at(-1)?.[0], {
+        threadId: codexThreadId,
+        continuation: true,
+      });
+
+      const claudeThreadId = asThreadId("thread-promptless-continuation-unsupported");
+      yield* provider.startSession(claudeThreadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId: claudeThreadId,
+        runtimeMode: "full-access",
+      });
+      const failure = yield* Effect.flip(
+        provider.sendTurn({ threadId: claudeThreadId, continuation: true }),
+      );
+      assert.instanceOf(failure, ProviderValidationError);
+      assert.include(failure.issue, "requires an explicit continuation prompt");
+      assert.equal(routing.claude.sendTurn.mock.calls.length, 0);
+
+      yield* provider.stopSession({ threadId: claudeThreadId });
+      routing.claude.startSession.mockClear();
+      const stoppedFailure = yield* Effect.flip(
+        provider.sendTurn({ threadId: claudeThreadId, continuation: true }),
+      );
+      assert.instanceOf(stoppedFailure, ProviderValidationError);
+      assert.include(stoppedFailure.issue, "requires an explicit continuation prompt");
+      assert.equal(routing.claude.startSession.mock.calls.length, 0);
+
+      yield* provider.stopSession({ threadId: codexThreadId });
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.stopSession.mockClear();
+      routing.claude.startSession.mockClear();
+      routing.claude.sendTurn.mockClear();
+      routing.claude.stopSession.mockClear();
     }),
   );
 

@@ -15,8 +15,17 @@ update the server, and the version difference remains visible in Connections.
 
 ## Before You Update
 
-Let active agent work and terminal commands finish first. Updating restarts the server, so the
-connection will disappear briefly and work that is still running may be interrupted.
+Updating restarts the server, so the connection will disappear briefly. **Settings → General →
+Continue threads after restarts** is off by default. Enable it to resume supported interrupted
+threads after an update, crash, or machine restart. Changes are saved to connected environments
+that support the setting; update older servers first. Use **Apply to all** after an offline
+supported environment reconnects if its value differs.
+
+Pylon must start again on that machine; the setting does not enable automatic startup. Codex
+continues without adding a user message. Other supported providers receive a short instruction
+to continue where they left off. Threads without saved provider resume state need a new message.
+Terminal commands may still be interrupted. Prime Agent retains its existing recovery of the
+original daemon session and does not receive a duplicate continuation turn.
 
 The update does not remove saved threads, settings, or project files.
 
