@@ -19,7 +19,12 @@ vi.mock("@shikijs/core", async (importOriginal) => {
         ...highlighter,
         codeToTokensBase: (...input: Parameters<typeof highlighter.codeToTokensBase>) => {
           tokenization.calls.push(input[0]);
-          const result = highlighter.codeToTokensBase(...input);
+          // Grammar assertions must not depend on CI scheduling or cold regex compilation.
+          // Production keeps Shiki's deadline; these tests cover row and batch boundaries.
+          const result = highlighter.codeToTokensBase(input[0], {
+            ...input[1],
+            tokenizeTimeLimit: 0,
+          });
           tokenization.afterCall?.();
           return result;
         },
