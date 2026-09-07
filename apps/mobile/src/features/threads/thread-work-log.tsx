@@ -701,8 +701,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
   const viewedImagePath = workEntryViewedImagePath(row.workEntry);
   const toolPresentation = resolveWorkEntryToolPresentation(row.workEntry);
   const previewText = workEntryRowLabel(row.workEntry);
-  const displayText =
-    !toolPresentation && expanded && row.workEntry.command?.trim() ? "Command" : previewText;
+  const displayText = workEntryRowLabel(row.workEntry, expanded);
   const failed = row.status === "failure";
   const iconIsDestructive = row.icon === "alert" || failed;
   const iconIsWarning = row.icon === "warning" && !failed;
@@ -718,7 +717,9 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
         accessibilityRole={canExpand ? "button" : undefined}
         accessibilityLabel={failed ? `${previewText}, tool call failed` : previewText}
         accessibilityHint={
-          canExpand ? "Double tap to show full details. Long press to copy." : "Long press to copy."
+          canExpand
+            ? `Double tap to ${expanded ? "hide" : "show"} full details. Long press to copy.`
+            : "Long press to copy."
         }
         accessibilityState={canExpand ? { expanded } : undefined}
         hitSlop={4}
@@ -732,7 +733,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
         className="rounded-md px-0.5 py-0 active:bg-subtle"
       >
         <View className="min-h-8 flex-row items-center gap-1.5">
-          {row.live ? (
+          {row.live && !expanded ? (
             <ShimmeringWorkContent
               icon={icon}
               iconSubtleColor={props.iconSubtleColor}
@@ -759,7 +760,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
                   iconIsDestructive && "font-t3-medium text-adaptive-rose-600-400",
                   iconIsWarning && "font-t3-medium text-adaptive-amber-600-400",
                 )}
-                numberOfLines={1}
+                numberOfLines={expanded ? undefined : 1}
               >
                 {displayText}
               </Text>
@@ -800,7 +801,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
         </View>
       </Pressable>
 
-      {fullDetail ? (
+      {expanded && (fullDetail || viewedImagePath) ? (
         <Animated.View
           entering={WORK_LOG_DETAIL_ENTER_TRANSITION}
           exiting={WORK_LOG_DETAIL_EXIT_TRANSITION}
