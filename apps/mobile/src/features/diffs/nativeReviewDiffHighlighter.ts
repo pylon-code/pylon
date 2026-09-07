@@ -1,4 +1,4 @@
-import { createHighlighterCore, type HighlighterCore } from "@shikijs/core";
+import { createHighlighterCore, type GrammarState, type HighlighterCore } from "@shikijs/core";
 import { createJavaScriptRegexEngine } from "@shikijs/engine-javascript";
 import bashLanguage from "@shikijs/langs/bash";
 import diffLanguage from "@shikijs/langs/diff";
@@ -46,8 +46,12 @@ export interface NativeReviewDiffHighlighterHandle {
   readonly engine: NativeReviewDiffHighlightEngine;
   readonly tokenize: (
     code: string,
-    options: { readonly lang: NativeReviewDiffLanguage; readonly theme: string },
-  ) => ReadonlyArray<ReadonlyArray<NativeReviewDiffToken>>;
+    options: {
+      readonly lang: NativeReviewDiffLanguage;
+      readonly theme: string;
+      readonly signal?: AbortSignal;
+    },
+  ) => Promise<ReadonlyArray<ReadonlyArray<NativeReviewDiffToken>>>;
 }
 
 interface NativeReviewDiffLineRow extends NativeReviewDiffRow {
@@ -76,6 +80,8 @@ export interface HighlightNativeReviewDiffVisibleRowsInput {
 
 const NATIVE_REVIEW_DIFF_VISIBLE_OVERSCAN_ROWS = 160;
 const NATIVE_REVIEW_DIFF_VISIBLE_MAX_ROWS = 360;
+const NATIVE_REVIEW_DIFF_TOKENIZE_MAX_LINE_LENGTH = 1_000;
+const NATIVE_REVIEW_DIFF_TOKENIZE_MAX_CHARACTERS = 8_000;
 
 const NATIVE_REVIEW_DIFF_THEME_NAME_BY_SCHEME = {
   dark: "t3-pierre-dark",
@@ -189,6 +195,10 @@ const NATIVE_REVIEW_DIFF_LANGUAGES = [
 let nativeHighlighterPromise: Promise<NativeReviewDiffHighlighterHandle> | null = null;
 let javascriptHighlighterPromise: Promise<NativeReviewDiffHighlighterHandle> | null = null;
 
+function waitForNextFrame(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 function normalizeTokens(
   tokenLines: ReadonlyArray<ReadonlyArray<{ content: string; color?: string; fontStyle?: number }>>,
 ): ReadonlyArray<ReadonlyArray<NativeReviewDiffToken>> {
@@ -199,6 +209,64 @@ function normalizeTokens(
       fontStyle: token.fontStyle ?? null,
     })),
   );
+}
+
+function createHighlighterHandle(
+  highlighter: HighlighterCore,
+  engine: NativeReviewDiffHighlightEngine,
+): NativeReviewDiffHighlighterHandle {
+  return {
+    engine,
+    async tokenize(code, { lang, theme, signal }) {
+      const lines = code.split("\n");
+      const highlighted: Array<ReadonlyArray<NativeReviewDiffToken>> = [];
+      let grammarState: GrammarState | undefined;
+      let start = 0;
+
+      while (start < lines.length) {
+        if (signal?.aborted) return [];
+
+        // Skipping this line leaves its ending grammar state unknown. Resume
+        // from a fresh state rather than leaving the rest of the segment plain:
+        // highlighted rows are cached for the sheet's lifetime, so a plain tail
+        // would stick, and which rows it covered would depend on where the
+        // first visible window happened to start.
+        if (lines[start]!.length > NATIVE_REVIEW_DIFF_TOKENIZE_MAX_LINE_LENGTH) {
+          highlighted.push([{ content: lines[start] || " ", color: null, fontStyle: null }]);
+          grammarState = undefined;
+          start += 1;
+          continue;
+        }
+
+        let end = start;
+        let characters = 0;
+        while (end < lines.length) {
+          const length = lines[end]!.length;
+          const nextCharacters = characters + length + (end > start ? 1 : 0);
+          if (
+            length > NATIVE_REVIEW_DIFF_TOKENIZE_MAX_LINE_LENGTH ||
+            nextCharacters > NATIVE_REVIEW_DIFF_TOKENIZE_MAX_CHARACTERS
+          ) {
+            break;
+          }
+          characters = nextCharacters;
+          end += 1;
+        }
+
+        const tokens = highlighter.codeToTokensBase(lines.slice(start, end).join("\n"), {
+          lang,
+          theme,
+          grammarState,
+        });
+        grammarState = highlighter.getLastGrammarState(tokens);
+        highlighted.push(...normalizeTokens(tokens));
+        start = end;
+        if (start < lines.length) await waitForNextFrame();
+      }
+
+      return signal?.aborted ? [] : highlighted;
+    },
+  };
 }
 
 async function createNativeReviewDiffHighlighter(): Promise<NativeReviewDiffHighlighterHandle> {
@@ -213,10 +281,7 @@ async function createNativeReviewDiffHighlighter(): Promise<NativeReviewDiffHigh
     engine: nativeEngineModule.createNativeEngine(),
   });
 
-  return {
-    engine: "native",
-    tokenize: (code, options) => normalizeTokens(highlighter.codeToTokensBase(code, options)),
-  };
+  return createHighlighterHandle(highlighter, "native");
 }
 
 async function createJavascriptReviewDiffHighlighter(): Promise<NativeReviewDiffHighlighterHandle> {
@@ -226,10 +291,7 @@ async function createJavascriptReviewDiffHighlighter(): Promise<NativeReviewDiff
     engine: createJavaScriptRegexEngine(),
   });
 
-  return {
-    engine: "javascript",
-    tokenize: (code, options) => normalizeTokens(highlighter.codeToTokensBase(code, options)),
-  };
+  return createHighlighterHandle(highlighter, "javascript");
 }
 
 export async function getNativeReviewDiffHighlighter(
@@ -399,8 +461,9 @@ export async function highlightNativeReviewDiffVisibleRows(
   const tokensByRowId: Record<string, ReadonlyArray<NativeReviewDiffToken>> = {};
   let segmentRows: IndexedNativeReviewDiffLineRow[] = [];
   let segmentFile: NativeReviewDiffFile | undefined;
+  let charactersSinceYield = 0;
 
-  const flushSegment = () => {
+  const flushSegment = async () => {
     if (!segmentFile || segmentRows.length === 0 || input.signal?.aborted) {
       segmentRows = [];
       segmentFile = undefined;
@@ -408,7 +471,20 @@ export async function highlightNativeReviewDiffVisibleRows(
     }
 
     const code = segmentRows.map(({ row }) => row.content).join("\n");
-    const tokenLines = highlighter.tokenize(code, { lang: segmentFile.language, theme });
+    if (
+      charactersSinceYield > 0 &&
+      charactersSinceYield + code.length > NATIVE_REVIEW_DIFF_TOKENIZE_MAX_CHARACTERS
+    ) {
+      await waitForNextFrame();
+      charactersSinceYield = 0;
+      if (input.signal?.aborted) return;
+    }
+    const tokenLines = await highlighter.tokenize(code, {
+      lang: segmentFile.language,
+      theme,
+      signal: input.signal,
+    });
+    charactersSinceYield += code.length;
     segmentRows.forEach(({ row }, rowIndex) => {
       tokensByRowId[row.id] = tokenLines[rowIndex] ?? makePlainTokenFallback(row);
     });
@@ -417,6 +493,7 @@ export async function highlightNativeReviewDiffVisibleRows(
   };
 
   for (const selectedRow of selectedRows) {
+    if (input.signal?.aborted) break;
     const { row } = selectedRow;
     const file = fileMap.get(row.fileId);
     if (!file) {
@@ -430,13 +507,17 @@ export async function highlightNativeReviewDiffVisibleRows(
         (previousRow !== undefined &&
           !canShareGrammarContext(previousRow, selectedRow, input.rows)))
     ) {
-      flushSegment();
+      await flushSegment();
     }
 
     segmentFile = file;
     segmentRows.push(selectedRow);
   }
-  flushSegment();
+  await flushSegment();
+
+  if (input.signal?.aborted) {
+    return { engine: highlighter.engine, tokensByRowId: {}, rowCount: 0, durationMs: 0 };
+  }
 
   return {
     engine: highlighter.engine,
