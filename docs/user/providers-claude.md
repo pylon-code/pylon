@@ -58,6 +58,19 @@ Claude Code holds the turn until that window reopens, so it can keep showing as
 working. Wait for the reset, or stop the turn and continue later. The warning's
 timestamp shows when the displayed wait started.
 
+## When A Turn Stops With An Authentication Or Usage Error
+
+When Claude cannot authenticate, the failed turn includes sign-in guidance. Sign in on the
+machine running that environment, using the same Claude config directory as the provider.
+If the provider shows **Sign in** in **Settings → Providers**, you can use that flow. For terminal
+login, follow the working-directory and `CLAUDE_CONFIG_DIR` values in the error before running
+`claude auth login`. Start a new thread after signing in; an existing Claude process may still
+hold the old credentials. API-key setups need their configured credentials checked instead.
+
+If Claude ends the turn while a usage window is still blocked, Pylon names the usage limit.
+Send the message again after that limit resets. A recovered usage window no longer determines
+an unrelated later error, and specific tool errors or overload messages keep their own explanation.
+
 ## Where Claude Skills Are Loaded
 
 Pylon looks for Claude skills in the Claude config directory's `skills` folder and
