@@ -1013,6 +1013,8 @@ function ThreadRouteContent(
           threadCwd={selectedThreadCwd}
           localOutboxCount={composer.selectedThreadQueueCount}
           onManagePendingSends={composer.onManagePendingSends}
+          queuedMessages={composer.selectedThreadQueuedMessages}
+          dispatchingMessageId={composer.dispatchingQueuedMessageId}
           layoutVariant={layout.variant}
           usesAutomaticContentInsets={usesNativeHeaderGlass}
           onOpenConnectionEditor={handleOpenConnectionEditor}

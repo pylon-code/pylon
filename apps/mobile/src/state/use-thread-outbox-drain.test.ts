@@ -1,3 +1,4 @@
+import { acknowledgedThreadMessagesAtom } from "./acknowledged-thread-messages";
 import {
   CommandId,
   EnvironmentId,
@@ -223,6 +224,7 @@ function remainingMessages(): ReadonlyArray<QueuedThreadMessage> {
 }
 
 beforeEach(() => {
+  appAtomRegistry.set(acknowledgedThreadMessagesAtom, []);
   harness.draftFile.setDocument({ schemaVersion: 1, drafts: {} });
 });
 
@@ -468,6 +470,7 @@ describe("thread outbox drain delivery cleanup", () => {
     await expect(completeQueuedMessageDelivery(message, deliveryRevision)).resolves.toBe("removed");
 
     expect(remainingMessages()).toEqual([]);
+    expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([message]);
   });
 
   it("keeps a delivered message when its editor opens during storage removal", async () => {
