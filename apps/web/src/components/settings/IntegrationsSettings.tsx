@@ -8,6 +8,8 @@
  */
 import {
   BROWSER_RECORDING_FRAME_RATES,
+  type BrowserLinkTarget,
+  DEFAULT_BROWSER_LINK_TARGET,
   DEFAULT_BROWSER_AUTO_SHOW_FLOATING_PREVIEW,
   DEFAULT_BROWSER_RECORDING_FRAME_RATE,
   DEFAULT_BROWSER_VIEWPORT,
@@ -402,6 +404,53 @@ function BrowserRecordingFrameRateSetting({ disabled }: { readonly disabled: boo
   );
 }
 
+const LINK_TARGET_LABELS: Readonly<Record<BrowserLinkTarget, string>> = {
+  system: "Your default browser",
+  app: "Pylon",
+};
+
+function BrowserLinkTargetSetting({ disabled }: { readonly disabled: boolean }) {
+  const linkTarget = useClientSettings((settings) => settings.browserLinkTarget);
+  const updateSettings = useUpdatePrimarySettings();
+
+  return (
+    <SettingsRow
+      {...searchableSetting("browser-link-target")}
+      description="Where links in the chat and terminal open. Hold ⌘ or Ctrl while clicking a chat link to open it in your default browser either way."
+      resetAction={
+        !disabled && linkTarget !== DEFAULT_BROWSER_LINK_TARGET ? (
+          <SettingResetButton
+            label="link target"
+            onClick={() => updateSettings({ browserLinkTarget: DEFAULT_BROWSER_LINK_TARGET })}
+          />
+        ) : null
+      }
+      control={
+        <Select
+          disabled={disabled}
+          value={linkTarget}
+          onValueChange={(value) => {
+            if (value === "system" || value === "app") {
+              updateSettings({ browserLinkTarget: value });
+            }
+          }}
+        >
+          <SelectTrigger size="sm" className="w-full sm:w-40" aria-label="Open links in">
+            <SelectValue>{LINK_TARGET_LABELS[linkTarget]}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {(Object.keys(LINK_TARGET_LABELS) as ReadonlyArray<BrowserLinkTarget>).map((target) => (
+              <SelectItem hideIndicator key={target} value={target}>
+                {LINK_TARGET_LABELS[target]}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
 function AgentBrowserAccessSetting() {
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
@@ -510,6 +559,7 @@ export function IntegrationsSettingsPanel() {
       <BrowserZoomSetting disabled={previewDefaultsDisabled} />
       <BrowserAppearanceSetting disabled={previewDefaultsDisabled} />
       <BrowserRecordingFrameRateSetting disabled={previewDefaultsDisabled} />
+      <BrowserLinkTargetSetting disabled={previewDefaultsDisabled} />
       <BrowserAutoShowFloatingPreviewSetting disabled={previewDefaultsDisabled} />
     </>
   );

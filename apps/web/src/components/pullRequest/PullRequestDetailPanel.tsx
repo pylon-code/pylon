@@ -443,6 +443,7 @@ function PullRequestBaseFreshnessWarning({
 
 export function PullRequestDetailPanel({
   environmentId,
+  threadRef = null,
   reference,
   listEntry = null,
   refreshToken: forcedRefreshToken = 0,
@@ -453,6 +454,8 @@ export function PullRequestDetailPanel({
   composerDraftTarget,
 }: {
   environmentId: EnvironmentId;
+  /** The thread beside this panel; standalone PR pages have none. */
+  threadRef?: ScopedThreadRef | null;
   reference: PullRequestRef;
   /** Row fields already loaded by the pull-request list, used while richer detail arrives. */
   listEntry?: PullRequestListEntry | null;
@@ -2184,7 +2187,11 @@ export function PullRequestDetailPanel({
                     aria-label={checksSummary ? `Checks: ${checksSummary}` : "Checks"}
                   >
                     {checksState !== null ? (
-                      <PullRequestChecksPopover checks={detail.checks} checksState={checksState} />
+                      <PullRequestChecksPopover
+                        checks={detail.checks}
+                        checksState={checksState}
+                        threadRef={threadRef}
+                      />
                     ) : (
                       <CircleDotIcon aria-hidden className="size-3.5" />
                     )}
@@ -2310,6 +2317,7 @@ export function PullRequestDetailPanel({
               <div className={cn("absolute inset-0", tab !== "summary" && "invisible")}>
                 <PullRequestSummaryTab
                   environmentId={environmentId}
+                  threadRef={threadRef}
                   reference={reference}
                   detail={detail}
                   activityPending={activityPending}
@@ -2337,6 +2345,7 @@ export function PullRequestDetailPanel({
                   <PullRequestTimelineTab
                     detail={detail}
                     environmentId={environmentId}
+                    threadRef={threadRef}
                     reference={reference}
                     order={timelineOrder}
                     onOpenCommit={openCommit}
