@@ -139,6 +139,12 @@ have a cached copy. Supported video formats and codecs depend on the browser or 
 Bare paths in ordinary prose and paths inside code blocks stay text. Raw HTML `<video>` tags
 are not supported; use the Markdown embed syntax above.
 
+## Icons beside web links
+
+Public web links can show a site icon. Links to localhost, private networks, Tailscale hosts, and
+reserved hostnames use a local fallback icon, so those hostnames are not sent to the public favicon
+service. This applies to markdown in web, desktop, and mobile.
+
 ## Files outside the workspace
 
 When an agent links to a file it wrote outside the workspace, such as a Markdown report in
