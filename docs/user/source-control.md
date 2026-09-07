@@ -53,9 +53,10 @@ Pylon works with the platforms your team already uses:
   PR/MR if background activity is enabled for that repository. Known reviews keep their normal
   refresh schedule.
 - Open several reviews from the **Pull requests** page as tabs in the right panel
-- By default, see passing and approved reviews first, passing reviews awaiting approval next, and
-  conflicting reviews last. Smaller changes come first within each readiness group, and finished
-  reviews follow open work when all states are visible.
+- Your authored reviews stay at the top and use the selected sort within their group. By default,
+  see passing and approved reviews first, passing reviews awaiting approval next, and conflicting
+  reviews last. Smaller changes come first within each readiness group, and finished reviews follow
+  open work when all states are visible.
 - Filter the list by author or labels, rank authors by merges in the loaded results, see label and
   change-size context on each row, and sort the results currently shown by readiness, update time,
   creation time, or change size. Your filters, search, scope, and sort are restored when you return.
@@ -68,6 +69,8 @@ Pylon works with the platforms your team already uses:
   brought in from the base branch
 - While working in a thread, open linked reviews in the same compact right-panel tabs without
   leaving the conversation
+- Enable **Settings → General → Proactive panels** to open a newly linked review automatically and
+  switch to the completed turn's diff when agent work changes files. An open review stays in front, and manual panel choices take priority
 - Open the review directly in your browser with one click
 - If Pylon cannot load a GitHub pull request, including when GitHub rate limits requests, use
   **Open on GitHub** in the error view

@@ -9,7 +9,10 @@ import { Button } from "./ui/button";
 import { setMarkdownTaskChecked } from "./files/filePreviewMode";
 
 vi.mock("@effect/atom-react", () => ({
-  useAtomValue: () => ({ availableEditors: ["cursor"] }),
+  useAtomValue: () => ({
+    availableEditors: ["cursor"],
+    environment: { capabilities: { pullRequests: true, threadPullRequestLinking: true } },
+  }),
 }));
 vi.mock("../hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark" }) }));
 vi.mock("../hooks/useSettings", async (importOriginal) => {

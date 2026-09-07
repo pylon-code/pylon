@@ -36,6 +36,7 @@ import {
   MenuPopup,
   MenuRadioGroup,
   MenuRadioItem,
+  MenuRadioItemIndicator,
   MenuSeparator,
   MenuSub,
   MenuSubPopup,
@@ -200,6 +201,7 @@ function PullRequestFilterRadioGroup<Value extends string>({
               <PullRequestFilterOptionIcon option={option} />
               <span className="min-w-0 flex-1 truncate">{option.label}</span>
               {option.unavailable ? <span className="shrink-0">· Unavailable</span> : null}
+              <MenuRadioItemIndicator />
             </span>
           </MenuRadioItem>
         );
