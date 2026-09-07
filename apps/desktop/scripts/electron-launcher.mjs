@@ -15,8 +15,8 @@ const repoRoot = NodePath.resolve(desktopDir, "..", "..");
 const devBundleIdSuffix = NodePath.basename(repoRoot)
   .toLowerCase()
   .replaceAll(/[^a-z0-9]+/g, "");
-export const APP_DISPLAY_NAME = isDevelopment ? "Pylon (Dev)" : "Pylon (Alpha)";
-export const APP_BUNDLE_ID = isDevelopment
+const APP_DISPLAY_NAME = isDevelopment ? "Pylon (Dev)" : "Pylon (Alpha)";
+const APP_BUNDLE_ID = isDevelopment
   ? `com.pylon.code.dev.${devBundleIdSuffix || "local"}`
   : "com.pylon.code";
 const APP_PROTOCOL_SCHEMES = isDevelopment ? ["pylon-code-dev"] : ["pylon-code"];
@@ -438,7 +438,7 @@ function resolveLinuxSandboxArgs(electronBinaryPath) {
   return ["--no-sandbox"];
 }
 
-export function resolveElectronPath() {
+function resolveElectronPath() {
   const electronBinaryPath = resolveElectronBinaryPath();
 
   if (hostPlatform !== "darwin") {
