@@ -596,8 +596,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           );
 
           assert.deepStrictEqual(status.usageLimits?.windows, [
-            { label: "Session", usedPercent: 20, windowDurationMins: 300 },
-            { label: "Weekly", usedPercent: 40, windowDurationMins: 10_080 },
+            {
+              id: "primary",
+              kind: "session",
+              label: "Session",
+              usedPercent: 20,
+              windowDurationMins: 300,
+            },
+            {
+              id: "secondary",
+              kind: "weekly",
+              label: "Weekly",
+              usedPercent: 40,
+              windowDurationMins: 10_080,
+            },
           ]);
         }),
       );

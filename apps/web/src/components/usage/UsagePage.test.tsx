@@ -1,10 +1,10 @@
-import { USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
+import { EnvironmentId, USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
 import { mergeUsage } from "@t3tools/shared/usageMerge";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const testState = vi.hoisted(() => ({
-  useUsage: vi.fn(),
+  useUsage: vi.fn<typeof import("../../state/usage").useUsage>(),
   metric: "cost" as "cost" | "tokens",
   breakdown: "time" as "model" | "time",
 }));
@@ -15,17 +15,19 @@ vi.mock("react", async (importOriginal) => {
     ...actual,
     useState: vi.fn((initial: unknown) => [
       typeof initial === "function"
-        ? {
-            days: 1,
-            window: {
-              sinceDay: "2026-08-10",
-              untilDay: "2026-08-11",
-              timeZone: "UTC",
-              resolution: "hour",
-              sinceTime: "2026-08-10T12:37:00.000Z",
-              untilTime: "2026-08-11T12:37:00.000Z",
-            },
-          }
+        ? "metric" in initial()
+          ? { metric: testState.metric, windowDays: 1 }
+          : {
+              days: 1,
+              window: {
+                sinceDay: "2026-08-10",
+                untilDay: "2026-08-11",
+                timeZone: "UTC",
+                resolution: "hour",
+                sinceTime: "2026-08-10T12:37:00.000Z",
+                untilTime: "2026-08-11T12:37:00.000Z",
+              },
+            }
         : initial === "cost"
           ? testState.metric
           : initial === "model"
@@ -128,6 +130,15 @@ beforeEach(() => {
       ],
     },
     environments: [],
+    selectedEnvironments: [
+      {
+        environmentId: EnvironmentId.make("test"),
+        label: "Test environment",
+        isPending: false,
+        error: null,
+        summary: null,
+      },
+    ],
     isPending: false,
     isPartial: false,
     refresh: vi.fn(),
