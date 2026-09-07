@@ -1091,9 +1091,21 @@ export function makeCursorAdapter(
               ),
             );
 
-          yield* ctx.acp.drainEvents;
+          // Stopping a session closes the consumer while its prompt can still
+          // resolve. A barrier cannot be acknowledged after that consumer exits.
+          if (!ctx.stopped && ctx.notificationFiber) {
+            yield* Effect.raceFirst(
+              ctx.acp.drainEvents,
+              Fiber.await(ctx.notificationFiber).pipe(Effect.asVoid),
+            );
+          }
           const failure = ctx.assistantReply.failure;
-          if (ctx.promptsInFlight === 1 && result.stopReason !== "cancelled" && failure) {
+          if (
+            !ctx.stopped &&
+            ctx.promptsInFlight === 1 &&
+            result.stopReason !== "cancelled" &&
+            failure
+          ) {
             return yield* new ProviderAdapterRequestError({
               provider: PROVIDER,
               method: "session/prompt",
