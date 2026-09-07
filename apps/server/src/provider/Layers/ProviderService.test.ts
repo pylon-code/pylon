@@ -904,8 +904,6 @@ it.effect(
               })
             : Effect.fail(unsupported()),
         listInstances: () => Effect.succeed([instanceId]),
-        listProviders: () => Effect.succeed([driverKind] as const),
-        streamChanges: Stream.empty,
         subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
           PubSub.subscribe(pubsub),
         ),
@@ -985,8 +983,6 @@ it.effect("ProviderServiceLive rejects new sessions for disabled custom instance
             })
           : Effect.fail(unsupported()),
       listInstances: () => Effect.succeed([instanceId]),
-      listProviders: () => Effect.succeed([CODEX_DRIVER] as const),
-      streamChanges: Stream.empty,
       subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
         PubSub.subscribe(pubsub),
       ),
@@ -3711,8 +3707,6 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
             },
           }),
         listInstances: () => Effect.succeed([codexInstanceId]),
-        listProviders: () => Effect.succeed([ProviderDriverKind.make("codex")]),
-        streamChanges: Stream.empty,
         subscribeChanges: PubSub.subscribe(changes),
       };
       const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(

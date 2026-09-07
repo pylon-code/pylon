@@ -1,14 +1,10 @@
 import { expect, it } from "@effect/vitest";
 
-import {
-  renderLoopbackAuthorizationCompleteHtml,
-  resolveLoopbackAuthorizationStage,
-} from "./cliAuthHtml.ts";
+import { renderLoopbackAuthorizationCompleteHtml } from "./cliAuthHtml.ts";
 
 it("renders the branded loopback authorization completion page", () => {
   const html = renderLoopbackAuthorizationCompleteHtml();
 
-  expect(resolveLoopbackAuthorizationStage()).toBe("dev");
   expect(html).toContain("Pylon (Dev)");
   expect(html).toContain('class="stage stage-dev"');
   expect(html).not.toContain("Secure terminal handoff");
