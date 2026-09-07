@@ -1,6 +1,7 @@
 import {
   isToolLifecycleItemType,
   type AssetResource,
+  type RuntimeItemStatus,
   type ThreadId,
   type ToolLifecycleItemType,
 } from "@t3tools/contracts";
@@ -14,10 +15,13 @@ export function isWorktreeSetupActivity(kind: string): boolean {
   return kind === "setup-script.requested" || kind === "setup-script.started";
 }
 
+export type WorkLogToolLifecycleStatus = RuntimeItemStatus | "stopped";
+
 export interface WorkLogPresentationEntry {
   readonly label: string;
   readonly toolTitle?: string;
   readonly detail?: string;
+  readonly toolData?: unknown;
   readonly tone: "thinking" | "tool" | "info" | "error";
   readonly command?: string;
   readonly viewedImagePath?: string;
@@ -35,6 +39,7 @@ export type ToolGroupAction =
   | "read"
   | "edit"
   | "command"
+  | "browser"
   | "code-search"
   | "search"
   | "other"
@@ -49,6 +54,103 @@ export type ToolGroupSummaryKind =
 
 export function normalizeCompactToolLabel(value: string): string {
   return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
+}
+
+const T3_MCP_TOOL_LABELS: Record<
+  string,
+  readonly [action: string, running: string, completed: string, detail: string]
+> = {
+  orchestrator_capabilities: ["Get", "Getting", "Got", "orchestration capabilities"],
+  delegate_task: ["Delegate", "Delegating", "Delegated", "a child task"],
+  task_status: ["Get", "Getting", "Got", "delegated task status"],
+  task_cancel: ["Cancel", "Canceling", "Canceled", "delegated task"],
+  schedule_task: ["Schedule", "Scheduling", "Scheduled", "a recurring task"],
+  list_scheduled_tasks: ["List", "Listing", "Listed", "scheduled tasks"],
+  update_scheduled_task: ["Update", "Updating", "Updated", "a scheduled task"],
+  delete_scheduled_task: ["Delete", "Deleting", "Deleted", "a scheduled task"],
+  create_threads: ["Create", "Creating", "Created", "Pylon threads"],
+  t3_thread_start: ["Start", "Starting", "Started", "a Pylon thread"],
+  t3_thread_list: ["List", "Listing", "Listed", "Pylon threads"],
+  t3_thread_read: ["Read", "Reading", "Read", "a Pylon thread"],
+  t3_thread_send: ["Send", "Sending", "Sent", "to a Pylon thread"],
+  t3_thread_wait: ["Wait", "Waiting", "Waited", "for a Pylon thread"],
+  t3_thread_interrupt: ["Interrupt", "Interrupting", "Interrupted", "a Pylon thread"],
+  t3_worktree_handoff: ["Hand off", "Handing off", "Handed off", "thread to a git worktree"],
+  t3_worktree_status: ["Get", "Getting", "Got", "thread worktree status"],
+  preview_status: ["Get", "Getting", "Got", "preview browser status"],
+  preview_open: ["Open", "Opening", "Opened", "a page in the preview browser"],
+  preview_navigate: ["Navigate", "Navigating", "Navigated", "the preview browser"],
+  preview_snapshot: [
+    "Take a snapshot of",
+    "Taking a snapshot of",
+    "Took a snapshot of",
+    "the preview page",
+  ],
+  preview_click: ["Click", "Clicking", "Clicked", "in the preview browser"],
+  preview_press: ["Press", "Pressing", "Pressed", "a key in the preview browser"],
+  preview_type: ["Type", "Typing", "Typed", "in the preview browser"],
+  preview_scroll: ["Scroll", "Scrolling", "Scrolled", "the preview browser"],
+  preview_resize: ["Resize", "Resizing", "Resized", "the preview browser"],
+  preview_evaluate: ["Evaluate", "Evaluating", "Evaluated", "script in the preview browser"],
+  preview_wait_for: ["Wait", "Waiting", "Waited", "for the preview page"],
+  preview_set_appearance: ["Set", "Setting", "Set", "preview browser appearance"],
+  preview_recording_start: ["Start", "Starting", "Started", "recording the preview browser"],
+  preview_recording_stop: ["Stop", "Stopping", "Stopped", "recording the preview browser"],
+};
+
+function resolveT3McpToolPresentation(value: string | undefined, status: string | undefined) {
+  if (!value) return null;
+  const name = normalizeCompactToolLabel(value).replace(
+    /^(?:mcp__(?:t3-code|t3_code|t3code)__|(?:t3-code|t3_code|t3code)(?:[.:/]|\s*·\s*))/i,
+    "",
+  );
+  if (!Object.hasOwn(T3_MCP_TOOL_LABELS, name)) return null;
+
+  const [action, running, completed, detail] = T3_MCP_TOOL_LABELS[name]!;
+  const verb =
+    status === "inProgress"
+      ? running
+      : status === "completed"
+        ? completed
+        : status === "failed"
+          ? `Failed to ${action.toLowerCase()}`
+          : status === "declined"
+            ? `Declined to ${action.toLowerCase()}`
+            : status === "stopped"
+              ? `Stopped ${running.toLowerCase()}`
+              : action;
+
+  return {
+    displayName: `${verb} ${detail}`,
+    icon: name.startsWith("preview_") ? ("browser" as const) : ("t3-code" as const),
+  };
+}
+
+/** Resolves tool identity before choosing labels or icons in either client. */
+export function resolveWorkEntryToolPresentation(
+  entry: Pick<WorkLogPresentationEntry, "label" | "toolTitle" | "toolData" | "toolLifecycleStatus">,
+  fallbackStatus?: "inProgress" | "completed",
+) {
+  const status = entry.toolLifecycleStatus ?? fallbackStatus;
+  const data = entry.toolData;
+  if (data !== null && typeof data === "object") {
+    if (
+      "server" in data &&
+      typeof data.server === "string" &&
+      "tool" in data &&
+      typeof data.tool === "string"
+    ) {
+      return resolveT3McpToolPresentation(`${data.server}.${data.tool}`, status);
+    }
+    if ("toolName" in data && typeof data.toolName === "string") {
+      return resolveT3McpToolPresentation(data.toolName, status);
+    }
+  }
+
+  return (
+    resolveT3McpToolPresentation(entry.toolTitle, status) ??
+    resolveT3McpToolPresentation(entry.label, status)
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -192,7 +294,7 @@ export function commandDetailRepeatsCommand(input: {
   );
 }
 
-function workLogEntryIsToolLike(entry: WorkLogPresentationEntry): boolean {
+export function workLogEntryIsToolLike(entry: WorkLogPresentationEntry): boolean {
   // A missing-response notice is not a tool call, and it arrives error-toned
   // from runtime.error as well as info-toned from runtime.warning. Without
   // this guard the error-toned variant summarises as "Used 1 tool".
@@ -203,6 +305,93 @@ function workLogEntryIsToolLike(entry: WorkLogPresentationEntry): boolean {
   return entry.itemType !== undefined && isToolLifecycleItemType(entry.itemType);
 }
 
+/** Maps item and task status to the status shown on a work-log row. */
+export function extractWorkLogToolLifecycleStatus(
+  payloadValue: unknown,
+): WorkLogToolLifecycleStatus | undefined {
+  const payload = asRecord(payloadValue);
+  switch (payload?.status) {
+    case "pending":
+    case "running":
+    case "waiting":
+      return "inProgress";
+    case "cancelled":
+    case "interrupted":
+      return "stopped";
+    case "idle":
+      // A batch becomes idle when its parent turn ends. Other idle tasks can resume.
+      return payload.taskType === "subagent_batch" ? "stopped" : undefined;
+    case "inProgress":
+    case "completed":
+    case "failed":
+    case "declined":
+    case "stopped":
+      return payload.status;
+    default:
+      return undefined;
+  }
+}
+
+// Some providers report completion even when the output describes a failure.
+function toolDetailTextLooksLikeFailure(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes("file not found") ||
+    normalized.includes("no files found") ||
+    normalized.includes("enoent") ||
+    normalized.includes("no such file or directory") ||
+    normalized.includes("no such file") ||
+    normalized.includes("commandnotfoundexception") ||
+    normalized.includes("command not found") ||
+    (normalized.includes("cannot find path") && normalized.includes("because it does not exist")) ||
+    (normalized.includes("is not recognized") && normalized.includes("the term '")) ||
+    normalized.includes("is not recognized as the name of a cmdlet") ||
+    normalized.includes("a parameter cannot be found that matches parameter name") ||
+    /<exited with exit code\s+[1-9]\d*\s*>/i.test(text) ||
+    /exit(?:ed)? with exit code\s+[1-9]\d*/i.test(text) ||
+    /exit code\s*[:\s]\s*[1-9]\d*\b/i.test(text)
+  );
+}
+
+function workEntryIndicatesToolFailureFromOutput(
+  entry: WorkLogPresentationEntry,
+  includeCommand: boolean,
+): boolean {
+  if (
+    entry.tone === "error" ||
+    entry.toolLifecycleStatus === "failed" ||
+    entry.toolLifecycleStatus === "declined"
+  ) {
+    return true;
+  }
+  if (!workLogEntryIsToolLike(entry)) return false;
+  const output = includeCommand
+    ? [entry.detail, entry.command].filter(Boolean).join("\n")
+    : (entry.detail ?? "");
+  return output.length > 0 && toolDetailTextLooksLikeFailure(output);
+}
+
+/** Includes legacy activities that stored error output in the command field. */
+export function workEntryIndicatesToolFailure(entry: WorkLogPresentationEntry): boolean {
+  return workEntryIndicatesToolFailureFromOutput(entry, true);
+}
+
+/** Checks rendered output without treating the user's command as an error. */
+export function workEntryDisplayIndicatesToolFailure(entry: WorkLogPresentationEntry): boolean {
+  return workEntryIndicatesToolFailureFromOutput(entry, false);
+}
+
+/** Decides whether the row can show a success marker. */
+export function workEntryIndicatesToolSuccess(entry: WorkLogPresentationEntry): boolean {
+  return (
+    workLogEntryIsToolLike(entry) &&
+    !workEntryIndicatesToolFailure(entry) &&
+    entry.tone !== "thinking" &&
+    entry.toolLifecycleStatus !== "inProgress" &&
+    entry.toolLifecycleStatus !== "stopped"
+  );
+}
+
 function workLogEntryIsLocalCodeSearch(entry: WorkLogPresentationEntry): boolean {
   return (
     entry.itemType === "web_search" &&
@@ -211,6 +400,7 @@ function workLogEntryIsLocalCodeSearch(entry: WorkLogPresentationEntry): boolean
 }
 
 export function toolGroupAction(entry: WorkLogPresentationEntry): ToolGroupAction {
+  if (resolveWorkEntryToolPresentation(entry)?.icon === "browser") return "browser";
   if (
     entry.sourceActivityKind === "approval.requested" ||
     entry.sourceActivityKind === "approval.resolved" ||
@@ -323,6 +513,8 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
       return `Changed ${count} ${count === 1 ? "file" : "files"}`;
     case "command":
       return `Ran ${count} ${count === 1 ? "command" : "commands"}`;
+    case "browser":
+      return `Used browser ${count} ${count === 1 ? "time" : "times"}`;
     case "search":
       return `Searched the web ${count} ${count === 1 ? "time" : "times"}`;
     case "code-search":

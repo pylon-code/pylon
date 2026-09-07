@@ -25,6 +25,41 @@ Prime retains its native managed instructions and exact submitted prompt. Its da
 
 Validation: 340 focused tests across the runtime helper and five provider suites, plus 24 Markdown workspace-image tests, pass. Server typecheck and scoped lint pass; POSIX absolute and file-URI images resolve through the existing signed media-file asset route. Web, desktop and mobile receive the same provider-generated messages through existing contracts; image paths resolve on the environment, including remote connections. This change adds prompt guidance and regression coverage without changing client presentation. The bounded upstream head and full review cursor remain unchanged; unmerged work stays out of adopted totals.
 
+## 2026-09-07 — bounded tool activity and lifecycle presentation (partial range)
+
+Under the maintainer's standing approval, [#396](https://github.com/pylon-code/pylon/pull/396) adapts twenty upstream sources as one connected activity-log change. Its sources are listed below. Publication and merge status must be checked on the PR; prepared work does not count as landed. Against bounded upstream head `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f`, the current merged tally is **104 adopted sources across 50 adoption PRs**, **28 reconciled without a port**, and **270 remaining**. PR #383 is merged; this PR and prepared #391 and #392 account for **27 prepared sources** within that remainder. The full review cursor is unchanged.
+
+| Source                                              | Upstream concern                                                                 |
+| --------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `b520120cf169ce63a5606447a292451e97622c9a` (#9106)  | fix(chat): improve tool group summaries and scrolling                            |
+| `24799de4f85a9071afc2420362784ea46041d544` (#9359)  | fix(mobile): size expanded tool groups correctly                                 |
+| `3fb8942a427d564cfee4724ad6e40eb9c8881aea` (#10173) | fix(mobile): restore live tool shimmer and add a Thinking row                    |
+| `7eda989d38a30d5e35c9efbd946aae3d6f9c065a` (#10210) | fix(mobile): only make work rows expandable when the body adds something         |
+| `579a77588684fc4012e28754cc4f662aa24730c7` (#10211) | fix(mobile): fold subagent lifecycle rows into one batch per spawn               |
+| `89cc7434f0a5373f1b9c73ee579480e8f862fa5b` (#10212) | fix(mobile): stop clipping expanded tool groups                                  |
+| `b7465a3bc993e7f10f4ec7a469759b95eb4c2f2a` (#10273) | fix(mobile): stop the work log flickering during subagent runs and failing calls |
+| `ac11bd29b03ec568f2616c78d885574eff16ad3c` (#10122) | refactor(client): share tool outcome rules                                       |
+| `8c9a49afb5a4c9b28c1ef3540248a1cfa87cdad5` (#10442) | fix(mobile): expand single-line tool details in work logs                        |
+| `46b5c66406b9942589d7e9132beeafda2434f113` (#9267)  | fix(chat): show single tool calls without summaries                              |
+| `79394154dfe1e6373534995022f53ffdcf293e55` (#10420) | fix(web): deduplicate expanded tool labels and keep errors expandable            |
+| `94cc8152fff5fd06baafd25964f54d7ec1a34f8d` (#9894)  | fix(chat): show hours for long runs                                              |
+| `0cb02abf5b3af2985d9dd23a637a63388e98fd49` (#9371)  | fix: better shell syntax handling for labels                                     |
+| `4b26132d2c740ff344ef3fae7ae62e9765759e29` (#9384)  | fix(web): keep trailing tool groups out of "Worked for" accordion                |
+| `cfc9bf34156ddcc4a98b7f5c67193adb5aedce06` (#9739)  | fix(web): fold single trailing activity                                          |
+| `be7796d867a1e66524f19e6cfee0109c3ab447f0` (#10092) | fix(web): scale agent spawn rows with interface font                             |
+| `89bd6376de0ca3513f9d9942a42ffc6e1ac1d7c1` (#9935)  | fix(web): align tool disclosure chevrons with expanded state                     |
+| `710f6dc417ebf303eede3df3605a6938482d83ab` (#9549)  | fix(web): simplify expanded tool details                                         |
+| `c7c1dfe4df99edf65a49d8a31b39ef1361f37f44` (#9709)  | perf(web): stop continuous chat status animations                                |
+| `935917f50a2d9ccdd772464de140c187ca80bb0b` (#9777)  | fix(web): restore the running tool label shine                                   |
+
+Complete patches, PR descriptions and relevant review context were read. Conflicts retain Pylon's warm history caches, reported costs, missing-response notices, Prime controls, per-provider failure semantics and existing brand mark. Web and mobile preserve completed/failed/stopped outcomes; a separate Thinking row describes an active parent turn between calls. Mobile task cards retain distinct task identities even for same-name agents, coordinator outcomes and expandable details; animation stops when the owning turn settles. Only the required mobile idle-batch presentation from #9616 is included: `00f8b7c280` remains an outstanding source, not an additional adoption.
+
+Pylon keeps the full raw shell wrapper and output when it differs from the friendly heading; output matching the command remains available. Expanded headings wrap and permit text selection without collapsing the row. Label-only errors retain the complete error without repeating it in a second body. Image-only details use the actual resolved preview, and unresolved image references remain readable. Single trailing ordinary calls fold; larger trailing groups, failures, agent cards and Pylon response notices remain outside the completed-work fold. Detached timestamps/actions and reported costs remain visible without hovering. Pylon's active-turn timing helper stays intact; the retired unused formatElapsed helper is not restored.
+
+The shell parser does not execute commands. It conservatively handles wrappers, quoting, redirection, comments, here-documents and PowerShell here-strings, with bounds on segments and recursion. Unsupported/control-flow syntax falls back safely. Active tool-label motion uses a single text node, with IntersectionObserver, window focus, document visibility, reduced-motion and forced-color gates. Thinking, loading/update icons and the ultrathink border stay static on web/desktop. Mobile keeps its separate implementation.
+
+Validation: all **898 focused tests in 11 suites** pass. Web, mobile and client-runtime typechecks and scoped lint pass after the final eight sources; shared, server and desktop scopes passed for the earlier code that affects them. Integrated browser checks confirm trailing result/footer order, persistent cost visibility, retained raw command/output, wrapping/selectable label-only errors and agent-row scaling from 13px to 16.25px at a 20px interface preference. Browser checks cover reduced motion, forced colors, actual window focus loss, offscreen geometry, and a simulated document visibility event; all gates pause animation and resume correctly. Existing integrated web/iPhone evidence confirms bounded groups, restored scroll position, stable agent identities, Thinking and hour-aware durations. Android and Electron shell have no separate runtime pass for this presentation change. Evidence is attached to the PR through GitHub uploads and remains outside the repository. The rebase preserves the runtime-guidance ledger entry; all 21 code patches replay unchanged.
+
 ## 2026-09-07 — work-log compatibility decisions and release test repair (partial range)
 
 Under the maintainer's standing approval, two upstream sources are resolved without a port. Against bounded upstream head `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f`, the totals are **101 adopted sources across 48 adoption PRs**, **28 reconciled without a port**, and **273 remaining sources**. Nineteen sources in prepared PRs #383, #391, #392 and #396 are still excluded from adopted counts. The full review cursor is unchanged.
