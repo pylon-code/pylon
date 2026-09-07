@@ -1,63 +1,46 @@
-# T3 upstream decision framework
+# T3 upstream decisions
 
-Use this reference to turn upstream commits into product decisions for Pylon.
+Use the smallest integration unit that contains the finished behavior and its dependencies. Optimize review effort by risk; preserve traceability for every source disposition.
 
-## Build coherent change sets
+## Choose scope and depth
 
-Group commits when they belong to one pull request, require one another, share a migration or contract, or split implementation and tests across commits. Keep independent fixes separate so the user can choose them independently.
+| Change                                                                        | Review and integration                                                                                                                                                   |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Already covered or superseded                                                 | Compare final behavior, Pylon callers, and recorded decisions. Group equivalent outcomes; do not port a temporary implementation just to count a commit.                 |
+| Routine fixes or cleanup                                                      | Read the combined diff and relevant callers/tests. Group related changes in one subsystem. Check that deleted helpers have no live Pylon callers.                        |
+| Provider, lifecycle, protocol, persistence, authentication, or native changes | Trace the complete dependency chain and affected surfaces. Read relevant upstream reasoning and intermediate transitions; verify Pylon-specific behavior explicitly.     |
+| Pylon product divergence                                                      | Describe the concrete behavior tradeoff. Adapt within standing approval if preservation is clear; request a decision for a capability loss or unresolved product choice. |
+| Upstream-only infrastructure, branding, marketing, or product policy          | Usually skip with a scoped reason. Inspect shared runtime dependencies before deciding an entire mixed commit is irrelevant.                                             |
 
-Use patch equivalence from `git cherry` as a signal, then inspect the Pylon source before declaring a change already adopted. A manual Pylon implementation can be semantically equivalent without producing the same patch ID.
+A coherent subsystem batch can contain many commits. Split it when independent behavior, migration/native risk, or a difficult rollback would make the combined change hard to assess. Commit count alone is not the split criterion.
 
-## Classify candidate value
+## Pylon boundaries to verify
 
-- **Adopt now**: fixes a real Pylon defect, closes a security or data-loss risk, restores provider compatibility, materially improves performance or remote reliability, or supplies infrastructure required by planned Pylon work.
-- **Consider**: valuable product or developer-experience work with manageable tradeoffs, but not urgent or clearly aligned enough to adopt automatically.
-- **Defer**: potentially useful, but blocked by timing, a dependency, unresolved product direction, or integration cost. Record the condition that should trigger reconsideration.
-- **Skip**: T3-specific branding, hosting, monetization, analytics, marketing, or product direction that conflicts with Pylon; superseded work; irrelevant changes; or complexity without a Pylon need.
+Choose existing tests and source checks that apply. Extend them only where the changed behavior lacks meaningful coverage.
 
-Recommendations are judgments, not votes. Explain the evidence and tradeoff behind each one.
+| Boundary                          | Preserve and verify                                                                                                                                                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Agent progress and recovery       | Prime admission and restart rules, provider ownership, Stop/cancel fences, typed receipts, checkpoint/rollback behavior, and visible terminal/error states. A provider-specific fix needs an explicit applicability decision for other adapters. |
+| Contracts and persistence         | Pylon migration numbering and prior schema state, version-skew behavior, event/command ordering, and all clients that consume changed fields. Generated provider schemas alone do not prove ingestion or UI support.                             |
+| Remote access                     | Local, relay/tunnel, multi-device and multi-environment routing, credential scopes, and single-origin browser behavior. Never use live user state for integration tests.                                                                         |
+| Product identity and installation | Pylon app IDs, schemes, profiles, runtime homes, artifacts and visible branding from `AGENTS.md`; preserve compatibility identifiers and installer ownership.                                                                                    |
+| UI and performance                | Web/desktop/mobile entry points that apply, reverse actions, bounded payload/list work, and motion that stops when its state or visibility ends. Reuse the final integrated UI evidence across related fixes.                                    |
+| Build and dependencies            | Pylon-owned release/signing/hosting decisions; regenerate lockfiles and native/generated files with the pinned tools when their inputs change.                                                                                                   |
 
-## Evaluate Pylon impact
+Clean application is not semantic compatibility. Avoid broad path-level `ours` rules for shared code; such rules can silently discard later fixes.
 
-For every change set, check the applicable dimensions:
+## Compact decision record
 
-| Dimension    | Questions                                                                                                                    |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| Product fit  | Does it advance Pylon's direction or merely copy T3? Does it conflict with a Pylon workflow?                                 |
-| Branding     | Does it restore T3 logos, names, hosted origins, analytics, or marketing copy? Can behavior be adopted without the branding? |
-| Architecture | Does it respect contracts, deciders, projectors, reactors, receipts, and adapter boundaries?                                 |
-| Providers    | What happens for Codex, Claude, Cursor, Grok, and OpenCode? Is unsupported behavior explicit?                                |
-| Clients      | Does it cover web, desktop, mobile, settings, command palette, and keybindings where applicable?                             |
-| Connectivity | Does it work locally, remotely, through relay, and through tunnels?                                                          |
-| Persistence  | Are migrations compatible with Pylon's numbering and existing schema? Is rollback or reverse behavior present?               |
-| Performance  | Does it change websocket volume, rendering cost, list behavior, background work, or continuous animation?                    |
-| Operations   | Does it alter build, release, signing, hosting, secrets, telemetry, or infrastructure assumptions?                           |
-| Integration  | Is a clean cherry-pick realistic, or should the behavior be manually ported? Which dependent commits are required?           |
+In the active ledger, use one row per coherent group, with a short paragraph only for a material exception:
 
-## Inspect known conflict hotspots
+| Group / bounded head            | Sources                                         | Outcome and remaining scope                                                                      | Pylon PR / verification           |
+| ------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------- |
+| Behavior and full upstream head | Full source SHAs or exact range plus exclusions | Adopted / partial / covered / superseded / skipped / deferred, with reason and any DEF reference | PR link; focused evidence summary |
 
-- **Brand assets and visible copy**: retain Pylon sources and regenerate Pylon assets. Do not accept upstream generated icons or T3 product strings blindly.
-- **Migrations**: Pylon already diverges from upstream. Detect duplicate migration numbers and reconcile ordering, schema assumptions, and tests deliberately.
-- **Generated files**: regenerate route trees, generated schemas, native projects, and lockfiles with Pylon's pinned tools after integrating source changes.
-- **Provider protocols**: generated protocol support is not the same as server ingestion or UI support. Trace the full path.
-- **Contracts and events**: schema changes can affect server, web, desktop, mobile, persistence, and remote compatibility simultaneously.
-- **Hosted services**: upstream T3 Connect, `app.t3.codes`, Clerk, telemetry, or release infrastructure may not match Pylon's deployment model.
-- **Git metadata**: retain `origin` as Pylon and T3 remotes as fetch-only. Never import upstream branch tracking configuration.
+A fully enumerated source list can live in the linked PR body rather than being duplicated in a long ledger table. It must remain recoverable from the repository/PR, not only from an agent's temporary files. Distinguish a reviewed classification from an implemented result. Count a source once even when it spans several ports; retain its unresolved scope until classified or explicitly deferred.
 
-## Decision brief template
+Deferred records need the original date, source and remaining behavior, reason, observable trigger (paths/dependency/external event), and an earliest date when timing matters. Watches identify an open effort and its owner, if one exists. A closed-unmerged PR earns a replacement condition or retirement, not a claim that its capability shipped.
 
-Use a compact table followed by details only where needed:
+## Decision brief
 
-| ID  | Upstream            | Change                  | Recommendation | Pylon impact                       | Integration                          |
-| --- | ------------------- | ----------------------- | -------------- | ---------------------------------- | ------------------------------------ |
-| A1  | `abc1234` / `#1234` | Plain-language behavior | Adopt now      | Web + server; low product conflict | Cherry-pick with branding adaptation |
-
-Then state:
-
-1. the exact review range and upstream head;
-2. patch-equivalent or already-present work;
-3. dependency groups;
-4. recommended selections;
-5. the candidate IDs the user should choose.
-
-Avoid dumping a raw commit list without interpretation.
+Report the frozen range and Pylon head, useful change groups, applicable standing approval, material exceptions, and the planned verification. Summarize unchanged deferred/watch entries collectively and explain triggered entries. Request a decision only for uncovered scope. Keep workflow evaluation separate from adopting new upstream code or changing the ancestry baseline.
