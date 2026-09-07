@@ -2,13 +2,14 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { PrimeAgentIcon } from "../Icons";
-import { PROVIDER_ICON_BY_PROVIDER, AVAILABLE_PROVIDER_OPTIONS } from "./providerIconUtils";
+import { PROVIDER_ICON_BY_PROVIDER } from "./providerIconUtils";
+import { PROVIDER_OPTIONS } from "../../session-logic";
 
 describe("Prime Agent provider presentation", () => {
   const primeAgent = ProviderDriverKind.make("primeAgent");
 
   it("is available in the provider picker", () => {
-    expect(AVAILABLE_PROVIDER_OPTIONS).toContainEqual({
+    expect(PROVIDER_OPTIONS).toContainEqual({
       value: primeAgent,
       label: "Prime Agent",
       available: true,
