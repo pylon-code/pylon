@@ -1100,7 +1100,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         '{"providerInstances":{"codex_personal":{"driver":"codex","environment":[{"name":"API_TOKEN","value":"inline-test-token","sensitive":true}],"config":{}}}}';
       yield* fs.writeFileString(config.settingsPath, original);
       const error = yield* Effect.flip(
-        service.updateSettings({
+        updateSettingsWithProviderInstances(service, {
           providerInstances: {
             [instanceId]: {
               driver: ProviderDriverKind.make("codex"),
@@ -1110,8 +1110,11 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           },
         }),
       );
-      assert.equal(error.operation, "write-secret");
-      assert.strictEqual(error.cause, cause);
+      assert.equal(error._tag, "ServerSettingsError");
+      if (error._tag === "ServerSettingsError") {
+        assert.equal(error.operation, "write-secret");
+        assert.strictEqual(error.cause, cause);
+      }
       assert.equal(yield* fs.readFileString(config.settingsPath), original);
       const settings = yield* service.getSettings;
       assert.equal(
@@ -1162,7 +1165,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           "inline-test-token",
         );
 
-        const next = yield* serverSettings.updateSettings({
+        const next = yield* updateSettingsWithProviderInstances(serverSettings, {
           providerInstances: {
             [instanceId]: {
               driver: ProviderDriverKind.make("codex"),

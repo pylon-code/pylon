@@ -122,7 +122,9 @@ Use the provider's Environment variables section in Settings.
 
 This is useful when a Codex-compatible setup needs account-specific variables. Add the variables to
 the provider instance that should receive them, and mark API keys or tokens as sensitive. Sensitive
-values are stored as server secrets and are not sent back to the app after saving.
+values are stored as server secrets and are not sent back to the app after saving. Saving a provider
+with a masked field preserves its existing secret. Enter a new value to replace it or explicitly
+clear the field to remove it.
 
 ## Can I Switch Accounts In An Existing Thread?
 
