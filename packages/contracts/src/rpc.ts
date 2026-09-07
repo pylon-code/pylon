@@ -1,3 +1,9 @@
+import {
+  ProviderConsumeResetCreditInput,
+  ProviderConsumeResetCreditResult,
+  ProviderConsumeResetCreditError,
+  UsageLimitSourceError,
+} from "./providerUsageLimits.ts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
@@ -274,6 +280,7 @@ import {
 import { VcsError } from "./vcs.ts";
 
 export const WS_METHODS = {
+  providerConsumeResetCredit: "provider.consumeResetCredit",
   // Project registry methods
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -599,6 +606,16 @@ const WsProviderRefineSessionHarnessRpc = Rpc.make(WS_METHODS.providerRefineSess
 const WsRollbackRecoverRpc = Rpc.make(WS_METHODS.rollbackRecover, {
   payload: OrchestrationRollbackRecoveryInput,
   error: Schema.Union([OrchestrationRollbackRecoveryError, EnvironmentAuthorizationError]),
+});
+
+const WsProviderConsumeResetCreditRpc = Rpc.make(WS_METHODS.providerConsumeResetCredit, {
+  payload: ProviderConsumeResetCreditInput,
+  success: ProviderConsumeResetCreditResult,
+  error: Schema.Union([
+    ProviderConsumeResetCreditError,
+    UsageLimitSourceError,
+    EnvironmentAuthorizationError,
+  ]),
 });
 
 const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
@@ -1284,6 +1301,14 @@ export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerCon
      * dropped by old servers.
      */
     environmentThemes: Schema.optional(Schema.Boolean),
+    /** Whether this client understands `usageLimitSourcesUpdated` events. */
+    usageLimitSources: Schema.optional(Schema.Boolean),
+    /**
+     * Whether this client answers `/usage-limits` itself. The server injects
+     * that command into provider catalogs only for such clients; an older
+     * client would send it to the provider as an ordinary prompt.
+     */
+    usageLimitsCommand: Schema.optional(Schema.Boolean),
   }),
   success: ServerConfigStreamEvent,
   error: Schema.Union([KeybindingsConfigError, ServerSettingsError, EnvironmentAuthorizationError]),
@@ -1342,6 +1367,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderRefineSessionHarnessRpc,
   WsRollbackRecoverRpc,
   WsServerUpdateProviderRpc,
+  WsProviderConsumeResetCreditRpc,
   WsServerGetPrimeManagedMaintenanceRpc,
   WsServerRunPrimeManagedMaintenanceRpc,
   WsServerStartProviderLoginRpc,

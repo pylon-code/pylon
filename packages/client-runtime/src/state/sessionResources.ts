@@ -84,11 +84,19 @@ export function resolveSessionSlashCommands(
   fallback: ServerProvider["slashCommands"],
 ): ServerProvider["slashCommands"] {
   if (snapshot?.available !== true) return fallback;
-  return snapshot.commands.map((command) => ({
+  const nativeCommands = snapshot.commands.map((command) => ({
     name: command.name,
     ...(command.description === undefined ? {} : { description: command.description }),
     ...(command.argumentHint === undefined ? {} : { input: { hint: command.argumentHint } }),
   }));
+  const nativeNames = new Set(nativeCommands.map((command) => command.name.toLowerCase()));
+  return [
+    ...nativeCommands,
+    ...fallback.filter(
+      (command) =>
+        command.localAction !== undefined && !nativeNames.has(command.name.toLowerCase()),
+    ),
+  ];
 }
 
 /** Show provider command help without dropping a separately supplied argument hint. */

@@ -345,25 +345,44 @@ export interface ServerConfigProjection {
   readonly source: "cache" | "live";
 }
 
+/**
+ * Cached config keeps the provider and model catalog available across reconnects.
+ * Published themes and usage-limit sources are current machine state, so a
+ * cache could restore a set the machine no longer reports. Replay sends both
+ * as separate events.
+ */
+function withoutEnvironmentThemes(config: ServerConfig): ServerConfig {
+  if (config.environmentThemes === undefined && config.usageLimitSources === undefined) {
+    return config;
+  }
+  const { environmentThemes: _themes, usageLimitSources: _sources, ...rest } = config;
+  return rest;
+}
+
 export function applyServerConfigProjection(
   current: Option.Option<ServerConfigProjection>,
   event: ServerConfigStreamEvent,
 ): Option.Option<ServerConfigProjection> {
   switch (event.type) {
     case "snapshot": {
-      // A snapshot never carries published themes -- the theme stream owns
-      // them -- so taking it wholesale would clear the set on every reconnect
-      // and repaint anyone wearing one until the follow-up event landed.
-      // Only from a server that still streams them. Reconnecting to one that
-      // predates the feature must drop the set rather than leave a palette on
-      // screen that nothing will ever update again.
-      const carried =
-        event.config.environment.capabilities.environmentThemes === true && Option.isSome(current)
+      // Wire snapshots never contain published themes. Keep the previous set
+      // until a capable server sends its authoritative theme event. A legacy
+      // server cannot send a later removal, so a downgrade must clear the set.
+      const capabilities = event.config.environment.capabilities;
+      const carriedThemes =
+        capabilities.environmentThemes === true && Option.isSome(current)
           ? current.value.config.environmentThemes
           : undefined;
+      const carriedSources =
+        capabilities.usageLimitSources === true && Option.isSome(current)
+          ? current.value.config.usageLimitSources
+          : undefined;
       return Option.some({
-        config:
-          carried === undefined ? event.config : { ...event.config, environmentThemes: carried },
+        config: {
+          ...event.config,
+          ...(carriedThemes === undefined ? {} : { environmentThemes: carriedThemes }),
+          ...(carriedSources === undefined ? {} : { usageLimitSources: carriedSources }),
+        },
         latestEvent: event,
         source: "live" as const,
       });
@@ -405,6 +424,15 @@ export function applyServerConfigProjection(
         latestEvent: event,
         source: "live",
       }));
+    case "usageLimitSourcesUpdated":
+      return Option.map(current, (projection) => ({
+        config: {
+          ...projection.config,
+          usageLimitSources: event.payload.sources.length > 0 ? event.payload.sources : undefined,
+        },
+        latestEvent: event,
+        source: "live",
+      }));
   }
 }
 
@@ -424,14 +452,14 @@ const cachedConfigSnapshotEvent = (config: ServerConfig): ServerConfigStreamEven
  * must not survive in the config cache: a restart or an offline load would
  * otherwise hand clients palettes the environment has already dropped.
  */
-function withoutEnvironmentThemes(config: ServerConfig): ServerConfig {
-  if (config.environmentThemes === undefined) return config;
-  const { environmentThemes: _ephemeral, ...rest } = config;
-  return rest;
+export interface ServerConfigSubscriptionOptions {
+  readonly environmentThemes?: boolean;
+  readonly usageLimitSources?: boolean;
+  readonly usageLimitsCommand?: boolean;
 }
 
 export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConfigState.make")(
-  function* (environmentThemes?: boolean) {
+  function* (subscription: ServerConfigSubscriptionOptions = {}) {
     const supervisor = yield* EnvironmentSupervisor;
     const cache = yield* EnvironmentCacheStore;
     const environmentId = supervisor.target.environmentId;
@@ -492,10 +520,11 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
       Effect.forkScoped,
     );
 
-    yield* subscribe(
-      WS_METHODS.subscribeServerConfig,
-      environmentThemes === true ? { environmentThemes: true } : {},
-    ).pipe(
+    yield* subscribe(WS_METHODS.subscribeServerConfig, {
+      ...(subscription.environmentThemes === true ? { environmentThemes: true } : {}),
+      ...(subscription.usageLimitSources === true ? { usageLimitSources: true } : {}),
+      ...(subscription.usageLimitsCommand === true ? { usageLimitsCommand: true } : {}),
+    }).pipe(
       Stream.runForEach((event) =>
         Effect.gen(function* () {
           const next = applyServerConfigProjection(yield* SubscriptionRef.get(state), event);
@@ -525,11 +554,14 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
   },
 );
 
-function serverConfigStateChanges(environmentId: EnvironmentId, environmentThemes?: boolean) {
+function serverConfigStateChanges(
+  environmentId: EnvironmentId,
+  subscription: ServerConfigSubscriptionOptions,
+) {
   return followStreamInEnvironment(
     environmentId,
     Stream.unwrap(
-      makeEnvironmentServerConfigState(environmentThemes).pipe(
+      makeEnvironmentServerConfigState(subscription).pipe(
         Effect.map((state) =>
           SubscriptionRef.changes(state).pipe(
             Stream.filterMap((projection) =>
@@ -588,6 +620,8 @@ export function createServerEnvironmentAtoms<R, E>(
      * receives the payload.
      */
     readonly environmentThemes?: boolean;
+    readonly usageLimitSources?: boolean;
+    readonly usageLimitsCommand?: boolean;
   },
 ) {
   const configScheduler = createAtomCommandScheduler();
@@ -599,7 +633,13 @@ export function createServerEnvironmentAtoms<R, E>(
   };
   const configProjectionFamily = Atom.family((environmentId: EnvironmentId) =>
     runtime
-      .atom(serverConfigStateChanges(environmentId, options.environmentThemes))
+      .atom(
+        serverConfigStateChanges(environmentId, {
+          ...(options.environmentThemes === true ? { environmentThemes: true } : {}),
+          ...(options.usageLimitSources === true ? { usageLimitSources: true } : {}),
+          ...(options.usageLimitsCommand === true ? { usageLimitsCommand: true } : {}),
+        }),
+      )
       .pipe(
         Atom.setIdleTTL(5 * 60_000),
         Atom.withLabel(`environment-data:server:config-projection:${environmentId}`),
@@ -917,6 +957,19 @@ export function createServerEnvironmentAtoms<R, E>(
         stream.pipe(
           Stream.mapAccum(Option.none<ServerLifecycleWelcomePayload>, projectServerWelcome),
         ),
+    }),
+    consumeResetCredit: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:consume-reset-credit",
+      tag: WS_METHODS.providerConsumeResetCredit,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify(
+            "instanceId" in input
+              ? ["native", environmentId, input.instanceId]
+              : ["hub", environmentId, input.sourceId, input.accountId],
+          ),
+      },
     }),
     refreshProviders: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-providers",

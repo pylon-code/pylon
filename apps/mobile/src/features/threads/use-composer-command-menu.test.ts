@@ -116,6 +116,27 @@ describe("buildComposerCommandItems slash menu", () => {
     ]);
   });
 
+  it("offers the local limits panel only in a thread while retaining native commands in drafts", () => {
+    const commands = [{ name: "usage-limits", localAction: "usage-limits" as const }];
+    const input = {
+      ...baseInput,
+      selectedProviderStatus: null,
+      trigger: trigger("/usage"),
+      providerSlashCommands: commands,
+    };
+    expect(buildComposerCommandItems({ ...input, hasThread: false })).toEqual([]);
+    expect(
+      buildComposerCommandItems({ ...input, hasThread: true }).map((item) => item.label),
+    ).toEqual(["/usage-limits"]);
+    expect(
+      buildComposerCommandItems({
+        ...input,
+        hasThread: false,
+        providerSlashCommands: [{ name: "usage-limits" }],
+      }).map((item) => item.label),
+    ).toEqual(["/usage-limits"]);
+  });
+
   it("hides Codex /feedback until a thread exists", () => {
     const codex = provider({
       driver: ProviderDriverKind.make("codex"),

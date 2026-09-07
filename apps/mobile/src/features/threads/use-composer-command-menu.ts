@@ -2,6 +2,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { serverEnvironment } from "../../state/server";
 import {
   resolveProviderSkillsForCwd,
+  resolveProviderSlashCommandsForCwd,
   dedupeProviderSkillsByName,
   getProviderSkillsForSlashMenu,
   getProviderSlashCommandsForSlashMenu,
@@ -59,13 +60,16 @@ const MAX_SKILL_RESULTS = 20;
 export function resolveComposerProviderSlashCommands(
   selectedProviderStatus: ServerProvider | null,
   sessionResources: SessionResourcesSnapshot | null,
+  projectCwd: string | null = null,
 ): ReadonlyArray<ServerProviderSlashCommand> {
   return resolveSessionSlashCommands(
     selectedProviderStatus?.featureCapabilities?.resources?.operations.includes("commands") &&
       sessionResources?.providerInstanceId === selectedProviderStatus.instanceId
       ? sessionResources
       : null,
-    selectedProviderStatus?.slashCommands ?? [],
+    selectedProviderStatus
+      ? resolveProviderSlashCommandsForCwd(selectedProviderStatus, projectCwd)
+      : [],
   );
 }
 
@@ -141,6 +145,7 @@ export function buildComposerCommandItems({
         : [];
     for (const cmd of expandableCommands) {
       if (!cmd.name.toLowerCase().includes(q)) continue;
+      if (!hasThread && cmd.localAction === "usage-limits") continue;
       // Codex `/feedback` uploads an existing thread's session and logs, so it
       // has nothing to send before the thread exists.
       if (!hasThread && selectedProviderStatus?.driver === "codex" && cmd.name === "feedback") {
@@ -420,8 +425,9 @@ export function useComposerCommandMenu({
   });
 
   const providerSlashCommands = useMemo(
-    () => resolveComposerProviderSlashCommands(selectedProviderStatus, sessionResources),
-    [selectedProviderStatus, sessionResources],
+    () =>
+      resolveComposerProviderSlashCommands(selectedProviderStatus, sessionResources, projectCwd),
+    [selectedProviderStatus, sessionResources, projectCwd],
   );
 
   const items = useMemo(
@@ -470,6 +476,7 @@ export function useComposerCommandMenu({
   );
 
   return {
+    providerSlashCommands,
     selection,
     onSelectionChange,
     trigger,

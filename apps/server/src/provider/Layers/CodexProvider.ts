@@ -99,7 +99,11 @@ export function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse[
   if (account.type === "amazonBedrock") return "Amazon Bedrock";
   if (account.type !== "chatgpt") return undefined;
 
-  switch (account.planType) {
+  return codexPlanLabel(account.planType);
+}
+
+export function codexPlanLabel(planType: string | null | undefined): string {
+  switch (planType) {
     case "free":
       return "ChatGPT Free Subscription";
     case "go":
@@ -387,7 +391,7 @@ const readCodexRateLimitsShared = Effect.fn("readCodexRateLimitsShared")(functio
   }).pipe(Effect.ensuring(releaseSharedUsageLock(cacheDir, cacheKey)));
 });
 
-const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(function* (input: {
+export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(function* (input: {
   readonly binaryPath: string;
   readonly homePath?: string;
   readonly launchArgs?: string;
@@ -457,6 +461,18 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   const versionMatch = initialize.userAgent.match(/\/([^\s]+)/);
   const version = versionMatch ? versionMatch[1] : undefined;
 
+  return { client, version, sharedHomePath };
+});
+
+const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(function* (input: {
+  readonly binaryPath: string;
+  readonly homePath?: string;
+  readonly launchArgs?: string;
+  readonly cwd: string;
+  readonly customModels?: ReadonlyArray<string>;
+  readonly environment?: NodeJS.ProcessEnv;
+}) {
+  const { client, version, sharedHomePath } = yield* withCodexAppServerClient(input);
   const accountResponse = yield* client.request("account/read", {});
   if (!accountResponse.account && accountResponse.requiresOpenaiAuth) {
     return {

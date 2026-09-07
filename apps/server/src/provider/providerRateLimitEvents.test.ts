@@ -132,7 +132,15 @@ describe("usageWindowsFromRuntimeEventPayload", () => {
           },
         }),
       )?.windows,
-    ).toEqual([{ label: "Weekly", usedPercent: 42, windowDurationMins: 10_080 }]);
+    ).toEqual([
+      {
+        id: "secondary",
+        kind: "weekly",
+        label: "Weekly",
+        usedPercent: 42,
+        windowDurationMins: 10_080,
+      },
+    ]);
   });
 
   // Codex wraps its sparse rolling update under its own `rateLimits` key,
@@ -152,12 +160,20 @@ describe("usageWindowsFromRuntimeEventPayload", () => {
       source: "codexAppServerPush",
       windows: [
         {
+          id: "primary",
+          kind: "session",
           label: "Session",
           usedPercent: 37,
           windowDurationMins: 300,
           resetsAt: "2026-08-04T01:50:00.000Z",
         },
-        { label: "Weekly", usedPercent: 62, windowDurationMins: 10_080 },
+        {
+          id: "secondary",
+          kind: "weekly",
+          label: "Weekly",
+          usedPercent: 62,
+          windowDurationMins: 10_080,
+        },
       ],
     });
   });
@@ -182,6 +198,8 @@ describe("usageWindowsFromRuntimeEventPayload", () => {
       source: "claudeRateLimitEvent",
       windows: [
         {
+          id: "five_hour",
+          kind: "session",
           label: "Session",
           usedPercent: 42,
           windowDurationMins: 300,
@@ -199,7 +217,13 @@ describe("usageWindowsFromRuntimeEventPayload", () => {
     );
 
     expect(parsed?.windows).toEqual([
-      { label: "Weekly (all models)", usedPercent: 80, windowDurationMins: 10_080 },
+      {
+        id: "seven_day",
+        kind: "weekly",
+        label: "Weekly (all models)",
+        usedPercent: 80,
+        windowDurationMins: 10_080,
+      },
     ]);
   });
 

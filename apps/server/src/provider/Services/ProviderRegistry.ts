@@ -17,6 +17,7 @@ import type {
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
+import type * as Scope from "effect/Scope";
 import type { ProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import type { ProviderRuntimeFence } from "../ProviderDriver.ts";
 
@@ -142,6 +143,12 @@ export interface ProviderRegistryShape {
    * change. The array contains the full current state.
    */
   readonly streamChanges: Stream.Stream<ReadonlyArray<ServerProvider>>;
+  /** Acquire the update subscription before reading the initial config snapshot. */
+  readonly subscribeChanges: Effect.Effect<
+    Stream.Stream<ReadonlyArray<ServerProvider>>,
+    never,
+    Scope.Scope
+  >;
 }
 
 export class ProviderRegistry extends Context.Service<ProviderRegistry, ProviderRegistryShape>()(

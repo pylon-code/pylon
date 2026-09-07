@@ -23,6 +23,7 @@
  */
 import type {
   ProviderDriverKind,
+  ProviderConsumeResetCreditResult,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
   ServerProvider,
@@ -92,6 +93,10 @@ export interface ProviderInstance {
    * drivers that use Pylon's configured accounts have nothing to read.
    */
   readonly capacity?: ProviderCapacitySource | undefined;
+  /** Explicit account action, separate from starting or resuming a turn. */
+  readonly consumeResetCredit?: (input: {
+    readonly requestId?: string | undefined;
+  }) => Effect.Effect<ProviderConsumeResetCreditResult, ProviderDriverError>;
   /** Server-private replacement fence. Prime is the first fenced driver. */
   readonly runtimeFence?: ProviderRuntimeFence | undefined;
 }

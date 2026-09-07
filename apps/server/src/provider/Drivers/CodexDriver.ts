@@ -26,6 +26,7 @@ import {
   ProviderDriverKind,
   type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -45,7 +46,18 @@ import {
   checkCodexProviderStatus,
   makePendingCodexProvider,
   probeCodexSkillsForCwd,
+  withCodexAppServerClient,
 } from "../Layers/CodexProvider.ts";
+import {
+  CodexResetCreditCoordinator,
+  CODEX_RESET_CREDIT_TIMEOUT,
+} from "../Layers/codexResetCredit.ts";
+import { usageLimitsFromCodexRateLimits } from "../providerUsageLimits.ts";
+import {
+  resolveSharedUsageCacheDir,
+  sharedUsageReadKey,
+  writeSharedUsageEntry,
+} from "../sharedUsageReadCache.ts";
 import { resolveCodexLaunchArgs } from "../Layers/codexLaunchArgs.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
@@ -65,7 +77,7 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
-import { retainSnapshotUsageLimits } from "../providerUsageRetention.ts";
+import { retainSnapshotUsageLimits, preferFreshUsageReading } from "../providerUsageRetention.ts";
 import {
   codexContinuationIdentity,
   materializeCodexShadowHome,
@@ -106,6 +118,7 @@ function makeCodexMaintenanceResolver(sharedHomePath: string) {
 export type CodexDriverEnv =
   | BackgroundPolicy.BackgroundPolicy
   | ChildProcessSpawner.ChildProcessSpawner
+  | CodexResetCreditCoordinator
   | Crypto.Crypto
   | FileSystem.FileSystem
   | HttpClient.HttpClient
@@ -126,6 +139,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const resetCreditCoordinator = yield* CodexResetCreditCoordinator;
       const httpClient = yield* HttpClient.HttpClient;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -197,11 +211,19 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       // is read over the network, so it fails independently. Keep the last
       // good reading through those failures rather than blanking the gauge.
       const lastKnownUsage = yield* Ref.make<ServerProviderUsageLimits | undefined>(undefined);
+      const redeemedUsage = yield* Ref.make<ServerProviderUsageLimits | undefined>(undefined);
       const checkProvider = modelManifest.refreshInBackground.pipe(
         Effect.andThen(
           Effect.zipWith(
             checkCodexProviderStatus(effectiveConfig, undefined, processEnv).pipe(
-              Effect.flatMap((snapshot) => retainSnapshotUsageLimits(lastKnownUsage, snapshot)),
+              Effect.flatMap((snapshot) =>
+                Effect.gen(function* () {
+                  const resetReading = yield* Ref.get(redeemedUsage);
+                  const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+                  const published = preferFreshUsageReading(snapshot, resetReading, nowMs);
+                  return yield* retainSnapshotUsageLimits(lastKnownUsage, published);
+                }),
+              ),
             ),
             modelManifest.current,
             (draft, manifest) =>
@@ -277,6 +299,80 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
               ),
             );
 
+      const accountKey = homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath;
+      const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = (input) =>
+        resetCreditCoordinator
+          .redeem(accountKey, input.requestId, (idempotencyKey) =>
+            Effect.gen(function* () {
+              const result = yield* Effect.gen(function* () {
+                const { client, outcome } = yield* Effect.gen(function* () {
+                  const { client } = yield* withCodexAppServerClient({
+                    binaryPath: effectiveConfig.binaryPath,
+                    homePath: effectiveConfig.homePath,
+                    launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+                    cwd: process.cwd(),
+                    environment: processEnv,
+                  });
+                  const { outcome } = yield* client.request(
+                    "account/rateLimitResetCredit/consume",
+                    { idempotencyKey },
+                  );
+                  return { client, outcome };
+                }).pipe(Effect.timeout(CODEX_RESET_CREDIT_TIMEOUT));
+                const reading = yield* client
+                  .request("account/rateLimits/read", undefined)
+                  .pipe(Effect.timeout("5 seconds"), Effect.result);
+                if (reading._tag === "Failure")
+                  return {
+                    outcome,
+                    warning:
+                      "Codex answered the reset request, but its updated limits could not be read. Refresh to check.",
+                  };
+                const checkedAt = DateTime.formatIso(yield* DateTime.now);
+                const limits = usageLimitsFromCodexRateLimits(reading.success, checkedAt);
+                if (!limits)
+                  return {
+                    outcome,
+                    warning:
+                      "Codex answered the reset request without reporting updated limits. Refresh to check.",
+                  };
+                yield* Ref.set(redeemedUsage, limits);
+                yield* writeSharedUsageEntry(
+                  yield* resolveSharedUsageCacheDir,
+                  sharedUsageReadKey(["codex", accountKey]),
+                  { version: 1, readAt: checkedAt, usageLimits: limits },
+                );
+                return { outcome };
+              }).pipe(Effect.scoped);
+              // The direct account read bypasses the shared cache. Even if an older
+              // status probe finishes now, checkProvider overlays this fresh reading.
+              const refreshed = yield* snapshot.refresh.pipe(Effect.exit);
+              return refreshed._tag === "Failure" && !result.warning
+                ? {
+                    ...result,
+                    warning:
+                      "Codex answered the reset request, but the provider status could not refresh. Refresh to check.",
+                  }
+                : result;
+            }).pipe(
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            ),
+          )
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderDriverError({
+                  driver: DRIVER_KIND,
+                  instanceId,
+                  detail:
+                    "Codex could not redeem the reset credit. Retry to check the same attempt.",
+                  cause,
+                }),
+            ),
+          );
+
       return {
         instanceId,
         driverKind: DRIVER_KIND,
@@ -286,6 +382,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         enabled,
         snapshot,
         snapshotForCwd,
+        consumeResetCredit,
         adapter,
         textGeneration,
       } satisfies ProviderInstance;

@@ -27,6 +27,8 @@ import { environmentSession } from "./session";
 // before caching, so following all of them costs a few KB per environment.
 export const serverEnvironment = createServerEnvironmentAtoms(connectionAtomRuntime, {
   initialConfigValueAtom: environmentSession.initialConfigValueAtom,
+  usageLimitSources: true,
+  usageLimitsCommand: true,
   environmentThemes: true,
 });
 export const environmentServerConfigsAtom = createEnvironmentServerConfigsAtom({

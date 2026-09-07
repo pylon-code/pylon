@@ -26,6 +26,7 @@ import {
   type ThreadId,
   type ThreadLinkedPullRequest,
   type TurnId,
+  type UsageLimitsReport,
   type KeybindingCommand,
   OrchestrationThreadActivity,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -382,6 +383,11 @@ import {
   useLinkedThreadPullRequest,
 } from "./ThreadStatusIndicators";
 import type { ComposerBannerStackItem } from "./chat/ComposerBannerStack";
+import { usageLimitsBannerItem } from "./chat/ComposerUsageLimits";
+import {
+  collectProviderUsageLimits,
+  shouldHandleUsageLimitsCommand,
+} from "@t3tools/shared/usageLimits";
 import { ComposerSurface } from "./chat/ComposerSurface";
 import {
   hasAvailableClaudeCompactionProvider,
@@ -5576,6 +5582,22 @@ export default function ChatView(props: ChatViewProps) {
     }
     void handleSwitchCheckoutToThread();
   }, [gitStatusQuery.data?.hasWorkingTreeChanges, handleSwitchCheckoutToThread]);
+  const [usageLimitsNotice, setUsageLimitsNotice] = useState<{
+    threadKey: string;
+    report: UsageLimitsReport;
+  } | null>(null);
+  const usageLimitsBanner = useMemo(
+    () =>
+      usageLimitsNotice?.threadKey === routeThreadKey
+        ? usageLimitsBannerItem(
+            `usage-limits:${routeThreadKey}`,
+            usageLimitsNotice.report,
+            environmentId,
+            () => setUsageLimitsNotice(null),
+          )
+        : null,
+    [usageLimitsNotice, routeThreadKey, environmentId],
+  );
   const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
     const backgroundLivenessItems =
       backgroundLivenessBannerItem === null ? [] : [backgroundLivenessBannerItem];
@@ -5586,6 +5608,7 @@ export default function ChatView(props: ChatViewProps) {
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...systemComposerBannerItems,
+        ...(usageLimitsBanner ? [usageLimitsBanner] : []),
         ...backgroundLivenessItems,
         ...resumeCompactionItems,
         ...wokeThreadItems,
@@ -5594,6 +5617,7 @@ export default function ChatView(props: ChatViewProps) {
     }
     return [
       ...systemComposerBannerItems,
+      ...(usageLimitsBanner ? [usageLimitsBanner] : []),
       ...backgroundLivenessItems,
       ...resumeCompactionItems,
       ...wokeThreadItems,
@@ -5648,6 +5672,7 @@ export default function ChatView(props: ChatViewProps) {
     resumeCompactionBannerItem,
     showBranchMismatchBanner,
     systemComposerBannerItems,
+    usageLimitsBanner,
     wokeThreadBannerItem,
   ]);
   useEffect(() => {
@@ -6153,6 +6178,33 @@ export default function ChatView(props: ChatViewProps) {
         composerPreviewAnnotations.length +
         composerReviewComments.length,
     });
+    if (
+      !directAnnotation &&
+      shouldHandleUsageLimitsCommand(
+        trimmed,
+        sendCtx.providerSlashCommands,
+        composerImages.length +
+          composerFiles.length +
+          composerTerminalContexts.length +
+          composerElementContexts.length +
+          composerPreviewAnnotations.length +
+          composerReviewComments.length,
+      )
+    ) {
+      const report = collectProviderUsageLimits(
+        ctxSelectedModelSelection.instanceId,
+        providerStatuses,
+        serverConfig?.usageLimitSources ?? [],
+        Date.now(),
+      );
+      if (report) {
+        setUsageLimitsNotice({ threadKey: routeThreadKey, report });
+        promptRef.current = "";
+        clearComposerDraftContent(composerDraftTarget);
+        composerRef.current?.resetCursorState();
+      }
+      return;
+    }
     const feedbackCommand =
       ctxSelectedProvider === "codex" &&
       composerImages.length === 0 &&
@@ -6843,6 +6895,9 @@ export default function ChatView(props: ChatViewProps) {
               : "Failed to send message.",
         );
       }
+    }
+    if (turnStartSucceeded) {
+      setUsageLimitsNotice((current) => (current?.threadKey === routeThreadKey ? null : current));
     }
     sendInFlightRef.current = false;
     if (!turnStartSucceeded) {

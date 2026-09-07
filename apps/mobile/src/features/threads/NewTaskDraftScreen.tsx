@@ -1,3 +1,4 @@
+import { shouldHandleUsageLimitsCommand } from "@t3tools/shared/usageLimits";
 import { useAtomValue } from "@effect/atom-react";
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import {
@@ -901,6 +902,16 @@ export function NewTaskDraftScreen(props: {
       flow.submitting ||
       (workspaceMode === "worktree" && !selectedBranchName)
     ) {
+      return;
+    }
+    if (
+      shouldHandleUsageLimitsCommand(
+        initialMessageText,
+        composerMenu.providerSlashCommands,
+        draft.attachments.length,
+      )
+    ) {
+      Alert.alert("Usage limits", "Open Usage → Limits to see quotas before starting a thread.");
       return;
     }
     // A failed-send restore can leave the draft over the cap on purpose (it

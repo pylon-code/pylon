@@ -1,3 +1,5 @@
+import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -32,6 +34,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  UsageLimitSourceId,
   ServerProviderMutationBusyError,
   ResolvedKeybindingRule,
   ThreadId,
@@ -442,6 +445,8 @@ const buildAppUnderTest = (options?: {
   config?: Partial<ServerConfig.ServerConfig["Service"]>;
   layers?: {
     keybindings?: Partial<Keybindings.Keybindings["Service"]>;
+    usageLimitSources?: Partial<UsageLimitSources.UsageLimitSources["Service"]>;
+    providerInstances?: Partial<ProviderInstanceRegistry["Service"]>;
     environmentTheme?: Partial<EnvironmentTheme.EnvironmentThemeService["Service"]>;
     providerRegistry?: Partial<ProviderRegistry.ProviderRegistry["Service"]>;
     providerService?: Partial<ProviderService.ProviderService["Service"]>;
@@ -688,6 +693,16 @@ const buildAppUnderTest = (options?: {
             streamChanges: Stream.empty,
             ...options?.layers?.keybindings,
           }),
+          Layer.mock(UsageLimitSources.UsageLimitSources)({
+            current: Effect.succeed([]),
+            streamChanges: Stream.make([]),
+            refresh: Effect.void,
+            ...options?.layers?.usageLimitSources,
+          }),
+          Layer.mock(ProviderInstanceRegistry)({
+            getInstance: () => Effect.succeed(undefined),
+            ...options?.layers?.providerInstances,
+          }),
           Layer.mock(EnvironmentTheme.EnvironmentThemeService)({
             current: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -706,6 +721,9 @@ const buildAppUnderTest = (options?: {
                 makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
               ),
             setProviderMaintenanceActionState: () => Effect.succeed([]),
+            subscribeChanges: Effect.succeed(
+              options?.layers?.providerRegistry?.streamChanges ?? Stream.empty,
+            ),
             streamChanges: Stream.empty,
             ...options?.layers?.providerRegistry,
           }),
@@ -5458,6 +5476,51 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect(
+    "routes hub reset credits through websocket rpc without looking up a native provider",
+    () =>
+      Effect.gen(function* () {
+        const input = {
+          sourceId: UsageLimitSourceId.make("hub"),
+          accountId: "account",
+          creditId: "credit",
+        };
+        const consumeResetCredit = vi.fn<
+          UsageLimitSources.UsageLimitSources["Service"]["consumeResetCredit"]
+        >(() => Effect.succeed({ outcome: "alreadyRedeemed" }));
+        yield* buildAppUnderTest({
+          layers: {
+            usageLimitSources: { consumeResetCredit },
+            providerInstances: {
+              getInstance: () => Effect.die("A hub reset must not use a native instance"),
+            },
+          },
+        });
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const response = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) => client[WS_METHODS.providerConsumeResetCredit](input)),
+        );
+        assert.deepEqual(response, { outcome: "alreadyRedeemed" });
+        assert.deepEqual(consumeResetCredit.mock.calls, [[input]]);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("rejects reset credits for a missing native provider through websocket rpc", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.providerConsumeResetCredit]({
+            instanceId: ProviderInstanceId.make("missing"),
+          }).pipe(Effect.result),
+        ),
+      );
+      assertTrue(result._tag === "Failure");
+      assert.equal(result.failure._tag, "ProviderConsumeResetCreditError");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("uploads Codex thread feedback through websocket rpc", () =>
     Effect.gen(function* () {
       const input = {
@@ -6015,6 +6078,128 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(first?.type, "snapshot");
       if (first?.type === "snapshot") assert.equal(first.config.environmentThemes, undefined);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect.each([false, true])(
+    "only advertises local usage commands to capable subscribers (%s)",
+    (capable) =>
+      Effect.gen(function* () {
+        const provider = {
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          enabled: true,
+          installed: true,
+          version: "1.0.0",
+          status: "ready" as const,
+          auth: { status: "authenticated" as const },
+          checkedAt: DateTime.formatIso(TEST_EPOCH),
+          models: [],
+          slashCommands: [],
+          skills: [],
+          workspaceSnapshots: [
+            {
+              cwd: "/fixture",
+              checkedAt: DateTime.formatIso(TEST_EPOCH),
+              slashCommands: [],
+              skills: [],
+            },
+          ],
+          usageLimits: {
+            checkedAt: DateTime.formatIso(TEST_EPOCH),
+            windows: [{ label: "Session", usedPercent: 25 }],
+          },
+        };
+        yield* buildAppUnderTest({
+          layers: { providerRegistry: { getProviders: Effect.succeed([provider]) } },
+        });
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const events = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.subscribeServerConfig]({ usageLimitsCommand: capable }).pipe(
+              Stream.take(1),
+              Stream.runCollect,
+            ),
+          ),
+        );
+        const first = Array.from(events)[0];
+        assert.equal(first?.type, "snapshot");
+        if (first?.type !== "snapshot") return;
+        const expected = capable
+          ? [
+              {
+                name: "usage-limits",
+                description: "Show this provider's usage limits",
+                localAction: "usage-limits" as const,
+              },
+            ]
+          : [];
+        assert.deepEqual(first.config.providers[0]?.slashCommands, expected);
+        assert.deepEqual(
+          first.config.providers[0]?.workspaceSnapshots?.[0]?.slashCommands,
+          expected,
+        );
+        const legacy = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) => client[WS_METHODS.serverGetConfig]({})),
+        );
+        assert.deepEqual(legacy.providers[0]?.slashCommands, []);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("buffers provider changes published while the config snapshot is being read", () =>
+    Effect.gen(function* () {
+      const next = [
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          enabled: true,
+          installed: true,
+          version: "1.0.0",
+          status: "ready" as const,
+          auth: { status: "authenticated" as const },
+          checkedAt: DateTime.formatIso(TEST_EPOCH),
+          models: [],
+          slashCommands: [],
+          skills: [],
+        },
+      ];
+      const changes = yield* Effect.acquireRelease(
+        PubSub.unbounded<typeof next>(),
+        PubSub.shutdown,
+      );
+      let reads = 0;
+      let subscribed = false;
+      yield* buildAppUnderTest({
+        layers: {
+          providerRegistry: {
+            subscribeChanges: PubSub.subscribe(changes).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  subscribed = true;
+                }),
+              ),
+              Effect.map(Stream.fromSubscription),
+            ),
+            getProviders: Effect.gen(function* () {
+              if (subscribed && reads++ === 0) yield* PubSub.publish(changes, next);
+              return [];
+            }),
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const events = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.subscribeServerConfig]({}).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
+      const [first, second] = Array.from(events);
+      assert.equal(first?.type, "snapshot");
+      assert.deepEqual(second, {
+        version: 1,
+        type: "providerStatuses",
+        payload: { providers: next },
+      });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
   it.effect("routes websocket rpc subscribeServerConfig emits provider status updates", () =>

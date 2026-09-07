@@ -1,3 +1,4 @@
+import * as CodexResetCredit from "./Layers/codexResetCredit.ts";
 /**
  * End-to-end proof of the server half of account draining.
  *
@@ -134,6 +135,7 @@ const registryLayer = ProviderRegistryLive.pipe(
     ),
   ),
   Layer.provideMerge(ModelManifest.layerTest),
+  Layer.provideMerge(CodexResetCredit.layerTest),
   Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
   Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
 );

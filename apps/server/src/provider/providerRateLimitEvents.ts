@@ -156,7 +156,15 @@ export function usageWindowsFromClaudeEvent(payload: unknown): PushedUsageWindow
 
   return {
     source: "claudeRateLimitEvent",
-    windows: [{ ...shape, usedPercent, ...(resetsAt ? { resetsAt } : {}) }],
+    windows: [
+      {
+        ...shape,
+        id: rateLimitType,
+        kind: rateLimitType === "five_hour" ? "session" : "weekly",
+        usedPercent,
+        ...(resetsAt ? { resetsAt } : {}),
+      },
+    ],
   };
 }
 
@@ -185,6 +193,7 @@ export function usageWindowsFromCodexEvent(payload: unknown): PushedUsageWindows
   };
   const windows = usageWindowsFromCodexRateLimitSnapshot({
     limitId: trimmedString(snapshot["limitId"]),
+    planType: trimmedString(snapshot["planType"]),
     primary: readWindow(snapshot["primary"]),
     secondary: readWindow(snapshot["secondary"]),
   });

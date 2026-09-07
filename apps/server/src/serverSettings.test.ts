@@ -7,6 +7,7 @@ import {
   ServerProviderInstancesMutationId,
   ServerSettings,
   ServerSettingsPatch,
+  UsageLimitSourceId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
@@ -1192,6 +1193,88 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       }).pipe(Effect.provide(makeServerSettingsLayer())),
     );
   }
+
+  it.effect("stores hub keys outside settings.json and preserves them across redacted edits", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const id = UsageLimitSourceId.make("team/hub");
+      const otherId = UsageLimitSourceId.make("personal");
+      const source = {
+        kind: "cliproxy" as const,
+        url: "https://hub.example.test",
+        enabled: true,
+        managementKey: "test-management-key",
+      };
+      yield* service.updateSettings({ usageLimitSources: { [id]: source } });
+      const settings = yield* service.getSettings;
+      assert.equal(settings.usageLimitSources[id]?.managementKey, "test-management-key");
+      const redacted =
+        ServerSettingsModule.redactServerSettingsForClient(settings).usageLimitSources[id]!;
+      assert.notEqual(redacted.managementKey, "test-management-key");
+      assert.notInclude(yield* fs.readFileString(config.settingsPath), "test-management-key");
+      yield* Effect.all(
+        [
+          service.updateSettings({
+            usageLimitSources: { [id]: { ...redacted, label: "Renamed" } },
+          }),
+          service.updateSettings({
+            usageLimitSources: { [otherId]: { ...source, managementKey: "other-test-key" } },
+          }),
+        ],
+        { concurrency: 2 },
+      );
+      const edited = yield* service.getSettings;
+      assert.equal(edited.usageLimitSources[id]?.label, "Renamed");
+      assert.equal(edited.usageLimitSources[id]?.managementKey, "test-management-key");
+      assert.equal(edited.usageLimitSources[otherId]?.managementKey, "other-test-key");
+      const raw = yield* fs.readFileString(config.settingsPath);
+      assert.notInclude(raw, "test-management-key");
+      assert.notInclude(raw, "other-test-key");
+      yield* service.updateSettings({ usageLimitSources: { [id]: null } });
+      const cleared = yield* service.updateSettings({
+        usageLimitSources: { [otherId]: { ...source, managementKey: "" } },
+      });
+      assert.isUndefined(cleared.usageLimitSources[id]);
+      assert.equal(cleared.usageLimitSources[otherId]?.managementKey, "");
+      // Re-adding the marker must not resurrect a deleted key.
+      const restored = yield* service.updateSettings({ usageLimitSources: { [id]: redacted } });
+      assert.equal(restored.usageLimitSources[id]?.managementKey, "");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect(
+    "moves an inline hub key into secret storage when a client edits its redacted entry",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const id = UsageLimitSourceId.make("hub");
+        yield* fs.writeFileString(
+          config.settingsPath,
+          '{"usageLimitSources":{"hub":{"kind":"cliproxy","url":"https://hub.example.test","managementKey":"inline-hub-test-key"}}}',
+        );
+        const initial = yield* service.getSettings;
+        const redacted =
+          ServerSettingsModule.redactServerSettingsForClient(initial).usageLimitSources[id]!;
+        const next = yield* service.updateSettings({
+          usageLimitSources: { [id]: { ...redacted, label: "Renamed" } },
+        });
+        assert.equal(next.usageLimitSources[id]?.managementKey, "inline-hub-test-key");
+        assert.notInclude(yield* fs.readFileString(config.settingsPath), "inline-hub-test-key");
+        const reloaded = yield* Effect.gen(function* () {
+          const fresh = yield* ServerSettingsModule.ServerSettingsService;
+          return yield* fresh.getSettings;
+        }).pipe(
+          Effect.provide(
+            Layer.fresh(ServerSettingsModule.layer).pipe(Layer.provide(ServerSecretStore.layer)),
+          ),
+        );
+        assert.equal(reloaded.usageLimitSources[id]?.managementKey, "inline-hub-test-key");
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
 
   it.effect("stores sensitive provider instance environment values outside settings.json", () =>
     Effect.gen(function* () {

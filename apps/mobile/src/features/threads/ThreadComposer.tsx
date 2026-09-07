@@ -58,6 +58,7 @@ import type {
   ProviderSessionSideQuestionRequestId,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
+  UsageLimitsReport,
 } from "@t3tools/contracts";
 import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { ReactNode } from "react";
@@ -142,6 +143,11 @@ import {
   threadComposerShowsStopAction,
 } from "./ThreadComposer.logic";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
+import {
+  collectProviderUsageLimits,
+  shouldHandleUsageLimitsCommand,
+} from "@t3tools/shared/usageLimits";
+import { ComposerUsageLimits } from "./ComposerUsageLimits";
 import {
   ComposerDictationCancelAction,
   ComposerDictationDraftContent,
@@ -1358,12 +1364,48 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const isToolbarVisible = isExpanded || isVoiceInputPresented;
 
   const { onSendMessage } = props;
+  const [usageLimitsNotice, setUsageLimitsNotice] = useState<{
+    threadKey: string;
+    report: UsageLimitsReport;
+  } | null>(null);
+  const handleLocalUsageLimits = useCallback(() => {
+    if (
+      !shouldHandleUsageLimitsCommand(
+        props.draftMessage,
+        composerMenu.providerSlashCommands,
+        props.draftAttachments.length,
+      )
+    )
+      return false;
+    if (selectedProviderStatus && props.serverConfig) {
+      const report = collectProviderUsageLimits(
+        selectedProviderStatus.instanceId,
+        props.serverConfig.providers,
+        props.serverConfig.usageLimitSources ?? [],
+        Date.now(),
+      );
+      if (report) {
+        setUsageLimitsNotice({ threadKey: composerOwnerKey, report });
+        props.onChangeDraftMessage("");
+      }
+    }
+    return true;
+  }, [
+    props.draftMessage,
+    props.draftAttachments.length,
+    props.serverConfig,
+    props.onChangeDraftMessage,
+    composerMenu.providerSlashCommands,
+    selectedProviderStatus,
+    composerOwnerKey,
+  ]);
 
   const handleSend = useCallback(async () => {
     // canSend is derived above voiceInput, so the block lives here.
     // Reachable via a hardware-keyboard Return while recording.
     if (voiceInput.blocksSubmission) return;
     if (!canSend) return;
+    if (handleLocalUsageLimits()) return;
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
     inFlightThreadIdsRef.current.add(threadKey);
@@ -1372,6 +1414,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       if (messageId === null) {
         return;
       }
+      setUsageLimitsNotice((current) => (current?.threadKey === threadKey ? null : current));
       // Sending a prompt starts agent work: arm the lock-screen card while the
       // app is foregrounded and the activity token can be registered. Armed
       // after the send so its preference read and native Activity start don't
@@ -1386,6 +1429,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     }
   }, [
     canSend,
+    handleLocalUsageLimits,
     onSendMessage,
     props.environmentId,
     props.environmentLabel,
@@ -1398,19 +1442,24 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     // Reachable via a hardware-keyboard Return while recording.
     if (voiceInput.blocksSubmission) return;
     if (!canSend) return;
+    if (handleLocalUsageLimits()) return;
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey) || isMutatingSessionInputQueue) return;
     inFlightThreadIdsRef.current.add(threadKey);
     const mutation = { scopeKey: sessionInputQueueScopeKey };
     setSessionInputQueueMutation(mutation);
     try {
-      await props.onQueueFollowUp();
+      const messageId = await props.onQueueFollowUp();
+      if (messageId !== null)
+        setUsageLimitsNotice((current) => (current?.threadKey === threadKey ? null : current));
     } finally {
       setSessionInputQueueMutation((current) => (current === mutation ? null : current));
       inFlightThreadIdsRef.current.delete(threadKey);
     }
   }, [
     canSend,
+    handleLocalUsageLimits,
+    voiceInput.blocksSubmission,
     isMutatingSessionInputQueue,
     props.environmentId,
     props.onQueueFollowUp,
@@ -1680,6 +1729,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           reason={blockingAdmissionReason}
           title={projectAdmissionReason === null ? undefined : "Project unavailable"}
         />
+
+        {usageLimitsNotice?.threadKey === composerOwnerKey ? (
+          <View className="mb-2">
+            <ComposerUsageLimits
+              report={usageLimitsNotice.report}
+              environmentId={props.environmentId}
+              onClose={() => setUsageLimitsNotice(null)}
+            />
+          </View>
+        ) : null}
 
         <ComposerSurface
           style={

@@ -24,7 +24,15 @@ describe("usageLimitsFromCodexRateLimits", () => {
         },
         "2026-09-07T00:00:00.000Z",
       )?.windows,
-    ).toEqual([{ label: "Weekly", usedPercent: 42, windowDurationMins: 10_080 }]);
+    ).toEqual([
+      {
+        id: "secondary",
+        kind: "weekly",
+        label: "Weekly",
+        usedPercent: 42,
+        windowDurationMins: 10_080,
+      },
+    ]);
   });
 
   it.each([undefined, null, {}])(
@@ -74,12 +82,16 @@ describe("usageLimitsFromCodexRateLimits", () => {
       checkedAt: "2026-03-20T00:00:00.000Z",
       windows: [
         {
+          id: "primary",
+          kind: "session",
           label: "Session",
           usedPercent: 25,
           windowDurationMins: 300,
           resetsAt: "2026-03-20T09:46:40.000Z",
         },
         {
+          id: "secondary",
+          kind: "weekly",
           label: "Weekly",
           usedPercent: 40,
           windowDurationMins: 10_080,
@@ -97,7 +109,15 @@ describe("usageWindowsFromCodexRateLimitSnapshot", () => {
       usageWindowsFromCodexRateLimitSnapshot({
         secondary: { usedPercent: 61, windowDurationMins: 10_080 },
       }),
-    ).toEqual([{ label: "Weekly", usedPercent: 61, windowDurationMins: 10_080 }]);
+    ).toEqual([
+      {
+        id: "secondary",
+        kind: "weekly",
+        label: "Weekly",
+        usedPercent: 61,
+        windowDurationMins: 10_080,
+      },
+    ]);
   });
 
   it("drops a window without a usable percentage", () => {
@@ -141,6 +161,22 @@ const pushed = (
 ) => ({ window, observedAt });
 
 describe("applyPushedUsageWindows", () => {
+  it("preserves the reset-credit balance and its original read time on a window push", () => {
+    const resetCredits = { availableCount: 0, checkedAt: PROBED.checkedAt };
+    const result = applyPushedUsageWindows(
+      { ...PROBED, resetCredits },
+      [
+        pushed(
+          { label: "Session", usedPercent: 15, windowDurationMins: 300 },
+          "2026-08-04T18:10:00.000Z",
+        ),
+      ],
+      { nowMs: NOW_MS, maxAgeMs: MAX_AGE_MS, source: "push" },
+    );
+    expect(result?.checkedAt).toBe("2026-08-04T18:10:00.000Z");
+    expect(result?.resetCredits).toEqual(resetCredits);
+  });
+
   it("replaces the matching window's percentage and reset, keeping the probe's label", () => {
     const applied = applyPushedUsageWindows(
       PROBED,

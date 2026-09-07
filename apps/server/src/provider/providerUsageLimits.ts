@@ -13,13 +13,15 @@
 import type { ServerProviderUsageLimits, ServerProviderUsageWindow } from "@t3tools/contracts";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 import * as DateTime from "effect/DateTime";
+import { codexRateLimitsToLimits, codexRateLimitsToWindows } from "./Layers/codexUsageLimits.ts";
+export {
+  clampPercent,
+  makeUsageLimits,
+  makeUnavailableUsageLimits,
+} from "./usageLimitsSnapshot.ts";
 
 const DAY_MINS = 24 * 60;
 const WEEK_MINS = 7 * DAY_MINS;
-
-function clampPercent(value: number): number {
-  return Math.max(0, Math.min(100, value));
-}
 
 /**
  * Windows are classified by duration rather than label so Codex and Claude,
@@ -44,35 +46,9 @@ export interface CodexRateLimitWindowLike {
 
 export interface CodexRateLimitSnapshotLike {
   readonly limitId?: string | null | undefined;
+  readonly planType?: string | null | undefined;
   readonly primary?: CodexRateLimitWindowLike | null | undefined;
   readonly secondary?: CodexRateLimitWindowLike | null | undefined;
-}
-
-function codexWindowLabel(windowDurationMins: number | null | undefined): string {
-  return windowDurationMins !== undefined &&
-    windowDurationMins !== null &&
-    windowDurationMins >= WEEK_MINS
-    ? "Weekly"
-    : "Session";
-}
-
-function mapCodexWindow(
-  window: CodexRateLimitWindowLike | null | undefined,
-): ServerProviderUsageWindow | undefined {
-  if (!window) return undefined;
-  if (typeof window.usedPercent !== "number" || !Number.isFinite(window.usedPercent)) {
-    return undefined;
-  }
-  return {
-    label: codexWindowLabel(window.windowDurationMins),
-    usedPercent: clampPercent(window.usedPercent),
-    ...(window.windowDurationMins !== undefined && window.windowDurationMins !== null
-      ? { windowDurationMins: Math.max(0, window.windowDurationMins) }
-      : {}),
-    ...(window.resetsAt !== undefined && window.resetsAt !== null
-      ? { resetsAt: DateTime.formatIso(DateTime.makeUnsafe(window.resetsAt * 1000)) }
-      : {}),
-  };
 }
 
 /**
@@ -82,12 +58,7 @@ function mapCodexWindow(
 export function usageWindowsFromCodexRateLimitSnapshot(
   snapshot: CodexRateLimitSnapshotLike,
 ): ReadonlyArray<ServerProviderUsageWindow> {
-  // Model-specific buckets must not replace the account-wide allowance.
-  // Older Codex versions omit the bucket id.
-  if (snapshot.limitId && snapshot.limitId !== "codex") return [];
-  return [mapCodexWindow(snapshot.primary), mapCodexWindow(snapshot.secondary)].filter(
-    (window): window is ServerProviderUsageWindow => window !== undefined,
-  );
+  return codexRateLimitsToWindows(snapshot);
 }
 
 export function usageLimitsFromCodexRateLimits(
@@ -95,10 +66,15 @@ export function usageLimitsFromCodexRateLimits(
   checkedAt: string,
   source: string = "codexAppServer",
 ): ServerProviderUsageLimits | undefined {
-  const windows = usageWindowsFromCodexRateLimitSnapshot(
-    response.rateLimitsByLimitId?.codex ?? response.rateLimits,
-  );
-  return windows.length > 0 ? { source, checkedAt, windows } : undefined;
+  const limits = codexRateLimitsToLimits({
+    checkedAt,
+    snapshot: response.rateLimits,
+    rateLimitsByLimitId: response.rateLimitsByLimitId,
+    resetCredits: response.rateLimitResetCredits,
+  });
+  return limits.windows.length > 0 || limits.resetCredits !== undefined
+    ? { ...limits, source }
+    : undefined;
 }
 
 /**
@@ -124,6 +100,7 @@ function isSameUsageWindow(
   candidate: ServerProviderUsageWindow,
   pushed: ServerProviderUsageWindow,
 ): boolean {
+  if (candidate.id !== undefined && pushed.id !== undefined) return candidate.id === pushed.id;
   if (isSessionUsageWindow(pushed)) return isSessionUsageWindow(candidate);
   if (isWeeklyUsageWindow(pushed)) return isWeeklyUsageWindow(candidate);
   return candidate.label === pushed.label;
@@ -202,6 +179,7 @@ export function applyPushedUsageWindows(
     readonly source: string;
   },
 ): ServerProviderUsageLimits | undefined {
+  if (current?.unavailable?.reason === "unsupported") return current;
   const currentCheckedAtMs = current ? parseMs(current.checkedAt) : undefined;
   const applicable = pushed.filter((entry) => {
     const observedAtMs = parseMs(entry.observedAt);
@@ -238,6 +216,8 @@ export function applyPushedUsageWindows(
   }
 
   return {
+    ...current,
+    unavailable: undefined,
     source: current?.source ?? options.source,
     checkedAt: DateTime.formatIso(DateTime.makeUnsafe(checkedAtMs)),
     windows,
