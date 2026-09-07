@@ -104,6 +104,7 @@ import { ComposerFeedback } from "./ComposerFeedback";
 import { PendingUserInputCard } from "./PendingUserInputCard";
 import { PendingSessionInteractionCard } from "./PendingSessionInteractionCard";
 import { SessionPresentationSurface } from "./SessionPresentationSurface";
+import { ThreadCreationFailedCard } from "./ThreadCreationFailedCard";
 import {
   FLOATING_WORKING_CONTROL_COVERAGE,
   FloatingWorkingControl,
@@ -146,6 +147,21 @@ export interface ThreadDetailScreenProps {
   readonly sessionCompactionPendingAction: SessionCompactionMenuAction | null;
   readonly activeWorkStartedAt: string | null;
   readonly isCompacting: boolean;
+  /**
+   * The server has not created this thread yet. "preparing" runs while the
+   * queued creation is delivered (a worktree may be checking out); "failed"
+   * is a rejected creation whose content went back to the project draft.
+   */
+  readonly creationState:
+    | { readonly kind: "preparing"; readonly preparingWorktree: boolean }
+    | {
+        readonly kind: "failed";
+        readonly reason: string;
+        /** Where the content went; defaults to the project draft. */
+        readonly note?: string;
+        readonly onEditTask: () => void;
+      }
+    | null;
   readonly activePendingApproval: PendingApproval | null;
   readonly respondingApprovalId: ApprovalRequestId | null;
   readonly activePendingUserInput: PendingUserInput | null;
@@ -475,6 +491,15 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       props.activePendingUserInput !== null ||
       props.activePendingInteraction !== null
     ) {
+      return null;
+    }
+    if (props.creationState?.kind === "preparing") {
+      return {
+        kind: "preparing",
+        label: props.creationState.preparingWorktree ? "Setting up worktree…" : "Starting…",
+      };
+    }
+    if (props.creationState?.kind === "failed") {
       return null;
     }
     if (threadSyncLabel !== null) {
@@ -1025,6 +1050,22 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     />
                   </View>
                 ) : null}
+                {props.creationState?.kind === "failed" ? (
+                  <Animated.View
+                    className="shrink-0 px-4"
+                    style={{ paddingBottom: composerBottomInset }}
+                    entering={FadeInDown.duration(220)}
+                    exiting={FadeOut.duration(140)}
+                  >
+                    <ThreadCreationFailedCard
+                      reason={props.creationState.reason}
+                      {...(props.creationState.note === undefined
+                        ? {}
+                        : { note: props.creationState.note })}
+                      onEditTask={props.creationState.onEditTask}
+                    />
+                  </Animated.View>
+                ) : null}
 
                 <View className="px-4">
                   <RollbackStatusSurface
@@ -1108,8 +1149,16 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               </View>
 
               {/* Hidden (not unmounted) while a user-input request owns the
-                composer slot, so composer drafts and editor state survive. */}
-              <View style={activeUserInputRequestId !== null ? { display: "none" } : undefined}>
+                composer slot, so composer drafts and editor state survive.
+                A rejected creation has no thread to send to; the failure card
+                owns the slot instead. */}
+              <View
+                style={
+                  activeUserInputRequestId !== null || props.creationState?.kind === "failed"
+                    ? { display: "none" }
+                    : undefined
+                }
+              >
                 <ThreadComposer
                   editorRef={composerEditorRef}
                   draftMessage={props.draftMessage}
@@ -1143,6 +1192,12 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   }
                   environmentId={props.environmentId}
                   projectCwd={props.threadCwd ?? props.projectWorkspaceRoot}
+                  // Follow-ups typed during setup wait in the draft: queueing
+                  // them against a thread id the server may still reject
+                  // would strand them in the outbox.
+                  sendBlockedReason={
+                    props.creationState?.kind === "preparing" ? "Starting the task…" : null
+                  }
                   bottomInset={hasBelowEditorWidgets ? 0 : composerBottomInset}
                   onChangeDraftMessage={props.onChangeDraftMessage}
                   onPickDraftMedia={props.onPickDraftMedia}

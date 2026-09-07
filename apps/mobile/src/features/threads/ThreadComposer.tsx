@@ -232,6 +232,8 @@ export interface ThreadComposerProps {
   readonly sessionInputBlocked: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
+  /** Why sending is blocked right now (shown as the send button's label), or null. */
+  readonly sendBlockedReason?: string | null;
   readonly editorRef?: RefObject<ComposerEditorHandle | null>;
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onPickDraftMedia: () => Promise<void>;
@@ -492,14 +494,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     });
   // A provider follow-up bypasses the outbox and uploads its files itself, so
   // it still waits for the background transfer instead of starting another.
+  const sendBlockedReason = props.sendBlockedReason ?? attachmentBlockReason;
   const followUpBlockReason =
-    attachmentBlockReason ?? (attachmentsUploading ? "Attachment still uploading" : null);
+    sendBlockedReason ?? (attachmentsUploading ? "Attachment still uploading" : null);
   const canSend =
     hasContent &&
     !props.sessionInputBlocked &&
     composerAuthority.providerAdmissionAvailable &&
     props.projectCwd !== null &&
-    attachmentBlockReason === null &&
+    sendBlockedReason === null &&
     props.sessionCompactionPendingAction !== "compact" &&
     !isSessionCompactionInProgress(props.sessionCompaction);
   const activeSessionProviderStatus = useMemo(() => {
@@ -1814,7 +1817,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   </View>
                 ) : (
                   <ControlPill
-                    accessibilityLabel={attachmentBlockReason ?? sendLabel}
+                    accessibilityLabel={sendBlockedReason ?? sendLabel}
                     icon="arrow.up"
                     variant="primary"
                     disabled={!canSend}
@@ -2062,8 +2065,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   {voicePresentation.showsSend ? (
                     <ComposerToolbarButton
                       accessibilityLabel={
-                        (canQueueFollowUp ? followUpBlockReason : attachmentBlockReason) ??
-                        sendLabel
+                        (canQueueFollowUp ? followUpBlockReason : sendBlockedReason) ?? sendLabel
                       }
                       icon="arrow.up"
                       variant="primary"
