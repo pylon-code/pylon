@@ -111,6 +111,30 @@ describe("rateLimitFromRuntimeEventPayload", () => {
 });
 
 describe("usageWindowsFromRuntimeEventPayload", () => {
+  it("ignores Spark pushes so the main allowance cannot be overwritten", () => {
+    expect(
+      usageWindowsFromRuntimeEventPayload(
+        envelope({
+          rateLimits: {
+            limitId: "codex_bengalfox",
+            primary: { usedPercent: 0, windowDurationMins: 300 },
+            secondary: { usedPercent: 90, windowDurationMins: 10_080 },
+          },
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      usageWindowsFromRuntimeEventPayload(
+        envelope({
+          rateLimits: {
+            limitId: "codex",
+            secondary: { usedPercent: 42, windowDurationMins: 10_080 },
+          },
+        }),
+      )?.windows,
+    ).toEqual([{ label: "Weekly", usedPercent: 42, windowDurationMins: 10_080 }]);
+  });
+
   // Codex wraps its sparse rolling update under its own `rateLimits` key,
   // inside the adapter envelope: `{ rateLimits: { rateLimits: {...} } }`.
   it("reads Codex's pushed windows", () => {

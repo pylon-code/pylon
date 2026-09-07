@@ -43,6 +43,7 @@ export interface CodexRateLimitWindowLike {
 }
 
 export interface CodexRateLimitSnapshotLike {
+  readonly limitId?: string | null | undefined;
   readonly primary?: CodexRateLimitWindowLike | null | undefined;
   readonly secondary?: CodexRateLimitWindowLike | null | undefined;
 }
@@ -81,6 +82,9 @@ function mapCodexWindow(
 export function usageWindowsFromCodexRateLimitSnapshot(
   snapshot: CodexRateLimitSnapshotLike,
 ): ReadonlyArray<ServerProviderUsageWindow> {
+  // Model-specific buckets must not replace the account-wide allowance.
+  // Older Codex versions omit the bucket id.
+  if (snapshot.limitId && snapshot.limitId !== "codex") return [];
   return [mapCodexWindow(snapshot.primary), mapCodexWindow(snapshot.secondary)].filter(
     (window): window is ServerProviderUsageWindow => window !== undefined,
   );
@@ -91,7 +95,9 @@ export function usageLimitsFromCodexRateLimits(
   checkedAt: string,
   source: string = "codexAppServer",
 ): ServerProviderUsageLimits | undefined {
-  const windows = usageWindowsFromCodexRateLimitSnapshot(response.rateLimits);
+  const windows = usageWindowsFromCodexRateLimitSnapshot(
+    response.rateLimitsByLimitId?.codex ?? response.rateLimits,
+  );
   return windows.length > 0 ? { source, checkedAt, windows } : undefined;
 }
 

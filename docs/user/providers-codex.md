@@ -28,6 +28,12 @@ Log in with Codex normally:
 codex login
 ```
 
+## Usage allowance
+
+The Codex usage gauge shows the main account allowance. Spark has a separate
+model-specific allowance, which does not replace the main session or weekly
+reading. Older Codex versions that report a single allowance remain supported.
+
 ## Send feedback to OpenAI
 
 In an existing Codex thread, send `/feedback` or `/feedback` followed by a description of the
