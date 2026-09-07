@@ -15,6 +15,30 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-07 — legacy actions, downloads, and native search tests (partial range)
+
+The maintainer's standing approval covers five more adopted sources across five merged PRs. Against the bounded upstream head `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f`, the active total is **85 adopted sources across 44 adoption PRs**, with **297 sources remaining** and **20 reconciled without a port**. Remaining sources include dependencies and possible intentional skips, not only missing fixes. The full review cursor remains unchanged.
+
+| Adopted concern                                        | Upstream source                            | Pylon implementation                                                                              |
+| ------------------------------------------------------ | ------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| Keep legacy project actions usable                     | `d8bc6831cd822b294d875364cf3aa0a17c999258` | [#379](https://github.com/pylon-code/pylon/pull/379) (`bcf81dfac8358476620c50f10ceef44245cdfe78`) |
+| Make the homepage Git illustration decorative          | `e5d086c262daab13a8adbb253e281c07ab235533` | [#380](https://github.com/pylon-code/pylon/pull/380) (`654927ffb509ba0dfc2698ea755be60aa4e85888`) |
+| Offer Pylon Stable and Nightly downloads               | `075a86e3b0152ea8f867ddd2c424739f5da08238` | [#385](https://github.com/pylon-code/pylon/pull/385) (`46e3c5b3dea22f6a127a7052bca75946fd3c1a36`) |
+| Accept either valid native file-search result in tests | `8ccb933a8aae461b616b199ab287164c3311a755` | [#386](https://github.com/pylon-code/pylon/pull/386) (`2fc841b7addc3e1ad6d30c8b7bc17d1d96efa041`) |
+| Create a working Pylon devcontainer                    | `7376536b23e8db0d1b09054bbc0b919cf0c85405` | [#384](https://github.com/pylon-code/pylon/pull/384) (`7e84a5734ef207082ce0514c95e71a130edd8fa0`) |
+
+Legacy project actions preserve Pylon metadata, model defaults, favicon tests, and Settings shortcut replacement/removal. Existing non-shortcut IDs remain runnable/editable/deletable, while new invalid IDs are rejected before persistence. All 88 focused tests and server/web typechecks pass; the new regressions fail against the old implementations. In a disposable real client, the same persisted legacy ID crashed the old thread, then rendered, edited, ran a harmless echo, and deleted successfully after the fix. No event schema or migration changed.
+
+The Git illustration retains its Pylon appearance with a descriptive image label and no fake interactive descendants. Build, Astro check, and browser accessibility/bounds checks pass. Nightly downloads retain Pylon's own release repository, default-stable homepage behavior, independent channel caches, and unpublished mobile-app state. Ten focused tests now run through the marketing package's CI test script. Build and Astro check pass. Real browser checks resolve all four platform links to Nightly 133; deterministic fixtures verify channel changes, shared URLs, stale-response rejection, storage failures, and failed-release fallback. A phone-width pass verifies wrapping and no horizontal overflow. Each UI PR contains uploaded before/after evidence.
+
+The file-search assertion retains result count, file type, allowed matching paths, and truncation instead of assuming native tie-break order. All 30 focused workspace-entry tests and lint pass; production search behavior is unchanged. All five PRs merged with green checks on their published commits.
+
+The devcontainer keeps Pylon names, isolated runtime state and caches, the repository-pinned Vite+ 0.2.2, and the current contributor guide. A disposable independent checkout completed the actual Ubuntu 24.04/Node 24 lifecycle with pnpm 11.10.0, Electron repair and web-cache warmup, then completed again after container recreation using saved caches. That execution caught and fixed the pinned CLI’s single-root VP_HOME path and root-owned cache before installation. Both shell scripts pass syntax checks; scoped formatting and diff checks pass.
+
+The same-head deferred and watch assessment remains as recorded in the preceding batch. Prepared mobile slider/diff fallback PRs are excluded from these adoption counts.
+
+Nightly `0.0.33-nightly.20260907.133` remains verified with the preceding 80 adopted sources; these five newly merged sources await a later Nightly. No installed-app update is claimed.
+
 ## 2026-09-07 — marketing chains and independent release versions (partial range)
 
 Under the maintainer's standing approval to preserve Pylon's product decisions, six more sources are reconciled without a runtime port. Against `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f`, this leaves **302 candidates**, with **80 sources adopted across 39 adoption PRs** and **20 sources reconciled without a port**. Pending PRs #379 (legacy-script crash) and #380 (Git-illustration accessibility) remain outside adoption counts. The full review cursor stays unchanged.
