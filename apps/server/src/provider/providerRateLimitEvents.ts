@@ -184,6 +184,7 @@ export function usageWindowsFromCodexEvent(payload: unknown): PushedUsageWindows
     };
   };
   const windows = usageWindowsFromCodexRateLimitSnapshot({
+    limitId: trimmedString(snapshot["limitId"]),
     primary: readWindow(snapshot["primary"]),
     secondary: readWindow(snapshot["secondary"]),
   });

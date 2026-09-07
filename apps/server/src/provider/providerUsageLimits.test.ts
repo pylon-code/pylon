@@ -8,6 +8,56 @@ import {
 } from "./providerUsageLimits.ts";
 
 describe("usageLimitsFromCodexRateLimits", () => {
+  it("selects the main allowance when the legacy snapshot names Spark", () => {
+    const spark = {
+      limitId: "codex_bengalfox",
+      secondary: { usedPercent: 90, windowDurationMins: 10_080 },
+    };
+    expect(
+      usageLimitsFromCodexRateLimits(
+        {
+          rateLimits: spark,
+          rateLimitsByLimitId: {
+            codex_bengalfox: spark,
+            codex: { secondary: { usedPercent: 42, windowDurationMins: 10_080 } },
+          },
+        },
+        "2026-09-07T00:00:00.000Z",
+      )?.windows,
+    ).toEqual([{ label: "Weekly", usedPercent: 42, windowDurationMins: 10_080 }]);
+  });
+
+  it.each([undefined, null, {}])(
+    "supports legacy reads with bucket map %j",
+    (rateLimitsByLimitId) => {
+      const rateLimits = { primary: { usedPercent: 12, windowDurationMins: 300 } };
+      const checkedAt = "2026-09-07T00:00:00.000Z";
+      expect(
+        usageLimitsFromCodexRateLimits(
+          {
+            rateLimits,
+            ...(rateLimitsByLimitId === undefined ? {} : { rateLimitsByLimitId }),
+          },
+          checkedAt,
+        ),
+      ).toEqual(usageLimitsFromCodexRateLimits({ rateLimits }, checkedAt));
+    },
+  );
+
+  it("does not publish a model-specific legacy snapshot as the main allowance", () => {
+    expect(
+      usageLimitsFromCodexRateLimits(
+        {
+          rateLimits: {
+            limitId: "codex_bengalfox",
+            secondary: { usedPercent: 90, windowDurationMins: 10_080 },
+          },
+        },
+        "2026-09-07T00:00:00.000Z",
+      ),
+    ).toBeUndefined();
+  });
+
   it("maps primary and secondary windows", () => {
     expect(
       usageLimitsFromCodexRateLimits(
