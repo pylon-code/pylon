@@ -2,6 +2,12 @@
 
 Pylon connects to your Git hosting provider so you can create pull requests, review code, and manage repositories without leaving the app.
 
+## Git status during another operation
+
+If another Git operation holds the repository’s index lock, Pylon pauses status
+scans and reports that the index is locked. Status refreshes resume after the
+operation releases the lock. Pylon leaves the lock in place.
+
 ## Supported Providers
 
 Pylon works with the platforms your team already uses:
