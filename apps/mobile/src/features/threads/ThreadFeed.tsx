@@ -492,30 +492,45 @@ function MessageAttachmentUnknown(props: { readonly name: string }) {
   );
 }
 
+// Mobile uses a 14px rem; these match px-3.5 user bubbles and px-1 assistant rows.
+const USER_BUBBLE_HORIZONTAL_PADDING = 12.25;
+const ASSISTANT_ROW_HORIZONTAL_PADDING = 3.5;
+
+/** The feed knows the image column width before an individual image lays out. */
+const MarkdownImageAvailableWidthContext = createContext(0);
+
 function ThreadMarkdownImageView(props: {
   readonly uri: string | null;
   readonly sourceKey: string;
   readonly unavailable: boolean;
   readonly alt: string | null;
+  readonly knownSize?: { readonly width: number; readonly height: number } | undefined;
   readonly actionsSource?: MediaActionsSource;
   readonly onPressPreview: (source: FilePreviewSource) => void;
 }) {
   const sourceIdentifier = useId();
   const mediaActions = useMediaActions(props.actionsSource);
-  const [availableWidth, setAvailableWidth] = useState(0);
-  const [sourceSize, setSourceSize] = useState<{ width: number; height: number } | null>(null);
+  const contextWidth = useContext(MarkdownImageAvailableWidthContext);
+  const [measuredWidth, setMeasuredWidth] = useState(0);
+  const availableWidth =
+    measuredWidth > 0 && contextWidth > 0
+      ? Math.min(contextWidth, measuredWidth)
+      : contextWidth || measuredWidth;
+  const [decodedSize, setDecodedSize] = useState<{ width: number; height: number } | null>(null);
   const [failedUri, setFailedUri] = useState<string | null>(null);
 
   useEffect(() => {
-    setSourceSize(null);
+    setDecodedSize(null);
   }, [props.sourceKey]);
 
   useEffect(() => {
     setFailedUri(null);
   }, [props.uri]);
 
+  // The platform's decoded size wins over the server's header hint.
+  const sourceSize = decodedSize ?? props.knownSize ?? null;
   const displaySize =
-    sourceSize === null
+    sourceSize === null || availableWidth <= 0
       ? null
       : resolveMarkdownImageDisplaySize({
           sourceWidth: sourceSize.width,
@@ -529,7 +544,7 @@ function ThreadMarkdownImageView(props: {
 
   return (
     <View
-      onLayout={(event) => setAvailableWidth(event.nativeEvent.layout.width)}
+      onLayout={(event) => setMeasuredWidth(event.nativeEvent.layout.width)}
       style={{ alignSelf: "stretch", gap: 6 }}
     >
       {props.uri === null || failed ? (
@@ -577,7 +592,7 @@ function ThreadMarkdownImageView(props: {
                   <ThreadMarkdownImageRequest
                     key={props.uri}
                     uri={props.uri}
-                    onLoad={setSourceSize}
+                    onLoad={setDecodedSize}
                     onError={() => setFailedUri(props.uri)}
                   />
                 </View>
@@ -652,6 +667,7 @@ function ThreadMarkdownImage(props: {
           : `workspace:${props.resource.path}`
       }
       unavailable={assetUrl._tag === "Failure"}
+      knownSize={assetUrl._tag === "Success" ? assetUrl.imageDimensions : undefined}
       alt={props.alt}
       actionsSource={props.actionsSource}
       onPressPreview={props.onPressPreview}
@@ -1506,6 +1522,7 @@ function renderFeedEntry(
     readonly reviewCommentColors: ReviewCommentColors;
     readonly reviewCommentBubbleWidth: number;
     readonly userBubbleMaxWidth: number;
+    readonly markdownContentWidth: number;
   },
 ) {
   const entry = info.item;
@@ -1592,14 +1609,18 @@ function renderFeedEntry(
             }}
           >
             {message.text.trim().length > 0 ? (
-              <UserMessageContent
-                text={renderedText}
-                markdownStyles={styles}
-                reviewCommentColors={props.reviewCommentColors}
-                skills={props.skills}
-                linkHandlers={props.markdownLinkHandlers}
-                renderImage={props.renderMarkdownImage}
-              />
+              <MarkdownImageAvailableWidthContext
+                value={props.userBubbleMaxWidth - USER_BUBBLE_HORIZONTAL_PADDING * 2}
+              >
+                <UserMessageContent
+                  text={renderedText}
+                  markdownStyles={styles}
+                  reviewCommentColors={props.reviewCommentColors}
+                  skills={props.skills}
+                  linkHandlers={props.markdownLinkHandlers}
+                  renderImage={props.renderMarkdownImage}
+                />
+              </MarkdownImageAvailableWidthContext>
             ) : null}
             {attachments.map((attachment) => {
               return isImageAttachment(attachment) ? (
@@ -1675,14 +1696,16 @@ function renderFeedEntry(
         {...(enterAnimated ? { entering: FadeIn.duration(220) } : {})}
       >
         {renderedText.trim().length > 0 ? (
-          <AssistantMarkdownContent
-            markdown={renderedText}
-            markdownStyles={styles}
-            linkHandlers={props.markdownLinkHandlers}
-            onUseArtifactTemplate={props.onUseArtifactTemplate}
-            renderImage={props.renderMarkdownImage}
-            skills={props.skills}
-          />
+          <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
+            <AssistantMarkdownContent
+              markdown={renderedText}
+              markdownStyles={styles}
+              linkHandlers={props.markdownLinkHandlers}
+              onUseArtifactTemplate={props.onUseArtifactTemplate}
+              renderImage={props.renderMarkdownImage}
+              skills={props.skills}
+            />
+          </MarkdownImageAvailableWidthContext>
         ) : null}
         {attachments.map((attachment) => {
           return isImageAttachment(attachment) ? (
@@ -2084,6 +2107,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   });
   const contentWidth = Math.max(0, viewportWidth - contentHorizontalPadding * 2);
   const userBubbleMaxWidth = contentWidth * 0.85;
+  const markdownContentWidth = Math.max(0, contentWidth - ASSISTANT_ROW_HORIZONTAL_PADDING * 2);
   const reviewCommentBubbleWidth = Math.min(Math.max(280, contentWidth * 0.85), contentWidth);
   const insets = useSafeAreaInsets();
   const topContentInset = props.contentTopInset ?? insets.top + IOS_NAV_BAR_HEIGHT;
@@ -2748,6 +2772,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             reviewCommentColors,
             reviewCommentBubbleWidth,
             userBubbleMaxWidth,
+            markdownContentWidth,
             skills: props.skills,
             onUseArtifactTemplate: props.onUseArtifactTemplate,
             rollbackTargets: props.rollbackTargets,
@@ -2770,6 +2795,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       reviewCommentColors,
       reviewCommentBubbleWidth,
       userBubbleMaxWidth,
+      markdownContentWidth,
       onCopyWorkRow,
       markdownLinkHandlers,
       onPressPreview,
