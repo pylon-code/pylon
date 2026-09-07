@@ -1,7 +1,16 @@
 ---
+import { getImage } from "astro:assets";
+import desktopScreenshot from "../assets/app-preview.webp";
 import PylonMark from "../components/PylonMark.astro";
 import Layout from "../layouts/Layout.astro";
 import { RELEASES_URL } from "../lib/releases";
+
+const screenshot = await getImage({
+  src: desktopScreenshot,
+  widths: [864, 1180, 1728, 2360],
+  format: "webp",
+  quality: 90,
+});
 ---
 
 <Layout>
@@ -64,14 +73,22 @@ import { RELEASES_URL } from "../lib/releases";
 
       <div class="hero-preview">
         <figure class="hero-screenshot-frame">
-          <img
-            src="/app-preview.webp"
-            alt="Pylon showing multiple coding agent threads in one workspace"
-            width="2508"
-            height="1682"
-            loading="eager"
-            decoding="async"
-          />
+          <picture>
+            <source
+              media="(max-width: 820px)"
+              srcset="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+            />
+            <img
+              src={desktopScreenshot.src}
+              srcset={`${screenshot.srcSet.attribute}, ${desktopScreenshot.src} ${desktopScreenshot.width}w`}
+              sizes="(max-width: 960px) min(864px, calc(100vw - 20px)), min(1180px, calc(100vw - 60px))"
+              alt="Pylon showing multiple coding agent threads in one workspace"
+              width={desktopScreenshot.width}
+              height={desktopScreenshot.height}
+              loading="eager"
+              decoding="async"
+            />
+          </picture>
         </figure>
       </div>
     </div>
@@ -557,7 +574,6 @@ import { RELEASES_URL } from "../lib/releases";
     box-shadow:
       0 20px 48px -16px rgba(0, 0, 0, 0.65),
       0 2px 0 0 rgba(255, 255, 255, 0.04) inset;
-    animation: floatDrift 9s ease-in-out infinite;
   }
 
   .hero-float-mark img {
@@ -567,11 +583,11 @@ import { RELEASES_URL } from "../lib/releases";
     object-fit: contain;
   }
 
-  .hero-float-mark.hf-claude   { background: radial-gradient(circle at 30% 25%, rgba(217, 119, 87, 0.22), rgba(20, 20, 24, 0.92) 65%); top: 8%;  left: 7%;  animation-delay: 0s;    transform: rotate(-8deg); }
-  .hero-float-mark.hf-codex    { background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 6%;  right: 7%; animation-delay: -2.5s; transform: rotate(6deg); }
-  .hero-float-mark.hf-opencode { background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.06), rgba(20, 20, 24, 0.92) 65%); top: 30%; left: 5%;  animation-delay: -5s;   transform: rotate(4deg); }
-  .hero-float-mark.hf-cursor   { background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 30%; right: 5%; animation-delay: -7s;   transform: rotate(-5deg); }
-  .hero-float-mark.hf-grok     { background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 52%; left: 6%;  animation-delay: -1.2s; transform: rotate(3deg); }
+  .hero-float-mark.hf-claude   { background: radial-gradient(circle at 30% 25%, rgba(217, 119, 87, 0.22), rgba(20, 20, 24, 0.92) 65%); top: 8%;  left: 7%; transform: rotate(-8deg); }
+  .hero-float-mark.hf-codex    { background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 6%;  right: 7%; transform: rotate(6deg); }
+  .hero-float-mark.hf-opencode { background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.06), rgba(20, 20, 24, 0.92) 65%); top: 30%; left: 5%; transform: rotate(4deg); }
+  .hero-float-mark.hf-cursor   { background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 30%; right: 5%; transform: rotate(-5deg); }
+  .hero-float-mark.hf-grok     { background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 52%; left: 6%; transform: rotate(3deg); }
 
   @media (max-width: 1180px) {
     .hero-float-mark { width: 76px; height: 76px; border-radius: 20px; }
@@ -580,7 +596,7 @@ import { RELEASES_URL } from "../lib/releases";
     .hero-float-mark.hf-codex    { top: 2%;  right: 3%; }
     .hero-float-mark.hf-opencode { top: 26%; left: 2%; }
     .hero-float-mark.hf-cursor   { top: 24%; right: 2%; }
-    .hero-float-mark.hf-grok     { top: 48%; left: 2%;  transform: rotate(3deg); }
+    .hero-float-mark.hf-grok     { top: 48%; left: 2%; transform: rotate(3deg); }
   }
 
   @media (max-width: 820px) {
