@@ -16,11 +16,11 @@ import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../..
 import { formatReportedTurnCost } from "@t3tools/client-runtime/state/turn-costs";
 import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
 
-export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
+const TIMELINE_MINIMAP_ITEM_SPACING = 8;
 export const TIMELINE_MINIMAP_MIN_ITEMS = 2;
-export const TIMELINE_MINIMAP_MAX_HEIGHT_CSS = "calc(100vh - 18rem)";
-export const TIMELINE_CONTENT_MAX_WIDTH = 768;
-export const TIMELINE_MINIMAP_PERSISTENT_GUTTER = 48;
+const TIMELINE_MINIMAP_MAX_HEIGHT_CSS = "calc(100vh - 18rem)";
+const TIMELINE_CONTENT_MAX_WIDTH = 768;
+const TIMELINE_MINIMAP_PERSISTENT_GUTTER = 48;
 
 export function workEntryIsVisibleInGroup(
   entry: WorkLogEntry,
@@ -48,7 +48,7 @@ export interface TimelineEndState {
  * A small pixel band (instead of the 1px isAtEnd epsilon alone) keeps re-arming
  * reliable while streaming content is still growing under the viewport.
  */
-export const TIMELINE_FOLLOW_REARM_THRESHOLD_PX = 40;
+const TIMELINE_FOLLOW_REARM_THRESHOLD_PX = 40;
 
 export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boolean | undefined {
   if (!state) {
@@ -110,9 +110,9 @@ export function resolveTimelineMinimapHasPersistentGutter(viewportWidth: number)
   return sideGutter >= TIMELINE_MINIMAP_PERSISTENT_GUTTER;
 }
 
-export const TIMELINE_MINIMAP_HIT_STRIP_LEFT = 12;
-export const TIMELINE_MINIMAP_HIT_STRIP_MAX_WIDTH = 40;
-export const TIMELINE_MINIMAP_EXPANDED_HIT_STRIP_WIDTH = "22rem";
+const TIMELINE_MINIMAP_HIT_STRIP_LEFT = 12;
+const TIMELINE_MINIMAP_HIT_STRIP_MAX_WIDTH = 40;
+const TIMELINE_MINIMAP_EXPANDED_HIT_STRIP_WIDTH = "22rem";
 
 /**
  * The minimap overlays the viewport's left edge while the content column is
@@ -280,7 +280,7 @@ export function normalizeCompactToolLabel(value: string): string {
 type ToolGroupAction = "read" | "edit" | "command" | "code-search" | "search" | "other" | "update";
 type ToolGroupSummaryKind = ToolGroupAction | "dynamic-tool" | "agent-tool" | "tone-tool" | "mixed";
 
-export function workLogEntryIsLocalCodeSearch(entry: WorkLogEntry): boolean {
+function workLogEntryIsLocalCodeSearch(entry: WorkLogEntry): boolean {
   return (
     entry.itemType === "web_search" &&
     /\bgrep\b/i.test(normalizeCompactToolLabel(entry.toolTitle ?? entry.label))
@@ -348,7 +348,7 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
 }
 
 /** Immediate, provider-neutral fallback while generated tool summaries are disabled or unavailable. */
-export function summarizeToolGroup(entries: ReadonlyArray<WorkLogEntry>): string {
+function summarizeToolGroup(entries: ReadonlyArray<WorkLogEntry>): string {
   const summaryEntries = omitSupersededLifecycleMarkers(entries, (entry) => entry);
   const groupedEntries = new Map<ToolGroupAction, WorkLogEntry[]>();
   for (const entry of summaryEntries) {

@@ -473,30 +473,24 @@ const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, 
   error: EnvironmentAuthorizationError,
 });
 
-export const WsProviderReloadSessionResourcesRpc = Rpc.make(
-  WS_METHODS.providerReloadSessionResources,
-  {
-    payload: ProviderReloadSessionResourcesInput,
-    success: SessionResourcesUpdatedPayload,
-    error: Schema.Union([ProviderSessionResourcesReloadError, EnvironmentAuthorizationError]),
-  },
-);
+const WsProviderReloadSessionResourcesRpc = Rpc.make(WS_METHODS.providerReloadSessionResources, {
+  payload: ProviderReloadSessionResourcesInput,
+  success: SessionResourcesUpdatedPayload,
+  error: Schema.Union([ProviderSessionResourcesReloadError, EnvironmentAuthorizationError]),
+});
 
-export const WsProviderRespondToInteractionRpc = Rpc.make(WS_METHODS.providerRespondToInteraction, {
+const WsProviderRespondToInteractionRpc = Rpc.make(WS_METHODS.providerRespondToInteraction, {
   payload: ProviderRespondToInteractionInput,
   error: Schema.Union([ProviderRespondToInteractionError, EnvironmentAuthorizationError]),
 });
 
-export const WsProviderAskSessionSideQuestionRpc = Rpc.make(
-  WS_METHODS.providerAskSessionSideQuestion,
-  {
-    payload: ProviderAskSessionSideQuestionInput,
-    success: ProviderAskSessionSideQuestionResult,
-    error: Schema.Union([ProviderAskSessionSideQuestionError, EnvironmentAuthorizationError]),
-  },
-);
+const WsProviderAskSessionSideQuestionRpc = Rpc.make(WS_METHODS.providerAskSessionSideQuestion, {
+  payload: ProviderAskSessionSideQuestionInput,
+  success: ProviderAskSessionSideQuestionResult,
+  error: Schema.Union([ProviderAskSessionSideQuestionError, EnvironmentAuthorizationError]),
+});
 
-export const WsProviderCancelSessionSideQuestionRpc = Rpc.make(
+const WsProviderCancelSessionSideQuestionRpc = Rpc.make(
   WS_METHODS.providerCancelSessionSideQuestion,
   {
     payload: ProviderCancelSessionSideQuestionInput,
@@ -505,19 +499,19 @@ export const WsProviderCancelSessionSideQuestionRpc = Rpc.make(
   },
 );
 
-export const WsProviderCancelSessionAgentRpc = Rpc.make(WS_METHODS.providerCancelSessionAgent, {
+const WsProviderCancelSessionAgentRpc = Rpc.make(WS_METHODS.providerCancelSessionAgent, {
   payload: ProviderCancelSessionAgentInput,
   success: ProviderCancelSessionAgentResult,
   error: Schema.Union([ProviderCancelSessionAgentError, EnvironmentAuthorizationError]),
 });
 
-export const WsProviderMessageSessionAgentRpc = Rpc.make(WS_METHODS.providerMessageSessionAgent, {
+const WsProviderMessageSessionAgentRpc = Rpc.make(WS_METHODS.providerMessageSessionAgent, {
   payload: ProviderMessageSessionAgentInput,
   success: ProviderMessageSessionAgentResult,
   error: Schema.Union([ProviderMessageSessionAgentError, EnvironmentAuthorizationError]),
 });
 
-export const WsProviderWatchSessionAgentActivityRpc = Rpc.make(
+const WsProviderWatchSessionAgentActivityRpc = Rpc.make(
   WS_METHODS.providerWatchSessionAgentActivity,
   {
     payload: ProviderWatchSessionAgentActivityInput,
@@ -527,34 +521,31 @@ export const WsProviderWatchSessionAgentActivityRpc = Rpc.make(
   },
 );
 
-export const WsProviderGetSessionAgentDepthRpc = Rpc.make(WS_METHODS.providerGetSessionAgentDepth, {
+const WsProviderGetSessionAgentDepthRpc = Rpc.make(WS_METHODS.providerGetSessionAgentDepth, {
   payload: ProviderGetSessionAgentDepthInput,
   success: SessionAgentDepthUpdatedPayload,
   error: Schema.Union([ProviderSessionAgentDepthError, EnvironmentAuthorizationError]),
 });
 
-export const WsProviderSetSessionAgentDepthRpc = Rpc.make(WS_METHODS.providerSetSessionAgentDepth, {
+const WsProviderSetSessionAgentDepthRpc = Rpc.make(WS_METHODS.providerSetSessionAgentDepth, {
   payload: ProviderSetSessionAgentDepthInput,
   success: SessionAgentDepthUpdatedPayload,
   error: Schema.Union([ProviderSessionAgentDepthError, EnvironmentAuthorizationError]),
 });
 
-export const WsProviderGetSessionInputQueueRpc = Rpc.make(WS_METHODS.providerGetSessionInputQueue, {
+const WsProviderGetSessionInputQueueRpc = Rpc.make(WS_METHODS.providerGetSessionInputQueue, {
   payload: ProviderGetSessionInputQueueInput,
   success: SessionInputQueueUpdatedPayload,
   error: Schema.Union([ProviderSessionInputQueueError, EnvironmentAuthorizationError]),
 });
 
-export const WsProviderClearSessionInputQueueRpc = Rpc.make(
-  WS_METHODS.providerClearSessionInputQueue,
-  {
-    payload: ProviderClearSessionInputQueueInput,
-    success: SessionInputQueueUpdatedPayload,
-    error: Schema.Union([ProviderSessionInputQueueError, EnvironmentAuthorizationError]),
-  },
-);
+const WsProviderClearSessionInputQueueRpc = Rpc.make(WS_METHODS.providerClearSessionInputQueue, {
+  payload: ProviderClearSessionInputQueueInput,
+  success: SessionInputQueueUpdatedPayload,
+  error: Schema.Union([ProviderSessionInputQueueError, EnvironmentAuthorizationError]),
+});
 
-export const WsProviderRemoveOnlySessionInputQueueItemRpc = Rpc.make(
+const WsProviderRemoveOnlySessionInputQueueItemRpc = Rpc.make(
   WS_METHODS.providerRemoveOnlySessionInputQueueItem,
   {
     payload: ProviderRemoveOnlySessionInputQueueItemInput,
@@ -563,7 +554,7 @@ export const WsProviderRemoveOnlySessionInputQueueItemRpc = Rpc.make(
   },
 );
 
-export const WsProviderSetSessionInputQueueModeRpc = Rpc.make(
+const WsProviderSetSessionInputQueueModeRpc = Rpc.make(
   WS_METHODS.providerSetSessionInputQueueMode,
   {
     payload: ProviderSetSessionInputQueueModeInput,
@@ -572,28 +563,25 @@ export const WsProviderSetSessionInputQueueModeRpc = Rpc.make(
   },
 );
 
-export const WsProviderGetSessionCompactionRpc = Rpc.make(WS_METHODS.providerGetSessionCompaction, {
+const WsProviderGetSessionCompactionRpc = Rpc.make(WS_METHODS.providerGetSessionCompaction, {
   payload: ProviderGetSessionCompactionInput,
   success: SessionCompactionUpdatedPayload,
   error: Schema.Union([ProviderSessionCompactionError, EnvironmentAuthorizationError]),
 });
 
-export const WsProviderCompactSessionRpc = Rpc.make(WS_METHODS.providerCompactSession, {
+const WsProviderCompactSessionRpc = Rpc.make(WS_METHODS.providerCompactSession, {
   payload: ProviderCompactSessionInput,
   success: SessionCompactionUpdatedPayload,
   error: Schema.Union([ProviderSessionCompactionError, EnvironmentAuthorizationError]),
 });
 
-export const WsProviderAbortSessionCompactionRpc = Rpc.make(
-  WS_METHODS.providerAbortSessionCompaction,
-  {
-    payload: ProviderAbortSessionCompactionInput,
-    success: SessionCompactionUpdatedPayload,
-    error: Schema.Union([ProviderSessionCompactionError, EnvironmentAuthorizationError]),
-  },
-);
+const WsProviderAbortSessionCompactionRpc = Rpc.make(WS_METHODS.providerAbortSessionCompaction, {
+  payload: ProviderAbortSessionCompactionInput,
+  success: SessionCompactionUpdatedPayload,
+  error: Schema.Union([ProviderSessionCompactionError, EnvironmentAuthorizationError]),
+});
 
-export const WsProviderSetSessionAutoCompactionRpc = Rpc.make(
+const WsProviderSetSessionAutoCompactionRpc = Rpc.make(
   WS_METHODS.providerSetSessionAutoCompaction,
   {
     payload: ProviderSetSessionAutoCompactionInput,
@@ -602,13 +590,13 @@ export const WsProviderSetSessionAutoCompactionRpc = Rpc.make(
   },
 );
 
-export const WsProviderRefineSessionHarnessRpc = Rpc.make(WS_METHODS.providerRefineSessionHarness, {
+const WsProviderRefineSessionHarnessRpc = Rpc.make(WS_METHODS.providerRefineSessionHarness, {
   payload: ProviderRefineSessionHarnessInput,
   success: ProviderRefineSessionHarnessResult,
   error: Schema.Union([ProviderRefineSessionHarnessError, EnvironmentAuthorizationError]),
 });
 
-export const WsRollbackRecoverRpc = Rpc.make(WS_METHODS.rollbackRecover, {
+const WsRollbackRecoverRpc = Rpc.make(WS_METHODS.rollbackRecover, {
   payload: OrchestrationRollbackRecoveryInput,
   error: Schema.Union([OrchestrationRollbackRecoveryError, EnvironmentAuthorizationError]),
 });
@@ -623,7 +611,7 @@ const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
   ]),
 });
 
-export const WsServerGetPrimeManagedMaintenanceRpc = Rpc.make(
+const WsServerGetPrimeManagedMaintenanceRpc = Rpc.make(
   WS_METHODS.serverGetPrimeManagedMaintenance,
   {
     payload: Schema.Struct({ instanceId: ProviderInstanceId }),
@@ -632,7 +620,7 @@ export const WsServerGetPrimeManagedMaintenanceRpc = Rpc.make(
   },
 );
 
-export const WsServerRunPrimeManagedMaintenanceRpc = Rpc.make(
+const WsServerRunPrimeManagedMaintenanceRpc = Rpc.make(
   WS_METHODS.serverRunPrimeManagedMaintenance,
   {
     payload: ServerPrimeManagedCommandInput,
@@ -649,22 +637,19 @@ export const WsServerRunPrimeManagedMaintenanceRpc = Rpc.make(
  * process has to stay alive between them. Without this, adding a second
  * account needs a terminal, which makes it a maintainer-only feature.
  */
-export const WsServerStartProviderLoginRpc = Rpc.make(WS_METHODS.serverStartProviderLogin, {
+const WsServerStartProviderLoginRpc = Rpc.make(WS_METHODS.serverStartProviderLogin, {
   payload: ServerProviderLoginStartInput,
   success: ServerProviderLoginStarted,
   error: Schema.Union([ServerProviderLoginError, EnvironmentAuthorizationError]),
 });
 
-export const WsServerSubmitProviderLoginCodeRpc = Rpc.make(
-  WS_METHODS.serverSubmitProviderLoginCode,
-  {
-    payload: ServerProviderLoginSubmitInput,
-    success: ServerProviderLoginResult,
-    error: Schema.Union([ServerProviderLoginError, EnvironmentAuthorizationError]),
-  },
-);
+const WsServerSubmitProviderLoginCodeRpc = Rpc.make(WS_METHODS.serverSubmitProviderLoginCode, {
+  payload: ServerProviderLoginSubmitInput,
+  success: ServerProviderLoginResult,
+  error: Schema.Union([ServerProviderLoginError, EnvironmentAuthorizationError]),
+});
 
-export const WsServerCancelProviderLoginRpc = Rpc.make(WS_METHODS.serverCancelProviderLogin, {
+const WsServerCancelProviderLoginRpc = Rpc.make(WS_METHODS.serverCancelProviderLogin, {
   payload: ServerProviderLoginCancelInput,
   success: Schema.Void,
   error: EnvironmentAuthorizationError,
@@ -706,18 +691,15 @@ const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
   ]),
 });
 
-export const WsServerMutateProviderInstancesRpc = Rpc.make(
-  WS_METHODS.serverMutateProviderInstances,
-  {
-    payload: ServerProviderInstancesMutationInput,
-    success: ServerProviderInstancesMutationReceipt,
-    error: Schema.Union([
-      ServerProviderInstancesMutationConflictError,
-      ServerSettingsError,
-      EnvironmentAuthorizationError,
-    ]),
-  },
-);
+const WsServerMutateProviderInstancesRpc = Rpc.make(WS_METHODS.serverMutateProviderInstances, {
+  payload: ServerProviderInstancesMutationInput,
+  success: ServerProviderInstancesMutationReceipt,
+  error: Schema.Union([
+    ServerProviderInstancesMutationConflictError,
+    ServerSettingsError,
+    EnvironmentAuthorizationError,
+  ]),
+});
 
 const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
   payload: Schema.Struct({}),

@@ -42,6 +42,9 @@ jobs:
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
 
+      - name: Check unused code
+        run: vp run knip:check
+
       - name: Check
         run: vp check
 

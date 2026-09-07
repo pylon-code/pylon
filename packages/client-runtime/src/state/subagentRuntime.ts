@@ -96,7 +96,7 @@ const TERMINAL_STATUSES: ReadonlySet<RuntimeSubagentStatus> = new Set([
   "interrupted",
 ]);
 
-export function isTerminalSubagentStatus(status: RuntimeSubagentStatus): boolean {
+function isTerminalSubagentStatus(status: RuntimeSubagentStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 

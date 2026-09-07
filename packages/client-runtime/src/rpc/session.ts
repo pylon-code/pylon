@@ -72,7 +72,7 @@ function mapSessionRpcError(
   }
 }
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const webSocketConstructor = yield* Socket.WebSocketConstructor;
 
   const connect = Effect.fnUntraced(function* (connection: PreparedConnection) {

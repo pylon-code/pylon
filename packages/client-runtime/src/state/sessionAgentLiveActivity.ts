@@ -181,7 +181,7 @@ export type SessionAgentLiveActivityFailureReason =
   | "session-not-ready"
   | "unsupported";
 
-export function sessionAgentLiveActivityFailureReason(
+function sessionAgentLiveActivityFailureReason(
   error: unknown,
 ): SessionAgentLiveActivityFailureReason | null {
   if (typeof error !== "object" || error === null || !("reason" in error)) return null;

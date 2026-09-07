@@ -43,14 +43,6 @@ export function useAssetUrlState(
       };
 }
 
-export function useAssetUrl(environmentId: EnvironmentId, resource: AssetResource): string | null {
-  const result = useAssetUrlState(environmentId, resource);
-  if (result._tag !== "Success") {
-    return null;
-  }
-  return result.url;
-}
-
 /** Re-mints an exact-file capability after a file change or an explicit retry. */
 export function useAssetUrlRefresh(
   environmentId: EnvironmentId,

@@ -348,7 +348,7 @@ export function resolvePromptInjectedEffort(
 }
 
 /** Prime Agent's built-in slug for deferring to its own configured model. */
-export const PRIME_AGENT_DEFAULT_MODEL_SLUG = "default";
+const PRIME_AGENT_DEFAULT_MODEL_SLUG = "default";
 
 /**
  * Prime Agent can only defer to its own model when a session starts: it exposes no

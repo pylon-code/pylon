@@ -11,10 +11,10 @@
  */
 
 /** Past this, the window is worth planning around. */
-export const USAGE_WARNING_PERCENT = 75;
+const USAGE_WARNING_PERCENT = 75;
 
 /** Past this, the window is nearly gone. */
-export const USAGE_CRITICAL_PERCENT = 90;
+const USAGE_CRITICAL_PERCENT = 90;
 
 export function usageEmphasisClassName(usedPercent: number): string {
   if (usedPercent >= USAGE_CRITICAL_PERCENT) return "text-red-400";

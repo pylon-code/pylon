@@ -145,7 +145,7 @@ function applyInstanceModelPreferences(
   );
 }
 
-export function normalizeCustomModelSlugs(
+function normalizeCustomModelSlugs(
   models: Iterable<string | null | undefined>,
   builtInModelSlugs: ReadonlySet<string>,
 ): string[] {
@@ -173,7 +173,7 @@ export function normalizeCustomModelSlugs(
   return normalizedModels;
 }
 
-export function getAppModelOptions(
+function getAppModelOptions(
   settings: UnifiedSettings,
   providers: ReadonlyArray<ServerProvider>,
   provider: ProviderDriverKind,
