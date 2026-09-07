@@ -2571,23 +2571,24 @@ function workEntryRawCommand(
 function buildToolCallExpandedBody(
   workEntry: TimelineWorkEntry,
   workspaceRoot: string | undefined,
+  visibleLabel: string,
 ): string | null {
   const blocks: string[] = [];
+  const seen = new Set([visibleLabel.trim()]);
+  const addBlock = (value: string | null | undefined) => {
+    const text = value?.trim();
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    blocks.push(text);
+  };
   if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
-    blocks.push(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
+    addBlock(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
   }
-  const raw = workEntryRawCommand(workEntry);
-  if (raw?.trim()) {
-    blocks.push(raw.trim());
-  } else if (workEntry.command?.trim()) {
-    blocks.push(workEntry.command.trim());
-  }
-  if (workEntry.detail?.trim()) {
-    blocks.push(workEntry.detail.trim());
-  }
+  addBlock(workEntryRawCommand(workEntry) ?? workEntry.command);
+  addBlock(workEntry.detail);
   const changedFiles = workEntry.changedFiles ?? [];
   if (changedFiles.length > 0) {
-    blocks.push(
+    addBlock(
       changedFiles
         .map((filePath) => formatWorkspaceRelativePath(filePath, workspaceRoot))
         .join("\n"),
@@ -2780,16 +2781,23 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   const previewText = workEntryDisplayLabel(workEntry, workspaceRoot);
   const displayText =
     !toolPresentation && expanded && workEntry.command?.trim() ? "Command" : previewText;
+  const viewedImagePath = workEntryViewedImagePath(workEntry);
   const canExpand =
+    (showFailedIndicator && previewText.trim().length > 0) ||
     (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) ||
     Boolean(
       workEntryRawCommand(workEntry) ||
       workEntry.command?.trim() ||
-      workEntry.detail?.trim() ||
-      workEntry.changedFiles?.length,
+      (workEntry.detail?.trim() && workEntry.detail.trim() !== previewText.trim()) ||
+      workEntry.changedFiles?.some(
+        (path) => formatWorkspaceRelativePath(path, workspaceRoot) !== previewText.trim(),
+      ) ||
+      viewedImagePath,
     );
-  const expandedBody = expanded ? buildToolCallExpandedBody(workEntry, workspaceRoot) : null;
-  const viewedImagePath = workEntryViewedImagePath(workEntry);
+  const expandedBody = expanded
+    ? (buildToolCallExpandedBody(workEntry, workspaceRoot, displayText) ??
+      (showFailedIndicator || viewedImagePath ? previewText : null))
+    : null;
   const viewedImage =
     viewedImagePath && threadRef
       ? resolveViewedImageAsset(viewedImagePath, {

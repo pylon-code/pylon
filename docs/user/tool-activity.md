@@ -18,3 +18,5 @@ Command summaries show the program inside a shell wrapper, such as "Running vp" 
 `/bin/zsh -lc 'vp test run'`. Expanded rows keep the full command.
 
 While a turn is active, Thinking appears when no tool call or subagent card owns the live activity row. Completed calls keep their outcome labels. A subagent card groups the agents launched in that turn; expand it to see each agent's latest reported status and details, and collapse it to return to the summary. Identically named agents remain separate.
+
+A single finished tool call shows its command or action instead of a one-call count. Failed web tool rows open to show their full error, even when the error arrived only as a short row label. Repeated labels are omitted from expanded details.
