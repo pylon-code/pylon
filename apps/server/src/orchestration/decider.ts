@@ -205,10 +205,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   command,
   readModel,
   userInputActivity,
+  pendingRequestActivities,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
   readonly userInputActivity?: OrchestrationThreadActivity;
+  readonly pendingRequestActivities?: ReadonlyArray<OrchestrationThreadActivity>;
 }): Effect.fn.Return<
   DecideOrchestrationCommandResult,
   OrchestrationCommandRejection | PlatformError.PlatformError,
@@ -480,7 +482,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (thread.session?.status === "starting" || thread.session?.status === "running") {
         return yield* new OrchestrationThreadSettleBlockedError({ threadId: command.threadId });
       }
-      const pendingRequests = openRequests(thread);
+      const pendingRequests = openRequests({
+        ...thread,
+        activities: pendingRequestActivities ?? thread.activities,
+      });
       // Manual settlement dismisses async questions without answering them.
       // Native callbacks and approvals still need a response or interruption.
       if (
@@ -636,7 +641,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // user-input request is the agent waiting on the user, and hiding it
       // defeats the request. (A running session IS snoozable — snooze only
       // affects visibility, never the agent.)
-      if (openRequests(thread).size > 0) {
+      if (
+        openRequests({ ...thread, activities: pendingRequestActivities ?? thread.activities })
+          .size > 0
+      ) {
         return yield* Effect.fail(
           new OrchestrationCommandInvariantError({
             commandType: command.type,

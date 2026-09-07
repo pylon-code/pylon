@@ -90,7 +90,12 @@ export interface ProjectionThreadDetailQuery {
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
-  /** Read the latest request or resolution without loading the thread history. */
+  /** Reads only unresolved request payloads for lifecycle commands after restart. */
+  readonly getPendingRequestActivities: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /** Read the final resolution or latest request without loading the thread history. */
   readonly getUserInputActivity: (input: {
     readonly threadId: ThreadId;
     readonly requestId: ApprovalRequestId;

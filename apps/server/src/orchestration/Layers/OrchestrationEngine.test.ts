@@ -93,6 +93,8 @@ async function createOrchestrationSystem(databasePath?: string) {
   return {
     engine,
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
+    readPendingRequests: (threadId: ThreadId) =>
+      runtime.runPromise(snapshotQuery.getPendingRequestActivities({ threadId })),
     readThread: (threadId: ThreadId) =>
       runtime.runPromise(snapshotQuery.getThreadDetailById(threadId)),
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
@@ -116,6 +118,187 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it.each(["async-settle", "async-dismiss", "native", "approval", "interaction"] as const)(
+    "preserves %s request lifecycle decisions after restart and history eviction",
+    async (requestType) => {
+      const directory = await NodeFSP.mkdtemp(
+        NodePath.join(NodeOS.tmpdir(), "pylon-request-restart-"),
+      );
+      const databasePath = NodePath.join(directory, "state.sqlite");
+      let system = await createOrchestrationSystem(databasePath);
+      const threadId = ThreadId.make("request-thread");
+      const projectId = ProjectId.make("request-project");
+      const requestId = ApprovalRequestId.make("request-1");
+      const isAsync = requestType === "async-settle" || requestType === "async-dismiss";
+      const family = isAsync || requestType === "native" ? "user-input" : requestType;
+      const payload = {
+        requestId,
+        ...(isAsync ? { responseMode: "message" } : {}),
+        questions: [{ id: "answer", header: "Question", question: "Continue?", options: [] }],
+      };
+      const append = (id: string, kind: string, activityPayload: Record<string, unknown>) =>
+        system.run(
+          system.engine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(id),
+            threadId,
+            createdAt: now(),
+            activity: {
+              id: EventId.make(id),
+              kind,
+              payload: activityPayload,
+              summary: "Request lifecycle",
+              tone: "info",
+              turnId: null,
+              createdAt: now(),
+            },
+          }),
+        );
+      const pending = () => system.readPendingRequests(threadId);
+      try {
+        await system.run(
+          system.engine.dispatch({
+            type: "project.create",
+            commandId: CommandId.make("request-project"),
+            projectId,
+            title: "Request restart",
+            workspaceRoot: directory,
+            createdAt: now(),
+          }),
+        );
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("request-thread"),
+            threadId,
+            projectId,
+            title: "Request restart",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now(),
+          }),
+        );
+        await append("request-open", `${family}.requested`, payload);
+        for (let i = 0; i < 501; i++) await append(`request-work-${i}`, "tool.completed", {});
+        await system.dispose();
+        system = await createOrchestrationSystem(databasePath);
+        expect((await pending()).map((activity) => activity.id)).toEqual(["request-open"]);
+        const snapshot = await system.readModel();
+        await expect(
+          system.run(
+            system.engine.dispatch({
+              type: "thread.auto-settle",
+              commandId: CommandId.make("request-auto-settle"),
+              threadId,
+              snapshotSequence: snapshot.snapshotSequence,
+              settledAt: now(),
+            }),
+          ),
+        ).rejects.toThrow();
+        await expect(
+          system.run(
+            system.engine.dispatch({
+              type: "thread.snooze",
+              commandId: CommandId.make("request-snooze"),
+              threadId,
+              snoozedUntil: "2027-01-01T00:00:00.000Z",
+            }),
+          ),
+        ).rejects.toThrow();
+        const settle = {
+          type: "thread.settle" as const,
+          commandId: CommandId.make("request-settle"),
+          threadId,
+        };
+        if (isAsync) {
+          await system.run(
+            system.engine.dispatch(
+              requestType === "async-dismiss"
+                ? {
+                    type: "thread.user-input.dismiss",
+                    commandId: CommandId.make("request-dismiss"),
+                    threadId,
+                    requestId,
+                    createdAt: now(),
+                  }
+                : settle,
+            ),
+          );
+          const after = await system.readModel();
+          expect(after.threads[0]?.settledOverride).toBe(
+            requestType === "async-dismiss" ? null : "settled",
+          );
+          expect(after.threads[0]?.messages).toEqual([]);
+          expect(
+            after.threads[0]?.activities.find((activity) => activity.kind === "user-input.resolved")
+              ?.payload,
+          ).toMatchObject({ requestId, responseMode: "message" });
+          await expect(
+            system.run(
+              system.engine.dispatch({
+                type: "thread.user-input.respond",
+                commandId: CommandId.make("request-answer-after-settle"),
+                threadId,
+                requestId,
+                answers: { answer: "yes" },
+                createdAt: now(),
+              }),
+            ),
+          ).rejects.toThrow("already been answered");
+        } else {
+          await expect(system.run(system.engine.dispatch(settle))).rejects.toThrow();
+          await append("request-transient-failure", `provider.${family}.respond.failed`, {
+            requestId,
+            detail: "Connection unavailable. Try again.",
+          });
+          expect(await pending()).toHaveLength(1);
+          await append("request-stale", `provider.${family}.respond.failed`, {
+            requestId,
+            detail: `Unknown pending ${family} request: request-1`,
+          });
+        }
+        expect(await pending()).toEqual([]);
+        // A delayed duplicate request cannot undo a terminal decision.
+        await append("request-late-replay", `${family}.requested`, payload);
+        expect(await pending()).toEqual([]);
+        if (isAsync) {
+          await expect(
+            system.run(
+              system.engine.dispatch({
+                type: "thread.user-input.respond",
+                commandId: CommandId.make("reply-after-late-replay"),
+                threadId,
+                requestId,
+                answers: { answer: "yes" },
+                createdAt: now(),
+              }),
+            ),
+          ).rejects.toThrow("already been answered");
+          await expect(
+            system.run(
+              system.engine.dispatch({
+                type: "thread.user-input.dismiss",
+                commandId: CommandId.make("dismiss-after-late-replay"),
+                threadId,
+                requestId,
+                createdAt: now(),
+              }),
+            ),
+          ).rejects.toThrow("already been answered");
+        }
+        await system.dispose();
+        system = await createOrchestrationSystem(databasePath);
+        expect(await pending()).toEqual([]);
+      } finally {
+        await system.dispose();
+        await NodeFSP.rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each(["running", "stopped"] as const)(
     "sends async answers with a %s session and rejects old duplicate replies",
     async (status) => {
@@ -393,6 +576,7 @@ describe("OrchestrationEngine", () => {
     const layer = OrchestrationEngineLive.pipe(
       Layer.provide(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getPendingRequestActivities: () => Effect.succeed([]),
           getUserInputActivity: () => Effect.die("unused"),
           getCommandReadModel: () => Effect.succeed(commandReadModel),
           getSnapshot: () =>

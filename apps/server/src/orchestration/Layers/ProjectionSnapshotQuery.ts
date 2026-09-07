@@ -1469,6 +1469,71 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listPendingRequestActivityRows = SqlSchema.findAll({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId }) => sql`
+      WITH request_lifecycle AS (
+        SELECT *,
+          CASE
+            WHEN kind IN ('approval.requested', 'approval.resolved', 'provider.approval.respond.failed') THEN 'approval'
+            WHEN kind IN ('user-input.requested', 'user-input.resolved', 'provider.user-input.respond.failed') THEN 'user-input'
+            ELSE 'interaction'
+          END AS request_family
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND json_type(payload_json, '$.requestId') = 'text'
+          AND (
+            kind IN ('approval.requested', 'approval.resolved', 'user-input.requested',
+              'user-input.resolved', 'interaction.requested', 'interaction.resolved')
+            OR (kind = 'provider.approval.respond.failed' AND (
+              lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%stale pending approval request%'
+              OR lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%unknown pending approval request%'
+              OR lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%unknown pending permission request%'
+              OR lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%unknown pending codex approval request%'
+            ))
+            OR (kind = 'provider.user-input.respond.failed' AND (
+              lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%stale pending user-input request%'
+              OR lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%unknown pending user-input request%'
+              OR lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%unknown pending user input request%'
+              OR lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%unknown pending codex user input request%'
+            ))
+            OR (kind = 'provider.interaction.respond.failed' AND (
+              lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%stale pending interaction request%'
+              OR lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%unknown pending interaction request%'
+            ))
+          )
+      ), ranked_requests AS (
+        SELECT *, ROW_NUMBER() OVER (
+          PARTITION BY request_family, json_extract(payload_json, '$.requestId')
+          ORDER BY
+            CASE WHEN kind IN ('approval.requested', 'user-input.requested', 'interaction.requested') THEN 1 ELSE 0 END,
+            sequence DESC, created_at DESC, activity_id DESC
+        ) AS request_order
+        FROM request_lifecycle
+      )
+      SELECT activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
+        tone, kind, summary, payload_json AS "payload", sequence, created_at AS "createdAt"
+      FROM ranked_requests
+      WHERE request_order = 1
+        AND kind IN ('approval.requested', 'user-input.requested', 'interaction.requested')
+      ORDER BY sequence ASC, created_at ASC, activity_id ASC
+    `,
+  });
+
+  const getPendingRequestActivities: ProjectionSnapshotQueryShape["getPendingRequestActivities"] = (
+    input,
+  ) =>
+    listPendingRequestActivityRows(input).pipe(
+      Effect.map((rows) => rows.map(mapThreadActivityRow)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getPendingRequestActivities:query",
+          "ProjectionSnapshotQuery.getPendingRequestActivities:decodeRows",
+        ),
+      ),
+    );
+
   const getUserInputActivityRow = SqlSchema.findOneOption({
     Request: Schema.Struct({ threadId: ThreadId, requestId: ApprovalRequestId }),
     Result: ProjectionThreadActivityDbRowSchema,
@@ -1487,7 +1552,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       WHERE thread_id = ${threadId}
         AND kind IN ('user-input.requested', 'user-input.resolved')
         AND json_extract(payload_json, '$.requestId') = ${requestId}
-      ORDER BY sequence DESC, created_at DESC, activity_id DESC
+      ORDER BY CASE WHEN kind = 'user-input.resolved' THEN 0 ELSE 1 END,
+        sequence DESC, created_at DESC, activity_id DESC
       LIMIT 1
     `,
   });
@@ -3741,6 +3807,7 @@ pending_approval_requests AS (
   return {
     getCommandReadModel,
     getUserInputActivity,
+    getPendingRequestActivities,
     getSnapshot,
     getShellSnapshot,
     getArchivedShellSnapshot,

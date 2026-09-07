@@ -341,9 +341,16 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           envelope.command.type === "thread.user-input.dismiss"
             ? yield* projectionSnapshotQuery.getUserInputActivity(envelope.command)
             : Option.none();
+        const pendingRequestActivities =
+          envelope.command.type === "thread.settle" ||
+          envelope.command.type === "thread.auto-settle" ||
+          envelope.command.type === "thread.snooze"
+            ? yield* projectionSnapshotQuery.getPendingRequestActivities(envelope.command)
+            : undefined;
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel: commandReadModel,
+          ...(pendingRequestActivities !== undefined ? { pendingRequestActivities } : {}),
           ...(Option.isSome(userInputActivity)
             ? { userInputActivity: userInputActivity.value }
             : {}),
