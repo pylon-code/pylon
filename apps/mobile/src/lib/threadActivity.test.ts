@@ -613,6 +613,17 @@ describe("buildThreadFeed", () => {
       canExpand: true,
     },
     {
+      name: "a failed tool whose full error is only in the row label",
+      activity: {
+        kind: "tool.failed" as const,
+        tone: "error" as const,
+        summary: "Synthetic tool failed: the requested fixture file could not be located.",
+        payload: { itemType: "dynamic_tool_call", status: "failed" },
+      },
+      label: "Synthetic tool failed: the requested fixture file could not be located.",
+      canExpand: true,
+    },
+    {
       name: "a command whose output differs from the command",
       activity: {
         kind: "tool.completed" as const,
@@ -709,7 +720,10 @@ describe("buildThreadFeed", () => {
     expect(group?.type).toBe("activity-group");
     if (group?.type !== "activity-group") return;
     expect(group.activities[0]?.workEntry.detail).toBe(input.expected);
-    expect(group.activities[0]?.canExpand).toBe(Boolean(input.expected));
+    expect(group.activities[0]?.canExpand).toBe(true);
+    expect(workEntryRowLabel(group.activities[0]!.workEntry, true)).toBe(
+      input.expected ?? "Runtime error",
+    );
   });
 
   it.each([

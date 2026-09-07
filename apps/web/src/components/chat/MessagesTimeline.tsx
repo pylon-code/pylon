@@ -2577,7 +2577,8 @@ function buildToolCallExpandedBody(
   const seen = new Set([visibleLabel.trim()]);
   const addBlock = (value: string | null | undefined) => {
     const text = value?.trim();
-    if (!text || seen.has(text)) return;
+    // Command output can legitimately equal the command; retain both records.
+    if (!text || (!workEntry.command && seen.has(text))) return;
     seen.add(text);
     blocks.push(text);
   };

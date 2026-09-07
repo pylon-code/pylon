@@ -1040,6 +1040,7 @@ function buildWorkEntryExpandedBody(entry: WorkLogEntry): string | null {
  */
 function workEntryCanExpand(entry: WorkLogEntry): boolean {
   if (entry.agentSpawn) return agentSpawnMembers(entry.agentSpawn).length > 0;
+  if (workLogEntryIsToolLike(entry) && workEntryIndicatesToolFailure(entry)) return true;
   if (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) return true;
   if (entry.changedFiles?.some((path) => path.trim().length > 0)) return true;
   return Boolean((entry.rawCommand ?? entry.command)?.trim() || entry.detail?.trim());
