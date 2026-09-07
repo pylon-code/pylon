@@ -1,3 +1,5 @@
+import { shallow } from "zustand/vanilla/shallow";
+import type { RollbackTarget } from "@t3tools/client-runtime/rollback";
 import {
   type AssetCreateUrlInput,
   type AssetCreateUrlResult,
@@ -884,4 +886,15 @@ export function shouldRetargetThreadPullRequestPanel(
     surface.repository.toLowerCase() === previousRepository &&
     surface.number === previous.number
   );
+}
+
+/** Reuse timeline counts without changing Pylon's verified rollback targets. */
+export function buildRollbackTurnCountByMessageId(
+  targets: ReadonlyMap<MessageId, RollbackTarget>,
+  previous: Map<MessageId, number> | null = null,
+): Map<MessageId, number> {
+  const counts = new Map(
+    [...targets].map(([messageId, target]) => [messageId, target.targetTurnCount]),
+  );
+  return previous !== null && shallow(previous, counts) ? previous : counts;
 }
