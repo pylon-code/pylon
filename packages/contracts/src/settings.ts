@@ -256,6 +256,9 @@ export const ClientSettingsSchema = Schema.Struct({
   // flag restores it along with the /plan and /default slash commands. Pylon
   // Mobile already carries a device-local counterpart of this key.
   planModeEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  contextWindowMeterEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Desktop scrolling can reclaim composer space; losing focus never collapses it.
+  composerCollapseOnScroll: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
   ),
@@ -1124,6 +1127,8 @@ export const ClientSettingsPatch = Schema.Struct({
   showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
   legacySidebarEnabled: Schema.optionalKey(Schema.Boolean),
   planModeEnabled: Schema.optionalKey(Schema.Boolean),
+  contextWindowMeterEnabled: Schema.optionalKey(Schema.Boolean),
+  composerCollapseOnScroll: Schema.optionalKey(Schema.Boolean),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),

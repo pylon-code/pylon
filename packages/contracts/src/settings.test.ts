@@ -175,6 +175,33 @@ describe("ClientSettings sidebar", () => {
   });
 });
 
+describe("ClientSettings context window meter", () => {
+  it("defaults off and preserves an explicit legacy opt-in", () => {
+    expect(decodeClientSettings({}).contextWindowMeterEnabled).toBe(false);
+    expect(
+      decodeClientSettings({ contextWindowMeterEnabled: true }).contextWindowMeterEnabled,
+    ).toBe(true);
+    expect(
+      decodeClientSettingsPatch({ contextWindowMeterEnabled: true }).contextWindowMeterEnabled,
+    ).toBe(true);
+  });
+});
+
+describe("ClientSettings composer collapse", () => {
+  it("collapses on scroll by default and accepts opting out", () => {
+    expect(decodeClientSettings({}).composerCollapseOnScroll).toBe(true);
+    expect(
+      decodeClientSettingsPatch({ composerCollapseOnScroll: false }).composerCollapseOnScroll,
+    ).toBe(false);
+  });
+
+  it("drops the retired blur trigger key", () => {
+    const decoded = decodeClientSettings({ composerCollapseOnBlur: false });
+    expect(decoded.composerCollapseOnScroll).toBe(true);
+    expect(decoded).not.toHaveProperty("composerCollapseOnBlur");
+  });
+});
+
 describe("ServerSettings thread settlement", () => {
   it("defaults merge settlement on and inactivity settlement to three days", () => {
     const settings = decodeServerSettings({});

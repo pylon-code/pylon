@@ -192,6 +192,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["command menu dollar $ slash /"],
   },
   {
+    id: "composer-collapse",
+    title: "Collapse composer on scroll",
+    to: "/settings/general",
+    searchTerms: ["composer rest resting scroll wheel conversation timeline shrink minimize"],
+  },
+  {
     id: "provider-update-checks",
     title: "Provider update checks",
     to: "/settings/general",
@@ -286,6 +292,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Plan mode (legacy)",
     to: "/settings/general",
     searchTerms: ["build plan composer old"],
+  },
+  {
+    id: "legacy-context-window-indicator",
+    title: "Context window indicator (legacy)",
+    to: "/settings/general",
+    searchTerms: ["composer meter usage tokens circle old"],
   },
   {
     id: "keybindings",

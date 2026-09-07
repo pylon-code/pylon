@@ -35,10 +35,7 @@ import {
   RuntimeMode,
   TerminalOpenInput,
 } from "@t3tools/contracts";
-import {
-  connectionStatusTitle,
-  type EnvironmentConnectionPresentation,
-} from "@t3tools/client-runtime/connection";
+import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import { deriveReportedTurnCosts } from "@t3tools/client-runtime/state/turn-costs";
 import { canAskSessionSideQuestion } from "@t3tools/client-runtime/state/session-side-question";
 import { wasBootstrapThreadDeleted } from "@t3tools/client-runtime/errors";
@@ -133,6 +130,7 @@ import { type LegendListRef } from "@legendapp/list/react";
 import {
   CHAT_TIMELINE_ANCHOR_OFFSET,
   getAnchoredTurnMetrics,
+  timelineContentOverflowsViewport,
   type TimelineScrollMode,
 } from "./chat/timelineScrollAnchoring";
 import {
@@ -354,6 +352,7 @@ import {
   type SessionInteractionSubmissionState,
 } from "./chat/ComposerSessionInteractionPanel";
 import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
+import { resolveComposerTimelineInset } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
@@ -451,6 +450,7 @@ import {
   codexArtifactTemplatePromptToAppend,
   toolGroupConsumesUpwardNavigation,
   waitForStartedServerThread,
+  shouldRefocusComposerOnWindowFocus,
 } from "./ChatView.logic";
 import type { ThreadSyncPhase } from "../threadSync";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
@@ -637,14 +637,24 @@ function eventPathContainsSelector(event: Event, selector: string): boolean {
   return path.some((target) => target instanceof Element && target.closest(selector));
 }
 
-function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
-  if (event.defaultPrevented || event.isComposing) return false;
-  if (event.metaKey || event.ctrlKey || event.altKey) return false;
-  if (event.key.length !== 1) return false;
-
+/**
+ * Whether input that landed outside any editable or interactive element
+ * should be redirected into the composer. Shared by type-to-focus and
+ * paste-to-focus so both honour the same surfaces.
+ */
+function shouldRedirectInputToComposer(event: Event): boolean {
+  if (event.defaultPrevented) return false;
   if (eventPathContainsSelector(event, TYPE_TO_FOCUS_EDITABLE_SELECTOR)) return false;
   if (eventPathContainsSelector(event, TYPE_TO_FOCUS_INTERACTIVE_SELECTOR)) return false;
   if (document.querySelector(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR)) return false;
+  return true;
+}
+
+function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
+  if (event.isComposing) return false;
+  if (event.metaKey || event.ctrlKey || event.altKey) return false;
+  if (event.key.length !== 1) return false;
+  if (!shouldRedirectInputToComposer(event)) return false;
 
   // The right-panel surface launcher claims its shortcut letters while it is
   // visible (data attribute set in RightPanelTabs); those keys open surfaces
@@ -655,6 +665,17 @@ function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
   if (launcherKeys && launcherKeys.toLowerCase().includes(event.key.toLowerCase())) return false;
 
   return true;
+}
+
+/**
+ * Plain text pasted with nothing editable focused, such as after the resting
+ * composer blurred. Files are left to the composer's own paste handler.
+ */
+function pasteTextToFocusComposer(event: ClipboardEvent): string | null {
+  if (!event.clipboardData || event.clipboardData.files.length > 0) return null;
+  if (!shouldRedirectInputToComposer(event)) return null;
+  const text = event.clipboardData.getData("text/plain");
+  return text.length > 0 ? text : null;
 }
 
 function formatOutgoingPrompt(params: {
@@ -1615,6 +1636,9 @@ export default function ChatView(props: ChatViewProps) {
   const composerElementContextsRef = useRef<ElementContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
+  const [restingComposerControlsHost, setRestingComposerControlsHost] =
+    useState<HTMLDivElement | null>(null);
+  const [restingComposerControlsVisible, setRestingComposerControlsVisible] = useState(false);
   const citeAssistantText = useCallback(
     (citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) => {
       const inserted = composerRef.current?.citeAssistantText(citation, sourceAnchor) ?? false;
@@ -1696,6 +1720,7 @@ export default function ChatView(props: ChatViewProps) {
   const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
     useState<Record<string, number>>({});
   const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const isMobileViewport = useMediaQuery("max-sm");
   const [terminalFocusRequestId, setTerminalFocusRequestId] = useState(0);
   const [pullRequestDialogState, setPullRequestDialogState] =
     useState<PullRequestDialogState | null>(null);
@@ -1717,10 +1742,28 @@ export default function ChatView(props: ChatViewProps) {
     LastInvokedScriptByProjectSchema,
   );
   const legendListRef = useRef<LegendListRef | null>(null);
+  const getTimelineScrollableNode = useCallback(
+    () => legendListRef.current?.getScrollableNode() ?? null,
+    [],
+  );
   const [composerOverlayElement, setComposerOverlayElement] = useState<HTMLDivElement | null>(null);
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
+  const composerOverlayHeightRef = useRef(0);
+  // Space the timeline keeps clear above its end. Tracks the overlay while the
+  // composer is expanded and holds that height while it rests, so the resting
+  // composer never exposes rows that its expansion will cover.
+  const [composerTimelineInset, setComposerTimelineInset] = useState(0);
+  const composerTimelineInsetRef = useRef(0);
+  const composerRestingRef = useRef(false);
   const [scrollToEndClearance, setScrollToEndClearance] = useState(0);
   const isAtEndRef = useRef(true);
+  const isTimelineAtLogicalEnd = useCallback(
+    () => resolveTimelineIsAtEnd(legendListRef.current?.getState()) ?? isAtEndRef.current,
+    [],
+  );
+  // Whether the timeline's rows extend past the viewport above the composer.
+  // The composer only rests when there is reading space to give back.
+  const [timelineOverflows, setTimelineOverflows] = useState(false);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
@@ -2411,21 +2454,22 @@ export default function ChatView(props: ChatViewProps) {
             />
           ),
           title: `${unavailableConnection.phase === "connecting" ? "Connecting" : "Reconnecting"} to ${activeEnvironmentUnavailableState.label}`,
-          description: "It may be finishing an update. One moment.",
+          description: "Finishing an update",
         });
       } else {
         items.push({
           id: `environment-unavailable:${activeEnvironmentUnavailableState.environmentId}`,
           variant: unavailableConnection.phase === "error" ? "error" : "warning",
           icon: <WifiOffIcon />,
-          title: `${activeEnvironmentUnavailableState.label}: ${connectionStatusTitle(unavailableConnection)}`,
+          title: `${activeEnvironmentUnavailableState.label} is ${environmentReconnecting ? "reconnecting" : "offline"}`,
           description:
             unavailableConnection.error ??
-            "Reconnect this environment before sending messages or running actions.",
+            (environmentReconnecting ? "Trying again" : "Reconnect to continue"),
           actions: (
             <>
               <Button
                 size="xs"
+                variant="ghost"
                 disabled={environmentReconnecting}
                 onClick={() =>
                   void handleReconnectActiveEnvironment(
@@ -2437,7 +2481,7 @@ export default function ChatView(props: ChatViewProps) {
               </Button>
               <Button
                 size="xs"
-                variant="outline"
+                variant="ghost"
                 onClick={() => void navigate({ to: "/settings/connections" })}
               >
                 Connections
@@ -2472,7 +2516,10 @@ export default function ChatView(props: ChatViewProps) {
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <button type="button" className="cursor-help rounded-sm text-left">
+                  <button
+                    type="button"
+                    className="block max-w-full cursor-help truncate rounded-sm text-left"
+                  >
                     Server update available
                   </button>
                 }
@@ -2488,13 +2535,10 @@ export default function ChatView(props: ChatViewProps) {
         description:
           !updateInProgress &&
           !updateFailed &&
-          versionMismatchSelfUpdate === "desktop-managed" &&
-          !versionMismatchDesktopAppUpdate
-            ? serverUpdateGuidance(versionMismatchSelfUpdate, versionMismatchServerLabel)
+          versionMismatchSelfUpdate !== null &&
+          (versionMismatchSelfUpdate !== "desktop-managed" || !versionMismatchDesktopAppUpdate)
+            ? serverUpdateGuidance(versionMismatchSelfUpdate)
             : undefined,
-        // The desktop-managed guidance is already the description; the action
-        // slot would only repeat it. When the desktop app accepts remote
-        // update requests, the action button takes over instead.
         actions:
           updateInProgress ||
           !versionMismatch ||
@@ -2508,6 +2552,7 @@ export default function ChatView(props: ChatViewProps) {
               threadContinuation={versionMismatchThreadContinuation}
               targetVersion={versionMismatch.clientVersion}
               label={updateFailed ? "Retry" : "Update"}
+              variant="ghost"
             />
           ),
         ...(updateInProgress || (!updateFailed && !versionMismatchDismissKey)
@@ -3327,10 +3372,20 @@ export default function ChatView(props: ChatViewProps) {
     terminalUiLaunchContext?.threadId === activeThreadId ? terminalUiLaunchContext : null;
   // Default true while loading to avoid toolbar flicker.
   const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
+  // Keep a hidden, off-flow strip mounted for existing threads so the composer
+  // can measure whether its relocated controls fit. The visible chrome remains
+  // content-driven: Git/environment context or controls that actually fit.
+  const mountComposerContextStrip = shouldShowComposerContextStrip({
+    hasActiveProject: activeProject !== null,
+    isGitRepo,
+    showEnvironmentIndicator: showComposerEnvironmentIndicator,
+    hostsRestingComposerControls: routeKind === "server",
+  });
   const showComposerContextStrip = shouldShowComposerContextStrip({
     hasActiveProject: activeProject !== null,
     isGitRepo,
     showEnvironmentIndicator: showComposerEnvironmentIndicator,
+    hostsRestingComposerControls: routeKind === "server" && restingComposerControlsVisible,
   });
   const initialDiffPanelGitScope =
     gitStatusQuery.data?.hasWorkingTreeChanges === true ? "unstaged" : "branch";
@@ -4522,6 +4577,7 @@ export default function ChatView(props: ChatViewProps) {
   const showScrollDebouncer = useRef(
     new Debouncer(() => setShowScrollToBottom(true), { wait: 150 }),
   );
+  const timelineScrollIntentRef = useRef<"toward-end" | "away-from-end" | null>(null);
   const timelineScrollModeRef = useRef<TimelineScrollMode>("following-end");
   // State mirror of the follow mode refs. LegendList's maintainScrollAtEnd
   // re-pins on its own (independent of the refs), so the timeline needs a
@@ -4564,46 +4620,27 @@ export default function ChatView(props: ChatViewProps) {
       return getAnchoredTurnMetrics({
         state,
         anchorIndex,
-        composerOverlayHeight,
+        composerOverlayHeight: composerTimelineInset,
         anchorOffset: CHAT_TIMELINE_ANCHOR_OFFSET,
       });
     },
-    [composerOverlayHeight],
+    [composerTimelineInset],
   );
   const timelineRealContentOverflowsViewport = useCallback(
-    (list?: LegendListRef | null) => {
-      const resolvedList = list ?? legendListRef.current;
-      const state = resolvedList?.getState();
-      if (!resolvedList || !state || state.data.length === 0) {
-        return false;
-      }
-
-      const lastRowIndex = state.data.length - 1;
-      const lastRowTop = state.positionAtIndex(lastRowIndex);
-      const lastRowHeight = state.sizeAtIndex(lastRowIndex);
-      if (
-        typeof lastRowTop !== "number" ||
-        typeof lastRowHeight !== "number" ||
-        !Number.isFinite(lastRowTop) ||
-        !Number.isFinite(lastRowHeight)
-      ) {
-        return false;
-      }
-
-      const realContentBottom = lastRowTop + Math.max(1, lastRowHeight);
-      const visibleScrollLength = Math.max(
-        0,
-        (state.scrollLength ?? 0) - composerOverlayHeight - CHAT_TIMELINE_ANCHOR_OFFSET,
-      );
-      return realContentBottom > visibleScrollLength;
-    },
-    [composerOverlayHeight],
+    (list?: LegendListRef | null) =>
+      timelineContentOverflowsViewport((list ?? legendListRef.current)?.getState(), {
+        composerInset: composerTimelineInset,
+        anchorOffset: CHAT_TIMELINE_ANCHOR_OFFSET,
+      }),
+    [composerTimelineInset],
   );
   const pageScrollControllerRef = useRef<ReturnType<typeof createPageScrollController> | null>(
     null,
   );
   const handlePageScrollStart = useEffectEvent((key: PageScrollKey) => {
-    if (key === "PageUp" && timelineRealContentOverflowsViewport()) {
+    timelineScrollIntentRef.current = key === "PageUp" ? "away-from-end" : "toward-end";
+    composerRef.current?.collapseForTimelineScrollKey(key);
+    if ((key === "PageUp" && timelineRealContentOverflowsViewport()) || !isTimelineAtLogicalEnd()) {
       cancelTimelineLiveFollowForUserNavigation();
     }
   });
@@ -4706,6 +4743,14 @@ export default function ChatView(props: ChatViewProps) {
         // Only an upward wheel is a navigation intent; wheeling down while
         // following either does nothing (at the end) or moves toward it.
         const handleWheel = (event: WheelEvent) => {
+          if (event.deltaY > 0) {
+            timelineScrollIntentRef.current = "toward-end";
+            if (isAtEndRef.current) {
+              composerRef.current?.restoreAfterTimelineReachedEnd();
+            }
+          } else if (event.deltaY < 0) {
+            timelineScrollIntentRef.current = "away-from-end";
+          }
           if (
             event.deltaY < 0 &&
             contentScrollsUp() &&
@@ -4741,14 +4786,45 @@ export default function ChatView(props: ChatViewProps) {
         };
         // Keyboard scrolling (PageUp/Home/ArrowUp) bypasses wheel and
         // pointer events entirely; without this the timeline yanks back to
-        // the end on the next stream chunk.
+        // the end on the next stream chunk. Clicking message text can leave
+        // DOM focus on body, so these keys must also be heard at document.
         const handleKeyDown = (event: KeyboardEvent) => {
+          if (
+            !(event.target instanceof Node) ||
+            (!scrollNode.contains(event.target) &&
+              event.target !== document.body &&
+              event.target !== document.documentElement) ||
+            event.defaultPrevented ||
+            event.isComposing ||
+            event.altKey ||
+            event.ctrlKey ||
+            event.metaKey ||
+            event.shiftKey ||
+            eventPathContainsSelector(event, TYPE_TO_FOCUS_EDITABLE_SELECTOR) ||
+            document.querySelector(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR)
+          ) {
+            return;
+          }
           switch (event.key) {
             case "PageUp":
             case "Home":
             case "ArrowUp":
+              timelineScrollIntentRef.current = "away-from-end";
               if (contentScrollsUp() && !toolGroupConsumesUpwardNavigation(event.target)) {
                 handleManualNavigation();
+                composerRef.current?.collapseForTimelineScrollKey(event.key);
+              }
+              break;
+            case "PageDown":
+            case "End":
+            case "ArrowDown":
+              timelineScrollIntentRef.current = "toward-end";
+              if (viewportIsAwayFromEnd()) {
+                handleManualNavigation();
+              }
+              composerRef.current?.collapseForTimelineScrollKey(event.key);
+              if (isTimelineAtLogicalEnd()) {
+                composerRef.current?.restoreAfterTimelineReachedEnd();
               }
               break;
             default:
@@ -4764,12 +4840,12 @@ export default function ChatView(props: ChatViewProps) {
         scrollNode.addEventListener("pointerdown", handlePointerDown, {
           passive: true,
         });
-        scrollNode.addEventListener("keydown", handleKeyDown);
+        document.addEventListener("keydown", handleKeyDown);
         removeListeners = () => {
           scrollNode.removeEventListener("wheel", handleWheel);
           scrollNode.removeEventListener("touchmove", handleTouchMove);
           scrollNode.removeEventListener("pointerdown", handlePointerDown);
-          scrollNode.removeEventListener("keydown", handleKeyDown);
+          document.removeEventListener("keydown", handleKeyDown);
         };
       });
     };
@@ -4781,7 +4857,7 @@ export default function ChatView(props: ChatViewProps) {
       }
       removeListeners?.();
     };
-  }, [activeThread?.id, timelineRealContentOverflowsViewport]);
+  }, [activeThread?.id, isTimelineAtLogicalEnd, timelineRealContentOverflowsViewport]);
 
   const onTimelineAnchorReady = useCallback((messageId: MessageId, anchorIndex: number) => {
     // Anchored-end space can be remeasured when the turn completes. Once the
@@ -4829,6 +4905,10 @@ export default function ChatView(props: ChatViewProps) {
     requestAnimationFrame(() => positionAnchor(12));
   }, []);
 
+  const onToolOutputCollapsedAtEnd = useCallback(() => {
+    composerRef.current?.restoreAfterTimelineReachedEnd();
+  }, []);
+
   const onIsAtEndChange = useCallback((isAtEnd: boolean) => {
     if (
       !isAtEnd &&
@@ -4841,6 +4921,9 @@ export default function ChatView(props: ChatViewProps) {
     if (isAtEndRef.current === isAtEnd) return;
     isAtEndRef.current = isAtEnd;
     if (isAtEnd) {
+      if (timelineScrollIntentRef.current === "toward-end") {
+        composerRef.current?.restoreAfterTimelineReachedEnd();
+      }
       timelineScrollModeRef.current = "following-end";
       liveFollowUserScrollGenerationRef.current = anchorUserScrollGenerationRef.current;
       setTimelineLiveFollowEnabled(true);
@@ -4913,6 +4996,7 @@ export default function ChatView(props: ChatViewProps) {
   useEffect(() => {
     setPullRequestDialogState(null);
     isAtEndRef.current = true;
+    timelineScrollIntentRef.current = null;
     timelineScrollModeRef.current = "following-end";
     liveFollowUserScrollGenerationRef.current = anchorUserScrollGenerationRef.current;
     setTimelineLiveFollowEnabled(true);
@@ -4938,6 +5022,33 @@ export default function ChatView(props: ChatViewProps) {
       window.cancelAnimationFrame(frame);
     };
   }, [activeThread?.id, focusComposer, terminalUiState.terminalOpen]);
+
+  // Tabbing back into the app lands focus wherever it last was, often the right panel or the
+  // body. Put it in the composer unless something that takes typing already holds it. The
+  // drawer terminal owns keyboard input while it is open, so it opts out here; a right panel
+  // terminal is a surface and is recognized by the predicate instead. Mobile is left alone so
+  // returning to the app does not raise the keyboard.
+  useEffect(() => {
+    if (!activeThread?.id || terminalUiState.terminalOpen || isMobileViewport) return;
+    let frame: number | null = null;
+    const onWindowFocus = () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      // The element that held focus receives it again after the window's own event, and the
+      // composer ignores that same frame so a restored focus does not lift a scroll-collapsed
+      // composer. Wait one more frame so this focus counts as a request to expand it.
+      frame = window.requestAnimationFrame(() => {
+        frame = window.requestAnimationFrame(() => {
+          frame = null;
+          if (shouldRefocusComposerOnWindowFocus(document.activeElement)) focusComposer();
+        });
+      });
+    };
+    window.addEventListener("focus", onWindowFocus);
+    return () => {
+      window.removeEventListener("focus", onWindowFocus);
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [activeThread?.id, focusComposer, isMobileViewport, terminalUiState.terminalOpen]);
 
   useEffect(() => {
     if (!activeThread?.id) return;
@@ -5058,18 +5169,49 @@ export default function ChatView(props: ChatViewProps) {
     [activeComposerPlan?.turnId, activeComposerTaskSteps, agentSessionLive, threadActivities],
   );
 
+  const publishComposerOverlayHeight = useCallback((height: number) => {
+    const nextHeight = Math.ceil(height);
+    if (nextHeight <= 0) return;
+    const previousHeight = composerOverlayHeightRef.current;
+    if (previousHeight !== nextHeight) {
+      composerOverlayHeightRef.current = nextHeight;
+      setComposerOverlayHeight(nextHeight);
+    }
+    const nextInset = resolveComposerTimelineInset({
+      currentInset: composerTimelineInsetRef.current,
+      overlayHeight: nextHeight,
+      isResting: composerRestingRef.current,
+    });
+    if (composerTimelineInsetRef.current !== nextInset) {
+      composerTimelineInsetRef.current = nextInset;
+      setComposerTimelineInset(nextInset);
+    }
+    setScrollToEndClearance((currentClearance) =>
+      currentClearance === nextHeight ? currentClearance : nextHeight,
+    );
+  }, []);
+  // The composer reports its resting flag from a layout effect, which runs
+  // before this component's own layout effects and before any resize
+  // observation, so every measurement below sees the flag for its layout.
+  // Only the flag is stored here: the stored height still belongs to the
+  // previous layout, and the composer publishes the new layout's height
+  // itself once it has measured it.
+  const onComposerRestingChange = useCallback((resting: boolean) => {
+    composerRestingRef.current = resting;
+  }, []);
+  // A held reservation belongs to the previous thread's draft. Rebuild it from
+  // this thread's overlay so a tall draft elsewhere does not pad this one.
+  useLayoutEffect(() => {
+    if (!composerOverlayElement) return;
+    composerTimelineInsetRef.current = 0;
+    publishComposerOverlayHeight(composerOverlayElement.getBoundingClientRect().height);
+  }, [activeThreadKey, composerOverlayElement, publishComposerOverlayHeight]);
+
   useLayoutEffect(() => {
     if (!composerOverlayElement) return;
 
     const updateHeight = () => {
-      const nextHeight = Math.ceil(composerOverlayElement.getBoundingClientRect().height);
-      if (nextHeight <= 0) return;
-      setComposerOverlayHeight((currentHeight) =>
-        currentHeight === nextHeight ? currentHeight : nextHeight,
-      );
-      setScrollToEndClearance((currentClearance) =>
-        currentClearance === nextHeight ? currentClearance : nextHeight,
-      );
+      publishComposerOverlayHeight(composerOverlayElement.getBoundingClientRect().height);
     };
 
     updateHeight();
@@ -5080,7 +5222,7 @@ export default function ChatView(props: ChatViewProps) {
     return () => {
       resizeObserver.disconnect();
     };
-  }, [composerOverlayElement]);
+  }, [composerOverlayElement, publishComposerOverlayHeight]);
   const linkedPullRequestStatus = useLinkedThreadPullRequest(
     activeThreadRef?.environmentId ?? null,
     linkedThreadPullRequest,
@@ -5521,8 +5663,8 @@ export default function ChatView(props: ChatViewProps) {
       id: `thread-woke:${activeThread?.id ?? "unknown"}`,
       variant: "info",
       icon: <AlarmClockIcon />,
-      title: "This thread woke from snooze",
-      description: "Dismiss to clear the Woke indicator, or send a message to keep going.",
+      title: "Thread woke from snooze",
+      description: "Send a message to continue",
       dismissLabel: "Dismiss Woke notification",
       onDismiss: acknowledgeActiveThreadWoke,
     };
@@ -5537,13 +5679,11 @@ export default function ChatView(props: ChatViewProps) {
       variant: "info",
       icon: isSnoozed ? <AlarmClockIcon /> : <CheckCircle2Icon />,
       title: `This thread is ${isSnoozed ? "snoozed" : "settled"}`,
-      description: isSnoozed
-        ? "Sending a message wakes it and moves it back to Active in the sidebar."
-        : "Sending a message moves it back to Active in the sidebar.",
+      description: `Send a message to ${isSnoozed ? "wake" : "unsettle"}`,
       actions: (
         <Button
           size="xs"
-          variant="outline"
+          variant="ghost"
           disabled={isSnoozed ? isUnsnoozing : isUnsettling}
           onClick={() =>
             void (isSnoozed ? handleUnsnoozeActiveThread() : handleUnsettleActiveThread())
@@ -5627,7 +5767,7 @@ export default function ChatView(props: ChatViewProps) {
     const compactAction = (
       <Button
         size="xs"
-        variant="outline"
+        variant="ghost"
         disabled={compactDisabled}
         onClick={() => {
           if (compactDisabled) return;
@@ -5642,7 +5782,7 @@ export default function ChatView(props: ChatViewProps) {
       variant: "info",
       icon: <Minimize2Icon />,
       title: "Resume with less context",
-      description: `${formatContextWindowTokens(activeContextWindow.usedTokens)} tokens from an older session`,
+      description: `${formatContextWindowTokens(activeContextWindow.usedTokens)} tokens from earlier`,
       actions: compactDisabledReason ? (
         <Tooltip>
           <TooltipTrigger render={<span className="inline-flex">{compactAction}</span>} />
@@ -5737,7 +5877,6 @@ export default function ChatView(props: ChatViewProps) {
             </Tooltip>
           </span>
         ),
-        className: "dark:shadow-none",
         actions: (
           <Button
             size="xs"
@@ -6075,6 +6214,25 @@ export default function ChatView(props: ChatViewProps) {
     toggleTerminalVisibility,
     composerRef,
   ]);
+
+  // Paste-to-focus: the resting composer blurs on a click into the timeline,
+  // so a paste that follows has no editable target and would be dropped.
+  // Route it to the composer like a typed key, which also expands it.
+  useEffect(() => {
+    const handler = (event: ClipboardEvent) => {
+      if (!activeThreadId || isCommandPaletteOpen()) return;
+      if (getTerminalFocusOwner() !== null) return;
+      if (composerRef.current?.isModelPickerOpen()) return;
+      const text = pasteTextToFocusComposer(event);
+      if (text === null) return;
+      if (composerRef.current?.insertTextAtEnd(text)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    window.addEventListener("paste", handler, true);
+    return () => window.removeEventListener("paste", handler, true);
+  }, [activeThreadId, composerRef]);
 
   const onRevertToTurnCount = useCallback(
     async (target: RollbackTarget) => {
@@ -8605,14 +8763,6 @@ export default function ChatView(props: ChatViewProps) {
           />
         </WorkspacePageHeader>
 
-        <ThreadErrorBanner
-          error={visibleThreadError}
-          onDismiss={() => {
-            setThreadError(activeThread.id, null);
-            dismissThreadErrorBannerForSession(threadErrorBannerKey);
-            setThreadErrorBannerDismissTick((tick) => tick + 1);
-          }}
-        />
         <ThreadContinuationBanner links={threadContinuationLinks} />
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
@@ -8639,8 +8789,8 @@ export default function ChatView(props: ChatViewProps) {
                 </div>
               </div>
             ) : null}
-            {/* Provider status overlays the timeline without changing its content height. */}
-            <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
+            {/* Banners overlay the timeline without changing its content height. */}
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col">
               <ProviderStatusBanner
                 status={visibleProviderStatus}
                 onDismiss={() => setDismissedProviderStatusBannerKey(providerStatusBannerKey)}
@@ -8649,6 +8799,14 @@ export default function ChatView(props: ChatViewProps) {
                 status={activeThread.rollbackStatus}
                 recoveryPending={rollbackRecoveryPending}
                 onRecover={onRecoverRollback}
+              />
+              <ThreadErrorBanner
+                error={visibleThreadError}
+                onDismiss={() => {
+                  setThreadError(activeThread.id, null);
+                  dismissThreadErrorBannerForSession(threadErrorBannerKey);
+                  setThreadErrorBannerDismissTick((tick) => tick + 1);
+                }}
               />
             </div>
             {/* Messages Wrapper */}
@@ -8696,9 +8854,11 @@ export default function ChatView(props: ChatViewProps) {
                 }
                 anchorMessageId={timelineAnchorMessageId}
                 onAnchorReady={onTimelineAnchorReady}
-                contentInsetEndAdjustment={composerOverlayHeight}
+                contentInsetEndAdjustment={composerTimelineInset}
                 liveFollowEnabled={timelineLiveFollowEnabled}
                 onIsAtEndChange={onIsAtEndChange}
+                onContentOverflowChange={setTimelineOverflows}
+                onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
                 onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
                 topFadeEnabled={!hasTimelineTopBanner}
@@ -8713,7 +8873,11 @@ export default function ChatView(props: ChatViewProps) {
                 >
                   <Button
                     aria-label="Scroll to end"
-                    onClick={() => scrollToEnd(true)}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      composerRef.current?.restoreAfterTimelineReachedEnd();
+                      scrollToEnd(true);
+                    }}
                     className="pointer-events-auto gap-1.5 rounded-full px-3 text-muted-foreground hover:text-foreground"
                     size="xs"
                     variant="glass"
@@ -8739,7 +8903,7 @@ export default function ChatView(props: ChatViewProps) {
                 ref={attachDraftHeroTransitionGroupRef}
                 className="w-full ps-[calc(env(safe-area-inset-left)+0.75rem)] pe-[calc(env(safe-area-inset-right)+0.75rem)] sm:ps-[calc(env(safe-area-inset-left)+1.25rem)] sm:pe-[calc(env(safe-area-inset-right)+1.25rem)]"
               >
-                <div className="group/composer-stack pointer-events-auto relative z-10">
+                <div className="group/composer-stack pointer-events-auto relative z-10 mx-auto w-full max-w-3xl">
                   {isDraftHeroState ? (
                     <div className="absolute inset-x-0 bottom-full z-0">
                       <div
@@ -8860,6 +9024,16 @@ export default function ChatView(props: ChatViewProps) {
                             keybindings={keybindings}
                             terminalOpen={Boolean(terminalUiState.terminalOpen)}
                             gitCwd={gitCwd}
+                            restingControlsHost={restingComposerControlsHost}
+                            restingControlsHaveLeadingContext={
+                              isGitRepo || showComposerEnvironmentIndicator
+                            }
+                            onRestingControlsVisibilityChange={setRestingComposerControlsVisible}
+                            getTimelineScrollableNode={getTimelineScrollableNode}
+                            isTimelineAtLogicalEnd={isTimelineAtLogicalEnd}
+                            timelineOverflows={timelineOverflows}
+                            onComposerOverlayHeightChange={publishComposerOverlayHeight}
+                            onRestingChange={onComposerRestingChange}
                             promptRef={promptRef}
                             composerImagesRef={composerImagesRef}
                             composerFilesRef={composerFilesRef}
@@ -8930,7 +9104,7 @@ export default function ChatView(props: ChatViewProps) {
                           data-terminal-open={terminalUiState.terminalOpen ? "true" : undefined}
                           className="relative z-0"
                         >
-                          {showComposerContextStrip && (
+                          {mountComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
                                 environmentId={activeThread.environmentId}
@@ -8960,6 +9134,8 @@ export default function ChatView(props: ChatViewProps) {
                                 usageStaleAfterMs={composerUsageStaleAfterMs}
                                 timestampFormat={settings.timestampFormat}
                                 availableEnvironments={logicalProjectEnvironments}
+                                composerControlsHostRef={setRestingComposerControlsHost}
+                                contextStripVisible={showComposerContextStrip}
                               />
                             </div>
                           )}

@@ -42,7 +42,11 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { LegendList, type LegendListRef } from "@legendapp/list/react";
+import {
+  LegendList,
+  type LegendListRef,
+  type MaintainScrollAtEndOptions,
+} from "@legendapp/list/react";
 import { FileDiff } from "@pierre/diffs/react";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
 import {
@@ -107,7 +111,7 @@ import { ChangedFilesCard } from "./ChangedFilesTree";
 import { shouldAutoExpandChangedFiles } from "./changedFilesPresentation";
 import {
   CHAT_TIMELINE_ANCHOR_OFFSET,
-  keepTimelineEndVisibleAfterOverlayGrowth,
+  timelineContentOverflowsViewport,
 } from "./timelineScrollAnchoring";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
@@ -204,7 +208,7 @@ interface TimelineRowSharedState {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
-  onToggleWorkEntry: (anchorKey: string) => void;
+  onToggleWorkEntry: (anchorKey: string, collapsed: boolean) => void;
   workGroupViewState: WorkGroupViewState;
   agentPanelModel: AgentPanelModel;
   onOpenAgents: () => void;
@@ -230,7 +234,7 @@ interface WorkGroupViewState {
 
 const WorkGroupViewCtx = createContext<{
   state: WorkGroupViewState;
-  onToggleEntry: () => void;
+  onToggleEntry: (collapsed: boolean) => void;
 } | null>(null);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = (
@@ -263,16 +267,27 @@ function TimelineLoadEarlierHeader({
     </div>
   );
 }
-const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
+function TimelineListFooter({ composerInset }: { readonly composerInset: number }) {
+  return (
+    <div aria-hidden>
+      <div style={{ height: composerInset }} />
+      <div className="h-3 sm:h-4" />
+    </div>
+  );
+}
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 const TIMELINE_MAINTAIN_SCROLL_AT_END = {
   animated: false,
   on: {
     dataChange: true,
+    // Composer inset changes must not move already-visible messages. New
+    // rows and row growth still keep live-follow pinned through the other
+    // triggers below.
+    footerLayout: false,
     itemLayout: true,
     layout: true,
   },
-} as const;
+} as const satisfies MaintainScrollAtEndOptions;
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -326,6 +341,12 @@ interface MessagesTimelineProps {
    */
   liveFollowEnabled: boolean;
   onIsAtEndChange: (isAtEnd: boolean) => void;
+  /**
+   * Whether the real rows extend past the viewport above the composer.
+   * Reported after scrolls, row size changes, and viewport resizes.
+   */
+  onContentOverflowChange?: (overflows: boolean) => void;
+  onToolOutputCollapsedAtEnd?: () => void;
   onManualNavigation: () => void;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
@@ -376,6 +397,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   contentInsetEndAdjustment,
   liveFollowEnabled,
   onIsAtEndChange,
+  onContentOverflowChange,
+  onToolOutputCollapsedAtEnd,
   onManualNavigation,
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
@@ -399,8 +422,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const disclosureAnchorKeyRef = useRef<string | null>(null);
   const disclosureSettleFrameRef = useRef<number | null>(null);
   const disclosureSettleSecondFrameRef = useRef<number | null>(null);
-  const previousContentInsetEndAdjustmentRef = useRef(contentInsetEndAdjustment);
-
   useEffect(() => {
     return () => {
       if (disclosureSettleFrameRef.current !== null) {
@@ -412,24 +433,32 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     };
   }, []);
 
-  const suspendEndScrollMaintenanceForDisclosure = useCallback((anchorKey: string) => {
-    disclosureAnchorKeyRef.current = anchorKey;
-    setDisclosureToggleSettling(true);
-    if (disclosureSettleFrameRef.current !== null) {
-      cancelAnimationFrame(disclosureSettleFrameRef.current);
-    }
-    if (disclosureSettleSecondFrameRef.current !== null) {
-      cancelAnimationFrame(disclosureSettleSecondFrameRef.current);
-    }
-    disclosureSettleFrameRef.current = requestAnimationFrame(() => {
-      disclosureSettleSecondFrameRef.current = requestAnimationFrame(() => {
-        disclosureAnchorKeyRef.current = null;
-        setDisclosureToggleSettling(false);
-        disclosureSettleFrameRef.current = null;
-        disclosureSettleSecondFrameRef.current = null;
+  const suspendEndScrollMaintenanceForDisclosure = useCallback(
+    (anchorKey: string, collapsed = false) => {
+      disclosureAnchorKeyRef.current = anchorKey;
+      setDisclosureToggleSettling(true);
+      if (disclosureSettleFrameRef.current !== null) {
+        cancelAnimationFrame(disclosureSettleFrameRef.current);
+      }
+      if (disclosureSettleSecondFrameRef.current !== null) {
+        cancelAnimationFrame(disclosureSettleSecondFrameRef.current);
+      }
+      disclosureSettleFrameRef.current = requestAnimationFrame(() => {
+        disclosureSettleSecondFrameRef.current = requestAnimationFrame(() => {
+          disclosureAnchorKeyRef.current = null;
+          setDisclosureToggleSettling(false);
+          disclosureSettleFrameRef.current = null;
+          disclosureSettleSecondFrameRef.current = null;
+          // Wait for row measurement and the disclosure click's blur check.
+          // Closing output can reveal the end without a scroll event.
+          if (collapsed && resolveTimelineIsAtEnd(listRef.current?.getState()) === true) {
+            onToolOutputCollapsedAtEnd?.();
+          }
+        });
       });
-    });
-  }, []);
+    },
+    [listRef, onToolOutputCollapsedAtEnd],
+  );
 
   const shouldRestoreVisibleContentPosition = useCallback((row: MessagesTimelineRow) => {
     const disclosureAnchorKey = disclosureAnchorKeyRef.current;
@@ -462,7 +491,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
   const onToggleWorkGroup = useCallback(
     (groupId: string, anchorKey: string) => {
-      suspendEndScrollMaintenanceForDisclosure(anchorKey);
+      suspendEndScrollMaintenanceForDisclosure(anchorKey, expandedWorkGroupIds.has(groupId));
       setExpandedWorkGroupIds((existing) => {
         const next = new Set(existing);
         if (next.has(groupId)) {
@@ -473,7 +502,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         return next;
       });
     },
-    [suspendEndScrollMaintenanceForDisclosure],
+    [expandedWorkGroupIds, suspendEndScrollMaintenanceForDisclosure],
   );
 
   // An in-session interrupt leaves its turn expanded so the user keeps their
@@ -567,15 +596,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onExpandTurn: expandCitedTurn,
     onManualNavigation,
   });
-  useLayoutEffect(() => {
-    keepTimelineEndVisibleAfterOverlayGrowth({
-      timeline: listRef.current,
-      previousOverlayHeight: previousContentInsetEndAdjustmentRef.current,
-      overlayHeight: contentInsetEndAdjustment,
-      followingEnd: liveFollowEnabled && anchorMessageId === null && !citationPositioning,
-    });
-    previousContentInsetEndAdjustmentRef.current = contentInsetEndAdjustment;
-  }, [anchorMessageId, citationPositioning, contentInsetEndAdjustment, listRef, liveFollowEnabled]);
   const [minimapHasPersistentGutter, setMinimapHasPersistentGutter] = useState(false);
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
   const handleAnchorReady = useCallback(
@@ -595,6 +615,46 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     );
     return config ? { ...config, onReady: handleAnchorReady } : undefined;
   }, [anchorMessageId, handleAnchorReady, rows]);
+  const timelineListFooter = useMemo(
+    () => <TimelineListFooter composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment} />,
+    [anchoredEndSpace, contentInsetEndAdjustment],
+  );
+
+  const measureContentOverflow = useCallback(
+    () =>
+      timelineContentOverflowsViewport(listRef.current?.getState?.(), {
+        composerInset: contentInsetEndAdjustment,
+        anchorOffset: CHAT_TIMELINE_ANCHOR_OFFSET,
+      }),
+    [contentInsetEndAdjustment, listRef],
+  );
+  // LegendList lays rows out from layout effects, so a read on the next frame
+  // sees the settled positions. One frame is shared across bursts of size
+  // changes.
+  const contentOverflowFrameRef = useRef<number | null>(null);
+  const cancelContentOverflowFrame = useCallback(() => {
+    if (contentOverflowFrameRef.current !== null) {
+      cancelAnimationFrame(contentOverflowFrameRef.current);
+      contentOverflowFrameRef.current = null;
+    }
+  }, []);
+  const reportContentOverflow = useCallback(() => {
+    if (!onContentOverflowChange || contentOverflowFrameRef.current !== null) return;
+    contentOverflowFrameRef.current = requestAnimationFrame(() => {
+      contentOverflowFrameRef.current = null;
+      onContentOverflowChange(measureContentOverflow());
+    });
+  }, [measureContentOverflow, onContentOverflowChange]);
+  useEffect(() => cancelContentOverflowFrame, [cancelContentOverflowFrame]);
+  // The list's own layout effects have already run here, so estimated row
+  // positions are in place. Reporting before the first paint lets a thread
+  // open in its final composer layout instead of correcting it a frame later.
+  // A frame scheduled with the previous inset would overwrite this read, so
+  // it is dropped first.
+  useLayoutEffect(() => {
+    cancelContentOverflowFrame();
+    onContentOverflowChange?.(measureContentOverflow());
+  }, [cancelContentOverflowFrame, measureContentOverflow, onContentOverflowChange, rows.length]);
 
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();
@@ -602,6 +662,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (isAtEnd !== undefined && !citationPositioning) {
       onIsAtEndChange(isAtEnd);
     }
+    reportContentOverflow();
     if (!state || minimapItems.length === 0) {
       return;
     }
@@ -624,7 +685,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
       strip.dataset.inView = inView ? "true" : "false";
     }
-  }, [citationPositioning, listRef, minimapItems, minimapStripMap, onIsAtEndChange]);
+  }, [
+    citationPositioning,
+    listRef,
+    minimapItems,
+    minimapStripMap,
+    onIsAtEndChange,
+    reportContentOverflow,
+  ]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(handleScroll);
@@ -643,6 +711,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         current === nextHasPersistentGutter ? current : nextHasPersistentGutter,
       );
       setMinimapHitStripWidth(resolveTimelineMinimapHitStripWidth(viewportWidth));
+      reportContentOverflow();
     };
 
     const frame = requestAnimationFrame(measure);
@@ -654,7 +723,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [timelineViewportElement, rows.length]);
+  }, [timelineViewportElement, rows.length, reportContentOverflow]);
 
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
@@ -779,7 +848,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             {...(citationAlwaysRender ? { alwaysRender: citationAlwaysRender } : {})}
             onLoad={onCitationListLoad}
             {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
-            contentInsetEndAdjustment={contentInsetEndAdjustment}
+            contentInsetEndAdjustment={anchoredEndSpace ? contentInsetEndAdjustment : 0}
             maintainScrollAtEnd={
               citationPositioning ||
               anchoredEndSpace ||
@@ -791,7 +860,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             maintainVisibleContentPosition={
               citationPositioning ? false : maintainVisibleContentPosition
             }
+            maintainScrollAtEndThreshold={1}
             onScroll={handleScroll}
+            onItemSizeChanged={reportContentOverflow}
             className={cn(
               "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
               topFadeEnabled && "topbar-scroll-fade",
@@ -809,7 +880,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 TIMELINE_LIST_HEADER
               )
             }
-            ListFooterComponent={TIMELINE_LIST_FOOTER}
+            ListFooterComponent={timelineListFooter}
           />
           <TimelineMinimap
             items={minimapItems}
@@ -1670,7 +1741,11 @@ const WorkGroupSection = memo(function WorkGroupSection({
   isExpandedToolGroup: boolean;
   displayLabel?: string | undefined;
 }) {
-  const { workspaceRoot, routeThreadKey } = use(TimelineRowCtx);
+  const { workspaceRoot, routeThreadKey, onToggleWorkEntry } = use(TimelineRowCtx);
+  const onToggleStandaloneEntry = useCallback(
+    (collapsed: boolean) => onToggleWorkEntry(anchorKey, collapsed),
+    [anchorKey, onToggleWorkEntry],
+  );
   const nonEmptyEntries = useMemo(
     () => groupedEntries.filter((entry) => workEntryIsVisibleInGroup(entry, isExpandedToolGroup)),
     [groupedEntries, isExpandedToolGroup],
@@ -1709,6 +1784,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
             workspaceRoot={workspaceRoot}
             isExpandedToolGroupEntry={false}
             displayLabel={displayLabel}
+            onToggleEntry={onToggleStandaloneEntry}
           />
         ))}
       </div>
@@ -1745,7 +1821,10 @@ function ExpandedWorkGroupEntries({
   }
 
   const groupView = useMemo(
-    () => ({ state: viewState, onToggleEntry: () => onToggleWorkEntry(anchorKey) }),
+    () => ({
+      state: viewState,
+      onToggleEntry: (collapsed: boolean) => onToggleWorkEntry(anchorKey, collapsed),
+    }),
     [anchorKey, onToggleWorkEntry, viewState],
   );
   const updateScrollFades = useCallback(() => {
@@ -2816,6 +2895,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workspaceRoot: string | undefined;
   isExpandedToolGroupEntry: boolean;
   displayLabel?: string | undefined;
+  onToggleEntry?: ((collapsed: boolean) => void) | undefined;
 }) {
   const { workEntry, workspaceRoot, isExpandedToolGroupEntry, displayLabel } = props;
   // Before any hooks: spawn CTA rows render their own component.
@@ -2831,6 +2911,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       workspaceRoot={workspaceRoot}
       isExpandedToolGroupEntry={isExpandedToolGroupEntry}
       displayLabel={displayLabel}
+      onToggleEntry={props.onToggleEntry}
     />
   );
 });
@@ -2840,6 +2921,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   workspaceRoot: string | undefined;
   isExpandedToolGroupEntry: boolean;
   displayLabel?: string | undefined;
+  onToggleEntry?: ((collapsed: boolean) => void) | undefined;
 }) {
   const { workEntry, workspaceRoot, isExpandedToolGroupEntry, displayLabel } = props;
   const activity = use(TimelineRowActivityCtx);
@@ -2851,9 +2933,11 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   const toggleExpanded = () => {
     const next = !expanded;
     if (groupView) {
-      groupView.onToggleEntry();
+      groupView.onToggleEntry(!next);
       if (next) groupView.state.expandedEntries.add(workEntry.id);
       else groupView.state.expandedEntries.delete(workEntry.id);
+    } else {
+      props.onToggleEntry?.(!next);
     }
     setExpanded(next);
   };

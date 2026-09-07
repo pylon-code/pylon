@@ -29,6 +29,8 @@ Historical groups are indexed in the linked archive. This file migration changes
 
 | Pull-request browsing, cached reads and opt-in panel behavior / `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f` | Full 16-source disposition list in #401; 15 adopted, #9877 deferred | Final PR state icons, authored/readiness sorting, seeded detail, keyboard pickers, link previews, profile links, revision-aware caches, project-filter deduplication and manual panel priority. Preserve Pylon server-projected PR tracking and quota reservation/refund semantics. Copy priority remains DEF-17. | [PR workflow #401](https://github.com/pylon-code/pylon/pull/401); 768 focused tests, affected package types, scoped lint and integrated web evidence. |
 
+| Composer interaction, layout and notice follow-ups / `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f` | Full 27-source disposition list in #402 | Final scroll-only resting behavior, readable multiline drafts, stable control measurements, last-message reservation, narrow-width controls and opt-in context meter. Preserve Pylon provider locks, quick questions, session/harness/goal actions, quota placement, upload handling and diagnostic errors. Temporary blur-selection holding in #9499 is superseded by #10437; no unresolved scope in this group. | [Composer #402](https://github.com/pylon-code/pylon/pull/402); 724 focused tests, six affected package typechecks, scoped lint, integrated web screenshots and motion evidence. |
+
 ## Deferred register
 
 Open decisions retain their original dates and revisit conditions. Check triggers once per integration cycle using the skill; detailed history is in the archive.

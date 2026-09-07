@@ -1,3 +1,4 @@
+import { composerFloatingLayerProps } from "./composerEventScope";
 import type { SessionCompactionUpdatedPayload } from "@t3tools/contracts";
 import { useId } from "react";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
@@ -214,6 +215,7 @@ export function ContextWindowMeter(props: {
         }
       />
       <PopoverPopup
+        {...composerFloatingLayerProps}
         tooltipStyle
         side="top"
         align="end"
