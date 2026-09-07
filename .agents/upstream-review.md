@@ -15,6 +15,25 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-07 — test-only follow-ups and verified Nightly (partial range)
+
+Under the maintainer's standing approval, six further sources are reconciled without a code port. Against bounded upstream head `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f`, this leaves **287 remaining sources**, **89 adopted sources across 47 adoption PRs**, and **26 reconciled without a port**. The twelve-source tooling PR #393 and eight sources in prepared client PRs #383, #391 and #392 remain excluded from adoption counts. The full review cursor is unchanged.
+
+| Source                                              | Decision          | Current Pylon evidence and dependency boundary                                                                                                                                                                                                                                   |
+| --------------------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `8339508f5c244a63a845004393d7d9e701152d6e` (#9172)  | Already covered   | Pylon already asserts that a failed trailing tool removes the work-live row and restores the shared thinking row in MessagesTimeline.logic.test.ts. The existing lifecycle test covers the corrected expectation; no production code changes in the upstream patch.              |
+| `11cb88efc54c5690e25348ce5c889722a3615089` (#9997)  | No current target | previewProfileName and its wording-only test are absent from Pylon. Their parent browser-profile feature 134d51096ea0d00a53a499e8f0c87e31fafb0006 (#7254) remains a candidate; if adopted, use its cleaned-up private helper.                                                    |
+| `3e544f8cda371dc565c806508a9ab38b80c96ff7` (#10005) | No current target | Pylon has neither faviconUrlForPage nor explicitFaviconUrl nor the toolActivityFaviconUrl tests rewritten here. Parent native/browser work-log icons 6cf0c6ea55d281f65c80502ec1871b0adf472025 (#9093) remains a candidate; preserve public-API test coverage when evaluating it. |
+| `31fb21009024e9476bda4705355d55491d7fd2ef` (#10028) | No current target | manifestUpdatedAtMs and its preliminary test assertion are absent. Parent manifest freshness change 1e051873094c0c75cd35fef89c90461c22cce76b (#9397) remains a candidate; use its private parser if adopted. Existing Pylon cache tests remain intact.                           |
+| `160e337a5c521bcaae94b386d22226f32242fdd0` (#10059) | No current target | RuntimeInstructions.test.ts and the repeated harness-name cases do not exist in Pylon. Parent runtime-instruction/image grouping work 61a91b6ef1bd45424169c6650362b358d49bbe34 (#9597) remains a candidate; its test-only deletion is not a missing runtime fix.                 |
+| `4f1dc55cabe6cb4a89c2180d6b0e270584bb8883` (#9996)  | No current target | ComposerControl.test.tsx is absent; Pylon has none of the deleted static Tailwind/SVG assertions. Parent resting-composer feature 5b8445b7a777ab1070aa97b062b1618971073a96 (#7855) remains a candidate and must preserve Pylon composer decisions.                               |
+
+Complete patches, upstream PR descriptions and relevant review context were read. Each absent helper or suite was checked against current source, and its introducing upstream commit remains in the candidate inventory. These dispositions resolve only the cleanup commits; they neither adopt nor reject their parent features. The existing failed-tool timeline assertion passed in the focused web verification for #393, whose runtime timeline behavior is unchanged. No tests or product code are removed by this ledger update.
+
+The deferred and watched items retain the same bounded-head assessment recorded earlier. Native GitHub evidence uploads for the three verified client PRs remain blocked by the locked Mac; their code and client verification are complete.
+
+Nightly `0.0.33-nightly.20260907.135` is verified from source `19c30d2d53868f663186b3b31123ffdcb06047df` in successful release run `34109926089`. All four platform builds, quality checks, publication of 15 Pylon assets, and hosted web deployment passed. This Nightly contains all **89 adopted sources** recorded above. No installed-app update is claimed.
+
 ## 2026-09-07 — mobile typography and compatibility cleanup (partial range)
 
 The maintainer's standing approval covers four more sources across three merged PRs. Against the bounded upstream head `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f`, the active total is **89 adopted sources across 47 adoption PRs**, with **293 sources remaining** and **20 reconciled without a port**. Remaining sources include dependencies and possible intentional skips. The full review cursor remains unchanged.
