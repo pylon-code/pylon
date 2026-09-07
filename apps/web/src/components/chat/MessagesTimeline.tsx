@@ -2637,29 +2637,40 @@ function buildToolCallExpandedBody(
   workEntry: TimelineWorkEntry,
   workspaceRoot: string | undefined,
   visibleLabel: string,
+  viewedImagePath: string | null,
 ): string | null {
   const blocks: string[] = [];
   const seen = new Set([visibleLabel.trim()]);
-  const addBlock = (value: string | null | undefined) => {
+  const addBlock = (value: string | null | undefined, retainMatchingOutput = false) => {
     const text = value?.trim();
-    // Command output can legitimately equal the command; retain both records.
-    if (!text || (!workEntry.command && seen.has(text))) return;
+    if (!text || (!retainMatchingOutput && seen.has(text))) return;
     seen.add(text);
     blocks.push(text);
   };
   if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
     addBlock(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
   }
+  // A distinct shell wrapper is useful even when the visible command matches the heading.
   addBlock(workEntryRawCommand(workEntry) ?? workEntry.command);
-  addBlock(workEntry.detail);
-  const changedFiles = workEntry.changedFiles ?? [];
-  if (changedFiles.length > 0) {
-    addBlock(
-      changedFiles
-        .map((filePath) => formatWorkspaceRelativePath(filePath, workspaceRoot))
-        .join("\n"),
-    );
+  const detail = workEntry.detail?.trim();
+  if (detail !== viewedImagePath?.trim()) {
+    addBlock(detail, Boolean(workEntry.command));
   }
+  const imagePaths = new Set(
+    viewedImagePath
+      ? [viewedImagePath.trim(), formatWorkspaceRelativePath(viewedImagePath, workspaceRoot)]
+      : [],
+  );
+  const changedFiles = (workEntry.changedFiles ?? []).flatMap((path) => {
+    const formatted = formatWorkspaceRelativePath(path, workspaceRoot);
+    return imagePaths.has(path) ||
+      imagePaths.has(formatted) ||
+      path.trim() === detail ||
+      formatted === detail
+      ? []
+      : [formatted];
+  });
+  addBlock([...new Set(changedFiles)].join("\n"));
   return blocks.length > 0 ? blocks.join("\n\n") : null;
 }
 
@@ -2845,28 +2856,9 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   const iconConfig = workToneIcon(workEntry.tone);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
   const showFailedIndicator = workEntryDisplayIndicatesToolFailure(workEntry);
-  const toolPresentation = resolveWorkEntryToolPresentation(workEntry);
   const entryIconName = showWarningIndicator ? "circle-alert" : workEntryIconName(workEntry);
   const previewText = displayLabel ?? workEntryDisplayLabel(workEntry, workspaceRoot);
-  const displayText =
-    !toolPresentation && expanded && workEntry.command?.trim() ? "Command" : previewText;
   const viewedImagePath = workEntryViewedImagePath(workEntry);
-  const canExpand =
-    (showFailedIndicator && previewText.trim().length > 0) ||
-    (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) ||
-    Boolean(
-      workEntryRawCommand(workEntry) ||
-      workEntry.command?.trim() ||
-      (workEntry.detail?.trim() && workEntry.detail.trim() !== previewText.trim()) ||
-      workEntry.changedFiles?.some(
-        (path) => formatWorkspaceRelativePath(path, workspaceRoot) !== previewText.trim(),
-      ) ||
-      viewedImagePath,
-    );
-  const expandedBody = expanded
-    ? (buildToolCallExpandedBody(workEntry, workspaceRoot, displayText) ??
-      (showFailedIndicator || viewedImagePath ? previewText : null))
-    : null;
   const viewedImage =
     viewedImagePath && threadRef
       ? resolveViewedImageAsset(viewedImagePath, {
@@ -2874,6 +2866,28 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
           workspaceRoot,
         })
       : null;
+  const commandMatchesVisibleLabel = workEntry.command?.trim() === previewText.trim();
+  const canExpand =
+    (showFailedIndicator && previewText.trim().length > 0) ||
+    (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) ||
+    Boolean(
+      workEntryRawCommand(workEntry) ||
+      (!commandMatchesVisibleLabel && workEntry.command?.trim()) ||
+      (workEntry.detail?.trim() &&
+        (workEntry.command || workEntry.detail.trim() !== previewText.trim())) ||
+      workEntry.changedFiles?.some(
+        (path) => formatWorkspaceRelativePath(path, workspaceRoot) !== previewText.trim(),
+      ) ||
+      viewedImagePath,
+    );
+  const expandedBody = expanded
+    ? buildToolCallExpandedBody(
+        workEntry,
+        workspaceRoot,
+        previewText,
+        viewedImage ? viewedImagePath : null,
+      )
+    : null;
   const missingResponse = workLogEntryIsMissingResponse(workEntry);
   const turnSettled = !activity.activeTurnInProgress;
   const showNeutralIndicator = !turnSettled && workEntryIndicatesToolNeutralStatus(workEntry);
@@ -2945,7 +2959,19 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <div className="min-w-0 flex-1 overflow-hidden">
             <p className="flex min-w-0 w-full items-baseline gap-1.5 text-sm leading-relaxed">
-              <span className={cn("min-w-0 flex-1 truncate", headingClass)}>{displayText}</span>
+              <span
+                className={cn(
+                  "min-w-0 flex-1",
+                  expanded || (commandMatchesVisibleLabel && !canExpand)
+                    ? "whitespace-pre-wrap break-words select-text"
+                    : "truncate",
+                  headingClass,
+                )}
+                onClick={expanded ? stopRowToggle : undefined}
+                onPointerDown={expanded ? stopRowToggle : undefined}
+              >
+                {previewText}
+              </span>
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-px text-icon-muted">
@@ -3014,9 +3040,9 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
           </div>
         </div>
       </div>
-      {expanded && canExpand && expandedBody ? (
+      {expanded && canExpand && (expandedBody || viewedImage) ? (
         <div
-          className="mt-1 ms-7 cursor-default border-s border-border/45 ps-3 pt-0.5"
+          className="mt-1 ms-7 cursor-default rounded-md bg-muted/40 px-3 py-2"
           onClick={stopRowToggle}
           onPointerDown={stopRowToggle}
         >
@@ -3033,7 +3059,9 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
               />
             </div>
           ) : null}
-          <pre className={toolCallExpandedBodyClassName}>{expandedBody}</pre>
+          {expandedBody ? (
+            <pre className={toolCallExpandedBodyClassName}>{expandedBody}</pre>
+          ) : null}
         </div>
       ) : null}
     </div>
