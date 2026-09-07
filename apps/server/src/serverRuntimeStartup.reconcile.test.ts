@@ -37,6 +37,7 @@ const makeThread = (
   activeTurnId: TurnId | null = null,
   archivedAt: string | null = null,
   deletedAt: string | null = null,
+  providerName: ProviderDriverKind = ProviderDriverKind.make("codex"),
 ) => ({
   id: ThreadId.make(id),
   archivedAt,
@@ -45,7 +46,7 @@ const makeThread = (
   session: {
     threadId: ThreadId.make(id),
     status,
-    providerName: "codex" as const,
+    providerName,
     providerInstanceId,
     runtimeMode: "full-access" as const,
     activeTurnId,
@@ -149,13 +150,21 @@ it.effect("marks active running sessions that have persisted resume state", () =
     "running",
     TurnId.make("turn-mark-missing-resume-state"),
   );
+  const prime = makeThread(
+    "thread-mark-prime",
+    "running",
+    TurnId.make("turn-prime"),
+    null,
+    null,
+    ProviderDriverKind.make("primeAgent"),
+  );
   const bindingReads: ThreadId[] = [];
   const upserts: ProviderSessionDirectory.ProviderRuntimeBinding[] = [];
 
   return ServerRuntimeStartup.markRunningProviderSessionsForContinuation.pipe(
     Effect.provideService(
       ProjectionSnapshotQuery.ProjectionSnapshotQuery,
-      queryWithThreads([active, archived, ready, missingResumeState]),
+      queryWithThreads([active, archived, ready, missingResumeState, prime]),
     ),
     Effect.provideService(ProviderSessionDirectory.ProviderSessionDirectory, {
       getBinding: (threadId) =>
@@ -163,21 +172,24 @@ it.effect("marks active running sessions that have persisted resume state", () =
           Effect.as(
             Option.some({
               threadId,
-              provider: ProviderDriverKind.make("codex"),
+              provider: ProviderDriverKind.make(threadId === prime.id ? "primeAgent" : "codex"),
               providerInstanceId,
-              ...(threadId === active.id ? { resumeCursor: { threadId } } : {}),
+              ...(threadId === active.id || threadId === prime.id
+                ? { resumeCursor: { threadId } }
+                : {}),
               runtimePayload: { activeTurnId: "turn-mark-active" },
             }),
           ),
         ),
       upsert: (binding) => Effect.sync(() => upserts.push(binding)),
+      removeExact: () => Effect.die("unused"),
       getProvider: () => Effect.die("unused"),
       listThreadIds: () => Effect.die("unused"),
       listBindings: () => Effect.succeed([]),
     }),
     Effect.tap((marked) =>
       Effect.sync(() => {
-        assert.deepStrictEqual(bindingReads, [active.id, missingResumeState.id]);
+        assert.deepStrictEqual(bindingReads, [active.id, missingResumeState.id, prime.id]);
         assert.deepStrictEqual(marked, [active.id]);
         assert.deepStrictEqual(upserts[0]?.runtimePayload, {
           activeTurnId: "turn-mark-active",
@@ -299,6 +311,7 @@ it.effect.each(
                 firstMarkerCleared ? Deferred.succeed(continuationCleared, undefined) : Effect.void,
               ),
             ),
+          removeExact: () => Effect.die("unused"),
           getProvider: () => Effect.die("unused"),
           listThreadIds: () => Effect.die("unused"),
           listBindings: () => Effect.succeed([]),
@@ -431,6 +444,7 @@ it.effect("does not continue archived or deleted marked sessions", () => {
         );
       },
       upsert: () => Effect.void,
+      removeExact: () => Effect.die("unused"),
       getProvider: () => Effect.die("unused"),
       listThreadIds: () => Effect.die("unused"),
       listBindings: () => Effect.succeed([]),
@@ -486,6 +500,7 @@ it.effect("retries continuation preparation before settling a persistent failure
           }),
         ),
       upsert: () => Effect.void,
+      removeExact: () => Effect.die("unused"),
       getProvider: () => Effect.die("unused"),
       listThreadIds: () => Effect.die("unused"),
       listBindings: () => Effect.succeed([]),
@@ -747,7 +762,7 @@ it.effect("runs restart adoption before taking the orphan inventory", () => {
       streamDomainEvents: Stream.empty,
       latestSequence: Effect.succeed(0),
     }),
-    Effect.provide(NodeServices.layer),
+    Effect.provide(Layer.mergeAll(NodeServices.layer, ServerSettings.layerTest())),
     Effect.tap(() => Effect.sync(() => assert.deepStrictEqual(order, ["recover", "inventory"]))),
   );
 });
@@ -797,6 +812,8 @@ for (const scenario of [
   "marked without cursor",
   "marked stopped projection",
   "marked superseded turn",
+  "marked prime daemon",
+  "prime daemon",
 ] as const) {
   it.effect(`does not recover an interrupted session with ${scenario}`, () => {
     const turnId = TurnId.make("turn-excluded-recovery");
@@ -810,6 +827,9 @@ for (const scenario of [
             ? "starting"
             : "running",
       scenario === "marked superseded turn" ? null : turnId,
+      null,
+      null,
+      ProviderDriverKind.make(scenario.includes("prime") ? "primeAgent" : "codex"),
     );
     const dispatched: OrchestrationCommand[] = [];
     const upserts: ProviderSessionDirectory.ProviderRuntimeBinding[] = [];
@@ -821,7 +841,7 @@ for (const scenario of [
           Effect.succeed(
             Option.some({
               threadId: thread.id,
-              provider: ProviderDriverKind.make("codex"),
+              provider: thread.session.providerName,
               providerInstanceId,
               status: scenario === "stopped binding" ? "stopped" : "running",
               ...(scenario.includes("cursor") ? {} : { resumeCursor: { threadId: thread.id } }),
@@ -835,6 +855,7 @@ for (const scenario of [
           Effect.sync(() => {
             upserts.push(binding);
           }),
+        removeExact: () => Effect.die("unused"),
         getProvider: () => Effect.die("unused"),
         listThreadIds: () => Effect.die("unused"),
         listBindings: () => Effect.succeed([]),
@@ -908,6 +929,7 @@ for (const preparedStatus of [
               if (binding.status !== "starting" || sends.length === 0) return;
               yield* Deferred.succeed(cleared, undefined);
             }),
+          removeExact: () => Effect.die("unused"),
           getProvider: () => Effect.die("unused"),
           listThreadIds: () => Effect.die("unused"),
           listBindings: () =>
@@ -1013,6 +1035,7 @@ it.effect("settles failed opt-in recovery without retrying the provider turn", (
           Effect.sync(() => {
             binding = next;
           }),
+        removeExact: () => Effect.die("unused"),
         getProvider: () => Effect.die("unused"),
         listThreadIds: () => Effect.die("unused"),
         listBindings: () => Effect.succeed([]),

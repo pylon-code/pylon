@@ -544,7 +544,7 @@ function GeneralSettingsSection() {
   return (
     <SettingsSection title="General">
       <SettingsRow icon="folder" label="Project Grouping" target="SettingsProjectGrouping" />
-      <AutoSettleSettingsRows />
+      <SharedThreadSettingsRows />
       <SettingsRow icon="chart.bar.xaxis" label="Usage" target="SettingsUsage" />
     </SettingsSection>
   );
@@ -553,12 +553,12 @@ function GeneralSettingsSection() {
 const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays ?? 3;
 
 /**
- * Auto-settlement is a user preference that every server has to hold. Mobile
+ * Shared thread preferences are persisted by each capable server. Mobile
  * has no primary environment, so the first connected environment that
  * supports it is the reference value. Edits fan out to every connected
  * environment, and a mismatch row lets the user push the reference out.
  */
-function AutoSettleSettingsRows() {
+function SharedThreadSettingsRows() {
   const { environments } = useEnvironments();
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
     label: "server settings update",
@@ -570,7 +570,13 @@ function AutoSettleSettingsRows() {
       environment.connection.phase === "connected" &&
       environment.serverConfig?.environment.capabilities.threadAutoSettlement === true,
   );
-  const reference = connected[0] ?? null;
+  const reference =
+    connected.find(
+      (environment) =>
+        environment.serverConfig?.environment.capabilities.threadRestartContinuation === true,
+    ) ??
+    connected[0] ??
+    null;
   const referenceSettings = reference?.serverConfig?.settings ?? null;
 
   const [daysDraft, setDaysDraft] = useState<string | null>(null);
@@ -581,7 +587,16 @@ function AutoSettleSettingsRows() {
 
   const writeToAll = (patch: ServerSettingsPatch) => {
     for (const environment of connected) {
-      void updateSettings({ environmentId: environment.environmentId, input: { patch } });
+      const supportedPatch = filterSharedServerPatch(
+        patch,
+        environment.serverConfig?.environment.capabilities,
+      );
+      if (Object.keys(supportedPatch).length > 0) {
+        void updateSettings({
+          environmentId: environment.environmentId,
+          input: { patch: supportedPatch },
+        });
+      }
     }
   };
 
@@ -617,6 +632,15 @@ function AutoSettleSettingsRows() {
 
   return (
     <>
+      {reference.serverConfig?.environment.capabilities.threadRestartContinuation === true ? (
+        <SettingsSwitchRow
+          icon="arrow.clockwise"
+          label="Continue threads after restarts"
+          subtitle="Resume interrupted threads on supported connected environments."
+          value={referenceSettings.continueThreadsAfterServerUpdate}
+          onValueChange={(value) => writeToAll({ continueThreadsAfterServerUpdate: value })}
+        />
+      ) : null}
       <SettingsSwitchRow
         icon="arrow.triangle.branch"
         label="Auto-settle merged threads"

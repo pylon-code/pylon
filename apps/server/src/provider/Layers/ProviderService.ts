@@ -18,6 +18,7 @@ import {
   PROVIDER_SESSION_AGENT_DEPTH_MAX_SETTABLE,
   RuntimeSessionId,
   ThreadId,
+  TurnId,
   ProviderAbortSessionCompactionInput,
   ProviderAskSessionSideQuestionInput,
   ProviderCancelSessionAgentInput,
@@ -3252,6 +3253,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     if (currentAdapters.every(([, adapter]) => adapter.shutdown === undefined)) {
       return yield* runStopAll();
     }
+    const continueAfterRestart = yield* serverSettings.getSettings.pipe(
+      Effect.map((settings) => settings.continueThreadsAfterServerUpdate),
+      Effect.orElseSucceed(() => false),
+    );
     const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
     yield* Effect.forEach(
       currentAdapters,
@@ -3266,6 +3271,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                     { ...session, providerInstanceId: instanceId },
                     session.threadId,
                     {
+                      ...(continueAfterRestart &&
+                      session.status === "running" &&
+                      session.activeTurnId
+                        ? { continueAfterServerUpdate: session.activeTurnId }
+                        : {}),
                       lastRuntimeEvent: "provider.stopAll",
                       lastRuntimeEventAt,
                     },

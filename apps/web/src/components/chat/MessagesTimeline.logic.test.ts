@@ -1489,7 +1489,9 @@ describe("deriveMessagesTimelineRows", () => {
     expect(rows.some((row) => row.kind === "turn-fold")).toBe(false);
     expect(rows.filter((row) => row.id === "working-indicator-row")).toHaveLength(1);
     expect(rows.findIndex((row) => row.id === "working-indicator-row")).toBeLessThan(
-      rows.findIndex((row) => row.id === "old-work-entry"),
+      rows.findIndex(
+        (row) => row.kind === "work-toggle" && row.id === "work-toggle:old-work-entry",
+      ),
     );
     expect(rows.find((row) => row.id === "working-indicator-row")).toMatchObject({
       createdAt: "2026-01-01T00:00:00Z",

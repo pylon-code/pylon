@@ -375,7 +375,9 @@ export const markRunningProviderSessionsForContinuation = Effect.gen(function* (
         continue;
       }
       const binding = yield* directory.getBinding(thread.id);
-      if (Option.isNone(binding)) {
+      // Prime owns daemon adoption and rollback recovery; generic continuation
+      // must not create a second turn when its recovery cannot adopt a session.
+      if (Option.isNone(binding) || binding.value.provider === "primeAgent") {
         continue;
       }
       if (binding.value.resumeCursor === null || binding.value.resumeCursor === undefined) {
@@ -630,6 +632,7 @@ export const reconcileProviderSessions = Effect.gen(function* () {
 
     if (
       Option.isSome(binding) &&
+      binding.value.provider !== "primeAgent" &&
       (continuationMarked || interruptedByRestart) &&
       (session.status === "running" || session.status === "starting" || preparedWhileReady) &&
       binding.value.resumeCursor != null &&

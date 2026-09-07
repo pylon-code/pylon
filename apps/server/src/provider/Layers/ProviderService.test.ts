@@ -627,16 +627,21 @@ function makeProviderServiceLayer(
   };
 }
 
-for (const [enabled, completed] of [
-  [false, false],
-  [true, false],
-  [true, true],
+for (const [enabled, completed, retainedDaemon] of [
+  [false, false, false],
+  [true, false, false],
+  [true, true, false],
+  [false, false, true],
+  [true, false, true],
+  [true, true, true],
 ] as const) {
   it.effect(
-    `persists shutdown recovery before stopping providers when enabled=${enabled}, completed=${completed}`,
+    `persists shutdown recovery before stopping providers when enabled=${enabled}, completed=${completed}, retainedDaemon=${retainedDaemon}`,
     () =>
       Effect.gen(function* () {
         const codex = makeFakeCodexAdapter();
+        const prime = makeFakeCodexAdapter(ProviderDriverKind.make("primeAgent"));
+        const shutdown = vi.fn(() => Effect.void);
         const persistence = yield* Layer.build(
           ProviderSessionDirectoryLive.pipe(
             Layer.provide(
@@ -658,7 +663,10 @@ for (const [enabled, completed] of [
             Layer.provide(
               Layer.succeed(
                 ProviderAdapterRegistry.ProviderAdapterRegistry,
-                makeStaticInstanceRegistry([[codexInstanceId, codex.adapter]]),
+                makeAdapterRegistryMock({
+                  [CODEX_DRIVER]: codex.adapter,
+                  ...(retainedDaemon ? { primeAgent: { ...prime.adapter, shutdown } } : {}),
+                }),
               ),
             ),
             Layer.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: enabled })),
@@ -721,6 +729,8 @@ for (const [enabled, completed] of [
         const binding = yield* directory.getBinding(threadId);
         assert(Option.isSome(binding));
         assert.equal(codex.stopAll.mock.calls.length, 1);
+        assert.equal(shutdown.mock.calls.length, retainedDaemon ? 1 : 0);
+        assert.equal(prime.stopAll.mock.calls.length, 0);
         assert.deepStrictEqual(binding.value.resumeCursor, session.resumeCursor);
         assert.equal(binding.value.status, "stopped");
         assert.propertyVal(markers[0], "activeTurnId", completed ? null : turnId);
