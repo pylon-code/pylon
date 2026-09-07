@@ -33,7 +33,7 @@ export const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
 
 export const DiffLayout = Schema.Literals(["stacked", "split"]);
 export type DiffLayout = typeof DiffLayout.Type;
-export const DEFAULT_DIFF_LAYOUT: DiffLayout = "stacked";
+const DEFAULT_DIFF_LAYOUT: DiffLayout = "stacked";
 
 export const SidebarProjectSortOrder = Schema.Literals(["updated_at", "created_at", "manual"]);
 export type SidebarProjectSortOrder = typeof SidebarProjectSortOrder.Type;
