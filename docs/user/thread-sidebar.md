@@ -30,7 +30,9 @@ environment holds a different value, **Settings > General** shows a warning that
 the new-thread workspace mode and the source control writing style.
 
 A settings change affects future settlement and does not reopen a settled thread. Settings saved
-by older clients on one device no longer control this behavior.
+by older clients on one device no longer control this behavior. When both automatic settlement
+options are off, the settlement worker skips its background thread and pull-request lookups.
+Turning either option back on resumes settlement checks.
 
 When you un-settle a thread, it returns to the top of the active list so you can find it right
 away. Its timestamps do not change. Other threads keep their positions.
