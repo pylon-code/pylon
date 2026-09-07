@@ -92,7 +92,11 @@ import {
   replaceTextRange,
 } from "../../composer-logic";
 import { DISCONNECTED_COMPOSER_PLACEHOLDER } from "../../composerPlaceholder";
-import { deriveComposerSendState, readFileAsDataUrl } from "../ChatView.logic";
+import {
+  buildRunningThreadTurnInterruptInput,
+  deriveComposerSendState,
+  readFileAsDataUrl,
+} from "../ChatView.logic";
 import {
   dataTransferHasComposerMention,
   makeComposerMentionDragHandlers,
@@ -1251,6 +1255,10 @@ export interface ChatComposerHandle {
   openQuickQuestion: () => boolean;
   canOpenSessionResources: () => boolean;
   openSessionResources: () => boolean;
+  /** Whether the focused thread has a running or admitting turn to stop. */
+  canStopThread: () => boolean;
+  /** Runs the same interrupt as the Stop button and the `thread.stop` shortcut. */
+  stopThread: () => boolean;
   compactContext: () => void;
   readSnapshot: () => {
     value: string;
@@ -5560,6 +5568,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         setIsSessionResourcesOpen(true);
         return true;
       },
+      canStopThread: () => buildRunningThreadTurnInterruptInput(activeThread, phase) !== null,
+      stopThread: () => {
+        if (buildRunningThreadTurnInterruptInput(activeThread, phase) === null) return false;
+        void onInterrupt();
+        return true;
+      },
       readSnapshot: () => {
         return readComposerSnapshot();
       },
@@ -5669,6 +5683,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       isComposerModelPickerOpen,
       quickQuestionAvailable,
       sessionResourceInventory,
+      phase,
+      onInterrupt,
       readComposerSnapshot,
       selectedModel,
       selectedModelOptionsForDispatch,

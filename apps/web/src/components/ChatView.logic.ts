@@ -376,6 +376,23 @@ export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "sessi
   };
 }
 
+/**
+ * The interrupt a Stop action may send for the focused thread, or null when
+ * nothing can be stopped. Mirrors the composer's Stop button: a running turn,
+ * or a turn still awaiting provider admission (which has no turn id yet).
+ */
+export function buildRunningThreadTurnInterruptInput(
+  thread: Pick<Thread, "id" | "session"> | null | undefined,
+  phase: SessionPhase,
+): { threadId: ThreadId; turnId?: TurnId } | null {
+  const sessionStatus = thread?.session?.status;
+  const running = phase === "running" && sessionStatus === "running";
+  if (!thread || !(running || sessionStatus === "starting")) {
+    return null;
+  }
+  return buildThreadTurnInterruptInput(thread);
+}
+
 export function reconcileMountedTerminalThreadIds(input: {
   currentThreadIds: ReadonlyArray<string>;
   openThreadIds: ReadonlyArray<string>;

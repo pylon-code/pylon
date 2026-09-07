@@ -52,6 +52,7 @@ import {
   MessageCircleQuestionIcon,
   MessageSquareIcon,
   PaletteIcon,
+  CircleStopIcon,
   SettingsIcon,
   SquarePenIcon,
   TextSearchIcon,
@@ -1679,6 +1680,20 @@ function OpenCommandPaletteDialog(props: {
             resolve();
           });
         });
+      },
+    });
+  }
+
+  if (composerHandleRef?.current?.canStopThread()) {
+    actionItems.push({
+      kind: "action",
+      value: "action:stop-thread",
+      searchTerms: ["stop", "interrupt", "cancel", "turn", "generation", "thread"],
+      title: "Stop the running turn",
+      icon: <CircleStopIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "thread.stop",
+      run: async () => {
+        composerHandleRef?.current?.stopThread();
       },
     });
   }
