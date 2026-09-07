@@ -27,7 +27,7 @@ Pylon is a long-lived independent product, not a temporary reskin or a patch que
 - Base Pylon work on `pylon` or a task branch created from it. Do not treat the inherited `main` branch as Pylon's product branch.
 - `t3code-upstream` (`pingdotgg/t3code`) and `t3code-fork` (`rynfar/t3code`) are reference remotes. They are intentionally fetch-only. Never push to them or re-enable their push URLs.
 - Upstream changes are opt-in. Fetch and inspect upstream commits, then cherry-pick or selectively merge only changes that benefit Pylon. Do not hard-reset, wholesale rebase, or replace Pylon with an upstream branch.
-- Use the `review-t3-upstream` skill whenever the user asks what changed in T3, whether Pylon should update, or wants to evaluate or adopt upstream work. The skill owns the durable review ledger in `.agents/upstream-review.md`; never bypass its human decision gate.
+- Use the `review-t3-upstream` skill whenever the user asks what changed in T3, whether Pylon should update, or wants to evaluate or adopt upstream work. The skill owns the active decision index in `.agents/upstream-review.md` and its linked history. Honor explicit selections and standing maintainer approval; ask again only for scope or product tradeoffs that approval does not cover.
 - Resolve upstream conflicts Pylon-first. Preserve Pylon branding, agent guidance, and later Pylon-specific product decisions unless the developer explicitly chooses otherwise.
 - An inherited compatibility name is not permission to restore visible T3 branding. Keep product identity and runtime compatibility separate.
 - Before committing or publishing, verify the current branch and remotes. If the checkout is not rooted in the Pylon repository or a push would target a T3 remote, stop and correct it before proceeding.
@@ -171,7 +171,7 @@ while work lands from elsewhere.
 - **Rebase onto the latest `pylon` branch before opening.** Stale branches conflict and burn a review round. Never rebase a Pylon branch directly onto a T3 remote.
 - UI changes need before/after images. Motion or timing needs a short video.
 - Upload PR evidence to GitHub. Never commit PR-only screenshots or assets such as `.github/pr-assets/`.
-- One concern per PR. If the description says "also", split it.
+- One concern per PR. An upstream dependency chain or closely related changes to one subsystem can be one concern, with a combined diff and verification. Split independent product decisions or unrelated high-risk changes; do not impose a source-commit quota.
 - When babysitting: poll checks and comments newer than the last push, verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
 
 ## Plans and work artifacts

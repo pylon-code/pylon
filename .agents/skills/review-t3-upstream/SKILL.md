@@ -1,270 +1,72 @@
 ---
 name: review-t3-upstream
-description: Review T3 Code upstream changes for selective adoption into Pylon. Use when the user asks what changed upstream, whether Pylon should sync or update, which T3 commits or pull requests are worth adopting, how the forks differ, whether previously deferred upstream work is ready to revisit, or asks to integrate selected upstream work. Fetch the protected upstream remote, consult the durable review ledger, re-evaluate deferred and watched upstream work against its recorded revisit conditions, group and assess candidate changes, wait for an explicit user decision, and then selectively port approved work with Pylon-first conflict resolution.
+description: Review and selectively adopt T3 Code upstream changes into Pylon. Use for upstream comparisons, catch-up, update recommendations, deferred work, or approved integration. Review final changes by dependency group, preserve Pylon behavior, and honor existing maintainer approval.
 ---
 
 # Review T3 Upstream
 
-Treat upstream review as a product decision workflow, not a synchronization command. Explain what changed and help the user choose before changing Pylon.
+Maintain Pylon as an independent fork. Optimize for useful, verified behavior and a bounded review backlog. Commit counts measure source history, not missing fixes or product quality.
 
-## Preserve the fork invariants
+Read `AGENTS.md` and the active `.agents/upstream-review.md`. Read [the decision framework](references/decision-framework.md) when choosing scope, review depth, or validation. Search archived decisions by SHA, PR, or affected behavior when needed; do not load the entire history each cycle.
 
-Read `AGENTS.md`, `.agents/upstream-review.md`, and [references/decision-framework.md](references/decision-framework.md) before reviewing candidates.
+## Authorization and boundaries
 
-- Keep `origin` pointed at the private `pylon-code/pylon` repository and `pylon` as its product branch.
-- Keep `t3code-upstream` and `t3code-fork` fetch-only. Never push to them or re-enable their push URLs.
-- Never hard-reset Pylon, replace it with upstream, or merge all of upstream by default.
-- Preserve visible Pylon identity and Pylon-specific product behavior. Compatibility identifiers may remain T3-named until deliberately migrated.
-- Separate review from integration. Do not edit code, create an integration branch, cherry-pick, merge, commit, or push until the user explicitly selects change sets.
+- A request to compare or recommend is read-only. Before integration, identify the change sets the user selected or the standing approval that covers them.
+- Existing approval for compatible catch-up includes routine Pylon adaptations that preserve the approved behavior. State the intended batch and proceed; do not request approval per commit, PR, or routine conflict.
+- Ask for a concrete decision if a change would remove an important Pylon capability, break compatibility or change the guarantees of a protected contract, or require a product choice outside that approval. Continue independent approved work while the question is pending.
+- Preserve Pylon identity, Prime and provider behavior, lifecycle ownership, migration lineage, client compatibility, remote authentication, and release/runtime boundaries. See the framework for focused checks.
+- Keep `origin` pointed at public `pylon-code/pylon`, with `pylon` as the product branch. T3 remotes remain fetch-only. Never replace Pylon, rebase onto T3, select all of `theirs`, or record an unreviewed upstream head as merged. Changing the Git ancestry baseline is a separate, explicitly approved task.
 
-## Phase 1: Preflight the repository
+## Bound one integration cycle
 
-Run from the Pylon repository root:
+Check the branch, worktree, and remotes. Fetch `origin pylon` and `t3code-upstream main` once at the start of a cycle; freeze their full SHAs for analysis. Compare against the fetched `origin/pylon`, not a potentially stale local `pylon` branch.
 
-```bash
-git status --short --branch
-git remote -v
-git branch --show-current
-git rev-parse --verify pylon
-```
-
-Confirm:
-
-- `origin` fetches and pushes `pylon-code/pylon`;
-- `t3code-upstream` fetches `pingdotgg/t3code` and has a disabled push URL;
-- `.agents/upstream-review.md` contains a `reviewed-through` commit;
-- the ledger contains a `## Deferred register` section;
-- the ledger contains an `## Upstream watch list` section;
-- the current checkout belongs to Pylon.
-
-A dirty tree does not block read-only review, but it blocks integration. Never stash, discard, or commit unrelated work to make the tree clean.
-
-If a required remote or ledger is missing, stop and explain the exact repair. Do not silently rewrite source-control configuration.
-
-## Phase 2: Refresh and bound the review
-
-Fetch only the official upstream tracking branch:
+Validate that the ledger's `reviewed-through` is an ancestor of the bounded upstream head. If it is not, investigate before changing the cursor. Inventory **every** commit in the range, including its changed paths, then subtract recorded decisions and check patch equivalence:
 
 ```bash
-git fetch --prune t3code-upstream main
+git log --reverse --format='%H %s' <cursor>..<upstream-head>
+git diff --name-status <cursor> <upstream-head>
+git cherry -v <pylon-head> <upstream-head> <cursor>
 ```
 
-Read the ledger cursor as `<cursor>`, then verify it is still in upstream history:
+A matching patch ID is evidence, not proof that a manual adaptation or later revert has the same behavior. Query archived records for partial ports and deferred work before counting a source as missing. New upstream arrivals belong to the next cycle; they do not continually expand an in-progress batch. Refresh at cycle completion and report any new arrivals separately.
 
-```bash
-git merge-base --is-ancestor <cursor> t3code-upstream/main
-```
+## Review the final behavior
 
-If that check fails, stop. Report that upstream history or the ledger diverged and investigate before choosing a new cursor.
+Group a feature and its fixes, reverts, tests, and necessary dependencies into one change set. Several related changes to one subsystem can share a PR when they form a reviewable and reversible unit. Do not impose a quota of upstream commits per PR. Keep independent product decisions and unrelated high-risk work separate.
 
-Collect candidates in chronological order and detect patch-equivalent work already present in Pylon:
+Read the complete **proposed combined diff**, relevant tests, and Pylon callers. Prefer the finished behavior at the bounded upstream head over replaying temporary implementations that were later replaced. Inspect intermediate commits where migrations, persistent data, wire formats, reverts, or provider/lifecycle ordering make that history relevant.
 
-```bash
-git log --reverse --date=short --format='%H%x09%ad%x09%s' <cursor>..t3code-upstream/main
-git cherry -v pylon t3code-upstream/main <cursor>
-```
+Consult upstream PR descriptions and substantive review findings when they explain intent, dependencies, unresolved correctness questions, or high-risk changes. Do not reread every historical bot discussion for routine cleanup. Titles and clean cherry-picks alone never establish correctness.
 
-Record the exact upstream head used for the report. Never describe a moving branch without its commit SHA.
+A path-filtered upstream diff may mix several features. Account for all included hunks and retain Pylon-specific code; do not copy the latest version of a shared file simply because the desired feature touches it. Record outcomes as adopted, partially adopted, already covered, superseded, skipped, or deferred. A partial port must name the excluded behavior; it does not close the whole source commit.
 
-## Phase 2.5: Re-evaluate deferred and watched work
+## Revisit only triggered decisions
 
-Deferred work is not decided work. It is a promise to look again, and a
-deferral nobody revisits is indistinguishable from having lost it. Run this
-phase on every review, including a review that finds no new commits.
+Read the open deferred register and watch list each cycle. Respect earliest-revisit dates. Check an entry's recorded paths, dependencies, or external state only when its trigger can be due or its cached evidence is invalidated. For an undated open PR watch, check its state once per cycle. Cache checked head/date and result in the cycle's working notes; do not repeat checks after each implementation PR.
 
-This phase covers two sections, and a review that reads only the first is
-incomplete. The `## Deferred register` holds change sets that appeared in some
-batch and were consciously not adopted. The `## Upstream watch list` holds
-upstream work that never entered a review range — open issues and unmerged pull
-requests — which no `<cursor>..t3code-upstream/main` command can surface,
-because a pull request that never merges produces no commit to find. Phases 2
-and 3 are structurally blind to it; this phase is the only place it gets seen.
+Reassess due or changed entries as normal candidates. Keep unmet entries with their original date and trigger. Retire superseded entries explicitly. An unknown or missing trigger needs a concrete replacement, not indefinite silent deferral. Summarize unchanged entries collectively; give details for due, changed, or unresolved entries. Update an owning issue when authorized; otherwise record that follow-up without sending an unapproved message.
 
-Read the `## Deferred register` in `.agents/upstream-review.md`. For each open
-entry:
+## Integrate and verify once per unit
 
-1. Read its `Revisit when` condition and evaluate it against the current
-   upstream head, not against memory. The condition names what to check, so
-   check it — usually `git log`, `git show --stat`, or a path filter over
-   `<deferred sha>..t3code-upstream/main`:
+Use a clean task worktree based on freshly fetched `origin/pylon`. Preserve other worktrees and unfinished work. Choose clean `cherry-pick -x` for coherent sources, a complete dependency series when useful, or a manual port of the final behavior with full source SHAs in the commit/PR. Preserve semantic intent when resolving conflicts.
 
-   ```bash
-   git log --oneline --since="<deferred on>" t3code-upstream/main -- <paths from the condition>
-   ```
+For repeated conflicts, use repository-local `rerere` when enabled, with automatic staging disabled. Inspect reused resolutions before staging; they are suggestions, not correctness checks. Do not silently change global Git configuration.
 
-2. Classify the entry as **due** (condition met), **not yet** (condition
-   unmet, with the specific evidence), or **stale** (the upstream work was
-   superseded, reverted, or has drifted so far that the original deferral no
-   longer describes it).
+Select existing regression checks for the affected Pylon boundaries before editing. Add focused tests for changed backend behavior or a missing protection. Run targeted checks during development, then the affected package checks and one integrated client pass for the completed unit where required by `AGENTS.md`. Reuse valid evidence for unchanged code. A rebase requires inspection and checks for the actual changes/conflicts; it does not automatically require replaying unrelated local suites or recapturing unchanged UI. CI must still pass on the final PR head.
 
-3. Re-check the dependency and conflict picture. A deferral that has sat for
-   weeks may now conflict with Pylon work that landed since, or may have
-   grown follow-up commits that belong with it. Report the current shape, not
-   the shape recorded when it was deferred.
+Keep UI evidence for the final integrated behavior together in the PR; backend-only, workflow, and documentation changes do not require browser evidence. Use the specialized server, branding, or client skills only when the scope needs them and honor computer-use authorization.
 
-Report every open entry in the decision brief, due or not, so nothing decays
-silently. A **due** entry is a first-class candidate: give it the same
-treatment as a new change set, including a concrete recommendation. A **not
-yet** entry gets one line naming the evidence that keeps it waiting. A
-**stale** entry should be proposed for outright skip, with the reason, so the
-register does not accumulate work nobody intends to do.
+## Land, record, and report
 
-Never adopt a deferred entry just because its condition came due. The
-condition earns it a fresh review, not automatic approval — the user still
-decides.
+Follow `AGENTS.md` for branching, rebasing onto Pylon, opening a PR, checking bot findings, and merging under existing approval. Keep the compact decision record in the implementation PR. A decision-only PR is appropriate for genuinely new skip/defer decisions; avoid extra PRs just to restate already merged work, refresh counters, or record each release.
 
-Then read the `## Upstream watch list` and do the same for each entry, with two
-differences. Its conditions are about upstream _state_, not upstream commits, so
-checking one usually means asking GitHub rather than `git log`:
+Each record identifies the bounded head, source SHAs (or an exact fully classified range with exclusions), final behavior, outcome and remaining scope, Pylon PR, material adaptations, and verification. The PR holds detailed implementation evidence; the ledger is an index. Preserve old records in linked archives and keep the active cursor and open registers easy to read.
 
-```bash
-gh pr view <number> --repo pingdotgg/t3code --json state,mergedAt
-gh issue view <number> --repo pingdotgg/t3code --json state
-```
+Advance `reviewed-through` only when every source through that head has an authorized disposition. Deferred entries may advance the cursor only with their remaining work and revisit trigger recorded. Unclassified sources or unaccounted parts of partial ports keep the cursor behind. Cursor advancement is neither proof of adoption nor a change to Git ancestry.
 
-A pull request that shows `CLOSED` with a null `mergedAt` closed unmerged. That
-is a real signal, not a non-event: the premise the entry was written on is gone.
-Rewrite the entry around what Pylon would now be waiting for — usually a
-replacement — or propose retiring it. Do not leave a row describing a live
-upstream effort that has stopped.
+After an integration cycle, validate one release containing the landed groups when release is authorized. Avoid publishing per minor PR. Report merged, released, and installed versions separately.
 
-Each watch entry names an `Owner` issue holding its design context. When an
-entry comes due, is rewritten, or is retired, update that issue in the same
-change. Two ledgers that disagree are worse than one, and this list exists
-because an owning issue once carried a watch duty that no workflow could see.
+During active work, give useful progress updates at least once a minute: completed groups, current work, next checkpoint, and exceptions. Report remaining **unclassified groups**, approved work still to land, and due deferred work separately; source counts are secondary and must name their range. Never report an estimated grouping as an exact count, or intentionally excluded work as missing fixes.
 
-## Phase 3: Understand the changes
-
-Group commits into coherent change sets before presenting them. A pull request, a dependency chain, or several commits implementing one behavior should normally be one decision.
-
-For every candidate change set:
-
-1. Inspect the complete commit diff and file list with `git show --stat --summary <sha>` and `git show <sha>`.
-2. When a title references a pull request, inspect its description and relevant review context with `gh pr view <number> --repo pingdotgg/t3code` when available.
-3. Trace dependencies on earlier or later upstream commits. Do not recommend a commit alone when it requires a series.
-4. Compare touched paths with Pylon's changes since the fork base. Identify semantic conflicts, not only textual conflicts.
-5. Evaluate every applicable client, provider, contract, connection mode, migration, generated file, and document.
-6. Classify the change using the decision framework and give a concrete Pylon recommendation.
-
-Do not infer value from a commit title alone. Read the implementation and tests.
-
-## Phase 4: Present a decision brief
-
-Lead with a compact summary:
-
-- upstream head and review range;
-- number of commits and coherent change sets;
-- patch-equivalent or already-adopted work;
-- **deferred entries that are now due**, named up front rather than buried
-  after the new candidates — they have already waited once;
-- **watch-list entries whose upstream state changed**, including any that
-  closed unmerged;
-- highest-value recommendations;
-- areas likely to conflict with Pylon.
-
-Give deferred work its own section, before or after the new change sets but
-never merged into them, so the user can tell "this is back again" from "this is
-new". Report the register's full state there: due, not yet, and stale, and the
-watch list's full state alongside it.
-
-For each change set, report:
-
-- stable candidate ID, upstream SHA, and pull request;
-- what changed in plain language;
-- why Pylon would or would not benefit;
-- recommendation: **adopt now**, **consider**, **defer**, or **skip**;
-- affected surfaces and providers;
-- dependency chain;
-- conflict risk and expected integration shape: clean cherry-pick, cherry-pick with adaptation, or manual port;
-- validation required.
-
-End with an explicit decision request keyed by candidate ID. Do not integrate while the user's selection is ambiguous.
-
-## Phase 5: Lock completed review decisions
-
-After the user decides every candidate through the reported upstream head, prepare one ledger batch and the new `reviewed-through` value. Do not modify the ledger yet when an approved integration still needs a clean branch setup.
-
-Record each change set as adopted, skipped, or deferred with its upstream SHA or PR, rationale, and eventual Pylon branch or commit when known. Deferred work remains visible in the ledger even though the cursor advances.
-
-A deferral is a decision, so it does not block the cursor. What it does require
-is an entry in the `## Deferred register` before the batch is considered closed.
-Keep the register current in both directions:
-
-- **Add** an entry for every newly deferred change set, keyed `DEF-<n>` so
-  register ids never collide with a batch's change-set ids, with a
-  `Revisit when` condition that a later session can actually check — name the
-  paths, the command, or the observable event. "Revisit later" is not a
-  condition, and neither is anything that depends on remembering this
-  conversation. Beware a condition that reads as satisfied the day it is
-  written: "no commits touching X recently" is also true one minute after
-  deferring, so pair a quiet-period check with an explicit earliest-revisit
-  date.
-- **Move out** an entry as soon as it is adopted or skipped for good: record
-  the outcome in that batch's table and delete the register row. The register
-  holds open questions only.
-- **Carry forward** everything else untouched, including its original
-  `Deferred on` date, so the age of a deferral stays visible.
-
-An entry whose condition has come due repeatedly without anyone acting on it is
-a signal the answer is really "skip" — say so rather than deferring a fourth
-time.
-
-Maintain the `## Upstream watch list` the same way, keyed `WATCH-<n>`. Add an
-entry when the review turns up upstream work Pylon cares about that a commit
-range will never surface — an open issue, an unmerged pull request, a capability
-Pylon expects upstream to attempt. Rewrite an entry whose upstream premise
-changed, and retire it once Pylon adopts the capability, upstream ships
-something Pylon reviewed, or the interest is gone. Every entry needs an `Owner`
-issue; when the row changes, change the issue with it, in the same pull request.
-
-Do not advance the cursor when:
-
-- the user has not decided every candidate;
-- the report covered only a filtered subset;
-- upstream history validation failed;
-- the session ended before decisions were confirmed.
-
-If the user selects no integration, update the ledger as the only intended source change and offer a scoped commit and push. If the user selects work to integrate, create the integration branch first, then update the ledger on that branch after the integration outcome is known.
-
-## Phase 6: Integrate only approved change sets
-
-Before modifying the ledger or source, require a clean worktree, then branch from the freshly fetched remote ref. Branching from `origin/pylon` avoids checking out `pylon` at all, which matters because a branch checked out in one worktree is pinned there:
-
-```bash
-git fetch origin pylon
-git switch -c upstream/<yyyy-mm-dd>-<topic> origin/pylon
-```
-
-Choose the smallest faithful integration method:
-
-- Use `git cherry-pick -x <sha>` in oldest-first order for coherent commits that fit Pylon.
-- Cherry-pick a complete dependency series when the selected behavior depends on it.
-- Manually port only the approved behavior when upstream structure, branding, migrations, or product direction conflict. Cite the upstream PR and SHA in the commit body.
-- Never resolve conflicts by taking all of `theirs`. Read both sides and preserve Pylon's intent.
-- If the integration proves materially broader than the approved change set, stop and return to the user with the new scope.
-
-Use `pylon-branding` for asset or visible-name conflicts and `effect-server` for Effect, orchestration, provider, contract, or persistence changes. Treat migration number collisions, generated route trees, lockfiles, mobile native projects, and compatibility identifiers as explicit reconciliation work.
-
-Run the smallest relevant tests, lint, formatting, typechecks, asset checks, and real-client verification required by `AGENTS.md`. Do not claim upstream tests prove the adapted Pylon behavior.
-
-Show the integrated diff, validation results, and remaining risks, then land the branch through the standard workflow in `AGENTS.md`: push the integration branch and open a pull request against `pylon`. Do not merge it or fast-forward `pylon` yourself until checks are green and the developer approves.
-
-## Finish with traceability
-
-When the integration outcome becomes known, append the prepared batch to `.agents/upstream-review.md` on the integration branch and advance the cursor to the reviewed upstream head. If integration is abandoned, record the decisions separately without claiming an adopted Pylon commit.
-
-Keep the review ledger and final handoff aligned. Report:
-
-- upstream PRs and SHAs reviewed;
-- user decisions;
-- Pylon branch and commits created;
-- adaptations made for Pylon;
-- checks run and unresolved risks;
-- the deferred register's state after this review: what was added, what came
-  due and what happened to it, what was retired, and what is still waiting
-  with its next check;
-- the watch list's state on the same terms, including any owning issue updated
-  to match.
-
-Closing without mentioning the register and the watch list is an incomplete
-handoff, even when nothing in them changed.
+For the first cycle under a changed process, use one coherent pilot batch. Record effort, repeated checks avoided, and any regressions or missed dependencies in the PR verification notes before broadening the approach. No promised speedup replaces that evidence.
