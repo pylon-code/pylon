@@ -5,6 +5,8 @@
 See the [maintainer scripts guide](docs/internals/scripts.md#first-checkout) for the initial checkout,
 development commands, tests, and platform-specific desktop packaging prerequisites.
 
+For VS Code or Codespaces, see the [dev container guide](docs/internals/devcontainer.md).
+
 ## Read This First
 
 We are not actively accepting contributions right now.
