@@ -51,6 +51,21 @@ On web and desktop, HEIC and HEIF photos are automatically converted to JPEG whe
 the composer or paste them into a message. On iOS, selecting them from **Photo Library** also
 converts them to JPEG. The 10 MB image limit applies to the converted photo.
 
+On web and desktop, scrolling an existing conversation can collapse its composer into a single
+line to make more room for reading. Clicking elsewhere leaves it alone. New threads, conversations
+that already fit on screen, and multiline drafts stay expanded. Focus the composer or start typing
+to expand it again. Scrolling back to the end also restores it without covering the last message.
+
+When the thread-context strip has room, the model and mode controls stay available beside the
+workspace and branch. Pylon's quick-question and session controls move with them; subscription
+usage remains on the right. Controls that cannot fit return when the composer expands. Turn off
+**Settings → General → Collapse composer on scroll** to keep the desktop composer expanded.
+
+At phone-sized web or desktop window widths, existing threads animate between their compact and
+expanded layouts. Up to three image attachments remain visible in either resting layout, followed
+by a count when more are attached. At wider sizes, videos, files, and other draft context remain
+visible at their natural height; the phone-sized compact row reveals those details when expanded.
+
 On mobile, the model picker shows each OpenCode model's upstream provider, such as Anthropic,
 GitHub Copilot, or OpenCode Zen, beneath its name. Search by that provider name to narrow the list
 when starting a thread or changing an existing thread's model.

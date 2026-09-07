@@ -62,7 +62,12 @@ export const ComposerStashBadge = memo(function ComposerStashBadge(props: {
   return props.placement === "inline" ? (
     row
   ) : (
-    <ComposerBanner.Root width="content" data-composer-shoulder-tab className="ml-auto">
+    <ComposerBanner.Root
+      density="comfortable"
+      width="content"
+      data-composer-shoulder-tab
+      className="ml-auto"
+    >
       {row}
     </ComposerBanner.Root>
   );

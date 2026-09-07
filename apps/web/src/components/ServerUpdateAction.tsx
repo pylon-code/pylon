@@ -4,6 +4,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import type { ComponentProps } from "react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
@@ -81,6 +82,7 @@ export function ServerUpdateAction({
   threadContinuation = false,
   targetVersion,
   label = "Update",
+  variant = "outline",
 }: {
   readonly environmentId: EnvironmentId;
   readonly serverLabel: string;
@@ -92,6 +94,7 @@ export function ServerUpdateAction({
   readonly threadContinuation?: boolean;
   readonly targetVersion: string;
   readonly label?: string;
+  readonly variant?: ComponentProps<typeof Button>["variant"];
 }) {
   const isDesktopAppUpdate = selfUpdate === "desktop-managed";
   const continueThreadsAfterServerUpdate = useEnvironmentSettings(
@@ -183,14 +186,14 @@ export function ServerUpdateAction({
   if (selfUpdate === null) {
     const command = manualServerUpdateCommand(targetVersion);
     return (
-      <Button size="xs" variant="outline" onClick={() => copyToClipboard(command, { command })}>
+      <Button size="xs" variant={variant} onClick={() => copyToClipboard(command, { command })}>
         Copy update command
       </Button>
     );
   }
 
   return (
-    <Button size="xs" variant="outline" onClick={() => void handleUpdate()}>
+    <Button size="xs" variant={variant} onClick={() => void handleUpdate()}>
       {label}
     </Button>
   );

@@ -235,7 +235,11 @@ export const ComposerTasksBadge = memo(function ComposerTasksBadge({
     );
   }
   return (
-    <ComposerBanner.Root className={dismiss ? "relative" : undefined} data-composer-shoulder-tab>
+    <ComposerBanner.Root
+      density="comfortable"
+      className={dismiss ? "relative" : undefined}
+      data-composer-shoulder-tab
+    >
       {row}
       {dismiss}
     </ComposerBanner.Root>
