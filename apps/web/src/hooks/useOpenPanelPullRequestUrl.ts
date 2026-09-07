@@ -55,6 +55,7 @@ export function useOpenPanelPullRequestUrl(threadRef: ScopedThreadRef | null) {
         environmentId,
         reference,
       })?.url ??
+        reference.url ??
         gitHubPullRequestBrowserUrl(
           project?.repositoryIdentity,
           reference.repository,
