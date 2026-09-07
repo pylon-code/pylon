@@ -15,6 +15,26 @@ Two standing sections outlive any single batch and must be read on every review:
 
 ## Review batches
 
+## 2026-09-07 — mobile typography and compatibility cleanup (partial range)
+
+The maintainer's standing approval covers four more sources across three merged PRs. Against the bounded upstream head `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f`, the active total is **89 adopted sources across 47 adoption PRs**, with **293 sources remaining** and **20 reconciled without a port**. Remaining sources include dependencies and possible intentional skips. The full review cursor remains unchanged.
+
+| Adopted concern                                                       | Upstream source                                                                                        | Pylon implementation                                                                                   |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| Commit mobile font-size changes when dragging finishes                | `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f` (#7138)                                                     | [#382](https://github.com/pylon-code/pylon/pull/382), merge `a3b48fcd1d21c974764ce55ce96bf4668ed9c6ff` |
+| Cancel highlighting-test animation callbacks before restoring globals | `f8b4c464b4760d73e0ece7e68011c738803d8b69` (#10188)                                                    | [#388](https://github.com/pylon-code/pylon/pull/388), merge `751afba0ddd66c53661026c1b2a5ab7d0b217ba4` |
+| Remove unused compatibility helpers and obsolete dependencies         | `db4bf9497b524f35e665af9e941aa8faeb05ea9e` (#9150), `10421bcdc9a059e0a717250257769af92567b645` (#9986) | [#389](https://github.com/pylon-code/pylon/pull/389), merge `fcaa308756cd9854e816a0ef249cec21cdca444e` |
+
+The mobile slider retains responsive Reanimated drag feedback while saving the snapped font size once on release. Cancelled gestures restore the saved size; taps and accessibility changes still commit immediately. Mobile typecheck and scoped lint pass. In the same iOS simulator gesture, temporary instrumentation measured five preference updates before and one after; native accessibility confirmed the committed value, tap changes and accessibility decrements. Original preferences were restored and instrumentation removed. Uploaded images and recordings are on the PR. Android shares the implementation but had no separate gesture run.
+
+Highlighting fixture cleanup cancels tracked animation handles after stopping the real worker and before removing browser globals. Eight focused tests, web typecheck, lint and formatting pass. Removing the cleanup reproduced the runner's unhandled `cancelAnimationFrame` error. Production highlighting is unchanged.
+
+The compatibility cleanup removes unused helpers, obsolete test-fixture interfaces, two unused direct dependencies and stale configuration. Pylon's live provider display helper, race-safe provider subscription, Prime picker and icon guards, OAuth branding checks, desktop WSL guards, client UI tests and existing app icons remain. All 403 focused tests (92 server and 311 web), server/web/mobile typechecks, scoped lint and formatting pass. No visible UI behavior changes. Complete source patches and relevant upstream review context were read, and all three PRs merged after green checks on their published commits.
+
+The same-head deferred and watch assessment remains as recorded in the preceding batch. Prepared mobile diff fallback, asynchronous question handling and compaction work are excluded from adoption counts.
+
+Nightly `0.0.33-nightly.20260907.134` is verified from source `7e84a5734ef207082ce0514c95e71a130edd8fa0` in successful run `34102581649`. All four platform builds, release quality checks, publication of 15 Pylon assets, and hosted web deployment passed. It contains the preceding **85 adopted sources**; the four sources above await a later Nightly. No installed-app update is claimed.
+
 ## 2026-09-07 — legacy actions, downloads, and native search tests (partial range)
 
 The maintainer's standing approval covers five more adopted sources across five merged PRs. Against the bounded upstream head `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f`, the active total is **85 adopted sources across 44 adoption PRs**, with **297 sources remaining** and **20 reconciled without a port**. Remaining sources include dependencies and possible intentional skips, not only missing fixes. The full review cursor remains unchanged.
