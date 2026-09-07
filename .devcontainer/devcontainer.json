@@ -24,9 +24,7 @@
     // Keep all runtime state inside the (gitignored) workspace .t3, matching
     // the worktree default. An explicit --home-dir still wins.
     "T3CODE_HOME": "${containerWorkspaceFolder}/.t3",
-    "VP_BIN_DIR": "/home/vscode/.local/share/vite-plus/bin",
-    "VP_DATA_DIR": "/home/vscode/.local/share/vite-plus",
-    "VP_CACHE_DIR": "/home/vscode/.cache/vite-plus",
+    "VP_HOME": "/home/vscode/.vite-plus",
     "npm_config_store_dir": "/home/vscode/.cache/pnpm/store"
   },
   "mounts": [
