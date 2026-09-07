@@ -176,3 +176,10 @@ Control settings**.
 - [GitHub CLI](https://cli.github.com/)
 - [GitLab CLI](https://gitlab.com/gitlab-org/cli)
 - [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/)
+
+## Branch names after checkout
+
+If a thread still shows a temporary branch name after its worktree switches to a
+real branch, Pylon updates the saved name when the turn finishes and refreshes
+the associated pull request. It keeps the saved name when other threads share
+that worktree.
