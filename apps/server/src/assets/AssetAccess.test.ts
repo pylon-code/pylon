@@ -102,6 +102,36 @@ describe("AssetAccess", () => {
       expect((yield* issue("shot.png")).imageDimensions).toEqual({ width: 1600, height: 900 });
       expect((yield* issue("clip.mp4")).imageDimensions).toBeUndefined();
       expect((yield* issue("broken.png")).imageDimensions).toBeUndefined();
+      expect(
+        (yield* issueAssetUrl({
+          resource: {
+            _tag: "workspace-file",
+            threadId: ThreadId.make("thread-1"),
+            path: "shot.png",
+          },
+          workspaceRoot: root,
+        })).imageDimensions,
+      ).toEqual({ width: 1600, height: 900 });
+      const config = yield* ServerConfig.ServerConfig;
+      const attachmentId = "thread-1-00000000-0000-4000-8000-000000000001";
+      yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fs.writeFile(path.join(config.attachmentsDir, `${attachmentId}.png`), png);
+      expect(
+        (yield* issueAssetUrl({
+          resource: { _tag: "attachment", attachmentId },
+        })).imageDimensions,
+      ).toEqual({ width: 1600, height: 900 });
+      if (symlinksSupported) {
+        const alias = path.join(root, "attachments-alias");
+        yield* fs.symlink(config.attachmentsDir, alias);
+        expect(
+          (yield* issueAssetUrl({
+            resource: { _tag: "attachment", attachmentId },
+          }).pipe(
+            Effect.provideService(ServerConfig.ServerConfig, { ...config, attachmentsDir: alias }),
+          )).imageDimensions,
+        ).toEqual({ width: 1600, height: 900 });
+      }
     }).pipe(Effect.provide(testLayer)),
   );
 

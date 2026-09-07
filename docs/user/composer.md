@@ -98,6 +98,8 @@ or replacing a pick discards its late capture results.
 
 ## Images and videos in messages
 
+Pylon uses image dimensions supplied by the environment to reserve space before an image finishes loading, reducing jumps in the conversation.
+
 On web, desktop, and mobile, select a link to an image or video to open it inside Pylon.
 Workspace image and video links open the file viewer. Links to media outside the workspace
 open a media preview.
