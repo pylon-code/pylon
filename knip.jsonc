@@ -16,8 +16,13 @@
       "vitest": { "entry": [".github/**/*.test.cjs"] },
     },
     "scripts": {
-      // Knip loads its preprocessor through a CLI option, not a source import.
-      "entry": ["knip-schemas.ts"],
+      // Knip loads its preprocessor through a CLI option. Pylon's maintainer
+      // screenshot scripts also run directly, without source imports.
+      "entry": [
+        "knip-schemas.ts",
+        "marketing-screenshot-capture.mjs",
+        "marketing-screenshot-environment.ts",
+      ],
     },
     "apps/server": {
       // Vite+ pack entries and the launcher used by installed background services.
