@@ -4,6 +4,11 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -231,3 +236,86 @@ it.layer(testLayer)("OpenCodeRuntime inventory", (it) => {
     }),
   );
 });
+
+for (const retry of [false, true]) {
+  it.effect(
+    `runs CLI inventory commands without overlapping database owners (retry=${retry})`,
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Queue.make<{
+          args: readonly string[];
+          finish: Deferred.Deferred<number>;
+        }>();
+        let active = 0;
+        let maximumActive = 0;
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            NodeAssert.equal(ChildProcess.isStandardCommand(command), true);
+            if (!ChildProcess.isStandardCommand(command))
+              return yield* Effect.die("Expected standard command");
+            active += 1;
+            maximumActive = Math.max(maximumActive, active);
+            const finish = yield* Deferred.make<number>();
+            yield* Queue.offer(started, { args: command.args, finish });
+            return ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(1),
+              exitCode: Deferred.await(finish).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    active -= 1;
+                  }),
+                ),
+                Effect.map(ChildProcessSpawner.ExitCode),
+              ),
+              isRunning: Effect.succeed(true),
+              kill: () => Effect.void,
+              unref: Effect.succeed(Effect.void),
+              stdin: Sink.drain,
+              stdout: Stream.make(
+                new TextEncoder().encode(
+                  command.args[0] === "models"
+                    ? 'openai/gpt-test\n{"id":"gpt-test","providerID":"openai","name":"GPT Test"}\n'
+                    : command.args[0] === "debug"
+                      ? "[]"
+                      : "",
+                ),
+              ),
+              stderr: Stream.empty,
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            });
+          }),
+        );
+        const runtime = yield* OpenCodeRuntime.pipe(
+          Effect.provide(
+            OpenCodeRuntimeLive.pipe(
+              Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+              // Mock children have no OS process group; cleanup goes through the mock handle.
+              Layer.provide(Layer.succeed(HostProcessPlatform, "win32")),
+              Layer.provide(NodeServices.layer),
+            ),
+          ),
+        );
+        const loading = yield* runtime
+          .loadInventoryFromCli({ binaryPath: "opencode", cwd: process.cwd() })
+          .pipe(Effect.forkChild);
+        for (let pass = 0; pass < (retry ? 2 : 1); pass += 1) {
+          if (pass > 0) yield* TestClock.adjust("1 second");
+          for (const expected of [
+            ["models", "--verbose"],
+            ["agent", "list"],
+            ["debug", "skill"],
+          ]) {
+            const command = yield* Queue.take(started);
+            NodeAssert.deepEqual(command.args, expected);
+            yield* Deferred.succeed(command.finish, retry && pass === 0 ? 1 : 0);
+          }
+        }
+        const inventory = yield* Fiber.join(loading);
+        NodeAssert.equal(maximumActive, 1);
+        NodeAssert.equal(active, 0);
+        NodeAssert.deepEqual(inventory.providerList.connected, ["openai"]);
+      }),
+  );
+}
