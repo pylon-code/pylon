@@ -14,6 +14,13 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("requires an explicit browser profile capability under version skew", () => {
+    expect(decodeDescriptor(descriptor).capabilities.browserProfiles).toBeUndefined();
+    expect(
+      decodeDescriptor({ ...descriptor, capabilities: { browserProfiles: true } }).capabilities
+        .browserProfiles,
+    ).toBe(true);
+  });
   it("treats a missing pull-request capability as unsupported under version skew", () => {
     expect(decodeDescriptor(descriptor).capabilities.pullRequests).toBeUndefined();
   });
