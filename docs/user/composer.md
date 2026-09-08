@@ -31,15 +31,18 @@ Use Share to save a copy or send it to another app. PDFs support page navigation
 PDF links in assistant responses open the same preview. On Android, images open in the image
 viewer and PDFs open the system chooser.
 
+On web and desktop, select a sent PDF or HTML attachment to open it in the file viewer, or use the
+download button beside it to save a copy. Other attached files download when selected.
+
 Select a video attachment before or after sending to play it. Web and desktop use the browser's
 built-in controls. On mobile, videos open in a full-screen player with native playback controls.
 Supported videos show a thumbnail in the conversation and composer.
-On web, desktop, and iOS, received videos stream from their environment as they play. Supported formats and codecs
-depend on the browser or device; you can save an unsupported video to open it in another app.
+Received videos stream from their environment as they play on every platform. Supported formats and
+codecs depend on the browser or device; you can save an unsupported video to open it in another app.
 
 On iOS, the system player zooms from the attachment. Swipe down or tap Close to return to the
-conversation or draft. Touch and hold the attachment, then choose **Save or share video** to open
-the system share options. On Android, use **Save or share video** inside the preview.
+conversation or draft. Touch and hold a video thumbnail, then choose **Save or share** to open
+the system share options. On Android, the same menu is also available inside the preview.
 
 On web and desktop, if you reload before a file finishes uploading, the draft keeps the file's name
 and shows **Attach again** next to it. Attach the file again or remove it, then send.
@@ -126,14 +129,14 @@ an initial frame when supported, but stay paused until you press Play. Video fil
 a filmstrip icon.
 
 On web and desktop, hover over a preview to see its full file path or original URL. Right-click
-to copy that reference, save an image, or copy an image to the clipboard. Use the video player's
-built-in controls to download videos. If the player cannot decode a video, its error message
+to copy that reference, save the image or video, or copy an image to the clipboard. The video
+player’s built-in controls can download a video too. If the player cannot decode a video, its error message
 offers a link to open the source in the browser. Workspace media also offers **Copy relative
 path** and **Open in file viewer**. These actions are available in expanded previews too.
 
-On mobile, touch and hold an inline image or use a preview's **Media actions** menu to see its
-source, copy the path or URL, or choose **Save or share**. Workspace media can open in the file
-viewer from the same menu. Saving downloads a copy only when you request it; it does not change
+On mobile, touch and hold an inline image or video thumbnail to see its source, copy the path
+or URL, or choose **Save or share**. Android video previews also have a **Media actions** menu.
+Workspace media can open in the file viewer from the same menu. Saving downloads a copy only when you request it; it does not change
 how the video buffers during playback. On iOS, touch and hold a file reference in a message to
 copy its full or relative path or open it in the file viewer.
 

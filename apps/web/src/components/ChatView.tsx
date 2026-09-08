@@ -1,3 +1,4 @@
+import { videoMimeType } from "@t3tools/shared/video";
 import { buildRollbackTurnCountByMessageId } from "./ChatView.logic";
 import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
 import {
@@ -156,8 +157,8 @@ import {
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
+  isBrowserPreviewAttachment,
   isImageAttachment,
-  videoMimeType,
   type SessionPhase,
   type Thread,
   type TurnDiffSummary,
@@ -355,7 +356,11 @@ import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
 import { resolveComposerTimelineInset } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
-import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
+import {
+  expandedImageKey,
+  buildAttachmentVideoAsset,
+  type ExpandedImagePreview,
+} from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import { WorkspacePageHeader } from "./WorkspacePageHeader";
 import {
@@ -437,7 +442,6 @@ import {
   readFileAsDataUrl,
   mergeFailedComposerSend,
   resolveFileAttachmentUrl,
-  isVideoPreviewRequestCurrent,
   reconcileMountedTerminalThreadIds,
   resolveBackgroundDraftWorkspaceOptions,
   resolveDraftHeroState,
@@ -1655,19 +1659,13 @@ export default function ChatView(props: ChatViewProps) {
     [composerRef],
   );
   const [isWorkspaceFileDragActive, setIsWorkspaceFileDragActive] = useState(false);
-  const routeThreadKeyRef = useRef(routeThreadKey);
-  routeThreadKeyRef.current = routeThreadKey;
-  const videoPreviewRequestIdRef = useRef(0);
-  const cancelVideoPreviewRequest = useCallback(() => {
-    videoPreviewRequestIdRef.current += 1;
-  }, []);
-  const [openingVideoAttachmentId, setOpeningVideoAttachmentId] = useState<string | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   useEffect(() => {
     const item = expandedImage?.images[expandedImage.index];
-    if (item?.type !== "video" || !item.src.startsWith("blob:")) return;
-    return () => revokeBlobPreviewUrl(item.src);
+    if (item?.type !== "video" || item.src === null || !item.src.startsWith("blob:")) return;
+    const src = item.src;
+    return () => revokeBlobPreviewUrl(src);
   }, [expandedImage]);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
   const [feedbackSubmissionsByThreadKey, setFeedbackSubmissionsByThreadKey] = useState<
@@ -2908,12 +2906,11 @@ export default function ChatView(props: ChatViewProps) {
   useEffect(() => {
     return () => {
       clearAttachmentPreviewHandoffs();
-      cancelVideoPreviewRequest();
       for (const message of optimisticUserMessagesRef.current) {
         revokeUserMessagePreviewUrls(message);
       }
     };
-  }, [cancelVideoPreviewRequest, clearAttachmentPreviewHandoffs]);
+  }, [clearAttachmentPreviewHandoffs]);
   const handoffAttachmentPreviews = useCallback((messageId: MessageId, previewUrls: string[]) => {
     if (previewUrls.length === 0) return;
 
@@ -2936,26 +2933,13 @@ export default function ChatView(props: ChatViewProps) {
   const serverMessages = activeThread?.messages;
   const [projectServerMessagePreviews] = useState(createMessageAttachmentPreviewProjector);
   const [projectHandoffMessagePreviews] = useState(createMessageAttachmentPreviewProjector);
-  const openFileAttachment = useCallback(
+  const downloadFileAttachment = useCallback(
     async (attachment: ChatFileAttachment) => {
       const connection = readPreparedConnection(environmentId);
       if (!connection) {
         toastManager.add({ type: "error", title: "The environment is not connected." });
         return;
       }
-      const isVideo = videoMimeType(attachment) !== null;
-      const action = isVideo ? "play" : "download";
-      const videoPreviewRequestId = isVideo ? ++videoPreviewRequestIdRef.current : 0;
-      const isCurrentRequest = () =>
-        !isVideo ||
-        isVideoPreviewRequestCurrent(
-          routeThreadKey,
-          routeThreadKeyRef.current,
-          videoPreviewRequestId,
-          videoPreviewRequestIdRef.current,
-        );
-      if (isVideo) setOpeningVideoAttachmentId(attachment.id);
-
       try {
         const url = await resolveFileAttachmentUrl({
           attachment,
@@ -2963,30 +2947,46 @@ export default function ChatView(props: ChatViewProps) {
           httpBaseUrl: connection.httpBaseUrl,
           createAssetUrl: createAttachmentAssetUrl,
         });
-        if (!isCurrentRequest()) return;
-        if (isVideo) {
-          setExpandedImage({
-            images: [{ src: url, name: attachment.name, type: "video" }],
-            index: 0,
-          });
-          return;
-        }
         const anchor = document.createElement("a");
         anchor.href = url;
         anchor.download = attachment.name;
         anchor.click();
       } catch (error) {
-        if (!isCurrentRequest()) return;
         toastManager.add({
           type: "error",
-          title: "Could not " + action + " " + attachment.name,
+          title: "Could not download " + attachment.name,
           description: error instanceof Error ? error.message : "The attachment is unavailable.",
         });
-      } finally {
-        if (isVideo && isCurrentRequest()) setOpeningVideoAttachmentId(null);
       }
     },
-    [createAttachmentAssetUrl, environmentId, routeThreadKey],
+    [createAttachmentAssetUrl, environmentId],
+  );
+  const openFileAttachment = useCallback(
+    (attachment: ChatFileAttachment) => {
+      if (isBrowserPreviewAttachment(attachment) && activeThreadRef) {
+        useRightPanelStore.getState().openAttachment(activeThreadRef, attachment);
+      } else if (videoMimeType(attachment) !== null) {
+        setExpandedImage({
+          images: [
+            {
+              src: null,
+              name: attachment.name,
+              type: "video",
+              actionsSource: {
+                kind: "video",
+                name: attachment.name,
+                src: null,
+                asset: buildAttachmentVideoAsset(environmentId, attachment),
+              },
+            },
+          ],
+          index: 0,
+        });
+      } else {
+        void downloadFileAttachment(attachment);
+      }
+    },
+    [activeThreadRef, downloadFileAttachment, environmentId],
   );
   const serverAttachmentResources = useMemo(
     () => selectHandoffImageResources(serverMessages, attachmentPreviewHandoffByMessageId),
@@ -5086,10 +5086,8 @@ export default function ChatView(props: ChatViewProps) {
       return [];
     });
     resetLocalDispatch();
-    cancelVideoPreviewRequest();
-    setOpeningVideoAttachmentId(null);
     setExpandedImage(null);
-  }, [cancelVideoPreviewRequest, draftId, resetLocalDispatch, threadId]);
+  }, [draftId, resetLocalDispatch, threadId]);
 
   const closeExpandedImage = useCallback(() => {
     setExpandedImage(null);
@@ -8508,14 +8506,9 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
 
-  const onExpandTimelineImage = useCallback(
-    (preview: ExpandedImagePreview) => {
-      cancelVideoPreviewRequest();
-      setOpeningVideoAttachmentId(null);
-      setExpandedImage(preview);
-    },
-    [cancelVideoPreviewRequest],
-  );
+  const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {
+    setExpandedImage(preview);
+  }, []);
   const onOpenTurnDiff = useCallback(
     (turnId: TurnId, filePath?: string) => {
       if (!isServerThread || !activeThreadRef) return;
@@ -8682,14 +8675,14 @@ export default function ChatView(props: ChatViewProps) {
         onMessageAgent={onMessageSessionAgent}
       />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
-      activeProject &&
-      activeWorkspaceRoot ? (
+      ((activeProject && activeWorkspaceRoot) || activeFileSurface?.attachment) ? (
       <Suspense fallback={null}>
         <FilePreviewPanel
-          key={`${activeProject.environmentId}:${activeWorkspaceRoot}`}
-          environmentId={activeProject.environmentId}
-          cwd={activeWorkspaceRoot}
-          projectName={activeProject.title}
+          key={`${activeThread.environmentId}:${activeFileSurface?.attachment ? `attachment:${activeFileSurface.attachment.id}` : activeWorkspaceRoot}`}
+          environmentId={activeThread.environmentId}
+          cwd={activeWorkspaceRoot ?? ""}
+          projectName={activeProject?.title ?? ""}
+          {...(activeFileSurface?.attachment ? { attachment: activeFileSurface.attachment } : {})}
           threadRef={activeThreadRef}
           composerDraftTarget={composerDraftTarget}
           keybindings={keybindings}
@@ -8843,7 +8836,7 @@ export default function ChatView(props: ChatViewProps) {
                 isRevertingCheckpoint={isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
                 onFileOpen={openFileAttachment}
-                openingVideoAttachmentId={openingVideoAttachmentId}
+                onFileDownload={downloadFileAttachment}
                 markdownCwd={gitCwd ?? undefined}
                 resolvedTheme={resolvedTheme}
                 timestampFormat={timestampFormat}
@@ -9091,7 +9084,6 @@ export default function ChatView(props: ChatViewProps) {
                             setThreadError={setThreadError}
                             onExpandImage={onExpandTimelineImage}
                             onFileOpen={openFileAttachment}
-                            openingVideoAttachmentId={openingVideoAttachmentId}
                           />
                           <SessionPresentationArea
                             statuses={sessionInteractionState.statuses}
@@ -9311,7 +9303,7 @@ export default function ChatView(props: ChatViewProps) {
 
       {expandedImage && (
         <ExpandedImageDialog
-          key={`${expandedImage.images[expandedImage.index]?.src ?? "image"}:${expandedImage.index}`}
+          key={expandedImageKey(expandedImage)}
           preview={expandedImage}
           onClose={closeExpandedImage}
         />

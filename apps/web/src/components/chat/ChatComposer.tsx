@@ -243,6 +243,7 @@ import {
   submitComposerDraft,
 } from "./composerSubmission";
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
+import { PierreEntryIcon } from "./PierreEntryIcon";
 import {
   createComposerScrollGestureState,
   recordComposerScrollGestureEvent,
@@ -864,7 +865,6 @@ import { toastManager } from "../ui/toast";
 import {
   BotIcon,
   CircleAlertIcon,
-  FileIcon,
   PaperclipIcon,
   PencilRulerIcon,
   MessageCircleQuestionIcon,
@@ -1455,7 +1455,6 @@ export interface ChatComposerProps {
   setThreadError: (threadId: ThreadId | null, error: string | null) => void;
   onExpandImage: (preview: ExpandedImagePreview) => void;
   onFileOpen: (attachment: ChatFileAttachment) => void;
-  openingVideoAttachmentId: string | null;
 }
 
 // --------------------------------------------------------------------------
@@ -1567,7 +1566,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     setThreadError,
     onExpandImage,
     onFileOpen,
-    openingVideoAttachmentId,
   } = props;
   const [isQuickQuestionOpen, setIsQuickQuestionOpen] = useState(false);
 
@@ -4470,7 +4468,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             {image.previewUrl ? (
               <img src={image.previewUrl} alt="" className="size-full object-cover" />
             ) : (
-              <FileIcon className="m-auto size-3.5 text-secondary-label" />
+              <PierreEntryIcon
+                pathValue={image.name}
+                kind="file"
+                theme={resolvedTheme}
+                className="m-auto size-3.5"
+              />
             )}
           </button>
         ))}
@@ -6070,7 +6073,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                           maxFileAttachmentBytes !== null &&
                           file.sizeBytes <= maxFileAttachmentBytes;
                         const upload = fileCanUpload ? uploadsByImageId[file.id] : undefined;
-                        const isOpening = file.uploadedAttachmentId === openingVideoAttachmentId;
                         return (
                           <div
                             key={file.id}
@@ -6079,11 +6081,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                             <button
                               type="button"
                               className="flex h-full w-full cursor-zoom-in flex-col items-center justify-center gap-1 px-1 text-white aria-disabled:cursor-default aria-disabled:opacity-50"
-                              aria-busy={isOpening || undefined}
-                              aria-disabled={isOpening || undefined}
-                              aria-label={`${isOpening ? "Loading" : "Play"} ${file.name}`}
+                              aria-label={`Play ${file.name}`}
                               onClick={() => {
-                                if (isOpening) return;
                                 if (file.file !== null) {
                                   const preview = buildExpandedImagePreview([file], file.id);
                                   if (preview) onExpandImage(preview);
@@ -6099,18 +6098,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                   <span className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-black/10" />
                                 </>
                               )}
-                              {isOpening ? (
-                                <span className="relative z-10 text-[10px]">Loading…</span>
-                              ) : (
-                                <>
-                                  <PlayIcon className="relative z-10 size-4 fill-current drop-shadow-md" />
-                                  {/* Two videos are otherwise indistinguishable
+                              <>
+                                <PlayIcon className="relative z-10 size-4 fill-current drop-shadow-md" />
+                                {/* Two videos are otherwise indistinguishable
                                       black tiles when no thumbnail decodes. */}
-                                  <span className="pointer-events-none relative z-10 w-full truncate text-center text-[9px] leading-tight drop-shadow-md">
-                                    {file.name}
-                                  </span>
-                                </>
-                              )}
+                                <span className="pointer-events-none relative z-10 w-full truncate text-center text-[9px] leading-tight drop-shadow-md">
+                                  {file.name}
+                                </span>
+                              </>
                             </button>
                             {upload?.status === "uploading" && (
                               <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-background/85 px-1 text-center text-[10px] text-foreground">
@@ -6180,7 +6175,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                             key={file.id}
                             className="flex min-w-0 items-center gap-2 py-1 text-sm text-foreground"
                           >
-                            <FileIcon className="size-4 shrink-0 text-secondary-label" />
+                            <PierreEntryIcon
+                              pathValue={file.name}
+                              kind="file"
+                              theme={resolvedTheme}
+                            />
                             <span className="min-w-0 flex-1 truncate">{file.name}</span>
                             <span className="shrink-0 text-xs text-secondary-label">
                               {needsReattach
