@@ -279,6 +279,7 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
         for (const defaultRule of Keybindings.DEFAULT_KEYBINDINGS) {
           assert.isTrue(byCommand.has(defaultRule.command), `expected ${defaultRule.command}`);
         }
+        assert.equal(byCommand.get("thread.copyReference")?.key, "mod+shift+c");
         assert.isTrue(byCommand.has("script.run-tests.run"));
       }).pipe(Effect.provide(makeKeybindingsLayer())),
   );

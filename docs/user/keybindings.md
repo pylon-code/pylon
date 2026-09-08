@@ -61,6 +61,11 @@ to close it closes the desktop window as before. Browsers reserve `mod+w` for cl
 and never pass it to the page, so in a browser rebind this command (and `terminal.close`) to a
 shortcut the browser leaves alone, such as `alt+w`.
 
+`thread.copyReference` copies the open pull request panel URL, then the active thread’s pull request
+link, or its thread ID when no pull request is available. Its default shortcut is `mod+shift+c`;
+terminal copy keeps its existing shortcut. The command is also available from the command palette
+and on mobile hardware keyboards.
+
 `thread.settle` settles the active thread or restores it when it is already settled. Its default
 shortcut is `mod+shift+s`, and it does not run while the terminal has focus.
 

@@ -1,7 +1,22 @@
 import { StackActions, useNavigation } from "@react-navigation/native";
-import { useCallback, useMemo, useSyncExternalStore, type PropsWithChildren } from "react";
+import { resolveThreadReferenceCopyTarget } from "@t3tools/shared/threadReference";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type PropsWithChildren,
+} from "react";
 
+import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { T3KeyboardCommands } from "../../native/T3KeyboardCommands";
+import { useProject, useThreadShell } from "../../state/entities";
+import { useEnvironmentQuery } from "../../state/query";
+import type { GitActionProgress } from "../../state/use-vcs-action-state";
+import { vcsEnvironment } from "../../state/vcs";
+import { GitActionProgressOverlay } from "../threads/GitActionProgressOverlay";
 import {
   dispatchHardwareKeyboardCommand,
   getHardwareKeyboardCommandRegistrationVersion,
@@ -11,11 +26,90 @@ import {
   type HardwareKeyboardCommand,
 } from "./hardwareKeyboardCommands";
 
+const EMPTY_COPY_FEEDBACK: GitActionProgress = {
+  phase: "idle",
+  label: null,
+  description: null,
+};
+const COPY_FEEDBACK_DISMISS_MS = 3_000;
+
 export function HardwareKeyboardCommandProvider({
   children,
   pathname,
 }: PropsWithChildren<{ readonly pathname: string }>) {
   const navigation = useNavigation();
+  const activeThreadRef = useMemo(() => parseActiveThreadPath(pathname), [pathname]);
+  const activeThread = useThreadShell(activeThreadRef);
+  const activeProjectRef = useMemo(
+    () =>
+      activeThread === null
+        ? null
+        : {
+            environmentId: activeThread.environmentId,
+            projectId: activeThread.projectId,
+          },
+    [activeThread],
+  );
+  const activeProject = useProject(activeProjectRef);
+  const activeThreadPullRequest =
+    activeThread?.linkedPullRequest ?? activeThread?.branchPullRequest ?? null;
+  const activeThreadCwd = activeThread?.worktreePath ?? activeProject?.workspaceRoot ?? null;
+  const gitStatus = useEnvironmentQuery(
+    activeThread !== null &&
+      activeThread.branchPullRequest === undefined &&
+      activeThreadPullRequest === null &&
+      activeThread.branch !== null &&
+      activeThreadCwd !== null
+      ? vcsEnvironment.status({
+          environmentId: activeThread.environmentId,
+          input: { cwd: activeThreadCwd },
+        })
+      : null,
+  ).data;
+  const detectedPullRequestUrl =
+    activeThread?.branch != null && gitStatus?.refName === activeThread.branch
+      ? (gitStatus.pr?.url ?? null)
+      : null;
+  const copyTarget = useMemo(
+    () =>
+      activeThreadRef === null
+        ? null
+        : resolveThreadReferenceCopyTarget({
+            threadId: activeThread?.id ?? activeThreadRef.threadId,
+            linkedPullRequestUrl: activeThreadPullRequest?.url ?? null,
+            detectedPullRequestUrl,
+          }),
+    [activeThread, activeThreadRef, activeThreadPullRequest, detectedPullRequestUrl],
+  );
+  const [copyFeedback, setCopyFeedback] = useState<GitActionProgress>(EMPTY_COPY_FEEDBACK);
+  const copyRequestIdRef = useRef(0);
+  const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dismissCopyFeedback = useCallback(() => {
+    if (copyFeedbackTimerRef.current !== null) {
+      clearTimeout(copyFeedbackTimerRef.current);
+      copyFeedbackTimerRef.current = null;
+    }
+    setCopyFeedback(EMPTY_COPY_FEEDBACK);
+  }, []);
+  const showCopyFeedback = useCallback((feedback: GitActionProgress) => {
+    if (copyFeedbackTimerRef.current !== null) {
+      clearTimeout(copyFeedbackTimerRef.current);
+    }
+    setCopyFeedback(feedback);
+    copyFeedbackTimerRef.current = setTimeout(() => {
+      copyFeedbackTimerRef.current = null;
+      setCopyFeedback(EMPTY_COPY_FEEDBACK);
+    }, COPY_FEEDBACK_DISMISS_MS);
+  }, []);
+  useEffect(
+    () => () => {
+      copyRequestIdRef.current += 1;
+      if (copyFeedbackTimerRef.current !== null) {
+        clearTimeout(copyFeedbackTimerRef.current);
+      }
+    },
+    [],
+  );
   const registrationVersion = useSyncExternalStore(
     subscribeToHardwareKeyboardCommandRegistrations,
     getHardwareKeyboardCommandRegistrationVersion,
@@ -25,17 +119,42 @@ export function HardwareKeyboardCommandProvider({
     const commands = new Set<HardwareKeyboardCommand>(getRegisteredHardwareKeyboardCommands());
     commands.add("newTask");
     if (pathname !== "/" || navigation.canGoBack()) commands.add("back");
-    if (parseActiveThreadPath(pathname)) {
+    if (activeThreadRef !== null) {
       commands.add("files");
       commands.add("terminal");
       commands.add("review");
+      if (pathname.split("/")[4] !== "terminal") commands.add("copyThreadReference");
     }
     return [...commands];
-  }, [pathname, registrationVersion, navigation]);
+  }, [activeThreadRef, pathname, registrationVersion, navigation]);
 
   const onCommand = useCallback(
     (command: HardwareKeyboardCommand) => {
       if (dispatchHardwareKeyboardCommand(command)) return;
+
+      if (command === "copyThreadReference") {
+        if (copyTarget === null) return;
+        const requestId = ++copyRequestIdRef.current;
+        void tryCopyTextWithHaptic(copyTarget.value, {
+          target: copyTarget.clipboardTarget,
+        }).then((didCopy) => {
+          if (requestId !== copyRequestIdRef.current) return;
+          showCopyFeedback(
+            didCopy
+              ? {
+                  phase: "success",
+                  label: copyTarget.successTitle,
+                  description: copyTarget.value,
+                }
+              : {
+                  phase: "error",
+                  label: copyTarget.failureTitle,
+                  description: "Try again.",
+                },
+          );
+        });
+        return;
+      }
 
       if (command === "newTask") {
         navigation.navigate("NewTaskSheet", { screen: "NewTask" });
@@ -62,12 +181,15 @@ export function HardwareKeyboardCommandProvider({
         navigation.navigate("ThreadReview", thread);
       }
     },
-    [pathname, navigation],
+    [copyTarget, navigation, pathname, showCopyFeedback],
   );
 
   return (
-    <T3KeyboardCommands enabledCommands={enabledCommands} onCommand={onCommand}>
-      {children}
-    </T3KeyboardCommands>
+    <>
+      <T3KeyboardCommands enabledCommands={enabledCommands} onCommand={onCommand}>
+        {children}
+      </T3KeyboardCommands>
+      <GitActionProgressOverlay progress={copyFeedback} onDismiss={dismissCopyFeedback} />
+    </>
   );
 }
