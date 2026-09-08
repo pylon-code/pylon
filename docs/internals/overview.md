@@ -75,6 +75,10 @@ processing is totally ordered. For each envelope `processEnvelope`:
    accepted receipt;
 4. after commit, swaps in the new read model, cleans up attachments, and publishes committed events
    to subscribers. Attachment cleanup failures are logged and do not reject committed commands.
+   Bootstrap retries them: cleanup keeps its own `projection.attachment-cleanup` cursor in
+   `projection_state`, and replays reverts and deletes past it only after every projector has
+   caught up, so files referenced by messages or `user-input.answer-submitted` activities are
+   retained.
 
 Because persistence and projection share a transaction, the read model cannot durably disagree with
 the event log. On dispatch failure the engine rereads persisted events past the starting sequence and

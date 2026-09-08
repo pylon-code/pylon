@@ -17,6 +17,7 @@
 - [Keeping app and server in sync](./user/updating.md)
 - [Source control integrations](./user/source-control.md)
 - [Revert a conversation](./user/conversation-rollback.md)
+- [Files in question answers](./user/question-attachments.md)
 - [Background service (Linux)](./user/background-service.md)
 - Providers: [Codex](./user/providers-codex.md) · [Claude](./user/providers-claude.md) · [OpenCode](./user/providers-opencode.md) · [Prime Agent](./user/providers-prime-agent.md)
 
