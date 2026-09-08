@@ -38,6 +38,22 @@ Turning either option back on resumes settlement checks.
 When you un-settle a thread, it returns to the top of the active list so you can find it right
 away. Its timestamps do not change. Other threads keep their positions.
 
+In the flat sidebar, a thread with unsent text, attachments, or context shows an amber tint and a
+pen icon when it is not open. Hover its row and choose **Discard draft** to clear that content
+without opening the thread. Model and mode choices are kept.
+
+The flat sidebar's project filter stays selected when you visit Settings or reload. Choose
+**All projects** to clear it. Pylon waits for connected environments to finish loading before
+clearing a filter for a project that was removed.
+
+Select several pinned threads and choose **Unpin** from the flat sidebar's context menu to unpin
+them together. Your unpin confirmation setting applies. Both sidebar layouts continue bulk
+deletion after a thread fails, keeping failed threads selected for retry. A worktree removal
+failure is reported separately when the thread itself was deleted successfully.
+
+Project settings are available from the project menu in either sidebar and from the breadcrumb
+context menu when composing a new thread.
+
 The server finds the pull request for each unsettled thread’s saved branch, even while your apps
 are closed. Settled threads keep their saved links. Older servers retain client-side discovery
 while the thread is visible; update them to discover and save links without an open client.
