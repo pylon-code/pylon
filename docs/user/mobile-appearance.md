@@ -22,5 +22,9 @@ another theme replaces those colors. Like other themes, Material You can be sele
 light and dark appearances. If you change your wallpaper, the colors update when you return to
 Pylon.
 
+Android also offers **Material You Layout** in Appearance. It uses rounded panels, pill-shaped
+search fields, tonal selected threads, and Material-style switches. It is off by default and works
+with any theme.
+
 **System** follows the device appearance automatically. Theme, text, code, and terminal appearance
 preferences are stored on the device.
