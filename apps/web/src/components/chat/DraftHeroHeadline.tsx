@@ -171,14 +171,7 @@ export function DraftHeroHeadline({
                 closeOnClick
                 className="[&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
               >
-                <ProjectFavicon
-                  environmentId={group.environmentId}
-                  cwd={group.workspaceRoot}
-                  projectName={group.displayName}
-                  faviconPath={group.faviconPath}
-                  projectIcon={group.projectIcon}
-                  className="size-4 shrink-0"
-                />
+                <ProjectFavicon project={group} className="size-4 shrink-0" />
                 <Tooltip>
                   <TooltipTrigger render={<span className="block min-w-0 truncate" />}>
                     {group.displayName}
