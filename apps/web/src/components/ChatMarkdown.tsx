@@ -121,7 +121,7 @@ import { LRUCache } from "../lib/lruCache";
 import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
 import { RenderErrorBoundary } from "./RenderErrorBoundary";
 import { useTheme } from "../hooks/useTheme";
-import { getClientSettings } from "../hooks/useSettings";
+import { getClientSettings, useClientSettings } from "../hooks/useSettings";
 import {
   chatMarkdownClipboardPayload,
   serializeTableElementToCsv,
@@ -176,6 +176,8 @@ import {
   openUrlInPreview,
   BrowserPreviewUnavailableError,
 } from "../browser/openFileInPreview";
+import { resolveLinkTarget } from "../browser/browserLinkTarget";
+import { useOpenLink } from "../browser/useOpenLink";
 import { PullRequestLinkPreview } from "./pullRequest/PullRequestLinkPreview";
 
 interface ChatMarkdownProps {
@@ -2192,10 +2194,9 @@ function useChatMarkdownState({
     event.clipboardData.setData("text/html", payload.html);
   }, []);
   const openChangeRequestLink = useOpenChangeRequestLink(threadRef);
-  const openDeferredMarkdownLink = useCallback(async (url: string) => {
-    const api = readLocalApi();
-    if (api) await api.shell.openExternal(url);
-  }, []);
+  const openDeferredMarkdownLink = useOpenLink(threadRef);
+  // Anchors decide synchronously whether to intercept, so subscribe to hydrated settings.
+  const linkTargetPreference = useClientSettings((settings) => settings.browserLinkTarget);
   const resolveThreadPullRequest = useCallback(
     (href: string): ThreadLinkedPullRequest | null => {
       if (
@@ -2438,6 +2439,7 @@ function useChatMarkdownState({
       imageBaseDir,
       inlineCodeFileLinkMetaByText,
       isStreaming,
+      linkTargetPreference,
       markdownFileLinkMetaByHref,
       onTaskListChange,
       onUseArtifactTemplate,
@@ -2463,6 +2465,7 @@ function useChatMarkdownState({
       imageBaseDir,
       inlineCodeFileLinkMetaByText,
       isStreaming,
+      linkTargetPreference,
       markdownFileLinkMetaByHref,
       onTaskListChange,
       onUseArtifactTemplate,
@@ -2582,6 +2585,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       serverConfig,
       projects,
       openDeferredMarkdownLink,
+      linkTargetPreference,
       imageBaseDir,
       markdownFileLinkMetaByHref,
       threadRef,
@@ -2674,9 +2678,28 @@ const CHAT_MARKDOWN_COMPONENTS = {
             }
             // A link to a change request in a workspace project opens beside the
             // conversation instead of in a browser: it is the thing being talked about, and
-            // the panel it opens offers the browser as one of its actions. Anything else is
-            // an ordinary link and keeps the `_blank` the shell already handles.
-            if (href) openChangeRequestLink(event, href, undefined, environmentId ?? undefined);
+            // the panel it opens offers the browser as one of its actions.
+            if (!href || openChangeRequestLink(event, href, undefined, environmentId ?? undefined))
+              return;
+            if (
+              event.defaultPrevented ||
+              resolveLinkTarget({
+                url: href,
+                event,
+                preference: linkTargetPreference,
+                canOpenInApp: canOpenInPreview,
+              }) !== "app"
+            )
+              return;
+            event.preventDefault();
+            event.stopPropagation();
+            void openDeferredMarkdownLink(href).catch((cause: unknown) => {
+              reportMarkdownActionFailure(
+                { operation: "open-link-in-preview", target: href },
+                cause,
+              );
+              toastManager.add({ type: "error", title: "Unable to open link" });
+            });
           }}
           onContextMenu={(event) => {
             if (!href || !faviconHost) return;

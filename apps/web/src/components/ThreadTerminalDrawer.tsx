@@ -764,10 +764,8 @@ function TerminalViewport({
           };
           void openTerminalLinkInPreview({
             url: text,
-            position: { x: event.clientX, y: event.clientY },
             threadRef,
             openPreview,
-            localApi,
             fallbackToBrowser,
           });
           return;
