@@ -32,6 +32,12 @@ Pylon is a long-lived independent product, not a temporary reskin or a patch que
 - An inherited compatibility name is not permission to restore visible T3 branding. Keep product identity and runtime compatibility separate.
 - Before committing or publishing, verify the current branch and remotes. If the checkout is not rooted in the Pylon repository or a push would target a T3 remote, stop and correct it before proceeding.
 
+## Shared agent skills and continuation
+
+Repository skills live in `.agents/skills/<name>/SKILL.md`. Claude reads this file through `CLAUDE.md`, and `.claude/skills` points to that same skill directory. If your harness does not discover repository skills automatically, read the relevant `SKILL.md` directly; do not substitute personal memories or an older copy of the workflow.
+
+For upstream work, including resuming another agent's work, read `.agents/skills/review-t3-upstream/SKILL.md`. Its [continuation procedure](.agents/skills/review-t3-upstream/references/continuation.md) explains how to find the active tracking issue, recover the existing worktree and verification evidence, and preserve the frozen review range. Keep reusable instructions in the skill; keep current work and handoff status in the owning issue, with local recovery artifacts outside the tracked worktree. A handoff should let either Claude or Codex continue without the previous conversation.
+
 ## What makes Pylon special?
 
 Pylon inherits a product used by more than 100,000 people. Preserve the qualities that made the upstream project successful while giving the fork a coherent Pylon identity.

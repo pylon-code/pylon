@@ -1,6 +1,6 @@
 ---
 name: review-t3-upstream
-description: Review and selectively adopt T3 Code upstream changes into Pylon. Use for upstream comparisons, catch-up, update recommendations, deferred work, or approved integration. Review final changes by dependency group, preserve Pylon behavior, and honor existing maintainer approval.
+description: Review and selectively adopt T3 Code upstream changes into Pylon. Use for comparisons, catch-up, deferred work, approved integration, or resuming another agent's upstream work. Review final changes by dependency group, preserve Pylon behavior, and honor existing maintainer approval.
 ---
 
 # Review T3 Upstream
@@ -8,6 +8,8 @@ description: Review and selectively adopt T3 Code upstream changes into Pylon. U
 Maintain Pylon as an independent fork. Optimize for useful, verified behavior and a bounded review backlog. Commit counts measure source history, not missing fixes or product quality.
 
 Read `AGENTS.md` and the active `.agents/upstream-review.md`. Read [the decision framework](references/decision-framework.md) when choosing scope, review depth, or validation. Search archived decisions by SHA, PR, or affected behavior when needed; do not load the entire history each cycle.
+
+When resuming after an interruption, changing agents, or preparing a handoff, first read [the continuation procedure](references/continuation.md). Recover the active cycle and existing work before starting a fresh inventory. This skill is shared by Claude and Codex; its operation does not depend on either harness's memory or task APIs.
 
 ## Authorization and boundaries
 
@@ -19,7 +21,7 @@ Read `AGENTS.md` and the active `.agents/upstream-review.md`. Read [the decision
 
 ## Bound one integration cycle
 
-Check the branch, worktree, and remotes. Fetch `origin pylon` and `t3code-upstream main` once at the start of a cycle; freeze their full SHAs for analysis. Compare against the fetched `origin/pylon`, not a potentially stale local `pylon` branch.
+Check the branch, worktree, and remotes. Fetch `origin pylon` and `t3code-upstream main` once at the start of a new cycle; freeze their full SHAs for analysis. On resumption, retain the recorded upstream bound and refresh only Pylon's landing state. Compare against the fetched `origin/pylon`, not a potentially stale local `pylon` branch.
 
 Validate that the ledger's `reviewed-through` is an ancestor of the bounded upstream head. If it is not, investigate before changing the cursor. Inventory **every** commit in the range, including its changed paths, then subtract recorded decisions and check patch equivalence:
 
