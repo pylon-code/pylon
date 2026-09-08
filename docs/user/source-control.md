@@ -74,8 +74,10 @@ Pylon works with the platforms your team already uses:
   the tree moves below the code.
 - Choose **Settings → General → Diff layout** to use stacked or side-by-side diffs. Changing the
   layout in either diff toolbar updates this preference too.
-- Enable **Settings → General → Proactive panels** to open a newly linked review automatically and
-  switch to the completed turn's diff when agent work changes files. An open review stays in front, and manual panel choices take priority
+- Enable **Settings → General → Proactive panels** to open a thread's linked review automatically,
+  both when you enter the thread and when a new link appears, and to switch to the completed turn's
+  diff when agent work changes files. An open review stays in front, and manual panel choices take
+  priority
 - Open the review directly in your browser with one click
 - If Pylon cannot load a GitHub pull request, including when GitHub rate limits requests, use
   **Open on GitHub** in the error view
