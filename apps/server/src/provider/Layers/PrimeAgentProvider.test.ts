@@ -380,6 +380,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
       expect(snapshot.featureCapabilities?.inputQueue?.operations).toContain("remove");
       expect(snapshot.featureCapabilities?.context?.operations).toContain("refine");
       expect(snapshot.requiresNewThreadForModelChange).toBe(false);
+      expect(snapshot.reportsContextWindow).toBe(true);
       expect(snapshot.supportedRuntimeModes).toEqual(["approval-required", "full-access"]);
       expect(snapshot.message).toBe("Checking Prime Agent CLI availability...");
     }),
@@ -421,6 +422,7 @@ describe("buildInitialPrimeAgentProviderSnapshot", () => {
         ),
       ).toEqual(["thinkingLevel", "serviceTier"]);
       expect(snapshot.requiresNewThreadForModelChange).toBe(true);
+      expect(snapshot.reportsContextWindow).toBe(false);
       expect(snapshot.supportedRuntimeModes).toEqual(["full-access"]);
       expect(snapshot.message).toBe(
         "Checking Prime Agent CLI availability... Prime Agent daemon integration is unavailable; using ACP compatibility mode.",
