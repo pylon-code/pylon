@@ -54,6 +54,43 @@ failure is reported separately when the thread itself was deleted successfully.
 Project settings are available from the project menu in either sidebar and from the breadcrumb
 context menu when composing a new thread.
 
+## Arrange threads
+
+On web and desktop, drag a thread between sections to change its state. Drag a thread up into
+the pinned section to pin it at the spot you drop it; drag a pinned thread down into the active
+list to unpin it. Dragging a thread onto the **Settled** header settles it, and dragging a settled
+thread into the active list un-settles it. A snoozed thread can be dragged out of the snoozed
+shelf, which wakes it, but threads cannot be dragged into the shelf because snoozing needs a wake
+time. Dragging a pinned thread out of the pinned section does not ask for unpin confirmation.
+Pinned and active boundary labels appear only while dragging. Other rows slide aside to show where the thread will land. When you cross into another section,
+the dragged thread shows the action the drop performs, with its icon: **Pin**, **Unpin**,
+**Settle**, **Un-settle**, or **Wake**. Its status and hover actions hide during the drag. A pinned
+thread keeps its pin only while it stays in the pinned section; once it leaves, the badge takes
+over. Reordering within the same section shows no badge. When there are no pins, drag to the top
+edge to pin a thread. Section labels stay readable for the whole drag, and the section the
+thread is over takes the accent color. Section labels also identify empty sections and a collapsed settled shelf.
+
+Drag within the pinned or active section to change its order. Other rows slide aside to show the
+spot where the thread will land. Drops into either section keep the position you choose. On
+mobile, open a pinned or active thread's menu and choose **Move up** or **Move down**. The server
+saves the order, so it survives a refresh and appears on your other connected devices.
+
+On web and desktop, the list also animates section changes made with thread actions such as
+**Pin**, **Settle**, and **Snooze**. These transitions respect your system's reduced-motion
+preference. While dragging, rows follow the insertion gap without replaying a second transition
+after the drop.
+
+New threads appear above the active threads you have arranged. Settling clears a thread's active
+position, so using **Un-settle** returns it to the top. Pinning and snoozing preserve its active
+position until you move it again. Thread activity does not change the order. The settled shelf
+continues to use settlement time.
+
+If dragging is unavailable for one environment, update the Pylon server running in that
+environment. Pinned and active reordering require server support. Threads from older servers keep
+their default order until the server is updated.
+
+## Pull request links
+
 The server finds the pull request for each unsettled thread’s saved branch, even while your apps
 are closed. Settled threads keep their saved links. Older servers retain client-side discovery
 while the thread is visible; update them to discover and save links without an open client.
@@ -61,14 +98,6 @@ while the thread is visible; update them to discover and save links without an o
 Right-click a pull request link in a thread and choose **Link to thread** to select a different
 pull request. **Unlink from thread** returns to the branch pull request, if one exists. The linked
 pull request participates in automatic settlement.
-
-On web and desktop, drag a pinned thread to change its position. On mobile, open the thread's menu
-and choose **Move up** or **Move down**. The order is stored by the server and appears on your
-other connected devices.
-
-If reordering is unavailable for one environment, update the Pylon server running in that
-environment. Older servers can still pin and unpin threads, but do not understand synced ordering;
-their pinned threads keep the default newest-first order below the ones you have arranged.
 
 ## Panel motion
 
