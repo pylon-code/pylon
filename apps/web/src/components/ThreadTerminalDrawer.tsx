@@ -1,3 +1,4 @@
+import { splitFilePathPosition } from "@t3tools/client-runtime/markdown-links";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
@@ -54,12 +55,7 @@ import {
 } from "~/terminal/ghostty/surface";
 import { type GhosttyColor, type GhosttyTheme } from "~/terminal/ghostty/core";
 import { useOpenInPreferredEditor } from "../editorPreferences";
-import {
-  isTerminalLinkActivation,
-  isTerminalUrl,
-  resolvePathLinkTarget,
-  splitPathAndPosition,
-} from "../terminal-links";
+import { isTerminalLinkActivation, isTerminalUrl, resolvePathLinkTarget } from "../terminal-links";
 import {
   isDiffToggleShortcut,
   isTerminalClearShortcut,
@@ -309,7 +305,7 @@ export function resolveTerminalPathOpenTargets(text: string, cwd: string) {
   const targetPath = resolvePathLinkTarget(text, cwd);
   return {
     targetPath,
-    fileManagerTargetPath: splitPathAndPosition(targetPath).path,
+    fileManagerTargetPath: splitFilePathPosition(targetPath).path,
   };
 }
 

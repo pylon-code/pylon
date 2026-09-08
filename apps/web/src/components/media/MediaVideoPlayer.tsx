@@ -14,8 +14,11 @@ interface MediaVideoPlayerProps {
   readonly originalUrl?: string | undefined;
   readonly revision?: string | null | undefined;
   readonly preload?: "visible" | "metadata" | undefined;
+  readonly autoPlay?: boolean | undefined;
   readonly className?: string | undefined;
   readonly videoClassName?: string | undefined;
+  /** Styles the loading and failure panels, which otherwise assume an inline light surface. */
+  readonly stateClassName?: string | undefined;
   readonly style?: CSSProperties | undefined;
   readonly copyMarkdown?: string | undefined;
   readonly onExpand?: ((src: string) => void) | undefined;
@@ -31,8 +34,10 @@ export function MediaVideoPlayer({
   originalUrl,
   revision = null,
   preload = "visible",
+  autoPlay = false,
   className,
   videoClassName,
+  stateClassName,
   style,
   copyMarkdown,
   onExpand,
@@ -130,7 +135,6 @@ export function MediaVideoPlayer({
         <Maximize2Icon />
       </Button>
     ) : null;
-
   const player = (
     <span
       className={cn("relative inline-block align-middle", className)}
@@ -140,7 +144,12 @@ export function MediaVideoPlayer({
       {failed ? (
         <span
           role="alert"
-          className="flex min-h-28 flex-col items-center justify-center gap-3 rounded-lg border border-border/40 bg-muted/40 p-4 text-center text-sm text-muted-foreground"
+          className={cn(
+            // Same 16:9 slot as the loading and playing states, so a failed or
+            // retried video does not move the rows below it.
+            "flex aspect-video max-h-full min-h-28 w-full flex-col items-center justify-center gap-3 rounded-lg border border-border/40 bg-muted/40 p-4 text-center text-sm text-muted-foreground",
+            stateClassName,
+          )}
         >
           <span className="inline-flex items-center gap-1.5">
             <TriangleAlertIcon aria-hidden className="size-3.5 shrink-0" />
@@ -168,6 +177,7 @@ export function MediaVideoPlayer({
           ref={videoRef}
           src={src}
           aria-label={label || "Video preview"}
+          autoPlay={autoPlay}
           controls
           playsInline
           preload={preload === "metadata" || preloadedSrc === src ? "metadata" : "none"}
@@ -186,7 +196,7 @@ export function MediaVideoPlayer({
         <span
           role="status"
           aria-label="Loading video"
-          className="block aspect-video w-full rounded-lg bg-muted/60"
+          className={cn("block aspect-video w-full rounded-lg bg-muted/60", stateClassName)}
           style={style}
         />
       )}

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Layer from "effect/Layer";
-import { Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
+  assetUrlStateFromResult,
   createAssetEnvironmentAtoms,
   InvalidAssetCollectionKeyError,
   parseAssetCollectionKey,
@@ -116,5 +117,22 @@ describe("createAssetEnvironmentAtoms", () => {
         resources: [...resources].toReversed(),
       }),
     ).not.toBe(assets.createUrls({ environmentId, resources }));
+  });
+});
+
+describe("asset URL metadata", () => {
+  it("preserves the server image dimensions for both clients when resolving a remote URL", () => {
+    const result = AsyncResult.success({
+      relativeUrl: "/api/assets/signed-image",
+      expiresAt: "2026-09-08T01:00:00.000Z",
+      imageDimensions: { width: 720, height: 1400 },
+      sourcePath: "/workspace/portrait.png",
+    });
+    expect(assetUrlStateFromResult(result, "https://environment.example")).toEqual({
+      _tag: "Success",
+      url: "https://environment.example/api/assets/signed-image",
+      sourcePath: "/workspace/portrait.png",
+      imageDimensions: { width: 720, height: 1400 },
+    });
   });
 });

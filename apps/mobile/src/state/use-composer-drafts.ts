@@ -20,7 +20,7 @@ import {
   isComposerAttachmentFileRetained,
   retainComposerAttachmentFile,
 } from "../lib/composerAttachmentFiles";
-import type { DraftComposerAttachment, DraftComposerFileAttachment } from "../lib/composerImages";
+import type { DraftComposerAttachment, FileBackedComposerAttachment } from "../lib/composerImages";
 import { SerializedAsyncQueue } from "../lib/serialized-async-queue";
 import { appAtomRegistry } from "./atom-registry";
 import {
@@ -390,7 +390,7 @@ function isComposerAttachmentFileReferenced(fileUri: string): boolean {
   return [...drafts, ...queuedMessages, ...signedOutAttachmentOwners()].some((owner) =>
     owner.attachments.some(
       (attachment) =>
-        attachment.type === "file" &&
+        attachment.fileUri !== undefined &&
         composerAttachmentFileReferenceKey(attachment.fileUri) === referenceKey,
     ),
   );
@@ -417,9 +417,9 @@ export async function releaseUnusedComposerAttachmentFiles(
   attachments: ReadonlyArray<DraftComposerAttachment>,
 ): Promise<void> {
   const candidates = new Set(
-    attachments
-      .filter((attachment) => attachment.type === "file")
-      .map((attachment) => attachment.fileUri),
+    attachments.flatMap((attachment) =>
+      attachment.fileUri !== undefined ? [attachment.fileUri] : [],
+    ),
   );
   const uploadCandidates = new Map<EnvironmentId, Set<string>>();
   for (const attachment of attachments) {
@@ -468,7 +468,7 @@ export async function releaseUnusedComposerAttachmentFiles(
     incomingShareFileUris = new Set(
       incomingShares.flatMap((share) =>
         share.attachments.flatMap((attachment) =>
-          attachment.type === "file"
+          attachment.fileUri !== undefined
             ? [composerAttachmentFileReferenceKey(attachment.fileUri)]
             : [],
         ),
@@ -523,7 +523,8 @@ export function scheduleUnusedComposerAttachmentCleanup(
 ): void {
   if (
     !attachments.some(
-      (attachment) => attachment.type === "file" || attachment.uploadedAttachmentId !== undefined,
+      (attachment) =>
+        attachment.fileUri !== undefined || attachment.uploadedAttachmentId !== undefined,
     )
   ) {
     return;
@@ -535,7 +536,7 @@ export function scheduleUnusedComposerAttachmentCleanup(
 
 /** Keeps a native preview or upload readable until it finishes, then retries ownership cleanup. */
 export function retainComposerAttachmentFileForPreview(
-  attachment: DraftComposerFileAttachment,
+  attachment: FileBackedComposerAttachment,
 ): () => void {
   return retainComposerAttachmentFile(attachment.fileUri, () => {
     scheduleUnusedComposerAttachmentCleanup([attachment]);

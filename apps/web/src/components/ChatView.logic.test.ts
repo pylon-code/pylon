@@ -32,7 +32,6 @@ import {
   ENVIRONMENT_RECONNECT_WARNING_GRACE_MS,
   getStartedThreadModelChangeBlockReason,
   mergeFailedComposerSend,
-  isVideoPreviewRequestCurrent,
   hasEnvironmentReconnectWarningGraceElapsed,
   hasServerAcknowledgedLocalDispatch,
   shouldRefocusComposerOnWindowFocus,
@@ -277,14 +276,6 @@ describe("proactive panels", () => {
         isGitRepo: undefined,
       }),
     ).toBe("defer");
-  });
-});
-
-describe("isVideoPreviewRequestCurrent", () => {
-  it("rejects changed threads and replaced previews", () => {
-    expect(isVideoPreviewRequestCurrent("thread-1", "thread-2", 1, 1)).toBe(false);
-    expect(isVideoPreviewRequestCurrent("thread-1", "thread-1", 1, 2)).toBe(false);
-    expect(isVideoPreviewRequestCurrent("thread-1", "thread-1", 2, 2)).toBe(true);
   });
 });
 
