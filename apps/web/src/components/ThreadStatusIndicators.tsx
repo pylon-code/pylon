@@ -1,3 +1,5 @@
+import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
+import { resolveEnvironmentMachineKind } from "@t3tools/contracts";
 import {
   scopeProjectRef,
   scopedThreadKey,
@@ -6,7 +8,7 @@ import {
 import { pullRequestDetailToVcsStatus } from "@t3tools/client-runtime/state/pull-requests";
 import type { EnvironmentId, ThreadLinkedPullRequest, VcsStatusResult } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
-import { CloudIcon, FolderGit2Icon, TerminalIcon } from "lucide-react";
+import { FolderGit2Icon, TerminalIcon } from "lucide-react";
 import { useMemo } from "react";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useEnvironment, usePrimaryEnvironmentId } from "../state/environments";
@@ -635,10 +637,12 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
   });
   const environment = useEnvironment(thread.environmentId);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const isRemoteThread =
-    primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId;
+  // No primary (the hosted app) means every thread is remote, and the machine
+  // glyph is what tells the environments apart.
+  const isRemoteThread = thread.environmentId !== primaryEnvironmentId;
   const remoteEnvLabel = environment?.label ?? null;
   const threadEnvironmentLabel = isRemoteThread ? (remoteEnvLabel ?? "Remote") : null;
+  const remoteMachine = resolveEnvironmentMachineKind(environment?.serverConfig ?? null);
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
 
   if (!terminalStatus && !isRemoteThread) {
@@ -677,7 +681,10 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
               />
             }
           >
-            <CloudIcon className="size-3 text-muted-foreground/60" />
+            <EnvironmentMachineIcon
+              kind={remoteMachine}
+              className="size-3 text-muted-foreground/60"
+            />
           </TooltipTrigger>
           <TooltipPopup side="top">{threadEnvironmentLabel}</TooltipPopup>
         </Tooltip>

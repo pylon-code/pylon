@@ -70,3 +70,7 @@ be selected again. The option is hidden when the connected environment needs a s
 Manually settling an idle thread dismisses unanswered async questions without
 sending an answer or restarting the agent. Questions that pause the agent still
 need an answer or an interrupted turn.
+
+## Environment icons
+
+Machine icons help distinguish environments in thread lists, connection lists, and environment pickers. Pylon detects the machine when it can and uses a server icon otherwise. Settings → Connections → Environment icon overrides the detected icon for every client connected to that environment. Choose Automatic to restore detection. Older servers keep the generic icon until updated.

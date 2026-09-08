@@ -1,6 +1,6 @@
+import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { composerFloatingLayerProps } from "./chat/composerEventScope";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { CloudIcon, MonitorIcon } from "lucide-react";
 import { memo, useMemo } from "react";
 
 import type { EnvironmentOption } from "./BranchToolbar.logic";
@@ -53,11 +53,10 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
         className="inline-flex h-7 min-w-0 max-w-full items-center gap-1 border border-transparent px-[calc(--spacing(2)-1px)] font-normal text-muted-foreground/70 text-xs sm:h-6"
         data-composer-context-control
       >
-        {activeEnvironment?.isPrimary ? (
-          <MonitorIcon className="size-3 shrink-0" />
-        ) : (
-          <CloudIcon className="size-3 shrink-0" />
-        )}
+        <EnvironmentMachineIcon
+          kind={activeEnvironment?.machine ?? "server"}
+          className="size-3 shrink-0"
+        />
         <span
           data-composer-label
           className="min-w-0 max-w-[240px] group-data-[compact]/composer-context:max-w-0"
@@ -87,11 +86,10 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
         aria-label="Run on"
         data-composer-context-control
       >
-        {activeEnvironment?.isPrimary ? (
-          <MonitorIcon className="size-3 shrink-0" />
-        ) : (
-          <CloudIcon className="size-3 shrink-0" />
-        )}
+        <EnvironmentMachineIcon
+          kind={activeEnvironment?.machine ?? "server"}
+          className="size-3 shrink-0"
+        />
         <span
           data-composer-label
           className="min-w-0 max-w-[240px] group-data-[compact]/composer-context:max-w-0"
@@ -110,11 +108,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
           {availableEnvironments.map((env) => (
             <SelectItem key={env.environmentId} value={env.environmentId}>
               <span className="inline-flex items-center gap-1.5">
-                {env.isPrimary ? (
-                  <MonitorIcon className="size-3" />
-                ) : (
-                  <CloudIcon className="size-3" />
-                )}
+                <EnvironmentMachineIcon kind={env.machine} className="size-3" />
                 {env.label}
               </span>
             </SelectItem>

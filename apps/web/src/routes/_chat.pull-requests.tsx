@@ -1,5 +1,6 @@
+import { environmentMachineIcon } from "../components/EnvironmentMachineIcon";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { pullRequestHostOf, ThreadId } from "@t3tools/contracts";
+import { pullRequestHostOf, resolveEnvironmentMachineKind, ThreadId } from "@t3tools/contracts";
 import type {
   EnvironmentId,
   ProjectId,
@@ -20,8 +21,6 @@ import {
   ChevronDownIcon,
   ClockIcon,
   EyeIcon,
-  MonitorIcon,
-  ServerIcon,
   GitMergeIcon,
   GitPullRequestClosedIcon,
   GitPullRequestIcon,
@@ -367,7 +366,12 @@ function PullRequestsRouteView() {
     [projects, scopedEnvironmentId, scopedProjectId],
   );
   const scopedProjects = useMemo(
-    () => pullRequestFilterProjects(projects, environmentLabels, scopedProject),
+    () =>
+      pullRequestFilterProjects(
+        projects.map((project) => ({ ...project, projectName: project.title })),
+        environmentLabels,
+        scopedProject,
+      ),
     [environmentLabels, projects, scopedProject],
   );
 
@@ -1678,14 +1682,14 @@ function PullRequestsRouteView() {
       };
     }),
   ];
-  // The same shape the host pills take, so the two groups read as one control. A local
-  // connection wears the screen it is on; every other server wears a server.
+  // The same shape the host pills take, so the two groups read as one control. Each server
+  // wears the machine it runs on.
   const serverMenuOptions: ReadonlyArray<PullRequestFilterOption<string>> = [
     { value: "", label: "All servers", Icon: LayersIcon },
     ...capableEnvironments.map((environment) => ({
       value: environment.environmentId,
       label: environment.label,
-      Icon: environment.displayUrl === null ? MonitorIcon : ServerIcon,
+      Icon: environmentMachineIcon(resolveEnvironmentMachineKind(environment.serverConfig)),
     })),
   ];
   const sortMenu = (

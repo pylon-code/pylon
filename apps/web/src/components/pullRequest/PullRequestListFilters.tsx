@@ -2,6 +2,7 @@ import type {
   EnvironmentId,
   ProjectId,
   PullRequestInvolvement,
+  ProjectIconOverride,
   PullRequestListFilters,
   PullRequestListState,
   SourceControlProviderKind,
@@ -59,6 +60,9 @@ export interface PullRequestFilterOption<Value extends string> {
   readonly favicon?: {
     readonly environmentId: EnvironmentId;
     readonly cwd: string;
+    readonly faviconPath?: string | null | undefined;
+    readonly projectIcon?: ProjectIconOverride | null | undefined;
+    readonly projectName?: string | undefined;
   };
   /** Why it cannot be chosen, carried onto the item as its title. */
   readonly unavailable?: string | undefined;
@@ -73,7 +77,9 @@ export function PullRequestFilterOptionIcon<Value extends string>({
     <ProjectFavicon
       environmentId={option.favicon.environmentId}
       cwd={option.favicon.cwd}
-      fallbackIcon={FolderGit2Icon}
+      projectName={option.favicon.projectName ?? option.label}
+      faviconPath={option.favicon.faviconPath}
+      projectIcon={option.favicon.projectIcon}
       className="size-3.5"
     />
   ) : (
@@ -452,6 +458,9 @@ export function PullRequestFiltersMenu({
     readonly environmentId: EnvironmentId;
     readonly title: string;
     readonly workspaceRoot: string;
+    readonly faviconPath?: string | null | undefined;
+    readonly projectIcon?: ProjectIconOverride | null | undefined;
+    readonly projectName?: string | undefined;
   }>;
   projectId: ProjectId | undefined;
   /**
@@ -507,7 +516,13 @@ export function PullRequestFiltersMenu({
         value: pullRequestProjectKey(project),
         label: project.title,
         Icon: FolderGit2Icon,
-        favicon: { environmentId: project.environmentId, cwd: project.workspaceRoot },
+        favicon: {
+          environmentId: project.environmentId,
+          cwd: project.workspaceRoot,
+          faviconPath: project.faviconPath ?? null,
+          projectName: project.projectName ?? project.title,
+          projectIcon: project.projectIcon ?? null,
+        },
         ...(unavailable.has(pullRequestProjectKey(project))
           ? { unavailable: unavailable.get(pullRequestProjectKey(project)) }
           : {}),
