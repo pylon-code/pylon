@@ -42,12 +42,14 @@ import { usageLimitsFromCodexRateLimits } from "../providerUsageLimits.ts";
 import {
   acquireSharedUsageLock,
   decideSharedUsageRead,
+  markSharedUsageReadFailed,
   readSharedUsageEntry,
   releaseSharedUsageLock,
   resolveSharedUsageCacheDir,
   sharedUsageReadKey,
   writeSharedUsageEntry,
 } from "../sharedUsageReadCache.ts";
+import { isRetainedUsageFresh } from "../providerUsageRetention.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
@@ -351,13 +353,42 @@ export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
 }
 
 /**
+ * What a read that never answered is worth: the reading before it, for as
+ * long as that reading is worth showing.
+ *
+ * The probe rebuilds the snapshot from scratch, so returning nothing omits
+ * `usageLimits` and the composer's gauge disappears. `CodexDriver` retains the
+ * last reading it saw, but a server that has just started has none — and this
+ * read is the one most likely to miss its budget, competing with every other
+ * provider probe. The shared file outlives the process, so it carries the
+ * reading across the restart. Recording the failure keeps every server on the
+ * account off the endpoint for a moment, as Claude's read does.
+ */
+const failedRead = Effect.fn("readCodexRateLimitsShared.failed")(function* (
+  cacheDir: string,
+  cacheKey: string,
+  failedAt: string,
+  nowMs: number,
+): Effect.fn.Return<
+  Pick<CodexAppServerProviderSnapshot, "sharedUsageLimits">,
+  never,
+  FileSystem.FileSystem | Path.Path
+> {
+  yield* markSharedUsageReadFailed(cacheDir, cacheKey, failedAt);
+  const retained = (yield* readSharedUsageEntry(cacheDir, cacheKey))?.usageLimits;
+  return retained && isRetainedUsageFresh({ checkedAt: retained.checkedAt, nowMs })
+    ? { sharedUsageLimits: retained }
+    : {};
+});
+
+/**
  * Read Codex's rate-limit windows through the machine-wide shared reading,
  * so several servers on one Codex home read the app-server — and through it
  * OpenAI — once per window between them. The live read is only issued when
  * no server has a fresh reading and this one wins the lock; a loser serves
  * what is there. Mirrors `fetchOAuthUsageWithToken` for Claude.
  */
-const readCodexRateLimitsShared = Effect.fn("readCodexRateLimitsShared")(function* (input: {
+export const readCodexRateLimitsShared = Effect.fn("readCodexRateLimitsShared")(function* (input: {
   readonly sharedHomePath: string;
   readonly read: Effect.Effect<CodexSchema.V2GetAccountRateLimitsResponse | undefined>;
 }): Effect.fn.Return<
@@ -381,8 +412,8 @@ const readCodexRateLimitsShared = Effect.fn("readCodexRateLimitsShared")(functio
   }
   return yield* Effect.gen(function* () {
     const rateLimits = yield* input.read;
-    if (!rateLimits) return {};
     const readAt = DateTime.formatIso(DateTime.makeUnsafe(nowMs));
+    if (!rateLimits) return yield* failedRead(cacheDir, cacheKey, readAt, nowMs);
     const usageLimits = usageLimitsFromCodexRateLimits(rateLimits, readAt);
     if (usageLimits) {
       yield* writeSharedUsageEntry(cacheDir, cacheKey, { version: 1, readAt, usageLimits });
