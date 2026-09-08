@@ -142,6 +142,7 @@ beforeEach(() => {
     ],
     isPending: false,
     isPartial: false,
+    refreshing: false,
     refresh: vi.fn(),
   });
 });

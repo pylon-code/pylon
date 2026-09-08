@@ -6,6 +6,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { useUsage, type EnvironmentUsageStatus, type UsageView } from "./usage";
 
 const testState = vi.hoisted(() => ({ environments: [] as EnvironmentUsageStatus[] }));
+const rateRefresh = vi.hoisted(() => ({
+  calls: 0,
+  settle: [] as (() => void)[],
+}));
+vi.mock("@t3tools/client-runtime/state/runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@t3tools/client-runtime/state/runtime")>()),
+  runAtomCommand: () => {
+    rateRefresh.calls += 1;
+    return new Promise<void>((resolve) => rateRefresh.settle.push(resolve));
+  },
+}));
+vi.mock("../rpc/atomRegistry", () => ({ appAtomRegistry: { refresh: () => {} } }));
 vi.mock("@effect/atom-react", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@effect/atom-react")>()),
   useAtomValue: () => testState.environments,
@@ -91,6 +103,8 @@ async function select(...ids: string[]) {
 
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  rateRefresh.calls = 0;
+  rateRefresh.settle = [];
   testState.environments = [environment("a", 10), environment("b", 20), environment("slow", null)];
   await act(() => {
     renderer = create(<Probe selected={null} />);
@@ -162,5 +176,46 @@ describe("usage environment selection", () => {
     expect(latest.merged.costUsd).toBe(10);
     expect(latest.isPending).toBe(false);
     expect(latest.isPartial).toBe(false);
+  });
+});
+
+describe("usage refresh feedback", () => {
+  it("stays refreshing across the rate refetch that precedes the rescan", async () => {
+    // The rescan's own pending state does not cover the refetch, so an
+    // environment that cannot reach the rate table would otherwise read as an
+    // immediate no-op for as long as that request takes to fail.
+    await select("a");
+    expect(latest.refreshing).toBe(false);
+
+    let settled: Promise<void> | undefined;
+    await act(() => {
+      settled = latest.refresh();
+    });
+    expect(rateRefresh.calls).toBe(1);
+    expect(latest.refreshing).toBe(true);
+
+    await act(async () => {
+      for (const resolve of rateRefresh.settle) resolve();
+      await settled;
+    });
+    expect(latest.refreshing).toBe(false);
+  });
+
+  it("ignores a second refresh while one is in flight", async () => {
+    await select("a");
+    let first: Promise<void> | undefined;
+    await act(() => {
+      first = latest.refresh();
+    });
+    await act(() => {
+      void latest.refresh();
+    });
+    expect(rateRefresh.calls).toBe(1);
+
+    await act(async () => {
+      for (const resolve of rateRefresh.settle) resolve();
+      await first;
+    });
+    expect(latest.refreshing).toBe(false);
   });
 });

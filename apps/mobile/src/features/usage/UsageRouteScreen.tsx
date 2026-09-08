@@ -76,7 +76,7 @@ export function UsageRouteScreen() {
   const isPast24Hours = windowDays === 1;
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
-  const { merged, environments, selectedEnvironments, isPending, refresh } = useUsage(
+  const { merged, environments, selectedEnvironments, isPending, refreshing, refresh } = useUsage(
     window,
     selectedEnvironmentIds,
   );
@@ -109,9 +109,10 @@ export function UsageRouteScreen() {
   // The pull spinner tracks re-scans of environments that have answered
   // before. The initial scan renders its own placeholder, and an unreachable
   // environment stays pending forever — neither may pin the spinner on.
-  const refreshingUsage = selectedEnvironments.some(
-    (entry) => entry.isPending && entry.summary !== null,
-  );
+  // `refreshing` covers the rate refetch that precedes the rescan; without it the
+  // spinner snaps back before the rescan has been requested.
+  const refreshingUsage =
+    refreshing || selectedEnvironments.some((entry) => entry.isPending && entry.summary !== null);
   const showingLimits = tab === "limits";
   const selectWindow = (days: number) => {
     setWindowSelection({

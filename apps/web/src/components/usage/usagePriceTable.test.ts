@@ -2,6 +2,7 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   usagePriceCell,
+  usagePriceRows,
   usagePriceTableChanges,
   usagePriceTableErrors,
   type UsagePriceDraft,
@@ -166,5 +167,45 @@ describe("price table edits", () => {
     expect(
       usagePriceTableChanges(environment, [draft({ outputCostPerMillionTokens: "" })]).errors.size,
     ).toBe(1);
+  });
+});
+
+describe("price table rows", () => {
+  const newDraft = (model: string): UsagePriceDraft => ({
+    id: "new:1",
+    model,
+    isNew: true,
+    values: { inputCostPerMillionTokens: "1" },
+  });
+
+  it("renders one row per model in settings, with staged edits applied", () => {
+    const edit = draft({ inputCostPerMillionTokens: "3" });
+    const rows = usagePriceRows(["example", "other"], [edit], { saving: false });
+    expect(rows.map((row) => row.model)).toEqual(["example", "other"]);
+    expect(rows[0]).toBe(edit);
+    expect(rows[1]?.values).toEqual({});
+  });
+
+  it("keeps a staged edit visible after another client removes that model", () => {
+    // Without this the row stops rendering while the draft still saves, and its
+    // validation message has nowhere to appear.
+    const edit = draft({ inputCostPerMillionTokens: "3" });
+    const rows = usagePriceRows([], [edit], { saving: false });
+    expect(rows).toEqual([edit]);
+  });
+
+  it("does not duplicate a staged edit whose model is still in settings", () => {
+    const edit = draft({ inputCostPerMillionTokens: "3" });
+    const rows = usagePriceRows(["example"], [edit], { saving: false });
+    expect(rows).toEqual([edit]);
+  });
+
+  it("holds a new row in place while its environments publish the saved price", () => {
+    const added = newDraft("fresh");
+    expect(usagePriceRows(["fresh"], [added], { saving: true })).toEqual([added]);
+    expect(usagePriceRows(["fresh"], [added], { saving: false }).map((row) => row.id)).toEqual([
+      "model:fresh",
+      "new:1",
+    ]);
   });
 });
