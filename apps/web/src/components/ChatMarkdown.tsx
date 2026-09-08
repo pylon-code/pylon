@@ -186,6 +186,8 @@ interface ChatMarkdownProps {
   text: string;
   cwd: string | undefined;
   threadRef?: ScopedThreadRef | undefined;
+  /** Panel that receives pull request links, including the standalone PR view. */
+  pullRequestPanelRef?: ScopedThreadRef | undefined;
   /** Environment that owns non-thread markdown, such as a pull request panel. */
   environmentId?: EnvironmentId | undefined;
   onTaskListChange?: ((input: { markerOffset: number; checked: boolean }) => void) | undefined;
@@ -2204,6 +2206,7 @@ function useChatMarkdownState({
   text,
   cwd,
   threadRef,
+  pullRequestPanelRef,
   environmentId: explicitEnvironmentId,
   onTaskListChange,
   isStreaming = false,
@@ -2370,7 +2373,7 @@ function useChatMarkdownState({
     event.clipboardData.setData("text/plain", payload.text);
     event.clipboardData.setData("text/html", payload.html);
   }, []);
-  const openChangeRequestLink = useOpenChangeRequestLink(threadRef);
+  const openChangeRequestLink = useOpenChangeRequestLink(threadRef, pullRequestPanelRef);
   const openDeferredMarkdownLink = useOpenLink(threadRef);
   // Anchors decide synchronously whether to intercept, so subscribe to hydrated settings.
   const linkTargetPreference = useClientSettings((settings) => settings.browserLinkTarget);
