@@ -177,6 +177,7 @@ export function findActiveBrowserRecordingRuntimeTabId(
  * a recording is for.
  */
 const preferredMimeTypes = [
+  "video/mp4;codecs=avc1",
   "video/mp4;codecs=avc1.640028",
   "video/mp4;codecs=avc1.42e01e",
   "video/webm;codecs=vp9",
@@ -185,16 +186,23 @@ const preferredMimeTypes = [
   "video/webm",
 ] as const;
 
-/** Chromium's default sits near 2.5 Mbps, which is thin for a 60 fps screen capture. */
-const recordingBitsPerSecond = (frameRate: number): number =>
-  frameRate >= 60 ? 8_000_000 : 4_000_000;
-
 const createMediaRecorder = (stream: MediaStream, frameRate: number): MediaRecorder => {
   const mimeType = preferredMimeTypes.find((candidate) => MediaRecorder.isTypeSupported(candidate));
-  const options = { videoBitsPerSecond: recordingBitsPerSecond(frameRate) };
-  return mimeType
-    ? new MediaRecorder(stream, { ...options, mimeType })
-    : new MediaRecorder(stream, options);
+  const settings = stream.getVideoTracks()[0]?.getSettings();
+  // Bound native-resolution capture quality without changing the exact-tab grant.
+  const videoBitsPerSecond = Math.round(
+    Math.min(
+      50_000_000,
+      Math.max(
+        2_500_000,
+        (settings?.width ?? 1920) *
+          (settings?.height ?? 1080) *
+          (settings?.frameRate ?? frameRate) *
+          0.05,
+      ),
+    ),
+  );
+  return new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), videoBitsPerSecond });
 };
 
 const captureTabMediaStream = (
@@ -557,6 +565,9 @@ const finalizeBrowserRecording = async (
           cause,
         });
       }
+      // Encoding has flushed; release native capture before materializing and saving the file.
+      stopMediaStream(recording.stream);
+      recording.stream = null;
       const mimeType =
         recording.recorder.mimeType ||
         recording.chunks.find((chunk) => chunk.type.length > 0)?.type;

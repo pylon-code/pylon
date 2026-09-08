@@ -70,6 +70,7 @@ export function HostedBrowserWebview(props: {
         fittedSourceContent: current?.fittedSourceContent ?? null,
         rect: resolveBrowserSurfacePanelRect(state.byTabId, runtimeTabId),
         visible: current?.visible ?? false,
+        zIndex: current?.zIndex ?? 30,
       };
     }),
   );
@@ -242,6 +243,7 @@ export function HostedBrowserWebview(props: {
     active,
     renderingActive,
     cornerRadius: presentation.cornerRadius,
+    zIndex: presentation.zIndex,
     rect: lastRect,
     hiddenSize,
   });
