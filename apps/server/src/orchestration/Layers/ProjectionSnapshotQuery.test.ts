@@ -321,6 +321,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             model: "gpt-5-codex",
           },
           faviconPath: null,
+          projectIcon: null,
           scripts: [
             {
               id: "script-1",
@@ -460,6 +461,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             model: "gpt-5-codex",
           },
           faviconPath: null,
+          projectIcon: null,
           scripts: [
             {
               id: "script-1",

@@ -36,6 +36,45 @@ export const IsoDateTime = Schema.String;
 export type IsoDateTime = typeof IsoDateTime.Type;
 
 /**
+ * Same idea for one optional value whose literal set grows over time: a
+ * member this build does not know decodes as absent rather than failing the
+ * enclosing struct. Encoding is the plain encoding.
+ */
+export const ForwardCompatibleOptional = <Value extends Schema.Top>(value: Value) => {
+  const decodeValue = Schema.decodeUnknownOption(value as never);
+  return Schema.optionalKey(
+    Schema.Unknown.pipe(
+      Schema.decodeTo(
+        Schema.UndefinedOr(value),
+        SchemaTransformation.transform<Value["Encoded"] | undefined, unknown>({
+          decode: (raw) =>
+            Option.isSome(decodeValue(raw)) ? (raw as Value["Encoded"]) : undefined,
+          encode: (raw) => raw,
+        }),
+      ),
+    ),
+  );
+};
+
+/**
+ * The nullable form, for a persisted setting whose literal set grows over
+ * time: a member this build does not know (or a missing key) decodes as null
+ * rather than failing the enclosing struct. Encoding is the plain encoding.
+ */
+export const ForwardCompatibleNullable = <Value extends Schema.Top>(value: Value) => {
+  const decodeValue = Schema.decodeUnknownOption(value as never);
+  return Schema.Unknown.pipe(
+    Schema.decodeTo(
+      Schema.NullOr(value),
+      SchemaTransformation.transform<Value["Encoded"] | null, unknown>({
+        decode: (raw) => (Option.isSome(decodeValue(raw)) ? (raw as Value["Encoded"]) : null),
+        encode: (raw) => raw,
+      }),
+    ),
+  );
+};
+
+/**
  * Wire codec for server→client arrays whose element unions grow over time
  * (new literal members, new struct variants). Decoding drops elements the
  * current build cannot decode instead of failing the whole payload — a client

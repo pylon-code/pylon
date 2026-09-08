@@ -247,6 +247,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           // explicit project default.
           defaultModelSelection: null,
           faviconPath: null,
+          projectIcon: null,
           scripts: [],
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
@@ -301,6 +302,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? { defaultThreadEnvMode: command.defaultThreadEnvMode }
             : {}),
           ...(command.faviconPath !== undefined ? { faviconPath: command.faviconPath } : {}),
+          ...(command.projectIcon !== undefined ? { projectIcon: command.projectIcon } : {}),
           ...(command.scripts !== undefined ? { scripts: command.scripts } : {}),
           updatedAt: occurredAt,
         },

@@ -1,3 +1,5 @@
+import IconCloud from "@tabler/icons-react-native/IconCloud";
+import IconDeviceLaptop from "@tabler/icons-react-native/IconDeviceLaptop";
 import type { Icon } from "@tabler/icons-react-native";
 import IconAdjustmentsHorizontal from "@tabler/icons-react-native/IconAdjustmentsHorizontal";
 import IconAlertCircle from "@tabler/icons-react-native/IconAlertCircle";
@@ -109,6 +111,10 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   checkmark: IconCheck,
   "checkmark.circle": IconCircleCheck,
   clock: IconClock,
+  cloud: IconCloud,
+  laptopcomputer: IconDeviceLaptop,
+  macmini: IconServer,
+  macstudio: IconDeviceDesktop,
   ticket: IconTicket,
   cube: IconBox,
   "chevron.down": IconChevronDown,
