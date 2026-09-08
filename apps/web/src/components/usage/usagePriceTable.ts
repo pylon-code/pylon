@@ -84,6 +84,42 @@ export function usagePriceTableChanges(
   return { changes, errors };
 }
 
+/**
+ * The rows to render for the environments' current prices plus the staged drafts.
+ *
+ * Rows for existing models come from settings, which another client can change
+ * while an edit is staged here. A draft whose model has since left settings keeps
+ * its row so the edit stays visible, correctable, and resettable; dropping the row
+ * would leave an edit that still saves and a validation message with nowhere to
+ * render. `saving` holds new rows in place while environments publish their
+ * updated settings.
+ */
+export function usagePriceRows(
+  customModels: readonly string[],
+  drafts: readonly UsagePriceDraft[],
+  options: { readonly saving: boolean },
+): readonly UsagePriceDraft[] {
+  const newModels = new Set(
+    drafts.filter((draft) => draft.isNew).map((draft) => draft.model.trim()),
+  );
+  const inSettings = new Set(customModels);
+  return [
+    ...customModels
+      .filter((model) => !options.saving || !newModels.has(model))
+      .map(
+        (model) =>
+          drafts.find((draft) => draft.id === `model:${model}`) ?? {
+            id: `model:${model}`,
+            model,
+            isNew: false,
+            values: {},
+          },
+      ),
+    ...drafts.filter((draft) => !draft.isNew && !inSettings.has(draft.model)),
+    ...drafts.filter((draft) => draft.isNew),
+  ];
+}
+
 /** Unavailable destinations report a save failure without blocking writable environments. */
 export function usagePriceTableErrors(
   targets: readonly UsagePriceTarget[],

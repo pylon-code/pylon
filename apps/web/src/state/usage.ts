@@ -16,7 +16,7 @@ import {
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -70,7 +70,9 @@ export interface UsageView {
    * improve by waiting on them, so they must not read as "still reporting".
    */
   readonly isPartial: boolean;
-  readonly refresh: () => void;
+  /** True while a refresh is in flight, including the rate refetch it starts with. */
+  readonly refreshing: boolean;
+  readonly refresh: () => Promise<void>;
 }
 
 export function useUsage(
@@ -106,21 +108,36 @@ export function useUsage(
     [environments, selectedEnvironmentIds],
   );
 
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshInFlight = useRef(false);
+
   // Refreshing only the derived atom would re-read the per-environment SWR
   // queries within their stale window and change nothing. Refresh each
   // environment's query so the button always rescans.
   // Refetch rates before rescanning; older or offline servers still rescan after a failed refresh.
-  const refresh = useCallback(() => {
+  // `refreshing` covers that refetch, which the rescan's own pending state does
+  // not: an environment that cannot reach the rate table takes seconds to fail,
+  // and without this the control reads as an immediate no-op.
+  const refresh = useCallback(async () => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
     const input = JSON.parse(windowKey) as UsageSummaryInput;
-    for (const environment of selectedEnvironments) {
-      const { environmentId } = environment;
-      const query = serverEnvironment.usageSummary({ environmentId, input });
-      void runAtomCommand(
-        appAtomRegistry,
-        serverEnvironment.refreshUsageRates,
-        { environmentId, input: {} },
-        { reportFailure: false },
-      ).finally(() => appAtomRegistry.refresh(query));
+    setRefreshing(true);
+    try {
+      await Promise.all(
+        selectedEnvironments.map(({ environmentId }) => {
+          const query = serverEnvironment.usageSummary({ environmentId, input });
+          return runAtomCommand(
+            appAtomRegistry,
+            serverEnvironment.refreshUsageRates,
+            { environmentId, input: {} },
+            { reportFailure: false },
+          ).finally(() => appAtomRegistry.refresh(query));
+        }),
+      );
+    } finally {
+      refreshInFlight.current = false;
+      setRefreshing(false);
     }
   }, [selectedEnvironments, windowKey]);
 
@@ -152,6 +169,7 @@ export function useUsage(
     selectedEnvironments,
     isPending: answeredCount === 0 && stillReporting > 0,
     isPartial: answeredCount > 0 && stillReporting > 0,
+    refreshing,
     refresh,
   };
 }

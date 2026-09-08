@@ -35,6 +35,7 @@ import { USAGE_PRICE_FIELDS } from "./usagePriceForm";
 import {
   isEmptyUsagePriceDraft,
   usagePriceCell,
+  usagePriceRows,
   usagePriceTableChanges,
   usagePriceTableErrors,
   type UsagePriceDraft,
@@ -124,24 +125,7 @@ export function UsagePriceOverrides({
         .flatMap((environment) => environment.summary?.buckets.map((bucket) => bucket.model) ?? []),
     ]),
   ].sort();
-  // Keep new rows in place while successful environments publish their updated settings.
-  const newModels = new Set(
-    drafts.filter((draft) => draft.isNew).map((draft) => draft.model.trim()),
-  );
-  const rows: readonly UsagePriceDraft[] = [
-    ...customModels
-      .filter((model) => attempt === null || !newModels.has(model))
-      .map(
-        (model) =>
-          drafts.find((draft) => draft.id === `model:${model}`) ?? {
-            id: `model:${model}`,
-            model,
-            isNew: false,
-            values: {},
-          },
-      ),
-    ...drafts.filter((draft) => draft.isNew),
-  ];
+  const rows = usagePriceRows(customModels, drafts, { saving: attempt !== null });
   const stagedDrafts = drafts.filter((draft) => !isEmptyUsagePriceDraft(draft));
   const errors = usagePriceTableErrors(selected, stagedDrafts);
   for (const draft of stagedDrafts) {

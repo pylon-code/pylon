@@ -107,10 +107,8 @@ export function UsagePage() {
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
-  const { merged, environments, selectedEnvironments, isPending, isPartial, refresh } = useUsage(
-    window,
-    selectedEnvironmentIds,
-  );
+  const { merged, environments, selectedEnvironments, isPending, isPartial, refreshing, refresh } =
+    useUsage(window, selectedEnvironmentIds);
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
@@ -180,7 +178,7 @@ export function UsagePage() {
       nextWindow.sinceTime === window.sinceTime &&
       nextWindow.untilTime === window.untilTime
     ) {
-      refresh();
+      void refresh();
     } else {
       setWindowSelection({ days: windowDays, window: nextWindow });
     }
@@ -254,7 +252,12 @@ export function UsagePage() {
           size="icon-sm"
           variant="ghost"
         >
-          <RefreshCwIcon className="size-3.5" />
+          <RefreshCwIcon
+            className={cn(
+              "size-3.5",
+              !showingLimits && refreshing && "animate-spin motion-reduce:animate-none",
+            )}
+          />
         </Button>
       </div>
       <div className="col-span-2 ms-auto flex min-w-0 items-center justify-end gap-1 xl:hidden">
@@ -311,7 +314,12 @@ export function UsagePage() {
           size="icon-sm"
           variant="ghost"
         >
-          <RefreshCwIcon className="size-3.5" />
+          <RefreshCwIcon
+            className={cn(
+              "size-3.5",
+              !showingLimits && refreshing && "animate-spin motion-reduce:animate-none",
+            )}
+          />
         </Button>
       </div>
     </div>
