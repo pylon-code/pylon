@@ -51,6 +51,9 @@ jobs:
       - name: Typecheck
         run: vpr typecheck
 
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
       - name: Build desktop pipeline
         run: vp run build:desktop
 
@@ -115,12 +118,13 @@ jobs:
           cache: true
           run-install: true
 
-      - name: Install ImageMagick
+      - name: Install Linux desktop build libraries
         if: matrix.platform == 'linux'
         shell: bash
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config
           if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
-              sudo apt-get update
               sudo apt-get install -y imagemagick
           fi
 
@@ -166,6 +170,9 @@ jobs:
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
 
       - name: Test release source selection
         run: node --test .github/scripts/check-nightly-release.test.cjs

@@ -26,6 +26,7 @@ const browserDefaultsMocks = vi.hoisted(() => ({
 vi.mock("~/browser/browserDefaults", () => ({
   resolveBrowserDefaults: browserDefaultsMocks.resolve,
   browserDefaultOpenViewport: (defaults: { viewport: unknown }) => defaults.viewport,
+  browserDefaultOpenProfileId: (defaults: { profileId: string }) => defaults.profileId,
 }));
 
 const linkTargetMocks = vi.hoisted(() => ({
@@ -38,6 +39,7 @@ vi.mock("~/browser/browserLinkTarget", () => ({
 }));
 
 const hydratedDefaults = {
+  profileId: "work",
   viewport: { _tag: "fixed", width: 1280, height: 720 } as const,
 };
 
@@ -130,6 +132,7 @@ describe("openTerminalLinkInPreview", () => {
         threadId: "thread-1",
         url: "http://localhost:3000/",
         viewport: hydratedDefaults.viewport,
+        profileId: hydratedDefaults.profileId,
       },
     });
   });

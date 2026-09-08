@@ -1,4 +1,8 @@
-import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
+import {
+  DEFAULT_BROWSER_PROFILE_ID,
+  ORCHESTRATION_WS_METHODS,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
@@ -134,6 +138,30 @@ export const request = Effect.fn("EnvironmentRpc.request")(function* <
     "rpc.method": tag,
   });
   const session = yield* currentSession();
+  // Check the same session that will receive the open. Legacy servers discard
+  // profileId, which would silently attach a custom/incognito tab to Default.
+  if (tag === WS_METHODS.previewOpen) {
+    const { profileId } = input as EnvironmentRpcInput<typeof WS_METHODS.previewOpen>;
+    if (profileId !== undefined && profileId !== DEFAULT_BROWSER_PROFILE_ID) {
+      const unavailable = () =>
+        new EnvironmentRpcUnavailableError({
+          environmentId: supervisor.target.environmentId,
+          message:
+            "Update this environment’s Pylon server to use browser profiles. Default remains available.",
+        });
+      const config = yield* session.initialConfig.pipe(
+        Effect.mapError(
+          () =>
+            new EnvironmentRpcUnavailableError({
+              environmentId: supervisor.target.environmentId,
+              message:
+                "Could not confirm browser profile support. Reconnect to this environment and retry.",
+            }),
+        ),
+      );
+      if (config.environment.capabilities.browserProfiles !== true) return yield* unavailable();
+    }
+  }
   const observer = yield* EnvironmentRpcRequestObserver;
   const method = session.client[tag] as (
     input: EnvironmentRpcInput<TTag>,
