@@ -756,7 +756,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
               <Text
                 className={cn(
                   "min-w-0 flex-1 text-xs text-foreground-muted",
-                  iconIsDestructive && "font-t3-medium text-adaptive-rose-600-400",
+                  iconIsDestructive && "font-t3-medium text-danger-foreground",
                   iconIsWarning && "font-t3-medium text-adaptive-amber-600-400",
                 )}
                 numberOfLines={expanded ? undefined : 1}
@@ -781,7 +781,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
                 <SymbolView
                   name="xmark"
                   size={11}
-                  tintColorClassName="accent-adaptive-rose-600-400"
+                  tintColorClassName="accent-danger-foreground"
                   type="monochrome"
                 />
               </View>
@@ -805,7 +805,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
           entering={WORK_LOG_DETAIL_ENTER_TRANSITION}
           exiting={WORK_LOG_DETAIL_EXIT_TRANSITION}
           layout={WORK_LOG_LAYOUT_TRANSITION}
-          className="ml-7 border-l border-adaptive-neutral-300-a60-white-a12 pb-1 pl-3 pt-0.5"
+          className="ml-7 border-l border-border pb-1 pl-3 pt-0.5"
         >
           {viewedImagePath ? (
             <View className="pb-1.5">
