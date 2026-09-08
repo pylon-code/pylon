@@ -391,7 +391,7 @@ function formatDesktopSshConnectionError(error: unknown): string {
   return withoutTaggedErrorPrefix.trim() || fallback;
 }
 
-const ENDPOINT_ROW_CLASSNAME = "rounded-xl px-3 py-2.5 sm:px-4";
+const ENDPOINT_ROW_CLASSNAME = "first:rounded-t-xl last:rounded-b-xl px-3 py-2.5 sm:px-4";
 
 type AccessSectionPresentation = "current" | "endpoint-rail";
 
@@ -401,7 +401,10 @@ function accessRowClassName(_presentation: AccessSectionPresentation) {
 
 function endpointRowClassName(presentation: AccessSectionPresentation, isAvailable: boolean) {
   if (presentation === "endpoint-rail") {
-    return cn("relative rounded-xl px-3 py-3 sm:px-4", !isAvailable && "bg-muted/15");
+    return cn(
+      "relative first:rounded-t-xl last:rounded-b-xl px-3 py-3 sm:px-4",
+      !isAvailable && "bg-muted/15",
+    );
   }
 
   return cn(ENDPOINT_ROW_CLASSNAME, !isAvailable && "bg-muted/24");
@@ -814,7 +817,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
                   Done
                 </Button>
                 {canCopyToClipboard ? (
-                  <Button variant="outline" size="xs" onClick={handleCopyCode}>
+                  <Button variant="outline" onClick={handleCopyCode}>
                     Copy code
                   </Button>
                 ) : null}
@@ -1695,7 +1698,7 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
       ) : null}
       <SettingsRow
         title={searchableSetting("publish-agent-activity").title}
-        description="Send activity from this environment to your mobile clients for push notifications and Live Activities. Works without a Pylon Connect tunnel."
+        description="Send activity to mobile notifications and Live Activities without a Pylon Connect tunnel."
         control={
           <CloudLinkSwitch
             ariaLabel="Publish agent activity to mobile clients"
@@ -2865,7 +2868,7 @@ export function ConnectionsSettings() {
             status={<span className="block text-destructive">{desktopWslError}</span>}
             control={
               <Button
-                size="xs"
+                size="sm"
                 variant="outline"
                 onClick={loadWslState}
                 disabled={isLoadingWslState}
@@ -2892,7 +2895,7 @@ export function ConnectionsSettings() {
       return (
         <SettingsRow
           {...searchableSetting("wsl-backend")}
-          description="WSL is no longer available, so the Windows backend is running instead. Switch off the WSL backend to clear this preference."
+          description="WSL is unavailable, so Windows is running instead. Turn WSL off to clear this preference."
           status={
             desktopWslError ? (
               <span className="block text-destructive">{desktopWslError}</span>
@@ -2900,6 +2903,7 @@ export function ConnectionsSettings() {
           }
           control={
             <Button
+              size="sm"
               variant="outline"
               disabled={isUpdatingWslBackend}
               onClick={() => handleSelectWslMode(BACKEND_VALUE_WSL_OFF)}
@@ -2929,7 +2933,7 @@ export function ConnectionsSettings() {
       <>
         <SettingsRow
           {...searchableSetting("wsl-backend")}
-          description="Run a second backend inside a WSL distro alongside the Windows one. Pick a distro to start it; pick Off to stop it. Projects opened against the WSL backend live on the Linux side; Windows projects stay where they are."
+          description="Run the selected WSL distro alongside Windows. Projects remain on their current filesystem."
           status={
             desktopWslError ? (
               <span className="block text-destructive">{desktopWslError}</span>
@@ -2948,6 +2952,7 @@ export function ConnectionsSettings() {
               }}
             >
               <SelectTrigger
+                size="sm"
                 className="w-full sm:w-56"
                 aria-label="WSL backend"
                 disabled={isUpdatingWslBackend}
@@ -2977,7 +2982,7 @@ export function ConnectionsSettings() {
         {desktopWslState.enabled ? (
           <SettingsRow
             title="WSL only"
-            description="Stop the Windows backend and run only the WSL backend. Useful if you develop entirely inside WSL and don't want a second backend process. Pylon restarts when you change this."
+            description="Run only the WSL backend. Pylon restarts when this changes."
             className="bg-muted/20 pl-7 sm:pl-8"
             control={
               <Switch
@@ -3081,8 +3086,8 @@ export function ConnectionsSettings() {
       title={searchableSetting("network-access").title}
       description={
         currentAuthPolicy === "remote-reachable"
-          ? "This backend is already configured for remote access. Network exposure changes must be made where the server is launched."
-          : "This backend is only reachable on this machine. Restart it with a non-loopback host to enable remote pairing."
+          ? "Remote access is already configured. Change network exposure where the server starts."
+          : "Only this machine can connect. Restart with a non-loopback host for remote pairing."
       }
       control={
         <Tooltip>
@@ -3144,6 +3149,7 @@ export function ConnectionsSettings() {
                   primaryEnvironmentId !== null &&
                   primaryServerUpdateState.status !== "running" ? (
                     <ServerUpdateAction
+                      size="sm"
                       environmentId={primaryEnvironmentId}
                       serverLabel={
                         primaryEnvironment ? `${primaryEnvironment.label} server` : "server"
@@ -3502,7 +3508,7 @@ export function ConnectionsSettings() {
                       <Button
                         size="xs"
                         variant="ghost"
-                        className="h-5 gap-1 rounded-sm px-1 text-[11px] font-normal text-muted-foreground/60 hover:text-muted-foreground"
+                        className="font-normal text-muted-foreground/60 hover:text-muted-foreground"
                         aria-label="Add environment"
                       >
                         <PlusIcon className="size-3" />

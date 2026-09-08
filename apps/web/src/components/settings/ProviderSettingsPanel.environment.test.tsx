@@ -9,7 +9,6 @@ import {
 } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { CollapsibleTrigger } from "../ui/collapsible";
 import { visitElements } from "../../test/reactElementTree";
 import { reactHookHarness as hooks } from "../../test/reactHookHarness";
 
@@ -142,23 +141,23 @@ function renderPanel(options?: {
   }) as ReactElement<Record<string, unknown>>;
 }
 
-function isAddProviderButton(element: ReactElement<Record<string, unknown>>): boolean {
-  return element.props["aria-label"] === "Add provider";
-}
-
-function isAdvancedTrigger(element: ReactElement<Record<string, unknown>>): boolean {
-  return element.type === CollapsibleTrigger;
-}
-
-function findAdvancedPanel(panel: ReactElement<Record<string, unknown>>) {
-  return visitElements(
-    panel,
-    (element) => element.props.className === "mt-1" && typeof element.props.open === "boolean",
+function isRefreshButton(element: ReactElement<Record<string, unknown>>): boolean {
+  const children = element.props.children;
+  return (
+    Array.isArray(children) &&
+    children.some(
+      (child) =>
+        typeof child === "object" &&
+        child !== null &&
+        (child as ReactElement<Record<string, unknown>>).props?.className === "sr-only" &&
+        (child as ReactElement<Record<string, unknown>>).props?.children ===
+          "Refresh provider status",
+    )
   );
 }
 
-function flushEffects(): void {
-  for (const effect of settingsSearchState.effects.splice(0)) effect();
+function isAddProviderButton(element: ReactElement<Record<string, unknown>>): boolean {
+  return element.props["aria-label"] === "Add provider";
 }
 
 async function flushPromises(): Promise<void> {
@@ -189,10 +188,7 @@ describe("EnvironmentProviderSettings routing", () => {
   it("routes refresh and provider update commands to the selected environment", async () => {
     atoms.providers = [provider()];
     const panel = renderPanel();
-    const refreshButton = visitElements(
-      panel,
-      (element) => element.props["aria-label"] === "Refresh provider status",
-    );
+    const refreshButton = visitElements(panel, isRefreshButton);
     expect(refreshButton).not.toBeNull();
     (refreshButton?.props.onClick as (() => void) | undefined)?.();
     await flushPromises();
@@ -227,13 +223,17 @@ describe("EnvironmentProviderSettings routing", () => {
     atoms.providers = [provider()];
     let panel = renderPanel({ readOnly: true });
 
-    // The panel's only inert fence is the Advanced health-interval block. The
-    // trigger that opens Advanced has to stay outside it, or a read-only
-    // session cannot see the configuration the fence is protecting.
-    const inertWrapper = visitElements(panel, (element) => element.props.inert === true);
-    expect(inertWrapper).not.toBeNull();
-    expect(visitElements(panel, isAdvancedTrigger)).not.toBeNull();
-    expect(visitElements(inertWrapper, isAdvancedTrigger)).toBeNull();
+    // The health interval is visible to read-only sessions; only its write controls are inert.
+    const advanced = visitElements(panel, (element) => element.props.title === "Advanced");
+    expect(advanced).not.toBeNull();
+    expect(advanced?.props.inert).not.toBe(true);
+    const interval = visitElements(
+      advanced,
+      (element) => element.props.id === "provider-health-check-interval",
+    );
+    expect(interval).not.toBeNull();
+    const control = interval?.props.control as ReactElement<Record<string, unknown>>;
+    expect(control.props.inert).toBe(true);
 
     const customRow = visitElements(
       panel,
@@ -253,9 +253,7 @@ describe("EnvironmentProviderSettings routing", () => {
     const notice = visitElements(panel, (element) => element.props.title === "Limited permissions");
     expect(notice).not.toBeNull();
 
-    expect(
-      visitElements(panel, (element) => element.props["aria-label"] === "Refresh provider status"),
-    ).toBeNull();
+    expect(visitElements(panel, isRefreshButton)).toBeNull();
     expect(visitElements(panel, isAddProviderButton)).toBeNull();
   });
 
@@ -266,9 +264,7 @@ describe("EnvironmentProviderSettings routing", () => {
     expect(
       visitElements(panel, (element) => element.props.title === "Limited permissions"),
     ).toBeNull();
-    expect(
-      visitElements(panel, (element) => element.props["aria-label"] === "Refresh provider status"),
-    ).not.toBeNull();
+    expect(visitElements(panel, isRefreshButton)).not.toBeNull();
     expect(visitElements(panel, isAddProviderButton)).not.toBeNull();
   });
 
@@ -367,15 +363,19 @@ describe("EnvironmentProviderSettings routing", () => {
     expect(swappedEditor).toBeNull();
   });
 
-  it("opens Advanced when search targets the provider health interval", () => {
-    settingsSearchState.targetId = "provider-health-check-interval";
+  it("keeps Advanced visible when search targets the provider health interval", () => {
     let panel = renderPanel();
+    expect(visitElements(panel, (element) => element.props.title === "Advanced")).not.toBeNull();
+    expect(
+      visitElements(panel, (element) => element.props.id === "provider-health-check-interval"),
+    ).not.toBeNull();
 
-    expect(findAdvancedPanel(panel)?.props.open).toBe(false);
-    flushEffects();
-
+    settingsSearchState.targetId = "provider-health-check-interval";
     panel = renderPanel();
-    expect(findAdvancedPanel(panel)?.props.open).toBe(true);
+    expect(visitElements(panel, (element) => element.props.title === "Advanced")).not.toBeNull();
+    expect(
+      visitElements(panel, (element) => element.props.id === "provider-health-check-interval"),
+    ).not.toBeNull();
   });
 
   it("deletes and resets provider configuration without erasing shared preferences", () => {

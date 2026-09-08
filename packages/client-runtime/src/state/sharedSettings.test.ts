@@ -6,12 +6,36 @@ import {
   findSharedSettingsMismatches,
   pickSharedServerSettings,
   splitSharedServerPatch,
+  supportsSharedSettingsSync,
 } from "./sharedSettings.ts";
 
 const primaryId = EnvironmentId.make("env-primary");
 const laptopId = EnvironmentId.make("env-laptop");
 const boxId = EnvironmentId.make("env-box");
 const restartCapabilities = { threadRestartContinuation: true };
+
+describe("supportsSharedSettingsSync", () => {
+  it("accepts only connected servers that advertise the shared-settings capability", () => {
+    expect(
+      supportsSharedSettingsSync({
+        connection: { phase: "connected" },
+        serverConfig: { environment: { capabilities: { threadAutoSettlement: true } } },
+      }),
+    ).toBe(true);
+    expect(
+      supportsSharedSettingsSync({
+        connection: { phase: "connected" },
+        serverConfig: { environment: { capabilities: {} } },
+      }),
+    ).toBe(false);
+    expect(
+      supportsSharedSettingsSync({
+        connection: { phase: "reconnecting" },
+        serverConfig: { environment: { capabilities: { threadAutoSettlement: true } } },
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("splitSharedServerPatch", () => {
   it("routes preference keys to the shared patch and machine keys to the local patch", () => {
@@ -78,7 +102,7 @@ describe("findSharedSettingsMismatches", () => {
       const environment = {
         environmentId: boxId,
         label: "Remote Box",
-        connected: true,
+        syncEligible: true,
         settings: remoteSettings,
         capabilities: restartCapabilities,
       };
@@ -120,7 +144,7 @@ describe("findSharedSettingsMismatches", () => {
       const environment = {
         environmentId: boxId,
         label: "Remote Box",
-        connected: true,
+        syncEligible: true,
         capabilities,
         settings: { ...primarySettings, continueThreadsAfterServerUpdate: true },
       };
@@ -150,12 +174,17 @@ describe("findSharedSettingsMismatches", () => {
       primaryEnvironmentId: primaryId,
       primarySettings,
       environments: [
-        { environmentId: primaryId, label: "Desktop", connected: true, settings: primarySettings },
-        { environmentId: laptopId, label: "Laptop", connected: true, settings: primarySettings },
+        {
+          environmentId: primaryId,
+          label: "Desktop",
+          syncEligible: true,
+          settings: primarySettings,
+        },
+        { environmentId: laptopId, label: "Laptop", syncEligible: true, settings: primarySettings },
         {
           environmentId: boxId,
           label: "Remote Box",
-          connected: true,
+          syncEligible: true,
           settings: DEFAULT_SERVER_SETTINGS,
         },
       ],
@@ -171,7 +200,7 @@ describe("findSharedSettingsMismatches", () => {
         {
           environmentId: boxId,
           label: "Remote Box",
-          connected: true,
+          syncEligible: true,
           settings: { ...primarySettings, enableAgentBrowserAccess: false },
         },
       ],
@@ -181,7 +210,12 @@ describe("findSharedSettingsMismatches", () => {
 
   it("reports nothing until the primary environment's settings are loaded", () => {
     const environments = [
-      { environmentId: boxId, label: "Remote Box", connected: true, settings: primarySettings },
+      {
+        environmentId: boxId,
+        label: "Remote Box",
+        syncEligible: true,
+        settings: primarySettings,
+      },
     ];
     expect(
       findSharedSettingsMismatches({ primaryEnvironmentId: null, primarySettings, environments }),
@@ -195,7 +229,7 @@ describe("findSharedSettingsMismatches", () => {
     ).toEqual([]);
   });
 
-  it("skips offline environments and environments without a loaded config", () => {
+  it("skips ineligible environments and environments without a loaded config", () => {
     const mismatches = findSharedSettingsMismatches({
       primaryEnvironmentId: primaryId,
       primarySettings,
@@ -203,10 +237,10 @@ describe("findSharedSettingsMismatches", () => {
         {
           environmentId: laptopId,
           label: "Laptop",
-          connected: false,
+          syncEligible: false,
           settings: DEFAULT_SERVER_SETTINGS,
         },
-        { environmentId: boxId, label: "Remote Box", connected: true, settings: null },
+        { environmentId: boxId, label: "Remote Box", syncEligible: true, settings: null },
       ],
     });
     expect(mismatches).toEqual([]);
