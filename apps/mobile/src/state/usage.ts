@@ -16,6 +16,7 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
+import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
@@ -113,12 +114,18 @@ export function useUsage(
   // Refreshing only the derived atom would re-read the per-environment SWR
   // queries within their stale window and change nothing. Refresh each
   // environment's query so pull-to-refresh always rescans.
+  // Refetch rates before rescanning; older or offline servers still rescan after a failed refresh.
   const refresh = useCallback(() => {
     const input = JSON.parse(windowKey) as UsageSummaryInput;
     for (const environment of selectedEnvironments) {
-      appAtomRegistry.refresh(
-        serverEnvironment.usageSummary({ environmentId: environment.environmentId, input }),
-      );
+      const { environmentId } = environment;
+      const query = serverEnvironment.usageSummary({ environmentId, input });
+      void runAtomCommand(
+        appAtomRegistry,
+        serverEnvironment.refreshUsageRates,
+        { environmentId, input: {} },
+        { reportFailure: false },
+      ).finally(() => appAtomRegistry.refresh(query));
     }
   }, [selectedEnvironments, windowKey]);
 
