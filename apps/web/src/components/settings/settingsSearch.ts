@@ -71,6 +71,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/projects",
     searchTerms: [
       "model workspace browser machines projects inheritance automatic pull checkout grouping actions scripts",
+      "project name icon emoji favicon image pull request merge method squash rebase",
     ],
   },
   {
