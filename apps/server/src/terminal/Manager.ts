@@ -1379,6 +1379,7 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
   );
 });
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.fn("TerminalManager.make")(function* () {
   const { terminalLogsDir } = yield* ServerConfig.ServerConfig;
   const ptyAdapter = yield* PtyAdapter.PtyAdapter;
