@@ -3996,6 +3996,27 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           projectIcon: '{"kind":"emoji","emoji":"🚀"}',
         },
       ]);
+
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const savedProject = (yield* snapshotQuery.getShellSnapshot()).projects.find(
+        (project) => project.id === "project-scripts",
+      );
+      assert.deepEqual(savedProject?.projectIcon, { kind: "emoji", emoji: "🚀" });
+
+      yield* engine.dispatch({
+        type: "project.meta.update",
+        commandId: CommandId.make("cmd-scripts-project-clear-icon"),
+        projectId: ProjectId.make("project-scripts"),
+        projectIcon: null,
+        faviconPath: null,
+      });
+      const clearedProject = (yield* snapshotQuery.getSnapshot()).projects.find(
+        (project) => project.id === "project-scripts",
+      );
+      assert.equal(clearedProject?.projectIcon, null);
+      assert.equal(clearedProject?.faviconPath, null);
+      assert.deepEqual(clearedProject?.scripts, savedProject?.scripts);
+      assert.deepEqual(clearedProject?.defaultModelSelection, savedProject?.defaultModelSelection);
     }),
   );
 

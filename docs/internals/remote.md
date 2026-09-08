@@ -223,7 +223,7 @@ supervisor owns the resulting disconnect and reconnect like any other involuntar
 ## Machine identity
 
 Every environment is drawn with one of a fixed set of machine glyphs (`EnvironmentMachineKind` in
-contracts: server, cloud, desktop, laptop, mac-mini, mac-studio). Two inputs feed it, and the
+contracts: server, cloud, desktop, laptop, mac-mini, mac-studio, linux). Two inputs feed it, and the
 precedence lives in one helper, `resolveEnvironmentMachineKind`, so web and mobile cannot drift:
 
 1. `settings.environmentIcon`, a nullable server setting the user picks in Settings → Connections.

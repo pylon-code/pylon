@@ -330,7 +330,11 @@ function ProviderSettingsPanelContent() {
                 <TooltipTrigger
                   render={
                     <Toggle value={environment.environmentId} className="gap-2 text-left">
-                      <EnvironmentMachineIcon kind={machine} className="size-3.5 shrink-0" aria-hidden />
+                      <EnvironmentMachineIcon
+                        kind={machine}
+                        className="size-3.5 shrink-0"
+                        aria-hidden
+                      />
                       <span className="max-w-40 truncate">{environment.label}</span>
                       {environment.connection.phase !== "connected" ? (
                         <ConnectionStatusDot
