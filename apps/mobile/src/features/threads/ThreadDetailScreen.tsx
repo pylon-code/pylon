@@ -1,6 +1,9 @@
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
-import type { SessionCompactionControlSnapshot } from "@t3tools/client-runtime/state/context-compaction";
+import {
+  isSessionCompactionInProgress,
+  type SessionCompactionControlSnapshot,
+} from "@t3tools/client-runtime/state/context-compaction";
 import type { SessionGoalSnapshot } from "@t3tools/client-runtime/state/session-goal";
 import type { SessionAgentDepthSnapshot } from "@t3tools/client-runtime/state/session-agent-depth";
 import type { SessionInputQueueSnapshot } from "@t3tools/client-runtime/state/session-input-queue";
@@ -98,6 +101,7 @@ import {
   FLOATING_WORKING_CONTROL_COVERAGE,
   FloatingWorkingControl,
 } from "./floating-working-control";
+import { connectionFloatingStatus, type FloatingWorkingStatus } from "./floating-working-status";
 import {
   derivePendingUserInputMaxHeight,
   ESTIMATED_KEYBOARD_HEIGHT,
@@ -428,31 +432,54 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   // The raw sync status enters "synchronizing" on every full fetch, cached or
   // not. Whether messages are already on screen decides the pill label: no
   // data yet → "Loading messages", cached data reconciling → "Syncing".
-  const threadSyncPhase = (() => {
+  const threadSyncLabel = (() => {
     switch (props.threadSyncStatus) {
       case "empty":
       case "cached":
       case "synchronizing":
         if (contentPresentationKind === "ready") {
-          return "syncing" as const;
+          return "Syncing messages...";
         }
-        return contentPresentationKind === "loading" ? ("loading" as const) : null;
+        return contentPresentationKind === "loading" ? "Loading messages..." : null;
       default:
         return null;
     }
   })();
-  const showWorkingControl =
-    props.activeWorkStartedAt !== null &&
-    contentPresentationKind === "ready" &&
-    threadSyncPhase === null &&
-    props.connectionStateLabel === "connected" &&
-    props.activePendingApproval === null &&
-    props.activePendingUserInput === null &&
-    // Pylon has a third blocking kind upstream lacks. Without it the pill
-    // keeps counting "Working for Xs" while a session interaction waits on
-    // the user, and its 52px coverage stays in the feed inset.
-    props.activePendingInteraction === null;
-  const floatingWorkingStartedAt = showWorkingControl ? props.activeWorkStartedAt : null;
+  // One floating pill above the composer: it reads the connection phase while
+  // disconnected, the sync state while messages load, then the working timer
+  // once the feed is settled.
+  const floatingStatus = ((): FloatingWorkingStatus | null => {
+    const connectionStatus = connectionFloatingStatus({
+      connectionError: props.connectionError,
+      connectionState: props.connectionStateLabel,
+      environmentLabel: props.environmentLabel,
+      onReconnect: props.onReconnectEnvironment,
+    });
+    if (connectionStatus !== null) {
+      return connectionStatus;
+    }
+    if (
+      props.activePendingApproval !== null ||
+      props.activePendingUserInput !== null ||
+      props.activePendingInteraction !== null
+    ) {
+      return null;
+    }
+    if (threadSyncLabel !== null) {
+      return { kind: "syncing", label: threadSyncLabel };
+    }
+    if (
+      isSessionCompactionInProgress(props.sessionCompaction) &&
+      contentPresentationKind === "ready"
+    ) {
+      return { kind: "compacting" };
+    }
+    if (props.activeWorkStartedAt !== null && contentPresentationKind === "ready") {
+      return { kind: "working", startedAt: props.activeWorkStartedAt };
+    }
+    return null;
+  })();
+  const showWorkingControl = floatingStatus !== null;
   const selectedThreadFeed = props.selectedThreadFeed;
   const composerChrome = composerExpanded ? COMPOSER_EXPANDED_CHROME : COMPOSER_COLLAPSED_CHROME;
   const composerOverlapHeight = composerChrome + composerBottomInset;
@@ -917,7 +944,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             <View ref={composerOverlayRef} onLayout={onComposerLayout} className="w-full">
               <FloatingWorkingControl
                 colorScheme={isDarkMode ? "dark" : "light"}
-                startedAt={floatingWorkingStartedAt}
+                status={floatingStatus}
                 showScrollToEnd={showScrollToEndButton}
                 onScrollToEnd={handleScrollToEnd}
               />
@@ -1023,9 +1050,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   placeholder="Ask the repo agent, or run a command…"
                   contentMaxWidth={contentMaxWidth}
                   connectionState={props.connectionStateLabel}
-                  connectionError={props.connectionError}
                   environmentLabel={props.environmentLabel}
-                  threadSyncPhase={threadSyncPhase}
                   selectedThread={props.selectedThread}
                   serverConfig={props.serverConfig}
                   localOutboxCount={props.localOutboxCount}
@@ -1070,7 +1095,6 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   onRunSessionCompactionAction={props.onRunSessionCompactionAction}
                   onCancelSessionAgent={props.onCancelSessionAgent}
                   onMessageSessionAgent={props.onMessageSessionAgent}
-                  onReconnectEnvironment={props.onReconnectEnvironment}
                   onUpdateModelSelection={props.onUpdateThreadModelSelection}
                   onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}
                   onUpdateInteractionMode={props.onUpdateThreadInteractionMode}

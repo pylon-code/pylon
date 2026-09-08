@@ -282,10 +282,8 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
 }) {
   const compact = props.variant === "compact";
-  const separatorColor = useUniwindTheme()["--color-separator"];
   const iconSubtleColor = useUniwindTheme()["--color-icon-subtle"];
   const mutedColor = useUniwindTheme()["--color-foreground-muted"];
-  const pressedBackgroundColor = useUniwindTheme()["--color-subtle"];
 
   const { pendingTask, onSelectPendingTask, onDeletePendingTask } = props;
   const timestamp = relativeTime(pendingTask.message.createdAt);
@@ -302,8 +300,8 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   );
 
   const statusPill = (
-    <View className="rounded-full bg-adaptive-zinc-500-a12-a16 px-1.5 py-0.5">
-      <Text className="text-3xs font-t3-bold text-adaptive-zinc-600-300">
+    <View className="rounded-full bg-subtle px-1.5 py-0.5">
+      <Text className="text-3xs font-t3-bold text-foreground-muted">
         {pendingTask.message.deliveryHold ? "Held" : "Pending"}
       </Text>
     </View>
@@ -336,25 +334,11 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
       accessibilityHint="Opens the queued task for editing"
       accessibilityLabel={pendingTask.title}
       accessibilityRole="button"
-      className="bg-screen"
+      className="bg-screen active:opacity-70"
       onPress={() => onSelectPendingTask(pendingTask)}
-      style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
     >
-      <View
-        style={{
-          paddingLeft: THREAD_LIST_COMPACT_INSET,
-          paddingRight: 18,
-          paddingTop: 10,
-        }}
-      >
-        <View
-          style={{
-            gap: 3,
-            borderBottomWidth: props.isLast ? 0 : 1,
-            borderBottomColor: separatorColor,
-            paddingBottom: 10,
-          }}
-        >
+      <View className="pr-[18px] pt-[10px]" style={{ paddingLeft: THREAD_LIST_COMPACT_INSET }}>
+        <View className={cn("gap-[3px] pb-[10px]", !props.isLast && "border-b border-separator")}>
           <View className="flex-row items-center justify-between gap-2">
             <Text className="flex-1 text-lg font-t3-bold text-foreground" numberOfLines={1}>
               {pendingTask.title}
@@ -379,16 +363,16 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
       accessibilityHint="Opens the queued task for editing"
       accessibilityLabel={pendingTask.title}
       accessibilityRole="button"
+      className="active:bg-subtle"
       onPress={() => onSelectPendingTask(pendingTask)}
-      style={({ pressed }) => ({
-        backgroundColor: pressed ? pressedBackgroundColor : "transparent",
+      style={{
         borderRadius: SIDEBAR_ROW_RADIUS,
         cursor: "pointer",
         minHeight: 64,
         justifyContent: "center",
         paddingHorizontal: 12,
         paddingVertical: 10,
-      })}
+      }}
     >
       <View className="gap-[3px]">
         <View className="flex-row items-center justify-between gap-2">
@@ -456,7 +440,6 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   // thread, so a hover highlight can't leak across rows.
   const [hovered, setHovered] = useRecyclingState(false);
 
-  const separatorColor = useUniwindTheme()["--color-separator"];
   const iconSubtleColor = useUniwindTheme()["--color-icon-subtle"];
   const screenColor = useUniwindTheme()["--color-screen"];
   const drawerColor = useUniwindTheme()["--color-drawer"];
@@ -576,28 +559,14 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
         accessibilityHint="Swipe left for archive and delete actions"
         accessibilityLabel={threadAccessibilityLabel}
         accessibilityRole="button"
-        className="bg-screen"
+        className="bg-screen active:opacity-70"
         onPress={() => {
           close();
           onSelectThread(thread);
         }}
-        style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
       >
-        <View
-          style={{
-            paddingLeft: THREAD_LIST_COMPACT_INSET,
-            paddingRight: 18,
-            paddingTop: 10,
-          }}
-        >
-          <View
-            style={{
-              gap: 3,
-              borderBottomWidth: props.isLast ? 0 : 1,
-              borderBottomColor: separatorColor,
-              paddingBottom: 10,
-            }}
-          >
+        <View className="pr-[18px] pt-[10px]" style={{ paddingLeft: THREAD_LIST_COMPACT_INSET }}>
+          <View className={cn("gap-[3px] pb-[10px]", !props.isLast && "border-b border-separator")}>
             <View className="flex-row items-center justify-between gap-2">
               <Text className="flex-1 text-lg font-t3-bold text-foreground" numberOfLines={1}>
                 {thread.title}
