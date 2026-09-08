@@ -5,6 +5,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   resolveEarlyLinuxElectronOptions,
   resolveEarlyLinuxPasswordStorePreference,
+  resolveLinuxDesktopEntryName,
 } from "./DesktopEarlyElectronStartup.ts";
 
 const STABLE_VERSION = "0.0.31";
@@ -89,7 +90,9 @@ describe("DesktopEarlyElectronStartup", () => {
     });
 
     assert.deepEqual(options, {
+      isDevelopment: true,
       linuxWmClass: "pylon-code-dev",
+      linuxDesktopEntryName: "com.pylon.code.dev.desktop",
       passwordStore: "gnome-libsecret",
     });
   });
@@ -160,7 +163,7 @@ describe("DesktopEarlyElectronStartup", () => {
     assert.equal(preference, "kwallet6");
   });
 
-  it("gives a nightly build its own window class", () => {
+  it("gives a nightly build its own window class and portal identity", () => {
     const options = resolveEarlyLinuxElectronOptions({
       env: { T3CODE_HOME: "/home/user/.t3-test" },
       homeDirectory: "/home/user",
@@ -170,6 +173,11 @@ describe("DesktopEarlyElectronStartup", () => {
     });
 
     assert.equal(options.linuxWmClass, "pylon-code-nightly");
+    assert.equal(options.linuxDesktopEntryName, "com.pylon.code.nightly.desktop");
+    assert.equal(
+      resolveLinuxDesktopEntryName({ isDevelopment: false, appVersion: STABLE_VERSION }),
+      "com.pylon.code.desktop",
+    );
   });
 
   it("treats whitespace-only T3CODE_HOME as unconfigured in development", () => {
