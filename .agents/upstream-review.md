@@ -39,6 +39,8 @@ Historical groups are indexed in the linked archive. This file migration changes
 
 | Settings navigation, provider editing and shared control foundation / `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f` | Full 18-source list in [#408](https://github.com/pylon-code/pylon/pull/408) | Adopted compatible settings redesign and follow-up fixes. Preserve Prime maintenance, provider mutations and rollback guards, account redaction, usage hubs, restart-continuation capability filtering and existing provider field types. Browser profiles, Motion and load balancing remain separate feature groups; their absent controls need the new layout when introduced. | [Settings foundation #408](https://github.com/pylon-code/pylon/pull/408); 106 focused tests, four package typechecks, scoped lint and integrated web evidence. |
 
+| Project and environment identity / `062987b2fb0ef48cc7776d654931bd9f3bcf1f9f` | Full ten-source list in #409, from #9299 through #10396 | Adopted final machine detection/override, environment glyphs, web/desktop colored project icons and emoji, saved-title consistency, and bounded persistent image caching across web/mobile. Preserve Pylon migration lineage (56), older-server image selection, project grouping, Prime controls and runtime identity. Mobile custom project icon rendering and unrelated auto-pull/work-log changes are outside these sources. | [Identity icons #409](https://github.com/pylon-code/pylon/pull/409); 317 focused tests, seven package typechecks, scoped lint/dependency checks and integrated web/iOS evidence. |
+
 ## Deferred register
 
 Open decisions retain their original dates and revisit conditions. Check triggers once per integration cycle using the skill; detailed history is in the archive.
