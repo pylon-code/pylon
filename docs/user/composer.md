@@ -75,12 +75,12 @@ when starting a thread or changing an existing thread's model.
 
 ## Model defaults
 
-T3 Code remembers the last provider, model, and model options you selected and reuses that
+Pylon remembers the last provider, model, and model options you selected and reuses that
 selection for new threads. A model configured in a project's settings overrides the remembered
 selection for that project; resetting the project setting returns it to the remembered selection.
 
-Model options shown as provider defaults remain display values until you choose them in T3 Code.
-T3 Code only sends options you selected explicitly, so an unset reasoning level or service tier can
+Model options shown as provider defaults remain display values until you choose them in Pylon.
+Pylon only sends options you selected explicitly, so an unset reasoning level or service tier can
 still come from the provider's own configuration.
 
 ## Quote an assistant response
@@ -102,7 +102,7 @@ Select a chip in the composer or a sent message to open the source thread, scrol
 and highlight the quoted passage — including in older history. The
 highlight pulses, holds for a moment, then fades on its own; press `Escape` to stop the navigation
 or clear it early. If the source is unavailable or its text has changed, the saved quote stays
-readable and T3 Code shows a warning.
+readable and Pylon shows a warning.
 
 Mobile shows the full saved quote and its comment in sent messages. It does not offer
 **Cite in composer** or navigation to a quote's source.
@@ -183,7 +183,7 @@ backslash UNC paths continue to match without regard to capitalization.
 On web and desktop, the file viewer shows HTML and PDF files as a rendered page. Use the
 source toggle in the viewer's header to switch an HTML file between the page and its markup; the
 choice persists like the rendered-Markdown toggle. A link to a line always opens the source. HTML
-runs in an isolated frame with no access to your T3 Code session. On desktop, the integrated
+runs in an isolated frame with no access to your Pylon session. On desktop, the integrated
 browser remains available from the same header for a full browser view.
 
 ## Changing projects
@@ -247,13 +247,13 @@ slash menu** in **Settings → General** in the web or desktop app. Skill result
 name remains searchable. If the provider also reports that skill as a native slash command, Pylon
 hides the duplicate native entry and keeps the `/skill:Skill Name` label.
 
-A skill token runs the skill wherever it sits in your message. T3 Code sends it to each provider in
+A skill token runs the skill wherever it sits in your message. Pylon sends it to each provider in
 the form that provider runs, so the text before and after the token is kept. Skills that only you may
 start, and never the agent on its own, work the same way. A skill you switched off in the provider's
 settings does not appear in either menu.
 
 Provider commands such as `/compact` only run when they open the message, so the `/` menu offers
-them only there. T3 Code's own commands, such as `/model` and `/plan`, and skills stay available on
+them only there. Pylon's own commands, such as `/model` and `/plan`, and skills stay available on
 any line.
 
 On desktop, press `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux from a new thread to
