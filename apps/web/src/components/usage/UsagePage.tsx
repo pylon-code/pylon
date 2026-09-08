@@ -4,7 +4,13 @@ import {
   type EnvironmentId,
   type UsageProviderKind,
 } from "@t3tools/contracts";
-import { CircleAlertIcon, ChevronDownIcon, CircleDashedIcon, RefreshCwIcon } from "lucide-react";
+import {
+  CircleAlertIcon,
+  ChevronDownIcon,
+  CircleDashedIcon,
+  RefreshCwIcon,
+  SlidersHorizontalIcon,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 import {
@@ -32,7 +38,14 @@ import {
   makeWindow,
 } from "@t3tools/shared/usageFormat";
 import { Button } from "../ui/button";
-import { Menu, MenuCheckboxItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import {
+  Menu,
+  MenuCheckboxItem,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { SidebarInset } from "../ui/sidebar";
@@ -45,6 +58,7 @@ import {
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { UsageLimitsSection } from "./UsageLimits";
+import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 
@@ -649,6 +663,7 @@ function UsageEnvironmentFilter({
   readonly duplicateSources: readonly string[];
   readonly staleEnvironments: readonly string[];
 }) {
+  const [modelPricesOpen, setModelPricesOpen] = useState(false);
   const allSelected = selectedEnvironmentIds === null;
   const label = allSelected
     ? "All environments"
@@ -762,8 +777,20 @@ function UsageEnvironmentFilter({
               staleEnvironments={staleEnvironments}
             />
           ) : null}
+          <MenuSeparator />
+          <MenuItem onClick={() => setModelPricesOpen(true)}>
+            <SlidersHorizontalIcon aria-hidden />
+            Model prices
+          </MenuItem>
         </MenuPopup>
       </Menu>
+      {modelPricesOpen ? (
+        <UsagePriceOverrides
+          usage={environments}
+          initialSelectedEnvironmentIds={selectedEnvironmentIds}
+          onOpenChange={setModelPricesOpen}
+        />
+      ) : null}
     </>
   );
 }
