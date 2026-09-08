@@ -37,6 +37,8 @@ the dialog. If a recovered environment needs a complete price, discard the pendi
 
 Choose **Limits** to see remaining quota, reset times, and pace across your connected accounts. Accounts for the same provider are pooled across the selected environments; expand a pool to inspect its accounts. Limits are provider-reported subscription allowances, separate from the Usage page’s estimated token costs. Refresh to update the readings and reset countdowns.
 
+Each window's bar has one segment per account, and an account keeps the same column across windows. Accounts are ordered by their 5-hour reset, soonest first, or by the first available window when no account reports a 5-hour limit. A gap means the account does not report that window.
+
 In a thread, submit **/usage-limits** by itself to show the current provider’s quota above the composer without starting an agent turn. Dismiss the panel with its close control; a successful message send clears it. Provider-defined commands with the same name keep their own behavior. On mobile, use Usage → Limits before creating a thread.
 
 When Codex reports reset credits, **Use reset** asks you to confirm before redeeming one. A confirmed result remains visible even if refreshing the balance fails. If the request’s outcome is uncertain, retrying checks the same attempt.
