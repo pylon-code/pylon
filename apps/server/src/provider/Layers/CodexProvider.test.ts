@@ -1,11 +1,25 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 
+import type { ServerProviderUsageLimits } from "@t3tools/contracts";
 import * as CodexSchema from "effect-codex-app-server/schema";
+import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as TestClock from "effect/testing/TestClock";
 
+import {
+  readSharedUsageEntry,
+  SHARED_USAGE_CACHE_DIR_ENV,
+  sharedUsageReadKey,
+  writeSharedUsageEntry,
+} from "../sharedUsageReadCache.ts";
 import {
   applyPreferredCodexDefaultModel,
   codexAccountAuthLabel,
   mapCodexModelCapabilities,
+  readCodexRateLimitsShared,
 } from "./CodexProvider.ts";
 
 it("maps current Codex model capability fields", () => {
@@ -206,4 +220,78 @@ it("labels non-ChatGPT account types", () => {
   assert.strictEqual(codexAccountAuthLabel({ type: "amazonBedrock" }), "Amazon Bedrock");
   assert.strictEqual(codexAccountAuthLabel(undefined), undefined);
   assert.strictEqual(codexAccountAuthLabel(null), undefined);
+});
+
+const CODEX_HOME = "/home/someone/.codex";
+
+const usageAt = (checkedAt: string): ServerProviderUsageLimits => ({
+  source: "codexAppServer",
+  checkedAt,
+  windows: [{ label: "Weekly", usedPercent: 15, windowDurationMins: 10080 }],
+});
+
+/** What the probe hands back when the read timed out or failed. */
+const MISSED_READ = Effect.as(
+  Effect.void,
+  undefined as CodexSchema.V2GetAccountRateLimitsResponse | undefined,
+);
+
+/**
+ * Seed a reading the shared window has already passed, so the read path runs,
+ * then answer nothing — the shape of a read that missed its budget.
+ */
+const readAfterMissedRead = (input: { readonly age: Duration.Duration }) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const cacheDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "pylon-codex-usage-" });
+    const priorCache = process.env[SHARED_USAGE_CACHE_DIR_ENV];
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        process.env[SHARED_USAGE_CACHE_DIR_ENV] = cacheDir;
+      }),
+      () =>
+        Effect.sync(() => {
+          if (priorCache === undefined) delete process.env[SHARED_USAGE_CACHE_DIR_ENV];
+          else process.env[SHARED_USAGE_CACHE_DIR_ENV] = priorCache;
+        }),
+    );
+    const cacheKey = sharedUsageReadKey(["codex", CODEX_HOME]);
+    const readAt = DateTime.formatIso(DateTime.makeUnsafe(0));
+    yield* writeSharedUsageEntry(cacheDir, cacheKey, {
+      version: 1,
+      readAt,
+      usageLimits: usageAt(readAt),
+    });
+
+    yield* TestClock.adjust(input.age);
+    const result = yield* readCodexRateLimitsShared({
+      sharedHomePath: CODEX_HOME,
+      read: MISSED_READ,
+    });
+    return { result, entry: yield* readSharedUsageEntry(cacheDir, cacheKey), readAt };
+  }).pipe(Effect.scoped);
+
+it.layer(NodeServices.layer)("codex capacity across a missed read", (it) => {
+  // The read that misses its budget is usually the first one after a restart,
+  // when the driver has nothing of its own to fall back on.
+  it.effect("keeps serving the last shared reading", () =>
+    Effect.gen(function* () {
+      const { result, entry, readAt } = yield* readAfterMissedRead({
+        age: Duration.minutes(10),
+      });
+
+      assert.deepStrictEqual(result, { sharedUsageLimits: usageAt(readAt) });
+      // Recorded so every server on the account backs off together.
+      assert.isDefined(entry?.failedAt);
+      assert.deepStrictEqual(entry?.usageLimits, usageAt(readAt));
+    }),
+  );
+
+  it.effect("drops a reading too old to still mean anything", () =>
+    Effect.gen(function* () {
+      const { result } = yield* readAfterMissedRead({ age: Duration.minutes(45) });
+
+      assert.deepStrictEqual(result, {});
+    }),
+  );
 });
