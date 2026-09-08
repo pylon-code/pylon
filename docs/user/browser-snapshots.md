@@ -10,3 +10,16 @@ it to `true` includes the screenshot again.
 
 Text-only snapshots can help avoid accumulating images in a conversation. They do not remove
 screenshots already sent to a provider. The browser still captures a complete snapshot.
+
+## Long pages
+
+Agent tools limit how much text one result can carry, so the snapshot text an agent reads stays
+compact. It leaves out the accessibility tree, shortens long page text and element names, and keeps
+the newest console, network, and action entries. When anything is shortened or left out, the
+snapshot says what, and the agent can read more of the page with `preview_evaluate`.
+
+## Saving screenshots
+
+A snapshot’s screenshot is not saved anywhere unless the agent asks. With `save: true`, Pylon writes
+the PNG to the environment the agent runs in and returns its path, so the agent can embed the
+screenshot in its reply for you to see.
