@@ -31,6 +31,7 @@ import {
   findSharedSettingsMismatches,
   pickSharedServerSettings,
   splitSharedServerPatch,
+  supportsSharedSettingsSync,
 } from "@t3tools/client-runtime/state/shared-settings";
 import { ensureLocalApi } from "~/localApi";
 import {
@@ -44,11 +45,7 @@ import * as Struct from "effect/Struct";
 import { toastManager } from "~/components/ui/toast";
 import { isHostedStaticApp } from "~/hostedPairing";
 import { primaryServerSettingsAtom, serverEnvironment } from "~/state/server";
-import {
-  type EnvironmentPresentation,
-  useEnvironments,
-  usePrimaryEnvironment,
-} from "~/state/environments";
+import { useEnvironments, usePrimaryEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useTheme } from "./useTheme";
 
@@ -336,17 +333,6 @@ export function usePrimarySettingsAvailable(): boolean {
 }
 
 /**
- * Whether an environment supports the shared-settings baseline. Newer
- * preferences are filtered separately against each target capability.
- */
-function supportsSharedSettings(environment: EnvironmentPresentation): boolean {
-  return (
-    environment.connection.phase === "connected" &&
-    environment.serverConfig?.environment.capabilities.threadAutoSettlement === true
-  );
-}
-
-/**
  * Returns an updater that routes each key to the correct backing store.
  *
  * Server keys are optimistically patched in atom-backed server state, then
@@ -408,7 +394,7 @@ function useUpdateSettingsTarget(
           }
           if (Object.keys(sharedPatch).length > 0) {
             const targets = new Set(
-              environments.filter(supportsSharedSettings).map((target) => target.environmentId),
+              environments.filter(supportsSharedSettingsSync).map((target) => target.environmentId),
             );
             if (environmentId) targets.add(environmentId);
             let wroteToTarget = false;
@@ -467,7 +453,7 @@ export function useSharedSettingsSync() {
   // must never push defaults over real values. Same for a primary too old to
   // hold the shared keys: its decoded defaults are not a source of truth.
   const primarySettings =
-    primaryEnvironment !== null && supportsSharedSettings(primaryEnvironment)
+    primaryEnvironment !== null && supportsSharedSettingsSync(primaryEnvironment)
       ? (primaryEnvironment.serverConfig?.settings ?? null)
       : null;
   const { environments } = useEnvironments();
@@ -485,7 +471,7 @@ export function useSharedSettingsSync() {
         environments: environments.map((environment) => ({
           environmentId: environment.environmentId,
           label: environment.label,
-          connected: supportsSharedSettings(environment),
+          syncEligible: supportsSharedSettingsSync(environment),
           settings: environment.serverConfig?.settings ?? null,
           capabilities: environment.serverConfig?.environment.capabilities,
         })),

@@ -4,8 +4,8 @@
  * Every server keeps its own `settings.json`, but some keys are user
  * preferences that only live on the server because the server has to act on
  * them (auto-settlement runs with no client attached). A user does not want
- * those to differ per machine. Clients write these keys to every connected
- * environment, and warn when a connected environment still holds a different
+ * those to differ per machine. Clients write these keys to every eligible
+ * environment, and warn when an eligible environment still holds a different
  * value so the user can push their current value out.
  */
 import type {
@@ -14,6 +14,7 @@ import type {
   ServerSettings,
   ServerSettingsPatch,
 } from "@t3tools/contracts";
+import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
 import * as Equal from "effect/Equal";
 import * as Struct from "effect/Struct";
 
@@ -69,10 +70,29 @@ export function pickSharedServerSettings(
   return filterSharedServerPatch(Struct.pick(settings, SHARED_SERVER_SETTING_KEYS), capabilities);
 }
 
+/**
+ * Whether an environment can participate in shared-settings sync right now.
+ * Auto-settlement defines the shared-settings baseline. Newer preferences
+ * are filtered separately against each target capability.
+ */
+export function supportsSharedSettingsSync(environment: {
+  readonly connection: { readonly phase: EnvironmentConnectionPhase };
+  readonly serverConfig: {
+    readonly environment: {
+      readonly capabilities: Pick<ExecutionEnvironmentCapabilities, "threadAutoSettlement">;
+    };
+  } | null;
+}): boolean {
+  return (
+    environment.connection.phase === "connected" &&
+    environment.serverConfig?.environment.capabilities.threadAutoSettlement === true
+  );
+}
+
 export interface SharedSettingsEnvironment {
   readonly environmentId: EnvironmentId;
   readonly label: string;
-  readonly connected: boolean;
+  readonly syncEligible: boolean;
   readonly settings: ServerSettings | null;
   readonly capabilities?:
     | Pick<ExecutionEnvironmentCapabilities, "threadRestartContinuation">
@@ -80,8 +100,8 @@ export interface SharedSettingsEnvironment {
 }
 
 /**
- * Connected environments whose shared settings differ from the primary
- * environment's. Offline environments are skipped: nothing can be read from
+ * Eligible environments whose shared settings differ from the primary
+ * environment's. Offline or unsupported environments are skipped: nothing can be read from
  * or written to them, and the warning would never clear. With no primary
  * settings loaded there is nothing to compare against, so nothing is
  * reported. Callers must pass the real loaded settings, never a default
@@ -105,7 +125,7 @@ export function findSharedSettingsMismatches(input: {
   return input.environments.flatMap((environment) => {
     if (
       environment.environmentId === input.primaryEnvironmentId ||
-      !environment.connected ||
+      !environment.syncEligible ||
       environment.settings === null
     ) {
       return [];

@@ -46,6 +46,7 @@ import {
 import {
   filterSharedServerPatch,
   findSharedSettingsMismatches,
+  supportsSharedSettingsSync,
   pickSharedServerSettings,
 } from "@t3tools/client-runtime/state/shared-settings";
 import { useThreadListV2Enabled } from "../threads/use-thread-list-v2-enabled";
@@ -554,8 +555,8 @@ const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterD
 
 /**
  * Shared thread preferences are persisted by each capable server. Mobile
- * has no primary environment, so the first connected environment that
- * supports it is the reference value. Edits fan out to every connected
+ * has no primary environment, so the first eligible environment that
+ * supports restart continuation when available is the reference value. Edits fan out to every eligible
  * environment, and a mismatch row lets the user push the reference out.
  */
 function SharedThreadSettingsRows() {
@@ -565,17 +566,13 @@ function SharedThreadSettingsRows() {
     reportFailure: true,
   });
 
-  const connected = environments.filter(
-    (environment) =>
-      environment.connection.phase === "connected" &&
-      environment.serverConfig?.environment.capabilities.threadAutoSettlement === true,
-  );
+  const syncTargets = environments.filter(supportsSharedSettingsSync);
   const reference =
-    connected.find(
+    syncTargets.find(
       (environment) =>
         environment.serverConfig?.environment.capabilities.threadRestartContinuation === true,
     ) ??
-    connected[0] ??
+    syncTargets[0] ??
     null;
   const referenceSettings = reference?.serverConfig?.settings ?? null;
 
@@ -586,7 +583,7 @@ function SharedThreadSettingsRows() {
   }
 
   const writeToAll = (patch: ServerSettingsPatch) => {
-    for (const environment of connected) {
+    for (const environment of syncTargets) {
       const supportedPatch = filterSharedServerPatch(
         patch,
         environment.serverConfig?.environment.capabilities,
@@ -607,7 +604,7 @@ function SharedThreadSettingsRows() {
     environments: environments.map((environment) => ({
       environmentId: environment.environmentId,
       label: environment.label,
-      connected: environment.connection.phase === "connected",
+      syncEligible: supportsSharedSettingsSync(environment),
       settings: environment.serverConfig?.settings ?? null,
       capabilities: environment.serverConfig?.environment.capabilities,
     })),
@@ -618,7 +615,7 @@ function SharedThreadSettingsRows() {
     const draft = (daysDraft ?? "").trim();
     setDaysDraft(null);
     // Whole-string check so "3.5" and "3days" are rejected instead of
-    // silently becoming 3 on every connected environment.
+    // silently becoming 3 on every eligible sync target.
     const parsed = /^\d+$/.test(draft) ? Number(draft) : Number.NaN;
     if (
       Number.isInteger(parsed) &&
