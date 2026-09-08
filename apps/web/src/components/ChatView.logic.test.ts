@@ -52,6 +52,7 @@ import {
   shouldShowBranchMismatchBanner,
   shouldOpenProactivePullRequest,
   shouldOpenProactiveTurnDiff,
+  shouldRenderPreviewMiniPlayer,
   resolveProactiveTurnDiffAction,
   observeProactivePanelUserChoice,
   shouldShowPlanFollowUpPrompt,
@@ -1587,5 +1588,26 @@ describe("shouldRefocusComposerOnWindowFocus", () => {
   it("leaves focus inside a dialog or popup alone", () => {
     expect(shouldRefocusComposerOnWindowFocus(element("BUTTON", { within: "dialog" }))).toBe(false);
     expect(shouldRefocusComposerOnWindowFocus(element("BUTTON", { within: "-popup" }))).toBe(false);
+  });
+});
+
+describe("floating browser preview", () => {
+  it("only hides the duplicate while the same browser is rendered in the panel", () => {
+    expect(shouldRenderPreviewMiniPlayer(null, null)).toBe(false);
+    expect(
+      shouldRenderPreviewMiniPlayer("tab-1", {
+        id: "browser:one",
+        kind: "preview",
+        resourceId: "tab-1",
+      }),
+    ).toBe(false);
+    expect(
+      shouldRenderPreviewMiniPlayer("tab-1", {
+        id: "browser:two",
+        kind: "preview",
+        resourceId: "tab-2",
+      }),
+    ).toBe(true);
+    expect(shouldRenderPreviewMiniPlayer("tab-1", { id: "diff", kind: "diff" })).toBe(true);
   });
 });

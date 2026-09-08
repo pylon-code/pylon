@@ -123,6 +123,7 @@ describe("browser recording", () => {
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
     vi.stubGlobal("MediaRecorder", FakeMediaRecorder as unknown as typeof MediaRecorder);
     getUserMedia.mockResolvedValue({
+      getVideoTracks: () => [],
       getTracks: () => [{ stop: vi.fn() }],
     });
     vi.stubGlobal("navigator", { mediaDevices: { getUserMedia } });
@@ -151,7 +152,7 @@ describe("browser recording", () => {
     getUserMedia.mockImplementationOnce(async () => {
       expect(animationFrameCount).toBe(2);
       expect(useBrowserSurfaceStore.getState().activityByTabId["background-tab"]).toBe(1);
-      return { getTracks: () => [{ stop: vi.fn() }] };
+      return { getVideoTracks: () => [], getTracks: () => [{ stop: vi.fn() }] };
     });
 
     await startBrowserRecording("background-tab");
@@ -178,9 +179,17 @@ describe("browser recording", () => {
     await stopBrowserRecording("hidden-window-tab");
   });
 
-  it("records the native tab stream at the preview's current dimensions", async () => {
+  it.each([
+    { width: 1280, height: 720, frameRate: 60, bitrate: 2_764_800 },
+    { width: 320, height: 240, frameRate: 30, bitrate: 2_500_000 },
+    { width: 3840, height: 2160, frameRate: 60, bitrate: 24_883_200 },
+    { width: 7680, height: 4320, frameRate: 60, bitrate: 50_000_000 },
+  ])("records the exact native tab at $width x $height with bounded bitrate", async (settings) => {
     const stopTrack = vi.fn();
-    const stream = { getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream;
+    const stream = {
+      getVideoTracks: () => [{ getSettings: () => settings }],
+      getTracks: () => [{ stop: stopTrack }],
+    } as unknown as MediaStream;
     getUserMedia.mockResolvedValueOnce(stream);
 
     await startBrowserRecording("recording-tab");
@@ -200,6 +209,7 @@ describe("browser recording", () => {
       },
     });
     expect(FakeMediaRecorder.instances[0]?.stream).toBe(stream);
+    expect(FakeMediaRecorder.instances[0]?.options?.videoBitsPerSecond).toBe(settings.bitrate);
 
     await stopBrowserRecording("recording-tab");
     expect(stopTrack).toHaveBeenCalledOnce();
@@ -222,6 +232,7 @@ describe("browser recording", () => {
   it("stops the native stream when MediaRecorder cleanup fails", async () => {
     const stopTrack = vi.fn();
     getUserMedia.mockResolvedValueOnce({
+      getVideoTracks: () => [],
       getTracks: () => [{ stop: stopTrack }],
     });
 
@@ -237,6 +248,7 @@ describe("browser recording", () => {
 
   it("prefers a hardware-encodable format over software av1", async () => {
     FakeMediaRecorder.supportedTypes = new Set([
+      "video/mp4;codecs=avc1",
       "video/mp4;codecs=avc1.42e01e",
       "video/webm;codecs=vp9",
       "video/webm;codecs=av1",
@@ -248,8 +260,8 @@ describe("browser recording", () => {
 
     // av1 is supported here but encodes in software; H.264 wins.
     expect(FakeMediaRecorder.instances[0]?.options).toEqual({
-      mimeType: "video/mp4;codecs=avc1.42e01e",
-      videoBitsPerSecond: 4_000_000,
+      mimeType: "video/mp4;codecs=avc1",
+      videoBitsPerSecond: 3_110_400,
     });
     expect(save).toHaveBeenCalledWith("recording-tab", "video/mp4", expect.any(Uint8Array));
   });
@@ -263,7 +275,7 @@ describe("browser recording", () => {
 
     expect(FakeMediaRecorder.instances[0]?.options).toEqual({
       mimeType: "video/webm;codecs=av1",
-      videoBitsPerSecond: 4_000_000,
+      videoBitsPerSecond: 3_110_400,
     });
   });
 
@@ -275,7 +287,7 @@ describe("browser recording", () => {
     await stopBrowserRecording("recording-tab");
 
     // No mimeType, but the bitrate still applies: Chromium's default is thin.
-    expect(FakeMediaRecorder.instances[0]?.options).toEqual({ videoBitsPerSecond: 4_000_000 });
+    expect(FakeMediaRecorder.instances[0]?.options).toEqual({ videoBitsPerSecond: 3_110_400 });
     expect(save).toHaveBeenCalledWith(
       "recording-tab",
       "video/platform-default",
@@ -334,7 +346,10 @@ describe("browser recording", () => {
     expect(readActiveBrowserRecordingTabIds()).toEqual(new Set());
     expect(useBrowserSurfaceStore.getState().activityByTabId["recording-tab"]).toBeUndefined();
 
-    finishCapture({ getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream);
+    finishCapture({
+      getVideoTracks: () => [],
+      getTracks: () => [{ stop: stopTrack }],
+    } as unknown as MediaStream);
     await vi.advanceTimersByTimeAsync(0);
     expect(stopTrack).toHaveBeenCalledOnce();
   });
