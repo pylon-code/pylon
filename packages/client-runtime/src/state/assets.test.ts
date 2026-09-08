@@ -124,7 +124,7 @@ describe("asset URL metadata", () => {
   it("preserves the server image dimensions for both clients when resolving a remote URL", () => {
     const result = AsyncResult.success({
       relativeUrl: "/api/assets/signed-image",
-      expiresAt: "2026-09-08T01:00:00.000Z",
+      expiresAt: Date.parse("2026-09-08T01:00:00.000Z"),
       imageDimensions: { width: 720, height: 1400 },
       sourcePath: "/workspace/portrait.png",
     });
