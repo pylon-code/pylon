@@ -91,7 +91,7 @@ export interface AcpSessionRuntimeOptions {
     notification: EffectAcpSchema.SessionNotification,
   ) => EffectAcpSchema.SessionNotification;
   /** Receives bounded stderr chunks. The provider must redact any secrets before logging. */
-  readonly onStderr?: (text: string) => Effect.Effect<void, never>;
+  readonly onStderr?: (text: string) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   /** Extra workspace roots the agent may read and write besides `cwd`. */
   readonly additionalDirectories?: ReadonlyArray<string>;
   /** Maximum time allowed for each initialize, authenticate, and session/new RPC. */
