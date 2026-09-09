@@ -212,15 +212,17 @@ const config: ExpoConfig = {
   userInterfaceStyle: "automatic",
   // Over-the-air updates follow the configured EAS project. Off until one is
   // set: an update URL is a remote code channel, and inheriting T3's would let
-  // their bundles run inside Pylon.
-  updates: easProjectId
-    ? {
-        enabled: true,
-        url: `https://u.expo.dev/${easProjectId}`,
-        checkAutomatically: "ON_LOAD",
-        fallbackToCacheTimeout: 0,
-      }
-    : { enabled: false },
+  // their bundles run inside Pylon. `T3CODE_MOBILE_UPDATES_ENABLED=0` also turns
+  // them off for a private binary built against a configured project.
+  updates:
+    easProjectId && repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0"
+      ? {
+          enabled: true,
+          url: `https://u.expo.dev/${easProjectId}`,
+          checkAutomatically: "ON_LOAD",
+          fallbackToCacheTimeout: 0,
+        }
+      : { enabled: false },
   ios: {
     icon: variant.assets.iosIcon,
     supportsTablet: true,
@@ -276,6 +278,9 @@ const config: ExpoConfig = {
   android: {
     icon: variant.assets.appIcon,
     package: variant.androidPackage,
+    ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
+      ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
+      : {}),
     adaptiveIcon: {
       backgroundColor: variant.assets.androidAdaptiveBackgroundColor,
       foregroundImage: variant.assets.androidAdaptiveForeground,
@@ -380,6 +385,10 @@ const config: ExpoConfig = {
     [
       "expo-build-properties",
       {
+        android: {
+          // Keep the supported floor explicit and covered by native notification tests.
+          minSdkVersion: 24,
+        },
         ios: {
           deploymentTarget: "18.0",
           // AppCheckCore 11.3+ includes Swift and needs module maps for these Objective-C dependencies.

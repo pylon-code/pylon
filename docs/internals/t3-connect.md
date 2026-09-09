@@ -279,6 +279,22 @@ is the exact string the allowlist needs. Note that these are bundle identifiers
 (`com.pylon.code.preview`), while the desktop entries above are URL schemes (`pylon-code`); the two
 namespaces are easy to confuse.
 
+### Android native sign-in redirects
+
+Clerk's native Android SDK uses `clerk://<applicationId>.callback`. Add each Android package you build
+to the same **Native applications > Allowlist for mobile SSO redirect** list:
+
+| Variant     | Callback                                  |
+| ----------- | ----------------------------------------- |
+| Development | `clerk://com.pylon.code.dev.callback`     |
+| Preview     | `clerk://com.pylon.code.preview.callback` |
+| Production  | `clerk://com.pylon.code.callback`         |
+
+Preserve existing entries. These callbacks are separate from the `pylon-code-dev` /
+`pylon-code-preview` / `pylon-code` navigation schemes. A private development build that uses the
+production Clerk key still needs its development callback allowed by that instance's administrator;
+rebuilding the same package does not change the allowlist.
+
 ## Sign-in Surfaces
 
 Signed-in users manage Pylon Connect under **Connections**. The settings sidebar also has dedicated
