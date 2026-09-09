@@ -1900,33 +1900,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                         />
                       </ControlPillMenu>
                     ) : null}
-                    {props.contextWindow ||
-                    (props.sessionCompaction?.available && sessionCompactionScopeKey) ? (
-                      props.sessionCompaction?.available && sessionCompactionScopeKey ? (
-                        <ControlPillMenu
-                          title="Context window"
-                          actions={sessionCompactionActions}
-                          onPressAction={({ nativeEvent }) =>
-                            handleSessionCompactionAction(nativeEvent.event)
-                          }
-                        >
-                          <ComposerToolbarButton
-                            accessibilityLabel={`${
-                              contextWindowPresentation?.accessibilityText ??
-                              "Context usage unavailable."
-                            } ${
-                              isSessionCompactionInProgress(props.sessionCompaction)
-                                ? "Compaction in progress."
-                                : "Compaction controls."
-                            }`}
-                            icon="gauge.with.dots.needle.50percent"
-                            label={contextWindowPresentation?.compactLabel ?? "Context"}
-                          />
-                        </ControlPillMenu>
-                      ) : props.contextWindow ? (
-                        <ContextWindowIndicator snapshot={props.contextWindow} expanded />
-                      ) : null
-                    ) : null}
                     {sessionAgentActions.length > 0 ? (
                       <ControlPillMenu
                         title="Active agents"
@@ -2002,6 +1975,40 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     ) : null}
                   </ComposerToolbarScroller>
                 )}
+                {/* Context usage is status, not an action. Inside the scroller it
+                    was the item that landed on the viewport edge and got sliced
+                    mid-glyph, so it is pinned beside the actions where it always
+                    renders whole. Hidden during dictation, which owns this row. */}
+                {!isVoiceInputPresented &&
+                (props.contextWindow ||
+                  (props.sessionCompaction?.available && sessionCompactionScopeKey)) ? (
+                  <View className="shrink-0">
+                    {props.sessionCompaction?.available && sessionCompactionScopeKey ? (
+                      <ControlPillMenu
+                        title="Context window"
+                        actions={sessionCompactionActions}
+                        onPressAction={({ nativeEvent }) =>
+                          handleSessionCompactionAction(nativeEvent.event)
+                        }
+                      >
+                        <ComposerToolbarButton
+                          accessibilityLabel={`${
+                            contextWindowPresentation?.accessibilityText ??
+                            "Context usage unavailable."
+                          } ${
+                            isSessionCompactionInProgress(props.sessionCompaction)
+                              ? "Compaction in progress."
+                              : "Compaction controls."
+                          }`}
+                          icon="gauge.with.dots.needle.50percent"
+                          label={contextWindowPresentation?.compactLabel ?? "Context"}
+                        />
+                      </ControlPillMenu>
+                    ) : props.contextWindow ? (
+                      <ContextWindowIndicator snapshot={props.contextWindow} expanded />
+                    ) : null}
+                  </View>
+                ) : null}
                 {/* Pylon ends this row in full-bleed 44px pills rather than
                     upstream's 30px-in-44px action buttons, which inset
                     themselves. Without this the send pill renders flush
