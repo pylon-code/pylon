@@ -2769,6 +2769,179 @@ export function GeneralSettingsPanel() {
         ) : null}
       </SettingsSection>
 
+      {isElectron ? (
+        <SettingsSection id="notifications" title="Notifications">
+          <SettingsRow
+            {...searchableSetting("desktop-notifications")}
+            description="Show a system notification when an agent needs you and no Pylon window is focused."
+            resetAction={
+              settings.desktopNotificationsEnabled !==
+              DEFAULT_UNIFIED_SETTINGS.desktopNotificationsEnabled ? (
+                <SettingResetButton
+                  label="desktop notifications"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotificationsEnabled:
+                        DEFAULT_UNIFIED_SETTINGS.desktopNotificationsEnabled,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotificationsEnabled: Boolean(checked) })
+                }
+                aria-label="Desktop notifications"
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("desktop-notifications-approval")}
+            description="An agent is waiting for you to approve an action."
+            resetAction={
+              settings.desktopNotifyOnApproval !==
+              DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnApproval ? (
+                <SettingResetButton
+                  label="notify when approval is needed"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotifyOnApproval: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnApproval,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotifyOnApproval}
+                disabled={!settings.desktopNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotifyOnApproval: Boolean(checked) })
+                }
+                aria-label="Notify when approval is needed"
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("desktop-notifications-input")}
+            description="An agent asked a question and is waiting for your answer."
+            resetAction={
+              settings.desktopNotifyOnInput !== DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnInput ? (
+                <SettingResetButton
+                  label="notify when input is needed"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotifyOnInput: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnInput,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotifyOnInput}
+                disabled={!settings.desktopNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotifyOnInput: Boolean(checked) })
+                }
+                aria-label="Notify when input is needed"
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("desktop-notifications-completion")}
+            description="An agent finished its work and is idle."
+            resetAction={
+              settings.desktopNotifyOnCompletion !==
+              DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnCompletion ? (
+                <SettingResetButton
+                  label="notify when an agent finishes"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotifyOnCompletion: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnCompletion,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotifyOnCompletion}
+                disabled={!settings.desktopNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotifyOnCompletion: Boolean(checked) })
+                }
+                aria-label="Notify when an agent finishes"
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("desktop-notifications-failure")}
+            description="An agent or its session hit an error."
+            resetAction={
+              settings.desktopNotifyOnFailure !==
+              DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnFailure ? (
+                <SettingResetButton
+                  label="notify when an agent fails"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotifyOnFailure: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnFailure,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotifyOnFailure}
+                disabled={!settings.desktopNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotifyOnFailure: Boolean(checked) })
+                }
+                aria-label="Notify when an agent fails"
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("desktop-notifications-test")}
+            description="Check that system notifications can reach you."
+            control={
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!window.desktopBridge?.sendTestNotification}
+                onClick={() => {
+                  void window.desktopBridge
+                    ?.sendTestNotification?.()
+                    .then((supported) => {
+                      if (supported === false) {
+                        toastManager.add({
+                          type: "warning",
+                          title: "Notifications unavailable",
+                          description:
+                            "The system reports no notification support. On Linux, check that a notification daemon is running.",
+                        });
+                      }
+                    })
+                    .catch(() => {
+                      toastManager.add({
+                        type: "error",
+                        title: "Could not send test notification",
+                        description: "Try again and check your system notification settings.",
+                      });
+                    });
+                }}
+              >
+                Send test notification
+              </Button>
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection id="text-generation" title="Text generation">
         <SettingsRow
           serverScoped
