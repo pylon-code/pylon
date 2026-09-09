@@ -1082,14 +1082,11 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
       const openCodeCompaction = adapter.compaction;
       NodeAssert.equal(openCodeCompaction?.type, "native");
-      yield* (
-        openCodeCompaction as {
-          start: (
-            id: typeof threadId,
-            selection: ReturnType<typeof createModelSelection>,
-          ) => Effect.Effect<void, unknown>;
-        }
-      ).start(threadId, createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"));
+      if (openCodeCompaction?.type !== "native") throw new Error("expected native compaction");
+      yield* openCodeCompaction.start(
+        threadId,
+        createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+      );
       const summarizeCall = runtimeMock.state.summarizeCalls[0] as Record<string, unknown>;
       NodeAssert.equal(summarizeCall.modelID, "gpt-5");
       const events = Array.from(yield* Fiber.join(eventsFiber));

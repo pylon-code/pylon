@@ -359,9 +359,8 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       );
       const codexCompaction = adapter.compaction;
       NodeAssert.equal(codexCompaction?.type, "native");
-      yield* (
-        codexCompaction as { start: (id: typeof threadId) => Effect.Effect<void, unknown> }
-      ).start(threadId);
+      if (codexCompaction?.type !== "native") throw new Error("expected native compaction");
+      yield* codexCompaction.start(threadId);
       yield* runtime.emit({
         id: asEventId("evt-compaction-item-completed"),
         kind: "notification",
