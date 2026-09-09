@@ -12,6 +12,7 @@ export * from "./ipc.ts";
 export * from "./terminal.ts";
 export * from "./provider.ts";
 export * from "./providerUsageLimits.ts";
+export * from "./providerSetup.ts";
 export * from "./usageLimitSourceId.ts";
 export * from "./providerCapabilities.ts";
 export * from "./providerInstance.ts";
