@@ -3336,18 +3336,14 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
           workspaceRoot,
         })
       : null;
-  const commandMatchesVisibleLabel = workEntry.command?.trim() === previewText.trim();
   const canExpand =
     (showFailedIndicator && previewText.trim().length > 0) ||
     (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) ||
     Boolean(
       workEntryRawCommand(workEntry) ||
-      (!commandMatchesVisibleLabel && workEntry.command?.trim()) ||
-      (workEntry.detail?.trim() &&
-        (workEntry.command || workEntry.detail.trim() !== previewText.trim())) ||
-      workEntry.changedFiles?.some(
-        (path) => formatWorkspaceRelativePath(path, workspaceRoot) !== previewText.trim(),
-      ) ||
+      workEntry.command?.trim() ||
+      workEntry.detail?.trim() ||
+      workEntry.changedFiles?.length ||
       viewedImagePath,
     );
   const expandedBody = expanded
@@ -3433,9 +3429,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
               <span
                 className={cn(
                   "min-w-0 flex-1",
-                  expanded || (commandMatchesVisibleLabel && !canExpand)
-                    ? "whitespace-pre-wrap break-words select-text"
-                    : "truncate",
+                  expanded ? "whitespace-pre-wrap break-words select-text" : "truncate",
                   headingClass,
                 )}
                 onClick={expanded ? stopRowToggle : undefined}
