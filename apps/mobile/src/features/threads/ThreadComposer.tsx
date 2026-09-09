@@ -1689,7 +1689,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 />
               </Animated.View>
             ) : null}
-            <View className={isExpanded ? undefined : "min-w-0 flex-1"}>
+            {/* The expanded surface carries no horizontal padding, so the
+                editor supplies the content gutter itself and lines up with
+                the attachment strip above it. Collapsed instead sits inside
+                the surface's own paddingLeft. */}
+            <View className={isExpanded ? "px-[14px]" : "min-w-0 flex-1"}>
               <ComposerEditor
                 ref={inputRef}
                 multiline
@@ -1998,7 +2002,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     ) : null}
                   </ComposerToolbarScroller>
                 )}
-                <View className="shrink-0 flex-row items-center gap-2">
+                {/* Pylon ends this row in full-bleed 44px pills rather than
+                    upstream's 30px-in-44px action buttons, which inset
+                    themselves. Without this the send pill renders flush
+                    against the surface and the corner radius clips it. */}
+                <View className="shrink-0 flex-row items-center gap-2 pe-1.5">
                   {/* Stop lives outside the dictation ternary: an agent must stay
                       stoppable for the whole recording and transcription window. */}
                   {showStopAction ? (
