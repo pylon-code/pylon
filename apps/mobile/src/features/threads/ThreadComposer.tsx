@@ -1689,7 +1689,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 />
               </Animated.View>
             ) : null}
-            <View className={isExpanded ? undefined : "min-w-0 flex-1"}>
+            {/* The expanded surface carries no horizontal padding, so the
+                editor supplies the content gutter itself and lines up with
+                the attachment strip above it. Collapsed instead sits inside
+                the surface's own paddingLeft. */}
+            <View className={isExpanded ? "px-[14px]" : "min-w-0 flex-1"}>
               <ComposerEditor
                 ref={inputRef}
                 multiline
@@ -1896,33 +1900,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                         />
                       </ControlPillMenu>
                     ) : null}
-                    {props.contextWindow ||
-                    (props.sessionCompaction?.available && sessionCompactionScopeKey) ? (
-                      props.sessionCompaction?.available && sessionCompactionScopeKey ? (
-                        <ControlPillMenu
-                          title="Context window"
-                          actions={sessionCompactionActions}
-                          onPressAction={({ nativeEvent }) =>
-                            handleSessionCompactionAction(nativeEvent.event)
-                          }
-                        >
-                          <ComposerToolbarButton
-                            accessibilityLabel={`${
-                              contextWindowPresentation?.accessibilityText ??
-                              "Context usage unavailable."
-                            } ${
-                              isSessionCompactionInProgress(props.sessionCompaction)
-                                ? "Compaction in progress."
-                                : "Compaction controls."
-                            }`}
-                            icon="gauge.with.dots.needle.50percent"
-                            label={contextWindowPresentation?.compactLabel ?? "Context"}
-                          />
-                        </ControlPillMenu>
-                      ) : props.contextWindow ? (
-                        <ContextWindowIndicator snapshot={props.contextWindow} expanded />
-                      ) : null
-                    ) : null}
                     {sessionAgentActions.length > 0 ? (
                       <ControlPillMenu
                         title="Active agents"
@@ -1998,7 +1975,45 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     ) : null}
                   </ComposerToolbarScroller>
                 )}
-                <View className="shrink-0 flex-row items-center gap-2">
+                {/* Context usage is status, not an action. Inside the scroller it
+                    was the item that landed on the viewport edge and got sliced
+                    mid-glyph, so it is pinned beside the actions where it always
+                    renders whole. Hidden during dictation, which owns this row. */}
+                {!isVoiceInputPresented &&
+                (props.contextWindow ||
+                  (props.sessionCompaction?.available && sessionCompactionScopeKey)) ? (
+                  <View className="shrink-0">
+                    {props.sessionCompaction?.available && sessionCompactionScopeKey ? (
+                      <ControlPillMenu
+                        title="Context window"
+                        actions={sessionCompactionActions}
+                        onPressAction={({ nativeEvent }) =>
+                          handleSessionCompactionAction(nativeEvent.event)
+                        }
+                      >
+                        <ComposerToolbarButton
+                          accessibilityLabel={`${
+                            contextWindowPresentation?.accessibilityText ??
+                            "Context usage unavailable."
+                          } ${
+                            isSessionCompactionInProgress(props.sessionCompaction)
+                              ? "Compaction in progress."
+                              : "Compaction controls."
+                          }`}
+                          icon="gauge.with.dots.needle.50percent"
+                          label={contextWindowPresentation?.compactLabel ?? "Context"}
+                        />
+                      </ControlPillMenu>
+                    ) : props.contextWindow ? (
+                      <ContextWindowIndicator snapshot={props.contextWindow} expanded />
+                    ) : null}
+                  </View>
+                ) : null}
+                {/* Pylon ends this row in full-bleed 44px pills rather than
+                    upstream's 30px-in-44px action buttons, which inset
+                    themselves. Without this the send pill renders flush
+                    against the surface and the corner radius clips it. */}
+                <View className="shrink-0 flex-row items-center gap-2 pe-1.5">
                   {/* Stop lives outside the dictation ternary: an agent must stay
                       stoppable for the whole recording and transcription window. */}
                   {showStopAction ? (

@@ -16,7 +16,10 @@ import { AppText as Text } from "./AppText";
 import { SymbolView } from "./AppSymbol";
 
 const COMPOSER_TOOLBAR_GAP = 8;
-const COMPOSER_TOOLBAR_FADE_WIDTH = 18;
+// Wide enough to dissolve a clipped glyph rather than just abut it: at 18 the
+// gradient started where the text was already cut, so overflow read as a hard
+// slice instead of "scroll for more".
+const COMPOSER_TOOLBAR_FADE_WIDTH = 28;
 const COMPOSER_TOOLBAR_SCROLL_EPSILON = 4;
 
 /**
