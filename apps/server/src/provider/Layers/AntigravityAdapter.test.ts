@@ -433,7 +433,7 @@ it.layer(layer)("AntigravityAdapter", (it) => {
         "mode:auto_edit",
       ]);
       expect(h.commandUpdates.at(-1)?.map((command) => command.name)).toEqual(["plan", "logout"]);
-      expect(h.adapter.capabilities.conversationRollback).toBe(false);
+      expect(h.adapter.capabilities.conversationRollback).toBe("unsupported");
       const rollback = yield* h.adapter.rollbackThread(threadId, 1).pipe(Effect.exit);
       expect(Exit.isFailure(rollback)).toBe(true);
     }),

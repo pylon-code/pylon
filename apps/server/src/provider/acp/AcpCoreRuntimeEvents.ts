@@ -224,6 +224,8 @@ export function makeAcpContentDeltaEvent(input: {
   readonly threadId: ThreadId;
   readonly turnId: TurnId | undefined;
   readonly itemId?: string;
+  /** Overrides the payload-derived kind for providers that signal it out of band. */
+  readonly streamKind?: "assistant_text" | "reasoning_text";
   readonly text: string;
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
@@ -235,7 +237,7 @@ export function makeAcpContentDeltaEvent(input: {
     turnId: input.turnId,
     ...(input.itemId ? { itemId: RuntimeItemId.make(input.itemId) } : {}),
     payload: {
-      streamKind: contentStreamKindFromAcpPayload(input.rawPayload),
+      streamKind: input.streamKind ?? contentStreamKindFromAcpPayload(input.rawPayload),
       delta: input.text,
     },
     raw: {

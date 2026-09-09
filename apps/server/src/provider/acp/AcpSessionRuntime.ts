@@ -677,7 +677,43 @@ export const make = (
         | EffectAcpSchema.LoadSessionResponse
         | EffectAcpSchema.NewSessionResponse
         | EffectAcpSchema.ResumeSessionResponse;
-      if (options.resumeSessionId) {
+      if (options.resumeSessionId && options.resumeMethod === "resume") {
+        if (!initializeResult.agentCapabilities?.sessionCapabilities?.resume) {
+          return yield* new EffectAcpErrors.AcpTransportError({
+            method: "session/resume",
+            detail: "The ACP agent does not support session/resume.",
+            cause: undefined,
+          });
+        }
+        const resumePayload = {
+          sessionId: options.resumeSessionId,
+          cwd: options.cwd,
+          mcpServers: options.mcpServers ?? [],
+          ...(options.additionalDirectories && options.additionalDirectories.length > 0
+            ? { additionalDirectories: options.additionalDirectories }
+            : {}),
+        } satisfies EffectAcpSchema.ResumeSessionRequest;
+        sessionId = options.resumeSessionId;
+        sessionSetupResult = yield* runLoggedRequest(
+          "session/resume",
+          resumePayload,
+          acp.agent.resumeSession(resumePayload).pipe(
+            Effect.timeoutOption(options.sessionLoadTimeout ?? defaultSessionLoadTimeout),
+            Effect.flatMap((result) =>
+              Option.isSome(result)
+                ? Effect.succeed(result.value)
+                : Effect.fail(
+                    new EffectAcpErrors.AcpTransportError({
+                      operation: "call-rpc",
+                      method: "session/resume",
+                      detail: "session/resume timed out waiting for the agent response.",
+                      cause: undefined,
+                    }),
+                  ),
+            ),
+          ),
+        );
+      } else if (options.resumeSessionId) {
         const loadPayload = {
           sessionId: options.resumeSessionId,
           cwd: options.cwd,
