@@ -138,8 +138,13 @@ export function useCreateProjectThread() {
         );
         return AsyncResult.failure(result.cause);
       }
+      // The started turn holds its own copy of the bytes; a failed delete is
+      // surfaced without failing the started task.
+      await prepared.releaseUploads().catch((error) => {
+        console.warn("[project-thread] could not delete consumed pending uploads", error);
+      });
       setPendingConnectionError(null);
-      scheduleUnusedComposerAttachmentCleanup(prepared.draftAttachments);
+      scheduleUnusedComposerAttachmentCleanup(input.initialAttachments);
 
       return mapAtomCommandResult(result, () =>
         scopeThreadRef(input.project.environmentId, threadId),

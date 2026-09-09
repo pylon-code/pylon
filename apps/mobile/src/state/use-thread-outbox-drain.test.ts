@@ -54,8 +54,6 @@ const harness = vi.hoisted(() => ({
   })(),
 }));
 
-vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
-
 vi.mock("expo-file-system", () => ({
   Directory: harness.draftFile.Directory,
   File: harness.draftFile.File,
@@ -146,7 +144,7 @@ vi.mock("./thread-outbox", async () => {
   harness.manager = createThreadOutboxManager({
     registry: appAtomRegistry,
     storage: {
-      load: async () => ({ messages: [], errors: [] }),
+      load: async () => [],
       write: async () => undefined,
       remove: (message) => harness.removeOutboxMessage(message),
     },
@@ -155,6 +153,7 @@ vi.mock("./thread-outbox", async () => {
   return {
     threadOutboxManager: manager,
     flushThreadOutbox: async () => undefined,
+    ensureThreadOutboxLoaded: () => undefined,
     confirmThreadOutboxMessageQueued: (message: never) => manager.confirmQueued(message),
     updateThreadOutboxMessage: (message: never, expectedRevision?: number) =>
       manager.update(message, expectedRevision),
@@ -251,6 +250,7 @@ describe("thread outbox attachment preparation", () => {
     );
     const preparationStarted = Promise.withResolvers<void>();
     const preparationBarrier = Promise.withResolvers<PreparedTurnAttachments>();
+    const releaseUploads = vi.fn(async () => undefined);
     harness.prepareTurnAttachments.mockImplementationOnce(async () => {
       preparationStarted.resolve();
       return preparationBarrier.promise;
@@ -268,10 +268,12 @@ describe("thread outbox attachment preparation", () => {
       attachments: [],
       draftAttachments: message.attachments,
       pendingAttachmentIds: ["pending-reused-upload"],
+      releaseUploads,
     });
 
     await expect(preparation).resolves.toEqual({ status: "abandoned" });
     expect(remainingMessages()).toEqual([edited]);
+    expect(releaseUploads).not.toHaveBeenCalled();
   });
 
   it("keeps an unchanged queued payload ready after attachment reuse", async () => {
@@ -283,11 +285,13 @@ describe("thread outbox attachment preparation", () => {
       }),
       "pending-reused-upload",
     );
+    const releaseUploads = vi.fn(async () => undefined);
     harness.prepareTurnAttachments.mockResolvedValueOnce({
       status: "ready",
       attachments: [],
       draftAttachments: message.attachments,
       pendingAttachmentIds: ["pending-reused-upload"],
+      releaseUploads,
     });
     await harness.manager.enqueue(message);
     const revision = harness.manager.revisionOf(message.messageId);
@@ -298,6 +302,7 @@ describe("thread outbox attachment preparation", () => {
       persistedMessage: message,
       deliveryRevision: revision,
     });
+    expect(releaseUploads).not.toHaveBeenCalled();
   });
 
   it("uses the known next revision after persisting uploaded references", async () => {
@@ -322,6 +327,7 @@ describe("thread outbox attachment preparation", () => {
         attachments: [],
         draftAttachments: uploadedAttachments,
         pendingAttachmentIds: ["pending-new-upload"],
+        releaseUploads: async () => undefined,
       };
     });
     await harness.manager.enqueue(message);

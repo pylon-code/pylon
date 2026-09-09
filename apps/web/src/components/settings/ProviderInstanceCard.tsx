@@ -1,12 +1,13 @@
 "use client";
 
+import { Spinner } from "~/components/ui/spinner";
+
 import {
   ArrowUpCircleIcon,
   ChevronDownIcon,
   ChevronUpIcon,
   CopyIcon,
   DownloadIcon,
-  LoaderIcon,
   LockIcon,
   LockOpenIcon,
   PlusIcon,
@@ -1113,11 +1114,7 @@ export function ProviderInstanceCard({
                     disabled={isUpdating || writeBlocked}
                     onClick={onRunUpdate}
                   >
-                    {isUpdating ? (
-                      <LoaderIcon className="animate-spin motion-reduce:animate-none" />
-                    ) : (
-                      <DownloadIcon />
-                    )}
+                    {isUpdating ? <Spinner /> : <DownloadIcon />}
                     {isUpdating ? "Updating" : "Update now"}
                   </Button>
                 ) : null}
