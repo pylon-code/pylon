@@ -109,3 +109,6 @@ export const MAC_PERMISSION_HELPER_CHANNEL = "desktop:mac-permission-helper";
 
 export const CHECK_SYSTEM_PERMISSION_CHANNEL = "desktop:check-system-permission";
 export const NOTIFICATION_NAVIGATE_CHANNEL = "desktop:notification-navigate";
+
+export const NOTIFY_AGENT_AWARENESS_CHANNEL = "desktop:notify-agent-awareness";
+export const SEND_TEST_NOTIFICATION_CHANNEL = "desktop:send-test-notification";
