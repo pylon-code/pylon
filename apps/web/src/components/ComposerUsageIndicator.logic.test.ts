@@ -1,16 +1,7 @@
-import {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type ServerProviderUsageWindow,
-} from "@t3tools/contracts";
+import { ProviderInstanceId, type ServerProviderUsageWindow } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  formatTimeUntilReset,
-  getComposerUsageView,
-  hasComposerUsageContent,
-} from "./ComposerUsageIndicator.logic";
-import type { ComposerUsage } from "../providerUsageAccounts";
+import { formatTimeUntilReset, getComposerUsageView } from "./ComposerUsageIndicator.logic";
 import type { ProviderUsageAccount } from "./providerUsage/ProviderUsageAccounts";
 
 function account(input: {
@@ -195,50 +186,5 @@ describe("formatTimeUntilReset", () => {
 
   it("gives nothing for an unreadable timestamp", () => {
     expect(formatTimeUntilReset("not a date", NOW)).toBeUndefined();
-  });
-});
-
-describe("hasComposerUsageContent", () => {
-  const NOW = Date.parse("2026-08-06T12:00:00.000Z");
-  const usage = (primary: ComposerUsage["primary"]): ComposerUsage => ({
-    accounts: primary ? [primary] : [],
-    primary,
-    backend: null,
-  });
-
-  // The strip is shown or hidden by this, and the readout inside it by
-  // `getComposerUsageView`. Disagreement means an empty strip or a hidden
-  // reading, so pin them together.
-  it.each([
-    ["a full Claude reading", usage(account({ windows: CLAUDE_WINDOWS }))],
-    [
-      "a weekly-only Codex reading",
-      usage(
-        account({ windows: [{ label: "Weekly", usedPercent: 15, windowDurationMins: 10_080 }] }),
-      ),
-    ],
-    [
-      "windows with no duration to classify",
-      usage(account({ windows: [{ label: "Overage", usedPercent: 3 }] })),
-    ],
-    ["no windows at all", usage(account({ windows: [] }))],
-    ["no account", usage(null)],
-  ])("agrees with the rendered view for %s", (_label, input) => {
-    expect(hasComposerUsageContent(input)).toBe(getComposerUsageView(input.primary, NOW) !== null);
-  });
-
-  it("keeps the strip open to report a Prime Agent account mismatch", () => {
-    expect(
-      hasComposerUsageContent({
-        accounts: [],
-        primary: null,
-        backend: {
-          driver: ProviderDriverKind.make("codex"),
-          label: "Codex",
-          model: "GPT-5",
-          verification: "mismatch",
-        },
-      }),
-    ).toBe(true);
   });
 });

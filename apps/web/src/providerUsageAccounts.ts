@@ -22,6 +22,7 @@ import {
 } from "@t3tools/contracts";
 
 import { formatProviderDisplayName } from "./lib/contextWindow";
+import { getComposerUsageView } from "./components/ComposerUsageIndicator.logic";
 import type { ProviderUsageAccount } from "./components/providerUsage/ProviderUsageAccounts";
 
 const PRIME_AGENT_DRIVER = ProviderDriverKind.make("primeAgent");
@@ -66,6 +67,21 @@ export interface ComposerUsage {
 }
 
 export const EMPTY_COMPOSER_USAGE: ComposerUsage = { accounts: [], primary: null, backend: null };
+
+/**
+ * Whether the capacity readout will render anything, for the strip that hosts
+ * it: a strip with a live reading in it must not be treated as empty.
+ *
+ * Asks the readout itself rather than restating its rule, so the two cannot
+ * drift. The instant passed only shapes the labels it builds, never whether
+ * there is one, so any instant answers this question.
+ */
+export function hasComposerUsageContent(usage: ComposerUsage): boolean {
+  // Prime signed in elsewhere still reports that, and saying so is content.
+  return (
+    usage.backend?.verification === "mismatch" || getComposerUsageView(usage.primary, 0) !== null
+  );
+}
 
 function toUsageAccount(provider: ServerProvider, isActive: boolean): ProviderUsageAccount | null {
   if (!provider.usageLimits) return null;

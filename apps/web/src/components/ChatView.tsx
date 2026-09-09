@@ -258,7 +258,7 @@ import {
   summarizeHandoffDiff,
 } from "./chat/ThreadHandoff.logic";
 import { ThreadContinuationBanner } from "./chat/ThreadContinuationBanner";
-import { deriveComposerUsage } from "../providerUsageAccounts";
+import { deriveComposerUsage, hasComposerUsageContent } from "../providerUsageAccounts";
 import { usageStaleAfterMs } from "./providerUsage/ProviderUsageMatrix.logic";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
@@ -374,7 +374,6 @@ import {
   shouldShowComposerContextStrip,
   shouldShowEnvironmentIndicator,
 } from "./BranchToolbar.logic";
-import { hasComposerUsageContent } from "./ComposerUsageIndicator.logic";
 import {
   getProviderStatusBannerKey,
   ProviderStatusBanner,
@@ -5470,7 +5469,13 @@ export default function ChatView(props: ChatViewProps) {
   // can measure whether its relocated controls fit. The visible chrome remains
   // content-driven: Git/environment context, controls that actually fit, or a
   // capacity reading. Decided below `composerUsage` because it reads it.
-  const composerUsageHasContent = hasComposerUsageContent(composerUsage);
+  // Until the provider snapshot lands there is no reading to find, and treating
+  // that as "no capacity" would hide the strip and then pop it back in a moment
+  // later. Assume a reading is coming, the way `isGitRepo` assumes a repository
+  // above. The client already knows whether the readout is switched off.
+  const composerUsageHasContent =
+    hasComposerUsageContent(composerUsage) ||
+    (settings.showProviderUsageInContextPopover && serverConfig === null);
   const mountComposerContextStrip = shouldShowComposerContextStrip({
     hasActiveProject: activeProject !== null,
     isGitRepo,
