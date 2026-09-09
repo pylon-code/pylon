@@ -50,6 +50,7 @@ export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 export type ProviderConversationRollbackMode = "absolute" | "relative" | "unsupported";
 
 export const BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES = {
+  antigravity: "unsupported",
   codex: "relative",
   claude: "relative",
   cursor: "unsupported",

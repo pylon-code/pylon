@@ -85,6 +85,7 @@ import {
 } from "../acp/AntigravityProtocol.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
 
 const PROVIDER = ProviderDriverKind.make("antigravity");
 const ResumeCursor = Schema.Struct({
@@ -1244,8 +1245,13 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
 
   return {
     provider: PROVIDER,
-    capabilities: { sessionModelSwitch: "in-session", supportsConversationRollback: false },
-    compaction: { type: "slash-command", command: "/compact" },
+    capabilities: {
+      sessionModelSwitch: "in-session",
+      conversationRollback: BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES.antigravity,
+    },
+    // Antigravity declares `compaction: { type: "slash-command", command: "/compact" }`
+    // upstream. `ProviderAdapterShape` only grows that field with #10112, which is a
+    // separate concern; restore this line when that lands.
     startSession,
     sendTurn,
     interruptTurn,

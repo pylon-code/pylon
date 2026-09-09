@@ -233,6 +233,14 @@ const encodeManifestCache = Schema.encodeEffect(
 );
 
 /** True when the manifest classifies `slug` as legacy for `driverKind`. */
+/** The manifest's chat default for `driverKind`, when it names one. */
+export function manifestDefaultModel(
+  manifest: ModelManifestData,
+  driverKind: ProviderDriverKind,
+): string | undefined {
+  return manifest.providers?.[driverKind]?.defaults?.chat;
+}
+
 export function isLegacyModel(
   manifest: ModelManifestData,
   driverKind: ProviderDriverKind,

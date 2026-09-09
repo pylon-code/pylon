@@ -53,7 +53,13 @@ export interface AcpSessionEventStreamBarrier {
   readonly acknowledge: Deferred.Deferred<void>;
 }
 
-export type AcpSessionRuntimeEvent = AcpParsedSessionEvent | AcpSessionEventStreamBarrier;
+export type AcpSessionRuntimeEvent =
+  | AcpParsedSessionEvent
+  | AcpSessionEventStreamBarrier
+  | {
+      readonly _tag: "ConnectionTerminated";
+      readonly error: EffectAcpErrors.AcpError;
+    };
 
 const defaultStartupRpcTimeout = Duration.seconds(90);
 const defaultSessionLoadTimeout = Duration.seconds(90);
@@ -72,6 +78,20 @@ export interface AcpSessionRuntimeOptions {
   readonly spawn: AcpSpawnInput;
   readonly cwd: string;
   readonly resumeSessionId?: string;
+  readonly resumeMethod?: "load" | "resume";
+  /** Native cancellation waits for the prompt response and the getEvents consumer to drain. */
+  readonly cancelBehavior?: "interrupt" | "wait-for-prompt";
+  readonly cancelTimeout?: Duration.Input;
+  /** Transforms provider stdout before protocol parsing and protocol logging. */
+  readonly transformStdout?: EffectAcpClient.AcpClientOptions["transformStdout"];
+  /** Normalizes provider-specific fields before notification queues or runtime state retain them. */
+  readonly transformSessionUpdate?: (
+    notification: EffectAcpSchema.SessionNotification,
+  ) => EffectAcpSchema.SessionNotification;
+  /** Receives bounded stderr chunks. The provider must redact any secrets before logging. */
+  readonly onStderr?: (text: string) => Effect.Effect<void, never>;
+  /** Extra workspace roots the agent may read and write besides `cwd`. */
+  readonly additionalDirectories?: ReadonlyArray<string>;
   /** Maximum time allowed for each initialize, authenticate, and session/new RPC. */
   readonly startupRpcTimeout?: Duration.Input;
   readonly sessionLoadTimeout?: Duration.Input;
