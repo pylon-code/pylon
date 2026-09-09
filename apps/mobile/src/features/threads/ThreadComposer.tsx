@@ -111,6 +111,7 @@ import {
 import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
 import { GlassSurface } from "../../components/GlassSurface";
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
+import { ContextWindowRing } from "../../components/ContextWindowRing";
 import {
   ComposerInlineControl,
   ComposerToolbarButton,
@@ -363,44 +364,6 @@ export function ComposerSurface(props: {
     </Animated.View>
   );
 }
-
-const ContextWindowIndicator = memo(function ContextWindowIndicator(props: {
-  readonly snapshot: ContextWindowSnapshot;
-  readonly expanded: boolean;
-}) {
-  const presentation = presentMobileContextWindow(props.snapshot);
-  if (presentation === null) return null;
-  const knownMaximum = props.snapshot.maxTokens !== null;
-  return (
-    <View
-      accessible
-      accessibilityLabel="Context window usage"
-      accessibilityRole={knownMaximum ? "progressbar" : "text"}
-      accessibilityValue={
-        knownMaximum
-          ? {
-              min: 0,
-              max: props.snapshot.maxTokens ?? undefined,
-              now: Math.min(props.snapshot.usedTokens, props.snapshot.maxTokens ?? 0),
-              text: presentation.accessibilityText,
-            }
-          : undefined
-      }
-      className="mx-1 rounded-full bg-subtle px-2.5 py-1"
-    >
-      <Text
-        className={
-          presentation.warning
-            ? "text-xs font-t3-bold tabular-nums text-danger-foreground"
-            : "text-xs font-t3-medium tabular-nums text-foreground-muted"
-        }
-        numberOfLines={1}
-      >
-        {props.expanded ? presentation.expandedLabel : presentation.compactLabel}
-      </Text>
-    </View>
-  );
-});
 
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
   const navigation = useNavigation();
@@ -1190,6 +1153,26 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       sessionCompactionScopeKey,
     ],
   );
+  // The ring carries no text, and a phone has no hover, so the counts ride in
+  // the menu as a leading read-only row. Disabled because it is a reading, not
+  // an action; keeping it first means the numbers sit in the same place whether
+  // or not the provider offers compaction.
+  const contextWindowMenuActions = useMemo(
+    () => [
+      ...(contextWindowPresentation
+        ? [
+            {
+              id: "context-window:detail",
+              title: contextWindowPresentation.detailLabel,
+              image: "gauge.with.dots.needle.50percent",
+              attributes: { disabled: true } as const,
+            },
+          ]
+        : []),
+      ...sessionCompactionActions,
+    ],
+    [contextWindowPresentation, sessionCompactionActions],
+  );
   const runSessionCompactionAction = useCallback(
     (action: SessionCompactionMenuAction, expectedScopeKey: string) => {
       const current = sessionCompactionControlRef.current;
@@ -1757,7 +1740,26 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               </View>
             ) : null}
             {!isExpanded && props.contextWindow ? (
-              <ContextWindowIndicator snapshot={props.contextWindow} expanded={false} />
+              <ControlPillMenu
+                title="Context window"
+                actions={contextWindowMenuActions}
+                onPressAction={({ nativeEvent }) =>
+                  handleSessionCompactionAction(nativeEvent.event)
+                }
+              >
+                <Pressable
+                  accessibilityLabel={
+                    contextWindowPresentation?.accessibilityText ?? "Context window usage"
+                  }
+                  accessibilityRole="button"
+                  className="size-11 shrink-0 items-center justify-center active:opacity-70"
+                >
+                  <ContextWindowRing
+                    percent={contextWindowPresentation?.percent ?? null}
+                    warning={contextWindowPresentation?.warning ?? false}
+                  />
+                </Pressable>
+              </ControlPillMenu>
             ) : null}
             {!isExpanded && !voiceInput.isBusy ? (
               <Animated.View
@@ -1978,36 +1980,40 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 {/* Context usage is status, not an action. Inside the scroller it
                     was the item that landed on the viewport edge and got sliced
                     mid-glyph, so it is pinned beside the actions where it always
-                    renders whole. Hidden during dictation, which owns this row. */}
-                {!isVoiceInputPresented &&
-                (props.contextWindow ||
-                  (props.sessionCompaction?.available && sessionCompactionScopeKey)) ? (
-                  <View className="shrink-0">
-                    {props.sessionCompaction?.available && sessionCompactionScopeKey ? (
-                      <ControlPillMenu
-                        title="Context window"
-                        actions={sessionCompactionActions}
-                        onPressAction={({ nativeEvent }) =>
-                          handleSessionCompactionAction(nativeEvent.event)
-                        }
-                      >
-                        <ComposerToolbarButton
-                          accessibilityLabel={`${
-                            contextWindowPresentation?.accessibilityText ??
-                            "Context usage unavailable."
-                          } ${
-                            isSessionCompactionInProgress(props.sessionCompaction)
-                              ? "Compaction in progress."
-                              : "Compaction controls."
-                          }`}
-                          icon="gauge.with.dots.needle.50percent"
-                          label={contextWindowPresentation?.compactLabel ?? "Context"}
-                        />
-                      </ControlPillMenu>
-                    ) : props.contextWindow ? (
-                      <ContextWindowIndicator snapshot={props.contextWindow} expanded />
-                    ) : null}
-                  </View>
+                    renders whole. Hidden during dictation, which owns this row.
+                    The placeholder holds the slot before usage arrives so the
+                    Renders nothing until usage exists: a provider that never
+                    reports it should not hold the width. */}
+                {isVoiceInputPresented ? null : props.contextWindow ||
+                  (props.sessionCompaction?.available && sessionCompactionScopeKey) ? (
+                  <ControlPillMenu
+                    title="Context window"
+                    actions={contextWindowMenuActions}
+                    onPressAction={({ nativeEvent }) =>
+                      handleSessionCompactionAction(nativeEvent.event)
+                    }
+                  >
+                    <Pressable
+                      accessibilityLabel={`${
+                        contextWindowPresentation?.accessibilityText ?? "Context usage unavailable."
+                      }${
+                        props.sessionCompaction?.available
+                          ? ` ${
+                              isSessionCompactionInProgress(props.sessionCompaction)
+                                ? "Compaction in progress."
+                                : "Compaction controls."
+                            }`
+                          : ""
+                      }`}
+                      accessibilityRole="button"
+                      className="size-11 shrink-0 items-center justify-center active:opacity-70"
+                    >
+                      <ContextWindowRing
+                        percent={contextWindowPresentation?.percent ?? null}
+                        warning={contextWindowPresentation?.warning ?? false}
+                      />
+                    </Pressable>
+                  </ControlPillMenu>
                 ) : null}
                 {/* Pylon ends this row in full-bleed 44px pills rather than
                     upstream's 30px-in-44px action buttons, which inset
