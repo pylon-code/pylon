@@ -1,4 +1,6 @@
 import { resolveEnvironmentMachineKind } from "@t3tools/contracts";
+import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
+import { usePullRequestStack } from "~/state/usePullRequestStack";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { scopedThreadKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -70,10 +72,10 @@ import { useProjects, useServerConfigs } from "~/state/entities";
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { useLiveRefresh } from "~/hooks/useLiveRefresh";
-import { pullRequestEnvironment, pullRequestStackAtom } from "~/state/pullRequests";
+import { pullRequestEnvironment } from "~/state/pullRequests";
 import { usePullRequestTurnRefresh, useSharedPullRequestSummary } from "~/state/pullRequests";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { PullRequestStackMap } from "./PullRequestStackMap";
+import { PullRequestStackMenu } from "./PullRequestStackMenu";
 import { PullRequestThreadLinks } from "./PullRequestThreadLinks";
 import { vcsEnvironment } from "~/state/vcs";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
@@ -104,7 +106,7 @@ import {
 } from "../ui/menu";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { toastManager } from "../ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { PullRequestDetailGhost, PullRequestTimelineGhost } from "./PullRequestGhosts";
 import { PullRequestActivityUnavailableState } from "./PullRequestActivityUnavailableState";
 import { DiffPanelLoadingState } from "../DiffPanelShell";
@@ -136,6 +138,7 @@ import {
   readPullRequestDetailSnapshot,
   resolveDisplayedPullRequestDetail,
   resolvePullRequestPrimaryControl,
+  allowsSinglePullRequestMerge,
   resolveBaseFreshness,
   resolvePullRequestMergeMethod,
   type PullRequestFinding,
@@ -460,9 +463,16 @@ export function PullRequestDetailPanel({
   context = "page",
   composerDraftTarget,
   onBack,
+  onSelectPullRequest,
 }: {
   environmentId: EnvironmentId;
-  /** The thread beside this panel; standalone PR pages have none. */
+  onSelectPullRequest?: ((reference: PullRequestRef) => void) | undefined;
+  /**
+   * The thread this panel sits beside, if any. Links that are not the pull
+   * request itself (check details, host permalinks) can open in that thread's
+   * in-app browser when the user has asked for it; the page has no thread, so
+   * there they always go to the system browser.
+   */
   threadRef?: ScopedThreadRef | null;
   reference: PullRequestRef;
   /** Row fields already loaded by the pull-request list, used while richer detail arrives. */
@@ -724,17 +734,34 @@ export function PullRequestDetailPanel({
     isStackedPullRequestBase(detail.baseBranch, branchRefsQuery.data?.refs ?? []);
   // The host's own stack, where it keeps one. Only asked for once the detail has landed so a
   // pull request nobody can read costs one request rather than two.
-  const nativeStack = useEnvironmentQuery(
-    detail === null || detail.capabilities.stacks !== true || !supportsThreadPullRequests
-      ? null
-      : pullRequestStackAtom({ environmentId, input: reference }),
-  ).data;
+  const stackReference = useMemo(
+    () =>
+      detail === null || detail.capabilities.stacks !== true || !supportsThreadPullRequests
+        ? null
+        : { ...reference, host: reference.host ?? parseChangeRequestUrl(detail.url)?.host },
+    [detail, reference, supportsThreadPullRequests],
+  );
+  const nativeStackQuery = usePullRequestStack(environmentId, stackReference);
+  const nativeStack = nativeStackQuery.data;
+  const supportsStackActions =
+    supportsThreadPullRequests &&
+    detail?.capabilities.stacks === true &&
+    detail.capabilities.stackActions === true &&
+    environmentConfigs.get(environmentId)?.environment.capabilities.pullRequestStackActions ===
+      true;
+  const canMergeSinglePullRequest = allowsSinglePullRequestMerge({
+    supportsStackActions,
+    hasStack: nativeStack !== null,
+    stackPending: !nativeStackQuery.isSuccess || nativeStackQuery.isPending,
+    stackError: nativeStackQuery.error,
+  });
   const activityPending = activityQuery.isPending && activity === null;
   const activityError = activity === null ? activityQuery.error : null;
   const refreshDetail = useCallback(() => {
     detailQuery.refresh();
     activityQuery.refresh();
-  }, [activityQuery.refresh, detailQuery.refresh]);
+    nativeStackQuery.refresh();
+  }, [activityQuery.refresh, detailQuery.refresh, nativeStackQuery.refresh]);
   const [refreshToken, setRefreshToken] = useState(0);
   const codeRefreshToken = refreshToken + (turnRefresh ?? 0);
   const activityRevision = useRef<{ readonly key: string; readonly updatedAt: string } | null>(
@@ -1355,9 +1382,9 @@ export function PullRequestDetailPanel({
         checksState,
         autoMergeEnabled: detail.autoMergeEnabled,
         hasMergeMethod: allowedMergeMethods.length > 0,
-        canMerge: can("merge"),
+        canMerge: canMergeSinglePullRequest && can("merge"),
         canMarkReady: can("ready"),
-        canEnableAutoMerge: can("enable-auto-merge"),
+        canEnableAutoMerge: canMergeSinglePullRequest && can("enable-auto-merge"),
       })
     : null;
   // What the menu's action group holds. Named once so the separators around it are drawn from
@@ -1367,6 +1394,7 @@ export function PullRequestDetailPanel({
     can(detail.isDraft ? "ready" : "draft") &&
     !(detail.isDraft && primaryAction === "ready");
   const showsAutoMerge =
+    canMergeSinglePullRequest &&
     detail?.state === "open" &&
     ((autoMergeArmed && can("disable-auto-merge")) ||
       (!autoMergeArmed &&
@@ -1376,6 +1404,7 @@ export function PullRequestDetailPanel({
         can("enable-auto-merge") &&
         allowedMergeMethods.length > 0));
   const showsMergeNow =
+    canMergeSinglePullRequest &&
     detail?.state === "open" &&
     (primaryAction === "enable-auto-merge" || primaryAction === "auto-merge-armed") &&
     can("merge") &&
@@ -1572,7 +1601,38 @@ export function PullRequestDetailPanel({
         </div>
         <div className="mr-4 flex h-7 shrink-0 items-center justify-end gap-1">
           {detail ? (
-            <>
+            <TooltipProvider delay={150} closeDelay={150} timeout={400}>
+              {!nativeStack && supportsStackActions && nativeStackQuery.error ? (
+                <Button variant="ghost" size="xs" onClick={nativeStackQuery.refresh}>
+                  Retry stack lookup
+                </Button>
+              ) : null}
+              {nativeStack ? (
+                <PullRequestStackMenu
+                  stack={nativeStack}
+                  notice={nativeStackQuery.notice}
+                  onRetry={nativeStackQuery.error ? nativeStackQuery.refresh : undefined}
+                  reference={reference}
+                  environmentId={environmentId}
+                  onSelect={onSelectPullRequest}
+                  mergeMethod={selectedMergeMethod}
+                  canMerge={
+                    nativeStackQuery.isFresh &&
+                    supportsStackActions &&
+                    can("merge") &&
+                    allowedMergeMethods.length > 0
+                  }
+                  canRebase={
+                    nativeStackQuery.isFresh &&
+                    supportsStackActions &&
+                    detail.viewerPermissions.stackRebase === true
+                  }
+                  onActed={() => {
+                    refreshDetail();
+                    onActed?.();
+                  }}
+                />
+              ) : null}
               {context === "page" ? (
                 <PullRequestThreadLinks
                   display="count"
@@ -1589,24 +1649,34 @@ export function PullRequestDetailPanel({
                   the page: beside a thread the branch is already checked out right there. */}
               {context === "page" ? (
                 <Menu>
-                  <MenuTrigger
-                    disabled={handoff !== null}
-                    render={
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        aria-label={
-                          handoff?.startsWith("checkout") ? "Checking out..." : "Check out"
-                        }
-                      >
-                        <GitBranchIcon aria-hidden className="size-3.5" />
-                        <span className="@max-[35rem]/pr-header:hidden">
-                          {handoff?.startsWith("checkout") ? "Checking out..." : "Check out"}
-                        </span>
-                        <ChevronDownIcon aria-hidden className="size-3.5 text-muted-foreground" />
-                      </Button>
-                    }
-                  />
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <MenuTrigger
+                          disabled={handoff !== null}
+                          render={
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              aria-label={
+                                handoff?.startsWith("checkout") ? "Checking out..." : "Check out"
+                              }
+                            >
+                              <GitBranchIcon aria-hidden className="size-3.5" />
+                              <span className="@max-[35rem]/pr-header:hidden">
+                                {handoff?.startsWith("checkout") ? "Checking out..." : "Check out"}
+                              </span>
+                              <ChevronDownIcon
+                                aria-hidden
+                                className="size-3.5 text-muted-foreground"
+                              />
+                            </Button>
+                          }
+                        />
+                      }
+                    />
+                    <TooltipPopup>Check out this pull request</TooltipPopup>
+                  </Tooltip>
                   <MenuPopup align="end" side="bottom" className="min-w-72">
                     <MenuItem onClick={() => startCheckout("worktree")}>
                       <GitBranchIcon className="mt-0.5 size-3.5 shrink-0 self-start" />
@@ -1667,7 +1737,7 @@ export function PullRequestDetailPanel({
                       <span className="inline-flex shrink-0">
                         <Button
                           size="xs"
-                          variant="destructive-outline"
+                          variant="ghost"
                           disabled={handoff !== null}
                           onClick={startResolveConflicts}
                           aria-label={
@@ -1693,6 +1763,7 @@ export function PullRequestDetailPanel({
                       <span className="inline-flex shrink-0">
                         <Button
                           size="xs"
+                          variant="ghost"
                           disabled={actionPending}
                           onClick={() => void perform("ready")}
                           aria-label="Ready for review"
@@ -1715,6 +1786,7 @@ export function PullRequestDetailPanel({
                       <span className="inline-flex shrink-0">
                         <Button
                           size="xs"
+                          variant="ghost"
                           disabled={actionPending}
                           onClick={() =>
                             setConfirmation({ open: true, action: "enable-auto-merge" })
@@ -1766,6 +1838,7 @@ export function PullRequestDetailPanel({
                       <span className="inline-flex shrink-0">
                         <Button
                           size="xs"
+                          variant="ghost"
                           disabled={actionPending}
                           onClick={() => setConfirmation({ open: true, action: "merge" })}
                           aria-label={
@@ -1795,18 +1868,25 @@ export function PullRequestDetailPanel({
                 </Badge>
               ) : null}
               <Menu>
-                <MenuTrigger
-                  render={
-                    <Button
-                      aria-label="More pull request actions"
-                      className="size-6"
-                      size="icon-xs"
-                      variant="ghost-muted"
-                    />
-                  }
-                >
-                  <MoreHorizontalIcon className="size-4" />
-                </MenuTrigger>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <MenuTrigger
+                        render={
+                          <Button
+                            aria-label="More pull request actions"
+                            className="size-6"
+                            size="icon-xs"
+                            variant="ghost-muted"
+                          />
+                        }
+                      >
+                        <MoreHorizontalIcon className="size-4" />
+                      </MenuTrigger>
+                    }
+                  />
+                  <TooltipPopup>More pull request actions</TooltipPopup>
+                </Tooltip>
                 <MenuPopup align="end" side="bottom" className="min-w-72">
                   <PullRequestThreadLinks
                     display="menu-item"
@@ -2002,7 +2082,7 @@ export function PullRequestDetailPanel({
                   ) : null}
                 </MenuPopup>
               </Menu>
-            </>
+            </TooltipProvider>
           ) : null}
           {onClose ? (
             <Button
@@ -2107,13 +2187,6 @@ export function PullRequestDetailPanel({
                     />
                   </span>
                 </div>
-                {nativeStack ? (
-                  <PullRequestStackMap
-                    stack={nativeStack}
-                    currentNumber={detail.number}
-                    className="mt-1"
-                  />
-                ) : null}
               </div>
             ) : null}
           </div>
