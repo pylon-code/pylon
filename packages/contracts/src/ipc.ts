@@ -1065,7 +1065,34 @@ export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
+/**
+ * One notification the renderer asks the desktop main process to deliver.
+ * Carries ids rather than a routed link: the renderer owns navigation and
+ * its thread route takes params, while main only needs display strings.
+ */
+export const DesktopNotificationCandidate = Schema.Struct({
+  environmentId: Schema.String,
+  threadId: Schema.String,
+  title: Schema.String,
+  body: Schema.String,
+});
+export type DesktopNotificationCandidate = typeof DesktopNotificationCandidate.Type;
+
 export interface DesktopBridge {
+  /** Optional while older desktop shells can host a newer web client. */
+  notifyAgentAwareness?: (candidates: ReadonlyArray<DesktopNotificationCandidate>) => Promise<void>;
+  /**
+   * Shows a notification immediately, bypassing the focus gate (the user is
+   * necessarily focused while clicking the button). Resolves false when the
+   * system reports no notification support. Optional while older desktop
+   * shells can host a newer web client.
+   */
+  sendTestNotification?: () => Promise<boolean>;
+  /** Optional while older desktop shells can host a newer web client. */
+  onNotificationNavigate?: (
+    listener: (target: { environmentId: string; threadId: string }) => void,
+  ) => () => void;
+
   getAppBranding: () => DesktopAppBranding | null;
   /**
    * The OS locale as a BCP-47 tag, which the renderer cannot read for itself:
