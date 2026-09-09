@@ -258,7 +258,7 @@ import {
   summarizeHandoffDiff,
 } from "./chat/ThreadHandoff.logic";
 import { ThreadContinuationBanner } from "./chat/ThreadContinuationBanner";
-import { deriveComposerUsage } from "../providerUsageAccounts";
+import { deriveComposerUsage, hasComposerUsageContent } from "../providerUsageAccounts";
 import { usageStaleAfterMs } from "./providerUsage/ProviderUsageMatrix.logic";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
@@ -3420,21 +3420,6 @@ export default function ChatView(props: ChatViewProps) {
     terminalUiLaunchContext?.threadId === activeThreadId ? terminalUiLaunchContext : null;
   // Default true while loading to avoid toolbar flicker.
   const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
-  // Keep a hidden, off-flow strip mounted for existing threads so the composer
-  // can measure whether its relocated controls fit. The visible chrome remains
-  // content-driven: Git/environment context or controls that actually fit.
-  const mountComposerContextStrip = shouldShowComposerContextStrip({
-    hasActiveProject: activeProject !== null,
-    isGitRepo,
-    showEnvironmentIndicator: showComposerEnvironmentIndicator,
-    hostsRestingComposerControls: routeKind === "server",
-  });
-  const showComposerContextStrip = shouldShowComposerContextStrip({
-    hasActiveProject: activeProject !== null,
-    isGitRepo,
-    showEnvironmentIndicator: showComposerEnvironmentIndicator,
-    hostsRestingComposerControls: routeKind === "server" && restingComposerControlsVisible,
-  });
   const initialDiffPanelGitScope =
     gitStatusQuery.data?.hasWorkingTreeChanges === true ? "unstaged" : "branch";
   const diffPanelGitStatusResolutionKey = gitStatusQuery.data ? "resolved" : "pending";
@@ -5480,6 +5465,31 @@ export default function ChatView(props: ChatViewProps) {
       settings.showProviderUsageInContextPopover,
     ],
   );
+  // Keep a hidden, off-flow strip mounted for existing threads so the composer
+  // can measure whether its relocated controls fit. The visible chrome remains
+  // content-driven: Git/environment context, controls that actually fit, or a
+  // capacity reading. Decided below `composerUsage` because it reads it.
+  // Until the provider snapshot lands there is no reading to find, and treating
+  // that as "no capacity" would hide the strip and then pop it back in a moment
+  // later. Assume a reading is coming, the way `isGitRepo` assumes a repository
+  // above. The client already knows whether the readout is switched off.
+  const composerUsageHasContent =
+    hasComposerUsageContent(composerUsage) ||
+    (settings.showProviderUsageInContextPopover && serverConfig === null);
+  const mountComposerContextStrip = shouldShowComposerContextStrip({
+    hasActiveProject: activeProject !== null,
+    isGitRepo,
+    showEnvironmentIndicator: showComposerEnvironmentIndicator,
+    hostsRestingComposerControls: routeKind === "server",
+    hasCapacityReading: composerUsageHasContent,
+  });
+  const showComposerContextStrip = shouldShowComposerContextStrip({
+    hasActiveProject: activeProject !== null,
+    isGitRepo,
+    showEnvironmentIndicator: showComposerEnvironmentIndicator,
+    hostsRestingComposerControls: routeKind === "server" && restingComposerControlsVisible,
+    hasCapacityReading: composerUsageHasContent,
+  });
   // The strip dims a reading the server should already have replaced, so the
   // bound follows the server's own poll rather than a fixed number.
   const composerUsageStaleAfterMs = useMemo(

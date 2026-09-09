@@ -6,7 +6,12 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveComposerUsage, EMPTY_COMPOSER_USAGE } from "./providerUsageAccounts";
+import {
+  deriveComposerUsage,
+  EMPTY_COMPOSER_USAGE,
+  hasComposerUsageContent,
+  type ComposerUsage,
+} from "./providerUsageAccounts";
 
 const limits = (usedPercent: number): ServerProviderUsageLimits => ({
   source: "test",
@@ -252,5 +257,62 @@ describe("deriveComposerUsage", () => {
     expect(deriveComposerUsage({ providerStatuses: ALL, selectedModel: null, ...input })).toBe(
       EMPTY_COMPOSER_USAGE,
     );
+  });
+});
+
+describe("hasComposerUsageContent", () => {
+  const usage = (windows: ServerProviderUsageLimits["windows"]): ComposerUsage => {
+    const account = {
+      instanceId: ProviderInstanceId.make("codex"),
+      displayName: "Codex",
+      usageLimits: { source: "test", checkedAt: "2026-08-06T11:59:00.000Z", windows },
+      isActive: true,
+    };
+    return { accounts: [account], primary: account, backend: null };
+  };
+
+  it("counts a weekly-only reading, as Codex reports on some plans", () => {
+    expect(
+      hasComposerUsageContent(
+        usage([{ label: "Weekly", usedPercent: 15, windowDurationMins: 10_080 }]),
+      ),
+    ).toBe(true);
+  });
+
+  it("counts a session and weekly pair", () => {
+    expect(
+      hasComposerUsageContent(
+        usage([
+          { label: "Session", usedPercent: 4, windowDurationMins: 300 },
+          { label: "Weekly", usedPercent: 15, windowDurationMins: 10_080 },
+        ]),
+      ),
+    ).toBe(true);
+  });
+
+  // The readout draws only the session and weekly windows, so anything it
+  // cannot classify leaves it with nothing to show.
+  it("ignores windows the readout cannot place", () => {
+    expect(hasComposerUsageContent(usage([{ label: "Overage", usedPercent: 3 }]))).toBe(false);
+  });
+
+  it("is false with no windows and with no account at all", () => {
+    expect(hasComposerUsageContent(usage([]))).toBe(false);
+    expect(hasComposerUsageContent(EMPTY_COMPOSER_USAGE)).toBe(false);
+  });
+
+  it("keeps the strip open to report a Prime Agent account mismatch", () => {
+    expect(
+      hasComposerUsageContent({
+        accounts: [],
+        primary: null,
+        backend: {
+          driver: ProviderDriverKind.make("codex"),
+          label: "Codex",
+          model: "GPT-5",
+          verification: "mismatch",
+        },
+      }),
+    ).toBe(true);
   });
 });

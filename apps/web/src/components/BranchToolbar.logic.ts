@@ -61,10 +61,20 @@ export function shouldShowComposerContextStrip(input: {
   showEnvironmentIndicator: boolean;
   /** A collapsed composer's controls currently fit in their measured strip host. */
   hostsRestingComposerControls: boolean;
+  /**
+   * The capacity readout has something to say. It sits at the far end of the
+   * strip and is the only entry here that belongs to the account rather than
+   * the workspace, so a project with no repository and one environment can
+   * still have a reason to keep the strip open.
+   */
+  hasCapacityReading: boolean;
 }): boolean {
   return (
     input.hasActiveProject &&
-    (input.isGitRepo || input.showEnvironmentIndicator || input.hostsRestingComposerControls)
+    (input.isGitRepo ||
+      input.showEnvironmentIndicator ||
+      input.hostsRestingComposerControls ||
+      input.hasCapacityReading)
   );
 }
 
