@@ -428,7 +428,7 @@ describe("shouldShowComposerContextStrip", () => {
     expect(
       shouldShowComposerContextStrip({
         hasActiveProject: true,
-        isGitRepo: false,
+        showsGitControls: false,
         showEnvironmentIndicator: true,
         hostsRestingComposerControls: false,
         hasCapacityReading: false,
@@ -440,7 +440,7 @@ describe("shouldShowComposerContextStrip", () => {
     expect(
       shouldShowComposerContextStrip({
         hasActiveProject: true,
-        isGitRepo: false,
+        showsGitControls: false,
         showEnvironmentIndicator: false,
         hostsRestingComposerControls: false,
         hasCapacityReading: false,
@@ -452,7 +452,7 @@ describe("shouldShowComposerContextStrip", () => {
     expect(
       shouldShowComposerContextStrip({
         hasActiveProject: true,
-        isGitRepo: false,
+        showsGitControls: false,
         showEnvironmentIndicator: false,
         hostsRestingComposerControls: true,
         hasCapacityReading: false,
@@ -464,7 +464,7 @@ describe("shouldShowComposerContextStrip", () => {
     expect(
       shouldShowComposerContextStrip({
         hasActiveProject: true,
-        isGitRepo: true,
+        showsGitControls: true,
         showEnvironmentIndicator: false,
         hostsRestingComposerControls: false,
         hasCapacityReading: false,
@@ -478,7 +478,7 @@ describe("shouldShowComposerContextStrip", () => {
     expect(
       shouldShowComposerContextStrip({
         hasActiveProject: true,
-        isGitRepo: false,
+        showsGitControls: false,
         showEnvironmentIndicator: false,
         hostsRestingComposerControls: false,
         hasCapacityReading: true,
@@ -490,7 +490,7 @@ describe("shouldShowComposerContextStrip", () => {
     expect(
       shouldShowComposerContextStrip({
         hasActiveProject: false,
-        isGitRepo: true,
+        showsGitControls: true,
         showEnvironmentIndicator: true,
         hostsRestingComposerControls: true,
         hasCapacityReading: true,

@@ -77,7 +77,7 @@ function renderUsage(
   // Exercise the gate ChatView uses when there are no other reasons to show the strip.
   const showStrip = shouldShowComposerContextStrip({
     hasActiveProject: true,
-    isGitRepo: false,
+    showsGitControls: false,
     showEnvironmentIndicator: false,
     hostsRestingComposerControls: false,
     hasCapacityReading: hasComposerUsageContent(usage),
