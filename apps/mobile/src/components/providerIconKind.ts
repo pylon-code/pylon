@@ -1,4 +1,5 @@
 export type ProviderIconKind =
+  | "antigravity"
   | "claude"
   | "codex"
   | "cursor"
@@ -11,6 +12,7 @@ export function providerIconKind(provider: string | null | undefined): ProviderI
   switch (provider) {
     case "claudeAgent":
       return "claude";
+    case "antigravity":
     case "codex":
     case "cursor":
     case "grok":

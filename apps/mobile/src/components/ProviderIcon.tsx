@@ -1,3 +1,4 @@
+import { Image } from "expo-image";
 import { Circle, Path, Svg } from "react-native-svg";
 
 import { providerIconKind } from "./providerIconKind";
@@ -14,6 +15,16 @@ export function ProviderIcon(props: ProviderIconProps) {
   const size = props.size ?? 16;
   const mono = isDarkMode ? "#e5e5e5" : "#171717";
   const iconKind = providerIconKind(props.provider);
+
+  if (iconKind === "antigravity") {
+    return (
+      <Image
+        source={require("../../assets/antigravity.png")}
+        style={{ width: size, height: size }}
+        contentFit="contain"
+      />
+    );
+  }
 
   if (iconKind === "claude") {
     return (
