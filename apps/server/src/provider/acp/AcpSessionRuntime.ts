@@ -595,13 +595,25 @@ export const make = (
         });
       });
 
-    const updateConfigOptions = (
+    const updateConfigOptions = Effect.fn("AcpSessionRuntime.updateConfigOptions")(function* (
       response:
         | EffectAcpSchema.SetSessionConfigOptionResponse
         | EffectAcpSchema.LoadSessionResponse
         | EffectAcpSchema.NewSessionResponse
         | EffectAcpSchema.ResumeSessionResponse,
-    ): Effect.Effect<void> => Ref.set(configOptionsRef, sessionConfigOptionsFromSetup(response));
+      options?: { readonly publish?: boolean },
+    ) {
+      const configOptions = sessionConfigOptionsFromSetup(response);
+      yield* Ref.set(configOptionsRef, configOptions);
+      // Session setup already reports its options through the start result, so only
+      // an explicit set publishes an event.
+      if (options?.publish !== true) return;
+      yield* Queue.offer(eventQueue, {
+        _tag: "ConfigOptionsUpdated",
+        configOptions,
+        rawPayload: response,
+      });
+    });
 
     const updateCurrentModeId = (modeId: string): Effect.Effect<void> =>
       Ref.update(modeStateRef, (current) =>
@@ -640,7 +652,7 @@ export const make = (
                 "session/set_config_option",
                 requestPayload,
                 acp.agent.setSessionConfigOption(requestPayload),
-              ).pipe(Effect.tap((response) => updateConfigOptions(response)));
+              ).pipe(Effect.tap((response) => updateConfigOptions(response, { publish: true })));
             }),
           ),
         ),
