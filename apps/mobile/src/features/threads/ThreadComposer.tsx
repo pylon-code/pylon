@@ -275,7 +275,7 @@ export interface ThreadComposerProps {
 
 /**
  * The pill / card container — renders with Expo's native GlassView on supported
- * iOS 26+ devices and keeps the existing opaque fallback elsewhere.
+ * iOS 26+ devices, with a frosted blur fallback where supported.
  * Exported so NewTaskDraftScreen can render the same composer chrome.
  */
 // One timing for every piece of the expanded↔compact morph so the surface,
@@ -304,6 +304,7 @@ export function ComposerSurface(props: {
   readonly animateLayout?: boolean;
 }) {
   const { materialYouStyleLayoutActive } = useAppearancePreferences();
+  const colors = useUniwindTheme();
   // Drop shadow lives on a wrapper: `overflow: "hidden"` on the surface itself
   // (needed to clip content to the pill shape) would clip the shadow on iOS.
   //
@@ -312,7 +313,7 @@ export function ComposerSurface(props: {
   // `box-shadow`, and Uniwind's native store only maps a style when
   // `result.boxShadow` is defined — so the class contributes nothing to the RN
   // style and `shadowOpacity: 1` would fall back to RN's default opaque black.
-  const shadowColor = useUniwindTheme()["--color-primary-shadow"];
+  const shadowColor = colors["--color-primary-shadow"];
   const isDarkMode = useColorScheme() === "dark";
   // #8793's shape morph, adopted without its toolbar restructure. Animating the
   // radius on a shared value keeps the pill/card corners interpolating with the
@@ -351,10 +352,11 @@ export function ComposerSurface(props: {
     >
       <AnimatedGlassSurface
         chrome="none"
+        fallbackColor={
+          materialYouStyleLayoutActive ? colors["--color-composer-surface"] : colors["--color-card"]
+        }
         fallbackClassName={
-          materialYouStyleLayoutActive
-            ? "border border-composer-border bg-composer-surface"
-            : "border border-border bg-card-translucent"
+          materialYouStyleLayoutActive ? "border border-composer-border" : "border border-border"
         }
         glassEffectStyle="regular"
         // Keep native glass out of the interactive content's layout path: the
