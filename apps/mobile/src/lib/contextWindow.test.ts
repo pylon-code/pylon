@@ -33,23 +33,23 @@ function snapshot(
 }
 
 describe("presentMobileContextWindow", () => {
-  it("presents known model windows with visible and accessible percentages", () => {
+  it("presents known model windows with a ring percentage and readable counts", () => {
     expect(
       presentMobileContextWindow(
         snapshot({ usedTokens: 82_000, maxTokens: 258_000, usedPercentage: 31.78 }),
       ),
     ).toEqual({
-      compactLabel: "32%",
-      expandedLabel: "Context 82k / 258k · 32%",
+      percent: 32,
+      detailLabel: "82k / 258k · 32%",
       accessibilityText: "32 percent, 82,000 of 258,000 tokens used.",
       warning: false,
     });
   });
 
-  it("falls back to current tokens when the model window is unknown", () => {
+  it("leaves the ring empty and says so when the model window is unknown", () => {
     expect(presentMobileContextWindow(snapshot({ usedTokens: 1_400 }))).toMatchObject({
-      compactLabel: "1.4k",
-      expandedLabel: "Context 1.4k",
+      percent: null,
+      detailLabel: "1.4k used · window size unknown",
       accessibilityText: "Context window, 1,400 tokens used.",
     });
   });
