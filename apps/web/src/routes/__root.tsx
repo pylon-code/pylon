@@ -1,3 +1,5 @@
+import { isElectron } from "../env";
+import { useAwarenessNotifications } from "../notifications/useAwarenessNotifications";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -152,6 +154,7 @@ function RootRouteView() {
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <PlanAgentSelectionHeal /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+        {isElectron ? <AwarenessNotificationsBridge /> : null}
         {appShell}
         {/* Above the router: a theme draft is judged by walking the app, so the
             editor has to survive navigation away from settings. */}
@@ -519,5 +522,10 @@ function EventRouter() {
     handleServerConfigUpdated();
   }, [serverConfigEvent]);
 
+  return null;
+}
+
+function AwarenessNotificationsBridge() {
+  useAwarenessNotifications();
   return null;
 }

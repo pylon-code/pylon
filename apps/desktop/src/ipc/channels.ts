@@ -90,3 +90,8 @@ export const PREVIEW_RECORDING_SAVE_CHANNEL = "desktop:preview-recording-save";
 export const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop:preview-recording-frame";
 export const PREVIEW_STATE_CHANGE_CHANNEL = "desktop:preview-state-change";
 export const PREVIEW_POINTER_EVENT_CHANNEL = "desktop:preview-pointer-event";
+
+export const NOTIFICATION_NAVIGATE_CHANNEL = "desktop:notification-navigate";
+
+export const NOTIFY_AGENT_AWARENESS_CHANNEL = "desktop:notify-agent-awareness";
+export const SEND_TEST_NOTIFICATION_CHANNEL = "desktop:send-test-notification";

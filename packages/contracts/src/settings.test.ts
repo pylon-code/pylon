@@ -660,3 +660,27 @@ describe("ServerSettings environment icon", () => {
     ).toBe("linux");
   });
 });
+
+describe("ClientSettings desktop notification preferences", () => {
+  it("defaults every desktop notification preference on", () => {
+    const settings = decodeClientSettings({});
+    expect(settings.desktopNotificationsEnabled).toBe(true);
+    expect(settings.desktopNotifyOnApproval).toBe(true);
+    expect(settings.desktopNotifyOnInput).toBe(true);
+    expect(settings.desktopNotifyOnCompletion).toBe(true);
+    expect(settings.desktopNotifyOnFailure).toBe(true);
+  });
+
+  it("decodes a settings payload written before the feature, new fields taking defaults", () => {
+    const settings = decodeClientSettings({ confirmQuit: false, wordWrap: false });
+    expect(settings.confirmQuit).toBe(false);
+    expect(settings.wordWrap).toBe(false);
+    expect(settings.desktopNotificationsEnabled).toBe(true);
+  });
+
+  it("accepts desktop notification fields in a client settings patch", () => {
+    expect(decodeClientSettingsPatch({ desktopNotifyOnCompletion: false })).toEqual({
+      desktopNotifyOnCompletion: false,
+    });
+  });
+});
