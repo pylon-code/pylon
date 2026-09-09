@@ -17,17 +17,46 @@ export class ElectronNotification extends Context.Service<
   }
 >()("@t3tools/desktop/electron/ElectronNotification") {}
 
-export const make = ElectronNotification.of({
-  isSupported: Effect.sync(() => Electron.Notification.isSupported()),
-  show: (input) =>
+export const make = Effect.gen(function* () {
+  // Electron drops the native event delegate when the JS notification is collected.
+  const pending = new Set<Electron.Notification>();
+  yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
-      const notification = new Electron.Notification({
-        title: input.title,
-        body: input.body,
-      });
-      notification.on("click", input.onClick);
-      notification.show();
+      for (const notification of pending) notification.close();
+      pending.clear();
     }),
+  );
+
+  return ElectronNotification.of({
+    isSupported: Effect.sync(() => Electron.Notification.isSupported()),
+    show: (input) =>
+      Effect.sync(() => {
+        const notification = new Electron.Notification({ title: input.title, body: input.body });
+        pending.add(notification);
+        const release = () => {
+          pending.delete(notification);
+        };
+        notification.once("click", () => {
+          try {
+            input.onClick();
+          } finally {
+            release();
+          }
+        });
+        notification.on("close", (event) => {
+          // Windows can move a banner into Action Center while it remains clickable.
+          if (event.reason === "timedOut" || event.reason === "applicationHidden") return;
+          release();
+        });
+        notification.once("failed", release);
+        try {
+          notification.show();
+        } catch (cause) {
+          release();
+          throw cause;
+        }
+      }),
+  });
 });
 
-export const layer = Layer.succeed(ElectronNotification, make);
+export const layer = Layer.effect(ElectronNotification, make);
