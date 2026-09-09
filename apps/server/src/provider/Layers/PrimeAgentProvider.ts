@@ -1,4 +1,5 @@
 import {
+  type CustomModelSetting,
   type ModelCapabilities,
   type PrimeAgentSettings,
   type ServerProvider,
@@ -210,7 +211,7 @@ export function parsePrimeAgentModelDiscoveryOutput(
 }
 
 export function primeAgentModelsFromSettings(
-  customModels: ReadonlyArray<string> | undefined,
+  customModels: ReadonlyArray<CustomModelSetting> | undefined,
   discoveredModels: ReadonlyArray<ServerProviderModel> = [],
 ): ReadonlyArray<ServerProviderModel> {
   return providerModelsFromSettings(
