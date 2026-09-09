@@ -17,6 +17,7 @@ When resuming after an interruption, changing agents, or preparing a handoff, fi
 - Existing approval for compatible catch-up includes routine Pylon adaptations that preserve the approved behavior. State the intended batch and proceed; do not request approval per commit, PR, or routine conflict.
 - Ask for a concrete decision if a change would remove an important Pylon capability, break compatibility or change the guarantees of a protected contract, or require a product choice outside that approval. Continue independent approved work while the question is pending.
 - Preserve Pylon identity, Prime and provider behavior, lifecycle ownership, migration lineage, client compatibility, remote authentication, and release/runtime boundaries. See the framework for focused checks.
+- When upstream ships a feature Pylon already implemented independently, do not silently keep Pylon's version. Say the two exist, compare them on merits, and let the maintainer choose. Replacing Pylon's implementation with upstream's is an available outcome when theirs is better; preservation is the default for adaptations and conflicts, not for duplicated features.
 - Keep `origin` pointed at public `pylon-code/pylon`, with `pylon` as the product branch. T3 remotes remain fetch-only. Never replace Pylon, rebase onto T3, select all of `theirs`, or record an unreviewed upstream head as merged. Changing the Git ancestry baseline is a separate, explicitly approved task.
 
 ## Bound one integration cycle
