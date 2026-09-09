@@ -199,6 +199,16 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   }, [isMacosDesktop]);
 
   useEffect(() => {
+    const onNotificationNavigate = window.desktopBridge?.onNotificationNavigate;
+    if (typeof onNotificationNavigate !== "function") {
+      return;
+    }
+    return onNotificationNavigate(({ environmentId, threadId }) => {
+      void navigate({ to: "/$environmentId/$threadId", params: { environmentId, threadId } });
+    });
+  }, [navigate]);
+
+  useEffect(() => {
     const onMenuAction = window.desktopBridge?.onMenuAction;
     if (typeof onMenuAction !== "function") {
       return;
