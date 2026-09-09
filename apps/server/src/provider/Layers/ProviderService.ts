@@ -1145,14 +1145,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     yield* recordCompletedTurnProperties(properties);
   });
   /**
-   * Attach the `t3-code` MCP server to the session that is about to start.
+   * Whether the credential minted below may drive the user's browser.
    *
-   * This is the only place a credential is minted, so withholding one here is
-   * what disables agent browser access everywhere: every adapter already
-   * treats a missing session as "no MCP server", and the `/mcp` endpoint
-   * accepts nothing but tokens issued from this path.
-   */
-  /**
    * Deny on an unreadable settings file rather than letting the read failure
    * escape: adding `ServerSettingsError` to `ProviderServiceError` would widen
    * a union every caller handles, for a branch that only decides whether one
@@ -1194,7 +1188,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const agentAccessCapabilities = Effect.fn("ProviderService.agentAccessCapabilities")(function* (
     threadId: ThreadId,
   ) {
-    const capabilities = new Set<McpInvocationContext.McpCapability>();
+    const capabilities = new Set<McpInvocationContext.McpCapability>(["pull-requests"]);
     if (yield* agentBrowserAccessEnabled(threadId)) capabilities.add("preview");
     if (yield* agentDeviceAccessEnabled) capabilities.add("device");
     return capabilities;
@@ -1235,10 +1229,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     Effect.gen(function* () {
       const fence = adapter.runtimeFence;
       const capabilities = yield* agentAccessCapabilities(threadId);
-      if (capabilities.size === 0) {
-        yield* clearMcpSession(threadId, fence);
-        return undefined;
-      }
       // CLI setup can yield while a provider generation is replaced. Prepare it
       // before the registry's guarded issue so retired work cannot publish over
       // the replacement generation's MCP session.

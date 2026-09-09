@@ -1479,6 +1479,44 @@ describe("cached pull request detail", () => {
     }
   });
 
+  it("isolates stored and displayed details between hosts with the same repository and number", () => {
+    const storage = makeStorage();
+    const publicRef = { ...reference, host: "github.com" };
+    const enterpriseRef = { ...reference, host: "github.example.com" };
+    const publicDetail = detail();
+    const enterpriseDetail = detail({
+      title: "Enterprise change",
+      url: "https://github.example.com/acme/web/pull/7",
+    });
+    writePullRequestDetailSnapshot(storage, "env-1", publicRef, publicDetail);
+    expect(readPullRequestDetailSnapshot(storage, "env-1", enterpriseRef)).toBeNull();
+    writePullRequestDetailSnapshot(storage, "env-1", enterpriseRef, enterpriseDetail);
+    expect(readPullRequestDetailSnapshot(storage, "env-1", publicRef)?.title).toBe(
+      publicDetail.title,
+    );
+    expect(readPullRequestDetailSnapshot(storage, "env-1", enterpriseRef)?.title).toBe(
+      enterpriseDetail.title,
+    );
+    expect(
+      resolveDisplayedPullRequestDetail({
+        live: null,
+        cached: { environmentId: "env-1", detail: publicDetail },
+        environmentId: "env-1",
+        reference: enterpriseRef,
+      }),
+    ).toBeNull();
+    expect(
+      resolveDisplayedPullRequestDetail({
+        live: null,
+        cached: { environmentId: "env-1", detail: enterpriseDetail },
+        environmentId: "env-1",
+        reference: enterpriseRef,
+      }),
+    ).toBe(enterpriseDetail);
+    writePullRequestDetailSnapshot(storage, "env-1", enterpriseRef, publicDetail);
+    expect(readPullRequestDetailSnapshot(storage, "env-1", enterpriseRef)).toBeNull();
+  });
+
   it("shrugs off corrupt storage and no storage at all", () => {
     const storage = makeStorage();
     storage.setItem("t3.pullRequests.detail:env-1:project-1:acme/web#7", "{not json");

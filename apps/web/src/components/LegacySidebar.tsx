@@ -1,3 +1,10 @@
+import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
+import { GitPullRequestIcon } from "lucide-react";
+import { LinkBranchPullRequestButton } from "./pullRequest/LinkBranchPullRequestButton";
+import {
+  resolveThreadCurrentPullRequestLink,
+  visibleThreadPullRequests,
+} from "@t3tools/shared/threadPullRequests";
 import { Spinner } from "~/components/ui/spinner";
 import {
   ArchiveIcon,
@@ -495,8 +502,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     },
   });
   const linkedPullRequestStatus = useLinkedThreadPullRequest(
-    leaseLiveStatus ? thread.environmentId : null,
-    leaseLiveStatus ? reference : null,
+    thread.environmentId,
+    thread.linkedPullRequest,
+    leaseLiveStatus,
+    thread.pullRequests,
+    thread.branchPullRequest,
   );
   const visibleGitStatus = useRetainedValue(
     JSON.stringify([thread.environmentId, gitCwd]),
@@ -506,12 +516,18 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     reference === null ? null : JSON.stringify([thread.environmentId, reference]),
     linkedPullRequestStatus,
   );
+  const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
+  const currentLinkedPr = supportsMultiplePullRequests
+    ? resolveThreadCurrentPullRequestLink(thread.pullRequests)
+    : null;
   const pr =
-    reference === null
-      ? legacyDiscovery
-        ? resolveThreadPr({ threadBranch: thread.branch, gitStatus: visibleGitStatus })
-        : null
-      : (visibleLinkedPullRequestStatus?.pr ?? null);
+    currentLinkedPr !== null
+      ? (linkedPullRequestStatus?.pr ?? null)
+      : reference === null
+        ? legacyDiscovery
+          ? resolveThreadPr({ threadBranch: thread.branch, gitStatus: visibleGitStatus })
+          : null
+        : (visibleLinkedPullRequestStatus?.pr ?? null);
   const prStatus = prStatusIndicator(
     pr,
     visibleLinkedPullRequestStatus?.sourceControlProvider ??
@@ -626,17 +642,26 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   );
   const handlePrClick = useCallback(
     (event: React.MouseEvent<HTMLAnchorElement>) => {
-      if (!prStatus) return;
+      const url = prStatus?.url ?? currentLinkedPr?.url;
+      if (!url) return;
       const openedInRightPanel = openPrLink(
         event,
-        prStatus.url,
+        url,
         openPullRequestsInRightPanel ? threadRef : undefined,
       );
       if (openedInRightPanel && openPullRequestsInRightPanel && !isActive) {
         navigateToThread(threadRef);
       }
     },
-    [isActive, navigateToThread, openPrLink, openPullRequestsInRightPanel, prStatus, threadRef],
+    [
+      isActive,
+      navigateToThread,
+      openPrLink,
+      openPullRequestsInRightPanel,
+      prStatus,
+      currentLinkedPr,
+      threadRef,
+    ],
   );
   const handleRenameInputRef = useCallback(
     (element: HTMLInputElement | null) => {
@@ -776,6 +801,25 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               </TooltipPopup>
             </Tooltip>
           )}
+          {!pr && currentLinkedPr ? (
+            <a
+              href={currentLinkedPr.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={handlePrClick}
+              className="text-muted-foreground"
+              aria-label={`PR #${currentLinkedPr.number}, status pending`}
+            >
+              <GitPullRequestIcon className="size-3" />
+            </a>
+          ) : null}
+          {pr &&
+          (supportsMultiplePullRequests
+            ? visibleThreadPullRequests(thread.pullRequests).length === 0
+            : thread.linkedPullRequest == null) ? (
+            <LinkBranchPullRequestButton threadRef={threadRef} url={pr.url} />
+          ) : null}
           {threadStatus && <ThreadStatusLabel status={threadStatus} />}
           {renamingThreadKey === threadKey ? (
             <input

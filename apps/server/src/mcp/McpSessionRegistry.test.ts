@@ -55,33 +55,33 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
   }),
 );
 
-it.effect("gates browser and device access independently", () =>
-  Effect.gen(function* () {
-    const registry = yield* makeRegistry(() => 1_000);
-    const withPreview = yield* registry.issue({
-      threadId: ThreadId.make("thread-preview"),
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      capabilities: new Set(["preview"]),
-    });
-    const withoutPreview = yield* registry.issue({
-      threadId: ThreadId.make("thread-no-preview"),
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      capabilities: new Set(),
-    });
-    const withDevice = yield* registry.issue({
-      threadId: ThreadId.make("thread-device"),
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      capabilities: new Set(["device"]),
-    });
-    const capabilitiesOf = (issued: typeof withPreview) =>
-      registry
-        .resolve(issued.config.authorizationHeader.replace(/^Bearer\s+/, ""))
-        .pipe(Effect.map((scope) => [...(scope?.capabilities ?? [])].sort()));
-
-    expect(yield* capabilitiesOf(withPreview)).toEqual(["preview"]);
-    expect(yield* capabilitiesOf(withoutPreview)).toEqual([]);
-    expect(yield* capabilitiesOf(withDevice)).toEqual(["device"]);
-  }),
+it.effect(
+  "preserves pull request access while gating browser and device access independently",
+  () =>
+    Effect.gen(function* () {
+      const registry = yield* makeRegistry(() => 1_000);
+      for (const browser of [false, true]) {
+        for (const device of [false, true]) {
+          const capabilities = new Set<import("./McpInvocationContext.ts").McpCapability>([
+            "pull-requests",
+            ...(browser ? ["preview" as const] : []),
+            ...(device ? ["device" as const] : []),
+          ]);
+          const issued = yield* registry.issue({
+            threadId: ThreadId.make(`thread-browser-${browser}-device-${device}`),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            capabilities,
+          });
+          const scope = yield* registry.resolve(
+            issued.config.authorizationHeader.replace(/^Bearer\s+/, ""),
+          );
+          expect(scope?.capabilities.has("pull-requests")).toBe(true);
+          expect(scope?.capabilities.has("preview")).toBe(browser);
+          expect(scope?.capabilities.has("device")).toBe(device);
+          expect(issued.config.capabilities).toEqual(scope?.capabilities);
+        }
+      }
+    }),
 );
 
 it.effect("builds MCP endpoints from the bound server host", () =>

@@ -47,6 +47,7 @@ const makeReadModel = (session: OrchestrationSession, sourceEpoch = 0): Orchestr
     {
       id: THREAD_ID,
       projectId: ProjectId.make("project-session-lifecycle"),
+      pullRequests: [],
       title: "Lifecycle",
       modelSelection: { instanceId: INSTANCE_ID, model: "gpt-5.4" },
       runtimeMode: "full-access",

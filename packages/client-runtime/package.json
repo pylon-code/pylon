@@ -290,6 +290,10 @@
     "./project-favicon-cache": {
       "types": "./src/projectFaviconCache.ts",
       "default": "./src/projectFaviconCache.ts"
+    },
+    "./thread-pull-request-compatibility": {
+      "types": "./src/threadPullRequestCompatibility.ts",
+      "default": "./src/threadPullRequestCompatibility.ts"
     }
   },
   "scripts": {
