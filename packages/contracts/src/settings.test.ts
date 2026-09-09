@@ -277,15 +277,27 @@ describe("ClientSettings sidebar", () => {
   });
 });
 
-describe("ClientSettings context window meter", () => {
-  it("defaults off and preserves an explicit legacy opt-in", () => {
-    expect(decodeClientSettings({}).contextWindowMeterEnabled).toBe(false);
+describe("ClientSettings context window indicator", () => {
+  it("shows the indicator by default", () => {
+    expect(decodeClientSettings({}).contextWindowIndicatorEnabled).toBe(true);
+  });
+
+  it("drops the retired meter key, restoring the indicator for everyone", () => {
+    // The old key defaulted off, so a persisted `false` records the default
+    // rather than a choice. Dropping it is what gives those users the ring back.
+    const decoded = decodeClientSettings({ contextWindowMeterEnabled: false });
+    expect(decoded.contextWindowIndicatorEnabled).toBe(true);
+    expect(decoded).not.toHaveProperty("contextWindowMeterEnabled");
+  });
+
+  it("preserves an explicit opt-out", () => {
     expect(
-      decodeClientSettings({ contextWindowMeterEnabled: true }).contextWindowMeterEnabled,
-    ).toBe(true);
+      decodeClientSettings({ contextWindowIndicatorEnabled: false }).contextWindowIndicatorEnabled,
+    ).toBe(false);
     expect(
-      decodeClientSettingsPatch({ contextWindowMeterEnabled: true }).contextWindowMeterEnabled,
-    ).toBe(true);
+      decodeClientSettingsPatch({ contextWindowIndicatorEnabled: false })
+        .contextWindowIndicatorEnabled,
+    ).toBe(false);
   });
 });
 

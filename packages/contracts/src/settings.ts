@@ -300,7 +300,16 @@ export const ClientSettingsSchema = Schema.Struct({
   // flag restores it along with the /plan and /default slash commands. Pylon
   // Mobile already carries a device-local counterpart of this key.
   planModeEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  contextWindowMeterEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Composer context window indicator. Upstream demoted it to an opt-in legacy
+  // row defaulting off; Pylon keeps it on, because the ring is how a user sees
+  // a thread approach compaction and Pylon Mobile shows the same reading with
+  // no toggle at all. Deliberately a fresh key (was `contextWindowMeterEnabled`):
+  // clients that wrote a full settings document while the row defaulted off
+  // persisted an explicit `false` nobody chose, and decoding drops the old key
+  // so those users get the indicator back.
+  contextWindowIndicatorEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
   // Desktop scrolling can reclaim composer space; losing focus never collapses it.
   composerCollapseOnScroll: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
@@ -1301,7 +1310,7 @@ export const ClientSettingsPatch = Schema.Struct({
   showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
   legacySidebarEnabled: Schema.optionalKey(Schema.Boolean),
   planModeEnabled: Schema.optionalKey(Schema.Boolean),
-  contextWindowMeterEnabled: Schema.optionalKey(Schema.Boolean),
+  contextWindowIndicatorEnabled: Schema.optionalKey(Schema.Boolean),
   composerCollapseOnScroll: Schema.optionalKey(Schema.Boolean),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
