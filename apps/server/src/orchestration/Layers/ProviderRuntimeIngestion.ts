@@ -1287,6 +1287,10 @@ export function runtimeEventToActivities(
             ...(primeAgentTool || !event.payload.parentToolUseId
               ? {}
               : { parentToolUseId: event.payload.parentToolUseId }),
+            ...(primeAgentTool || !event.payload.title ? {} : { title: event.payload.title }),
+            ...(event.payload.toolSurface ? { toolSurface: event.payload.toolSurface } : {}),
+            ...(event.payload.toolIcon ? { toolIcon: event.payload.toolIcon } : {}),
+            ...(event.payload.toolSource ? { toolSource: event.payload.toolSource } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1429,6 +1433,11 @@ export function runtimeEventToActivities(
             ...(primeAgentTool || !event.payload.parentToolUseId
               ? {}
               : { parentToolUseId: event.payload.parentToolUseId }),
+            ...(primeAgentTool || !event.payload.title ? {} : { title: event.payload.title }),
+            ...(event.payload.toolSurface ? { toolSurface: event.payload.toolSurface } : {}),
+            ...(event.payload.toolIcon ? { toolIcon: event.payload.toolIcon } : {}),
+            ...(event.payload.toolSource ? { toolSource: event.payload.toolSource } : {}),
+            ...(event.payload.status ? { status: event.payload.status } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1492,6 +1501,11 @@ export function runtimeEventToActivities(
             ...(primeAgentTool || !event.payload.parentToolUseId
               ? {}
               : { parentToolUseId: event.payload.parentToolUseId }),
+            ...(primeAgentTool || !event.payload.title ? {} : { title: event.payload.title }),
+            ...(event.payload.toolSurface ? { toolSurface: event.payload.toolSurface } : {}),
+            ...(event.payload.toolIcon ? { toolIcon: event.payload.toolIcon } : {}),
+            ...(event.payload.toolSource ? { toolSource: event.payload.toolSource } : {}),
+            ...(event.payload.status ? { status: event.payload.status } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
