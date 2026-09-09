@@ -39,6 +39,7 @@ import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import {
   ProviderAdapterRequestError,
+  ProviderAdapterValidationError,
   ProviderWorkspaceMissingError,
 } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
@@ -65,6 +66,7 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderWorkspaceMissingError = Schema.is(ProviderWorkspaceMissingError);
+const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
 type TurnAdmissionIntent = NonNullable<
@@ -101,6 +103,16 @@ export function providerFollowUpInputFromMessage(message: {
     ...(message.attachments === undefined ? {} : { attachments: message.attachments }),
   };
 }
+
+/** `/compact` is a client-side command, not text the provider should ever see. */
+const isCompactCommandMessage = (message: {
+  readonly role: string;
+  readonly text: string;
+  readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
+}): boolean =>
+  message.role === "user" &&
+  (message.attachments?.length ?? 0) === 0 &&
+  message.text.trim().toLowerCase() === "/compact";
 
 function mapProviderSessionStatusToOrchestrationStatus(
   status: "connecting" | "ready" | "running" | "error" | "closed",
@@ -369,6 +381,8 @@ const make = Effect.gen(function* () {
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
+  const compactingThreadIds = new Set<ThreadId>();
+  const stoppingThreadIds = new Set<ThreadId>();
   const admissionFibers = new Map<CommandId, Fiber.Fiber<unknown, unknown>>();
   const admissionFiberThreads = new Map<CommandId, ThreadId>();
   type AdmissionStopToken = object;
@@ -474,11 +488,11 @@ const make = Effect.gen(function* () {
 
   const formatFailureDetail = (cause: Cause.Cause<unknown>): string => {
     const failReason = cause.reasons.find(Cause.isFailReason);
-    const providerError = isProviderAdapterRequestError(failReason?.error)
-      ? failReason.error
-      : undefined;
-    if (providerError) {
-      return providerError.detail;
+    if (isProviderAdapterRequestError(failReason?.error)) {
+      return failReason.error.detail;
+    }
+    if (isProviderAdapterValidationError(failReason?.error)) {
+      return failReason.error.issue;
     }
     if (isProviderWorkspaceMissingError(failReason?.error)) {
       return failReason.error.message;
@@ -627,6 +641,101 @@ const make = Effect.gen(function* () {
       .getThreadShellById(threadId)
       .pipe(Effect.map(Option.getOrUndefined));
   });
+
+  const setThreadSession = (input: {
+    readonly threadId: ThreadId;
+    readonly session: OrchestrationSession;
+    readonly createdAt: string;
+  }) =>
+    serverCommandId("provider-session-set").pipe(
+      Effect.flatMap((commandId) =>
+        orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId,
+          threadId: input.threadId,
+          session: input.session,
+          createdAt: input.createdAt,
+        }),
+      ),
+      Effect.asVoid,
+    );
+
+  const restoreCompaction = Effect.fnUntraced(function* (threadId: ThreadId, fromRunning = false) {
+    if (stoppingThreadIds.has(threadId)) {
+      compactingThreadIds.delete(threadId);
+      return;
+    }
+    const thread = yield* resolveThreadShell(threadId);
+    if (!thread?.session) return;
+    if (
+      thread.session.status !== "starting" &&
+      thread.session.status !== "ready" &&
+      (!fromRunning || thread.session.status !== "running")
+    )
+      return;
+    const completedAt = DateTime.formatIso(yield* DateTime.now);
+    if (stoppingThreadIds.has(threadId)) {
+      compactingThreadIds.delete(threadId);
+      return;
+    }
+    yield* setThreadSession({
+      threadId,
+      session: {
+        ...thread.session,
+        status: "ready",
+        activeTurnId: null,
+        // Pylon's decider reserves a turn admission for every `thread.turn.start`,
+        // including the `/compact` one, but compaction never becomes a provider
+        // turn that could accept it. Retire it here or the spread above carries
+        // it forward and the decider rejects every later turn on this thread.
+        pendingTurnRequestId: undefined,
+        pendingTurnMessageId: undefined,
+        pendingTurnRequestedAt: undefined,
+        pendingTurnDeadlineAt: undefined,
+        pendingTurnSessionId: undefined,
+        activeTurnRequestId: undefined,
+        lastError: null,
+        updatedAt: completedAt,
+      },
+      createdAt: completedAt,
+    });
+  });
+
+  /**
+   * Marks a stop in flight so a compaction finishing underneath it cannot flip
+   * the session back to ready. Pylon's decider records `stopped` in the same
+   * transaction as the stop intent, so there is nothing to restore afterwards
+   * even when the provider stop itself fails.
+   */
+  const withSessionStopTracking = <A, E, R>(threadId: ThreadId, stop: Effect.Effect<A, E, R>) =>
+    Effect.suspend(() => {
+      stoppingThreadIds.add(threadId);
+      return stop.pipe(
+        Effect.onError((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.void
+            : DateTime.now.pipe(
+                Effect.flatMap((failedAt) =>
+                  appendProviderFailureActivity({
+                    threadId,
+                    kind: "provider.session.stop.failed",
+                    summary: "Provider session stop failed",
+                    detail: formatFailureDetail(cause),
+                    turnId: null,
+                    createdAt: DateTime.formatIso(failedAt),
+                  }),
+                ),
+                Effect.catchCause((appendCause) =>
+                  Effect.logWarning("failed to record a provider session stop failure", {
+                    threadId,
+                    cause: Cause.pretty(appendCause),
+                  }),
+                ),
+              ),
+        ),
+        Effect.ensuring(Effect.sync(() => void stoppingThreadIds.delete(threadId))),
+      );
+    });
 
   const rejectStartedThreadModelChangeIfRequired = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -1515,9 +1624,20 @@ const make = Effect.gen(function* () {
         detail: `User message '${event.payload.messageId}' was not found for turn start request.`,
         turnId: null,
         createdAt: event.payload.createdAt,
+        requestId: event.payload.messageId,
       });
       return;
     }
+    const appendTurnStartFailure = (summary: string, detail: string) =>
+      appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.turn.start.failed",
+        summary,
+        detail,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+        requestId: event.payload.messageId,
+      });
 
     const { message, hasOtherUserMessages } = turnStart.value;
 
@@ -1561,6 +1681,100 @@ const make = Effect.gen(function* () {
     if ((yield* Clock.currentTimeMillis) >= admissionDeadlineMs) {
       yield* failAdmission(PROVIDER_TURN_ADMISSION_TIMEOUT_DETAIL);
       return;
+    }
+
+    // `/compact` never reaches the provider as a turn. It runs through
+    // ProviderService.compactThread, which either calls the adapter's native
+    // compaction or sends the adapter's own slash command.
+    if (isCompactCommandMessage(message)) {
+      if (!hasOtherUserMessages) {
+        return yield* appendTurnStartFailure(
+          "Context compaction failed",
+          "Context compaction requires an existing conversation.",
+        );
+      }
+      const latestSession = (yield* resolveThreadShell(event.payload.threadId))?.session;
+      // Pylon admits the turn before the reactor observes its intent event, so
+      // this thread already reads as "starting" for the compaction's own
+      // request. Upstream's status check would reject every compaction here;
+      // reject only when a different turn owns the session.
+      const otherTurnOwnsSession =
+        latestSession?.status === "running" ||
+        latestSession?.activeTurnId != null ||
+        (latestSession?.pendingTurnRequestId != null &&
+          latestSession.pendingTurnRequestId !== requestId);
+      if (compactingThreadIds.has(event.payload.threadId) || otherTurnOwnsSession) {
+        yield* appendTurnStartFailure(
+          "Context compaction failed",
+          "Context compaction is unavailable while a provider turn is running.",
+        );
+        return;
+      }
+      const handleCompactionFailure = (cause: Cause.Cause<unknown>) => {
+        if (Cause.hasInterruptsOnly(cause)) return Effect.void;
+        const detail = formatFailureDetail(cause);
+        return appendTurnStartFailure("Context compaction failed", detail).pipe(
+          Effect.ensuring(
+            // A no-op unless the session actually reached a restorable state,
+            // so this covers both a failed ensure and a failed compaction.
+            restoreCompaction(event.payload.threadId).pipe(
+              Effect.catchCause((restoreCause) =>
+                Effect.logWarning("failed to restore provider session after compaction failure", {
+                  threadId: event.payload.threadId,
+                  cause: Cause.pretty(restoreCause),
+                }),
+              ),
+            ),
+          ),
+          Effect.asVoid,
+        );
+      };
+      compactingThreadIds.add(event.payload.threadId);
+      yield* Effect.gen(function* () {
+        // Deliberately no pending turn admission: `restoreCompaction` spreads
+        // the existing session forward, so an admission recorded here would
+        // survive it and the decider would reject every later turn on the
+        // thread. `compactingThreadIds` is what serialises compaction instead.
+        yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt, {
+          ...(event.payload.modelSelection !== undefined
+            ? { modelSelection: event.payload.modelSelection }
+            : {}),
+          runtimeMode: event.payload.runtimeMode,
+          interactionMode: event.payload.interactionMode,
+          pendingTurnStart: true,
+        });
+        if (event.payload.modelSelection !== undefined) {
+          threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
+        }
+        yield* providerService.compactThread(
+          event.payload.threadId,
+          event.payload.modelSelection,
+          event.payload.messageId,
+        );
+      }).pipe(
+        Effect.andThen(restoreCompaction(event.payload.threadId, true)),
+        Effect.catchCause((cause) =>
+          handleCompactionFailure(cause).pipe(
+            Effect.catchCause((recoveryCause) =>
+              Effect.logWarning("provider command reactor failed to recover compaction failure", {
+                eventType: event.type,
+                threadId: event.payload.threadId,
+                cause: Cause.pretty(recoveryCause),
+                originalCause: Cause.pretty(cause),
+              }),
+            ),
+          ),
+        ),
+        Effect.ensuring(Effect.sync(() => void compactingThreadIds.delete(event.payload.threadId))),
+        Effect.forkScoped,
+      );
+      return;
+    }
+    if (compactingThreadIds.has(event.payload.threadId)) {
+      return yield* appendTurnStartFailure(
+        "Provider turn start failed",
+        "Wait for context compaction to finish before sending another message.",
+      );
     }
 
     // Subscribe before provider admission starts. Only the persisted exact
@@ -2056,13 +2270,16 @@ const make = Effect.gen(function* () {
     // runtime. A still-projected stopped target owns the original reservation.
     const invalidateStartReservation =
       currentSession?.status === "stopped" && pendingStopTargetIsCurrent(currentSession, target);
-    yield* providerService.stopSession({
-      threadId: target.threadId,
-      expectedProviderInstanceId: target.providerInstanceId,
-      expectedSessionIncarnationId: target.sessionIncarnationId,
-      expectedAdmissionRequestId: target.turnRequestId,
-      invalidateStartReservation,
-    });
+    yield* withSessionStopTracking(
+      target.threadId,
+      providerService.stopSession({
+        threadId: target.threadId,
+        expectedProviderInstanceId: target.providerInstanceId,
+        expectedSessionIncarnationId: target.sessionIncarnationId,
+        expectedAdmissionRequestId: target.turnRequestId,
+        invalidateStartReservation,
+      }),
+    );
     yield* clearPendingSessionStop(target);
     releaseAdmissionLaneIfIdle(target.threadId);
   });
@@ -2087,18 +2304,21 @@ const make = Effect.gen(function* () {
       if (event.commandId === null) {
         // Legacy stop events have no durable pending-stop marker. Keep their
         // prior exact-stop behavior, but never manufacture a cleanup target.
-        yield* providerService.stopSession({
-          threadId: event.payload.threadId,
-          ...(event.payload.targetProviderInstanceId !== undefined ||
-          event.payload.targetSessionIncarnationId !== undefined ||
-          event.payload.targetTurnRequestId !== undefined
-            ? {
-                expectedProviderInstanceId: event.payload.targetProviderInstanceId ?? null,
-                expectedSessionIncarnationId: event.payload.targetSessionIncarnationId ?? null,
-                expectedAdmissionRequestId: targetRequestId,
-              }
-            : {}),
-        });
+        yield* withSessionStopTracking(
+          event.payload.threadId,
+          providerService.stopSession({
+            threadId: event.payload.threadId,
+            ...(event.payload.targetProviderInstanceId !== undefined ||
+            event.payload.targetSessionIncarnationId !== undefined ||
+            event.payload.targetTurnRequestId !== undefined
+              ? {
+                  expectedProviderInstanceId: event.payload.targetProviderInstanceId ?? null,
+                  expectedSessionIncarnationId: event.payload.targetSessionIncarnationId ?? null,
+                  expectedAdmissionRequestId: targetRequestId,
+                }
+              : {}),
+          }),
+        );
         return;
       }
       yield* stopPendingSessionTarget({

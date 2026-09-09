@@ -49,6 +49,7 @@ const baseInput = {
   providerSlashCommands: [],
   showInteractionModeToggle: false,
   hasThread: true,
+  hasCompactableConversation: true,
   pathEntries: [],
 } as const;
 

@@ -19,6 +19,7 @@ import {
   type OrchestrationSession,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
+  RuntimeRequestId,
   type SessionInteractionRequest,
   type SessionInteractionResponse,
 } from "@t3tools/contracts";
@@ -27,12 +28,14 @@ import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { formatTokens } from "@t3tools/shared/usageFormat";
 
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -139,6 +142,8 @@ interface AssistantSegmentState {
   activeMessageId: MessageId | null;
 }
 
+const CONTEXT_WINDOW_HISTORY_BY_THREAD_CACHE_CAPACITY = 2_000;
+const CONTEXT_WINDOW_HISTORY_BY_THREAD_TTL = Duration.minutes(120);
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
 const TURN_MESSAGE_IDS_BY_TURN_TTL = Duration.minutes(120);
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
@@ -281,6 +286,29 @@ function buildContextWindowActivityPayload(
     return undefined;
   }
   return event.payload.usage;
+}
+
+/**
+ * The two most recent context-window totals seen for a thread. Pylon upserts a
+ * single `context-window.updated` activity per thread so a streaming turn does
+ * not append a row per token tick, which means the pre-compaction total is no
+ * longer in the projection by the time the compacted event lands. Retaining the
+ * previous value here keeps the "899K -> 19K" label without reintroducing a row
+ * per update.
+ */
+interface ContextWindowHistory {
+  readonly previousUsedTokens: number | undefined;
+  readonly latestUsedTokens: number;
+}
+
+function compactedTokenCounts(
+  history: ContextWindowHistory | undefined,
+): { readonly beforeTokens: number; readonly afterTokens: number } | undefined {
+  if (history?.previousUsedTokens === undefined) return undefined;
+  const beforeTokens = history.previousUsedTokens;
+  const afterTokens = history.latestUsedTokens;
+  if (afterTokens >= beforeTokens) return undefined;
+  return { beforeTokens, afterTokens };
 }
 
 function normalizeRuntimeTurnState(
@@ -1165,14 +1193,26 @@ export function runtimeEventToActivities(
         return [];
       }
 
+      const beforeTokens = event.payload.beforeTokens;
+      const afterTokens = event.payload.afterTokens;
+      const summary =
+        beforeTokens !== undefined && afterTokens !== undefined
+          ? `Compacted context ${formatTokens(beforeTokens)} → ${formatTokens(afterTokens)} tokens`
+          : "Context compacted";
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "info",
           kind: "context-compaction",
-          summary: "Context compacted",
-          payload: { state: event.payload.state },
+          summary,
+          payload: {
+            state: event.payload.state,
+            ...(beforeTokens !== undefined ? { beforeTokens } : {}),
+            ...(afterTokens !== undefined ? { afterTokens } : {}),
+            ...(event.requestId !== undefined ? { requestId: event.requestId } : {}),
+            ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
+          },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
         },
@@ -1523,6 +1563,15 @@ const make = Effect.gen(function* () {
     crypto.randomUUIDv4.pipe(
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
     );
+
+  const contextWindowHistoryByThreadId = yield* Cache.make<ThreadId, ContextWindowHistory>({
+    capacity: CONTEXT_WINDOW_HISTORY_BY_THREAD_CACHE_CAPACITY,
+    timeToLive: CONTEXT_WINDOW_HISTORY_BY_THREAD_TTL,
+    lookup: () =>
+      Effect.die(
+        new Error("context window history should be read through getOption before initialization"),
+      ),
+  });
 
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
@@ -3071,7 +3120,66 @@ const make = Effect.gen(function* () {
       }
 
       yield* requireRuntimeEventCurrent;
-      const activities = runtimeEventToActivities(event, taskTitle);
+      if (event.type === "thread.token-usage.updated" && event.payload.usage.usedTokens >= 0) {
+        const previous = Option.getOrUndefined(
+          yield* Cache.getOption(contextWindowHistoryByThreadId, thread.id),
+        );
+        yield* Cache.set(contextWindowHistoryByThreadId, thread.id, {
+          previousUsedTokens: previous?.latestUsedTokens,
+          latestUsedTokens: event.payload.usage.usedTokens,
+        });
+      }
+      let activityEvent = event;
+      if (
+        isCompactedThreadState &&
+        event.requestId === undefined &&
+        Option.isSome(pendingTurnStart) &&
+        thread.session?.status === "starting" &&
+        activeTurnId === null &&
+        sameId(thread.session.providerName, event.provider) &&
+        sameId(thread.session.providerInstanceId, event.providerInstanceId) &&
+        DateTime.isGreaterThanOrEqualTo(
+          DateTime.makeUnsafe(event.createdAt),
+          DateTime.makeUnsafe(pendingTurnStart.value.requestedAt),
+        )
+      ) {
+        const pendingMessage = yield* getThreadMessageById(
+          thread.id,
+          pendingTurnStart.value.messageId,
+        );
+        if (
+          pendingMessage?.role === "user" &&
+          (pendingMessage.attachments?.length ?? 0) === 0 &&
+          pendingMessage.text.trim().toLowerCase() === "/compact"
+        ) {
+          activityEvent = {
+            ...event,
+            requestId: RuntimeRequestId.make(String(pendingTurnStart.value.messageId)),
+          };
+        }
+      }
+      if (
+        activityEvent.type === "thread.state.changed" &&
+        activityEvent.payload.state === "compacted" &&
+        (activityEvent.payload.beforeTokens === undefined ||
+          activityEvent.payload.afterTokens === undefined)
+      ) {
+        const tokenCounts = compactedTokenCounts(
+          Option.getOrUndefined(yield* Cache.getOption(contextWindowHistoryByThreadId, thread.id)),
+        );
+        if (tokenCounts) {
+          activityEvent = {
+            ...activityEvent,
+            payload: {
+              ...activityEvent.payload,
+              beforeTokens: activityEvent.payload.beforeTokens ?? tokenCounts.beforeTokens,
+              afterTokens: activityEvent.payload.afterTokens ?? tokenCounts.afterTokens,
+            },
+          };
+        }
+      }
+
+      const activities = runtimeEventToActivities(activityEvent, taskTitle);
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
           Effect.flatMap((commandId) =>

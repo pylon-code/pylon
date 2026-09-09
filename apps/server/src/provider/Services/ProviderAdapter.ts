@@ -47,6 +47,21 @@ import type { Json } from "effect/Schema";
 import type { ProviderRuntimeFence } from "../ProviderDriver.ts";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
+
+/**
+ * How ProviderService runs manual context compaction for an adapter.
+ * Native adapters expose a start call and must emit a compacted thread state
+ * when they finish. Slash-command adapters get the command sent as a turn.
+ */
+export type ProviderCompaction<TError> =
+  | {
+      readonly type: "native";
+      readonly start: (
+        threadId: ThreadId,
+        modelSelection?: ProviderSendTurnInput["modelSelection"],
+      ) => Effect.Effect<void, TError>;
+    }
+  | { readonly type: "slash-command"; readonly command: `/${string}` };
 export type ProviderConversationRollbackMode = "absolute" | "relative" | "unsupported";
 
 export const BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES = {
@@ -159,6 +174,9 @@ export interface ProviderAdapterShape<TError> {
   readonly sendTurn: (
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
+
+  /** Omitted when this adapter does not support manual context compaction. */
+  readonly compaction?: ProviderCompaction<TError>;
 
   /** Server-private hook. Prime uses it to replace an idle ordinary owner with a recoverable one. */
   readonly prepareTurnRecovery?: (input: ProviderSendTurnInput) => Effect.Effect<void, TError>;

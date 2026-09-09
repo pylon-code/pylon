@@ -1276,6 +1276,7 @@ export function makeCursorAdapter(
         sessionModelSwitch: "in-session",
         conversationRollback: BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES.cursor,
       },
+      compaction: { type: "slash-command", command: "/compress" },
       startSession,
       sendTurn,
       interruptTurn,
