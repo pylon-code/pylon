@@ -37,6 +37,7 @@ import * as PrimeAgentRecoveryLedger from "./provider/prime/PrimeAgentRecoveryLe
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import { AntigravityInstallation } from "./provider/AntigravityInstallation.ts";
+import { ProviderAuthServiceLive } from "./provider/Layers/ProviderAuthService.ts";
 import * as ProviderEventLoggers from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
@@ -298,10 +299,17 @@ const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
 // `create()`; `ProviderEventLoggers.layer` owns the shared native/canonical
 // NDJSON writers and is provided at the outer runtime layer so both
 // `ProviderService` and the per-instance drivers read the same logger pair.
-const ProviderLayerLive = ProviderServiceLive.pipe(
-  Layer.provide(ProviderAdapterRegistryLive),
-  Layer.provideMerge(ProviderSessionDirectoryLayerLive),
-  Layer.provideMerge(RollbackSagaRepositoryLive),
+// ProviderAuthService backs the provider setup/auth RPCs and reads the provider
+// service and session directory, so it is layered on top of them rather than
+// provided to them.
+const ProviderLayerLive = ProviderAuthServiceLive.pipe(
+  Layer.provideMerge(
+    ProviderServiceLive.pipe(
+      Layer.provide(ProviderAdapterRegistryLive),
+      Layer.provideMerge(ProviderSessionDirectoryLayerLive),
+      Layer.provideMerge(RollbackSagaRepositoryLive),
+    ),
+  ),
 );
 
 const PersistenceLayerLive = PrimeAgentRecoveryLedger.layer.pipe(

@@ -8,6 +8,15 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  ProviderAuthCancelInput,
+  ProviderAuthCompleteInput,
+  ProviderAuthState,
+  ProviderInstallCancelInput,
+  ProviderInstallState,
+  ProviderSetupError,
+  ProviderSetupInput,
+} from "./providerSetup.ts";
 
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import {
@@ -302,6 +311,15 @@ export const WS_METHODS = {
 
   // Provider methods
   providerUploadFeedback: "provider.uploadFeedback",
+  providerAuthStart: "provider.auth.start",
+  providerAuthComplete: "provider.auth.complete",
+  providerAuthCancel: "provider.auth.cancel",
+  providerAuthLogout: "provider.auth.logout",
+  providerAuthSubscribe: "provider.auth.subscribe",
+  providerInstallStart: "provider.install.start",
+  providerInstallCancel: "provider.install.cancel",
+  providerInstallSubscribe: "provider.install.subscribe",
+  providerInstallRemove: "provider.install.remove",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -476,9 +494,11 @@ const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, 
      */
     instanceId: Schema.optional(ProviderInstanceId),
     cwd: Schema.optional(TrimmedNonEmptyString),
+    /** Explicit user request. Background status refreshes must not open agent sessions. */
+    refreshModels: Schema.optional(Schema.Boolean),
   }),
   success: ServerProviderUpdatedPayload,
-  error: EnvironmentAuthorizationError,
+  error: Schema.Union([EnvironmentAuthorizationError, ProviderSetupError]),
 });
 
 const WsProviderReloadSessionResourcesRpc = Rpc.make(WS_METHODS.providerReloadSessionResources, {
@@ -671,6 +691,64 @@ const WsServerCancelProviderLoginRpc = Rpc.make(WS_METHODS.serverCancelProviderL
   payload: ServerProviderLoginCancelInput,
   success: Schema.Void,
   error: EnvironmentAuthorizationError,
+});
+
+const ProviderSetupRpcError = Schema.Union([ProviderSetupError, EnvironmentAuthorizationError]);
+
+const WsProviderAuthStartRpc = Rpc.make(WS_METHODS.providerAuthStart, {
+  payload: ProviderSetupInput,
+  success: ProviderAuthState,
+  error: ProviderSetupRpcError,
+});
+
+const WsProviderAuthCompleteRpc = Rpc.make(WS_METHODS.providerAuthComplete, {
+  payload: ProviderAuthCompleteInput,
+  success: ProviderAuthState,
+  error: ProviderSetupRpcError,
+});
+
+const WsProviderAuthCancelRpc = Rpc.make(WS_METHODS.providerAuthCancel, {
+  payload: ProviderAuthCancelInput,
+  success: ProviderAuthState,
+  error: ProviderSetupRpcError,
+});
+
+const WsProviderAuthLogoutRpc = Rpc.make(WS_METHODS.providerAuthLogout, {
+  payload: ProviderSetupInput,
+  success: ProviderAuthState,
+  error: ProviderSetupRpcError,
+});
+
+const WsProviderAuthSubscribeRpc = Rpc.make(WS_METHODS.providerAuthSubscribe, {
+  payload: ProviderSetupInput,
+  success: ProviderAuthState,
+  error: ProviderSetupRpcError,
+  stream: true,
+});
+
+const WsProviderInstallStartRpc = Rpc.make(WS_METHODS.providerInstallStart, {
+  payload: ProviderSetupInput,
+  success: ProviderInstallState,
+  error: ProviderSetupRpcError,
+});
+
+const WsProviderInstallCancelRpc = Rpc.make(WS_METHODS.providerInstallCancel, {
+  payload: ProviderInstallCancelInput,
+  success: ProviderInstallState,
+  error: ProviderSetupRpcError,
+});
+
+const WsProviderInstallSubscribeRpc = Rpc.make(WS_METHODS.providerInstallSubscribe, {
+  payload: ProviderSetupInput,
+  success: ProviderInstallState,
+  error: ProviderSetupRpcError,
+  stream: true,
+});
+
+const WsProviderInstallRemoveRpc = Rpc.make(WS_METHODS.providerInstallRemove, {
+  payload: ProviderSetupInput,
+  success: ProviderInstallState,
+  error: ProviderSetupRpcError,
 });
 
 const WsServerUpdateServerRpc = Rpc.make(WS_METHODS.serverUpdateServer, {
@@ -1381,6 +1459,15 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerStartProviderLoginRpc,
   WsServerSubmitProviderLoginCodeRpc,
   WsServerCancelProviderLoginRpc,
+  WsProviderAuthStartRpc,
+  WsProviderAuthCompleteRpc,
+  WsProviderAuthCancelRpc,
+  WsProviderAuthLogoutRpc,
+  WsProviderAuthSubscribeRpc,
+  WsProviderInstallStartRpc,
+  WsProviderInstallCancelRpc,
+  WsProviderInstallSubscribeRpc,
+  WsProviderInstallRemoveRpc,
   WsServerUpdateServerRpc,
   WsServerUpdateServerWithProgressRpc,
   WsServerCommitDesktopUpdateRpc,
