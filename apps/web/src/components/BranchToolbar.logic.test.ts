@@ -431,6 +431,7 @@ describe("shouldShowComposerContextStrip", () => {
         isGitRepo: false,
         showEnvironmentIndicator: true,
         hostsRestingComposerControls: false,
+        hasCapacityReading: false,
       }),
     ).toBe(true);
   });
@@ -442,6 +443,7 @@ describe("shouldShowComposerContextStrip", () => {
         isGitRepo: false,
         showEnvironmentIndicator: false,
         hostsRestingComposerControls: false,
+        hasCapacityReading: false,
       }),
     ).toBe(false);
   });
@@ -453,6 +455,7 @@ describe("shouldShowComposerContextStrip", () => {
         isGitRepo: false,
         showEnvironmentIndicator: false,
         hostsRestingComposerControls: true,
+        hasCapacityReading: false,
       }),
     ).toBe(true);
   });
@@ -464,8 +467,35 @@ describe("shouldShowComposerContextStrip", () => {
         isGitRepo: true,
         showEnvironmentIndicator: false,
         hostsRestingComposerControls: false,
+        hasCapacityReading: false,
       }),
     ).toBe(true);
+  });
+  // The capacity readout belongs to the account, not the workspace, so a
+  // project with no repository and one environment can still have something
+  // to show. It used to be hidden along with the empty strip around it.
+  it("keeps the strip for a capacity reading in a non-Git thread", () => {
+    expect(
+      shouldShowComposerContextStrip({
+        hasActiveProject: true,
+        isGitRepo: false,
+        showEnvironmentIndicator: false,
+        hostsRestingComposerControls: false,
+        hasCapacityReading: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("still hides the strip without a project to describe", () => {
+    expect(
+      shouldShowComposerContextStrip({
+        hasActiveProject: false,
+        isGitRepo: true,
+        showEnvironmentIndicator: true,
+        hostsRestingComposerControls: true,
+        hasCapacityReading: true,
+      }),
+    ).toBe(false);
   });
 });
 

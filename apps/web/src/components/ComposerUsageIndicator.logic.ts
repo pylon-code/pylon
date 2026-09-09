@@ -11,6 +11,7 @@
  */
 import type { ServerProviderUsageWindow } from "@t3tools/contracts";
 
+import type { ComposerUsage } from "../providerUsageAccounts";
 import type { ProviderUsageAccount } from "./providerUsage/ProviderUsageAccounts";
 import { isUsageReadingStale } from "./providerUsage/ProviderUsageMatrix.logic";
 import { formatTimeSinceChecked, formatTimeUntilReset } from "./providerUsage/usageTime";
@@ -72,6 +73,21 @@ const entryFrom = (
   detail: window.label,
   ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}),
 });
+
+/**
+ * Whether the readout will render anything, for the strip that hosts it.
+ *
+ * Deliberately blind to the clock: this decides whether a container is shown,
+ * and a strip that appeared and vanished on the minute would be worse than one
+ * that never appeared. It answers the same question as
+ * {@link getComposerUsageView} returning non-`null`, which a test pins.
+ */
+export function hasComposerUsageContent(usage: ComposerUsage): boolean {
+  // Prime signed in elsewhere still reports that, and saying so is content.
+  if (usage.backend?.verification === "mismatch") return true;
+  const windows = usage.primary?.usageLimits.windows ?? [];
+  return windows.some(isSessionWindow) || windows.some(isWeeklyWindow);
+}
 
 /**
  * Build the strip's view for the leading account, or `null` when it reports
