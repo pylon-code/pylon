@@ -28,6 +28,30 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 }
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  notifyAgentAwareness: (candidates) =>
+    ipcRenderer.invoke(IpcChannels.NOTIFY_AGENT_AWARENESS_CHANNEL, candidates),
+  sendTestNotification: () =>
+    ipcRenderer.invoke(IpcChannels.SEND_TEST_NOTIFICATION_CHANNEL, undefined),
+  onNotificationNavigate: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, target: unknown) => {
+      if (
+        typeof target !== "object" ||
+        target === null ||
+        !("environmentId" in target) ||
+        typeof target.environmentId !== "string" ||
+        !("threadId" in target) ||
+        typeof target.threadId !== "string"
+      )
+        return;
+      listener({ environmentId: target.environmentId, threadId: target.threadId });
+    };
+
+    ipcRenderer.on(IpcChannels.NOTIFICATION_NAVIGATE_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.NOTIFICATION_NAVIGATE_CHANNEL, wrappedListener);
+    };
+  },
+
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
     if (typeof result !== "object" || result === null) {
