@@ -1863,6 +1863,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                         onPress={() => setQuickQuestionOpenScopeKey(quickQuestionScopeKey)}
                       />
                     ) : null}
+                    <View className="min-w-0 shrink">
                     <ComposerInlineControl
                       accessibilityLabel="Model and reasoning settings"
                       emphasized
@@ -1870,7 +1871,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                         <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
                       }
                       label={currentModelOption?.label ?? currentModelSelection.model}
-                      maxWidth={152}
+                      maxWidth="100%"
                       disabled={props.sessionInputBlocked}
                       accessibilityHint={
                         props.sessionInputBlocked
@@ -1879,6 +1880,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       }
                       onPress={openSettings}
                     />
+                    </View>
                     {sessionHarnessRefinementActions.length > 0 ? (
                       <ControlPillMenu
                         title="Local harness"
