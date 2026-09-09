@@ -33,7 +33,6 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { formatTokens } from "@t3tools/shared/usageFormat";
@@ -143,6 +142,8 @@ interface AssistantSegmentState {
   activeMessageId: MessageId | null;
 }
 
+const CONTEXT_WINDOW_HISTORY_BY_THREAD_CACHE_CAPACITY = 2_000;
+const CONTEXT_WINDOW_HISTORY_BY_THREAD_TTL = Duration.minutes(120);
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
 const TURN_MESSAGE_IDS_BY_TURN_TTL = Duration.minutes(120);
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
@@ -287,36 +288,26 @@ function buildContextWindowActivityPayload(
   return event.payload.usage;
 }
 
-function compactedTokenCountsFromActivities(
-  activities: ReadonlyArray<OrchestrationThreadActivity> | undefined,
+/**
+ * The two most recent context-window totals seen for a thread. Pylon upserts a
+ * single `context-window.updated` activity per thread so a streaming turn does
+ * not append a row per token tick, which means the pre-compaction total is no
+ * longer in the projection by the time the compacted event lands. Retaining the
+ * previous value here keeps the "899K -> 19K" label without reintroducing a row
+ * per update.
+ */
+interface ContextWindowHistory {
+  readonly previousUsedTokens: number | undefined;
+  readonly latestUsedTokens: number;
+}
+
+function compactedTokenCounts(
+  history: ContextWindowHistory | undefined,
 ): { readonly beforeTokens: number; readonly afterTokens: number } | undefined {
-  const lastCompactionIndex = activities?.findLastIndex(
-    (activity) => activity.kind === "context-compaction",
-  );
-  const lastCompaction =
-    lastCompactionIndex !== undefined && lastCompactionIndex >= 0
-      ? activities?.[lastCompactionIndex]
-      : undefined;
-  const activitiesSinceLastCompaction = activities?.slice((lastCompactionIndex ?? -1) + 1) ?? [];
-  const usedTokens = activitiesSinceLastCompaction.flatMap((activity) => {
-    if (activity.kind !== "context-window.updated") return [];
-    if (lastCompaction !== undefined) {
-      const isAfterLastCompaction =
-        activity.sequence !== undefined && lastCompaction.sequence !== undefined
-          ? activity.sequence > lastCompaction.sequence
-          : activity.createdAt > lastCompaction.createdAt;
-      if (!isAfterLastCompaction) return [];
-    }
-    const payload = Predicate.isObject(activity.payload) ? activity.payload : undefined;
-    return Predicate.isNumber(payload?.usedTokens) && payload.usedTokens >= 0
-      ? [payload.usedTokens]
-      : [];
-  });
-  const beforeTokens = usedTokens.at(-2);
-  const afterTokens = usedTokens.at(-1);
-  if (beforeTokens === undefined || afterTokens === undefined || afterTokens >= beforeTokens) {
-    return undefined;
-  }
+  if (history?.previousUsedTokens === undefined) return undefined;
+  const beforeTokens = history.previousUsedTokens;
+  const afterTokens = history.latestUsedTokens;
+  if (afterTokens >= beforeTokens) return undefined;
   return { beforeTokens, afterTokens };
 }
 
@@ -1573,6 +1564,15 @@ const make = Effect.gen(function* () {
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
     );
 
+  const contextWindowHistoryByThreadId = yield* Cache.make<ThreadId, ContextWindowHistory>({
+    capacity: CONTEXT_WINDOW_HISTORY_BY_THREAD_CACHE_CAPACITY,
+    timeToLive: CONTEXT_WINDOW_HISTORY_BY_THREAD_TTL,
+    lookup: () =>
+      Effect.die(
+        new Error("context window history should be read through getOption before initialization"),
+      ),
+  });
+
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
     timeToLive: TURN_MESSAGE_IDS_BY_TURN_TTL,
@@ -1631,14 +1631,6 @@ const make = Effect.gen(function* () {
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
-  const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (
-    threadId: ThreadId,
-    activityKinds: ReadonlyArray<string>,
-  ) {
-    return yield* projectionSnapshotQuery
-      .getThreadDetailById(threadId, { activityKinds })
-      .pipe(Effect.map(Option.getOrUndefined));
-  });
 
   const getThreadMessageById = Effect.fn("getThreadMessageById")(function* (
     threadId: ThreadId,
@@ -3129,6 +3121,15 @@ const make = Effect.gen(function* () {
       }
 
       yield* requireRuntimeEventCurrent;
+      if (event.type === "thread.token-usage.updated" && event.payload.usage.usedTokens >= 0) {
+        const previous = Option.getOrUndefined(
+          yield* Cache.getOption(contextWindowHistoryByThreadId, thread.id),
+        );
+        yield* Cache.set(contextWindowHistoryByThreadId, thread.id, {
+          previousUsedTokens: previous?.latestUsedTokens,
+          latestUsedTokens: event.payload.usage.usedTokens,
+        });
+      }
       let activityEvent = event;
       if (
         isCompactedThreadState &&
@@ -3164,11 +3165,9 @@ const make = Effect.gen(function* () {
         (activityEvent.payload.beforeTokens === undefined ||
           activityEvent.payload.afterTokens === undefined)
       ) {
-        const threadDetail = yield* resolveThreadDetail(thread.id, [
-          "context-window.updated",
-          "context-compaction",
-        ]);
-        const tokenCounts = compactedTokenCountsFromActivities(threadDetail?.activities);
+        const tokenCounts = compactedTokenCounts(
+          Option.getOrUndefined(yield* Cache.getOption(contextWindowHistoryByThreadId, thread.id)),
+        );
         if (tokenCounts) {
           activityEvent = {
             ...activityEvent,

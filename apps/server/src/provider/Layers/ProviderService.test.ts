@@ -498,8 +498,17 @@ function makeFakeCodexAdapter(
     },
   };
 
+  // Real adapters stamp every event with the incarnation that produced it, and
+  // ProviderService drops unstamped events so a replaced adapter cannot write
+  // into the new session. Stamp here too, or these fakes would exercise a path
+  // production never takes.
   const emit = (event: LegacyProviderRuntimeEvent): void => {
-    Effect.runSync(PubSub.publish(runtimeEventPubSub, event as unknown as ProviderRuntimeEvent));
+    const incarnationId = sessions.get(event.threadId as ThreadId)?.sessionIncarnationId;
+    const stamped =
+      incarnationId === undefined || event.sessionIncarnationId !== undefined
+        ? event
+        : { ...event, sessionIncarnationId: incarnationId };
+    Effect.runSync(PubSub.publish(runtimeEventPubSub, stamped as unknown as ProviderRuntimeEvent));
   };
 
   const removeSession = (threadId: ThreadId): void => {

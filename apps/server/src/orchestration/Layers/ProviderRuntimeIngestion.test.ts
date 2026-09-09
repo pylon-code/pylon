@@ -5785,12 +5785,14 @@ describe("ProviderRuntimeIngestion", () => {
         payload: { usage: { usedTokens } },
       });
     }
-    await waitForThread(
-      harness.readModel,
-      (entry) =>
-        entry.activities.filter(
-          (activity: ProviderRuntimeTestActivity) => activity.kind === "context-window.updated",
-        ).length === 2,
+    // Pylon upserts one context-window row per thread, so both updates land on
+    // the same activity; the compaction label reads its retained previous total.
+    await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "context-window.updated" &&
+          (activity.payload as { readonly usedTokens?: number } | undefined)?.usedTokens === 0,
+      ),
     );
 
     harness.emit({

@@ -3719,6 +3719,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       compactDisabled ||
       providerTurnUnavailable ||
       noProviderAvailable ||
+      // The composer can hold a draft for a provider other than the running
+      // session's, so re-check the selected entry rather than trusting the
+      // thread-level gate alone.
+      !compactCommandAvailable ||
       composerSendState.hasSendableContent ||
       activePendingApproval !== null ||
       pendingUserInputs.length > 0 ||
@@ -3755,10 +3759,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [
     activePendingApproval,
     activeThreadId,
+    compactCommandAvailable,
     compactDisabled,
     composerDraftTarget,
+    composerSendState.hasSendableContent,
     isConnecting,
     isSendBusy,
+    noProviderAvailable,
     providerTurnUnavailable,
     pendingUserInputs.length,
     phase,

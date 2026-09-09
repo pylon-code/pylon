@@ -1164,17 +1164,16 @@ describe("ProviderCommandReactor", () => {
       yield* dispatchTurn("blocked-compact", "/compact", "2026-01-01T00:00:01.000Z");
       yield* Deferred.await(readyDispatchStarted);
 
-      yield* dispatchTurn("during-compact-recovery", "too soon", "2026-01-01T00:00:02.000Z");
-      yield* Effect.promise(() =>
-        waitFor(async () => {
-          const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
-          return (
-            thread?.activities.some(
-              (activity) => activity.kind === "provider.turn.start.failed",
-            ) === true
-          );
-        }),
-      );
+      // Upstream blocks this in the reactor and records a failure activity.
+      // Pylon's decider owns turn exclusivity: the compaction still holds the
+      // thread's pending admission, so the command is refused outright and
+      // never reaches the reactor's own `compactingThreadIds` guard.
+      const blockedTurn = yield* dispatchTurn(
+        "during-compact-recovery",
+        "too soon",
+        "2026-01-01T00:00:02.000Z",
+      ).pipe(Effect.result);
+      expect(blockedTurn._tag).toBe("Failure");
       expect(harness.sendTurn).toHaveBeenCalledTimes(1);
       expect(yield* Effect.promise(() => harness.readPendingTurnStarts())).toEqual([
         { threadId: "thread-1" },
@@ -1291,17 +1290,26 @@ describe("ProviderCommandReactor", () => {
           );
         }),
       );
+      // Pylon's decider persists the `stopped` transition in the same
+      // transaction as the stop intent, so the session reads stopped here where
+      // upstream still reads starting. What matters is the same either way: the
+      // in-flight compaction does not overwrite it, and the failed stop is
+      // recorded and recovered below.
       const stoppingThread = (yield* Effect.promise(() => harness.readModel())).threads.find(
         (entry) => entry.id === threadId,
       );
-      expect(stoppingThread?.session?.status).toBe("starting");
+      expect(stoppingThread?.session?.status).toBe("stopped");
       yield* Deferred.succeed(releaseFailedStop, undefined);
       yield* Effect.promise(() => harness.drain());
 
       const recoveredThread = (yield* Effect.promise(() => harness.readModel())).threads.find(
         (entry) => entry.id === threadId,
       );
-      expect(recoveredThread?.session?.status).toBe("ready");
+      // Upstream restores the session to ready here because its stop had not
+      // committed yet. Pylon's stop is authoritative once the decider records
+      // it, so a failed provider stop leaves the thread stopped and the next
+      // turn starts a fresh session. The stop failure is still recorded.
+      expect(recoveredThread?.session?.status).toBe("stopped");
       expect(
         recoveredThread?.activities.find(
           (activity) => activity.kind === "provider.session.stop.failed",
@@ -1332,7 +1340,10 @@ describe("ProviderCommandReactor", () => {
       const restartedThread = (yield* Effect.promise(() => harness.readModel())).threads.find(
         (entry) => entry.id === threadId,
       );
-      expect(restartedThread?.session?.status).toBe("starting");
+      // Same eager reverse transition as above. What phase two actually checks
+      // is below: a compaction that fails after the session moved to running
+      // must not overwrite it back to ready.
+      expect(restartedThread?.session?.status).toBe("stopped");
       const restartedSession = restartedThread?.session;
       if (!restartedSession) return yield* Effect.die("Compaction session missing");
       yield* harness.engine.dispatch({

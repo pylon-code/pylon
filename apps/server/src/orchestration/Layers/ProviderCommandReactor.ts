@@ -684,6 +684,16 @@ const make = Effect.gen(function* () {
         ...thread.session,
         status: "ready",
         activeTurnId: null,
+        // Pylon's decider reserves a turn admission for every `thread.turn.start`,
+        // including the `/compact` one, but compaction never becomes a provider
+        // turn that could accept it. Retire it here or the spread above carries
+        // it forward and the decider rejects every later turn on this thread.
+        pendingTurnRequestId: undefined,
+        pendingTurnMessageId: undefined,
+        pendingTurnRequestedAt: undefined,
+        pendingTurnDeadlineAt: undefined,
+        pendingTurnSessionId: undefined,
+        activeTurnRequestId: undefined,
         lastError: null,
         updatedAt: completedAt,
       },
@@ -692,30 +702,36 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Marks a stop in flight so `restoreCompaction` cannot flip the session back
-   * to ready underneath it, and restores compaction only if the stop failed
-   * after the compaction had already settled.
+   * Marks a stop in flight so a compaction finishing underneath it cannot flip
+   * the session back to ready. Pylon's decider records `stopped` in the same
+   * transaction as the stop intent, so there is nothing to restore afterwards
+   * even when the provider stop itself fails.
    */
   const withSessionStopTracking = <A, E, R>(threadId: ThreadId, stop: Effect.Effect<A, E, R>) =>
     Effect.suspend(() => {
-      const wasCompacting = compactingThreadIds.has(threadId);
       stoppingThreadIds.add(threadId);
       return stop.pipe(
-        Effect.onError(() =>
-          Effect.sync(() => {
-            stoppingThreadIds.delete(threadId);
-            return wasCompacting && !compactingThreadIds.has(threadId);
-          }).pipe(
-            Effect.flatMap((compactionSettled) =>
-              compactionSettled ? restoreCompaction(threadId) : Effect.void,
-            ),
-            Effect.catchCause((cause) =>
-              Effect.logWarning("failed to restore compaction after a session stop failure", {
-                threadId,
-                cause: Cause.pretty(cause),
-              }),
-            ),
-          ),
+        Effect.onError((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.void
+            : DateTime.now.pipe(
+                Effect.flatMap((failedAt) =>
+                  appendProviderFailureActivity({
+                    threadId,
+                    kind: "provider.session.stop.failed",
+                    summary: "Provider session stop failed",
+                    detail: formatFailureDetail(cause),
+                    turnId: null,
+                    createdAt: DateTime.formatIso(failedAt),
+                  }),
+                ),
+                Effect.catchCause((appendCause) =>
+                  Effect.logWarning("failed to record a provider session stop failure", {
+                    threadId,
+                    cause: Cause.pretty(appendCause),
+                  }),
+                ),
+              ),
         ),
         Effect.ensuring(Effect.sync(() => void stoppingThreadIds.delete(threadId))),
       );
@@ -1677,32 +1693,30 @@ const make = Effect.gen(function* () {
           "Context compaction requires an existing conversation.",
         );
       }
-      const latestThread = yield* resolveThreadShell(event.payload.threadId);
-      if (
-        compactingThreadIds.has(event.payload.threadId) ||
-        latestThread?.session?.status === "starting" ||
-        latestThread?.session?.status === "running"
-      ) {
+      const latestSession = (yield* resolveThreadShell(event.payload.threadId))?.session;
+      // Pylon admits the turn before the reactor observes its intent event, so
+      // this thread already reads as "starting" for the compaction's own
+      // request. Upstream's status check would reject every compaction here;
+      // reject only when a different turn owns the session.
+      const otherTurnOwnsSession =
+        latestSession?.status === "running" ||
+        latestSession?.activeTurnId != null ||
+        (latestSession?.pendingTurnRequestId != null &&
+          latestSession.pendingTurnRequestId !== requestId);
+      if (compactingThreadIds.has(event.payload.threadId) || otherTurnOwnsSession) {
         yield* appendTurnStartFailure(
           "Context compaction failed",
           "Context compaction is unavailable while a provider turn is running.",
         );
         return;
       }
-      let compactionSessionEnsured = false;
       const handleCompactionFailure = (cause: Cause.Cause<unknown>) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.void;
         const detail = formatFailureDetail(cause);
-        // Before the session exists the pending turn is still admissible, so
-        // failing the admission is what clears it and records the error.
-        if (!compactionSessionEnsured) {
-          return failAdmission(detail).pipe(
-            Effect.flatMap(() => appendTurnStartFailure("Context compaction failed", detail)),
-            Effect.asVoid,
-          );
-        }
         return appendTurnStartFailure("Context compaction failed", detail).pipe(
           Effect.ensuring(
+            // A no-op unless the session actually reached a restorable state,
+            // so this covers both a failed ensure and a failed compaction.
             restoreCompaction(event.payload.threadId).pipe(
               Effect.catchCause((restoreCause) =>
                 Effect.logWarning("failed to restore provider session after compaction failure", {
@@ -1717,14 +1731,18 @@ const make = Effect.gen(function* () {
       };
       compactingThreadIds.add(event.payload.threadId);
       yield* Effect.gen(function* () {
-        yield* ensureSessionForThread(
-          event.payload.threadId,
-          event.payload.createdAt,
-          event.payload.modelSelection !== undefined
-            ? { modelSelection: event.payload.modelSelection, pendingTurnStart: true }
-            : { pendingTurnStart: true },
-        );
-        compactionSessionEnsured = true;
+        // Deliberately no pending turn admission: `restoreCompaction` spreads
+        // the existing session forward, so an admission recorded here would
+        // survive it and the decider would reject every later turn on the
+        // thread. `compactingThreadIds` is what serialises compaction instead.
+        yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt, {
+          ...(event.payload.modelSelection !== undefined
+            ? { modelSelection: event.payload.modelSelection }
+            : {}),
+          runtimeMode: event.payload.runtimeMode,
+          interactionMode: event.payload.interactionMode,
+          pendingTurnStart: true,
+        });
         if (event.payload.modelSelection !== undefined) {
           threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
         }
