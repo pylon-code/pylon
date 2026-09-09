@@ -377,6 +377,19 @@ export const ServerProvider = Schema.Struct({
   supportsBackgroundTextGeneration: Schema.optional(Schema.Boolean),
   supportsConversationRollback: Schema.optional(Schema.Boolean),
   /**
+   * Whether this instance can currently generate text. Distinct from the
+   * driver-level `supportsBackgroundTextGeneration` presentation flag: this one
+   * is resolved per snapshot, because Antigravity depends on a profile that may
+   * or may not be present.
+   */
+  supportsTextGeneration: Schema.optional(Schema.Boolean),
+  setup: Schema.optional(
+    Schema.Struct({
+      canAuthenticate: Schema.Boolean,
+      canInstall: Schema.Boolean,
+    }),
+  ),
+  /**
    * Whether this exact driver/runtime may have more than one enabled instance.
    * Missing is fail-closed: older or unknown drivers must not be duplicated until
    * the host server publishes an explicit current capability.
