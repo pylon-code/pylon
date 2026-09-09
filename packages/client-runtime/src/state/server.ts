@@ -941,6 +941,52 @@ export function createServerEnvironmentAtoms<R, E>(
     updateStateAtom,
     settingsValueAtom,
     providersValueAtom,
+    providerAuthState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:provider:auth-state",
+      tag: WS_METHODS.providerAuthSubscribe,
+      idleTtlMs: 0,
+    }),
+    startProviderAuth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:auth-start",
+      tag: WS_METHODS.providerAuthStart,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.instanceId]),
+      },
+    }),
+    completeProviderAuth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:auth-complete",
+      tag: WS_METHODS.providerAuthComplete,
+    }),
+    cancelProviderAuth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:auth-cancel",
+      tag: WS_METHODS.providerAuthCancel,
+    }),
+    logoutProviderAuth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:auth-logout",
+      tag: WS_METHODS.providerAuthLogout,
+    }),
+    providerInstallState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:provider:install-state",
+      tag: WS_METHODS.providerInstallSubscribe,
+      idleTtlMs: 0,
+    }),
+    startProviderInstall: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:install-start",
+      tag: WS_METHODS.providerInstallStart,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
+    cancelProviderInstall: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:install-cancel",
+      tag: WS_METHODS.providerInstallCancel,
+    }),
+    removeProviderInstallation: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:install-remove",
+      tag: WS_METHODS.providerInstallRemove,
+    }),
     traceDiagnostics: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:trace-diagnostics",
       tag: WS_METHODS.serverGetTraceDiagnostics,
@@ -999,7 +1045,12 @@ export function createServerEnvironmentAtoms<R, E>(
       concurrency: {
         mode: "singleFlight",
         key: ({ environmentId, input }) =>
-          JSON.stringify([environmentId, input.instanceId ?? null, input.cwd ?? null]),
+          JSON.stringify([
+            environmentId,
+            input.instanceId ?? null,
+            input.cwd ?? null,
+            input.refreshModels ?? false,
+          ]),
       },
     }),
     updateProvider: createEnvironmentRpcCommand(runtime, {

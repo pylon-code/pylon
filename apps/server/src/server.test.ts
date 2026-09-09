@@ -1,5 +1,7 @@
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
+import { ProviderAuthService } from "./provider/Services/ProviderAuthService.ts";
+import { AntigravityInstallation } from "./provider/AntigravityInstallation.ts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -34,6 +36,8 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderAuthState,
+  type ProviderInstallState,
   UsageLimitSourceId,
   ServerProviderMutationBusyError,
   ResolvedKeybindingRule,
@@ -440,6 +444,27 @@ const makeBrowserOtlpPayload = (spanName: string) =>
     return JSON.parse(request.body) as OtlpTracer.TraceData;
   });
 
+const IDLE_PROVIDER_AUTH_STATE: ProviderAuthState = {
+  instanceId: ProviderInstanceId.make("antigravity"),
+  phase: "idle",
+  flowId: null,
+  authorizationUrl: null,
+  expiresAt: null,
+  message: null,
+};
+
+const IDLE_PROVIDER_INSTALL_STATE: ProviderInstallState = {
+  driver: ProviderDriverKind.make("antigravity"),
+  operationId: null,
+  phase: "idle",
+  downloadedBytes: 0,
+  totalBytes: null,
+  version: null,
+  installedVersion: null,
+  canRemove: false,
+  message: null,
+};
+
 const buildAppUnderTest = (options?: {
   onPairingChangesSubscribed?: Effect.Effect<void>;
   config?: Partial<ServerConfig.ServerConfig["Service"]>;
@@ -447,6 +472,8 @@ const buildAppUnderTest = (options?: {
     keybindings?: Partial<Keybindings.Keybindings["Service"]>;
     usageLimitSources?: Partial<UsageLimitSources.UsageLimitSources["Service"]>;
     providerInstances?: Partial<ProviderInstanceRegistry["Service"]>;
+    providerAuth?: Partial<ProviderAuthService["Service"]>;
+    antigravityInstallation?: Partial<AntigravityInstallation["Service"]>;
     environmentTheme?: Partial<EnvironmentTheme.EnvironmentThemeService["Service"]>;
     providerRegistry?: Partial<ProviderRegistry.ProviderRegistry["Service"]>;
     providerService?: Partial<ProviderService.ProviderService["Service"]>;
@@ -988,6 +1015,30 @@ const buildAppUnderTest = (options?: {
           snapshot: Effect.succeed({ sequence: 0, events: [] }),
           stream: Stream.empty,
           ...options?.layers?.serverLifecycleEvents,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(ProviderAuthService)({
+          start: () => Effect.succeed(IDLE_PROVIDER_AUTH_STATE),
+          complete: () => Effect.succeed(IDLE_PROVIDER_AUTH_STATE),
+          cancel: () => Effect.succeed(IDLE_PROVIDER_AUTH_STATE),
+          logout: () => Effect.succeed(IDLE_PROVIDER_AUTH_STATE),
+          subscribe: () => Stream.make(IDLE_PROVIDER_AUTH_STATE),
+          tryHandlePromptCommand: () => Effect.succeed(false),
+          ...options?.layers?.providerAuth,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(AntigravityInstallation)({
+          managedDirectory: "/tmp/antigravity",
+          resolve: () => Effect.die("resolve is not stubbed"),
+          acquire: () => Effect.die("acquire is not stubbed"),
+          start: Effect.succeed(IDLE_PROVIDER_INSTALL_STATE),
+          cancel: () => Effect.succeed(IDLE_PROVIDER_INSTALL_STATE),
+          state: Effect.succeed(IDLE_PROVIDER_INSTALL_STATE),
+          changes: Stream.make(IDLE_PROVIDER_INSTALL_STATE),
+          remove: () => Effect.void,
+          ...options?.layers?.antigravityInstallation,
         }),
       ),
       Layer.provide(
