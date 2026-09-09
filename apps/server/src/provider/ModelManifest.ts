@@ -52,7 +52,7 @@ export const MODEL_MANIFEST_MAX_BYTES = 32 * 1024;
 const MODEL_MANIFEST_MAX_PROVIDERS = 8;
 const MODEL_MANIFEST_MAX_MODELS_PER_PROVIDER = 256;
 const MODEL_MANIFEST_MAX_SLUG_LENGTH = 256;
-const SUPPORTED_MANIFEST_DRIVER_KINDS = new Set(["codex", "claudeAgent"]);
+const SUPPORTED_MANIFEST_DRIVER_KINDS = new Set(["codex", "claudeAgent", "antigravity"]);
 
 class ModelManifestValidationError extends Schema.TaggedErrorClass<ModelManifestValidationError>()(
   "ModelManifestValidationError",
@@ -233,6 +233,14 @@ const encodeManifestCache = Schema.encodeEffect(
 );
 
 /** True when the manifest classifies `slug` as legacy for `driverKind`. */
+/** The manifest's chat default for `driverKind`, when it names one. */
+export function manifestDefaultModel(
+  manifest: ModelManifestData,
+  driverKind: ProviderDriverKind,
+): string | undefined {
+  return manifest.providers?.[driverKind]?.defaults?.chat;
+}
+
 export function isLegacyModel(
   manifest: ModelManifestData,
   driverKind: ProviderDriverKind,

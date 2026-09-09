@@ -32,6 +32,7 @@ import type {
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
+import type { ProviderAuthController } from "./Services/ProviderAuthService.ts";
 
 import type * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import type { ProviderAdapterError, ProviderDriverError } from "./Errors.ts";
@@ -85,6 +86,8 @@ export interface ProviderInstance {
   readonly snapshotForCwd?: (cwd: string) => Effect.Effect<ServerProvider, ProviderDriverError>;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
+  readonly refreshModels?: () => Effect.Effect<void, ProviderDriverError>;
+  readonly auth?: ProviderAuthController;
   /**
    * Re-read the backends this instance signs in to on its own, when it has
    * any (see `ServerProvider.backends`). The registry runs it after a turn

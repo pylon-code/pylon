@@ -1,3 +1,4 @@
+import { AntigravityInstallation } from "./AntigravityInstallation.ts";
 import * as CodexResetCredit from "./Layers/codexResetCredit.ts";
 /**
  * End-to-end proof of the server half of account draining.
@@ -126,6 +127,7 @@ const TWO_ACCOUNT_OVERRIDES = {
 const registryLayer = ProviderRegistryLive.pipe(
   Layer.provideMerge(ProviderInstanceRegistryHydrationLive),
   Layer.provideMerge(ServerSettingsModule.layerTest(TWO_ACCOUNT_OVERRIDES)),
+  Layer.provideMerge(AntigravityInstallation.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-account-drain-e2e-" })),
   Layer.provideMerge(TestHttpClientLive),
   Layer.provideMerge(
