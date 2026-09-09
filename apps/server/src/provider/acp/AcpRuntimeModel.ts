@@ -795,16 +795,6 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
   let modeId: string | undefined;
 
   switch (upd.sessionUpdate) {
-    case "agent_thought_chunk": {
-      if (upd.content.type === "text" && upd.content.text.length > 0) {
-        events.push({
-          _tag: "ThoughtDelta",
-          text: upd.content.text,
-          rawPayload: params,
-        });
-      }
-      break;
-    }
     case "config_option_update": {
       events.push({
         _tag: "ConfigOptionsUpdated",

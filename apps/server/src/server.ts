@@ -37,7 +37,6 @@ import * as PrimeAgentRecoveryLedger from "./provider/prime/PrimeAgentRecoveryLe
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import { AntigravityInstallation } from "./provider/AntigravityInstallation.ts";
-import { ProviderAuthServiceLive } from "./provider/Layers/ProviderAuthService.ts";
 import * as ProviderEventLoggers from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
@@ -475,7 +474,6 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
       // AntigravityDriver resolves its managed runtime through this service, and
       // ProviderAuthService backs the provider setup/auth RPCs.
       AntigravityInstallation.layer,
-      ProviderAuthServiceLive,
     ),
   ),
   // `OpenCodeDriver.create()` yields `OpenCodeRuntime`; previously the old

@@ -646,7 +646,8 @@ export type OpenCodeSettings = typeof OpenCodeSettings.Type;
  * in the browser. The API key and Agent Platform methods take credentials from
  * the instance config and never open a browser.
  */
-export const ANTIGRAVITY_AUTH_METHODS = [
+/** Re-export when the web settings form lands with the Antigravity client work. */
+const ANTIGRAVITY_AUTH_METHODS = [
   { value: "oauth-personal", label: "Google account" },
   { value: "oauth-business", label: "Gemini Enterprise" },
   { value: "gemini-api-key", label: "Gemini API key" },
