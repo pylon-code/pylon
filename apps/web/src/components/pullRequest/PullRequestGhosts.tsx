@@ -3,11 +3,9 @@
  * and a detail panel opening — use bars in the geometry of the content they stand for, pulsing
  * on one composited layer. Diff loading uses the shared diff-panel skeleton instead.
  *
- * Deliberately not the app's shimmer skeleton. The sweep is a `transform` animation per bar —
- * compositor-safe, but a layer for every bar on screen — and its white highlight over the
- * near-white `muted` base all but disappears in light mode. Here one `animate-ghost-pulse` on the
- * container is a single opacity animation however many bars sit under it, and the bars take
- * their tone from `muted-foreground` at low alpha, which reads on both themes.
+ * The bars share the app-wide `Skeleton` tone (`muted-foreground` at low alpha, which reads on
+ * both themes) and the single `animate-skeleton` pulse, applied once on the container so any
+ * number of bars costs one opacity animation.
  */
 import type { PullRequestListEntry } from "@t3tools/contracts";
 import { ArrowLeftIcon } from "lucide-react";
@@ -44,7 +42,7 @@ export function PullRequestListGhost({
     <div
       role="status"
       aria-label={caption ?? "Loading pull requests"}
-      className="animate-ghost-pulse space-y-0.5"
+      className="motion-safe:animate-skeleton space-y-0.5"
     >
       {caption ? (
         <p className="px-3 pb-1 text-xs font-medium text-muted-foreground/70">{caption}</p>
@@ -91,7 +89,8 @@ export function PullRequestDetailGhost({ seed }: { seed?: PullRequestListEntry |
       aria-label="Loading pull request"
       className={cn(
         "flex h-full min-h-0 flex-col overflow-hidden bg-background",
-        !seed && "animate-ghost-pulse",
+        // A seeded panel already shows real content, so only the empty one breathes.
+        !seed && "motion-safe:animate-skeleton",
       )}
     >
       <div className="shrink-0 border-b border-border/60">
@@ -273,7 +272,11 @@ export function PullRequestDetailGhost({ seed }: { seed?: PullRequestListEntry |
 /** People-shaped: an avatar and a name, in the reviewer picker's own row height. */
 export function PullRequestPeopleGhost({ rows = 4 }: { rows?: number }) {
   return (
-    <div role="status" aria-label="Loading people" className="animate-ghost-pulse space-y-1 p-1">
+    <div
+      role="status"
+      aria-label="Loading people"
+      className="motion-safe:animate-skeleton space-y-1 p-1"
+    >
       {Array.from({ length: rows }, (_, index) => (
         <div key={index} className="flex h-7 items-center gap-2 rounded-md px-2">
           <GhostBar className="size-4 rounded-full" />
@@ -287,7 +290,11 @@ export function PullRequestPeopleGhost({ rows = 4 }: { rows?: number }) {
 /** The timeline's own shape: dots on the rail, a line and a date to each. */
 export function PullRequestTimelineGhost({ rows = 6 }: { rows?: number }) {
   return (
-    <div role="status" aria-label="Loading timeline" className="animate-ghost-pulse px-4 py-5">
+    <div
+      role="status"
+      aria-label="Loading timeline"
+      className="motion-safe:animate-skeleton px-4 py-5"
+    >
       <div className="relative ml-2 border-l border-border/70 pl-5">
         {Array.from({ length: rows }, (_, index) => (
           <div key={index} className="relative pb-5">
@@ -307,7 +314,7 @@ export function PullRequestConversationGhost({ rows = 3 }: { rows?: number }) {
     <div
       role="status"
       aria-label="Loading pull request conversation"
-      className="animate-ghost-pulse space-y-4 py-2"
+      className="motion-safe:animate-skeleton space-y-4 py-2"
     >
       {Array.from({ length: rows }, (_, index) => (
         <div key={index} className="flex items-start gap-2">
