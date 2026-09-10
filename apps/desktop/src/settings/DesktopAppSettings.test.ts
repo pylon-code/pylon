@@ -28,6 +28,8 @@ const DesktopSettingsPatch = Schema.Struct({
   serverExposureMode: Schema.optionalKey(Schema.Literals(["local-only", "network-accessible"])),
   tailscaleServeEnabled: Schema.optionalKey(Schema.Boolean),
   tailscaleServePort: Schema.optionalKey(Schema.Number),
+  // Retired keys, kept here so tests can still write the legacy documents that
+  // real installs have on disk.
   updateChannel: Schema.optionalKey(Schema.Literals(["latest", "nightly"])),
   updateChannelConfiguredByUser: Schema.optionalKey(Schema.Boolean),
   wslBackendEnabled: Schema.optionalKey(Schema.Boolean),
@@ -101,25 +103,6 @@ describe("DesktopSettings", () => {
     ),
   );
 
-  it("defaults packaged nightly builds to the nightly update channel", () => {
-    assert.deepEqual(
-      DesktopAppSettings.resolveDefaultDesktopSettings("0.0.17-nightly.20260415.1"),
-      {
-        linuxPasswordStore: "auto",
-        mainWindowBounds: null,
-        mainWindowMaximized: false,
-        serverExposureMode: "local-only",
-        tailscaleServeEnabled: false,
-        tailscaleServePort: 443,
-        updateChannel: "nightly",
-        updateChannelConfiguredByUser: false,
-        wslBackendEnabled: false,
-        wslOnly: false,
-        wslDistro: null,
-      } satisfies DesktopAppSettings.DesktopSettings,
-    );
-  });
-
   it.effect("loads persisted settings and applies semantic updates", () =>
     withSettings(
       Effect.gen(function* () {
@@ -129,8 +112,6 @@ describe("DesktopSettings", () => {
           serverExposureMode: "network-accessible",
           tailscaleServeEnabled: true,
           tailscaleServePort: 8443,
-          updateChannel: "latest",
-          updateChannelConfiguredByUser: true,
         });
 
         assert.deepEqual(yield* settings.load, {
@@ -140,8 +121,6 @@ describe("DesktopSettings", () => {
           serverExposureMode: "network-accessible",
           tailscaleServeEnabled: true,
           tailscaleServePort: 8443,
-          updateChannel: "latest",
-          updateChannelConfiguredByUser: true,
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,
@@ -157,11 +136,38 @@ describe("DesktopSettings", () => {
         });
         assert.isTrue(tailscale.changed);
         assert.equal(tailscale.settings.tailscaleServePort, 9443);
+      }),
+    ),
+  );
 
-        const updateChannel = yield* settings.setUpdateChannel("nightly");
-        assert.isTrue(updateChannel.changed);
-        assert.equal(updateChannel.settings.updateChannel, "nightly");
-        assert.equal(updateChannel.settings.updateChannelConfiguredByUser, true);
+  // Anyone who used the old Update track selector has `updateChannel` on disk.
+  // Honouring it would leave a stable install polling the nightly feed for an
+  // update it can never install, so the key has to stay ignored.
+  it.effect("ignores a retired update channel preference and drops it on write", () =>
+    withSettings(
+      Effect.gen(function* () {
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+        yield* writeSettingsPatch({
+          tailscaleServePort: 8443,
+          updateChannel: "nightly",
+          updateChannelConfiguredByUser: true,
+        });
+
+        const loaded = yield* settings.load;
+        assert.deepEqual(loaded, {
+          ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+          tailscaleServePort: 8443,
+        } satisfies DesktopAppSettings.DesktopSettings);
+        assert.notProperty(loaded, "updateChannel");
+
+        yield* settings.setServerExposureMode("network-accessible");
+        const persisted = yield* decodeDesktopSettingsPatch(
+          yield* fileSystem.readFileString(environment.desktopSettingsPath),
+        );
+        assert.isUndefined(persisted.updateChannel);
+        assert.isUndefined(persisted.updateChannelConfiguredByUser);
       }),
     ),
   );
@@ -200,10 +206,6 @@ describe("DesktopSettings", () => {
           port: Option.none(),
         });
         assert.isFalse(tailscale.changed);
-
-        const updateChannel = yield* settings.setUpdateChannel("latest");
-        assert.isFalse(updateChannel.changed);
-        assert.equal(updateChannel.settings.updateChannelConfiguredByUser, false);
       }),
     ),
   );
@@ -247,8 +249,6 @@ describe("DesktopSettings", () => {
           serverExposureMode: "network-accessible",
           tailscaleServeEnabled: true,
           tailscaleServePort: 8443,
-          updateChannel: "latest",
-          updateChannelConfiguredByUser: false,
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,
@@ -303,8 +303,6 @@ describe("DesktopSettings", () => {
             serverExposureMode: "network-accessible",
             tailscaleServeEnabled: true,
             tailscaleServePort: 8443,
-            updateChannel: "nightly",
-            updateChannelConfiguredByUser: true,
             wslBackendEnabled: false,
             wslOnly: false,
             wslDistro: null,
@@ -341,7 +339,6 @@ describe("DesktopSettings", () => {
         const settings = yield* DesktopAppSettings.DesktopAppSettings;
         yield* writeSettingsPatch({
           serverExposureMode: "local-only",
-          updateChannel: "latest",
         });
 
         assert.deepEqual(yield* settings.load, {
@@ -351,8 +348,6 @@ describe("DesktopSettings", () => {
           serverExposureMode: "local-only",
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
-          updateChannel: "nightly",
-          updateChannelConfiguredByUser: false,
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,
@@ -368,8 +363,6 @@ describe("DesktopSettings", () => {
         const settings = yield* DesktopAppSettings.DesktopAppSettings;
         yield* writeSettingsPatch({
           serverExposureMode: "local-only",
-          updateChannel: "latest",
-          updateChannelConfiguredByUser: true,
         });
 
         assert.deepEqual(yield* settings.load, {
@@ -379,8 +372,6 @@ describe("DesktopSettings", () => {
           serverExposureMode: "local-only",
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
-          updateChannel: "latest",
-          updateChannelConfiguredByUser: true,
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,
@@ -406,8 +397,6 @@ describe("DesktopSettings", () => {
           serverExposureMode: "local-only",
           tailscaleServeEnabled: true,
           tailscaleServePort: 443,
-          updateChannel: "latest",
-          updateChannelConfiguredByUser: false,
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,

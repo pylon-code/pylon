@@ -10,6 +10,15 @@ Stable selects the latest stable release; Nightly selects a recent preview build
 links and release notes follow your choice. You can share a direct
 [Nightly download link](https://pylon-code.com/download?channel=nightly).
 
+Stable and Nightly are two separate applications. Installing one leaves the other in place, and
+each keeps its own projects, threads, and settings — nothing carries across, and neither one
+updates into the other. Each app keeps itself current on the track it was built for.
+
+To move between tracks, install the other app: **Settings** → **About** → **Update track** shows
+which build you are running and opens the download page for the other one. Both can run at the
+same time. If you want to leave a track for good, delete that app; its data stays on disk until
+you remove it yourself.
+
 Mobile availability is separate from the desktop release channel.
 
 ## Where to Find the Update
