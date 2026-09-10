@@ -44,7 +44,12 @@ import { createModelSelection } from "@t3tools/shared/model";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import * as Schema from "effect/Schema";
-import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
+import {
+  APP_VERSION,
+  HOSTED_APP_CHANNEL,
+  HOSTED_APP_CHANNEL_LABEL,
+  desktopDownloadUrl,
+} from "../../branding";
 import {
   canCheckForUpdate,
   getDesktopUpdateButtonTooltip,
@@ -240,42 +245,32 @@ function AboutVersionTitle() {
 
 function AboutVersionSection() {
   const updateState = useDesktopUpdateState();
-  const [isChangingUpdateChannel, setIsChangingUpdateChannel] = useState(false);
   const [isUpdateActionPending, setIsUpdateActionPending] = useState(false);
 
   const hasDesktopBridge = typeof window !== "undefined" && Boolean(window.desktopBridge);
   const selectedUpdateChannel = updateState?.channel ?? "latest";
   const selectedHostedAppChannel = hasDesktopBridge ? null : HOSTED_APP_CHANNEL;
 
-  const handleUpdateChannelChange = useCallback(
-    (channel: DesktopUpdateChannel) => {
-      const bridge = window.desktopBridge;
-      if (
-        !bridge ||
-        typeof bridge.setUpdateChannel !== "function" ||
-        channel === selectedUpdateChannel
-      ) {
-        return;
-      }
+  // Stable and nightly are separate applications, each keeping its own projects
+  // and settings, so the other track is something you install alongside this
+  // one rather than something this app can switch itself to.
+  const otherUpdateChannel: DesktopUpdateChannel =
+    selectedUpdateChannel === "nightly" ? "latest" : "nightly";
 
-      setIsChangingUpdateChannel(true);
-      void bridge
-        .setUpdateChannel(channel)
-        .catch((error: unknown) => {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not change update track",
-              description: error instanceof Error ? error.message : "Update track change failed.",
-            }),
-          );
-        })
-        .finally(() => {
-          setIsChangingUpdateChannel(false);
-        });
-    },
-    [selectedUpdateChannel],
-  );
+  const handleGetOtherChannelBuild = useCallback(() => {
+    const api = readLocalApi();
+    if (!api) return;
+
+    void api.shell.openExternal(desktopDownloadUrl(otherUpdateChannel)).catch((error: unknown) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not open the download page",
+          description: error instanceof Error ? error.message : "Opening the link failed.",
+        }),
+      );
+    });
+  }, [otherUpdateChannel]);
 
   const handleButtonClick = useCallback(async () => {
     const bridge = window.desktopBridge;
@@ -409,33 +404,20 @@ function AboutVersionSection() {
       {hasDesktopBridge ? (
         <SettingsRow
           title="Update track"
-          description="Use stable releases or nightly builds. Switch back anytime."
+          description={
+            selectedUpdateChannel === "nightly"
+              ? "This is the nightly build. Stable installs as a separate app with its own projects and settings."
+              : "This is the stable build. Nightly installs as a separate app with its own projects and settings."
+          }
           control={
-            <Select
-              value={selectedUpdateChannel}
-              onValueChange={(value) => {
-                handleUpdateChannelChange(value as DesktopUpdateChannel);
-              }}
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full sm:w-40"
+              onClick={handleGetOtherChannelBuild}
             >
-              <SelectTrigger
-                size="sm"
-                className="w-full sm:w-40"
-                aria-label="Update track"
-                disabled={isChangingUpdateChannel}
-              >
-                <SelectValue>
-                  {selectedUpdateChannel === "nightly" ? "Nightly" : "Stable"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="latest">
-                  Stable
-                </SelectItem>
-                <SelectItem hideIndicator value="nightly">
-                  Nightly
-                </SelectItem>
-              </SelectPopup>
-            </Select>
+              {otherUpdateChannel === "nightly" ? "Get nightly" : "Get stable"}
+            </Button>
           }
         />
       ) : selectedHostedAppChannel ? (
