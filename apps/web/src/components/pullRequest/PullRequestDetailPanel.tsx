@@ -1737,7 +1737,7 @@ export function PullRequestDetailPanel({
                       <span className="inline-flex shrink-0">
                         <Button
                           size="xs"
-                          variant="ghost"
+                          variant="default"
                           disabled={handoff !== null}
                           onClick={startResolveConflicts}
                           aria-label={
@@ -1763,15 +1763,12 @@ export function PullRequestDetailPanel({
                       <span className="inline-flex shrink-0">
                         <Button
                           size="xs"
-                          variant="ghost"
+                          variant="default"
                           disabled={actionPending}
                           onClick={() => void perform("ready")}
                           aria-label="Ready for review"
                         >
-                          <GitPullRequestIcon
-                            aria-hidden
-                            className="hidden size-3.5 @max-[30rem]/pr-header:inline"
-                          />
+                          <GitPullRequestIcon aria-hidden className="size-3.5" />
                           <span className="@max-[30rem]/pr-header:hidden">Ready for review</span>
                         </Button>
                       </span>
@@ -1786,7 +1783,7 @@ export function PullRequestDetailPanel({
                       <span className="inline-flex shrink-0">
                         <Button
                           size="xs"
-                          variant="ghost"
+                          variant="default"
                           disabled={actionPending}
                           onClick={() =>
                             setConfirmation({ open: true, action: "enable-auto-merge" })
@@ -1838,17 +1835,14 @@ export function PullRequestDetailPanel({
                       <span className="inline-flex shrink-0">
                         <Button
                           size="xs"
-                          variant="ghost"
+                          variant="default"
                           disabled={actionPending}
                           onClick={() => setConfirmation({ open: true, action: "merge" })}
                           aria-label={
                             pendingAction === "merge" ? "Merging..." : selectedMergeMethodLabel
                           }
                         >
-                          <GitMergeIcon
-                            aria-hidden
-                            className="hidden size-3.5 @max-[30rem]/pr-header:inline"
-                          />
+                          <GitMergeIcon aria-hidden className="size-3.5" />
                           <span className="@max-[30rem]/pr-header:hidden">
                             {pendingAction === "merge" ? "Merging..." : selectedMergeMethodLabel}
                           </span>
