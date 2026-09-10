@@ -137,6 +137,12 @@ export function SettingsEnvironmentsRouteScreen() {
                   onReconnect={onReconnectEnvironment}
                   onRemove={onRemoveEnvironmentPress}
                   onUpdate={handleUpdateEnvironment}
+                  onSetupProvider={(target) =>
+                    navigation.navigate("SettingsProviderSetup", {
+                      environmentId: target.environmentId,
+                      instanceId: target.instanceId,
+                    })
+                  }
                 />
               </View>
             ))}

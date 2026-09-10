@@ -1,5 +1,6 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
 import {
+  AntigravityIcon,
   ClaudeAI,
   CursorIcon,
   GrokIcon,
@@ -16,6 +17,7 @@ export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>
   [ProviderDriverKind.make("cursor")]: CursorIcon,
   [ProviderDriverKind.make("grok")]: GrokIcon,
   [ProviderDriverKind.make("primeAgent")]: PrimeAgentIcon,
+  [ProviderDriverKind.make("antigravity")]: AntigravityIcon,
 };
 
 export type ModelEsque = {

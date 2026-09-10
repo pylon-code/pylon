@@ -612,6 +612,8 @@ interface ProviderInstanceCardProps {
   readonly readOnly?: boolean | undefined;
   /** Server-owned rollback fence reason for this exact provider instance. */
   readonly mutationBlockedReason?: string | undefined;
+  /** Driver-specific setup surface rendered above the runtime settings. */
+  readonly setup?: ReactNode;
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => void;
   /**
    * Pass `undefined` to hide the delete button entirely. Built-in default
@@ -683,6 +685,7 @@ export function ProviderInstanceCard({
   onSelect,
   readOnly = false,
   mutationBlockedReason,
+  setup,
   onUpdate,
   onDelete,
   headerAction,
@@ -1265,6 +1268,8 @@ export function ProviderInstanceCard({
           {liveProvider.multipleInstancesUnavailableReason}
         </p>
       ) : null}
+
+      {setup ? <div className="border-b border-border/60 px-4 py-3">{setup}</div> : null}
 
       <SettingsSection
         title="Runtime"
