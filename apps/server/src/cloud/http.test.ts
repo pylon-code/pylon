@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import type * as NodeOS from "node:os";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -33,6 +34,8 @@ import type { RelayLinkProofRequest } from "@t3tools/contracts/relay";
 import { CLOUD_ENDPOINT_RUNTIME_CONFIG, RELAY_URL_SECRET } from "./config.ts";
 import {
   consumeCloudReplayGuards,
+  isAllowedEndpointOrigin,
+  isOwnRequestHostname,
   isSupportedLinkProviderKind,
   linkProofScopes,
   pendingServiceUpdateExists,
@@ -607,5 +610,87 @@ describe("link proof provider kinds", () => {
       "managed_tunnels",
     ]);
     expect(linkProofScopes(proofRequest("manual"))).toEqual(["agent_activity_notifications"]);
+  });
+});
+
+describe("isOwnRequestHostname", () => {
+  // Shaped like os.networkInterfaces() on a Windows host running a WSL2 distro
+  // in the default NAT mode: the distro reaches the outside world through a
+  // host-only vEthernet address that is not loopback.
+  const interfaces = {
+    lo: [
+      { address: "127.0.0.1", family: "IPv4", internal: true },
+      { address: "::1", family: "IPv6", internal: true },
+    ],
+    eth0: [
+      { address: "172.17.123.131", family: "IPv4", internal: false },
+      { address: "fe80::215:5dff:fe12:3456%eth0", family: "IPv6", internal: false },
+    ],
+  } as unknown as ReturnType<typeof NodeOS.networkInterfaces>;
+
+  it("accepts loopback without consulting the interface list", () => {
+    expect(isOwnRequestHostname("127.0.0.1", {})).toBe(true);
+    expect(isOwnRequestHostname("localhost", {})).toBe(true);
+    expect(isOwnRequestHostname("[::1]", {})).toBe(true);
+  });
+
+  it("accepts an IP bound to one of this machine's interfaces", () => {
+    expect(isOwnRequestHostname("172.17.123.131", interfaces)).toBe(true);
+    expect(isOwnRequestHostname("[fe80::215:5dff:fe12:3456]", interfaces)).toBe(true);
+  });
+
+  it("rejects an IP that is not bound here", () => {
+    expect(isOwnRequestHostname("172.17.123.132", interfaces)).toBe(false);
+    expect(isOwnRequestHostname("192.168.1.42", interfaces)).toBe(false);
+  });
+
+  it("rejects hostnames, which is how proxied and tunnelled traffic arrives", () => {
+    expect(isOwnRequestHostname("environment.example.test", interfaces)).toBe(false);
+    expect(isOwnRequestHostname("", interfaces)).toBe(false);
+  });
+});
+
+describe("isAllowedEndpointOrigin", () => {
+  const interfaces = {
+    lo: [{ address: "127.0.0.1", family: "IPv4", internal: true }],
+    eth0: [{ address: "172.17.123.131", family: "IPv4", internal: false }],
+  } as unknown as ReturnType<typeof NodeOS.networkInterfaces>;
+
+  const check = (requestUrl: string, localHttpHost = "127.0.0.1", localHttpPort = 3773) =>
+    isAllowedEndpointOrigin({
+      origin: { localHttpHost, localHttpPort },
+      requestUrl,
+      interfaces,
+    });
+
+  it("accepts a loopback request whose port matches the claimed origin", () => {
+    expect(check("http://127.0.0.1:3773/api/connect/link-proof")).toBe(true);
+  });
+
+  // The Pylon desktop shell on Windows addresses a WSL2 NAT-mode backend by the
+  // distro's eth0 IP, so the request arrives under that host rather than
+  // loopback while the origin it claims is still loopback.
+  it("accepts a request reached at this host's own interface address", () => {
+    expect(check("http://172.17.123.131:3773/api/connect/link-proof")).toBe(true);
+  });
+
+  it("rejects a request reached through a public hostname", () => {
+    expect(check("https://environment.example.test/api/connect/link-proof", "127.0.0.1", 443)).toBe(
+      false,
+    );
+  });
+
+  it("rejects an address that is not bound to this host", () => {
+    expect(check("http://192.168.1.42:3773/api/connect/link-proof")).toBe(false);
+  });
+
+  it("rejects a claimed origin that is not loopback", () => {
+    expect(check("http://127.0.0.1:3773/api/connect/link-proof", "172.17.123.131")).toBe(false);
+  });
+
+  it("rejects a claimed origin port the request did not arrive on", () => {
+    expect(check("http://172.17.123.131:3773/api/connect/link-proof", "127.0.0.1", 3774)).toBe(
+      false,
+    );
   });
 });
