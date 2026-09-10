@@ -10,9 +10,14 @@ Collapsing and reopening a group preserves your reading position and any open ca
 Recognized Pylon tools use descriptive labels in both the running summary and individual rows.
 Labels follow the call's state, such as "Clicking" while running and "Clicked" after success.
 Failed, declined, and stopped calls say what happened without implying success.
+Failed calls keep their tool icon with a muted red tint, so a failed command still
+looks like a command. App logos and other multicolor icons keep their artwork and
+show a small muted red failure mark beside the row. Expand the call to inspect its
+output. Runtime errors and warnings keep their stronger styling.
 Preview browser actions use a globe icon. Other Pylon tools keep the Pylon mark.
-Group summaries count browser actions separately, such as "Used browser 18 times" or
-"Ran 4 commands and used browser 15 times". Browser-only groups also use a globe icon.
+
+> > > > > > > Group summaries count browser actions separately, such as "Used browser 18 times" or
+> > > > > > > "Ran 4 commands and used browser 15 times". Browser-only groups also use a globe icon.
 
 Command summaries show the program inside a shell wrapper, such as "Running vp" for
 `/bin/zsh -lc 'vp test run'`. Expanded rows keep the full command. Long expanded headings wrap, and their text can be selected without closing the details.

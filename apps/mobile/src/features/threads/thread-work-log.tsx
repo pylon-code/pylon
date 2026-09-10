@@ -17,7 +17,15 @@ import {
   type ComponentProps,
   type ReactNode,
 } from "react";
-import { AccessibilityInfo, AppState, Pressable, ScrollView, StyleSheet, View, type ColorValue } from "react-native";
+import {
+  AccessibilityInfo,
+  AppState,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+  type ColorValue,
+} from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import type { EnvironmentId, ToolActivityIcon } from "@t3tools/contracts";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
@@ -72,14 +80,13 @@ type WorkContentIcon = AppSymbolName | "browser" | "t3-code";
 function WorkLogIcon(props: {
   readonly icon: WorkContentIcon;
   readonly color: ColorValue;
+  readonly colorClassName?: string;
   readonly highlighted?: boolean;
 }) {
+  const colorClassName = props.highlighted ? "accent-foreground" : props.colorClassName;
   if (props.icon === "t3-code") {
     return (
-      <PylonMark
-        height={18}
-        {...(props.highlighted ? { colorClassName: "accent-foreground" } : { color: props.color })}
-      />
+      <PylonMark height={18} {...(colorClassName ? { colorClassName } : { color: props.color })} />
     );
   }
   return (
@@ -87,9 +94,7 @@ function WorkLogIcon(props: {
       name={props.icon === "browser" ? { ios: "globe", android: "public" } : props.icon}
       size={13}
       weight="medium"
-      {...(props.highlighted
-        ? { tintColorClassName: "accent-foreground" }
-        : { tintColor: props.color })}
+      {...(colorClassName ? { tintColorClassName: colorClassName } : { tintColor: props.color })}
       type="monochrome"
     />
   );
@@ -734,11 +739,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
   const iconIsDestructive = row.icon === "alert" || failed;
   const iconIsWarning = row.icon === "warning" && !failed;
   const toolIcon = row.workEntry.toolIcon ?? row.workEntry.toolSource?.icon;
-  const hasSpecialToolIcon =
-    toolPresentation !== null || row.workEntry.toolSurface !== undefined || toolIcon !== undefined;
-  const icon =
-    toolPresentation?.icon ??
-    (failed && !hasSpecialToolIcon ? "xmark" : workRowSymbolName(row.icon));
+  const icon = toolPresentation?.icon ?? workRowSymbolName(row.icon);
 
   return (
     <Animated.View
@@ -779,7 +780,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
           ) : (
             <>
               <View className="h-[18px] w-5 shrink-0 items-center justify-center">
-                {toolIcon && props.environmentId && !(failed && !hasSpecialToolIcon) ? (
+                {toolIcon && props.environmentId ? (
                   <ToolActivityIconView
                     environmentId={props.environmentId}
                     icon={toolIcon}
@@ -790,12 +791,15 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
                 ) : (
                   <WorkLogIcon
                     icon={icon}
-                    color={
+                    color={props.iconSubtleColor}
+                    colorClassName={
                       iconIsDestructive
-                        ? "#e11d48"
+                        ? "accent-adaptive-rose-600-400"
                         : iconIsWarning
-                          ? "#d97706"
-                          : props.iconSubtleColor
+                          ? "accent-adaptive-amber-600-400"
+                          : failed
+                            ? "accent-danger-foreground/40"
+                            : undefined
                     }
                   />
                 )}
@@ -819,7 +823,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
                 Copied
               </Text>
             ) : null}
-            {failed && hasSpecialToolIcon ? (
+            {failed && toolIcon !== undefined ? (
               <View
                 className="h-4 w-4 items-center justify-center"
                 accessibilityElementsHidden
@@ -828,7 +832,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
                 <SymbolView
                   name="xmark"
                   size={11}
-                  tintColorClassName="accent-danger-foreground"
+                  tintColorClassName="accent-danger-foreground/40"
                   type="monochrome"
                 />
               </View>
