@@ -59,9 +59,25 @@ describe("ProviderSettingsForm helpers", () => {
     expect(deriveProviderSettingsFields(claude!).map((field) => field.key)).toEqual([
       "binaryPath",
       "homePath",
+      "taskTools",
       "autoCompactWindow",
       "launchArgs",
     ]);
+  });
+
+  it("renders the Claude task list as a switch that defaults on", () => {
+    const claude = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("claudeAgent")];
+    expect(claude).toBeDefined();
+
+    const taskTools = deriveProviderSettingsFields(claude!).find(
+      (field) => field.key === "taskTools",
+    );
+
+    expect(taskTools).toMatchObject({
+      label: "Task list",
+      control: "switch",
+      defaultBooleanValue: true,
+    });
   });
 
   it("preserves unknown config keys while omitting empty configurable fields", () => {

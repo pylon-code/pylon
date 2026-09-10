@@ -1962,6 +1962,249 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("opts into Claude's task tools so the plan reaches the UI", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(
+        harness.getLastCreateQueryInput()?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS,
+        "1",
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("leaves Claude Code's own default alone when the task list is off", () => {
+    const harness = makeHarness({ claudeConfig: { taskTools: false } });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(
+        harness.getLastCreateQueryInput()?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS,
+        undefined,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("drops a deleted task from the plan instead of parking it as pending", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+
+      const emitTaskTool = (
+        index: number,
+        toolUseId: string,
+        name: string,
+        input: Record<string, unknown>,
+        result: Record<string, unknown>,
+      ) => {
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-task-delete",
+          uuid: `start-${toolUseId}`,
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index,
+            content_block: { type: "tool_use", id: toolUseId, name, input },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-task-delete",
+          uuid: `stop-${toolUseId}`,
+          parent_tool_use_id: null,
+          event: { type: "content_block_stop", index },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-task-delete",
+          uuid: `result-${toolUseId}`,
+          parent_tool_use_id: null,
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: toolUseId, content: "ok" }],
+          },
+          tool_use_result: result,
+        } as unknown as SDKMessage);
+      };
+
+      emitTaskTool(
+        1,
+        "task-create-1",
+        "TaskCreate",
+        { subject: "Ship it" },
+        {
+          task: { id: "t1", subject: "Ship it" },
+        },
+      );
+      emitTaskTool(
+        2,
+        "task-create-2",
+        "TaskCreate",
+        { subject: "Write it up" },
+        {
+          task: { id: "t2", subject: "Write it up" },
+        },
+      );
+      emitTaskTool(
+        3,
+        "task-delete-1",
+        "TaskUpdate",
+        { taskId: "t1", status: "deleted" },
+        {
+          taskId: "t1",
+        },
+      );
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-task-delete",
+        uuid: "result-task-delete",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const plans = runtimeEvents.filter((event) => event.type === "turn.plan.updated");
+      const finalPlan = plans.at(-1);
+      assert.equal(finalPlan?.type, "turn.plan.updated");
+      if (finalPlan?.type === "turn.plan.updated") {
+        assert.deepEqual(finalPlan.payload.plan, [{ step: "Write it up", status: "pending" }]);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("clears the plan once the last task is deleted", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+
+      const emitTaskTool = (
+        index: number,
+        toolUseId: string,
+        name: string,
+        input: Record<string, unknown>,
+        result: Record<string, unknown>,
+      ) => {
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-task-clear",
+          uuid: `start-${toolUseId}`,
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index,
+            content_block: { type: "tool_use", id: toolUseId, name, input },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-task-clear",
+          uuid: `stop-${toolUseId}`,
+          parent_tool_use_id: null,
+          event: { type: "content_block_stop", index },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-task-clear",
+          uuid: `result-${toolUseId}`,
+          parent_tool_use_id: null,
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: toolUseId, content: "ok" }],
+          },
+          tool_use_result: result,
+        } as unknown as SDKMessage);
+      };
+
+      emitTaskTool(
+        1,
+        "task-create-only",
+        "TaskCreate",
+        { subject: "Ship it" },
+        {
+          task: { id: "t1", subject: "Ship it" },
+        },
+      );
+      emitTaskTool(
+        2,
+        "task-delete-only",
+        "TaskUpdate",
+        { taskId: "t1", status: "deleted" },
+        {
+          taskId: "t1",
+        },
+      );
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-task-clear",
+        uuid: "result-task-clear",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const plans = runtimeEvents.filter((event) => event.type === "turn.plan.updated");
+      const finalPlan = plans.at(-1);
+      assert.equal(finalPlan?.type, "turn.plan.updated");
+      if (finalPlan?.type === "turn.plan.updated") {
+        assert.deepEqual(finalPlan.payload.plan, []);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("classifies Claude Task tool invocations as collaboration agent work", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
