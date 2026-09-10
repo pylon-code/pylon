@@ -1,4 +1,6 @@
 import * as NodeCrypto from "node:crypto";
+import * as NodeNet from "node:net";
+import * as NodeOS from "node:os";
 import {
   AuthRelayReadScope,
   AuthRelayWriteScope,
@@ -98,6 +100,8 @@ const CLOUD_CREDENTIAL_RESPONSE_HEADERS = {
   "cache-control": "no-store",
   pragma: "no-cache",
 } as const;
+
+type NetworkInterfacesMap = ReturnType<typeof NodeOS.networkInterfaces>;
 
 const appendCloudCredentialResponseHeaders = HttpEffect.appendPreResponseHandler(
   (_request, response) =>
@@ -268,6 +272,34 @@ function isLoopbackHostname(hostname: string): boolean {
   return LOOPBACK_HOSTNAMES.has(normalizeHostname(hostname));
 }
 
+function stripIpv6Zone(address: string): string {
+  const zone = address.indexOf("%");
+  return zone === -1 ? address : address.slice(0, zone);
+}
+
+// Whether the request reached this server at one of its own addresses rather
+// than through a proxy or the public managed endpoint. Loopback is the common
+// case; matching a bound interface additionally covers a desktop shell reaching
+// its backend over a host-only virtual network, which is how WSL2 in NAT mode
+// addresses the Linux backend. Proxied traffic carries a public hostname, which
+// is never an address bound here.
+export function isOwnRequestHostname(
+  hostname: string,
+  interfaces: NetworkInterfacesMap = NodeOS.networkInterfaces(),
+): boolean {
+  const normalized = normalizeHostname(hostname);
+  if (LOOPBACK_HOSTNAMES.has(normalized)) {
+    return true;
+  }
+  const candidate = stripIpv6Zone(normalized);
+  if (NodeNet.isIP(candidate) === 0) {
+    return false;
+  }
+  return Object.values(interfaces)
+    .flatMap((entries) => entries ?? [])
+    .some((entry) => stripIpv6Zone(normalizeHostname(entry.address)) === candidate);
+}
+
 function firstForwardedHeaderValue(value: string | undefined): string | undefined {
   const first = value?.split(",")[0]?.trim();
   return first && first.length > 0 ? first : undefined;
@@ -297,16 +329,20 @@ function endpointRequestPort(url: URL): number {
   return Number(url.port || (url.protocol === "https:" ? 443 : 80));
 }
 
-function isAllowedEndpointOrigin(input: {
+// The proof pins the relay to a loopback port on this machine, so the request
+// asking for one has to have reached the server directly at that same port.
+export function isAllowedEndpointOrigin(input: {
   readonly origin: RelayManagedEndpointOrigin;
   readonly requestUrl: string;
+  // Injected by tests; production reads the live interface list.
+  readonly interfaces?: NetworkInterfacesMap;
 }): boolean {
   if (!isLoopbackHostname(input.origin.localHttpHost)) {
     return false;
   }
 
   const url = new URL(input.requestUrl);
-  if (!isLoopbackHostname(url.hostname)) {
+  if (!isOwnRequestHostname(url.hostname, input.interfaces)) {
     return false;
   }
 
