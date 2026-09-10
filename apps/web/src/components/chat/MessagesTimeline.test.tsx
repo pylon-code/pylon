@@ -1562,9 +1562,9 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Working for");
     expect(markup).toContain("Running pnpm");
-    // The live row shimmer is the sweeping overlay, which pauses offscreen
-    // through `--visible-animation-state`.
-    expect(markup).toContain("live-activity-focus");
+    // A tool label shines; the sweeping overlay belongs to label-only rows.
+    expect(markup).toContain("live-tool-shine");
+    expect(markup).not.toContain("live-activity-focus");
   });
 
   it("scopes a live row failure to the tool named by the row", () => {
@@ -1643,6 +1643,32 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Thinking");
     expect(markup).toContain("lucide-brain");
     expect(markup).toContain('data-timeline-row-id="live-activity-row"');
+    expect(markup).toContain("live-activity-focus");
+    expect(markup).not.toContain("live-tool-shine");
+  });
+
+  it("shimmers the worktree setup label instead of the thinking row", () => {
+    const turnId = TurnId.make("turn-setup");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        isPreparingWorktree
+        activeTurnStartedAt={MESSAGE_CREATED_AT}
+        latestTurn={{
+          turnId,
+          state: "running",
+          startedAt: MESSAGE_CREATED_AT,
+          completedAt: null,
+        }}
+        runningTurnId={turnId}
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain("Setting up worktree…");
+    expect(markup).toContain("live-activity-focus");
+    expect(markup).not.toContain("Thinking");
   });
 
   it("keeps the completed command in the shared activity row with a past-tense label", () => {
@@ -1682,9 +1708,9 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Ran pnpm");
     expect(markup).toContain("lucide-terminal");
-    // The live row shimmer is the sweeping overlay, which pauses offscreen
-    // through `--visible-animation-state`.
-    expect(markup).toContain("live-activity-focus");
+    // A tool label shines; the sweeping overlay belongs to label-only rows.
+    expect(markup).toContain("live-tool-shine");
+    expect(markup).not.toContain("live-activity-focus");
     expect(markup).not.toContain("Running pnpm");
     expect(markup).not.toContain("Thinking");
     expect(markup).not.toContain('data-timeline-row-kind="thinking"');
