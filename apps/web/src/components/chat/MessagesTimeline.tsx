@@ -1713,12 +1713,21 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
       <div className="flex h-6 min-w-0 items-baseline px-1 text-sm leading-relaxed text-muted-foreground tabular-nums">
         <span
           key={isPreparingWorktree ? "setup" : isCompacting ? "compacting" : "working"}
+          ref={isPreparingWorktree || isCompacting ? observeVisibleAnimation : undefined}
           className="relative shrink-0 overflow-hidden whitespace-nowrap transition-opacity duration-150 starting:opacity-0 motion-reduce:transition-none"
         >
           {isPreparingWorktree ? (
-            "Setting up worktree…"
+            <>
+              Setting up worktree…
+              <ActivityShimmerOverlay>Setting up worktree…</ActivityShimmerOverlay>
+            </>
           ) : isCompacting ? (
-            <CompactingLabel />
+            <>
+              <CompactingLabel />
+              <ActivityShimmerOverlay>
+                <CompactingLabel />
+              </ActivityShimmerOverlay>
+            </>
           ) : row.createdAt ? (
             <>
               Working for <WorkingTimer createdAt={row.createdAt} />
@@ -1743,7 +1752,7 @@ function ThinkingTimelineRow() {
   return (
     <div className="min-h-7">
       {isPreparingWorktree || isCompacting ? null : (
-        <LiveActivityRow label="Thinking" iconName="brain" />
+        <LiveActivityRow label="Thinking" iconName="brain" active shimmer />
       )}
     </div>
   );
@@ -1996,29 +2005,51 @@ function ExpandedWorkGroupEntries({
 
 const workEntryKey = (entry: TimelineWorkEntry) => entry.id;
 
+function ActivityShimmerOverlay({ children }: { children: ReactNode }) {
+  return (
+    <span
+      aria-hidden
+      className="live-activity-focus pointer-events-none absolute inset-y-0 select-none"
+    >
+      <span className="live-activity-focus-counter block">
+        <span className="live-activity-focus-aligned block text-foreground">{children}</span>
+      </span>
+    </span>
+  );
+}
+
 function LiveActivityRow({
   label,
   iconName,
   failed = false,
   active = false,
+  shimmer = false,
 }: {
   label: string;
   iconName?: WorkEntryIconName;
   failed?: boolean;
   active?: boolean;
+  shimmer?: boolean;
 }) {
+  const animated = active && !failed;
+  const showShimmer = animated && shimmer;
   return (
     <div
-      ref={active ? observeVisibleAnimation : undefined}
-      className="min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed"
+      ref={animated ? observeVisibleAnimation : undefined}
+      className="relative min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed"
     >
       <LiveActivityContent
         label={label}
         iconName={iconName}
         failed={failed}
         announceFailure={failed}
-        active={active}
+        active={animated && !shimmer}
       />
+      {showShimmer ? (
+        <ActivityShimmerOverlay>
+          <LiveActivityContent label={label} iconName={iconName} highlighted />
+        </ActivityShimmerOverlay>
+      ) : null}
     </div>
   );
 }
@@ -2029,12 +2060,14 @@ function LiveActivityContent({
   failed = false,
   announceFailure = false,
   active = false,
+  highlighted = false,
 }: {
   label: string;
   iconName: WorkEntryIconName | undefined;
   failed?: boolean;
   announceFailure?: boolean;
   active?: boolean;
+  highlighted?: boolean;
 }) {
   const isSpecialToolIcon = iconName === "browser" || iconName === "t3-code";
   const resolvedIconName = iconName;
@@ -2044,18 +2077,21 @@ function LiveActivityContent({
       className={cn(
         "flex min-h-6 min-w-0 items-center gap-1.5 py-0.5",
         resolvedIconName ? "px-0.5" : "px-1",
-        "text-secondary-label",
+        highlighted ? "text-foreground" : "text-secondary-label",
       )}
     >
       {resolvedIconName ? (
         <span
-          className="flex size-6 shrink-0 items-center justify-center text-icon-muted"
+          className={cn(
+            "flex size-6 shrink-0 items-center justify-center",
+            highlighted ? "text-foreground" : "text-icon-muted",
+          )}
           role={announceFailure ? "img" : undefined}
           aria-label={announceFailure ? "Tool call failed" : undefined}
         >
           <WorkEntryIcon
             name={resolvedIconName}
-            className="block size-4 shrink-0 stroke-[1.8] opacity-70"
+            className={cn("block size-4 shrink-0 stroke-[1.8]", !highlighted && "opacity-70")}
           />
         </span>
       ) : null}
