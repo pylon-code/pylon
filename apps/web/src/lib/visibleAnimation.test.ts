@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - Regression coverage compares the gated CSS with its observer wiring.
+import * as NodeFS from "node:fs";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { observeVisibleAnimation } from "./visibleAnimation";
@@ -173,5 +176,92 @@ describe("observeVisibleAnimation", () => {
     expect(animation.state()).toBe("paused");
     expect(animation.willChange()).toBe("auto");
     expect(observers).toHaveLength(0);
+  });
+});
+
+const webSourceRoot = new URL("../", import.meta.url);
+
+/** Every `@utility` name in `index.css`, and which of them read the state variable. */
+function utilities(css: string) {
+  const all: string[] = [];
+  const gated: string[] = [];
+  let utility: string | undefined;
+  let body = "";
+  for (const line of css.split("\n")) {
+    const opened = /^@utility ([\w-]+) \{$/.exec(line)?.[1];
+    if (opened !== undefined) {
+      utility = opened;
+      all.push(opened);
+      body = "";
+    } else if (utility === undefined) {
+      continue;
+    } else if (line === "}") {
+      if (body.includes("var(--visible-animation-state")) gated.push(utility);
+      utility = undefined;
+    } else {
+      body += line;
+    }
+  }
+  return { all, gated };
+}
+
+function sourceFiles(directory: URL): URL[] {
+  return NodeFS.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.isDirectory()) return sourceFiles(new URL(`${entry.name}/`, directory));
+    if (!/\.tsx?$/.test(entry.name) || entry.name.includes(".test.")) return [];
+    return [new URL(entry.name, directory)];
+  });
+}
+
+const applies = (text: string, utility: string) =>
+  new RegExp(`(?<![\\w-])${utility}(?![\\w-])`).test(text);
+
+describe("gated animation utilities", () => {
+  // File-level, so it catches a gated utility applied by a file that registers
+  // nothing and one with no consumer at all — #426's two shapes. It cannot see a
+  // single ref go missing in a file that still registers somewhere else.
+  it("are applied only by files that attach the observer", () => {
+    const css = NodeFS.readFileSync(new URL("index.css", webSourceRoot), "utf8");
+    const { gated } = utilities(css);
+    expect(gated.length).toBeGreaterThan(0);
+
+    const sources = sourceFiles(webSourceRoot).map((url) => ({
+      path: url.pathname.slice(webSourceRoot.pathname.length),
+      text: NodeFS.readFileSync(url, "utf8"),
+    }));
+
+    const unobserved = gated.flatMap((utility) => {
+      const users = sources.filter(({ text }) => applies(text, utility));
+      if (users.length === 0) return [`${utility} is never applied`];
+      return users
+        .filter(({ text }) => !text.includes("observeVisibleAnimation"))
+        .map(({ path }) => `${utility} in ${path} never attaches observeVisibleAnimation`);
+    });
+
+    expect(unobserved).toEqual([]);
+  });
+
+  it("exist for every animation utility the components ask for", () => {
+    const css = NodeFS.readFileSync(new URL("index.css", webSourceRoot), "utf8");
+    const { all } = utilities(css);
+    const defined = new Set(all);
+
+    // Tailwind emits nothing for a utility with no `@utility`, so a class deleted
+    // as "dead" while a component still names it goes silently static — which is
+    // what happened to `visible-animate-spin`.
+    const undefinedUtilities = sourceFiles(webSourceRoot).flatMap((url) => {
+      const text = NodeFS.readFileSync(url, "utf8");
+      const path = url.pathname.slice(webSourceRoot.pathname.length);
+      return [
+        ...text.matchAll(
+          /(?<![\w-])(visible-animate-[\w-]+|live-[\w-]*(?:shine|focus)[\w-]*)(?![\w-])/g,
+        ),
+      ]
+        .map((match) => match[1]!)
+        .filter((utility) => !defined.has(utility))
+        .map((utility) => `${path} applies ${utility}, which no @utility defines`);
+    });
+
+    expect([...new Set(undefinedUtilities)]).toEqual([]);
   });
 });
