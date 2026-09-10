@@ -993,6 +993,9 @@ function applyClaudeTaskToolResult(
     if (!Array.isArray(resultTasks)) {
       return false;
     }
+    // An emptied list is a real change: report it so the plan clears instead
+    // of leaving the last snapshot on screen.
+    const hadTasks = tasks.size > 0;
     tasks.clear();
     for (const entry of resultTasks) {
       if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
@@ -1011,7 +1014,7 @@ function applyClaudeTaskToolResult(
         blockedBy: new Set(readStringArray(task.blockedBy)),
       });
     }
-    return tasks.size > 0;
+    return tasks.size > 0 || hadTasks;
   }
 
   if (tool.toolName === "TaskCreate") {
@@ -1033,6 +1036,11 @@ function applyClaudeTaskToolResult(
   const taskId = readString(tool.input.taskId) ?? readString(result?.taskId);
   if (!taskId) {
     return false;
+  }
+  // "deleted" is a TaskUpdate status, not a lifecycle state we can render:
+  // normalizing it would park the task in the plan as pending forever.
+  if (tool.input.status === "deleted") {
+    return tasks.delete(taskId);
   }
   const task = tasks.get(taskId);
   if (!task) {
@@ -2400,10 +2408,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       readonly rawPayload: unknown;
     },
   ) {
+    // Emitted only when the task set actually changed, so an empty plan here
+    // means the tasks are gone and downstream progress should clear.
     const plan = planStepsFromClaudeTasks(context.claudeTasks);
-    if (plan.length === 0) {
-      return;
-    }
 
     const stamp = yield* makeEventStamp();
     yield* offerRuntimeEvent(context.sessionIncarnationId, {
@@ -4694,6 +4701,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(input.cwd ? [input.cwd] : []),
         serverConfig.attachmentsDir,
       ];
+      // Claude Code hides TodoWrite and the Task tools by default on its newest
+      // models, and Pylon's plan UI is fed by exactly those tools. Opt back in
+      // unless the user turned the setting off; "off" leaves Claude Code's own
+      // default in place rather than forcing a state the CLI cannot express.
+      const sessionEnvironment = claudeSettings.taskTools
+        ? { ...claudeEnvironment, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }
+        : claudeEnvironment;
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
@@ -4723,7 +4737,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         canUseTool,
         onUserDialog,
         supportedDialogKinds: ["resume_return"],
-        env: claudeEnvironment,
+        env: sessionEnvironment,
         additionalDirectories,
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
         ...(mcpSession
@@ -4761,6 +4775,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.include_partial_messages": true,
         "claude.query.additional_directories": additionalDirectories,
         "claude.query.setting_sources": [...CLAUDE_SETTING_SOURCES],
+        "claude.query.task_tools": claudeSettings.taskTools,
         "claude.query.settings_json": encodeJsonStringForDiagnostics(settings) ?? "",
         "claude.query.extra_args_json": encodeJsonStringForDiagnostics(extraArgs) ?? "",
         "claude.query.path_to_executable": claudeBinaryPath,

@@ -134,6 +134,23 @@ describe("ClaudeSettings auto-compaction", () => {
   });
 });
 
+describe("ClaudeSettings task tools", () => {
+  it("keeps Claude's task list on for a configuration that predates the setting", () => {
+    expect(decodeClaudeSettings({}).taskTools).toBe(true);
+  });
+
+  it("honours an explicit opt-out", () => {
+    expect(decodeClaudeSettings({ taskTools: false }).taskTools).toBe(false);
+  });
+
+  it("accepts the toggle at the settings patch boundary", () => {
+    expect(
+      decodeServerSettingsPatch({ providers: { claudeAgent: { taskTools: false } } }).providers
+        ?.claudeAgent?.taskTools,
+    ).toBe(false);
+  });
+});
+
 describe("ClientSettings retired status motion", () => {
   it("ignores the removed setting in existing persisted data", () => {
     expect(decodeClientSettings({ dotMatrixMotion: "smooth" })).not.toHaveProperty(

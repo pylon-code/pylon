@@ -50,6 +50,20 @@ offers to compact the conversation before you continue. You can also select **Co
 from the context meter. On every client, you can enter `/compact` in the message composer, and
 Claude can show its own resume prompt when you continue an old session.
 
+## Claude's Task List
+
+Claude Code hides its task-tracking tools on its newest models, so Claude works
+through multi-step jobs without publishing a checklist. Pylon turns them back on,
+which is what fills the **Tasks** badge above the composer and the current-step
+label on the working row. This is on by default.
+
+To leave Claude Code's own default in place, open your Claude provider in Settings
+and turn **Task list** off. Off frees the context those tool definitions and their
+reminders take up; on trades that context for being able to watch which step Claude
+is on. Codex, Cursor, and OpenCode publish their plans without any setting.
+
+The task list shows on web and desktop. Mobile does not render it yet.
+
 ## Usage limits
 
 If your Claude subscription runs out of usage mid-turn, the thread shows which
