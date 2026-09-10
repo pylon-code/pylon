@@ -1033,7 +1033,6 @@ export function runtimeEventToActivities(
                   ...(event.payload.lastToolName
                     ? { lastToolName: event.payload.lastToolName }
                     : {}),
-                  ...(event.payload.status ? { status: event.payload.status } : {}),
                   ...(event.payload.error ? { error: event.payload.error } : {}),
                   ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
                   ...identityLinkage,
@@ -1276,7 +1275,6 @@ export function runtimeEventToActivities(
             // A Prime tool's itemId is a canonical path, so it stays behind the
             // same gate as the rest of the native detail.
             ...(primeAgentTool || event.itemId === undefined ? {} : { toolCallId: event.itemId }),
-            ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(primeAgentTool || !event.payload.detail
               ? {}
               : { detail: truncateDetail(event.payload.detail) }),
@@ -1437,7 +1435,6 @@ export function runtimeEventToActivities(
             ...(event.payload.toolSurface ? { toolSurface: event.payload.toolSurface } : {}),
             ...(event.payload.toolIcon ? { toolIcon: event.payload.toolIcon } : {}),
             ...(event.payload.toolSource ? { toolSource: event.payload.toolSource } : {}),
-            ...(event.payload.status ? { status: event.payload.status } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1505,7 +1502,6 @@ export function runtimeEventToActivities(
             ...(event.payload.toolSurface ? { toolSurface: event.payload.toolSurface } : {}),
             ...(event.payload.toolIcon ? { toolIcon: event.payload.toolIcon } : {}),
             ...(event.payload.toolSource ? { toolSource: event.payload.toolSource } : {}),
-            ...(event.payload.status ? { status: event.payload.status } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

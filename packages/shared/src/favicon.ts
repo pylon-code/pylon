@@ -62,9 +62,11 @@ export function explicitFaviconUrl(rawUrl: string | null | undefined): string | 
   if (!rawUrl || rawUrl.length > 4096) return null;
   try {
     const url = new URL(rawUrl);
-    return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "data:"
-      ? url.href
-      : null;
+    if (url.protocol === "data:") return url.href;
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    // A tab favicon is still a page host: a remote client would resolve a
+    // private one against its own network.
+    return isPublicFaviconHost(url.hostname) ? url.href : null;
   } catch {
     return null;
   }

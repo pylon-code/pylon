@@ -793,7 +793,9 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
                     icon={icon}
                     color={props.iconSubtleColor}
                     colorClassName={
-                      iconIsDestructive
+                      // Severe failures stay red; an ordinary tool failure keeps
+                      // its icon with a muted tint, matching web.
+                      row.icon === "alert"
                         ? "accent-adaptive-rose-600-400"
                         : iconIsWarning
                           ? "accent-adaptive-amber-600-400"

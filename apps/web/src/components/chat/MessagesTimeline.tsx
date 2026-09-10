@@ -2044,7 +2044,7 @@ function LiveActivityRow({
   active?: boolean;
 }) {
   return (
-    <div className="min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed">
+    <div className="relative min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed">
       <LiveActivityContent
         label={label}
         iconName={iconName}
@@ -3349,7 +3349,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
                 onClick={expanded ? stopRowToggle : undefined}
                 onPointerDown={expanded ? stopRowToggle : undefined}
               >
-                {previewText}
+                {displayText}
               </span>
             </p>
           </div>

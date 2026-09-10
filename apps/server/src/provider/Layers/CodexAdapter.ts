@@ -238,6 +238,15 @@ function browserDisplayName(value: unknown): string | undefined {
   return normalizedDisplayName(value);
 }
 
+/**
+ * `backend` carries transport names such as `cdp`, which are not product names.
+ * Only a recognized browser is worth showing as the activity's source.
+ */
+function knownBrowserDisplayName(value: unknown): string | undefined {
+  const name = browserDisplayName(value);
+  return name !== undefined && browserNativeAppReference(name) !== undefined ? name : undefined;
+}
+
 function browserNativeAppReference(name: string): ToolActivityNativeAppReference | undefined {
   switch (name) {
     case "Chrome":
@@ -333,7 +342,7 @@ function mcpToolPresentation(
     const name =
       browserDisplayName(appContext?.appName) ??
       browserDisplayName(surface.browserFamily) ??
-      browserDisplayName(surface.backend) ??
+      knownBrowserDisplayName(surface.backend) ??
       "Browser";
     const nativeBrowserIcon = browserNativeAppReference(name);
     const sourceIcon =

@@ -292,12 +292,11 @@ function AgentRow({
           agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
         )}
       >
-        {activity ?? statusLabel}
+        {activity ? `${statusLabel} · ${activity}` : statusLabel}
       </span>
       <span className="col-start-2 col-end-7 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
         {metadata.join(" · ")}
       </span>
-      <span className="sr-only">{statusLabel}</span>
     </div>
   );
 }
