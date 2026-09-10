@@ -3574,6 +3574,8 @@ describe("quiet timeline: nested agents", () => {
       expect(rows[0]).toMatchObject({
         lifecycleStatus: status === "failed" ? "failed" : "stopped",
         summary: `Ran 1 subagent · ${status === "failed" ? "1 failed" : "1 stopped"}`,
+        // Pylon carries the stop reason on the agent inside the spawn group
+        // rather than duplicating it onto the row.
         workEntry: {
           taskId: "trajectory:4",
           toolTitle: "Antigravity subagent batch",

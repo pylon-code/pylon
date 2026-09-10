@@ -58,7 +58,7 @@ export interface SubagentRunHandles {
 
 export interface RuntimeSubagent {
   readonly id: string;
-  readonly kind: "subagent" | "workflow" | "workflow_agent";
+  readonly kind: "subagent" | "subagent_batch" | "workflow" | "workflow_agent";
   readonly title: string;
   readonly role: string | null;
   readonly model: string | null;
@@ -96,7 +96,7 @@ const TERMINAL_STATUSES: ReadonlySet<RuntimeSubagentStatus> = new Set([
   "interrupted",
 ]);
 
-function isTerminalSubagentStatus(status: RuntimeSubagentStatus): boolean {
+export function isTerminalSubagentStatus(status: RuntimeSubagentStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
@@ -303,6 +303,9 @@ function kindFromPayload(
   payload: Record<string, unknown>,
   agentId: string,
 ): RuntimeSubagent["kind"] {
+  if (payload.taskType === "subagent_batch") {
+    return "subagent_batch";
+  }
   if (asString(payload.taskType) === "local_workflow") {
     return "workflow";
   }
@@ -364,6 +367,7 @@ function getOrCreate(
  */
 function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): boolean {
   let attemptBumped = false;
+  if (payload.taskType === "subagent_batch") agent.kind = "subagent_batch";
   const title = asString(payload.title);
   if (title) agent.title = title;
   const role = asString(payload.role);
@@ -622,6 +626,12 @@ export function foldSubagentActivities(
         if (summary) {
           agent.progress = bounded(summary);
           agent.recentActivity = appendActivity(agent.recentActivity, at, summary);
+        } else if (agent.kind === "subagent_batch" && asString(payload.status) === "idle") {
+          // The parent turn ended, so the batch cannot report child progress.
+          // Replace the stale running summary with the explanation instead of
+          // leaving a marker that implies work is still happening.
+          const detail = asString(payload.detail);
+          if (detail) agent.progress = bounded(detail);
         }
         const lastToolName = asString(payload.lastToolName);
         if (lastToolName) {
@@ -645,6 +655,13 @@ export function foldSubagentActivities(
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         const attemptBumped = fillMetadata(agent, payload);
+        if (agent.kind === "subagent_batch" && asString(payload.status) === "idle") {
+          // The parent turn ended, so the batch cannot report child progress.
+          // Replace the stale running summary with the explanation rather than
+          // leaving a marker that implies work is still happening.
+          const idleDetail = asString(payload.detail);
+          if (idleDetail) agent.progress = bounded(idleDetail);
+        }
         // A task first seen via task.updated (start row aged out) has run at
         // least once — zero activations would misreport "run 0" and let a
         // later start row treat it as never-started (review finding).
