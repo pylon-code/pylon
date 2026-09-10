@@ -295,6 +295,8 @@ export type MessagesTimelineRow =
       expanded: boolean;
       summary: string;
       summaryKind: ToolGroupSummaryKind;
+      toolSurface?: WorkLogEntry["toolSurface"];
+      toolIcon?: WorkLogEntry["toolIcon"];
       summaryToolIcon?: "browser" | "t3-code";
       hasFailure: boolean;
     }
@@ -463,8 +465,15 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
 /** Immediate, provider-neutral fallback while generated tool summaries are disabled or unavailable. */
 function summarizeToolGroup(entries: ReadonlyArray<WorkLogEntry>): string {
   const summaryEntries = omitSupersededLifecycleMarkers(entries, (entry) => entry);
+  // A named source stands in for every call it made, so a run of Chrome steps
+  // reads as the integration rather than a tool count.
+  const sources = new Map<string, NonNullable<WorkLogEntry["toolSource"]>>();
   const groupedEntries = new Map<ToolGroupAction, WorkLogEntry[]>();
   for (const entry of summaryEntries) {
+    if (entry.toolSource) {
+      sources.set(entry.toolSource.key, entry.toolSource);
+      continue;
+    }
     const action = toolGroupAction(entry);
     const group = groupedEntries.get(action);
     if (group) group.push(entry);
@@ -473,6 +482,20 @@ function summarizeToolGroup(entries: ReadonlyArray<WorkLogEntry>): string {
   const labels = [...groupedEntries].map(([action, actionEntries]) =>
     toolGroupActionLabel(action, toolGroupActionCount(action, actionEntries)),
   );
+  if (sources.size > 0) {
+    const sourceValues = [...sources.values()];
+    const sourceNames = sourceValues.map((source) => source.name);
+    const formattedNames =
+      sourceNames.length < 2
+        ? sourceNames[0]!
+        : sourceNames.length === 2
+          ? sourceNames.join(" and ")
+          : `${sourceNames.slice(0, -1).join(", ")}, and ${sourceNames.at(-1)}`;
+    const allIntegrations = sourceValues.every((source) => source.kind === "integration");
+    labels.unshift(
+      `Used ${formattedNames}${allIntegrations ? ` ${sources.size === 1 ? "integration" : "integrations"}` : ""}`,
+    );
+  }
   const sentenceLabels = labels.map((label, index) =>
     index === 0 ? label : label.charAt(0).toLowerCase() + label.slice(1),
   );
@@ -1211,6 +1234,22 @@ export function deriveMessagesTimelineRows(input: {
           const groupId = workGroupId(timelineEntry.id, timelineEntry.entry);
           const expanded = input.expandedWorkGroupIds?.has(groupId) ?? false;
           const summaryKind = toolGroupSummaryKind(visibleGroupedEntries);
+          const primarySourceEntry = visibleGroupedEntries.find(
+            (entry) => entry.toolSource !== undefined,
+          );
+          const primarySourceKey = primarySourceEntry?.toolSource?.key;
+          const primarySourceIcon = primarySourceKey
+            ? (visibleGroupedEntries.find(
+                (entry) =>
+                  entry.toolSource?.key === primarySourceKey && entry.toolIcon !== undefined,
+              )?.toolIcon ?? primarySourceEntry?.toolSource?.icon)
+            : undefined;
+          const groupToolSurface =
+            primarySourceEntry?.toolSurface ??
+            visibleGroupedEntries.findLast((entry) => entry.toolSurface !== undefined)?.toolSurface;
+          const groupToolIcon =
+            primarySourceIcon ??
+            visibleGroupedEntries.findLast((entry) => entry.toolIcon !== undefined)?.toolIcon;
           const latestToolEntry = visibleGroupedEntries.findLast(workLogEntryIsToolLike);
           const singleEntry =
             visibleGroupedEntries.length === 1 ? (visibleGroupedEntries[0] ?? null) : null;
@@ -1235,6 +1274,8 @@ export function deriveMessagesTimelineRows(input: {
                 ? visibleGroupedEntries.at(-1)!.label
                 : summarizeToolGroup(visibleGroupedEntries),
             summaryKind,
+            ...(groupToolSurface ? { toolSurface: groupToolSurface } : {}),
+            ...(groupToolIcon ? { toolIcon: groupToolIcon } : {}),
             ...(summaryToolIcon ? { summaryToolIcon } : {}),
             hasFailure:
               latestToolEntry !== undefined &&
@@ -1455,6 +1496,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.expanded === bw.expanded &&
         a.summary === bw.summary &&
         a.summaryKind === bw.summaryKind &&
+        a.toolSurface === bw.toolSurface &&
+        Equal.equals(a.toolIcon, bw.toolIcon) &&
         a.hasFailure === bw.hasFailure
       );
     }

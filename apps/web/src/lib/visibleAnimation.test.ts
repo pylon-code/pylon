@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import { observeVisibleAnimation } from "./visibleAnimation";
 
-let page = Object.assign(new EventTarget(), { visibilityState: "visible" });
+let focused = true;
+let page = Object.assign(new EventTarget(), {
+  visibilityState: "visible",
+  hasFocus: () => focused,
+});
 let motion = Object.assign(new EventTarget(), { matches: false });
 let observers: TestIntersectionObserver[] = [];
 let cleanups: Array<() => void> = [];
@@ -43,12 +47,16 @@ function attach(element: HTMLElement) {
 }
 
 beforeEach(() => {
-  page = Object.assign(new EventTarget(), { visibilityState: "visible" });
+  focused = true;
+  page = Object.assign(new EventTarget(), {
+    visibilityState: "visible",
+    hasFocus: () => focused,
+  });
   motion = Object.assign(new EventTarget(), { matches: false });
   observers = [];
   cleanups = [];
   vi.stubGlobal("document", page);
-  vi.stubGlobal("window", { matchMedia: () => motion });
+  vi.stubGlobal("window", Object.assign(new EventTarget(), { matchMedia: () => motion }));
   vi.stubGlobal("IntersectionObserver", TestIntersectionObserver);
 });
 
@@ -106,6 +114,21 @@ describe("observeVisibleAnimation", () => {
     page.visibilityState = "visible";
     motion.matches = false;
     page.dispatchEvent(new Event("visibilitychange"));
+    expect(animation.state()).toBe("running");
+  });
+
+  it("pauses while the window is unfocused", () => {
+    const animation = animationElement();
+    attach(animation.element);
+    observers[0]!.report(animation.element, true);
+    expect(animation.state()).toBe("running");
+
+    focused = false;
+    window.dispatchEvent(new Event("blur"));
+    expect(animation.state()).toBe("paused");
+
+    focused = true;
+    window.dispatchEvent(new Event("focus"));
     expect(animation.state()).toBe("running");
   });
 

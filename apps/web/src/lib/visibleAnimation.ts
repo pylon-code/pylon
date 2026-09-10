@@ -8,8 +8,13 @@ let observer: IntersectionObserver | null = null;
 let reducedMotion: MediaQueryList | null = null;
 
 function updateAnimation(animation: ObservedAnimation) {
+  // Reduce-motion, backgrounding and an unfocused window all stop an animation:
+  // nothing may repaint at rest.
   const running =
-    animation.intersecting && document.visibilityState === "visible" && !reducedMotion?.matches;
+    animation.intersecting &&
+    document.visibilityState === "visible" &&
+    document.hasFocus() &&
+    !reducedMotion?.matches;
   animation.element.style.setProperty("--visible-animation-state", running ? "running" : "paused");
   animation.element.style.setProperty(
     "--visible-animation-will-change",
@@ -32,6 +37,8 @@ export function observeVisibleAnimation(element: HTMLElement | SVGElement | null
     reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     reducedMotion.addEventListener("change", updateAnimations);
     document.addEventListener("visibilitychange", updateAnimations);
+    window.addEventListener("focus", updateAnimations);
+    window.addEventListener("blur", updateAnimations);
     observer = new IntersectionObserver((entries, source) => {
       if (source !== observer) return;
       for (const entry of entries) {
@@ -59,6 +66,8 @@ export function observeVisibleAnimation(element: HTMLElement | SVGElement | null
       reducedMotion?.removeEventListener("change", updateAnimations);
       reducedMotion = null;
       document.removeEventListener("visibilitychange", updateAnimations);
+      window.removeEventListener("focus", updateAnimations);
+      window.removeEventListener("blur", updateAnimations);
     }
   };
 }

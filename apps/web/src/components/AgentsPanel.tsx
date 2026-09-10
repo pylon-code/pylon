@@ -197,6 +197,8 @@ function AgentRow({
   liveActivityControls: AgentLiveActivityControls;
 }) {
   const visuals = STATUS_VISUALS[agent.status];
+  const statusLabel =
+    agent.kind === "subagent_batch" && agent.status === "idle" ? "Idle" : visuals.label;
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const role =
@@ -290,7 +292,7 @@ function AgentRow({
           agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
         )}
       >
-        {activity ? `${visuals.label} · ${activity}` : visuals.label}
+        {activity ? `${statusLabel} · ${activity}` : statusLabel}
       </span>
       <span className="col-start-2 col-end-7 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
         {metadata.join(" · ")}
