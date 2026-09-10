@@ -27,6 +27,7 @@ import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regenerati
 import {
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SnoozeGateExpiryMs,
+  formatThreadPlanProgressLabel,
   resolveThreadListV2Status,
   resolveThreadListV2SwipeActions,
   type ThreadListV2Status,
@@ -420,6 +421,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
 
   const status = resolveThreadListV2Status(thread);
   const statusLabel = STATUS_LABEL_BY_STATUS[status];
+  // "Working 3/7" answers whether an agent is moving without opening the row.
+  // The server clears planProgress when a turn settles, so this never labels a
+  // finished thread.
+  const planProgressLabel = status === "working" ? formatThreadPlanProgressLabel(thread) : null;
   // Settled rows label by the same stamp they sort by, so order and label
   // can't disagree. updatedAt is always present, so the resolver never
   // returns null here.
@@ -707,7 +712,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               : (statusLabel?.className ?? "text-foreground-tertiary"),
           )}
         >
-          {statusLabel?.label ?? timeLabel}
+          {statusLabel
+            ? `${statusLabel.label}${planProgressLabel === null ? "" : ` ${planProgressLabel}`}`
+            : timeLabel}
         </Text>
       </View>
       <Text

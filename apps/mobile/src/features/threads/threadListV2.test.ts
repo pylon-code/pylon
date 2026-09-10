@@ -24,6 +24,7 @@ import {
   buildThreadListV2Items,
   buildThreadListV2ListItems,
   getThreadListV2OrderedSection,
+  formatThreadPlanProgressLabel,
   resolveThreadListV2Enabled,
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SnoozeGateExpiryMs,
@@ -246,6 +247,29 @@ describe("resolveThreadListV2Status running without a turn", () => {
         }),
       ),
     ).toBe("ready");
+  });
+});
+
+describe("formatThreadPlanProgressLabel", () => {
+  it("labels a running plan with its completed and total steps", () => {
+    expect(
+      formatThreadPlanProgressLabel({
+        planProgress: { step: "Writing tests", completedSteps: 3, totalSteps: 7 },
+      }),
+    ).toBe("3/7");
+  });
+
+  it("reports nothing when the agent published no plan", () => {
+    expect(formatThreadPlanProgressLabel({ planProgress: null })).toBeNull();
+    expect(formatThreadPlanProgressLabel({})).toBeNull();
+  });
+
+  it("reports nothing for an empty plan rather than a 0/0 label", () => {
+    expect(
+      formatThreadPlanProgressLabel({
+        planProgress: { step: "Idle", completedSteps: 0, totalSteps: 0 },
+      }),
+    ).toBeNull();
   });
 });
 

@@ -322,6 +322,7 @@ function FloatingStatusLabel(props: {
     <WorkingDuration
       key="working"
       startedAt={props.status.startedAt}
+      step={props.status.step}
       onLayout={props.onLayout}
       active={active}
     />
@@ -367,6 +368,7 @@ function StatusLabelRow(props: {
 function WorkingDuration(props: {
   readonly active: boolean;
   readonly startedAt: string;
+  readonly step?: string | undefined;
   readonly onLayout: (event: LayoutChangeEvent) => void;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -379,7 +381,8 @@ function WorkingDuration(props: {
   }, [props.startedAt, props.active]);
 
   const duration = formatWorkingDuration(props.startedAt, nowMs);
-  const label = `Working for ${duration}`;
+  const step = props.step?.trim();
+  const label = step ? `Working for ${duration}, ${step}` : `Working for ${duration}`;
 
   return (
     <StatusLabelRow accessibilityLabel={label} onLayout={props.onLayout}>
@@ -390,6 +393,17 @@ function WorkingDuration(props: {
       >
         {duration}
       </SystemText>
+      {/* The step says what the agent is on, which is the question the pill
+        cannot answer with elapsed time alone. Truncated so a long step never
+        widens the capsule past the screen. */}
+      {step ? (
+        <Text
+          className="ml-1 max-w-[180px] font-t3-medium text-xs text-foreground-muted"
+          numberOfLines={1}
+        >
+          {`\u00b7 ${step}`}
+        </Text>
+      ) : null}
     </StatusLabelRow>
   );
 }

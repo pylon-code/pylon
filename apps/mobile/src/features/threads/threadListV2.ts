@@ -551,3 +551,14 @@ export function buildThreadListV2Items(input: {
     nextSnoozeWakeAt,
   };
 }
+
+/** "3/7" for a running thread's plan, or null when the agent published none.
+    The server clears planProgress when a turn settles, so a finished thread
+    never carries a stale count. */
+export function formatThreadPlanProgressLabel(
+  thread: Pick<EnvironmentThreadShell, "planProgress">,
+): string | null {
+  const planProgress = thread.planProgress;
+  if (!planProgress || planProgress.totalSteps <= 0) return null;
+  return `${planProgress.completedSteps}/${planProgress.totalSteps}`;
+}

@@ -4,7 +4,7 @@ import {
   isAtomCommandInterrupted,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
-import type { ContextMenuItem } from "@t3tools/contracts";
+import type { ContextMenuItem, OrchestrationThreadShell } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/unstable/reactivity";
 import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
@@ -1011,6 +1011,16 @@ export function resolveWorkingStartedAt(
     return firstValidTimestamp(turn.startedAt, turn.requestedAt, thread.session?.updatedAt);
   }
   return firstValidTimestamp(thread.session?.updatedAt);
+}
+
+/** "3/7" for a running thread's plan, or null when there is no plan worth
+    reporting. The server clears planProgress when a turn settles, so this
+    never labels a finished thread. */
+export function formatPlanProgressLabel(
+  planProgress: OrchestrationThreadShell["planProgress"],
+): string | null {
+  if (!planProgress || planProgress.totalSteps <= 0) return null;
+  return `${planProgress.completedSteps}/${planProgress.totalSteps}`;
 }
 
 export function formatWorkingDurationLabel(elapsedMs: number): string {

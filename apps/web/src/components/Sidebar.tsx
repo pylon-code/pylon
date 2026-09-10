@@ -142,6 +142,7 @@ import {
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
+  formatPlanProgressLabel,
   formatWorkingDurationLabel,
   firstValidTimestampMs,
   hasUnseenCompletion,
@@ -1136,6 +1137,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // indigo input, sky working, violet plan-ready). Pylon-only delegation keeps
   // a distinct static icon and label after removing its orchestrating matrix.
   const activityStatus = resolveSidebarThreadActivityVisual(status, props.isActive);
+  const planProgressLabel = isInFlight ? formatPlanProgressLabel(thread.planProgress) : null;
   const topStatus =
     activityStatus ??
     (status === "plan-ready"
@@ -1870,6 +1872,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                           {status === "working" || status === "delegating" ? (
                             <span aria-hidden>
                               <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                            </span>
+                          ) : null}
+                          {/* Plan progress answers "is this one moving" without
+                            opening the thread. Absent until the agent publishes
+                            a plan, and cleared when the turn settles. */}
+                          {planProgressLabel !== null ? (
+                            <span aria-hidden className="tabular-nums">
+                              {planProgressLabel}
                             </span>
                           ) : null}
                         </span>

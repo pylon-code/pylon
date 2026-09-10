@@ -29,6 +29,7 @@ import {
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
   searchSidebarThreadsByTitle,
+  formatPlanProgressLabel,
   formatWorkingDurationLabel,
   shouldClearThreadSelectionOnMouseDown,
   shouldRecedeSidebarThread,
@@ -1977,6 +1978,23 @@ describe("resolveWorkingStartedAt", () => {
 
   it("returns null with neither a running turn nor a session", () => {
     expect(resolveWorkingStartedAt({ latestTurn: null, session: null })).toBeNull();
+  });
+});
+
+describe("formatPlanProgressLabel", () => {
+  it("labels a running plan with its completed and total steps", () => {
+    expect(
+      formatPlanProgressLabel({ step: "Writing tests", completedSteps: 3, totalSteps: 7 }),
+    ).toBe("3/7");
+  });
+
+  it("reports nothing when the agent published no plan", () => {
+    expect(formatPlanProgressLabel(null)).toBeNull();
+    expect(formatPlanProgressLabel(undefined)).toBeNull();
+  });
+
+  it("reports nothing for an empty plan rather than a 0/0 label", () => {
+    expect(formatPlanProgressLabel({ step: "Idle", completedSteps: 0, totalSteps: 0 })).toBeNull();
   });
 });
 

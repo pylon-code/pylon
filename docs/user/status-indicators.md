@@ -23,6 +23,12 @@ Task lists use `✓` for completed steps, `●` for the current step, and `○` 
 pending or passive waiting steps. A step that is specifically waiting for you
 uses an amber `●`.
 
+A working thread also carries its plan progress as a step count, such as
+`3/7`, on sidebar rows and mobile thread rows. The count appears once the
+agent publishes a plan and clears when the turn settles, so a finished
+thread never keeps a stale number. After an environment restarts, a thread
+that is still running shows no count until its agent next updates the plan.
+
 On mobile, a thread that cannot load may show **Could not synchronize the
 thread.** This can happen while the environment still shows connected. The
 message remains until Pylon starts another attempt to load that thread.

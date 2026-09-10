@@ -6,7 +6,8 @@ import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connect
  * another. The connection variant is tappable and triggers a reconnect.
  */
 export type FloatingWorkingStatus =
-  | { readonly kind: "working"; readonly startedAt: string }
+  // `step` is the running plan's current step, when the agent publishes one.
+  | { readonly kind: "working"; readonly startedAt: string; readonly step?: string }
   | { readonly kind: "syncing"; readonly label: string }
   | { readonly kind: "compacting" }
   | {
