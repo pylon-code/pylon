@@ -215,9 +215,10 @@ export function applyPushedUsageWindows(
     };
   }
 
+  // Clear the stale marker without putting undefined into the JSON provider snapshot.
+  const { unavailable: _unavailable, ...currentReading } = current ?? {};
   return {
-    ...current,
-    unavailable: undefined,
+    ...currentReading,
     source: current?.source ?? options.source,
     checkedAt: DateTime.formatIso(DateTime.makeUnsafe(checkedAtMs)),
     windows,

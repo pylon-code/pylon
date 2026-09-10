@@ -1,3 +1,5 @@
+import { ServerProvider, ServerProviders } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -6,6 +8,12 @@ import {
   usageLimitsFromCodexRateLimits,
   usageWindowsFromCodexRateLimitSnapshot,
 } from "./providerUsageLimits.ts";
+
+const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
+const decodeServerProviders = Schema.decodeUnknownSync(ServerProviders);
+const providerJsonCodec = Schema.toCodecJson(ServerProviders);
+const encodeProviderJson = Schema.encodeSync(providerJsonCodec);
+const decodeProviderJson = Schema.decodeUnknownSync(providerJsonCodec);
 
 describe("usageLimitsFromCodexRateLimits", () => {
   it("selects the main allowance when the legacy snapshot names Spark", () => {
@@ -161,6 +169,46 @@ const pushed = (
 ) => ({ window, observedAt });
 
 describe("applyPushedUsageWindows", () => {
+  it.each([
+    { label: "a missing probe", current: undefined },
+    { label: "a successful probe", current: PROBED },
+    {
+      label: "a failed probe",
+      current: {
+        ...PROBED,
+        unavailable: { reason: "probeFailed", message: "Probe failed." },
+      } as const,
+    },
+  ])("keeps provider JSON serializable when a push replaces $label", ({ current }) => {
+    const usageLimits = applyPushedUsageWindows(
+      current,
+      [
+        pushed(
+          { label: "Session", usedPercent: 15, windowDurationMins: 300 },
+          "2026-08-04T18:10:00.000Z",
+        ),
+      ],
+      { nowMs: NOW_MS, maxAgeMs: MAX_AGE_MS, source: "push" },
+    );
+    const provider = decodeServerProvider({
+      instanceId: "codex",
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-08-04T18:10:00.000Z",
+      models: [],
+      usageLimits,
+    });
+    const encoded = encodeProviderJson([provider]);
+
+    expect(usageLimits).not.toHaveProperty("unavailable");
+    expect(decodeProviderJson(encoded)).toEqual([provider]);
+    expect(decodeServerProviders(encoded)).toEqual([provider]);
+  });
+
   it("preserves the reset-credit balance and its original read time on a window push", () => {
     const resetCredits = { availableCount: 0, checkedAt: PROBED.checkedAt };
     const result = applyPushedUsageWindows(
