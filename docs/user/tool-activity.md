@@ -25,4 +25,4 @@ On web and desktop, groups of tools that finish after the final reply stay below
 
 Long run durations include hours, such as "Worked for 6h 59m 50s". Live timers use the same hour format.
 
-On web and desktop, only the active tool label shines. It stays still when offscreen, in a background tab or unfocused window, or with reduced motion or forced colors. Loading and server-update icons and the ultrathink border use static colors.
+On web and desktop, only the active tool label shines. It stays still when offscreen, in a background tab or unfocused window, or with reduced motion or forced colors. Loading spinners pause under the same conditions. Loading and server-update icons and the ultrathink border use static colors.

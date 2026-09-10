@@ -168,6 +168,7 @@ import {
   type ParsedPreviewAnnotation,
 } from "~/lib/previewAnnotation";
 import { cn } from "~/lib/utils";
+import { observeVisibleAnimation } from "~/lib/visibleAnimation";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
@@ -2007,7 +2008,10 @@ function LiveActivityRow({
   active?: boolean;
 }) {
   return (
-    <div className="min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed">
+    <div
+      ref={active ? observeVisibleAnimation : undefined}
+      className="min-h-6 w-fit max-w-full min-w-0 overflow-hidden rounded-md text-sm leading-relaxed"
+    >
       <LiveActivityContent
         label={label}
         iconName={iconName}
@@ -2032,33 +2036,6 @@ function LiveActivityContent({
   announceFailure?: boolean;
   active?: boolean;
 }) {
-  const labelRef = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    const element = labelRef.current;
-    if (!active || !element) return;
-    let visible = false;
-    const update = () => {
-      element.dataset.animationActive = String(visible && !document.hidden && document.hasFocus());
-    };
-    const pause = () => {
-      element.dataset.animationActive = "false";
-    };
-    const observer = new IntersectionObserver(([entry]) => {
-      visible = entry?.isIntersecting ?? false;
-      update();
-    });
-    observer.observe(element);
-    document.addEventListener("visibilitychange", update);
-    window.addEventListener("focus", update);
-    window.addEventListener("blur", pause);
-    return () => {
-      observer.disconnect();
-      document.removeEventListener("visibilitychange", update);
-      window.removeEventListener("focus", update);
-      window.removeEventListener("blur", pause);
-      delete element.dataset.animationActive;
-    };
-  }, [active]);
   const isSpecialToolIcon = iconName === "browser" || iconName === "t3-code";
   const resolvedIconName = iconName;
 
@@ -2082,9 +2059,7 @@ function LiveActivityContent({
           />
         </span>
       ) : null}
-      <span ref={labelRef} className={cn("min-w-0 flex-1 truncate", active && "live-tool-shine")}>
-        {label}
-      </span>
+      <span className={cn("min-w-0 flex-1 truncate", active && "live-tool-shine")}>{label}</span>
       {failed && isSpecialToolIcon ? <XIcon aria-hidden className="size-3 shrink-0" /> : null}
     </span>
   );
