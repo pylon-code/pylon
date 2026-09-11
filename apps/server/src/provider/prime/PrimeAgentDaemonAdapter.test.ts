@@ -226,6 +226,7 @@ interface FakeCaptures {
   }>;
   readonly order: Array<string>;
   disposeCount: number;
+  eventStreamFinalizations: number;
   disposeObserved: Queue.Queue<void> | undefined;
   disposeRelease: Deferred.Deferred<void> | undefined;
   extensionFailure: boolean;
@@ -402,6 +403,7 @@ function makeCaptures(): FakeCaptures {
     extensions: [],
     order: [],
     disposeCount: 0,
+    eventStreamFinalizations: 0,
     disposeObserved: undefined,
     disposeRelease: undefined,
     extensionFailure: false,
@@ -843,7 +845,13 @@ function fakeRuntimeFactory(
             captures.agentDepth = { ...captures.agentDepth, maxDepth, source: "session" };
             return captures.agentDepth;
           }),
-        events: Stream.fromQueue(queue),
+        events: Stream.fromQueue(queue).pipe(
+          Stream.ensuring(
+            Effect.sync(() => {
+              captures.eventStreamFinalizations += 1;
+            }),
+          ),
+        ),
         rlmQuiescenceAvailable: captures.rlmQuiescenceAvailable,
         waitForRlmQuiescence: (token, signal) =>
           Effect.gen(function* () {
@@ -6049,6 +6057,118 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  for (const firstDecision of ["accept", "decline"] as const) {
+    it.effect(
+      `keeps native follow-up approvals live after the first ${firstDecision} worker completes`,
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const captures = makeCaptures();
+            captures.correlatedPromptLifecycleAvailable = true;
+            captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+            const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+              instanceId,
+              runtimeFactory: fakeRuntimeFactory(captures),
+            });
+            const subscription = yield* subscribe(adapter);
+            const firstWorker = yield* Effect.gen(function* () {
+              yield* adapter.startSession({
+                threadId,
+                cwd: process.cwd(),
+                runtimeMode: "approval-required",
+              });
+              return yield* adapter.sendTurn({ threadId, input: "first supervised turn" });
+            }).pipe(Effect.forkChild);
+            const firstCorrelation = yield* Queue.take(captures.correlatedPromptObserved);
+            const firstStarted = yield* awaitObservedType(subscription.observed, "turn.started");
+            const extensionSource = yield* Effect.promise(() =>
+              NodeFSP.readFile(captures.runtimeInputs[0]!.extensions![0]!, "utf8"),
+            );
+            const title = extensionSource.match(/const TITLE = "([^"]+)";/)?.[1];
+            if (title === undefined) throw new Error("Managed extension title was not generated.");
+
+            const approve = Effect.fn("approveFollowupTest")(function* (
+              correlationId: string,
+              nativeId: string,
+              decision: "accept" | "decline",
+            ) {
+              yield* offer(captures, {
+                _tag: "PromptLifecycleUpdated",
+                lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+              });
+              yield* offer(captures, {
+                _tag: "ExtensionRequest",
+                attribution: { scope: "prompt", correlationId },
+                request: {
+                  id: nativeId,
+                  method: "confirm",
+                  title,
+                  message:
+                    "pylon-permission-v1\ncommand_execution_approval\nipython\nwrite fixture",
+                },
+              });
+              const opened = yield* awaitObservedType(subscription.observed, "request.opened");
+              yield* adapter.respondToRequest(
+                threadId,
+                ApprovalRequestId.make(String(opened.requestId)),
+                decision,
+              );
+              yield* awaitObservedType(subscription.observed, "request.resolved");
+              expect(captures.extensions.at(-1)).toEqual({
+                id: nativeId,
+                response: { confirmed: decision === "accept" },
+              });
+              return opened;
+            });
+            expect(
+              (yield* approve(firstCorrelation, "first-native-approval", firstDecision)).turnId,
+            ).toBe(firstStarted.turnId);
+            yield* offer(captures, {
+              _tag: "PromptLifecycleUpdated",
+              lifecycle: lifecycleSnapshot(firstCorrelation, "completed", 3),
+            });
+            yield* Fiber.join(firstWorker);
+            yield* awaitObservedType(subscription.observed, "turn.completed");
+            expect(captures.eventStreamFinalizations).toBe(0);
+
+            const secondWorker = yield* adapter
+              .sendTurn({ threadId, input: "second supervised turn" })
+              .pipe(Effect.forkChild);
+            const secondCorrelation = yield* Queue.take(captures.correlatedPromptObserved);
+            const secondStarted = yield* awaitObservedType(subscription.observed, "turn.started");
+            expect(secondStarted.turnId).not.toBe(firstStarted.turnId);
+            expect(
+              (yield* approve(secondCorrelation, "second-native-approval", "accept")).turnId,
+            ).toBe(secondStarted.turnId);
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              attribution: { scope: "prompt", correlationId: secondCorrelation },
+              message: assistantMessage("follow-up completed"),
+            });
+            yield* offer(captures, {
+              _tag: "PromptLifecycleUpdated",
+              lifecycle: lifecycleSnapshot(secondCorrelation, "completed", 3),
+            });
+            yield* Fiber.join(secondWorker);
+            yield* awaitObservedType(subscription.observed, "turn.completed");
+            const secondEvents = subscription.events.filter(
+              (event) => event.turnId === secondStarted.turnId,
+            );
+            expect(secondEvents.filter((event) => event.type === "request.opened")).toHaveLength(1);
+            expect(secondEvents.filter((event) => event.type === "content.delta")).toHaveLength(1);
+            expect(secondEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+            expect((yield* adapter.listSessions())[0]?.status).toBe("ready");
+            expect(captures.runtimeInputs).toHaveLength(1);
+            expect(captures.eventStreamFinalizations).toBe(0);
+            expect(captures.correlatedPromptCancellations).toEqual([]);
+            expect(captures.order).not.toContain("abort-clear");
+            yield* adapter.stopSession(threadId);
+            expect(captures.eventStreamFinalizations).toBe(1);
+          }),
+        ).pipe(Effect.provide(testLayer)),
+    );
+  }
+
   it.effect("gates approval-required sessions through opaque canonical approvals", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -9916,6 +10036,7 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(adapter.capabilities.conversationRollback).toBe("absolute");
         expect(captures.runtimeInputs).toHaveLength(2);
         expect(captures.runtimeInputs.at(-1)?.recovery?.kind).toBe("create");
+        const finalizedBeforeAdmission = captures.eventStreamFinalizations;
         const turn = yield* adapter.sendTurn(turnInput).pipe(Effect.forkChild);
         yield* Queue.take(captures.promptObserved!);
         yield* offer(captures, { _tag: "RunCompleted", messages: [] });
@@ -9923,6 +10044,7 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* awaitObservedType(subscription.observed, "turn.completed");
 
         expect(markAdmittedCalls).toHaveLength(1);
+        expect(captures.eventStreamFinalizations).toBe(finalizedBeforeAdmission);
         yield* Deferred.await(markIdleObserved);
         const retainedSessions = yield* adapter.listSessions();
         expect(retainedSessions).toHaveLength(1);
@@ -9943,6 +10065,7 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(held._tag).toBe("Failure");
         if (held._tag === "Failure") expect(held.failure).toMatchObject({ reason: "busy" });
         expect(captures.runtimeInputs).toHaveLength(2);
+        expect(captures.eventStreamFinalizations).toBe(finalizedBeforeAdmission);
       }),
     ).pipe(Effect.provide(testLayer)),
   );

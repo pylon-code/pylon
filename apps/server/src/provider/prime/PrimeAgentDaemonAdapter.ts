@@ -1233,10 +1233,11 @@ export function makePrimeAgentDaemonAdapter(
         return teardown.run.pipe(
           Effect.forkDetach,
           Effect.andThen(
+            // Session closure must be able to interrupt the consumer that requested teardown.
             Effect.raceFirst(
               Deferred.await(teardown.context.teardownResourcesStarted),
               Deferred.await(teardown.completion),
-            ),
+            ).pipe(Effect.interruptible),
           ),
           Effect.andThen(Effect.yieldNow),
           Effect.asVoid,
@@ -4899,7 +4900,7 @@ export function makePrimeAgentDaemonAdapter(
           if (recoveryStart === undefined) {
             context.eventFiber = yield* runtime.events.pipe(
               Stream.runForEach((event) => consumeEvent(context, event)),
-              Effect.forkChild,
+              Effect.forkIn(context.scope),
             );
           }
           if (recoveryStart === undefined && runtime.inputAdmissionBusy) {
@@ -5951,7 +5952,7 @@ export function makePrimeAgentDaemonAdapter(
               context.recoveryPendingActivation = false;
               context.eventFiber = yield* context.runtime.events.pipe(
                 Stream.runForEach((event) => consumeEvent(context, event)),
-                Effect.forkChild,
+                Effect.forkIn(context.scope),
               );
               if (context.runtime.inputAdmissionBusy) {
                 yield* startBackgroundQuiescenceWatchLocked(context);
