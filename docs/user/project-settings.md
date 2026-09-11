@@ -14,6 +14,11 @@ Select a machine to limit edits to it. **All machines** writes defaults to conne
 offline machines keep their previous values. When selected machines or checkouts disagree, the row
 says so. Browser access changes apply when an agent session next starts.
 
+A machine running an older Pylon server still saves its workspace and browser access defaults, and
+keeps each project's actions and automatic pull on that project. Its default model, automatic pull,
+and action defaults, and per-project browser access, need a server update first. Settings names the
+machines to update.
+
 Project grouping has a default for this client across machines, with individual checkout overrides.
 Shared actions apply to projects that inherit them; editing a project's actions creates an
 independent list for that checkout. Reset that list to use shared actions again. Existing project

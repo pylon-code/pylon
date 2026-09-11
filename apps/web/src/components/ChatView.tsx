@@ -1,4 +1,8 @@
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
+import {
+  resolveProjectScriptsWrite,
+  supportsProjectDefaults,
+} from "./settings/ProjectSettingsPanel.logic";
 import { videoMimeType } from "@t3tools/shared/video";
 import { buildRollbackTurnCountByMessageId } from "./ChatView.logic";
 import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
@@ -326,6 +330,7 @@ import { appendReviewCommentsToPrompt, type ReviewCommentContext } from "../revi
 import { environmentCatalog } from "../connection/catalog";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/terminalSessions";
+import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import {
   environmentServerConfigsAtom,
@@ -1459,6 +1464,7 @@ export default function ChatView(props: ChatViewProps) {
   const updateProjectScriptSettings = useAtomCommand(serverEnvironment.updateSettings, {
     reportFailure: false,
   });
+  const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
   const upsertKeybinding = useAtomCommand(serverEnvironment.upsertKeybinding, {
     reportFailure: false,
   });
@@ -4042,19 +4048,31 @@ export default function ChatView(props: ChatViewProps) {
       keybinding?: string | null;
       keybindingCommand: KeybindingCommand | null;
     }): Promise<AtomCommandResult<void, unknown>> => {
-      const updateResult = mapAtomCommandResult(
-        await updateProjectScriptSettings({
-          environmentId,
-          input: {
-            patch: {
-              projectScriptOverrides: {
-                [input.projectId]: input.nextScripts,
-              },
-            },
-          },
-        }),
-        () => undefined,
-      );
+      const scriptServerConfig = environmentById.get(environmentId)?.serverConfig;
+      // Until the server reports its capabilities there is no telling where actions are kept.
+      if (!scriptServerConfig) {
+        return AsyncResult.failure(
+          Cause.fail(new Error("Reconnect to this machine to save project actions.")),
+        );
+      }
+      const write = resolveProjectScriptsWrite({
+        supportsProjectDefaults: supportsProjectDefaults(scriptServerConfig),
+        projectId: input.projectId,
+        nextScripts: input.nextScripts,
+      });
+      const updateResult =
+        write.kind === "settings"
+          ? mapAtomCommandResult(
+              await updateProjectScriptSettings({ environmentId, input: { patch: write.patch } }),
+              () => undefined,
+            )
+          : mapAtomCommandResult(
+              await updateProject({
+                environmentId,
+                input: { projectId: input.projectId, scripts: input.nextScripts },
+              }),
+              () => undefined,
+            );
       if (updateResult._tag === "Failure") {
         return updateResult;
       }
@@ -4075,7 +4093,7 @@ export default function ChatView(props: ChatViewProps) {
       }
       return updateResult;
     },
-    [environmentId, updateProjectScriptSettings, upsertKeybinding],
+    [environmentById, environmentId, updateProject, updateProjectScriptSettings, upsertKeybinding],
   );
   const saveProjectScript = useCallback(
     async (input: NewProjectScriptInput): Promise<AtomCommandResult<void, unknown>> => {

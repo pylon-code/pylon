@@ -31,6 +31,12 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { PROJECT_GROUPING_MODE_LABELS } from "./ProjectSettingsPanel";
 import { ProjectDefaultActionsSettings } from "./ProjectDefaultActionsSettings";
+import {
+  outdatedProjectDefaultsNotice,
+  patchRequiresProjectDefaults,
+  settingRequiresProjectDefaults,
+  supportsProjectDefaults,
+} from "./ProjectSettingsPanel.logic";
 import { searchableSetting } from "./settingsSearch";
 import {
   SETTINGS_PICKER_TRIGGER_CLASSNAME,
@@ -63,8 +69,16 @@ export function ProjectDefaultsSettings({
     (environment) =>
       environment.connection.phase === "connected" && environment.serverConfig !== null,
   );
+  // Older servers still save the workspace and browser access defaults, but drop the rest.
+  const currentTargets = targets.filter((target) => supportsProjectDefaults(target.serverConfig));
+  const outdatedTargets = targets.filter((target) => !supportsProjectDefaults(target.serverConfig));
+  const writeTargets = (patch: ServerSettingsPatch) =>
+    patchRequiresProjectDefaults(patch) ? currentTargets : targets;
+  const representativeTargets = currentTargets.length > 0 ? currentTargets : targets;
   const representative =
-    targets.find((environment) => environment.environmentId === primaryEnvironmentId) ?? targets[0];
+    representativeTargets.find(
+      (environment) => environment.environmentId === primaryEnvironmentId,
+    ) ?? representativeTargets[0];
   const serverSettings = representative?.serverConfig?.settings ?? DEFAULT_SERVER_SETTINGS;
   const providers = representative?.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS;
   const settings = { ...serverSettings, ...clientSettings };
@@ -80,7 +94,7 @@ export function ProjectDefaultsSettings({
     selection?.model,
   );
   const activeEntry = entries.find((entry) => entry.instanceId === selection?.instanceId);
-  const mixedModel = targets.some(
+  const mixedModel = currentTargets.some(
     (target) =>
       JSON.stringify(target.serverConfig?.settings.defaultModelSelection) !==
       JSON.stringify(storedSelection),
@@ -94,14 +108,16 @@ export function ProjectDefaultsSettings({
       target.serverConfig?.settings.enableAgentBrowserAccess !==
       serverSettings.enableAgentBrowserAccess,
   );
-  const disabled = (key: keyof ServerSettingsPatch) => targets.length === 0 || saving.has(key);
-  const mixedAutoPull = targets.some(
+  const disabled = (key: keyof ServerSettingsPatch) =>
+    (settingRequiresProjectDefaults(key) ? currentTargets : targets).length === 0 ||
+    saving.has(key);
+  const mixedAutoPull = currentTargets.some(
     (target) => target.serverConfig?.settings.defaultAutoPull !== serverSettings.defaultAutoPull,
   );
 
   function modelDisabledReason(instanceId: ProviderInstanceId, model: string): string | null {
     const sourceEntry = entries.find((entry) => entry.instanceId === instanceId);
-    for (const target of targets) {
+    for (const target of currentTargets) {
       const config = target.serverConfig;
       if (!config) continue;
       const entry = applyProviderInstanceSettings(
@@ -126,7 +142,8 @@ export function ProjectDefaultsSettings({
 
   async function save(patch: ServerSettingsPatch) {
     const keys = Object.keys(patch);
-    if (targets.length === 0 || keys.some((key) => savingRef.current.has(key))) return;
+    const saveTargets = writeTargets(patch);
+    if (saveTargets.length === 0 || keys.some((key) => savingRef.current.has(key))) return;
     const nextModel = patch.defaultModelSelection;
     const reason = nextModel ? modelDisabledReason(nextModel.instanceId, nextModel.model) : null;
     if (reason) {
@@ -137,11 +154,11 @@ export function ProjectDefaultsSettings({
     setSaving(new Set(savingRef.current));
     try {
       const results = await Promise.all(
-        targets.map((target) =>
+        saveTargets.map((target) =>
           updateSettings({ environmentId: target.environmentId, input: { patch } }),
         ),
       );
-      const failedTargets = targets.filter((_, index) => results[index]?._tag === "Failure");
+      const failedTargets = saveTargets.filter((_, index) => results[index]?._tag === "Failure");
       if (failedTargets.length > 0) {
         toastManager.add({
           type: "error",
@@ -199,11 +216,18 @@ export function ProjectDefaultsSettings({
               : "Changes apply to connected machines only. Offline machines keep their current defaults."}
           </p>
         ) : null}
+        {outdatedTargets.length > 0 ? (
+          <p role="status" className="px-4 py-3 text-sm text-muted-foreground">
+            {outdatedProjectDefaultsNotice(
+              environmentId === null ? outdatedTargets.map((target) => target.label) : null,
+            )}
+          </p>
+        ) : null}
         <SettingsRow
           title="Model"
           description="Default model for new threads. Projects can override it."
           status={
-            targets.length === 0
+            currentTargets.length === 0
               ? undefined
               : mixedModel
                 ? "Differs by machine"

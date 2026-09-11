@@ -12,6 +12,7 @@ import {
 import { Button } from "../ui/button";
 import { ProjectActionsList } from "./ProjectActionsList";
 import { useProjectScriptSettings } from "./ProjectSettingsPanel";
+import { supportsProjectDefaults } from "./ProjectSettingsPanel.logic";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
 
 export function ProjectDefaultActionsSettings({
@@ -24,7 +25,8 @@ export function ProjectDefaultActionsSettings({
     (environment) =>
       (environmentId === null || environment.environmentId === environmentId) &&
       environment.connection.phase === "connected" &&
-      environment.serverConfig !== null,
+      // Older servers have nowhere to keep default actions; the page names them.
+      supportsProjectDefaults(environment.serverConfig),
   );
   const representative = targets[0]?.serverConfig;
   const scripts = representative?.settings.defaultProjectScripts ?? [];
@@ -43,6 +45,7 @@ export function ProjectDefaultActionsSettings({
               environmentId,
               settings: serverConfig.settings,
               keybindings: serverConfig.keybindings,
+              supportsProjectDefaults: true,
             },
           ]
         : [],

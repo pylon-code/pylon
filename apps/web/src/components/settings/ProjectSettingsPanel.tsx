@@ -114,7 +114,15 @@ import {
   canPickExternalProjectFavicon,
   ProjectFaviconPickerDialog,
 } from "./ProjectFaviconPickerDialog";
-import { projectGroupTitleNeedsUpdate } from "./ProjectSettingsPanel.logic";
+import {
+  planProjectOverrideWrites,
+  projectGroupTitleNeedsUpdate,
+  resolveProjectScriptsWrite,
+  supportsProjectDefaults,
+} from "./ProjectSettingsPanel.logic";
+
+const PROJECT_BROWSER_ACCESS_UPDATE_HINT =
+  "Update every environment in this project group to override agent browser access.";
 
 const ProjectIconPickerDialog = lazy(() =>
   import("./ProjectIconPickerDialog").then((module) => ({
@@ -258,6 +266,7 @@ export function useProjectScriptSettings(
     environmentId: EnvironmentId;
     settings: ServerSettings;
     keybindings: ResolvedKeybindingsConfig;
+    supportsProjectDefaults: boolean;
     project?: { id: ProjectId; scripts: readonly ProjectScript[] };
   }[],
 ) {
@@ -265,6 +274,7 @@ export function useProjectScriptSettings(
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, "project actions update");
+  const updateProject = useAtomCommand(projectEnvironment.update, "project actions update");
   const upsertKeybinding = useAtomCommand(
     serverEnvironment.upsertKeybinding,
     "action shortcut update",
@@ -287,20 +297,30 @@ export function useProjectScriptSettings(
     savingRef.current = true;
     setSaving(true);
     try {
-      for (const { environmentId, settings, keybindings, project } of targets) {
+      for (const target of targets) {
+        const { environmentId, settings, keybindings, project } = target;
         const current = project
           ? resolveProjectScripts(settings, project)
           : settings.defaultProjectScripts;
         const nextScripts = transform(current);
         const effectiveScripts = nextScripts ?? settings.defaultProjectScripts;
-        const result = await updateSettings({
-          environmentId,
-          input: {
-            patch: project
-              ? { projectScriptOverrides: { [project.id]: nextScripts } }
-              : { defaultProjectScripts: nextScripts ?? [] },
-          },
+        const write = resolveProjectScriptsWrite({
+          supportsProjectDefaults: target.supportsProjectDefaults,
+          projectId: project?.id ?? null,
+          nextScripts,
         });
+        if (write.kind === "unsupported") {
+          const message = "Update this machine to save default actions.";
+          toastManager.add({ type: "error", title: "Actions not saved", description: message });
+          return AsyncResult.failure(Cause.fail(new Error(message)));
+        }
+        const result =
+          write.kind === "settings"
+            ? await updateSettings({ environmentId, input: { patch: write.patch } })
+            : await updateProject({
+                environmentId,
+                input: { projectId: write.projectId, scripts: write.scripts },
+              });
         if (result._tag === "Failure") return reportScriptFailure(result);
         if (!isElectron) continue;
         const changedIds = scriptId
@@ -428,6 +448,11 @@ function ProjectDetail({
         (browserOverride ?? projectSettings.enableAgentBrowserAccess)
     );
   });
+  // An offline checkout does not block the row; saving asks for it to connect.
+  const browserOverridesSupported = group.memberProjects.every((member) => {
+    const config = environmentById.get(member.environmentId)?.serverConfig;
+    return config == null || supportsProjectDefaults(config);
+  });
   const setBooleanOverride = async (
     key: "projectAgentBrowserAccessOverrides" | "projectAutoPullOverrides",
     enabled: boolean | undefined,
@@ -448,27 +473,41 @@ function ProjectDetail({
           return;
         }
       }
-      if (key === "projectAutoPullOverrides" && enabled === undefined) {
-        const result = await updateAllMembers(
-          { autoPull: false },
-          "Failed to reset automatic pull",
-        );
-        if (result._tag === "Failure") return;
-      }
-      for (const environmentId of environmentIds) {
-        const overrides = Object.fromEntries(
-          group.memberProjects
-            .filter((member) => member.environmentId === environmentId)
-            .map((member) => [member.id, enabled ?? null]),
-        );
-        const result = await updateServerSettings({
-          environmentId,
-          input: { patch: { [key]: overrides } },
+      const writes = planProjectOverrideWrites({
+        key,
+        enabled,
+        members: group.memberProjects,
+        supportsProjectDefaults: (environmentId) =>
+          supportsProjectDefaults(environmentById.get(environmentId)?.serverConfig),
+      });
+      if (writes === null) {
+        toastManager.add({
+          type: "warning",
+          title: "Setting not saved",
+          description: PROJECT_BROWSER_ACCESS_UPDATE_HINT,
         });
+        return;
+      }
+      for (const write of writes) {
+        const environmentId =
+          write.kind === "settings" ? write.environmentId : write.member.environmentId;
+        const result =
+          write.kind === "settings"
+            ? mapAtomCommandResult(
+                await updateServerSettings({ environmentId, input: { patch: write.patch } }),
+                () => undefined,
+              )
+            : mapAtomCommandResult(
+                await updateProject({
+                  environmentId,
+                  input: { projectId: write.member.id, autoPull: write.autoPull },
+                }),
+                () => undefined,
+              );
         if (result._tag === "Failure") {
           reportFailure(
             `Failed to save project setting on ${environmentById.get(environmentId)?.label ?? "this machine"}`,
-            mapAtomCommandResult(result, () => undefined),
+            result,
           );
           return;
         }
@@ -736,19 +775,27 @@ function ProjectDetail({
   const scriptSettings = useEnvironmentSettings(selectedCheckout.environmentId);
   const scripts = resolveProjectScripts(scriptSettings, selectedCheckout);
   const scriptsInherited = projectScriptsInheritDefaults(scriptSettings, selectedCheckout);
+  // Older servers keep actions on the checkout itself, with no machine defaults to inherit.
+  const scriptDefaultsSupported = supportsProjectDefaults(selectedServerConfig);
   const [editorRequest, setEditorRequest] = useState<ProjectScriptEditorRequest | null>(null);
   const {
     saving: isSavingScripts,
     persist: persistScripts,
     submit: submitScript,
-  } = useProjectScriptSettings([
-    {
-      environmentId: selectedCheckout.environmentId,
-      settings: scriptSettings,
-      keybindings,
-      project: selectedCheckout,
-    },
-  ]);
+  } = useProjectScriptSettings(
+    // Until the checkout's server reports its capabilities there is no telling where actions are kept.
+    selectedServerConfig
+      ? [
+          {
+            environmentId: selectedCheckout.environmentId,
+            settings: scriptSettings,
+            keybindings,
+            supportsProjectDefaults: scriptDefaultsSupported,
+            project: selectedCheckout,
+          },
+        ]
+      : [],
+  );
   const t3File = useT3ProjectFileState(
     selectedCheckout.environmentId,
     selectedCheckout.workspaceRoot,
@@ -1195,14 +1242,16 @@ function ProjectDetail({
           <SettingsRow
             title="Agent browser access"
             description={
-              browserMixed
-                ? "Mixed defaults or overrides across selected checkouts."
-                : browserOverride === undefined
-                  ? "Inherited from machine defaults. Controls agent access to the preview browser."
-                  : "Overridden for this project. Applies when the agent session next starts."
+              !browserOverridesSupported
+                ? PROJECT_BROWSER_ACCESS_UPDATE_HINT
+                : browserMixed
+                  ? "Mixed defaults or overrides across selected checkouts."
+                  : browserOverride === undefined
+                    ? "Inherited from machine defaults. Controls agent access to the preview browser."
+                    : "Overridden for this project. Applies when the agent session next starts."
             }
             resetAction={
-              browserOverrides.some((value) => value !== undefined) ? (
+              browserOverridesSupported && browserOverrides.some((value) => value !== undefined) ? (
                 <SettingResetButton
                   label="project browser access"
                   tooltip="Reset to inherited browser access"
@@ -1222,7 +1271,7 @@ function ProjectDetail({
                         ? "enabled"
                         : "disabled"
                 }
-                disabled={savingBrowserAccess}
+                disabled={savingBrowserAccess || !browserOverridesSupported}
                 onValueChange={(value) => {
                   if (value === "inherit") void setBrowserAccess(undefined);
                   else if (value === "enabled" || value === "disabled")
@@ -1348,13 +1397,15 @@ function ProjectDetail({
             <div className="min-w-0">
               <h3 className="text-base font-semibold text-foreground">Actions</h3>
               <p className="text-pretty text-sm text-muted-foreground">
-                {scriptsInherited
-                  ? "Inherited from machine defaults."
-                  : `Overridden for ${selectedCheckoutLabel}.`}
+                {!scriptDefaultsSupported
+                  ? `Saved and run only in ${selectedCheckoutLabel}.`
+                  : scriptsInherited
+                    ? "Inherited from machine defaults."
+                    : `Overridden for ${selectedCheckoutLabel}.`}
               </p>
             </div>
             <div className="flex w-full flex-wrap gap-1.5 sm:w-auto sm:shrink-0 sm:justify-end">
-              {!scriptsInherited ? (
+              {scriptDefaultsSupported && !scriptsInherited ? (
                 <SettingResetButton
                   label="project actions"
                   tooltip="Reset to inherited actions"
