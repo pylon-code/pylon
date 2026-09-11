@@ -497,6 +497,13 @@ describe("Pylon Prime publication verification", () => {
         stableWorkflowPath: PRIME_STABLE_WORKFLOW,
         stableWorkflowSha256: "0f04d1f55f54312d933087d88de6883e8408bb0cd9f060d3b5851d710698b1af",
       },
+      {
+        publicationPolicyRevision: 3,
+        previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
+        previewWorkflowSha256: "16f68e46801eccca5e7e99736f346b5ffd96ce7188792d4ac8fbc4580408a736",
+        stableWorkflowPath: PRIME_STABLE_WORKFLOW,
+        stableWorkflowSha256: "96e4f3ccd889a17a391f00b4398d132a4234b5bc337045fedd3605f4eb74c331",
+      },
     ]);
   });
 
@@ -504,6 +511,9 @@ describe("Pylon Prime publication verification", () => {
     { preview: 1, build: 1, promotion: 1 },
     { preview: 2, build: 2, promotion: 2 },
     { preview: 1, build: 1, promotion: 2 },
+    { preview: 3, build: 3, promotion: 3 },
+    { preview: 1, build: 1, promotion: 3 },
+    { preview: 2, build: 2, promotion: 3 },
   ])("verifies independent build and promotion policies: %j", async (policies) => {
     const fixture = syntheticPublication("stable", policies);
     const verifySourcePolicy = vi.fn(validVerification.verifySourcePolicy);
@@ -535,9 +545,9 @@ describe("Pylon Prime publication verification", () => {
   });
 
   it.each([
-    { preview: 3, build: 2, promotion: 2 },
-    { preview: 2, build: 3, promotion: 2 },
-    { preview: 2, build: 2, promotion: 3 },
+    { preview: 4, build: 3, promotion: 3 },
+    { preview: 3, build: 4, promotion: 3 },
+    { preview: 3, build: 3, promotion: 4 },
   ])("rejects an unknown policy revision in any manifest position: %j", async (policies) => {
     await expect(
       verifyPrimePublicationFixture(syntheticPublication("stable", policies), validVerification),
@@ -547,13 +557,15 @@ describe("Pylon Prime publication verification", () => {
   it.each([
     { preview: 1, build: 2, promotion: 2 },
     { preview: 2, build: 1, promotion: 2 },
+    { preview: 2, build: 3, promotion: 3 },
+    { preview: 3, build: 2, promotion: 3 },
   ])("rejects a stable build policy different from its exact preview: %j", async (policies) => {
     await expect(
       verifyPrimePublicationFixture(syntheticPublication("stable", policies), validVerification),
     ).rejects.toThrow(/Stable manifest does not bind the exact verified preview/u);
   });
 
-  it.each([1, 2])("checks actual fetched workflow bytes under policy %i", async (revision) => {
+  it.each([1, 2, 3])("checks actual fetched workflow bytes under policy %i", async (revision) => {
     const fixture = syntheticPublication("preview", {
       preview: revision,
       build: revision,

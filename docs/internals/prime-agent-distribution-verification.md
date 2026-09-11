@@ -23,12 +23,12 @@ Unknown recipes, policy revisions, fields, assets, or tag shapes fail closed. Th
 both publication workflow byte digests. A publication workflow change therefore needs a new reviewed
 policy revision rather than a permissive parser change.
 
-The immutable registry retains revision 1 and adds revision 2 from the reviewed publication changes
-in [Prime Agent PR #56](https://github.com/pylon-code/prime-agent/pull/56). Each revision pins its own
+The immutable registry retains revisions 1 and 2 and supports revision 3, which uses the pinned
+GitHub REST client to upload release assets. Each revision pins its own
 exact preview and stable workflow bytes. A stable receipt's build policy must equal its verified
 preview's policy; its promotion policy is checked independently against the promotion commit and tree.
-This permits a revision-1 preview to be promoted under revision 2 without changing its original build
-provenance. Network verification and real-artifact graduation resolve the same frozen policies.
+This permits a preview built under an earlier supported policy to be promoted under revision 3
+without changing its original build provenance. Network verification and real-artifact graduation resolve the same frozen policies.
 
 The server uses `@sigstore/bundle`, `@sigstore/core`, `@sigstore/tuf`, and `@sigstore/verify` directly.
 It requires a current Sigstore bundle with an inclusion proof, one verified Rekor timestamp, one
