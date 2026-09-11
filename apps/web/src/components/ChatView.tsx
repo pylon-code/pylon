@@ -423,6 +423,7 @@ import {
   buildLoadingThreadFromShell,
   buildRunningThreadTurnInterruptInput,
   buildThreadTurnInterruptInput,
+  collectLocalTimelineMessageIds,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
@@ -3242,6 +3243,12 @@ export default function ChatView(props: ChatViewProps) {
     optimisticUserMessages,
     projectHandoffMessagePreviews,
   ]);
+  // Stable while a turn streams: it changes only when this client sends or
+  // resolves a local message, so the row projection keeps its fast path.
+  const localTimelineMessageIds = useMemo(
+    () => collectLocalTimelineMessageIds(optimisticUserMessages, feedbackSubmissions),
+    [feedbackSubmissions, optimisticUserMessages],
+  );
   const timelineProjectionRef = useRef<{
     threadKey: string | null;
     projection: TimelineEntriesProjection;
@@ -9117,6 +9124,7 @@ export default function ChatView(props: ChatViewProps) {
                 routeThreadKey={routeThreadKey}
                 onOpenTurnDiff={onOpenTurnDiff}
                 supportsConversationRollback={rollbackTargetIdle}
+                localMessageIds={localTimelineMessageIds}
                 onRevertUserMessage={onRevertUserMessage}
                 onUseArtifactTemplate={useArtifactTemplate}
                 isRevertingCheckpoint={isRevertingCheckpoint}

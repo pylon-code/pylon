@@ -12,9 +12,11 @@ import {
 } from "@t3tools/contracts";
 import {
   applyThreadDetailEvent,
+  codexFeedbackMessage,
   createEnvironmentThreadDetailAtoms,
   EMPTY_ENVIRONMENT_THREAD_STATE,
 } from "@t3tools/client-runtime/state/threads";
+import { deriveRollbackTargets } from "@t3tools/client-runtime/rollback";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import {
@@ -39,6 +41,7 @@ import {
   type WorkLogEntry,
   type TimelineEntriesProjection,
 } from "../../session-logic";
+import { collectLocalTimelineMessageIds } from "../ChatView.logic";
 import { isImageAttachment, type ChatMessage, type TurnDiffSummary } from "../../types";
 
 describe("streaming row projection", () => {
@@ -322,6 +325,90 @@ describe("streaming row projection", () => {
       } else expect(next.rows[index]).toBe(row);
     }
 
+    // The turn settles and its checkpoint lands, so the live request becomes
+    // revertible too; a later checkpoint count moves that target, and revoking
+    // its proof removes it again.
+    const userRow = (projection: MessagesTimelineRowsProjection, id: string) =>
+      projection.rows.find(
+        (row) => row.kind === "message" && row.message.id === MessageId.make(id),
+      );
+    const settledMessages = messages.map((message) =>
+      message.id === last.id
+        ? { ...message, text: "Done", streaming: false, updatedAt: initial.time(9) }
+        : message,
+    );
+    const settledTimeline = deriveTimelineEntriesWithState(
+      settledMessages,
+      [],
+      initial.work,
+      timeline,
+    );
+    const verifiedHistory: TurnDiffSummary = {
+      ...checkpoint,
+      rollbackAvailability: { state: "available", reason: "Exact anchor verified." },
+    };
+    const liveCheckpoint: TurnDiffSummary = {
+      turnId: initial.turnId,
+      checkpointTurnCount: 2,
+      checkpointRef: CheckpointRef.make("refs/pylon/checkpoints/live"),
+      status: "ready",
+      files: [],
+      assistantMessageId: last.id,
+      completedAt: initial.time(9),
+    };
+    const settledInput = {
+      ...nextInput,
+      timelineEntries: settledTimeline.entries,
+      latestTurn: {
+        ...nextInput.latestTurn,
+        state: "completed" as const,
+        completedAt: initial.time(9),
+      },
+      runningTurnId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [baseline, verifiedHistory, liveCheckpoint],
+    };
+    const settled = deriveMessagesTimelineRowsWithState(settledInput, next);
+    expect(settled.rows).toEqual(deriveMessagesTimelineRows(settledInput));
+    expect(userRow(next, "live-user")).toMatchObject({ revertTurnCount: undefined });
+    expect(userRow(settled, "history-user")).toMatchObject({ revertTurnCount: 0 });
+    expect(userRow(settled, "live-user")).toMatchObject({ revertTurnCount: 1 });
+
+    const movedInput = {
+      ...settledInput,
+      turnDiffSummaries: [
+        baseline,
+        verifiedHistory,
+        {
+          ...baseline,
+          checkpointTurnCount: 2,
+          checkpointRef: CheckpointRef.make("refs/pylon/checkpoints/intermediate"),
+          completedAt: initial.time(8),
+        },
+        { ...liveCheckpoint, checkpointTurnCount: 3 },
+      ],
+    };
+    const moved = deriveMessagesTimelineRowsWithState(movedInput, settled);
+    expect(moved.rows).toEqual(deriveMessagesTimelineRows(movedInput));
+    expect(userRow(moved, "history-user")).toMatchObject({ revertTurnCount: 0 });
+    expect(userRow(moved, "live-user")).toMatchObject({ revertTurnCount: 2 });
+
+    const liveRevoked = deriveMessagesTimelineRowsWithState(
+      {
+        ...settledInput,
+        turnDiffSummaries: [
+          baseline,
+          { ...verifiedHistory, rollbackAvailability: undefined },
+          liveCheckpoint,
+        ],
+      },
+      settled,
+    );
+    expect(userRow(liveRevoked, "history-user")).toMatchObject({ revertTurnCount: 0 });
+    expect(userRow(liveRevoked, "live-user")).toMatchObject({ revertTurnCount: undefined });
+    expect(userRow(settled, "live-user")).toMatchObject({ revertTurnCount: 1 });
+
     const revoked = deriveMessagesTimelineRowsWithState(
       {
         ...nextInput,
@@ -336,6 +423,97 @@ describe("streaming row projection", () => {
     );
     expect(firstUserRow(unsupported)).toMatchObject({ revertTurnCount: undefined });
     expect(firstUserRow(previous)).toMatchObject({ revertTurnCount: 0 });
+  });
+
+  it("never anchors a rollback on a local feedback transcript inside a turn", () => {
+    const initial = fixture("Partial");
+    const submission = {
+      id: MessageId.make("feedback-1"),
+      command: "/feedback",
+      createdAt: initial.time(1),
+      status: "sent" as const,
+      feedbackId: "feedback-thread",
+    };
+    // The transcript sorts between the request and its checkpointed response.
+    const messages: ChatMessage[] = [
+      initial.messages[0]!,
+      codexFeedbackMessage(submission),
+      codexFeedbackMessage(submission, "assistant"),
+      ...initial.messages.slice(1),
+    ];
+    const checkpoints: TurnDiffSummary[] = [
+      {
+        turnId: initial.historyTurnId,
+        checkpointTurnCount: 0,
+        checkpointRef: CheckpointRef.make("refs/pylon/checkpoints/baseline"),
+        status: "ready",
+        files: [],
+        assistantMessageId: null,
+        rollbackAvailability: { state: "available", reason: "Exact anchor verified." },
+        completedAt: initial.time(0),
+      },
+      {
+        turnId: initial.historyTurnId,
+        checkpointTurnCount: 1,
+        checkpointRef: CheckpointRef.make("refs/pylon/checkpoints/history"),
+        status: "ready",
+        files: [],
+        assistantMessageId: MessageId.make("history-assistant"),
+        completedAt: initial.time(4),
+      },
+    ];
+    const localMessageIds = collectLocalTimelineMessageIds([], [submission]);
+    expect([...localMessageIds]).toEqual(["feedback-1", "feedback-1:feedback"]);
+    expect(collectLocalTimelineMessageIds([], [])).toBe(collectLocalTimelineMessageIds([], []));
+    expect([
+      ...collectLocalTimelineMessageIds([{ id: MessageId.make("optimistic-1") }], []),
+    ]).toEqual(["optimistic-1"]);
+
+    const timeline = deriveTimelineEntriesWithState(messages, [], initial.work);
+    const input = {
+      ...initial.input,
+      timelineEntries: timeline.entries,
+      turnDiffSummaries: checkpoints,
+      supportsConversationRollback: true,
+      expandedTurnIds: new Set([initial.historyTurnId]),
+      localMessageIds,
+    };
+    const revertCounts = (rows: ReadonlyArray<MessagesTimelineRow>) =>
+      Object.fromEntries(
+        rows.flatMap((row) =>
+          row.kind === "message" && row.revertTurnCount !== undefined
+            ? [[row.message.id, row.revertTurnCount]]
+            : [],
+        ),
+      );
+    const serverTargets = deriveRollbackTargets({
+      messages: messages.filter((message) => !localMessageIds.has(message.id)),
+      checkpoints,
+    });
+    // Counted as server messages, the transcript would take the request's target.
+    const { localMessageIds: _localMessageIds, ...withoutLocalIds } = input;
+    expect(revertCounts(deriveMessagesTimelineRows(withoutLocalIds))).toEqual({ "feedback-1": 0 });
+    const projection = deriveMessagesTimelineRowsWithState(input);
+    expect(revertCounts(projection.rows)).toEqual({ "history-user": 0 });
+    expect(Object.keys(revertCounts(projection.rows))).toEqual([...serverTargets.keys()]);
+
+    // The local id set keeps its identity while the turn streams, so the rows
+    // stay on the fast path and the answer does not change.
+    const last = messages.at(-1)!;
+    const streamed = [...messages.slice(0, -1), { ...last, text: "Partial token" }];
+    const nextInput = {
+      ...input,
+      timelineEntries: deriveTimelineEntriesWithState(streamed, [], initial.work, timeline).entries,
+    };
+    const next = deriveMessagesTimelineRowsWithState(nextInput, projection);
+    expect(next.rows).toEqual(deriveMessagesTimelineRows(nextInput));
+    expect(revertCounts(next.rows)).toEqual({ "history-user": 0 });
+    for (const [index, row] of projection.rows.entries()) {
+      if ((row.kind === "message" || row.kind === "assistant-meta") && row.message === last) {
+        continue;
+      }
+      expect(next.rows[index]).toBe(row);
+    }
   });
 
   it("reuses long-thread rows through detail events, selectors, and attachment previews", () => {

@@ -330,6 +330,8 @@ interface MessagesTimelineProps {
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   supportsConversationRollback: boolean;
+  /** Client-only message ids; see `collectLocalTimelineMessageIds`. */
+  localMessageIds?: ReadonlySet<MessageId>;
   onRevertUserMessage: (messageId: MessageId) => void;
   revertDisabledReason?: string;
   onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
@@ -392,6 +394,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   routeThreadKey,
   onOpenTurnDiff,
   supportsConversationRollback,
+  localMessageIds,
   onRevertUserMessage,
   revertDisabledReason,
   onUseArtifactTemplate = NOOP_USE_ARTIFACT_TEMPLATE,
@@ -566,6 +569,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         turnDiffSummaries,
         ...(reportedTurnCosts === undefined ? {} : { reportedTurnCosts }),
         supportsConversationRollback,
+        ...(localMessageIds === undefined ? {} : { localMessageIds }),
       },
       previous?.threadKey === routeThreadKey && previous.workspaceRoot === workspaceRoot
         ? previous.projection
@@ -587,6 +591,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     turnDiffSummaries,
     reportedTurnCosts,
     supportsConversationRollback,
+    localMessageIds,
   ]);
   const rows = useStableRows(rawRows);
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);

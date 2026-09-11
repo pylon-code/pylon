@@ -1009,6 +1009,8 @@ export function deriveMessagesTimelineRows(input: {
   turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
   reportedTurnCosts?: ReadonlyMap<TurnId, number>;
   supportsConversationRollback: boolean;
+  /** Client-only messages (optimistic sends, feedback transcripts); never rollback anchors. */
+  localMessageIds?: ReadonlySet<MessageId>;
 }): MessagesTimelineRow[] {
   const turnDiffSummaryByAssistantMessageId = new Map<MessageId, TurnDiffSummary>();
   for (const summary of input.turnDiffSummaries) {
@@ -1017,11 +1019,14 @@ export function deriveMessagesTimelineRows(input: {
     }
   }
   // Pylon's rollback proof: a user message is revertible only when the
-  // checkpoint before its response is ready and verified as available.
+  // checkpoint before its response is ready and verified as available. Only
+  // server messages take part, so a local message cannot claim a target.
   const rollbackTargets = input.supportsConversationRollback
     ? deriveRollbackTargets({
         messages: input.timelineEntries.flatMap((entry) =>
-          entry.kind === "message" ? [entry.message] : [],
+          entry.kind === "message" && !input.localMessageIds?.has(entry.message.id)
+            ? [entry.message]
+            : [],
         ),
         checkpoints: input.turnDiffSummaries,
       })

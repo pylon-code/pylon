@@ -30,6 +30,10 @@ import {
   type CodexArtifactTemplate,
 } from "@t3tools/client-runtime/codex-artifact-templates";
 import {
+  codexFeedbackMessage,
+  type CodexFeedbackSubmission,
+} from "@t3tools/client-runtime/state/threads";
+import {
   type TurnDiffSummary,
   type ChatMessage,
   isImageAttachment,
@@ -374,6 +378,29 @@ export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "sessi
     threadId: thread.id,
     ...(runningTurnId !== null ? { turnId: runningTurnId } : {}),
   };
+}
+
+const NO_LOCAL_TIMELINE_MESSAGE_IDS: ReadonlySet<MessageId> = new Set();
+
+/**
+ * Ids of timeline messages that exist only on this client: optimistic sends and
+ * `/feedback` transcripts. The timeline never anchors a rollback on them. Built
+ * from local state alone, so its identity holds while a turn streams.
+ */
+export function collectLocalTimelineMessageIds(
+  optimisticUserMessages: ReadonlyArray<Pick<ChatMessage, "id">>,
+  feedbackSubmissions: ReadonlyArray<CodexFeedbackSubmission>,
+): ReadonlySet<MessageId> {
+  if (optimisticUserMessages.length === 0 && feedbackSubmissions.length === 0) {
+    return NO_LOCAL_TIMELINE_MESSAGE_IDS;
+  }
+  return new Set([
+    ...optimisticUserMessages.map((message) => message.id),
+    ...feedbackSubmissions.flatMap((submission) => [
+      codexFeedbackMessage(submission).id,
+      codexFeedbackMessage(submission, "assistant").id,
+    ]),
+  ]);
 }
 
 /**
