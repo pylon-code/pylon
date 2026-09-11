@@ -49,7 +49,6 @@ import {
 } from "../../onboarding/providerReadiness.logic";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { newProjectId, randomUUID } from "../../lib/utils";
-import { resolveDefaultProviderModelSelection } from "../../providerInstances";
 import { agentSessionImport } from "../../state/agentSessions";
 import { readProjects, useProjects } from "../../state/entities";
 import { useEnvironments, usePrimaryEnvironment } from "../../state/environments";
@@ -1117,11 +1116,7 @@ function ImportStep({
             title: candidate.title,
             workspaceRoot: candidate.path,
             createWorkspaceRootIfMissing: false,
-            defaultModelSelection: resolveDefaultProviderModelSelection(
-              environments.find((environment) => environment.environmentId === environmentId)
-                ?.serverConfig?.providers ?? [],
-              null,
-            ),
+            defaultModelSelection: null,
           },
         });
         if (
