@@ -20,7 +20,7 @@ import {
   PRIME_HIGH_WATER_FILE,
   PRIME_PREVIEW_MANIFEST,
   PRIME_PREVIEW_WORKFLOW,
-  PRIME_PUBLICATION_POLICY,
+  PRIME_PUBLICATION_POLICIES,
   PRIME_PUBLICATION_SCHEMA_SOURCE,
   PRIME_RECEIPT_FILE,
   PRIME_RECEIPT_KEY_FILE,
@@ -62,6 +62,7 @@ const VERSION = "1.0.0";
 
 function syntheticPublication(
   channel: "preview" | "stable" = "preview",
+  policies = { preview: 1, build: 1, promotion: 1 },
 ): PrimePublicationFixture & { readonly verified: VerifiedPrimePublication } {
   const artifactBytes = new Map([
     [`pylon-prime-agent-${VERSION}.tgz`, Buffer.from("synthetic-root-tarball-v1")],
@@ -116,7 +117,7 @@ function syntheticPublication(
     schemaVersion: 1,
     channel: "preview",
     repository: PRIME_DISTRIBUTION_REPOSITORY_URL,
-    publicationPolicyRevision: 1,
+    publicationPolicyRevision: policies.preview,
     sequenceEpoch: 1,
     sequence: 7,
     workflowRunId: "9001",
@@ -155,7 +156,7 @@ function syntheticPublication(
       previewTag: BUILD_ID,
       id: BUILD_ID,
       recipeRevision: 1,
-      publicationPolicyRevision: 1,
+      publicationPolicyRevision: policies.build,
       source: releaseManifest.source,
       releaseManifest: {
         file: PRIME_RELEASE_MANIFEST,
@@ -171,7 +172,7 @@ function syntheticPublication(
       kind: "promote",
       policyCommit: POLICY_COMMIT,
       policyTree: POLICY_TREE,
-      publicationPolicyRevision: 1,
+      publicationPolicyRevision: policies.promotion,
     },
     revocations: [],
   };
@@ -269,6 +270,7 @@ function githubAsset(id: number, name: string, url: string) {
 function makeNetworkHarness(input: {
   readonly channel: "preview" | "stable";
   readonly candidates: number;
+  readonly fixture?: ReturnType<typeof syntheticPublication>;
   readonly key: string;
   readonly now?: () => number;
   readonly failureTtlMs?: number;
@@ -276,7 +278,7 @@ function makeNetworkHarness(input: {
   readonly refreshReuseMs?: number;
   readonly failListOnceWith403?: boolean;
 }) {
-  const fixture = syntheticPublication(input.channel);
+  const fixture = input.fixture ?? syntheticPublication(input.channel);
   const releaseManifest = JSON.parse(fixture.releaseManifestBytes.toString("utf8")) as {
     assets: ReadonlyArray<{ readonly file: string }>;
   };
@@ -462,7 +464,7 @@ describe("Pylon Prime publication verification", () => {
       commit: "f4d9ef03b529faf2e07031c8b7cd703363316ae5",
       tree: "b9a14b389aa64f54527008fb4d6119a7c57c2b58",
     });
-    expect(PRIME_PUBLICATION_POLICY).toMatchObject({
+    expect(PRIME_PUBLICATION_POLICIES[0]).toMatchObject({
       publicationPolicyRevision: 1,
       previewWorkflowSha256: "e790a5da7063bd40fbd886e84945c3200291194fdbd5b002079349e45356a41d",
       stableWorkflowSha256: "dfcecdf6b58f143f9b7a543eadd124c190350ae29ac9eadccb907f1398b0958a",
@@ -475,6 +477,111 @@ describe("Pylon Prime publication verification", () => {
     await expect(verifyPrimePublicationFixture(stable, validVerification)).resolves.toEqual(
       stable.verified,
     );
+  });
+
+  it("retains immutable historical and current workflow policies", () => {
+    expect(Object.isFrozen(PRIME_PUBLICATION_POLICIES)).toBe(true);
+    expect(PRIME_PUBLICATION_POLICIES.every(Object.isFrozen)).toBe(true);
+    expect(PRIME_PUBLICATION_POLICIES).toEqual([
+      {
+        publicationPolicyRevision: 1,
+        previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
+        previewWorkflowSha256: "e790a5da7063bd40fbd886e84945c3200291194fdbd5b002079349e45356a41d",
+        stableWorkflowPath: PRIME_STABLE_WORKFLOW,
+        stableWorkflowSha256: "dfcecdf6b58f143f9b7a543eadd124c190350ae29ac9eadccb907f1398b0958a",
+      },
+      {
+        publicationPolicyRevision: 2,
+        previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
+        previewWorkflowSha256: "9f4e3f38fb0bdb9c11662310c5369fb792765a3090e0f74b0ec0b34127b43ed8",
+        stableWorkflowPath: PRIME_STABLE_WORKFLOW,
+        stableWorkflowSha256: "0f04d1f55f54312d933087d88de6883e8408bb0cd9f060d3b5851d710698b1af",
+      },
+    ]);
+  });
+
+  it.each([
+    { preview: 1, build: 1, promotion: 1 },
+    { preview: 2, build: 2, promotion: 2 },
+    { preview: 1, build: 1, promotion: 2 },
+  ])("verifies independent build and promotion policies: %j", async (policies) => {
+    const fixture = syntheticPublication("stable", policies);
+    const verifySourcePolicy = vi.fn(validVerification.verifySourcePolicy);
+    await expect(
+      verifyPrimePublicationFixture(fixture, { ...validVerification, verifySourcePolicy }),
+    ).resolves.toEqual(fixture.verified);
+    expect(verifySourcePolicy.mock.calls).toEqual([
+      [
+        {
+          commit: SOURCE_COMMIT,
+          tree: SOURCE_TREE,
+          workflow: PRIME_PREVIEW_WORKFLOW,
+          publicationPolicyRevision: policies.preview,
+        },
+      ],
+      [
+        {
+          commit: POLICY_COMMIT,
+          tree: POLICY_TREE,
+          workflow: PRIME_STABLE_WORKFLOW,
+          publicationPolicyRevision: policies.promotion,
+        },
+      ],
+    ]);
+    const preview = syntheticPublication("preview", policies);
+    await expect(verifyPrimePublicationFixture(preview, validVerification)).resolves.toEqual(
+      preview.verified,
+    );
+  });
+
+  it.each([
+    { preview: 3, build: 2, promotion: 2 },
+    { preview: 2, build: 3, promotion: 2 },
+    { preview: 2, build: 2, promotion: 3 },
+  ])("rejects an unknown policy revision in any manifest position: %j", async (policies) => {
+    await expect(
+      verifyPrimePublicationFixture(syntheticPublication("stable", policies), validVerification),
+    ).rejects.toThrow(/Unsupported Pylon publication policy revision/u);
+  });
+
+  it.each([
+    { preview: 1, build: 2, promotion: 2 },
+    { preview: 2, build: 1, promotion: 2 },
+  ])("rejects a stable build policy different from its exact preview: %j", async (policies) => {
+    await expect(
+      verifyPrimePublicationFixture(syntheticPublication("stable", policies), validVerification),
+    ).rejects.toThrow(/Stable manifest does not bind the exact verified preview/u);
+  });
+
+  it.each([1, 2])("checks actual fetched workflow bytes under policy %i", async (revision) => {
+    const fixture = syntheticPublication("preview", {
+      preview: revision,
+      build: revision,
+      promotion: revision,
+    });
+    const harness = makeNetworkHarness({
+      channel: "preview",
+      candidates: 1,
+      key: `policy-bytes-${revision}`,
+      fixture,
+    });
+    const { verifySourcePolicy: _injectedSourcePolicy, ...dependencies } =
+      harness.dependencyShape();
+    const workflowUrl = `https://raw.githubusercontent.com/${PRIME_DISTRIBUTION_REPOSITORY}/${SOURCE_COMMIT}/${PRIME_PREVIEW_WORKFLOW}`;
+    const fetchBytes = vi.fn(async (url: string, maximumBytes: number) => {
+      if (url === workflowUrl) return Buffer.from("altered publication workflow");
+      return dependencies.fetchBytes(url, maximumBytes);
+    });
+    const load = makeLatestPrimePublicationLoader({
+      ...dependencies,
+      fetchJson: async (url, maximumBytes) =>
+        url.endsWith(`/git/commits/${SOURCE_COMMIT}`)
+          ? { sha: SOURCE_COMMIT, tree: { sha: SOURCE_TREE } }
+          : dependencies.fetchJson(url, maximumBytes),
+      fetchBytes,
+    });
+    await expect(load("preview")).rejects.toThrow(/No exact signed preview publication verified/u);
+    expect(fetchBytes.mock.calls.some(([url]) => url === workflowUrl)).toBe(true);
   });
 
   it("fails closed for tarball, manifest, attestation, source, recipe, and stable history tampering", async () => {
