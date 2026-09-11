@@ -91,6 +91,23 @@ export function dismissFailedSnapShot(
   }
 }
 
+/**
+ * Reports a capture that could not be delivered. It stays pending so a later drain can retry it, and
+ * every focus drains again, so the capture keeps its sounded id and its failure is reported once
+ * instead of replaying the capture sound and the same error toast on each retry.
+ */
+export function reportUndeliveredSnapShot(
+  id: string,
+  soundedIds: Set<string>,
+  reportedIds: Set<string>,
+  report: () => void,
+): void {
+  soundedIds.add(id);
+  if (reportedIds.has(id)) return;
+  reportedIds.add(id);
+  report();
+}
+
 export function resolveSnapShotTargetOnce(
   resolutionRef: { current: Promise<CaptureTarget | null> | null },
   resolveTarget: () => Promise<CaptureTarget | null>,
@@ -222,6 +239,7 @@ export function SnapShotCoordinator() {
   const drainingRef = useRef<Promise<void> | null>(null);
   const rerunRequestedRef = useRef(false);
   const soundedCaptureIdsRef = useRef(new Set<string>());
+  const reportedFailureIdsRef = useRef(new Set<string>());
   const pendingAnimationStartsRef = useRef(new Set<string>());
 
   const currentTarget = routeThreadRef ?? routeDraftId;
@@ -290,13 +308,18 @@ export function SnapShotCoordinator() {
             : null;
           if (!target) {
             await dismissSnapShotAnimation(item.id);
-            soundedCaptureIdsRef.current.delete(item.id);
-            toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: "Snapshot taken, but no project is available",
-                description: "Add a project, then capture the window again.",
-              }),
+            reportUndeliveredSnapShot(
+              item.id,
+              soundedCaptureIdsRef.current,
+              reportedFailureIdsRef.current,
+              () =>
+                toastManager.add(
+                  stackedThreadToast({
+                    type: "error",
+                    title: "Snapshot taken, but no project is available",
+                    description: "Add a project, then capture the window again.",
+                  }),
+                ),
             );
             continue;
           }
@@ -305,6 +328,7 @@ export function SnapShotCoordinator() {
             const delivery = await deliverSnapShot(bridge, item, target);
             captureTargetsRef.current.delete(item.id);
             soundedCaptureIdsRef.current.delete(item.id);
+            reportedFailureIdsRef.current.delete(item.id);
             if (!delivery.persisted) {
               toastManager.add(
                 stackedThreadToast({
@@ -317,15 +341,20 @@ export function SnapShotCoordinator() {
             }
           } catch (error) {
             await dismissSnapShotAnimation(item.id);
-            soundedCaptureIdsRef.current.delete(item.id);
-            toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: "Snapshot failed",
-                description: `Capture ${item.id}: ${
-                  error instanceof Error ? error.message : "Try the capture again."
-                }`,
-              }),
+            reportUndeliveredSnapShot(
+              item.id,
+              soundedCaptureIdsRef.current,
+              reportedFailureIdsRef.current,
+              () =>
+                toastManager.add(
+                  stackedThreadToast({
+                    type: "error",
+                    title: "Snapshot failed",
+                    description: `Capture ${item.id}: ${
+                      error instanceof Error ? error.message : "Try the capture again."
+                    }`,
+                  }),
+                ),
             );
           }
         }

@@ -13,6 +13,7 @@ import {
   beginSnapShotAnimationWhenReady,
   deliverSnapShot,
   dismissFailedSnapShot,
+  reportUndeliveredSnapShot,
   resolveExistingSnapShotTarget,
   resolveSnapShotTargetOnce,
   resolveSnapShotDeliveryTarget,
@@ -133,6 +134,48 @@ describe("window capture failures", () => {
     expect(getPendingSnapShotAnimations()).toEqual([]);
     expect(soundedIds.size).toBe(0);
     expect(pendingStarts.size).toBe(0);
+  });
+
+  it("tells the user once about a capture that stays pending after delivery fails", async () => {
+    const item: DesktopPendingSnapShot = {
+      id: "87654321-4321-4321-4321-cba987654321",
+      name: "window.png",
+      mimeType: "image/png",
+      sizeBytes: 3,
+      source: {
+        kind: "snap-shot",
+        capturedAt: "2026-09-01T00:00:00.000Z",
+        appName: "Editor",
+        windowTitle: "main.ts",
+      },
+    };
+    const acknowledgeSnapShot = vi.fn(async () => undefined);
+    const bridge = {
+      readSnapShot: vi.fn(async () => ({
+        ...item,
+        dataUrl: "data:image/png;base64,AQID",
+      })),
+      acknowledgeSnapShot,
+    } as unknown as DesktopSnapShotBridge;
+    vi.stubGlobal("window", { localStorage: storage, desktopBridge: bridge });
+    // The drain sounded the capture before delivering it.
+    const soundedIds = new Set([item.id]);
+    const reportedIds = new Set<string>();
+    const report = vi.fn();
+
+    // A draft without a thread refuses the image, so the capture stays pending, and every focus
+    // drains and retries it.
+    for (let drain = 0; drain < 3; drain += 1) {
+      await expect(
+        deliverSnapShot(bridge, item, DraftId.make("snap-shot-unmapped-draft")),
+      ).rejects.toThrow("Remove an attachment, then try this capture again.");
+      reportUndeliveredSnapShot(item.id, soundedIds, reportedIds, report);
+    }
+    reportUndeliveredSnapShot("another-capture", soundedIds, reportedIds, report);
+
+    expect(acknowledgeSnapShot).not.toHaveBeenCalled();
+    expect(report).toHaveBeenCalledTimes(2);
+    expect(soundedIds).toEqual(new Set([item.id, "another-capture"]));
   });
 });
 
