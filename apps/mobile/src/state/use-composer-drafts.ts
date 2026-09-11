@@ -1122,8 +1122,14 @@ export function clearComposerDraftContentState(
     return current;
   }
   // Clearing content is the "this draft is done" moment (sent, queued, or
-  // discarded), so the project stamp goes too and an otherwise-empty new-task
-  // draft leaves the store rather than lingering as a blank row.
+  // discarded). A new-task draft id is never reused, so the whole entry goes:
+  // retained mode choices would otherwise persist under a key nothing can
+  // reach again.
+  if (isNewTaskDraftKey(draftKey)) {
+    const next = { ...current };
+    delete next[draftKey];
+    return next;
+  }
   const {
     importedShareIds: _importedShareIds,
     modelSelection,

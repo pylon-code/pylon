@@ -182,6 +182,7 @@ import {
   stickyComposerModelSelectionAtom,
   undoComposerDraftMerge,
   undoComposerDraftMergeState,
+  updateComposerDraftSettings,
 } from "./use-composer-drafts";
 
 const DRAFT: ComposerDraft = {
@@ -1246,6 +1247,30 @@ describe("mobile composer drafts", () => {
     clearComposerDraftContent(first, { clearModelSelection: true, clearWorkspaceSelection: true });
     expect(appAtomRegistry.get(composerDraftsAtom)[first]).toBeUndefined();
     expect(getComposerDraftSnapshot(second).text).toBe("second idea");
+  });
+
+  it("removes a finished new-task draft entirely, including its mode choices", async () => {
+    const key = createNewTaskDraft({
+      environmentId: EnvironmentId.make("environment-1"),
+      projectId: ProjectId.make("project-1"),
+    });
+    setComposerDraftText(key, "ship it");
+    updateComposerDraftSettings(key, {
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+    });
+    await flushComposerDrafts();
+    expect(
+      decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument())).drafts[key],
+    ).toMatchObject({ text: "ship it", runtimeMode: "approval-required" });
+
+    clearComposerDraftContent(key, { clearModelSelection: true, clearWorkspaceSelection: true });
+    await flushComposerDrafts();
+
+    expect(appAtomRegistry.get(composerDraftsAtom)[key]).toBeUndefined();
+    expect(
+      decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument())).drafts,
+    ).toEqual({});
   });
 
   it("retargets a new-task draft to another project without losing its text", () => {
