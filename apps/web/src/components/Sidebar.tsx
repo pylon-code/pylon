@@ -1,9 +1,5 @@
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
-import { LinkBranchPullRequestButton } from "./pullRequest/LinkBranchPullRequestButton";
-import {
-  resolveThreadCurrentPullRequestLink,
-  visibleThreadPullRequests,
-} from "@t3tools/shared/threadPullRequests";
+import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {
@@ -1688,14 +1684,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                 <TooltipPopup side="top">Discard draft</TooltipPopup>
               </Tooltip>
             ) : null}
-            {prBadge &&
-            variantAction !== "unsettle" &&
-            pr &&
-            (supportsMultiplePullRequests
-              ? visibleThreadPullRequests(thread.pullRequests).length === 0
-              : thread.linkedPullRequest == null) ? (
-              <LinkBranchPullRequestButton threadRef={threadRef} url={pr.url} />
-            ) : null}
             {sortable?.isDragging ? (
               dragDestination
             ) : (
@@ -2006,13 +1994,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               )}
               {terminalStatusIcon}
               {prBadge}
-              {prBadge &&
-              pr &&
-              (supportsMultiplePullRequests
-                ? visibleThreadPullRequests(thread.pullRequests).length === 0
-                : thread.linkedPullRequest == null) ? (
-                <LinkBranchPullRequestButton threadRef={threadRef} url={pr.url} />
-              ) : null}
               {diff ? (
                 <span className="shrink-0 font-mono">
                   <span className="text-diff-addition-foreground">+{diff.insertions}</span>{" "}
