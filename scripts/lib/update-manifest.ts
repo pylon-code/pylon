@@ -13,6 +13,21 @@ export interface UpdateManifest {
   readonly extras: Readonly<Record<string, UpdateManifestScalar>>;
 }
 
+/**
+ * electron-updater skips an update whose `minimumSystemVersion` is newer than
+ * `os.release()`, which on macOS is the Darwin kernel version, not the marketing
+ * version. Darwin 22 is macOS 13 Ventura, the oldest release Electron 44 runs on,
+ * so Monterey installs stay on the last build that still launches there.
+ */
+export const MAC_UPDATE_MINIMUM_DARWIN_VERSION = "22.0.0";
+
+export function withMacUpdateMinimumSystemVersion(manifest: UpdateManifest): UpdateManifest {
+  return {
+    ...manifest,
+    extras: { ...manifest.extras, minimumSystemVersion: MAC_UPDATE_MINIMUM_DARWIN_VERSION },
+  };
+}
+
 interface MutableUpdateManifestFile {
   url?: string;
   sha512?: string;

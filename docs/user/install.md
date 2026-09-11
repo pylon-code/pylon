@@ -8,6 +8,9 @@ Node.js `^22.16 || ^23.11 || >=24.10` on the machine that runs the Pylon server.
 
 At least one provider CLI, installed and authenticated. See [Providers](#providers) below.
 
+The desktop app needs macOS 13 Ventura or later on a Mac. A desktop app already installed on macOS
+12 Monterey keeps working on the version it has, but it no longer receives desktop updates.
+
 ## Run Without Installing
 
 ```bash

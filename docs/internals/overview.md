@@ -184,6 +184,37 @@ HTTP listener via `markHttpListening`; publish ready; fork the heartbeat; then e
 output or open the browser. Command readiness precedes the listener, so a socket that opens can
 already dispatch.
 
+## Desktop startup and native isolation
+
+The Electron shell acquires `DesktopPreReadyPlatform.layer` synchronously before asynchronous
+services. On Linux this sets the desktop-entry identity and global-shortcut portal flags before
+Chromium initializes its portal connection. Setting the identity later in `DesktopAppIdentity`
+is too late: Chromium caches the first registration, including failures. The identity must match
+the installed entry managed by `DesktopLinuxUrlHandler`, and portals reject application IDs
+without a reverse-DNS dot, so each channel uses `com.pylon.code[.dev|.nightly].desktop`. Electron
+derives every window's WM class and Wayland app ID from that name, so `linuxWmClass` and the
+AppImage `StartupWMClass` use the same `com.pylon.code[.nightly]` ID; launchers that name
+another class stop grouping with running windows. Desktops that match a window by app ID land on the
+hidden entry, so it carries the channel's name and an `Icon=` pointing at a copy of the bundled
+icon under `$XDG_DATA_HOME/<app-id>/icon.png` (the AppImage mount path changes every launch).
+After the scheme default moves to the new
+entry, the URL handler deletes the `pylon-code-url-handler.desktop` entry earlier builds wrote,
+but only when its content is still Pylon's generated hidden handler, and never while the default
+could not be moved. Pre-ready setup also refreshes that entry's `Exec` path before
+portal registration: AppImage updates can remove the previous executable, which makes the old
+entry invalid even though its filename is correct. The later URL handler avoids rewriting an
+identical entry while the portal may be reading it. On Wayland, Electron's synchronous
+shortcut-registration result only confirms submission; it does not confirm desktop consent or
+an active binding.
+
+Native modules never load in the Electron main process on the startup path, and the two the
+snapshot feature keeps are isolated: `@crowecawcaw/xa11y` runs only in forked Node-mode children
+(`SnapShotAccessibilityWorker`, `RegionSnapShotWorker`) and a worker thread, and `ffi-rs` loads
+lazily inside `WindowsForeground.ts` for a handful of Win32 calls. macOS window lookup shells out
+to `osascript` instead of a native addon. A crash or stall in any of these must not take the app
+down, so new native capability goes in a child with a deadline, not an `import` in main. See
+[Linux window capture](./linux-snap-shot.md) for the Wayland backends.
+
 ## Related
 
 - [Workspace layout](./workspace-layout.md), [Glossary](./glossary.md)

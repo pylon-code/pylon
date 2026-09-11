@@ -32,9 +32,28 @@ interface EarlyDesktopSettingsInput {
 type EarlyLinuxElectronOptionsInput = EarlyDesktopSettingsInput;
 
 export interface EarlyLinuxElectronOptions {
+  readonly isDevelopment: boolean;
   readonly linuxWmClass: string;
+  readonly linuxDesktopEntryName: string;
   readonly passwordStore: LinuxPasswordStoreSwitch | null;
 }
+
+/**
+ * Desktop entry that identifies this channel to the XDG portals and claims its
+ * URL scheme. Portals reject application IDs without a reverse-DNS dot, so the
+ * name mirrors the per-channel app ID. Electron derives each window's WM class
+ * and Wayland app ID from it too, which is why `linuxWmClass` and the AppImage
+ * `StartupWMClass` use the same ID.
+ */
+export const resolveLinuxDesktopEntryName = (input: {
+  readonly isDevelopment: boolean;
+  readonly appVersion: string;
+}): string =>
+  input.isDevelopment
+    ? "com.pylon.code.dev.desktop"
+    : isNightlyDesktopVersion(input.appVersion)
+      ? "com.pylon.code.nightly.desktop"
+      : "com.pylon.code.desktop";
 
 const trimNonEmpty = (value: string | undefined): string | null => {
   const trimmed = value?.trim();
@@ -89,15 +108,18 @@ export function resolveEarlyLinuxElectronOptions(
   input: EarlyLinuxElectronOptionsInput,
 ): EarlyLinuxElectronOptions {
   const preference = resolveEarlyLinuxPasswordStorePreference(input);
+  const isDevelopment = isDevelopmentEnvironment(input.env);
+  const linuxDesktopEntryName = resolveLinuxDesktopEntryName({
+    isDevelopment,
+    appVersion: input.appVersion,
+  });
   return {
+    isDevelopment,
     // Must match DesktopEnvironment's linuxWmClass: the window manager groups
     // by this, so a shared class would make a nightly window indistinguishable
     // from the stable app's.
-    linuxWmClass: isDevelopmentEnvironment(input.env)
-      ? "pylon-code-dev"
-      : isNightlyDesktopVersion(input.appVersion)
-        ? "pylon-code-nightly"
-        : "pylon-code",
+    linuxWmClass: linuxDesktopEntryName.replace(/\.desktop$/, ""),
+    linuxDesktopEntryName,
     passwordStore: resolveLinuxPasswordStoreSwitch({
       preference,
       env: input.env,

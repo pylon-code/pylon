@@ -8,12 +8,18 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
+import * as DesktopAssets from "./DesktopAssets.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopLinuxUrlHandler from "./DesktopLinuxUrlHandler.ts";
+
+const BUNDLED_ICON_PATH = "/tmp/.mount_pylon/resources/icon.png";
+const INSTALLED_ICON_PATH = "/home/alice/.local/share/com.pylon.code/icon.png";
 
 interface RecordedRegistration {
   readonly directories: string[];
   readonly files: Array<{ readonly path: string; readonly content: string }>;
+  readonly removed: string[];
+  readonly binaryFiles: Array<{ readonly path: string; readonly bytes: Uint8Array }>;
   readonly commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }>;
 }
 
@@ -23,10 +29,14 @@ const makeEnvironment = (overrides: Record<string, unknown> = {}) =>
     isPackaged: true,
     isDevelopment: false,
     displayName: "Pylon (Alpha)",
-    linuxWmClass: "pylon-code",
+    linuxDesktopEntryName: "com.pylon.code.desktop",
+    linuxWmClass: "com.pylon.code",
     linuxApplicationsDir: "/home/alice/.local/share/applications",
     appImagePath: Option.some("/home/alice/Applications/Pylon.AppImage"),
-    path: { join: (...parts: ReadonlyArray<string>) => parts.join("/") },
+    path: {
+      join: (...parts: ReadonlyArray<string>) => parts.join("/"),
+      dirname: (path: string) => path.slice(0, path.lastIndexOf("/")),
+    },
     ...overrides,
   } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
 
@@ -51,13 +61,60 @@ const makeHandlerLayer = (
     readonly environment?: Record<string, unknown>;
     readonly xdgMimeExitCode?: number;
     readonly writeError?: PlatformError.PlatformError;
+    readonly existingEntry?: string;
+    readonly legacyEntry?: string;
+    readonly bundledIcon?: Uint8Array;
+    readonly installedIcon?: Uint8Array;
   } = {},
 ) =>
   DesktopLinuxUrlHandler.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         Layer.succeed(DesktopEnvironment.DesktopEnvironment, makeEnvironment(input.environment)),
+        Layer.succeed(
+          DesktopAssets.DesktopAssets,
+          DesktopAssets.DesktopAssets.of({
+            iconPaths: Effect.succeed({
+              ico: Option.none(),
+              icns: Option.none(),
+              png: input.bundledIcon ? Option.some(BUNDLED_ICON_PATH) : Option.none(),
+            }),
+            resolveResourcePath: () => Effect.succeed(Option.none()),
+          }),
+        ),
         FileSystem.layerNoop({
+          readFile: (path) => {
+            const bytes =
+              path === BUNDLED_ICON_PATH
+                ? input.bundledIcon
+                : path === INSTALLED_ICON_PATH
+                  ? input.installedIcon
+                  : undefined;
+            return bytes
+              ? Effect.succeed(bytes)
+              : Effect.fail(
+                  PlatformError.systemError({
+                    _tag: "NotFound",
+                    module: "FileSystem",
+                    method: "readFile",
+                    pathOrDescriptor: path,
+                  }),
+                );
+          },
+          writeFile: (path, bytes) =>
+            Effect.sync(() => {
+              recorded.binaryFiles.push({ path, bytes });
+            }),
+          readFileString: (path) =>
+            Effect.succeed(
+              path.endsWith(DesktopLinuxUrlHandler.LEGACY_URL_HANDLER_DESKTOP_ENTRY_NAME)
+                ? (input.legacyEntry ?? "")
+                : (input.existingEntry ?? ""),
+            ),
+          remove: (path) =>
+            Effect.sync(() => {
+              recorded.removed.push(path);
+            }),
           makeDirectory: (path) =>
             Effect.sync(() => {
               recorded.directories.push(path);
@@ -99,7 +156,15 @@ const runRegister = (
 const emptyRecording = (): RecordedRegistration => ({
   directories: [],
   files: [],
+  removed: [],
+  binaryFiles: [],
   commands: [],
+});
+
+const legacyHandlerEntry = DesktopLinuxUrlHandler.renderUrlHandlerDesktopEntry({
+  displayName: "Pylon (Nightly)",
+  execTarget: "/home/alice/Applications/Pylon-0.0.31.AppImage",
+  scheme: "pylon-code",
 });
 
 describe("DesktopLinuxUrlHandler", () => {
@@ -128,7 +193,7 @@ describe("DesktopLinuxUrlHandler", () => {
     const writeError = new DesktopLinuxUrlHandler.DesktopLinuxUrlHandlerRegistrationError({
       step: "write-desktop-entry",
       scheme: "pylon-code",
-      desktopEntryPath: "/home/alice/.local/share/applications/pylon-code-url-handler.desktop",
+      desktopEntryPath: "/home/alice/.local/share/applications/com.pylon.code.desktop",
       cause: new Error("boom"),
     });
     assert.equal(
@@ -137,7 +202,7 @@ describe("DesktopLinuxUrlHandler", () => {
     );
     assert.equal(
       writeError.desktopEntryPath,
-      "/home/alice/.local/share/applications/pylon-code-url-handler.desktop",
+      "/home/alice/.local/share/applications/com.pylon.code.desktop",
     );
 
     const exitError = new DesktopLinuxUrlHandler.DesktopLinuxUrlHandlerRegistrationError({
@@ -161,7 +226,7 @@ describe("DesktopLinuxUrlHandler", () => {
       assert.equal(recorded.files.length, 1);
       assert.equal(
         recorded.files[0]?.path,
-        "/home/alice/.local/share/applications/pylon-code-url-handler.desktop",
+        "/home/alice/.local/share/applications/com.pylon.code.desktop",
       );
       assert.include(
         recorded.files[0]?.content,
@@ -171,7 +236,7 @@ describe("DesktopLinuxUrlHandler", () => {
       assert.deepEqual(recorded.commands, [
         {
           command: "xdg-mime",
-          args: ["default", "pylon-code-url-handler.desktop", "x-scheme-handler/pylon-code"],
+          args: ["default", "com.pylon.code.desktop", "x-scheme-handler/pylon-code"],
         },
       ]);
     });
@@ -190,19 +255,121 @@ describe("DesktopLinuxUrlHandler", () => {
     });
   });
 
-  it.effect("does nothing on other platforms or unpackaged builds", () => {
+  it.effect("does not rewrite the pre-ready entry while the portal can be reading it", () => {
+    const recorded = emptyRecording();
+
+    return Effect.gen(function* () {
+      yield* runRegister(recorded, {
+        existingEntry: DesktopLinuxUrlHandler.renderUrlHandlerDesktopEntry({
+          displayName: "Pylon (Alpha)",
+          execTarget: "/home/alice/Applications/Pylon.AppImage",
+          scheme: "pylon-code",
+          iconPath: INSTALLED_ICON_PATH,
+        }),
+      });
+
+      assert.deepEqual(recorded.files, []);
+      assert.deepEqual(recorded.directories, []);
+      assert.equal(recorded.commands.length, 1);
+    });
+  });
+
+  it.effect("writes the portal identity without claiming the URL scheme in development", () => {
     const nonLinux = emptyRecording();
     const unpackaged = emptyRecording();
 
     return Effect.gen(function* () {
       yield* runRegister(nonLinux, { environment: { platform: "darwin" } });
-      yield* runRegister(unpackaged, { environment: { isPackaged: false } });
+      yield* runRegister(unpackaged, {
+        environment: {
+          isPackaged: false,
+          linuxDesktopEntryName: "com.pylon.code.dev.desktop",
+        },
+      });
 
-      for (const recorded of [nonLinux, unpackaged]) {
-        assert.deepEqual(recorded.directories, []);
-        assert.deepEqual(recorded.files, []);
-        assert.deepEqual(recorded.commands, []);
-      }
+      assert.deepEqual(nonLinux.files, []);
+      assert.equal(
+        unpackaged.files[0]?.path,
+        "/home/alice/.local/share/applications/com.pylon.code.dev.desktop",
+      );
+      assert.deepEqual(unpackaged.commands, []);
+    });
+  });
+
+  it.effect("gives the channel entry a stable icon copy outside the AppImage mount", () => {
+    const fresh = emptyRecording();
+    const unchanged = emptyRecording();
+    const bundledIcon = new Uint8Array([137, 80, 78, 71]);
+
+    return Effect.gen(function* () {
+      yield* runRegister(fresh, { bundledIcon });
+      yield* runRegister(unchanged, { bundledIcon, installedIcon: new Uint8Array(bundledIcon) });
+
+      assert.deepEqual(fresh.binaryFiles, [{ path: INSTALLED_ICON_PATH, bytes: bundledIcon }]);
+      assert.include(fresh.directories, "/home/alice/.local/share/com.pylon.code");
+      assert.include(fresh.files[0]?.content, `Icon=${INSTALLED_ICON_PATH}`);
+      assert.deepEqual(unchanged.binaryFiles, []);
+    });
+  });
+
+  it.effect("removes the pre-rename handler entry once the scheme default has moved", () => {
+    const recorded = emptyRecording();
+
+    return Effect.gen(function* () {
+      yield* runRegister(recorded, { legacyEntry: legacyHandlerEntry });
+
+      assert.deepEqual(recorded.commands, [
+        {
+          command: "xdg-mime",
+          args: ["default", "com.pylon.code.desktop", "x-scheme-handler/pylon-code"],
+        },
+      ]);
+      assert.deepEqual(recorded.removed, [
+        "/home/alice/.local/share/applications/pylon-code-url-handler.desktop",
+      ]);
+    });
+  });
+
+  it.effect("keeps the pre-rename entry while it is still the only working handler", () => {
+    const failedDefault = emptyRecording();
+    const development = emptyRecording();
+
+    return Effect.gen(function* () {
+      yield* runRegister(failedDefault, { legacyEntry: legacyHandlerEntry, xdgMimeExitCode: 1 });
+      yield* runRegister(development, {
+        legacyEntry: legacyHandlerEntry,
+        environment: { isPackaged: false, linuxDesktopEntryName: "com.pylon.code.dev.desktop" },
+      });
+
+      assert.deepEqual(failedDefault.removed, []);
+      assert.deepEqual(development.removed, []);
+    });
+  });
+
+  it.effect("leaves a file with the legacy name alone unless Pylon generated it", () => {
+    const recorded = emptyRecording();
+
+    return Effect.gen(function* () {
+      yield* runRegister(recorded, {
+        legacyEntry: [
+          "[Desktop Entry]",
+          "Type=Application",
+          "Name=My Pylon launcher",
+          "Exec=/opt/pylon/pylon %U",
+          "MimeType=x-scheme-handler/pylon-code;",
+          "",
+        ].join("\n"),
+      });
+
+      assert.deepEqual(recorded.removed, []);
+      assert.equal(
+        DesktopLinuxUrlHandler.isLegacyUrlHandlerDesktopEntry(legacyHandlerEntry, "pylon-code"),
+        true,
+      );
+      assert.equal(
+        DesktopLinuxUrlHandler.isLegacyUrlHandlerDesktopEntry(legacyHandlerEntry, "pylon-code-dev"),
+        false,
+      );
     });
   });
 
@@ -218,7 +385,7 @@ describe("DesktopLinuxUrlHandler", () => {
           module: "FileSystem",
           method: "writeFileString",
           description: "read-only filesystem",
-          pathOrDescriptor: "/home/alice/.local/share/applications/pylon-code-url-handler.desktop",
+          pathOrDescriptor: "/home/alice/.local/share/applications/com.pylon.code.desktop",
         }),
       });
 

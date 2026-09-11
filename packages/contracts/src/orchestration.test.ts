@@ -7,6 +7,7 @@ import { CommandId, ProjectId, ThreadId } from "./baseSchemas.ts";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  type ChatImageAttachment,
   ClientOrchestrationCommand,
   ModelSelection,
   OrchestrationCommand,
@@ -31,6 +32,8 @@ import {
   ThreadCreatedPayload,
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
+  SnapShotAccessibility,
+  compactSnapShotSource,
   isProviderSendTurnSupportedImageMimeType,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
 } from "./orchestration.ts";
@@ -71,6 +74,7 @@ const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationComma
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 const decodeDispatchCommandError = Schema.decodeUnknownEffect(OrchestrationDispatchCommandError);
+const decodeSnapShotAccessibility = Schema.decodeUnknownEffect(SnapShotAccessibility);
 
 it.effect("decodes a dispatch error after its bootstrap thread was deleted", () =>
   Effect.gen(function* () {
@@ -377,6 +381,184 @@ it.effect("rejects malformed known attachment types instead of tolerating them",
       decode({ ...base, type: "image", mimeType: "application/pdf", sizeBytes: 12 }),
     );
     assert.strictEqual(Exit.isFailure(badMimeImage), true);
+  }),
+);
+
+it.effect("preserves window capture metadata in thread.turn.start", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnStartCommand({
+      type: "thread.turn.start",
+      commandId: "cmd-snap-shot",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-snap-shot",
+        role: "user",
+        text: "Review this window",
+        attachments: [
+          {
+            type: "image",
+            id: "snap-shot-1",
+            name: "editor.png",
+            mimeType: "image/png",
+            sizeBytes: 4,
+            source: {
+              kind: "snap-shot",
+              capturedAt: "2026-08-24T11:00:00.000Z",
+              appName: "Editor",
+              windowTitle: "main.ts",
+              accessibleText: "const answer = 42;",
+              accessibility: {
+                format: "element-tree",
+                coordinateSpace: "captured-image",
+                imageSize: { width: 800, height: 600 },
+                truncated: false,
+                root: {
+                  role: "window",
+                  name: "main.ts",
+                  bounds: { x: 0, y: 0, width: 800, height: 600 },
+                  children: [
+                    {
+                      role: "text",
+                      value: "const answer = 42;",
+                      bounds: { x: 20, y: 40, width: 180, height: 20 },
+                      children: [],
+                    },
+                  ],
+                },
+              },
+              appIdentifier: "com.example.editor",
+              appIconDataUrl: "data:image/png;base64,iVBORw==",
+            },
+          },
+        ],
+      },
+      createdAt: "2026-08-24T11:00:00.000Z",
+    });
+
+    const attachment = parsed.message.attachments[0];
+    assert.strictEqual(attachment?.type, "image");
+    assert.deepStrictEqual((attachment as ChatImageAttachment).source, {
+      kind: "snap-shot",
+      capturedAt: "2026-08-24T11:00:00.000Z",
+      appName: "Editor",
+      windowTitle: "main.ts",
+      accessibleText: "const answer = 42;",
+      accessibility: {
+        format: "element-tree",
+        coordinateSpace: "captured-image",
+        imageSize: { width: 800, height: 600 },
+        truncated: false,
+        root: {
+          role: "window",
+          name: "main.ts",
+          bounds: { x: 0, y: 0, width: 800, height: 600 },
+          children: [
+            {
+              role: "text",
+              value: "const answer = 42;",
+              bounds: { x: 20, y: 40, width: 180, height: 20 },
+              children: [],
+            },
+          ],
+        },
+      },
+      appIdentifier: "com.example.editor",
+      appIconDataUrl: "data:image/png;base64,iVBORw==",
+    });
+  }),
+);
+
+// Capture metadata travels on persisted events and thread streams, so a source this
+// build cannot decode (a newer shape, or a tree over the limits) must drop only the
+// metadata. Failing it would fail the whole message or command.
+it.effect("keeps an image attachment whose capture metadata has an unknown shape", () =>
+  Effect.gen(function* () {
+    const image = {
+      type: "image",
+      id: "thread-1-00000000-0000-4000-8000-000000000004",
+      name: "window.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+      source: { kind: "snap-shot-v2", capturedAt: 42, frames: ["a", "b"] },
+    };
+
+    const message = yield* decodeOrchestrationMessage({
+      id: "message-1",
+      role: "user",
+      text: "look at this window",
+      attachments: [image],
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const attachment = message.attachments?.[0] as ChatImageAttachment | undefined;
+    assert.strictEqual(attachment?.name, "window.png");
+    assert.strictEqual(attachment?.source, undefined);
+
+    const command = yield* decodeThreadTurnStartCommand({
+      type: "thread.turn.start",
+      commandId: "cmd-snap-shot-future",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-snap-shot-future",
+        role: "user",
+        text: "Review this window",
+        attachments: [image],
+      },
+      createdAt: "2026-08-24T11:00:00.000Z",
+    });
+    assert.strictEqual(command.message.attachments[0]?.type, "image");
+    assert.strictEqual(
+      (command.message.attachments[0] as { readonly source?: unknown }).source,
+      undefined,
+    );
+  }),
+);
+
+it("stores accessible text only when it is the sole accessibility data", () => {
+  const base = {
+    kind: "snap-shot" as const,
+    capturedAt: "2026-08-24T11:00:00.000Z",
+    appName: "Editor",
+    windowTitle: "main.ts",
+  };
+  const textOnly = { ...base, accessibleText: "const answer = 42;" };
+  const accessibility = {
+    format: "flat-text" as const,
+    text: "const answer = 42;",
+    truncated: false,
+  };
+
+  assert.strictEqual(compactSnapShotSource(textOnly), textOnly);
+  assert.deepStrictEqual(
+    compactSnapShotSource({ ...base, accessibleText: "duplicate", accessibility }),
+    { ...base, accessibility },
+  );
+});
+
+it.effect("rejects accessibility trees above the serialized payload limit", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decodeSnapShotAccessibility({
+        format: "element-tree",
+        coordinateSpace: "captured-image",
+        imageSize: { width: 800, height: 600 },
+        truncated: false,
+        root: {
+          role: "window",
+          bounds: { x: 0, y: 0, width: 800, height: 600 },
+          children: Array.from({ length: 10 }, () => ({
+            role: "text",
+            value: "x".repeat(8_000),
+            bounds: null,
+            children: [],
+          })),
+        },
+      }),
+    );
+
+    assert.strictEqual(Exit.isFailure(result), true);
   }),
 );
 

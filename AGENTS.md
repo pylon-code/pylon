@@ -14,7 +14,7 @@ The desktop product identity is deliberately independent from T3 Code so both ap
 - renderer protocols: `pylon-code://` and `pylon-code-dev://`;
 - runtime home: `~/.pylon-code` unless explicitly overridden;
 - Electron profiles: `pylon-code` and `pylon-code-dev`;
-- Linux executable/registration: `pylon`, `pylon-code.desktop`, and `pylon-code` WM class;
+- Linux executable/registration: `pylon`, the per-channel desktop entries `com.pylon.code.desktop`, `com.pylon.code.nightly.desktop` and `com.pylon.code.dev.desktop`, and the matching `com.pylon.code[.nightly|.dev]` WM class and Wayland app ID (Electron derives both from the desktop entry, and XDG portals require a dotted ID);
 - packaged app and artifacts: `Pylon (Alpha)` / `Pylon (Nightly)` and `Pylon-*`.
 
 T3-named environment variables may still be passed to the bundled compatibility server. They are not permission to point Pylon at T3's default runtime or Electron data directories.

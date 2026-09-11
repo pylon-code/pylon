@@ -67,6 +67,10 @@ releaseDate: '2026-03-07T10:36:07.540Z'
     const serialized = serializePlatformUpdateManifest("mac", merged);
     assert.ok(!serialized.includes("path:"));
     assert.equal((serialized.match(/- url:/g) ?? []).length, 4);
+    // electron-updater compares this with the Darwin kernel version: 22 is macOS 13,
+    // so Monterey (Darwin 21) keeps its current build instead of updating into Electron 44.
+    assert.equal(merged.extras.minimumSystemVersion, "22.0.0");
+    assert.ok(serialized.includes("minimumSystemVersion: '22.0.0'"));
   });
 
   it("merges arm64 and x64 Windows update manifests into one multi-arch manifest", () => {
@@ -106,6 +110,7 @@ releaseDate: '2026-03-07T10:36:07.540Z'
 
     const merged = mergePlatformUpdateManifests("win", arm64, x64);
 
+    assert.equal(merged.extras.minimumSystemVersion, undefined);
     assert.equal(merged.version, "0.0.4");
     assert.equal(merged.releaseDate, "2026-03-07T10:36:07.540Z");
     assert.deepStrictEqual(

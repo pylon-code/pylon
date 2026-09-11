@@ -1,0 +1,8 @@
+{
+  "uuid": "snap-shot@pylon-code.com",
+  "name": "Pylon SnapShots",
+  "description": "Allows Pylon to capture the focused window, identify it for optional accessibility text, and animate it into Pylon. Disable this extension to revoke access.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 2,
+  "url": "https://github.com/pylon-code/pylon"
+}

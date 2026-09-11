@@ -77,8 +77,8 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.userDataDirName, "pylon-code-dev");
       assert.equal(environment.legacyUserDataDirName, "Pylon (Dev)");
       assert.equal(environment.displayName, "Pylon (Dev)");
-      assert.equal(environment.linuxDesktopEntryName, "pylon-code-dev.desktop");
-      assert.equal(environment.linuxWmClass, "pylon-code-dev");
+      assert.equal(environment.linuxDesktopEntryName, "com.pylon.code.dev.desktop");
+      assert.equal(environment.linuxWmClass, "com.pylon.code.dev");
       assert.deepEqual(
         Option.map(environment.devServerUrl, (url) => url.href),
         Option.some("http://localhost:5173/"),
@@ -109,8 +109,8 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.userDataDirName, "pylon-code");
       assert.equal(environment.legacyUserDataDirName, "Pylon (Alpha)");
       assert.equal(environment.displayName, "Pylon (Alpha)");
-      assert.equal(environment.linuxDesktopEntryName, "pylon-code.desktop");
-      assert.equal(environment.linuxWmClass, "pylon-code");
+      assert.equal(environment.linuxDesktopEntryName, "com.pylon.code.desktop");
+      assert.equal(environment.linuxWmClass, "com.pylon.code");
     }),
   );
 
@@ -129,6 +129,19 @@ describe("DesktopEnvironment", () => {
         environment.backendEntryPath,
         "/install/resources/server.asar/apps/server/dist/bin.mjs",
       );
+    }),
+  );
+
+  it.effect("uses the stable desktop entry as the packaged Linux portal identity", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment({
+        platform: "linux",
+        isPackaged: true,
+        appPath: "/tmp/.mount_pylon/resources/app.asar",
+        resourcesPath: "/tmp/.mount_pylon/resources",
+      });
+
+      assert.equal(environment.linuxDesktopEntryName, "com.pylon.code.desktop");
     }),
   );
 

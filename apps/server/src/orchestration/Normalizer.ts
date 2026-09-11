@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import {
+  compactSnapShotSource,
   type ClientOrchestrationCommand,
   type UserInputAttachments,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -243,6 +244,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
             name: attachment.name,
             mimeType: parsed.mimeType.toLowerCase(),
             sizeBytes: bytes.byteLength,
+            ...(attachment.source ? { source: compactSnapShotSource(attachment.source) } : {}),
           };
 
           const attachmentPath = resolveAttachmentPath({
