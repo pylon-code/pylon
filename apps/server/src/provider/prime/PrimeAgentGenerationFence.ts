@@ -8,7 +8,7 @@ import type { PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
 
 const PROVIDER = ProviderDriverKind.make("primeAgent");
 
-export const stalePrimeAgentGenerationError = (method: string) =>
+const stalePrimeAgentGenerationError = (method: string) =>
   new ProviderAdapterRequestError({
     provider: PROVIDER,
     method,
@@ -16,7 +16,7 @@ export const stalePrimeAgentGenerationError = (method: string) =>
     reason: "stale",
   });
 
-export const requirePrimeAgentGeneration = (
+const requirePrimeAgentGeneration = (
   fence: ProviderRuntimeFence | undefined,
   method: string,
 ): Effect.Effect<void, ProviderAdapterRequestError> =>

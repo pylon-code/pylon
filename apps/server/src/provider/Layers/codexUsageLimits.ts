@@ -67,7 +67,7 @@ function labelForKind(kind: NonNullable<ServerProviderUsageWindow["kind"]>): str
  * `windowDurationMins`; when it does not, paid plans expose the 5-hour and
  * weekly pair and Free/Go expose one monthly allowance.
  */
-function codexRateLimitsToWindows(
+export function codexRateLimitsToWindows(
   snapshot: CodexRateLimitSnapshot,
 ): ReadonlyArray<ServerProviderUsageWindow> {
   // Show the main allowance only. Model-specific notifications (such as Spark)

@@ -4,7 +4,6 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 export const PRIME_AGENT_SESSION_IDENTITY_FILENAME = ".pylon-prime-session.json";
-export const PRIME_AGENT_SESSION_IDENTITY_TEMP_FILENAME = ".pylon-prime-session.json.tmp";
 
 const PrimeAgentSessionIdentity = Schema.Struct({
   schemaVersion: Schema.Literal(1),

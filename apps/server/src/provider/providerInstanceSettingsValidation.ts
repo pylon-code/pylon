@@ -15,13 +15,11 @@ import * as Schema from "effect/Schema";
 
 const PRIME_DRIVER = ProviderDriverKind.make("primeAgent");
 export const PRIME_AGENT_SUPPORTED_INSTANCE_LIMIT = 4;
-export const PRIME_AGENT_DISTINCT_HOME_GUIDANCE =
+const PRIME_AGENT_DISTINCT_HOME_GUIDANCE =
   "Each enabled Prime Agent instance needs a distinct, non-nested Agent home and a separate Prime sign-in. The home owns that instance's credentials, settings, models, sessions, sockets, checkpoints, and MCP state.";
-export const PRIME_AGENT_GLOBAL_MAINTENANCE_GUIDANCE =
-  "Pylon manages only its instance-owned Prime processes. OS-user-global Prime update, doctor, shutdown, and stop-all maintenance stays external and is never run for an instance.";
-export const NATIVE_WINDOWS_MULTIPLE_INSTANCES_REASON =
+const NATIVE_WINDOWS_MULTIPLE_INSTANCES_REASON =
   "Multiple Prime Agent instances are unavailable on native Windows. Run the Pylon server and Prime Agent inside WSL2, which uses the supported Linux runtime.";
-export const PRIME_AGENT_ACP_ONLY_SETTINGS_REASON =
+const PRIME_AGENT_ACP_ONLY_SETTINGS_REASON =
   "Multiple Prime Agent instances are native-only, but custom Prime launch arguments require ACP compatibility. Remove the launch arguments or reduce the enabled Prime set to one.";
 export const PRIME_AGENT_MULTIPLE_INSTANCES_GRADUATION_REASON =
   "Multiple Prime Agent instances remain disabled until the signed-in N=1/2/4 macOS proof and enforced Linux/WSL2 hosted contract prove separate homes, credentials, catalogs, capacity, MCP bearer calls, canonical checkpoints, and conservative resource limits.";

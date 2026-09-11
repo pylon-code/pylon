@@ -111,7 +111,7 @@ export const expandHomePath = Effect.fn(function* (input: string) {
 export const RUNTIME_HOME_DIR_NAME = ".pylon-code";
 
 /** T3 Code's runtime home. Only ever named, never opened by default. */
-export const LEGACY_RUNTIME_HOME_DIR_NAME = ".t3";
+const LEGACY_RUNTIME_HOME_DIR_NAME = ".t3";
 
 export const resolveBaseDir = Effect.fn(function* (raw: string | undefined) {
   const { join, resolve } = yield* Path.Path;

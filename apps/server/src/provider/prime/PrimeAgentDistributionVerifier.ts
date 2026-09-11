@@ -22,7 +22,7 @@ export const PRIME_PREVIEW_WORKFLOW = ".github/workflows/pylon-preview-release.y
 export const PRIME_STABLE_WORKFLOW = ".github/workflows/pylon-stable-release.yml";
 export const PRIME_RELEASE_MANIFEST = "pylon-prime-agent-release-v1.json";
 export const PRIME_PREVIEW_MANIFEST = "pylon-preview-channel-v1.json";
-export const PRIME_STABLE_MANIFEST = "pylon-stable-channel-v1.json";
+const PRIME_STABLE_MANIFEST = "pylon-stable-channel-v1.json";
 export const PRIME_RECEIPT_FILE = "managed-receipt-v1.json";
 export const PRIME_HIGH_WATER_FILE = "channel-high-water-v1.json";
 export const PRIME_RECEIPT_KEY_FILE = "receipt-auth-v1.key";
@@ -367,7 +367,7 @@ type GitHubRelease = typeof GitHubReleaseSchema.Type;
 
 type TrustedRoot = Awaited<ReturnType<typeof getTrustedRoot>>;
 
-export const PRIME_RELEASE_RECIPE = Object.freeze({
+const PRIME_RELEASE_RECIPE = Object.freeze({
   recipeRevision: 1,
   manifestSchemaVersion: 1,
   nodeVersion: "22.23.2",
@@ -759,7 +759,7 @@ export function assertPrimeAttestationBinding(
   }
 }
 
-export function verifyPrimeSigstoreBundle(
+function verifyPrimeSigstoreBundle(
   bundleJson: unknown,
   trustedRoot: TrustedRoot,
   expected: ExpectedPrimeAttestation,

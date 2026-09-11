@@ -24,8 +24,6 @@ export const PRIME_AGENT_CALLER_OWNED_SESSION_FEATURE =
   "caller_owned_session_environment_cleanup_v1" as const;
 export const PRIME_AGENT_AUTHORITATIVE_CLEANUP_CAPABILITY =
   "authoritative_owned_session_cleanup_v1" as const;
-export const PRIME_AGENT_NEGOTIATED_CAPABILITIES_FEATURE =
-  "negotiated_daemon_session_capabilities_v1" as const;
 
 const DRIVER_KIND = "primeAgent" as const;
 const DISTINCT_HOME_REASON =

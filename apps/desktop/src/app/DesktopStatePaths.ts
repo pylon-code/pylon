@@ -14,7 +14,7 @@ function normalizeConfiguredBaseDir(t3Home: Option.Option<string>): Option.Optio
  * Pylon's runtime home. `t3Home` remains a T3-compatible override input, but an
  * unset override resolves to Pylon's own directory, never T3's.
  */
-export const DESKTOP_RUNTIME_HOME_DIR_NAME = ".pylon-code";
+const DESKTOP_RUNTIME_HOME_DIR_NAME = ".pylon-code";
 
 /**
  * Nightly's runtime home.
@@ -25,9 +25,9 @@ export const DESKTOP_RUNTIME_HOME_DIR_NAME = ".pylon-code";
  * using, and its migrations would run there too. The default has to be the safe
  * one: nobody remembers to set an override before double-clicking an app.
  */
-export const DESKTOP_NIGHTLY_RUNTIME_HOME_DIR_NAME = ".pylon-code-nightly";
+const DESKTOP_NIGHTLY_RUNTIME_HOME_DIR_NAME = ".pylon-code-nightly";
 
-export function resolveDesktopRuntimeHomeDirName(isNightly: boolean): string {
+function resolveDesktopRuntimeHomeDirName(isNightly: boolean): string {
   return isNightly ? DESKTOP_NIGHTLY_RUNTIME_HOME_DIR_NAME : DESKTOP_RUNTIME_HOME_DIR_NAME;
 }
 

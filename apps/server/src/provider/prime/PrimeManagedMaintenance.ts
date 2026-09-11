@@ -88,6 +88,7 @@ export function toPrimeManagedMaintenance(
   };
 }
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
   const config = yield* ServerConfig;
   const platform = yield* HostProcessPlatform;

@@ -70,8 +70,8 @@ import {
   writeSharedUsageEntry,
 } from "./sharedUsageReadCache.ts";
 
-export const PRIME_AGENT_ANTHROPIC_BACKEND = "anthropic";
-export const PRIME_AGENT_CODEX_BACKEND = "openai-codex";
+const PRIME_AGENT_ANTHROPIC_BACKEND = "anthropic";
+const PRIME_AGENT_CODEX_BACKEND = "openai-codex";
 
 /**
  * A token about to expire is as good as expired: the read would land just

@@ -11,8 +11,8 @@ import type {
 } from "./PrimeAgentDaemonBridge.ts";
 
 export const PRIME_AGENT_INHERIT_MODEL_OPTION = "prime-default" as const;
-export const PRIME_AGENT_THINKING_LEVEL_OPTION_ID = "thinkingLevel" as const;
-export const PRIME_AGENT_SERVICE_TIER_OPTION_ID = "serviceTier" as const;
+const PRIME_AGENT_THINKING_LEVEL_OPTION_ID = "thinkingLevel" as const;
+const PRIME_AGENT_SERVICE_TIER_OPTION_ID = "serviceTier" as const;
 
 const THINKING_LEVELS: ReadonlyArray<PrimeAgentDaemonThinkingLevel> = [
   "off",
@@ -80,7 +80,7 @@ export function supportedPrimeAgentThinkingLevels(
   });
 }
 
-export function primeAgentModelSupportsFastMode(metadata: PrimeAgentModelControlMetadata): boolean {
+function primeAgentModelSupportsFastMode(metadata: PrimeAgentModelControlMetadata): boolean {
   return (
     metadata.provider === "openai-codex" &&
     metadata.api === "openai-codex-responses" &&

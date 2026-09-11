@@ -17,8 +17,8 @@ import {
 } from "./PrimeAgentDistributionVerifier.ts";
 
 export const PRIME_MANAGED_TOOL_DIRECTORY = "provider-tools/prime-agent";
-export const PRIME_MANAGED_STATE_FILE = "managed-tool-state-v1.json";
-export const PRIME_MANAGED_BUILD_FILE = "pylon-managed-build-v1.json";
+const PRIME_MANAGED_STATE_FILE = "managed-tool-state-v1.json";
+const PRIME_MANAGED_BUILD_FILE = "pylon-managed-build-v1.json";
 
 const BUILD_ID = /^pylon-build-g[0-9a-f]{12}-r[1-9][0-9]*$/u;
 const PACKAGE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
