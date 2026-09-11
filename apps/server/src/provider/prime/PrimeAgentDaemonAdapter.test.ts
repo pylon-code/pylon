@@ -2182,6 +2182,8 @@ describe("PrimeAgentDaemonAdapter", () => {
     "different image bytes",
     "missing proof epoch",
     "unknown replay",
+    "replacement unknown replay",
+    "worker unknown replay",
     "unavailable replay",
     "missing lifecycle",
     "different owner",
@@ -2192,11 +2194,15 @@ describe("PrimeAgentDaemonAdapter", () => {
     "extra assistant",
     "repeated user boundary",
     "changed observed transcript",
+    "missing observed transcript",
   ] as const) {
     it.effect(`rejects submitted-user resync with ${rejection}`, () =>
       Effect.scoped(
         Effect.gen(function* () {
+          const recovering = rejection.includes("unknown replay");
           const captures = makeCaptures();
+          captures.rlmConnectionGeneration = recovering ? 1 : 0;
+          captures.retryWorkerRecoverySnapshots = rejection === "worker unknown replay";
           captures.correlatedPromptLifecycleAvailable = true;
           captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
           const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
@@ -2231,7 +2237,8 @@ describe("PrimeAgentDaemonAdapter", () => {
           }
           if (
             rejection === "repeated user boundary" ||
-            rejection === "changed observed transcript"
+            rejection === "changed observed transcript" ||
+            rejection === "missing observed transcript"
           ) {
             yield* offer(captures, {
               _tag: "MessageCompleted",
@@ -2266,6 +2273,10 @@ describe("PrimeAgentDaemonAdapter", () => {
           if (rejection === "repeated user boundary") messages.unshift(prompt);
           if (rejection === "changed observed transcript")
             messages.unshift({ ...prompt, text: "changed prior user" });
+          if (rejection === "missing observed transcript") messages.length = 0;
+          if (recovering) {
+            yield* offer(captures, { _tag: "ConnectionStatus", status: "reconnecting" });
+          }
           const lifecycle = {
             ...delivered,
             ...(rejection === "different owner" ? { correlationId: "another-owner" } : {}),
@@ -2279,13 +2290,13 @@ describe("PrimeAgentDaemonAdapter", () => {
             ...initialSnapshot(),
             state: { ...initialSnapshot().state, messageCount: messages.length, isStreaming: true },
             messages,
-            replayContinuity:
-              rejection === "unknown replay"
-                ? "unknown"
-                : rejection === "unavailable replay"
-                  ? "unavailable"
-                  : "complete",
-            connectionGeneration: 0,
+            replayContinuity: recovering
+              ? "unknown"
+              : rejection === "unavailable replay"
+                ? "unavailable"
+                : "complete",
+            connectionGeneration: captures.rlmConnectionGeneration,
+            replacementSnapshot: rejection === "replacement unknown replay",
             correlatedProofEpoch: rejection === "missing proof epoch" ? undefined : 1,
             promptLifecycles: {
               records: rejection === "missing lifecycle" ? [] : [lifecycle],
@@ -2295,7 +2306,7 @@ describe("PrimeAgentDaemonAdapter", () => {
           const result = yield* Fiber.join(turnFiber);
           const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
           expect(captures.reconnectResolutions).toContainEqual({
-            generation: 0,
+            generation: captures.rlmConnectionGeneration,
             reconciled: false,
             terminalResponseObserved: false,
           });
@@ -2303,6 +2314,7 @@ describe("PrimeAgentDaemonAdapter", () => {
             payload: { state: "failed" },
           });
           expect(turnEvents.filter((event) => event.type === "content.delta")).toEqual([]);
+          expect(captures.retryWorkerRecoverySnapshotCalls).toEqual([]);
         }),
       ).pipe(Effect.provide(testLayer)),
     );
