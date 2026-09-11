@@ -49,7 +49,7 @@ const reservedPrimeAgentEnvironmentName = (name: string): boolean => {
 const freezeStringRecord = (record: Record<string, string>): Readonly<Record<string, string>> =>
   Object.freeze({ ...record });
 
-class PrimeAgentHomeCanonicalizationError extends Schema.TaggedErrorClass<PrimeAgentHomeCanonicalizationError>()(
+class PrimeAgentHomeCanonicalizationError extends Schema.TaggedError<PrimeAgentHomeCanonicalizationError>()(
   "PrimeAgentHomeCanonicalizationError",
   {},
 ) {}

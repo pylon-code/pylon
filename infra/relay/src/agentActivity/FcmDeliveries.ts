@@ -49,13 +49,10 @@ const decodePreviousActivity = Schema.decodeUnknownOption(
   Schema.fromJsonString(RelayAgentActivityAggregateState),
 );
 
-export class FcmDeliveryError extends Schema.TaggedErrorClass<FcmDeliveryError>()(
-  "FcmDeliveryError",
-  {
-    operation: Schema.Literals(["enqueue", "decode-job", "invalidate-token"]),
-    cause: Schema.Defect(),
-  },
-) {
+export class FcmDeliveryError extends Schema.TaggedError<FcmDeliveryError>()("FcmDeliveryError", {
+  operation: Schema.Literals(["enqueue", "decode-job", "invalidate-token"]),
+  cause: Schema.Defect(),
+}) {
   override get message() {
     return `Failed to ${this.operation} Android notification delivery.`;
   }

@@ -718,14 +718,11 @@ describe("RpcSessionFactory", () => {
             payload: { themes: [] },
           },
         ];
-        const settingsEvents = Array.from(
-          { length: 65 },
-          (): ServerConfigStreamEventType => ({
-            version: 1,
-            type: "settingsUpdated",
-            payload: { settings: DEFAULT_SERVER_SETTINGS },
-          }),
-        );
+        const settingsEvents = Array.from({ length: 65 }, (): ServerConfigStreamEventType => ({
+          version: 1,
+          type: "settingsUpdated",
+          payload: { settings: DEFAULT_SERVER_SETTINGS },
+        }));
         const sourceEvents: ServerConfigStreamEventType[] = [
           SOURCE_EVENT,
           { version: 1, type: "usageLimitSourcesUpdated", payload: { sources: [] } },

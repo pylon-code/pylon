@@ -703,16 +703,13 @@ it.layer(TestLayer)("PrimeAgentTextGeneration", (it) => {
         const path = yield* Path.Path;
         const serverConfig = yield* ServerConfig.ServerConfig;
         const imageBytes = 10 * 1024 * 1024;
-        const attachments = Array.from(
-          { length: 8 },
-          (_, index): ChatAttachment => ({
-            type: "image",
-            id: `thread-00000000-0000-4000-8000-${String(index + 10).padStart(12, "0")}-png`,
-            name: `maximum-${index}.png`,
-            mimeType: "image/png",
-            sizeBytes: imageBytes,
-          }),
-        );
+        const attachments = Array.from({ length: 8 }, (_, index): ChatAttachment => ({
+          type: "image",
+          id: `thread-00000000-0000-4000-8000-${String(index + 10).padStart(12, "0")}-png`,
+          name: `maximum-${index}.png`,
+          mimeType: "image/png",
+          sizeBytes: imageBytes,
+        }));
         yield* fileSystem.makeDirectory(serverConfig.attachmentsDir, { recursive: true });
         for (const attachment of attachments) {
           const filePath = path.join(serverConfig.attachmentsDir, `${attachment.id}.png`);
@@ -747,16 +744,13 @@ it.layer(TestLayer)("PrimeAgentTextGeneration", (it) => {
         const path = yield* Path.Path;
         const serverConfig = yield* ServerConfig.ServerConfig;
         const imageBytes = 2 * 1024 * 1024;
-        const attachments = Array.from(
-          { length: 8 },
-          (_, index): ChatAttachment => ({
-            type: "image",
-            id: `thread-00000000-0000-4000-8000-${String(index + 30).padStart(12, "0")}-png`,
-            name: `near-cap-${index}.png`,
-            mimeType: "image/png",
-            sizeBytes: imageBytes,
-          }),
-        );
+        const attachments = Array.from({ length: 8 }, (_, index): ChatAttachment => ({
+          type: "image",
+          id: `thread-00000000-0000-4000-8000-${String(index + 30).padStart(12, "0")}-png`,
+          name: `near-cap-${index}.png`,
+          mimeType: "image/png",
+          sizeBytes: imageBytes,
+        }));
         yield* fileSystem.makeDirectory(serverConfig.attachmentsDir, { recursive: true });
         for (const attachment of attachments) {
           const filePath = path.join(serverConfig.attachmentsDir, `${attachment.id}.png`);

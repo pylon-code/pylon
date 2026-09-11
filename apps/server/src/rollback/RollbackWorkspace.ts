@@ -15,7 +15,7 @@ const execFileAsync = NodeUtil.promisify(NodeChildProcess.execFile);
 const MAX_PREIMAGE_ENTRIES = 20_000;
 const MAX_PREIMAGE_BYTES = 512 * 1024 * 1024;
 
-export class RollbackWorkspaceError extends Schema.TaggedErrorClass<RollbackWorkspaceError>()(
+export class RollbackWorkspaceError extends Schema.TaggedError<RollbackWorkspaceError>()(
   "RollbackWorkspaceError",
   { code: Schema.String, cause: Schema.optional(Schema.Defect()) },
 ) {

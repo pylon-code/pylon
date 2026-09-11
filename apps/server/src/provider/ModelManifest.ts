@@ -54,7 +54,7 @@ const MODEL_MANIFEST_MAX_MODELS_PER_PROVIDER = 256;
 const MODEL_MANIFEST_MAX_SLUG_LENGTH = 256;
 const SUPPORTED_MANIFEST_DRIVER_KINDS = new Set(["codex", "claudeAgent", "antigravity"]);
 
-class ModelManifestValidationError extends Schema.TaggedErrorClass<ModelManifestValidationError>()(
+class ModelManifestValidationError extends Schema.TaggedError<ModelManifestValidationError>()(
   "ModelManifestValidationError",
   { reason: Schema.String },
 ) {}

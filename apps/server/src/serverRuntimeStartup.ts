@@ -54,7 +54,7 @@ import {
   issueHeadlessServeAccessInfo,
 } from "./startupAccess.ts";
 
-export class ServerRuntimeStartupError extends Schema.TaggedErrorClass<ServerRuntimeStartupError>()(
+export class ServerRuntimeStartupError extends Schema.TaggedError<ServerRuntimeStartupError>()(
   "ServerRuntimeStartupError",
   {
     mode: ServerConfig.RuntimeMode,
@@ -343,7 +343,7 @@ const ORPHANED_PROVIDER_SESSION_ERROR =
 const SERVER_UPDATE_CONTINUATION_KEY = "continueAfterServerUpdate";
 const SERVER_UPDATE_CONTINUATION_PROMPT = "Continue where you left off.";
 
-class ProviderSessionContinuationError extends Schema.TaggedErrorClass<ProviderSessionContinuationError>()(
+class ProviderSessionContinuationError extends Schema.TaggedError<ProviderSessionContinuationError>()(
   "ProviderSessionContinuationError",
   {
     threadId: ThreadId,
@@ -354,7 +354,7 @@ class ProviderSessionContinuationError extends Schema.TaggedErrorClass<ProviderS
   }
 }
 
-export class ServerUpdateThreadContinuationError extends Schema.TaggedErrorClass<ServerUpdateThreadContinuationError>()(
+export class ServerUpdateThreadContinuationError extends Schema.TaggedError<ServerUpdateThreadContinuationError>()(
   "ServerUpdateThreadContinuationError",
   {
     cause: Schema.Defect(),

@@ -7,7 +7,7 @@ import * as WebCrypto from "../WebCrypto.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
-export class FcmAssertionSigningError extends Schema.TaggedErrorClass<FcmAssertionSigningError>()(
+export class FcmAssertionSigningError extends Schema.TaggedError<FcmAssertionSigningError>()(
   "FcmAssertionSigningError",
   { cause: Schema.Defect() },
 ) {

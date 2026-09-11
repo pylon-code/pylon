@@ -129,7 +129,7 @@ const DesktopSnapShotOperation = Schema.Literals([
   "capture",
 ]);
 
-export class DesktopSnapShotError extends Schema.TaggedErrorClass<DesktopSnapShotError>()(
+export class DesktopSnapShotError extends Schema.TaggedError<DesktopSnapShotError>()(
   "DesktopSnapShotError",
   {
     operation: DesktopSnapShotOperation,
@@ -204,7 +204,7 @@ export class DesktopSnapShot extends Context.Service<
   }
 >()("@t3tools/desktop/snapShot/DesktopSnapShot") {}
 
-export class DesktopSnapShotSetupError extends Schema.TaggedErrorClass<DesktopSnapShotSetupError>()(
+export class DesktopSnapShotSetupError extends Schema.TaggedError<DesktopSnapShotSetupError>()(
   "DesktopSnapShotSetupError",
   {
     action: Schema.Union([

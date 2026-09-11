@@ -74,7 +74,7 @@ const decodeDownloadProgressInfo = Schema.decodeUnknownEffect(DownloadProgressIn
 
 const currentIsoTimestamp = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
-export class DesktopUpdatePollerError extends Schema.TaggedErrorClass<DesktopUpdatePollerError>()(
+export class DesktopUpdatePollerError extends Schema.TaggedError<DesktopUpdatePollerError>()(
   "DesktopUpdatePollerError",
   {
     poller: Schema.Literals(["startup", "poll"]),
@@ -86,7 +86,7 @@ export class DesktopUpdatePollerError extends Schema.TaggedErrorClass<DesktopUpd
   }
 }
 
-export class DesktopUpdateEventHandlingError extends Schema.TaggedErrorClass<DesktopUpdateEventHandlingError>()(
+export class DesktopUpdateEventHandlingError extends Schema.TaggedError<DesktopUpdateEventHandlingError>()(
   "DesktopUpdateEventHandlingError",
   {
     event: Schema.Literals(["update-available", "download-progress", "update-downloaded"]),
@@ -98,7 +98,7 @@ export class DesktopUpdateEventHandlingError extends Schema.TaggedErrorClass<Des
   }
 }
 
-export class DesktopUpdaterReportedError extends Schema.TaggedErrorClass<DesktopUpdaterReportedError>()(
+export class DesktopUpdaterReportedError extends Schema.TaggedError<DesktopUpdaterReportedError>()(
   "DesktopUpdaterReportedError",
   {
     operation: Schema.Literals(["check", "download", "install", "background"]),
@@ -110,7 +110,7 @@ export class DesktopUpdaterReportedError extends Schema.TaggedErrorClass<Desktop
   }
 }
 
-export class DesktopUpdateUnexpectedActionError extends Schema.TaggedErrorClass<DesktopUpdateUnexpectedActionError>()(
+export class DesktopUpdateUnexpectedActionError extends Schema.TaggedError<DesktopUpdateUnexpectedActionError>()(
   "DesktopUpdateUnexpectedActionError",
   {
     action: Schema.Literals(["download", "install"]),

@@ -756,9 +756,10 @@ export const ProviderRegistryLive = Layer.effect(
       if (input.runtimeFence !== undefined && !(yield* input.runtimeFence.isCurrent)) {
         return yield* Ref.get(providersRef);
       }
-      const pushed = input.windows.map(
-        (window): PushedUsageWindow => ({ window, observedAt: input.observedAt }),
-      );
+      const pushed = input.windows.map((window): PushedUsageWindow => ({
+        window,
+        observedAt: input.observedAt,
+      }));
       yield* Ref.update(pushedUsageRef, (previous) => {
         const next = new Map(previous);
         next.set(input.instanceId, {

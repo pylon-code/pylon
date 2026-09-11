@@ -148,7 +148,7 @@ function homesOverlap(
   return !path.isAbsolute(inverse) && inverse !== ".." && !inverse.startsWith(`..${path.sep}`);
 }
 
-export class ProviderInstanceSettingsValidationError extends Schema.TaggedErrorClass<ProviderInstanceSettingsValidationError>()(
+export class ProviderInstanceSettingsValidationError extends Schema.TaggedError<ProviderInstanceSettingsValidationError>()(
   "ProviderInstanceSettingsValidationError",
   { detail: Schema.String },
 ) {

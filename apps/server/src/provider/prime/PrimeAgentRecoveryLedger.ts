@@ -127,7 +127,7 @@ export function primeAgentRecoveryOwnershipIdentities(
     : [current];
 }
 
-export class PrimeAgentRecoveryLedgerError extends Schema.TaggedErrorClass<PrimeAgentRecoveryLedgerError>()(
+export class PrimeAgentRecoveryLedgerError extends Schema.TaggedError<PrimeAgentRecoveryLedgerError>()(
   "PrimeAgentRecoveryLedgerError",
   {
     operation: Schema.String,

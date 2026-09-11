@@ -38,7 +38,7 @@ import {
 } from "./ResourceTelemetryHistory.ts";
 import { subscribeBeforeSnapshot } from "../utils/subscribeBeforeSnapshot.ts";
 
-export class ResourceTelemetryRefreshFailed extends Schema.TaggedErrorClass<ResourceTelemetryRefreshFailed>()(
+export class ResourceTelemetryRefreshFailed extends Schema.TaggedError<ResourceTelemetryRefreshFailed>()(
   "ResourceTelemetryRefreshFailed",
   {
     operation: Schema.String,
@@ -491,12 +491,10 @@ export const make = Effect.fn("resourceTelemetry.resourceTelemetry.make")(functi
     validateProcessIdentity,
     retry: nativeClient.retry.pipe(
       Effect.zip(Ref.get(state)),
-      Effect.map(
-        ([accepted, current]): ResourceTelemetryRetryResult => ({
-          accepted,
-          snapshot: current.latest,
-        }),
-      ),
+      Effect.map(([accepted, current]): ResourceTelemetryRetryResult => ({
+        accepted,
+        snapshot: current.latest,
+      })),
     ),
   });
 });
