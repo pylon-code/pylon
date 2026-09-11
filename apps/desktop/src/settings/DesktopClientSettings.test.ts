@@ -43,6 +43,7 @@ const clientSettings: ClientSettings = {
   fontSizeTerminal: 12,
   fontSmoothing: true,
   glassOpacity: 80,
+  onboardingCompletedAt: null,
   panelAnimationDurationMs: 0,
   proactivePanelsEnabled: true,
   showSkillsInSlashMenu: false,
@@ -136,6 +137,59 @@ describe("DesktopClientSettings", () => {
     ),
   );
 
+  for (const failure of [
+    { label: "permission", reason: "PermissionDenied" },
+    { label: "I/O", reason: "Unknown" },
+  ] as const) {
+    it.effect(`preserves saved preferences across ${failure.label} read failures and retries`, () =>
+      withClientSettings(
+        Effect.gen(function* () {
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const settings = yield* DesktopClientSettings.DesktopClientSettings;
+          const savedSettings = {
+            ...clientSettings,
+            onboardingCompletedAt: "2026-09-05T12:00:00.000Z",
+          };
+          yield* settings.set(savedSettings);
+          const savedContents = yield* fileSystem.readFileString(environment.clientSettingsPath);
+          const cause = PlatformError.systemError({
+            _tag: failure.reason,
+            module: "FileSystem",
+            method: "readFileString",
+            pathOrDescriptor: environment.clientSettingsPath,
+          });
+          let failRead = true;
+          const retryableSettings = yield* DesktopClientSettings.make.pipe(
+            Effect.provideService(
+              FileSystem.FileSystem,
+              FileSystem.FileSystem.of({
+                ...fileSystem,
+                readFileString: (path) =>
+                  Effect.suspend(() =>
+                    failRead ? Effect.fail(cause) : fileSystem.readFileString(path),
+                  ),
+              }),
+            ),
+          );
+
+          const error = yield* retryableSettings.get.pipe(Effect.flip);
+          assert.instanceOf(error, DesktopClientSettings.DesktopClientSettingsReadError);
+          assert.equal(error.operation, "read-file");
+          assert.equal(error.path, environment.clientSettingsPath);
+          assert.strictEqual(error.cause, cause);
+          assert.equal(
+            yield* fileSystem.readFileString(environment.clientSettingsPath),
+            savedContents,
+          );
+
+          failRead = false;
+          assert.deepEqual(yield* retryableSettings.get, Option.some(savedSettings));
+        }),
+      ),
+    );
+  }
+
   it.effect("reports the failed client settings write operation and path", () =>
     withClientSettings(
       Effect.gen(function* () {
@@ -222,7 +276,7 @@ describe("DesktopClientSettings", () => {
     ),
   );
 
-  it.effect("treats malformed client settings documents as absent", () =>
+  it.effect("reads a malformed settings file as no saved settings without rewriting it", () =>
     withClientSettings(
       Effect.gen(function* () {
         const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -232,7 +286,95 @@ describe("DesktopClientSettings", () => {
         yield* fileSystem.writeFileString(environment.clientSettingsPath, "{not-json");
 
         assert.isTrue(Option.isNone(yield* settings.get));
+        assert.equal(yield* fileSystem.readFileString(environment.clientSettingsPath), "{not-json");
       }),
     ),
+  );
+
+  for (const document of [
+    { label: "direct", contents: '{"fontSizeCode":"large","timestampFormat":"12-hour"}' },
+    {
+      label: "legacy",
+      contents: '{"settings":{"fontSizeCode":"large","timestampFormat":"12-hour"}}',
+    },
+  ]) {
+    it.effect(`keeps readable ${document.label} settings beside an undecodable value`, () =>
+      withClientSettings(
+        Effect.gen(function* () {
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const settings = yield* DesktopClientSettings.DesktopClientSettings;
+          yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+          yield* fileSystem.writeFileString(environment.clientSettingsPath, document.contents);
+
+          assert.deepEqual(
+            yield* settings.get,
+            Option.some({
+              ...(yield* decodeClientSettingsJson("{}")),
+              timestampFormat: "12-hour" as const,
+            }),
+          );
+          assert.equal(
+            yield* fileSystem.readFileString(environment.clientSettingsPath),
+            document.contents,
+          );
+        }),
+      ),
+    );
+  }
+
+  it.effect("leaves an undecodable value in the file until that setting changes", () =>
+    withClientSettings(
+      Effect.gen(function* () {
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const settings = yield* DesktopClientSettings.DesktopClientSettings;
+        const readDocument = Effect.flatMap(
+          fileSystem.readFileString(environment.clientSettingsPath),
+          decodeRecordJson,
+        );
+        yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+        yield* fileSystem.writeFileString(
+          environment.clientSettingsPath,
+          '{"confirmQuit":"hold","timestampFormat":"12-hour"}',
+        );
+
+        const saved = Option.getOrThrow(yield* settings.get);
+        assert.isTrue(saved.confirmQuit);
+        yield* settings.set({ ...saved, onboardingCompletedAt: "2026-09-10T12:00:00.000Z" });
+        assert.deepInclude(yield* readDocument, {
+          confirmQuit: "hold",
+          timestampFormat: "12-hour",
+          onboardingCompletedAt: "2026-09-10T12:00:00.000Z",
+        });
+
+        yield* settings.set({ ...saved, confirmQuit: false });
+        assert.deepInclude(yield* readDocument, { confirmQuit: false });
+        yield* settings.set({ ...saved, confirmQuit: false, wordWrap: false });
+        assert.deepInclude(yield* readDocument, { confirmQuit: false, wordWrap: false });
+      }),
+    ),
+  );
+
+  it.effect("keeps the default quit hold when settings cannot be read", () =>
+    Effect.gen(function* () {
+      const failing = DesktopClientSettings.DesktopClientSettings.of({
+        get: Effect.fail(
+          new DesktopClientSettings.DesktopClientSettingsReadError({
+            operation: "read-file",
+            path: "/unreadable/client-settings.json",
+            cause: new Error("permission denied"),
+          }),
+        ),
+        set: () => Effect.void,
+      });
+      const disabled = DesktopClientSettings.DesktopClientSettings.of({
+        get: Effect.succeed(Option.some({ ...clientSettings, confirmQuit: false })),
+        set: () => Effect.void,
+      });
+
+      assert.isTrue(yield* DesktopClientSettings.readConfirmQuit(failing));
+      assert.isFalse(yield* DesktopClientSettings.readConfirmQuit(disabled));
+    }),
   );
 });

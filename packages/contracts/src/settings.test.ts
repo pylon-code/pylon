@@ -6,8 +6,12 @@ import {
   ClientSettingsSchema,
   ClientSettingsPatch,
   ClaudeSettings,
+  DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
+  decodeStoredClientSettings,
+  encodeStoredClientSettings,
   resolveProviderInstanceEnabled,
+  retainUnreadClientSettings,
   ServerSettings,
   ServerSettingsPatch,
 } from "./settings.ts";
@@ -159,6 +163,43 @@ describe("ClientSettings retired status motion", () => {
     expect(decodeClientSettingsPatch({ dotMatrixMotion: "efficient" })).not.toHaveProperty(
       "dotMatrixMotion",
     );
+  });
+});
+
+describe("stored client settings", () => {
+  it("returns null for a document that is not a settings object", () => {
+    expect(decodeStoredClientSettings("settings")).toBeNull();
+    expect(decodeStoredClientSettings([])).toBeNull();
+    expect(decodeStoredClientSettings(null)).toBeNull();
+  });
+
+  it("defaults only the values it cannot decode and retains them until they change", () => {
+    const stored = decodeStoredClientSettings({
+      confirmQuit: "hold",
+      fontSizeCode: "large",
+      timestampFormat: "12-hour",
+    });
+
+    expect(stored).toEqual({
+      settings: { ...DEFAULT_CLIENT_SETTINGS, timestampFormat: "12-hour" },
+      unreadValues: { confirmQuit: "hold", fontSizeCode: "large" },
+    });
+    const unchanged = retainUnreadClientSettings({ ...stored!.settings, wordWrap: false }, stored);
+    expect(encodeStoredClientSettings(unchanged)).toMatchObject({
+      confirmQuit: "hold",
+      fontSizeCode: "large",
+      timestampFormat: "12-hour",
+      wordWrap: false,
+    });
+    const changed = retainUnreadClientSettings(
+      { ...unchanged.settings, confirmQuit: false },
+      unchanged,
+    );
+    expect(changed.unreadValues).toEqual({ fontSizeCode: "large" });
+    expect(encodeStoredClientSettings(changed)).toMatchObject({
+      confirmQuit: false,
+      fontSizeCode: "large",
+    });
   });
 });
 

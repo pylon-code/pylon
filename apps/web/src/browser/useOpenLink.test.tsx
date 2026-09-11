@@ -26,8 +26,12 @@ vi.mock("~/localApi", () => ({
 }));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => mocks.openPreview }));
 vi.mock("~/state/preview", () => ({ previewEnvironment: { open: {} } }));
-vi.mock("./openFileInPreview", () => ({ openUrlInPreview: mocks.openUrl }));
+vi.mock("./openFileInPreview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./openFileInPreview")>()),
+  openUrlInPreview: mocks.openUrl,
+}));
 
+import { BrowserSettingsReadError } from "./openFileInPreview";
 import { useOpenLink } from "./useOpenLink";
 
 const threadRef = { environmentId: "local", threadId: "thread-1" } as ScopedThreadRef;
@@ -98,6 +102,18 @@ describe("useOpenLink", () => {
       else mocks.openUrl.mockRejectedValue(error);
       await opener(threadRef)(url);
       expect(mocks.openExternal).toHaveBeenCalledExactlyOnceWith(url);
+      expect(mocks.recordVisit).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["failure", "rejection"])(
+    "rejects a settings read %s without opening either browser",
+    async (kind) => {
+      const error = new BrowserSettingsReadError({ cause: new Error("storage unavailable") });
+      if (kind === "failure")
+        mocks.openUrl.mockResolvedValue(AsyncResult.failure(Cause.fail(error)));
+      else mocks.openUrl.mockRejectedValue(error);
+      await expect(opener(threadRef)(url)).rejects.toBe(error);
+      expect(mocks.openExternal).not.toHaveBeenCalled();
       expect(mocks.recordVisit).not.toHaveBeenCalled();
     },
   );

@@ -8,8 +8,6 @@ import * as Ref from "effect/Ref";
 
 import * as Electron from "electron";
 
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
-
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { makeComponentLogger } from "../app/DesktopObservability.ts";
@@ -571,16 +569,7 @@ export const make = Effect.gen(function* () {
     // renderer shows the "Hold to Quit" hint via QUIT_SHORTCUT_CHANNEL.
     const quitHoldHandler = makeQuitHoldHandler({
       platform: environment.platform,
-      isEnabled: () =>
-        runPromise(
-          Effect.map(
-            clientSettings.get,
-            Option.match({
-              onNone: () => DEFAULT_CLIENT_SETTINGS.confirmQuit,
-              onSome: (settings) => settings.confirmQuit,
-            }),
-          ),
-        ),
+      isEnabled: () => runPromise(DesktopClientSettings.readConfirmQuit(clientSettings)),
       notify: (state) => {
         if (!window.isDestroyed()) {
           window.webContents.send(QUIT_SHORTCUT_CHANNEL, state);

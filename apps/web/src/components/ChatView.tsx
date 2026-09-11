@@ -186,6 +186,7 @@ import {
   useThreadPreviewState,
 } from "../previewStateStore";
 import { previewRuntimeTabId } from "../browser/previewRuntimeTabId";
+import { BrowserSettingsReadError } from "../browser/openFileInPreview";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
@@ -2411,6 +2412,12 @@ export default function ChatView(props: ChatViewProps) {
     [openOrReuseProjectDraftThread],
   );
 
+  // Once a thread selects an environment, never substitute the primary
+  // environment's config while the selected environment is still loading.
+  const serverConfig = activeThread
+    ? (activeEnvironment?.serverConfig ?? null)
+    : (primaryEnvironment?.serverConfig ?? null);
+  const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
   const selectedProviderByThreadId = composerActiveProvider ?? null;
   const threadProvider =
     activeThread?.modelSelection.instanceId ??
@@ -2420,12 +2427,8 @@ export default function ChatView(props: ChatViewProps) {
     thread: activeThread,
     selectedProvider: selectedProviderByThreadId,
     threadProvider,
+    providers: providerStatuses,
   });
-  // Once a thread selects an environment, never substitute the primary
-  // environment's config while the selected environment is still loading.
-  const serverConfig = activeThread
-    ? (activeEnvironment?.serverConfig ?? null)
-    : (primaryEnvironment?.serverConfig ?? null);
   const pullRequestsCapabilityKnown = serverConfig !== null;
   const supportsPullRequests = serverConfig?.environment.capabilities.pullRequests === true;
   // Same fallback the load-failure view offers: a pull request stays readable on
@@ -2657,7 +2660,6 @@ export default function ChatView(props: ChatViewProps) {
     versionMismatchThreadContinuation,
     versionMismatchServerLabel,
   ]);
-  const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
   const threadHandoffEntries = useMemo(
     () => applyProviderInstanceSettings(deriveProviderInstanceEntries(providerStatuses), settings),
     [providerStatuses, settings],
@@ -4075,6 +4077,18 @@ export default function ChatView(props: ChatViewProps) {
         threadRef: activeThreadRef,
         openPreview,
         ...(profileId === undefined ? {} : { profileId }),
+      }).then((result) => {
+        if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
+        const error = squashAtomCommandFailure(result);
+        if (error instanceof BrowserSettingsReadError) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Unable to open browser",
+              description: error.message,
+            }),
+          );
+        }
       });
     },
     [activeThreadRef, openPreview],

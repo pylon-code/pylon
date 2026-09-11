@@ -1,5 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
+import * as Equal from "effect/Equal";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { ForwardCompatibleNullable, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
@@ -264,6 +266,13 @@ export const ClientSettingsSchema = Schema.Struct({
   // Grayscale `-webkit-font-smoothing: antialiased` (thinner strokes);
   // disabling restores the platform's heavier default. No effect off macOS.
   fontSmoothing: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // When the first-run welcome wizard finished (or was skipped), as an ISO
+  // timestamp. `null` alone does not mean "show the wizard" — every install
+  // that predates this field decodes to `null` — so the gate also requires an
+  // empty workspace before it treats the client as a fresh install.
+  onboardingCompletedAt: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   // Model favorites. Historically keyed by provider kind, now
   // widened to `ProviderInstanceId` so users can favorite a specific model
   // on a custom provider instance (e.g. "Codex Personal · gpt-5") without
@@ -342,6 +351,75 @@ export const ClientSettingsSchema = Schema.Struct({
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientSettingsSchema)({});
+
+/**
+ * A stored client settings document decoded one setting at a time. A value this
+ * build cannot decode (for example a preference that T3 Code writes to the same
+ * browser storage in a newer shape) falls back to its default instead of
+ * discarding every saved preference or locking the app. `unreadValues` keeps
+ * those stored values so writes can leave them in place until that setting
+ * changes; see {@link retainUnreadClientSettings}.
+ */
+export interface StoredClientSettings {
+  readonly settings: ClientSettings;
+  readonly unreadValues: Readonly<Record<string, unknown>>;
+}
+
+const decodeClientSettingsOption = Schema.decodeUnknownOption(ClientSettingsSchema);
+const encodeClientSettingsSync = Schema.encodeSync(ClientSettingsSchema);
+type ClientSettingField =
+  (typeof ClientSettingsSchema.fields)[keyof typeof ClientSettingsSchema.fields];
+const clientSettingFields: Readonly<Record<string, ClientSettingField>> =
+  ClientSettingsSchema.fields;
+const decodeClientSettingValue = new Map(
+  Object.entries(clientSettingFields).map(
+    ([key, field]) => [key, Schema.decodeUnknownOption(Schema.Struct({ [key]: field }))] as const,
+  ),
+);
+
+/** Returns `null` when the document is not a settings object at all. */
+export function decodeStoredClientSettings(document: unknown): StoredClientSettings | null {
+  if (typeof document !== "object" || document === null || Array.isArray(document)) {
+    return null;
+  }
+  const complete = decodeClientSettingsOption(document);
+  if (Option.isSome(complete)) {
+    return { settings: complete.value, unreadValues: {} };
+  }
+  const readable: Record<string, unknown> = {};
+  const unreadValues: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(document)) {
+    const decodeValue = decodeClientSettingValue.get(key);
+    // Keys this schema does not know are dropped by the full decode below.
+    if (decodeValue === undefined || Option.isSome(decodeValue({ [key]: value }))) {
+      readable[key] = value;
+    } else {
+      unreadValues[key] = value;
+    }
+  }
+  const partial = decodeClientSettingsOption(readable);
+  return Option.isSome(partial) ? { settings: partial.value, unreadValues } : null;
+}
+
+/** Keeps unread stored values only for settings that still hold their fallback. */
+export function retainUnreadClientSettings(
+  settings: ClientSettings,
+  previous: StoredClientSettings | null,
+): StoredClientSettings {
+  const unreadValues: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(previous?.unreadValues ?? {})) {
+    const setting = key as keyof ClientSettings;
+    if (previous !== null && Equal.equals(settings[setting], previous.settings[setting])) {
+      unreadValues[key] = value;
+    }
+  }
+  return { settings, unreadValues };
+}
+
+/** The document to store: encoded settings with any retained unread values restored. */
+export function encodeStoredClientSettings(stored: StoredClientSettings): Record<string, unknown> {
+  return { ...encodeClientSettingsSync(stored.settings), ...stored.unreadValues };
+}
 
 // ── Server Settings (server-authoritative) ────────────────────
 
@@ -1297,6 +1375,7 @@ export const ClientSettingsPatch = Schema.Struct({
   diffLayout: Schema.optionalKey(DiffLayout),
   environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),
   glassOpacity: Schema.optionalKey(GlassOpacity),
+  onboardingCompletedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
   fontSizeInterface: Schema.optionalKey(InterfaceFontSize),
   fontSizePrompt: Schema.optionalKey(PromptFontSize),
   fontSizeCode: Schema.optionalKey(CodeFontSize),
