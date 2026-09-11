@@ -119,3 +119,20 @@ export function snapShotKeybindingConflict<Command extends string>(
       ?.command ?? null
   );
 }
+
+/**
+ * Whether a Pylon keybinding (in settings input notation) reuses the global SnapShot shortcut.
+ * The desktop registers that shortcut system-wide, so it wins over the keybinding in every context.
+ */
+export function keybindingUsesSnapShotShortcut(
+  key: string,
+  snapShotShortcut: SnapShotShortcut,
+  platform = navigator.platform,
+): boolean {
+  if (isModifierPairShortcut(snapShotShortcut)) return false;
+  const shortcut = parseKeybindingShortcut(key);
+  return (
+    shortcut !== null &&
+    shortcutConflictKey(shortcut, platform) === shortcutConflictKey(snapShotShortcut, platform)
+  );
+}

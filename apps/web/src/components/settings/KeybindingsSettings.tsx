@@ -21,6 +21,7 @@ import {
   useState,
 } from "react";
 import {
+  type ClientSettings,
   type KeybindingCommand,
   type KeybindingWhenNode,
   type ServerRemoveKeybindingInput,
@@ -34,7 +35,10 @@ import {
 
 import { isElectron } from "../../env";
 import { useOpenInPreferredEditor } from "../../editorPreferences";
+import { useClientSettings } from "../../hooks/useSettings";
 import { formatShortcutLabel } from "../../keybindings";
+import { getDesktopSnapShotBridge } from "../../lib/desktopSnapShot";
+import { keybindingUsesSnapShotShortcut } from "../../lib/snapShotShortcut";
 import { cn } from "../../lib/utils";
 import {
   primaryServerAvailableEditorsAtom,
@@ -293,7 +297,17 @@ function UnknownWhenVariableWarning({
   );
 }
 
-function KeybindingConflictWarning({ labels }: { labels: ReadonlyArray<string> }) {
+function KeybindingConflictWarning({
+  labels: bindingLabels,
+  snapShotShortcutConflict,
+}: {
+  labels: ReadonlyArray<string>;
+  snapShotShortcutConflict: boolean;
+}) {
+  // Lead with the SnapShot shortcut so the three-label summary never cuts it off.
+  const labels = snapShotShortcutConflict
+    ? ["the SnapShot shortcut", ...bindingLabels]
+    : bindingLabels;
   if (labels.length === 0) return null;
   const description =
     labels.length === 1
@@ -302,8 +316,27 @@ function KeybindingConflictWarning({ labels }: { labels: ReadonlyArray<string> }
 
   return (
     <WarningTooltipIcon label={description}>
-      {description} The most recent matching binding wins when both conditions can apply.
+      {description}
+      {snapShotShortcutConflict
+        ? " SnapShots claim this shortcut system-wide, so Pylon never receives it."
+        : null}
+      {bindingLabels.length > 0
+        ? " The most recent matching binding wins when both conditions can apply."
+        : null}
     </WarningTooltipIcon>
+  );
+}
+
+const selectEnabledSnapShotShortcut = (settings: ClientSettings) =>
+  settings.snapShotEnabled ? settings.snapShotShortcut : null;
+
+/** Whether a key draft reuses the SnapShot shortcut this desktop registers system-wide. */
+function useSnapShotShortcutConflict(key: string): boolean {
+  const snapShotShortcut = useClientSettings(selectEnabledSnapShotShortcut);
+  return (
+    snapShotShortcut !== null &&
+    getDesktopSnapShotBridge() !== undefined &&
+    keybindingUsesSnapShotShortcut(key, snapShotShortcut)
   );
 }
 
@@ -782,6 +815,7 @@ function useKeybindingRowEditor({
     key: keyDraft,
     when: whenDraftExpression,
   });
+  const snapShotShortcutConflict = useSnapShotShortcutConflict(keyDraft);
 
   const save = () => {
     onSave({
@@ -812,6 +846,7 @@ function useKeybindingRowEditor({
     whenDraftExpression,
     isDirty,
     conflictLabels,
+    snapShotShortcutConflict,
     setDraft,
     save,
     captureKeybinding,
@@ -1049,7 +1084,10 @@ function KeybindingSettingsRow(props: KeybindingRowProps) {
       description={<KeybindingRowWhen row={row} editor={editor} variables={variables} />}
       control={
         <div className="flex flex-wrap items-center justify-end gap-1.5">
-          <KeybindingConflictWarning labels={editor.conflictLabels} />
+          <KeybindingConflictWarning
+            labels={editor.conflictLabels}
+            snapShotShortcutConflict={editor.snapShotShortcutConflict}
+          />
           <KeybindingHoverRowMenu
             row={row}
             isSaving={isSaving}
@@ -1090,6 +1128,7 @@ function useNewKeybindingDraft({
     key: keyDraft,
     when: whenDraftExpression,
   });
+  const snapShotShortcutConflict = useSnapShotShortcutConflict(keyDraft);
   const commandLabelText = commandDraft ? commandLabel(commandDraft) : "new keybinding";
   const canSave = Boolean(commandDraft) && keyDraft.trim().length > 0 && isWhenDraftValid;
 
@@ -1122,6 +1161,7 @@ function useNewKeybindingDraft({
     whenDraftExpression,
     isRecording,
     conflictLabels,
+    snapShotShortcutConflict,
     commandLabelText,
     canSave,
     setDraft,
@@ -1269,7 +1309,10 @@ function NewKeybindingSettingsRow(props: NewKeybindingProps) {
             commandOptions={commandOptions}
             className="w-56"
           />
-          <KeybindingConflictWarning labels={draft.conflictLabels} />
+          <KeybindingConflictWarning
+            labels={draft.conflictLabels}
+            snapShotShortcutConflict={draft.snapShotShortcutConflict}
+          />
           <NewKeybindingKeyInput draft={draft} className="w-44" />
           <Button size="sm" disabled={isSaving || !draft.canSave} onClick={draft.save}>
             {isSaving ? "Saving" : "Save"}

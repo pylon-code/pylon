@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   formatSnapShotShortcutLabel,
+  keybindingUsesSnapShotShortcut,
   parseDesktopSnapShotShortcut,
   sameSnapShotShortcut,
   snapShotKeybindingConflict,
@@ -157,6 +158,26 @@ describe("window capture keybinding conflicts", () => {
         "MacIntel",
       ),
     ).toBeNull();
+  });
+
+  it("flags a Pylon keybinding draft that reuses the global capture chord", () => {
+    const captureChord = {
+      key: "4",
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: true,
+      altKey: false,
+      modKey: true,
+    };
+
+    expect(keybindingUsesSnapShotShortcut("mod+shift+4", captureChord, "MacIntel")).toBe(true);
+    expect(keybindingUsesSnapShotShortcut("meta+shift+4", captureChord, "MacIntel")).toBe(true);
+    expect(keybindingUsesSnapShotShortcut("ctrl+shift+4", captureChord, "MacIntel")).toBe(false);
+    expect(keybindingUsesSnapShotShortcut("ctrl+shift+4", captureChord, "Win32")).toBe(true);
+    expect(keybindingUsesSnapShotShortcut("", captureChord, "MacIntel")).toBe(false);
+    expect(
+      keybindingUsesSnapShotShortcut("shift+shift", { kind: "both-shift-keys" }, "Linux"),
+    ).toBe(false);
   });
 });
 

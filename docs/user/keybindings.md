@@ -1,7 +1,9 @@
 # Keybindings
 
 Edit keybindings from **Settings** → **Keybindings**. That page lists every command, its current
-shortcut, whether it is a default or your own, and warns about conflicts.
+shortcut, whether it is a default or your own, and warns about conflicts. In the desktop app it
+also warns when a shortcut matches your SnapShot shortcut, which is claimed system-wide and never
+reaches Pylon while SnapShots are on.
 
 The same configuration lives in `~/.pylon-code/userdata/keybindings.json` on the machine running
 the server, if you prefer editing it directly. Pylon writes the built-in defaults into that file on
