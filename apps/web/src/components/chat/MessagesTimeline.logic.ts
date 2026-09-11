@@ -15,6 +15,7 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
+import { deriveRollbackTargets } from "@t3tools/client-runtime/rollback";
 import { formatReportedTurnCost } from "@t3tools/client-runtime/state/turn-costs";
 import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
@@ -183,6 +184,34 @@ export function resolveTimelineMinimapIndexFromPointer(input: {
 
   const progress = Math.max(0, Math.min(1, (input.pointerY - input.railTop) / input.railHeight));
   return Math.max(0, Math.min(input.itemCount - 1, Math.round(progress * (input.itemCount - 1))));
+}
+
+export function resolveTimelineMinimapCurrentIndex(input: {
+  readonly scrollTop: number;
+  readonly scrollBottom: number;
+  readonly itemBounds: ReadonlyArray<{
+    readonly top: number | null;
+    readonly height: number | null;
+  }>;
+}): number | null {
+  let precedingIndex: number | null = null;
+
+  for (const [index, item] of input.itemBounds.entries()) {
+    if (item.top === null) {
+      continue;
+    }
+    const inView =
+      item.top < input.scrollBottom && item.top + Math.max(1, item.height ?? 1) > input.scrollTop;
+    if (inView) {
+      // The first visible marker is the turn at the reader's current position.
+      return index;
+    }
+    if (item.top <= input.scrollTop) {
+      precedingIndex = index;
+    }
+  }
+
+  return precedingIndex;
 }
 
 export function resolveTimelineMinimapHasPersistentGutter(viewportWidth: number): boolean {
@@ -977,10 +1006,31 @@ export function deriveMessagesTimelineRows(input: {
   expandedWorkGroupIds?: ReadonlySet<string>;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
-  turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
+  turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
   reportedTurnCosts?: ReadonlyMap<TurnId, number>;
-  revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
+  supportsConversationRollback: boolean;
+  /** Client-only messages (optimistic sends, feedback transcripts); never rollback anchors. */
+  localMessageIds?: ReadonlySet<MessageId>;
 }): MessagesTimelineRow[] {
+  const turnDiffSummaryByAssistantMessageId = new Map<MessageId, TurnDiffSummary>();
+  for (const summary of input.turnDiffSummaries) {
+    if (summary.assistantMessageId) {
+      turnDiffSummaryByAssistantMessageId.set(summary.assistantMessageId, summary);
+    }
+  }
+  // Pylon's rollback proof: a user message is revertible only when the
+  // checkpoint before its response is ready and verified as available. Only
+  // server messages take part, so a local message cannot claim a target.
+  const rollbackTargets = input.supportsConversationRollback
+    ? deriveRollbackTargets({
+        messages: input.timelineEntries.flatMap((entry) =>
+          entry.kind === "message" && !input.localMessageIds?.has(entry.message.id)
+            ? [entry.message]
+            : [],
+        ),
+        checkpoints: input.turnDiffSummaries,
+      })
+    : null;
   const nextRows: MessagesTimelineRow[] = [];
   const durationStartByMessageId = computeMessageDurationStart(
     input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
@@ -1336,11 +1386,11 @@ export function deriveMessagesTimelineRows(input: {
           : undefined,
       assistantTurnDiffSummary:
         timelineEntry.message.role === "assistant"
-          ? input.turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
+          ? turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
           : undefined,
       revertTurnCount:
         timelineEntry.message.role === "user"
-          ? input.revertTurnCountByUserMessageId.get(timelineEntry.message.id)
+          ? rollbackTargets?.get(timelineEntry.message.id)?.targetTurnCount
           : undefined,
     });
   }
@@ -1370,9 +1420,30 @@ function replaceStreamingMessageRows(
   input: MessagesTimelineRowsInput,
   previous: MessagesTimelineRowsProjection,
 ): MessagesTimelineRow[] | null {
-  const { timelineEntries: previousEntries, ...previousContext } = previous.input;
-  const { timelineEntries, ...context } = input;
-  if (timelineEntries.length !== previousEntries.length || !shallow(previousContext, context)) {
+  const {
+    timelineEntries: previousEntries,
+    turnDiffSummaries: previousSummaries,
+    latestTurn: previousLatestTurn,
+    expandedTurnIds: previousExpandedTurns,
+    expandedWorkGroupIds: previousExpandedGroups,
+    ...previousContext
+  } = previous.input;
+  const {
+    timelineEntries,
+    turnDiffSummaries,
+    latestTurn,
+    expandedTurnIds,
+    expandedWorkGroupIds,
+    ...context
+  } = input;
+  if (
+    timelineEntries.length !== previousEntries.length ||
+    !shallow(previousContext, context) ||
+    !shallow(previousSummaries, turnDiffSummaries) ||
+    !shallow(previousLatestTurn, latestTurn) ||
+    !shallow(previousExpandedTurns, expandedTurnIds) ||
+    !shallow(previousExpandedGroups, expandedWorkGroupIds)
+  ) {
     return null;
   }
   const replacements = new Map<ChatMessage, ChatMessage>();

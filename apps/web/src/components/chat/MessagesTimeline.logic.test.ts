@@ -1,5 +1,24 @@
 import { describe, expect, it } from "vite-plus/test";
-import { CheckpointRef, MessageId, TurnId } from "@t3tools/contracts";
+import {
+  CheckpointRef,
+  EnvironmentId,
+  EventId,
+  MessageId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  TurnId,
+  type OrchestrationThread,
+} from "@t3tools/contracts";
+import {
+  applyThreadDetailEvent,
+  codexFeedbackMessage,
+  createEnvironmentThreadDetailAtoms,
+  EMPTY_ENVIRONMENT_THREAD_STATE,
+} from "@t3tools/client-runtime/state/threads";
+import { deriveRollbackTargets } from "@t3tools/client-runtime/rollback";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
@@ -12,6 +31,7 @@ import {
   shouldFollowWorkGroupAppend,
   shouldPreserveAssistantLineBreaks,
   type MessagesTimelineRow,
+  type MessagesTimelineRowsProjection,
   workEntryDisplayLabel,
 } from "./MessagesTimeline.logic";
 import {
@@ -19,9 +39,9 @@ import {
   deriveTimelineEntries,
   deriveTimelineEntriesWithState,
   type WorkLogEntry,
+  type TimelineEntriesProjection,
 } from "../../session-logic";
-import { buildRollbackTurnCountByMessageId } from "../ChatView.logic";
-import { deriveRollbackTargets } from "@t3tools/client-runtime/rollback";
+import { collectLocalTimelineMessageIds } from "../ChatView.logic";
 import { isImageAttachment, type ChatMessage, type TurnDiffSummary } from "../../types";
 
 describe("streaming row projection", () => {
@@ -98,8 +118,8 @@ describe("streaming row projection", () => {
       runningTurnId: turnId,
       isWorking: true,
       activeTurnStartedAt: time(5),
-      turnDiffSummaryByAssistantMessageId: new Map<MessageId, TurnDiffSummary>(),
-      revertTurnCountByUserMessageId: new Map<MessageId, number>(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     } satisfies Parameters<typeof deriveMessagesTimelineRows>[0];
     return { messages, work, timeline, input, time, turnId, historyTurnId };
   }
@@ -240,83 +260,444 @@ describe("streaming row projection", () => {
     },
   );
 
-  it("reuses streamed rows while preserving exact rollback proof and revocation", () => {
+  it("owns checkpoint lookups across streaming while preserving exact rollback proof", () => {
     const initial = fixture("Partial");
+    let checkpointLookupReads = 0;
     const checkpoint: TurnDiffSummary = {
       turnId: initial.historyTurnId,
-      checkpointTurnCount: 1,
+      get checkpointTurnCount() {
+        checkpointLookupReads += 1;
+        return 1;
+      },
       checkpointRef: CheckpointRef.make("refs/pylon/checkpoints/history"),
       status: "ready",
       files: [],
-      assistantMessageId: MessageId.make("history-assistant"),
+      get assistantMessageId() {
+        checkpointLookupReads += 1;
+        return MessageId.make("history-assistant");
+      },
       completedAt: initial.time(4),
     };
     const baseline: TurnDiffSummary = {
-      ...checkpoint,
+      turnId: initial.historyTurnId,
       checkpointTurnCount: 0,
+      checkpointRef: CheckpointRef.make("refs/pylon/checkpoints/baseline"),
+      status: "ready",
+      files: [],
       assistantMessageId: null,
       rollbackAvailability: { state: "available", reason: "Exact anchor verified." },
+      completedAt: initial.time(0),
     };
-    const summaries = new Map([[checkpoint.assistantMessageId!, checkpoint]]);
-    let counts: Map<MessageId, number> | null = null;
-    const build = (
-      messages: ChatMessage[],
-      timelineEntries: typeof initial.timeline.entries,
-      verified = true,
-    ) => {
-      counts = buildRollbackTurnCountByMessageId(
-        deriveRollbackTargets({
-          messages,
-          checkpoints: [
-            {
-              ...baseline,
-              rollbackAvailability: verified ? baseline.rollbackAvailability : undefined,
-            },
-            checkpoint,
-          ],
-        }),
-        counts,
-      );
-      return {
-        ...initial.input,
-        timelineEntries,
-        turnDiffSummaryByAssistantMessageId: summaries,
-        revertTurnCountByUserMessageId: counts,
-      };
+    const input = {
+      ...initial.input,
+      turnDiffSummaries: [baseline, checkpoint],
+      supportsConversationRollback: true,
+      expandedTurnIds: new Set([initial.historyTurnId]),
+      expandedWorkGroupIds: new Set<string>(),
     };
-    const previous = deriveMessagesTimelineRowsWithState(
-      build(initial.messages, initial.timeline.entries),
-    );
-    expect(
-      previous.rows.find(
+    const firstUserRow = (projection: MessagesTimelineRowsProjection) =>
+      projection.rows.find(
         (row) => row.kind === "message" && row.message.id === initial.messages[0]!.id,
-      ),
-    ).toMatchObject({ revertTurnCount: 0 });
+      );
+    const previous = deriveMessagesTimelineRowsWithState(input);
+    expect(checkpointLookupReads).toBeGreaterThan(0);
+    expect(firstUserRow(previous)).toMatchObject({ revertTurnCount: 0 });
+
     const last = initial.messages.at(-1)!;
     const messages = [...initial.messages.slice(0, -1), { ...last, text: "Partial token" }];
     const timeline = deriveTimelineEntriesWithState(messages, [], initial.work, initial.timeline);
-    const nextInput = build(messages, timeline.entries);
+    // Equal source snapshots arrive as fresh containers on every streamed token.
+    const nextInput = {
+      ...input,
+      timelineEntries: timeline.entries,
+      turnDiffSummaries: [...input.turnDiffSummaries],
+      latestTurn: { ...input.latestTurn },
+      expandedTurnIds: new Set(input.expandedTurnIds),
+      expandedWorkGroupIds: new Set(input.expandedWorkGroupIds),
+    };
+    checkpointLookupReads = 0;
     const next = deriveMessagesTimelineRowsWithState(nextInput, previous);
+    expect(checkpointLookupReads).toBe(0);
     expect(next.rows).toEqual(deriveMessagesTimelineRows(nextInput));
     for (const [index, row] of previous.rows.entries()) {
-      if (row.kind === "message" && row.message === last) {
+      if ((row.kind === "message" || row.kind === "assistant-meta") && row.message === last) {
         expect(next.rows[index]).toMatchObject({ message: { text: "Partial token" } });
       } else expect(next.rows[index]).toBe(row);
     }
+
+    // The turn settles and its checkpoint lands, so the live request becomes
+    // revertible too; a later checkpoint count moves that target, and revoking
+    // its proof removes it again.
+    const userRow = (projection: MessagesTimelineRowsProjection, id: string) =>
+      projection.rows.find(
+        (row) => row.kind === "message" && row.message.id === MessageId.make(id),
+      );
+    const settledMessages = messages.map((message) =>
+      message.id === last.id
+        ? { ...message, text: "Done", streaming: false, updatedAt: initial.time(9) }
+        : message,
+    );
+    const settledTimeline = deriveTimelineEntriesWithState(
+      settledMessages,
+      [],
+      initial.work,
+      timeline,
+    );
+    const verifiedHistory: TurnDiffSummary = {
+      ...checkpoint,
+      rollbackAvailability: { state: "available", reason: "Exact anchor verified." },
+    };
+    const liveCheckpoint: TurnDiffSummary = {
+      turnId: initial.turnId,
+      checkpointTurnCount: 2,
+      checkpointRef: CheckpointRef.make("refs/pylon/checkpoints/live"),
+      status: "ready",
+      files: [],
+      assistantMessageId: last.id,
+      completedAt: initial.time(9),
+    };
+    const settledInput = {
+      ...nextInput,
+      timelineEntries: settledTimeline.entries,
+      latestTurn: {
+        ...nextInput.latestTurn,
+        state: "completed" as const,
+        completedAt: initial.time(9),
+      },
+      runningTurnId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [baseline, verifiedHistory, liveCheckpoint],
+    };
+    const settled = deriveMessagesTimelineRowsWithState(settledInput, next);
+    expect(settled.rows).toEqual(deriveMessagesTimelineRows(settledInput));
+    expect(userRow(next, "live-user")).toMatchObject({ revertTurnCount: undefined });
+    expect(userRow(settled, "history-user")).toMatchObject({ revertTurnCount: 0 });
+    expect(userRow(settled, "live-user")).toMatchObject({ revertTurnCount: 1 });
+
+    const movedInput = {
+      ...settledInput,
+      turnDiffSummaries: [
+        baseline,
+        verifiedHistory,
+        {
+          ...baseline,
+          checkpointTurnCount: 2,
+          checkpointRef: CheckpointRef.make("refs/pylon/checkpoints/intermediate"),
+          completedAt: initial.time(8),
+        },
+        { ...liveCheckpoint, checkpointTurnCount: 3 },
+      ],
+    };
+    const moved = deriveMessagesTimelineRowsWithState(movedInput, settled);
+    expect(moved.rows).toEqual(deriveMessagesTimelineRows(movedInput));
+    expect(userRow(moved, "history-user")).toMatchObject({ revertTurnCount: 0 });
+    expect(userRow(moved, "live-user")).toMatchObject({ revertTurnCount: 2 });
+
+    const liveRevoked = deriveMessagesTimelineRowsWithState(
+      {
+        ...settledInput,
+        turnDiffSummaries: [
+          baseline,
+          { ...verifiedHistory, rollbackAvailability: undefined },
+          liveCheckpoint,
+        ],
+      },
+      settled,
+    );
+    expect(userRow(liveRevoked, "history-user")).toMatchObject({ revertTurnCount: 0 });
+    expect(userRow(liveRevoked, "live-user")).toMatchObject({ revertTurnCount: undefined });
+    expect(userRow(settled, "live-user")).toMatchObject({ revertTurnCount: 1 });
+
     const revoked = deriveMessagesTimelineRowsWithState(
-      build(messages, timeline.entries, false),
+      {
+        ...nextInput,
+        turnDiffSummaries: [{ ...baseline, rollbackAvailability: undefined }, checkpoint],
+      },
       next,
     );
-    expect(
-      revoked.rows.find(
-        (row) => row.kind === "message" && row.message.id === initial.messages[0]!.id,
-      ),
-    ).toMatchObject({ revertTurnCount: undefined });
-    expect(
-      previous.rows.find(
-        (row) => row.kind === "message" && row.message.id === initial.messages[0]!.id,
-      ),
-    ).toMatchObject({ revertTurnCount: 0 });
+    expect(firstUserRow(revoked)).toMatchObject({ revertTurnCount: undefined });
+    const unsupported = deriveMessagesTimelineRowsWithState(
+      { ...nextInput, supportsConversationRollback: false },
+      next,
+    );
+    expect(firstUserRow(unsupported)).toMatchObject({ revertTurnCount: undefined });
+    expect(firstUserRow(previous)).toMatchObject({ revertTurnCount: 0 });
+  });
+
+  it("never anchors a rollback on a local feedback transcript inside a turn", () => {
+    const initial = fixture("Partial");
+    const submission = {
+      id: MessageId.make("feedback-1"),
+      command: "/feedback",
+      createdAt: initial.time(1),
+      status: "sent" as const,
+      feedbackId: "feedback-thread",
+    };
+    // The transcript sorts between the request and its checkpointed response.
+    const messages: ChatMessage[] = [
+      initial.messages[0]!,
+      codexFeedbackMessage(submission),
+      codexFeedbackMessage(submission, "assistant"),
+      ...initial.messages.slice(1),
+    ];
+    const checkpoints: TurnDiffSummary[] = [
+      {
+        turnId: initial.historyTurnId,
+        checkpointTurnCount: 0,
+        checkpointRef: CheckpointRef.make("refs/pylon/checkpoints/baseline"),
+        status: "ready",
+        files: [],
+        assistantMessageId: null,
+        rollbackAvailability: { state: "available", reason: "Exact anchor verified." },
+        completedAt: initial.time(0),
+      },
+      {
+        turnId: initial.historyTurnId,
+        checkpointTurnCount: 1,
+        checkpointRef: CheckpointRef.make("refs/pylon/checkpoints/history"),
+        status: "ready",
+        files: [],
+        assistantMessageId: MessageId.make("history-assistant"),
+        completedAt: initial.time(4),
+      },
+    ];
+    const localMessageIds = collectLocalTimelineMessageIds([], [submission]);
+    expect([...localMessageIds]).toEqual(["feedback-1", "feedback-1:feedback"]);
+    expect(collectLocalTimelineMessageIds([], [])).toBe(collectLocalTimelineMessageIds([], []));
+    expect([
+      ...collectLocalTimelineMessageIds([{ id: MessageId.make("optimistic-1") }], []),
+    ]).toEqual(["optimistic-1"]);
+
+    const timeline = deriveTimelineEntriesWithState(messages, [], initial.work);
+    const input = {
+      ...initial.input,
+      timelineEntries: timeline.entries,
+      turnDiffSummaries: checkpoints,
+      supportsConversationRollback: true,
+      expandedTurnIds: new Set([initial.historyTurnId]),
+      localMessageIds,
+    };
+    const revertCounts = (rows: ReadonlyArray<MessagesTimelineRow>) =>
+      Object.fromEntries(
+        rows.flatMap((row) =>
+          row.kind === "message" && row.revertTurnCount !== undefined
+            ? [[row.message.id, row.revertTurnCount]]
+            : [],
+        ),
+      );
+    const serverTargets = deriveRollbackTargets({
+      messages: messages.filter((message) => !localMessageIds.has(message.id)),
+      checkpoints,
+    });
+    // Counted as server messages, the transcript would take the request's target.
+    const { localMessageIds: _localMessageIds, ...withoutLocalIds } = input;
+    expect(revertCounts(deriveMessagesTimelineRows(withoutLocalIds))).toEqual({ "feedback-1": 0 });
+    const projection = deriveMessagesTimelineRowsWithState(input);
+    expect(revertCounts(projection.rows)).toEqual({ "history-user": 0 });
+    expect(Object.keys(revertCounts(projection.rows))).toEqual([...serverTargets.keys()]);
+
+    // The local id set keeps its identity while the turn streams, so the rows
+    // stay on the fast path and the answer does not change.
+    const last = messages.at(-1)!;
+    const streamed = [...messages.slice(0, -1), { ...last, text: "Partial token" }];
+    const nextInput = {
+      ...input,
+      timelineEntries: deriveTimelineEntriesWithState(streamed, [], initial.work, timeline).entries,
+    };
+    const next = deriveMessagesTimelineRowsWithState(nextInput, projection);
+    expect(next.rows).toEqual(deriveMessagesTimelineRows(nextInput));
+    expect(revertCounts(next.rows)).toEqual({ "history-user": 0 });
+    for (const [index, row] of projection.rows.entries()) {
+      if ((row.kind === "message" || row.kind === "assistant-meta") && row.message === last) {
+        continue;
+      }
+      expect(next.rows[index]).toBe(row);
+    }
+  });
+
+  it("reuses long-thread rows through detail events, selectors, and attachment previews", () => {
+    const initial = fixture("Partial");
+    let checkpointLookupReads = 0;
+    const history = Array.from({ length: 250 }, (_, index) => {
+      const turnId = TurnId.make(`older-turn-${index}`);
+      const user = {
+        ...initial.messages[0]!,
+        id: MessageId.make(`older-user-${index}`),
+        createdAt: new Date(Date.UTC(2026, 8, 3, 0, 0, index * 5)).toISOString(),
+        attachments: [
+          {
+            type: "image" as const,
+            id: "image",
+            name: "image.png",
+            mimeType: "image/png",
+            sizeBytes: 42,
+          },
+        ],
+      };
+      const assistant = {
+        ...initial.messages[1]!,
+        id: MessageId.make(`older-assistant-${index}`),
+        turnId,
+        createdAt: new Date(Date.UTC(2026, 8, 3, 0, 0, index * 5 + 3)).toISOString(),
+      };
+      const checkpoint: TurnDiffSummary = {
+        turnId,
+        get checkpointTurnCount() {
+          checkpointLookupReads += 1;
+          return index + 1;
+        },
+        checkpointRef: CheckpointRef.make(`refs/pylon/checkpoints/older-${index}`),
+        status: "ready",
+        files: [],
+        get assistantMessageId() {
+          checkpointLookupReads += 1;
+          return assistant.id;
+        },
+        rollbackAvailability: { state: "available", reason: "Exact anchor verified." },
+        completedAt: assistant.createdAt,
+      };
+      return { user, assistant, checkpoint };
+    });
+    const liveMessage = initial.messages.at(-1)!;
+    let thread: OrchestrationThread = {
+      id: ThreadId.make("streaming-thread"),
+      projectId: ProjectId.make("project"),
+      title: "Long thread",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      latestTurn: {
+        ...initial.input.latestTurn,
+        requestedAt: initial.time(5),
+        assistantMessageId: liveMessage.id,
+      },
+      createdAt: initial.time(0),
+      updatedAt: initial.time(7),
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      deletedAt: null,
+      messages: [
+        ...history.flatMap(({ user, assistant }) => [user, assistant]),
+        ...initial.messages,
+      ],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: history.map(({ checkpoint }) => checkpoint),
+      session: null,
+    };
+    const state = Atom.make(
+      AsyncResult.success({ ...EMPTY_ENVIRONMENT_THREAD_STATE, data: Option.some(thread) }),
+    );
+    const details = createEnvironmentThreadDetailAtoms(() => state);
+    const ref = { environmentId: EnvironmentId.make("local"), threadId: thread.id };
+    const registry = AtomRegistry.make();
+    const unmount = registry.mount(details.detailAtom(ref));
+    const preview = createMessageAttachmentPreviewProjector();
+    let imageUrl = "https://first.test/image";
+    let timeline: TimelineEntriesProjection | null = null;
+    let projection: MessagesTimelineRowsProjection | null = null;
+    const project = () => {
+      const selected = registry.get(details.detailAtom(ref));
+      if (selected === null) throw new Error("Missing thread detail");
+      const messages = selected.messages.map((message) => preview(message, () => imageUrl));
+      timeline = deriveTimelineEntriesWithState(
+        messages,
+        selected.proposedPlans,
+        initial.work,
+        timeline,
+      );
+      projection = deriveMessagesTimelineRowsWithState(
+        {
+          timelineEntries: timeline.entries,
+          latestTurn: selected.latestTurn,
+          runningTurnId:
+            selected.latestTurn?.state === "running" ? selected.latestTurn.turnId : null,
+          isWorking: selected.latestTurn?.state === "running",
+          activeTurnStartedAt: selected.latestTurn?.startedAt ?? null,
+          turnDiffSummaries: selected.checkpoints,
+          supportsConversationRollback: true,
+        },
+        projection,
+      );
+      return projection;
+    };
+    const send = (text: string, sequence: number, streaming = true) => {
+      const result = applyThreadDetailEvent(thread, {
+        eventId: EventId.make(`delta-${sequence}`),
+        sequence,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        occurredAt: initial.time(8 + sequence),
+        aggregateKind: "thread",
+        aggregateId: thread.id,
+        type: "thread.message-sent",
+        payload: {
+          threadId: thread.id,
+          messageId: liveMessage.id,
+          role: "assistant",
+          text,
+          turnId: initial.turnId,
+          streaming,
+          createdAt: liveMessage.createdAt,
+          updatedAt: initial.time(8 + sequence),
+        },
+      });
+      if (result.kind !== "updated") throw new Error("Message event did not update the thread");
+      thread = result.thread;
+      registry.set(
+        state,
+        AsyncResult.success({ ...EMPTY_ENVIRONMENT_THREAD_STATE, data: Option.some(thread) }),
+      );
+      return project();
+    };
+
+    try {
+      const first = project();
+      const saved = structuredClone(first.rows);
+      expect(checkpointLookupReads).toBeGreaterThan(0);
+      expect(
+        first.rows.find(
+          (row) => row.kind === "message" && row.message.id === MessageId.make("older-user-3"),
+        ),
+      ).toMatchObject({ revertTurnCount: 3 });
+      checkpointLookupReads = 0;
+      for (let index = 0; index < 10; index += 1) {
+        const next = send(` ${index}`, index + 1);
+        for (const [rowIndex, row] of first.rows.entries()) {
+          if (
+            (row.kind === "message" || row.kind === "assistant-meta") &&
+            row.message.id === liveMessage.id
+          )
+            continue;
+          expect(next.rows[rowIndex]).toBe(row);
+        }
+      }
+      expect(checkpointLookupReads).toBe(0);
+      const streamed = project();
+      expect(streamed.rows).toEqual(deriveMessagesTimelineRows(streamed.input));
+
+      imageUrl = "https://renewed.test/image";
+      const renewed = project();
+      expect(renewed.rows[0]).not.toBe(first.rows[0]);
+      expect(renewed.rows[0]).toMatchObject({
+        message: { attachments: [{ previewUrl: imageUrl }] },
+      });
+      const completed = send("Complete", 11, false);
+      expect(completed.rows).toEqual(deriveMessagesTimelineRows(completed.input));
+      expect(
+        completed.rows.find((row) => row.kind === "message" && row.message.id === liveMessage.id),
+      ).toMatchObject({ message: { text: "Complete" }, assistantCopyStreaming: false });
+      expect(first.rows).toEqual(saved);
+    } finally {
+      unmount();
+      registry.dispose();
+    }
   });
 
   it.each(["completion", "turn", "role", "ordering"] as const)(
@@ -428,7 +809,7 @@ describe("streaming row projection", () => {
         ? { ...message, role: "user", turnId: null, createdAt: initial.time(0) }
         : message,
     );
-    check({ revertTurnCountByUserMessageId: new Map([[MessageId.make("live-user"), 3]]) });
+    check({ supportsConversationRollback: true });
   });
 });
 
@@ -592,8 +973,8 @@ describe("work entry labels", () => {
         ],
         isWorking: false,
         activeTurnStartedAt: null,
-        turnDiffSummaryByAssistantMessageId: new Map(),
-        revertTurnCountByUserMessageId: new Map(),
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
       });
       const directRow = rows.find((row) => row.kind === "work");
       expect(directRow).toMatchObject({
@@ -905,8 +1286,8 @@ describe("deriveMessagesTimelineRows", () => {
       ],
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows).toEqual([
@@ -968,8 +1349,8 @@ describe("deriveMessagesTimelineRows", () => {
       expandedTurnIds: new Set(["turn-1" as never]),
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     const assistantRows = rows.filter(
@@ -1022,8 +1403,8 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     const assistantRows = rows.filter(
@@ -1079,10 +1460,18 @@ describe("deriveMessagesTimelineRows", () => {
       ],
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map([
-        ["assistant-1" as never, assistantTurnDiffSummary],
-      ]),
-      revertTurnCountByUserMessageId: new Map([["user-1" as never, 1]]),
+      turnDiffSummaries: [
+        {
+          ...assistantTurnDiffSummary,
+          checkpointTurnCount: 1,
+          checkpointRef: "checkpoint-0" as never,
+          assistantMessageId: null,
+          files: [],
+          rollbackAvailability: { state: "available", reason: "Exact anchor verified." },
+        },
+        assistantTurnDiffSummary,
+      ],
+      supportsConversationRollback: true,
     });
 
     const userRow = rows.find(
@@ -1160,8 +1549,8 @@ describe("deriveMessagesTimelineRows", () => {
       timelineEntries,
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     const foldRow = collapsedRows.find(
@@ -1183,8 +1572,8 @@ describe("deriveMessagesTimelineRows", () => {
       expandedTurnIds: new Set(["turn-1" as never]),
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(expandedRows.map((row) => row.id)).toEqual([
@@ -1233,8 +1622,8 @@ describe("deriveMessagesTimelineRows", () => {
       ],
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     // Folding here would leave "Worked for 6s" above an empty response with the
@@ -1296,8 +1685,8 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
       reportedTurnCosts: new Map([[turnId, 0.123456]]),
     };
     const rows = deriveMessagesTimelineRows({ ...input, timelineEntries });
@@ -1381,8 +1770,8 @@ describe("deriveMessagesTimelineRows", () => {
       timelineEntries,
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows.map((row) => row.id)).toEqual(["turn-fold:turn-1", "assistant-final-entry"]);
@@ -1426,8 +1815,8 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     // The notice keeps its own row outside the fold. Grouping renders it as a
@@ -1540,8 +1929,8 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:00:14Z",
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     const foldRow = rows.find(
@@ -1577,8 +1966,8 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows).toEqual([
@@ -1645,8 +2034,8 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:01:00Z",
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows.map((row) => row.id)).toEqual([
@@ -1699,8 +2088,8 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows.some((row) => row.kind === "turn-fold")).toBe(false);
@@ -1793,8 +2182,8 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:01:00Z",
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows.some((row) => row.kind === "turn-fold")).toBe(false);
@@ -1873,8 +2262,8 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows.map((row) => row.kind)).toEqual(["working", "work-live"]);
@@ -1946,8 +2335,8 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows.map((row) => row.kind)).toEqual(["working", "work", "message", "work-live"]);
@@ -1998,8 +2387,8 @@ describe("deriveMessagesTimelineRows", () => {
       expandedTurnIds: new Set([turnId]),
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows.find((row) => row.kind === "work")).toMatchObject({
@@ -2066,8 +2455,8 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows.map((row) => row.kind)).toEqual(["working", "work-live", "message", "work-live"]);
@@ -2113,8 +2502,8 @@ describe("deriveMessagesTimelineRows", () => {
       latestTurn: null,
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:01:00Z",
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows.some((row) => row.kind === "work-live")).toBe(false);
@@ -2174,8 +2563,8 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows.filter((row) => row.kind === "work-live").map((row) => row.entry.id)).toEqual([
@@ -2219,8 +2608,8 @@ describe("deriveMessagesTimelineRows", () => {
         },
         isWorking: true,
         activeTurnStartedAt: "2026-01-01T00:00:00Z",
-        turnDiffSummaryByAssistantMessageId: new Map(),
-        revertTurnCountByUserMessageId: new Map(),
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
       });
 
       if (toolLifecycleStatus === "failed") {
@@ -2266,8 +2655,8 @@ describe("deriveMessagesTimelineRows", () => {
         },
         isWorking: true,
         activeTurnStartedAt: "2026-01-01T00:00:00Z",
-        turnDiffSummaryByAssistantMessageId: new Map(),
-        revertTurnCountByUserMessageId: new Map(),
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
       });
 
     const initialRows = deriveRows(null);
@@ -2344,8 +2733,8 @@ describe("deriveMessagesTimelineRows", () => {
       runningTurnId: "turn-2" as never,
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:01:00Z",
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows.filter((row) => row.kind === "turn-fold").map((row) => row.turnId)).toEqual([
@@ -2389,9 +2778,9 @@ describe("deriveMessagesTimelineRows", () => {
       expandedTurnIds: new Set(["turn-1" as never]),
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
+      turnDiffSummaries: [],
       reportedTurnCosts: new Map([["turn-1" as never, 0.123456]]),
-      revertTurnCountByUserMessageId: new Map(),
+      supportsConversationRollback: false,
     });
 
     const assistantRows = rows.filter(
@@ -2432,9 +2821,9 @@ describe("deriveMessagesTimelineRows", () => {
       },
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
-      turnDiffSummaryByAssistantMessageId: new Map(),
+      turnDiffSummaries: [],
       reportedTurnCosts: new Map([["turn-1" as never, 1]]),
-      revertTurnCountByUserMessageId: new Map(),
+      supportsConversationRollback: false,
     });
 
     const assistantRow = rows.find(
@@ -2500,8 +2889,8 @@ describe("deriveMessagesTimelineRows", () => {
       timelineEntries,
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     };
     const collapsedRows = deriveMessagesTimelineRows(baseInput);
     const expandedRows = deriveMessagesTimelineRows({
@@ -2594,8 +2983,8 @@ describe("deriveMessagesTimelineRows", () => {
       timelineEntries,
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(row).toMatchObject({
@@ -2636,8 +3025,8 @@ describe("deriveMessagesTimelineRows", () => {
         expandedTurnIds: new Set([turnId]),
         runningTurnId: isWorking ? turnId : null,
         activeTurnStartedAt: isWorking ? createdAt : null,
-        turnDiffSummaryByAssistantMessageId: new Map(),
-        revertTurnCountByUserMessageId: new Map(),
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
       };
       const expandedRows = deriveMessagesTimelineRows({
         ...input,
@@ -2676,8 +3065,8 @@ describe("deriveMessagesTimelineRows", () => {
       timelineEntries,
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     expect(rows.find((row) => row.kind === "work-toggle")).toMatchObject({
@@ -2723,8 +3112,8 @@ describe("deriveMessagesTimelineRows", () => {
         timelineEntries,
         isWorking: false,
         activeTurnStartedAt: null,
-        turnDiffSummaryByAssistantMessageId: new Map(),
-        revertTurnCountByUserMessageId: new Map(),
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
       });
 
       expect(rows.find((row) => row.kind === "work-toggle")).toMatchObject({
@@ -2780,8 +3169,8 @@ describe("computeStableMessagesTimelineRows", () => {
       runningTurnId: turnId,
       isWorking: true,
       activeTurnStartedAt: startedAt,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     };
     const assistantEntry = {
       id: "assistant-entry",
@@ -2858,8 +3247,8 @@ describe("computeStableMessagesTimelineRows", () => {
       ],
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     const initial = computeStableMessagesTimelineRows(rows, {
@@ -2907,8 +3296,8 @@ describe("computeStableMessagesTimelineRows", () => {
         ],
         isWorking: false,
         activeTurnStartedAt: null,
-        turnDiffSummaryByAssistantMessageId: new Map(),
-        revertTurnCountByUserMessageId: new Map(),
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
       });
 
     const firstRows = createRows();
@@ -2963,8 +3352,8 @@ describe("computeStableMessagesTimelineRows", () => {
       ],
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaryByAssistantMessageId: new Map(),
-      revertTurnCountByUserMessageId: new Map(),
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
 
     const initial = computeStableMessagesTimelineRows(firstRows, {

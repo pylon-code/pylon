@@ -1,5 +1,3 @@
-import { shallow } from "zustand/vanilla/shallow";
-import type { RollbackTarget } from "@t3tools/client-runtime/rollback";
 import {
   type AssetCreateUrlInput,
   type AssetCreateUrlResult,
@@ -31,6 +29,10 @@ import {
   codexArtifactTemplateUsePrompt,
   type CodexArtifactTemplate,
 } from "@t3tools/client-runtime/codex-artifact-templates";
+import {
+  codexFeedbackMessage,
+  type CodexFeedbackSubmission,
+} from "@t3tools/client-runtime/state/threads";
 import {
   type TurnDiffSummary,
   type ChatMessage,
@@ -101,7 +103,7 @@ export function shouldOpenProactivePullRequest(
   previousTargetKey: string | null | undefined,
   targetKey: string | null,
 ): boolean {
-  return previousTargetKey !== undefined && targetKey !== null && targetKey !== previousTargetKey;
+  return targetKey !== null && targetKey !== previousTargetKey;
 }
 
 interface ProactivePanelObservation {
@@ -137,11 +139,11 @@ export function shouldOpenProactiveTurnDiff(input: {
   turnCompleted: boolean;
 }): boolean {
   return (
-    input.previousRunningTurnId !== undefined &&
-    input.previousRunningTurnId !== null &&
     input.runningTurnId === null &&
     input.turnCompleted &&
-    input.settledTurnId === input.previousRunningTurnId
+    input.settledTurnId !== null &&
+    (input.previousRunningTurnId === undefined ||
+      input.settledTurnId === input.previousRunningTurnId)
   );
 }
 
@@ -376,6 +378,46 @@ export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "sessi
     threadId: thread.id,
     ...(runningTurnId !== null ? { turnId: runningTurnId } : {}),
   };
+}
+
+const NO_LOCAL_TIMELINE_MESSAGE_IDS: ReadonlySet<MessageId> = new Set();
+
+/**
+ * Ids of timeline messages that exist only on this client: optimistic sends and
+ * `/feedback` transcripts. The timeline never anchors a rollback on them. Built
+ * from local state alone, so its identity holds while a turn streams.
+ */
+export function collectLocalTimelineMessageIds(
+  optimisticUserMessages: ReadonlyArray<Pick<ChatMessage, "id">>,
+  feedbackSubmissions: ReadonlyArray<CodexFeedbackSubmission>,
+): ReadonlySet<MessageId> {
+  if (optimisticUserMessages.length === 0 && feedbackSubmissions.length === 0) {
+    return NO_LOCAL_TIMELINE_MESSAGE_IDS;
+  }
+  return new Set([
+    ...optimisticUserMessages.map((message) => message.id),
+    ...feedbackSubmissions.flatMap((submission) => [
+      codexFeedbackMessage(submission).id,
+      codexFeedbackMessage(submission, "assistant").id,
+    ]),
+  ]);
+}
+
+/**
+ * The interrupt a Stop action may send for the focused thread, or null when
+ * nothing can be stopped. Mirrors the composer's Stop button: a running turn,
+ * or a turn still awaiting provider admission (which has no turn id yet).
+ */
+export function buildRunningThreadTurnInterruptInput(
+  thread: Pick<Thread, "id" | "session"> | null | undefined,
+  phase: SessionPhase,
+): { threadId: ThreadId; turnId?: TurnId } | null {
+  const sessionStatus = thread?.session?.status;
+  const running = phase === "running" && sessionStatus === "running";
+  if (!thread || !(running || sessionStatus === "starting")) {
+    return null;
+  }
+  return buildThreadTurnInterruptInput(thread);
 }
 
 export function reconcileMountedTerminalThreadIds(input: {
@@ -678,9 +720,52 @@ export function isBranchMismatchDismissedForSession(key: string | null): boolean
   return key !== null && sessionDismissedBranchMismatchKeys.has(key);
 }
 
+// Git status for a checkout arrives after the composer paints, and the branch
+// strip mounts on the assumption that a project is a Git repo. Without a
+// memory, a non-Git project would mount the strip and drop it on every visit.
+// Keyed by environment and checkout for the session; never persisted.
+const sessionCheckoutIsRepo = new Map<string, boolean>();
+
+function checkoutIsRepoKey(environmentId: EnvironmentId, cwd: string): string {
+  return JSON.stringify([environmentId, cwd]);
+}
+
+export function rememberCheckoutIsRepo(
+  environmentId: EnvironmentId,
+  cwd: string,
+  isRepo: boolean,
+): void {
+  sessionCheckoutIsRepo.set(checkoutIsRepoKey(environmentId, cwd), isRepo);
+}
+
+export function recallCheckoutIsRepo(
+  environmentId: EnvironmentId,
+  cwd: string | null,
+): boolean | undefined {
+  return cwd === null
+    ? undefined
+    : sessionCheckoutIsRepo.get(checkoutIsRepoKey(environmentId, cwd));
+}
+
 export function threadHasStarted(thread: Thread | null | undefined): boolean {
   return Boolean(
     thread && (thread.latestTurn !== null || thread.messages.length > 0 || thread.session !== null),
+  );
+}
+
+/**
+ * Whether a thread ran at least one turn, judged from its shell alone.
+ *
+ * `threadHasStarted` needs the detail: a thread whose latest turn was cleared
+ * still has messages, and the loading shell carries none. The shell records
+ * when the last user message landed, which every started thread has.
+ */
+export function threadShellHasStarted(
+  shell: Pick<ThreadShell, "latestTurn" | "latestUserMessageAt" | "session"> | null | undefined,
+): boolean {
+  return Boolean(
+    shell &&
+    (shell.latestTurn !== null || shell.latestUserMessageAt !== null || shell.session !== null),
   );
 }
 
@@ -993,17 +1078,6 @@ export function shouldRetargetThreadPullRequestPanel(
     surface.repository.toLowerCase() === previousRepository &&
     surface.number === previous.number
   );
-}
-
-/** Reuse timeline counts without changing Pylon's verified rollback targets. */
-export function buildRollbackTurnCountByMessageId(
-  targets: ReadonlyMap<MessageId, RollbackTarget>,
-  previous: Map<MessageId, number> | null = null,
-): Map<MessageId, number> {
-  const counts = new Map(
-    [...targets].map(([messageId, target]) => [messageId, target.targetTurnCount]),
-  );
-  return previous !== null && shallow(previous, counts) ? previous : counts;
 }
 
 // Returning to the window should land the caret in the composer, so the reader can type right

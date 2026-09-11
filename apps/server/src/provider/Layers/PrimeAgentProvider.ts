@@ -99,6 +99,8 @@ export function stampPrimeAgentBackendSnapshot(
             capabilities: EMPTY_CAPABILITIES,
           })),
     requiresNewThreadForModelChange: backend.runtime === "acp",
+    // Only the daemon reports context usage; ACP compatibility mode does not.
+    reportsContextWindow: backend.runtime === "daemon",
     supportedRuntimeModes:
       backend.runtime === "daemon"
         ? (["approval-required", "full-access"] as const)
