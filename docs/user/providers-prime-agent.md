@@ -93,6 +93,16 @@ inside the app.
 
 ## Configure Pylon
 
+| What works in ACP compatibility mode                                                                           | What native mode adds                                                                                                                                                                                        |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| One account through one enabled Prime Agent instance.                                                          | Native mode also supports one enabled instance per environment; it does not enable multiple Prime accounts.                                                                                                  |
+| Full access only; no execution approvals.                                                                      | **Supervised** approvals, alongside Full access.                                                                                                                                                             |
+| Changing the model requires a new thread.                                                                      | Change to another named model in the same thread for the next message. **Prime Agent Default** still cannot be reselected after a thread has run on a named model.                                           |
+| No **Goal** or **Harness** controls.                                                                           | Read-only **Goal** status in Full access, plus **Harness** subagent depth and, when supported, **Refine local harness**. Supervised depth stays fixed at 0; refinement requires a fresh Full access session. |
+| No native input queue, resources, context, or history controls.                                                | Native input queue controls and compaction lifecycle rows. Full access also offers supported resource and context controls, described below.                                                                 |
+| No Prime reasoning or normalized per-turn usage and cost in interactive threads.                               | Bounded final reasoning when the model exposes it, context usage, and **Reported cost** after completed turns.                                                                                               |
+| Subscription capacity can still appear for a mapped model backend; it is separate from Prime's per-turn usage. | Subscription capacity is re-read after turns in both modes, subject to the short refresh cache. Native turn cost remains a separate estimate.                                                                |
+
 Open **Settings → Providers**. The default provider normally needs no changes:
 
 ```text

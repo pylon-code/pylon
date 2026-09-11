@@ -118,6 +118,25 @@ A signed provider CLI build installed side by side in an environment's runtime h
 one provider instance. It does not replace the user's stock installation. Prime Agent is the first
 provider with this lifecycle. See [Prime Agent managed installation](./prime-agent-managed-install.md).
 
+#### ACP compatibility mode
+
+Pylon's fallback connection to Prime Agent through the Agent Client Protocol when the selected
+installation or launch arguments cannot use the native daemon contract. It supports one enabled Prime
+instance, Full access, and model selection for new threads, with a reduced feature set. Subscription
+capacity from a mapped backend is separate from the native reasoning and turn usage that ACP does not
+expose. See [the Prime Agent mode comparison](../user/providers-prime-agent.md#configure-pylon) and
+[the daemon parity contract](./prime-agent-daemon-parity.md).
+
+#### Pylon Prime build
+
+A Prime Agent build with the SDK feature declarations and negotiated daemon capabilities Pylon requires
+for native sessions, including caller-owned session isolation, cleanup, transcript snapshots, and event
+continuity. The fork name or package version alone does not establish compatibility: Pylon validates
+the loaded SDK and daemon handshake. A manually installed compatible build can enable native mode;
+verified Pylon-managed distribution additionally supplies installation provenance for managed lifecycle
+and eligible server-restart recovery. See [the daemon parity contract](./prime-agent-daemon-parity.md)
+and [managed installation](./prime-agent-managed-install.md).
+
 #### Session
 
 The live provider-backed runtime attached to a thread. Session shape is in [the orchestration contracts][1], and lifecycle is managed in [ProviderService.ts][14].
