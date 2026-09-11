@@ -283,7 +283,7 @@ it.effect.each([
 
     assert.equal(typeof targets.bootstrapProjectId, "string");
     assert.equal(typeof targets.bootstrapThreadId, "string");
-    assert.equal(targets.bootstrapProjectCreated, true);
+    assert.equal(targets.bootstrapProjectCreated, !existing);
     assert.equal(targets.bootstrapThreadCreated, true);
     const commands = yield* Ref.get(dispatchCalls);
     assert.deepStrictEqual(
@@ -308,6 +308,7 @@ it.effect(
     Effect.gen(function* () {
       const dispatchCalls = yield* Ref.make<ReadonlyArray<string>>([]);
       const targets = yield* ServerRuntimeStartup.resolveAutoBootstrapWelcomeTargets.pipe(
+        Effect.provide(ServerSettings.layerTest()),
         Effect.provideService(ServerConfig.ServerConfig, {
           cwd: "/tmp/startup-project",
           autoBootstrapProjectFromCwd: true,
