@@ -2614,6 +2614,29 @@ export function makePrimeAgentDaemonAdapter(
                       snapshotCount: event.state.messageCount,
                     });
                     const missingMessages = transcriptPlan?.missingMessages ?? [];
+                    yield* Effect.logWarning("Prime native continuity diagnostic", {
+                      initialSnapshot: event.initialSnapshot ?? false,
+                      replacementSnapshot: event.replacementSnapshot === true,
+                      connectionGeneration: event.connectionGeneration,
+                      correlatedProofEpoch: event.correlatedProofEpoch,
+                      replayContinuity: event.replayContinuity,
+                      observedCount: context.nativeTranscriptMessageCount,
+                      observedRoles: context.nativeTranscript.map((message) => message.role),
+                      snapshotCount: event.state.messageCount,
+                      snapshotRoles: event.messages.map((message) => message.role),
+                      transcriptPlanAvailable: transcriptPlan !== undefined,
+                      missingRoles: missingMessages.map((message) => message.role),
+                      hasStreamingMessage: event.streamingMessage !== undefined,
+                      isStreaming: event.state.isStreaming,
+                      hasActiveCorrelation: activeTurn?.correlationId !== undefined,
+                      lifecycleStatuses: event.promptLifecycles?.records.map((lifecycle) => ({
+                        phase: lifecycle.phase,
+                        deliveryCrossed: lifecycle.deliveryCrossed,
+                        matchesActiveCorrelation:
+                          lifecycle.correlationId === activeTurn?.correlationId,
+                      })),
+                      observedLifecyclePhase: activeTurn?.correlatedLifecycle?.phase,
+                    });
                     const snapshotIsExactOrCurrentTerminal =
                       missingMessages.length === 0 ||
                       (missingMessages.length === 1 &&
