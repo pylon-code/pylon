@@ -6659,8 +6659,10 @@ describe("agent browser access", () => {
         ServerSettings.ServerSettingsService.layerTest({
           enableAgentBrowserAccess,
           enableAgentDeviceAccess,
-          projectAgentBrowserAccessOverrides:
-            projectOverride === undefined ? {} : { [projectId]: projectOverride },
+          projectSettingsOverrides:
+            projectOverride === undefined
+              ? {}
+              : { [projectId]: { enableAgentBrowserAccess: projectOverride } },
         }),
       ),
       Layer.provide(serverConfigTestLayer),

@@ -1059,6 +1059,55 @@ export const BackgroundActivitySettings = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
+/**
+ * Server settings a project may override. Every other server setting is
+ * environment-wide: providers, keybindings, observability, device hosts,
+ * background activity, theme. UI, search and the write planner derive
+ * eligibility from this list, so adding a key here is the whole opt-in.
+ */
+export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
+  "defaultModelSelection",
+  "defaultThreadEnvMode",
+  "newWorktreesStartFromOrigin",
+  "defaultAutoPull",
+  "defaultProjectScripts",
+  "enableAgentBrowserAccess",
+  "enableAgentDeviceAccess",
+  "textGenerationModelSelection",
+  "sourceControlWriterModelSelection",
+  "sourceControlWritingStyle",
+  "pullRequestMergeMethod",
+  "sidebarAutoSettleOnMerge",
+  "sidebarAutoSettleAfterDays",
+  "continueThreadsAfterServerUpdate",
+  "enableLegacyTokenStreaming",
+] as const;
+export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];
+
+/**
+ * One project's overrides. An absent key inherits the environment value;
+ * `null` is a real value where the environment type is nullable (no default
+ * model, no dedicated writer model, never auto-settle).
+ */
+export const ProjectSettingsOverrides = Schema.Struct({
+  defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
+  newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
+  defaultAutoPull: Schema.optionalKey(Schema.Boolean),
+  defaultProjectScripts: Schema.optionalKey(Schema.Array(ProjectScript)),
+  enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+  enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
+  textGenerationModelSelection: Schema.optionalKey(ModelSelection),
+  sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  sourceControlWritingStyle: Schema.optionalKey(SourceControlWritingStyleSettings),
+  pullRequestMergeMethod: Schema.optionalKey(Schema.NullOr(PullRequestMergeMethod)),
+  sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
+  sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
+  continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
+  enableLegacyTokenStreaming: Schema.optionalKey(Schema.Boolean),
+} satisfies Record<ProjectScopedServerSettingKey, unknown>);
+export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
+
 export const ServerSettings = Schema.Struct({
   // Legacy token-by-token assistant output. Deliberately a fresh key (was
   // `enableAssistantStreaming`): decoding drops the old key, so everyone,
@@ -1116,6 +1165,21 @@ export const ServerSettings = Schema.Struct({
   /** Whether the server-local Device panel setup flow has been completed. */
   deviceOnboardingCompleted: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   deviceHosts: SshDeviceHostConfigs.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  /**
+   * Per-project overrides of the keys in `PROJECT_SCOPED_SERVER_SETTING_KEYS`.
+   * The source of truth for project settings; `projectAgentBrowserAccessOverrides`,
+   * `projectAutoPullOverrides` and `projectScriptOverrides` are derived views
+   * kept for one release so older clients keep reading them.
+   */
+  projectSettingsOverrides: Schema.Record(ProjectId, ProjectSettingsOverrides).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  /**
+   * Whether the legacy per-project fields have been folded into
+   * `projectSettingsOverrides`. The fold runs once so a later reset in the
+   * settings UI is not undone by the next server start.
+   */
+  projectSettingsFolded: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
@@ -1182,6 +1246,14 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   sourceControlWriterModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /**
+   * The merge method pull requests start with; `null` reuses the method
+   * last chosen on this device. Server-side so a project can override it
+   * like any other project setting.
+   */
+  pullRequestMergeMethod: Schema.NullOr(PullRequestMergeMethod).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
 
@@ -1280,6 +1352,7 @@ export const ServerSettingsOperation = Schema.Literals([
   "check-exists",
   "read-file",
   "read-provider-history",
+  "read-project-settings",
   "read-secret",
   "remove-secret",
   "remove-stale-secret",
@@ -1412,6 +1485,16 @@ export const ServerSettingsPatch = Schema.Struct({
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),
+  /**
+   * Per-project entry replacement: each entry replaces that project's whole
+   * override set and `null` removes it. Clearing one override means resending
+   * the entry without that key. Per-key null cannot express "clear" for the
+   * keys whose value type is itself nullable, and clients always hold the
+   * current entry from the last settings snapshot.
+   */
+  projectSettingsOverrides: Schema.optionalKey(
+    Schema.Record(ProjectId, Schema.NullOr(ProjectSettingsOverrides)),
+  ),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
@@ -1438,6 +1521,7 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  pullRequestMergeMethod: Schema.optionalKey(Schema.NullOr(PullRequestMergeMethod)),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(TrimmedString),
