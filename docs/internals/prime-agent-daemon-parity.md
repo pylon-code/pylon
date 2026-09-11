@@ -1,8 +1,8 @@
 # Prime Agent daemon parity ledger
 
 This ledger records Pylon's treatment of the public `DaemonAgentConnection` surface shipped by
-Prime Agent 0.8.1 (daemon protocol 7, schema 22) and Pylon's optional fork extension at protocol 7,
-schema 30. Parity here means that every useful public outcome is either integrated through a typed
+Prime Agent 0.9.4 (daemon protocol 7, schema 27) and Pylon's optional fork extension at protocol 7,
+schema 33. Parity here means that every useful public outcome is either integrated through a typed
 provider-neutral contract or has an explicit product and safety decision. It does not mean exposing a
 raw method tunnel.
 
@@ -11,17 +11,28 @@ private prompts, diagnostics, and result envelopes terminate at the Prime adapte
 
 Exact checkpoint rollback is a server-private exception to the otherwise deferred history surface. The managed native adapter uses only public `getState()` and `navigateTree()` calls. It stores opaque leaf anchors in private rollback tables, never in contracts or public events. Availability is per thread and requires an idle, quiescent, full-access session with matching provider, runtime-generation, session-incarnation, and native-session identity. Navigation never summarizes an abandoned branch. A nonterminal saga quarantines Prime output, accepts only its source or target leaf after reconnect, and proves the exact committed target before release. Managed recoverable ownership remains idle and adoptable after a settled turn; the next turn cannot rotate that owner until terminal projection and checkpoint quiescence are durable.
 
-Prime Agent 0.8.1 keeps daemon protocol 7 and schema 22 unchanged from 0.8.0, which advanced the
-schema from 16. Pylon supplies the fresh owner runtime configuration required to recover a client-owned
+Prime Agent 0.9.4 keeps daemon protocol 7 and advances the shipped stock schema to 27. The Pylon fork uses
+schema 33 for its additional capability-gated contract. Pylon supplies the fresh owner runtime
+configuration required to recover a client-owned
 worker, refreshes the RLM roster from the authoritative snapshot method when available, and retains
 event-derived fallback behavior for older installations. Both daemon and ACP launch paths remove
 inherited `PRIME_AGENT_INTERNAL_*` and `RLM_DEPTH` process context while preserving public user
 configuration such as `RLM_MAX_DEPTH`. This prevents a Pylon-owned root session from accidentally
-inheriting another harness worker's private identity or recursion depth. The daemon protocol and schema
-surface remain unchanged in 0.8.1; its no-override RLM-depth fallback moves from 1 to 2, and Pylon
+inheriting another harness worker's private identity or recursion depth. Prime's no-override RLM-depth
+fallback is 2, and Pylon
 continues to project the authoritative source and value rather than assuming either default. ACP
 completion and assistant-boundary changes are handled separately below; live catalog changes remain
 provider-discovered rather than pinned in Pylon.
+
+Prime Agent 0.9.4 makes process-owner liveness zombie-aware and reports a known recovering daemon
+session through the structured, retryable `session_recovering` error with its active-session identity.
+It adds `rlm.create_session` so a daemon-backed root agent can create a separate top-level session.
+Provider retries honor bounded `Retry-After` and usage-limit reset delays, the `zai` provider defaults to
+`glm-5.3`, and Prime Inference refreshes its public and authorized private model catalog while retaining
+bundled and cached fallbacks. Pylon keeps these model and retry changes provider-discovered and preserves
+its existing recovery, privacy, and session-ownership boundaries around them.
+The fork's schema 33 also forwards validated complete, partial, or unavailable replay proof through
+direct-worker and supervisor resync paths; absent proof remains unavailable instead of being synthesized.
 
 ## Multiple-instance capability gate
 
@@ -184,6 +195,12 @@ must identify the same delivered model prompt, with an unchanged or valid advanc
 or an advanced transcript boundary excludes this case. The submission signature exists only in active-turn
 memory and is absent from adopted restart turns. Unknown replay, changed transcript content, missing ownership
 proof, and additional unattributed output remain rejected.
+
+Prime 0.9.4 can insert one hidden `harness_digest` before the first submitted user message. Pylon retains
+its timestamp and SHA-256 content/details identity in the native transcript, preserving the native absolute
+message count without publishing harness content. The first-user case permits that single prefix either
+already observed or in the same complete snapshot. Changed or missing observed digests, multiple prefixes,
+unknown custom messages, and extra user/assistant/tool output still fail continuity validation.
 
 Ordinary sessions preserve lossless FIFO delivery under transient decoded-queue pressure through a separately
 bounded 256-route, 64 MiB raw staging tail. Reconnect and close admission fence public input synchronously at

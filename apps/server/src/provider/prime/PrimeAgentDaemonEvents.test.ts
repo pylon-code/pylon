@@ -96,6 +96,73 @@ function sessionEvent(event: Record<string, unknown>) {
 }
 
 describe("PrimeAgentDaemonEvents", () => {
+  it("retains exact hidden harness digest identity and native snapshot counts without content", () => {
+    const hidden = {
+      role: "custom",
+      customType: "harness_digest",
+      display: false,
+      content: "private harness content",
+      details: { digest: "private digest" },
+      timestamp: 10,
+    };
+    const event = decodePrimeAgentDaemonEvent({
+      type: "session_resynced",
+      snapshot: {
+        state: { ...state, messageCount: 2 },
+        messages: [hidden, { role: "user", content: "inspect", timestamp: 11 }],
+      },
+    });
+    expect(event).toMatchObject({
+      _tag: "SessionResynced",
+      state: { messageCount: 2 },
+      messages: [
+        {
+          role: "harnessDigest",
+          timestamp: 10,
+          contentDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+        { role: "user" },
+      ],
+    });
+    const completed = decodePrimeAgentDaemonEvent(
+      sessionEvent({ type: "message_end", message: hidden }),
+    );
+    if (event?._tag !== "SessionResynced" || completed?._tag !== "MessageCompleted")
+      throw new Error("missing hidden message");
+    expect(completed.message).toEqual(event.messages[0]);
+    expect(JSON.stringify(event)).not.toContain("private");
+    for (const changed of [
+      { ...hidden, content: "changed" },
+      { ...hidden, details: { digest: "changed" } },
+    ]) {
+      const update = decodePrimeAgentDaemonEvent(
+        sessionEvent({ type: "message_end", message: changed }),
+      );
+      expect(update).not.toEqual(completed);
+    }
+  });
+
+  it("does not recognize unrelated or visible custom messages as hidden harness digests", () => {
+    for (const hidden of [
+      { customType: "other", display: false, details: { digest: "x" } },
+      { customType: "harness_digest", display: true, details: { digest: "x" } },
+      { customType: "harness_digest", display: false, details: {} },
+    ]) {
+      const event = decodePrimeAgentDaemonEvent({
+        type: "session_resynced",
+        snapshot: {
+          state: { ...state, messageCount: 1 },
+          messages: [{ role: "custom", content: "x", timestamp: 10, ...hidden }],
+        },
+      });
+      expect(event).toMatchObject({
+        _tag: "SessionResynced",
+        state: { messageCount: 1 },
+        messages: [],
+      });
+    }
+  });
+
   it("decodes real-shaped text and thinking deltas without a partial field", () => {
     expect(
       decodePrimeAgentDaemonEvent(

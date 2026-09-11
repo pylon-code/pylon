@@ -5,16 +5,16 @@ import * as Schema from "effect/Schema";
 export const PRIME_STOCK_ARTIFACT = Object.freeze({
   repository: "PrimeIntellect-ai/prime-agent",
   repositoryId: 1_232_493_406,
-  version: "0.8.1",
-  releaseId: 376_894_763,
-  tag: "v0.8.1",
-  assetId: 530_304_956,
-  assetName: "prime-agent-0.8.1.tgz",
-  size: 9_616_163,
-  url: "https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v0.8.1/prime-agent-0.8.1.tgz",
-  sha256: "46c24db1782dd31adc35d5c6cbcc75564faba6ced3bf2ccf03d836ee77134475",
+  version: "0.9.4",
+  releaseId: 385_120_922,
+  tag: "v0.9.4",
+  assetId: 551_511_768,
+  assetName: "prime-agent-0.9.4.tgz",
+  size: 10_028_862,
+  url: "https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v0.9.4/prime-agent-0.9.4.tgz",
+  sha256: "b8d752a53d11a8c9a7580e1fb5fc24f7ce74ccad979c7e6e6aa8880fc3ad90b0",
   sha512:
-    "28ce7328c386d6d54261ba6a7bebe3cd420bf6f625ed6cb6a9fae6ca4815988c767b8f3f0ff3d3a95037ab566a17e074b181039a3da2ec929f4c6712ba51931d",
+    "e85582bd3892dfea36c97dcd5935504a53cd3f444785ab6ea0ab25dd97ac0a7f12bda812b8343568288fee89b32a1d790175cf6b4dc1164ac02fe3a8e54b8f13",
 });
 
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0));

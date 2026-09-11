@@ -111,8 +111,14 @@ const RLM_WORKER_RECOVERY_LIST_DELAYS_MS = [
 const PRIME_AGENT_WORKER_RECOVERY_CUSTOM_TYPE = "prime-agent.worker_recovery";
 const isRlmQuiescenceWaitCancellation = (cause: unknown) =>
   cause instanceof Error && cause.message === "RLM quiescence wait cancelled";
-const isPrimeAgentWorkerRecovering = (cause: unknown) =>
-  cause instanceof Error && cause.message === "Session worker is recovering";
+export const isPrimeAgentWorkerRecovering = (cause: unknown, activeSessionId: string) =>
+  cause instanceof Error &&
+  (cause.message === "Session worker is recovering" ||
+    (cause.name === "DaemonSessionRecoveringError" &&
+      Predicate.isObject(cause) &&
+      cause.code === "session_recovering" &&
+      Predicate.isString(cause.activeSessionId) &&
+      cause.activeSessionId === activeSessionId));
 
 function workerRecoverySnapshotIsUnsafe(
   raw: unknown,
@@ -6798,7 +6804,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 return "completed" as const;
               } catch (cause) {
                 if (isRlmQuiescenceWaitCancellation(cause)) return "cancelled" as const;
-                if (isPrimeAgentWorkerRecovering(cause)) return "worker-recovering" as const;
+                if (isPrimeAgentWorkerRecovering(cause, activeSessionId)) {
+                  return "worker-recovering" as const;
+                }
                 return "failed" as const;
               }
             });

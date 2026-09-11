@@ -45,6 +45,7 @@ import { PrimeAgentOwnershipReceiptStore } from "./PrimeAgentOwnershipReceipt.ts
 import { PRIME_AGENT_PLAN_TOOL_DEFINITION } from "./PrimeAgentManagedExtension.ts";
 import { PRIME_AGENT_EVENT_BUFFER_CAPACITY } from "./PrimeAgentEventBuffer.ts";
 import {
+  isPrimeAgentWorkerRecovering,
   makePrimeAgentDaemonSessionRuntime,
   PRIME_AGENT_DAEMON_RESUME_CURSOR,
   PRIME_AGENT_LIVE_ACTIVITY_REFRESH_DELAY_MS,
@@ -189,6 +190,35 @@ function workerListResponse(
     },
   };
 }
+
+describe("Prime Agent worker recovery errors", () => {
+  it.each([
+    new Error("Session worker is recovering"),
+    Object.assign(new Error("Active session active-secret-1 is recovering; retry shortly"), {
+      name: "DaemonSessionRecoveringError",
+      code: "session_recovering",
+      activeSessionId: "active-secret-1",
+    }),
+  ])("classifies supported recovery error %#", (cause) => {
+    expect(isPrimeAgentWorkerRecovering(cause, "active-secret-1")).toBe(true);
+  });
+
+  it.each([
+    new Error("Active session active-secret-1 is recovering; retry shortly"),
+    Object.assign(new Error("Active session active-secret-2 is recovering; retry shortly"), {
+      name: "DaemonSessionRecoveringError",
+      code: "session_recovering",
+      activeSessionId: "active-secret-2",
+    }),
+    Object.assign(new Error("Active session active-secret-1 is recovering; retry shortly"), {
+      name: "DaemonSessionRecoveringError",
+      code: "session_recovering",
+      activeSessionId: 1,
+    }),
+  ])("rejects unrelated recovery-shaped error %#", (cause) => {
+    expect(isPrimeAgentWorkerRecovering(cause, "active-secret-1")).toBe(false);
+  });
+});
 
 interface Captures {
   readonly order: string[];

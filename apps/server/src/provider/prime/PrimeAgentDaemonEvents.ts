@@ -150,10 +150,20 @@ export const PrimeAgentDaemonToolResultMessage = Schema.Struct({
   timestamp: Schema.Number,
 });
 
+const PrimeAgentDaemonHarnessDigestMessage = Schema.Struct({
+  role: Schema.Literal("custom"),
+  customType: Schema.Literal("harness_digest"),
+  display: Schema.Literal(false),
+  content: Schema.String,
+  details: Schema.Struct({ digest: Schema.String }),
+  timestamp: Schema.Number,
+});
+
 export const PrimeAgentDaemonMessage = Schema.Union([
   PrimeAgentDaemonUserMessage,
   PrimeAgentDaemonAssistantMessage,
   PrimeAgentDaemonToolResultMessage,
+  PrimeAgentDaemonHarnessDigestMessage,
 ]);
 export type PrimeAgentDaemonMessage = typeof PrimeAgentDaemonMessage.Type;
 
@@ -753,6 +763,12 @@ export interface PrimeDaemonPlanUpdate {
 }
 
 export type PrimeDaemonMessage =
+  | {
+      readonly role: "harnessDigest";
+      readonly timestamp: number;
+      /** Hidden native context participates in continuity, never client projection. */
+      readonly contentDigest: string;
+    }
   | {
       readonly role: "user";
       readonly timestamp: number;
@@ -1382,6 +1398,14 @@ function mapMessage(
 function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage;
 function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
   switch (value.role) {
+    case "custom":
+      return {
+        role: "harnessDigest",
+        timestamp: value.timestamp,
+        contentDigest: NodeCrypto.createHash("sha256")
+          .update(JSON.stringify([value.content, value.details.digest]), "utf8")
+          .digest("hex"),
+      };
     case "user": {
       if (Predicate.isString(value.content)) {
         return {

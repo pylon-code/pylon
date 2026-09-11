@@ -2080,9 +2080,14 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
-  for (const withImage of [false, true]) {
+  for (const { withImage, hidden } of [
+    { withImage: false, hidden: "none" },
+    { withImage: true, hidden: "none" },
+    { withImage: false, hidden: "snapshot" },
+    { withImage: false, hidden: "observed" },
+  ] as const) {
     it.effect(
-      `reconciles the delivered submitted user from the first complete resync (image: ${withImage})`,
+      `reconciles the delivered submitted user from the first complete resync (image: ${withImage}, hidden: ${hidden})`,
       () =>
         Effect.scoped(
           Effect.gen(function* () {
@@ -2128,10 +2133,27 @@ describe("PrimeAgentDaemonAdapter", () => {
               imageMimeTypes: withImage ? ["image/png"] : [],
               imageDigests: withImage ? [primeAgentDaemonImageDigest("AQID")] : [],
             } satisfies PrimeDaemonMessage;
+            const digest = {
+              role: "harnessDigest",
+              timestamp: 0,
+              contentDigest: "a".repeat(64),
+            } satisfies PrimeDaemonMessage;
+            if (hidden === "observed") {
+              yield* offer(captures, {
+                _tag: "MessageCompleted",
+                message: digest,
+                attribution: { scope: "prompt", correlationId },
+              });
+            }
+            const messages = hidden === "none" ? [prompt] : [digest, prompt];
             const resync = {
               ...initialSnapshot(),
-              state: { ...initialSnapshot().state, messageCount: 1, isStreaming: true },
-              messages: [prompt],
+              state: {
+                ...initialSnapshot().state,
+                messageCount: messages.length,
+                isStreaming: true,
+              },
+              messages,
               replayContinuity: "complete",
               connectionGeneration: 0,
               correlatedProofEpoch: 0,
@@ -2172,6 +2194,8 @@ describe("PrimeAgentDaemonAdapter", () => {
               payload: { state: "completed" },
             });
             expect(turnEvents.filter((event) => event.type === "runtime.error")).toEqual([]);
+            expect(encodeUnknownJson(turnEvents)).not.toContain(digest.contentDigest);
+            expect(encodeUnknownJson(turnEvents)).not.toContain("harnessDigest");
             expect(
               turnEvents.filter(
                 (event) => event.type === "content.delta" && event.payload.delta === answer.text,
@@ -2183,6 +2207,14 @@ describe("PrimeAgentDaemonAdapter", () => {
   }
 
   for (const rejection of [
+    "hidden unknown replay",
+    "hidden unavailable replay",
+    "hidden changed observed digest",
+    "hidden missing observed digest",
+    "hidden duplicate prefix",
+    "hidden suffix",
+    "hidden extra assistant",
+    "hidden count mismatch",
     "different text",
     "unexpected image MIME",
     "unexpected image digest",
@@ -2207,7 +2239,8 @@ describe("PrimeAgentDaemonAdapter", () => {
     it.effect(`rejects submitted-user resync with ${rejection}`, () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const recovering = rejection.includes("unknown replay");
+          const recovering =
+            rejection.includes("unknown replay") && rejection !== "hidden unknown replay";
           const captures = makeCaptures();
           captures.rlmConnectionGeneration = recovering ? 1 : 0;
           captures.retryWorkerRecoverySnapshots = rejection === "worker unknown replay";
@@ -2254,6 +2287,21 @@ describe("PrimeAgentDaemonAdapter", () => {
               attribution: { scope: "prompt", correlationId },
             });
           }
+          const hidden = {
+            role: "harnessDigest",
+            timestamp: 0,
+            contentDigest: "a".repeat(64),
+          } satisfies PrimeDaemonMessage;
+          if (
+            rejection === "hidden changed observed digest" ||
+            rejection === "hidden missing observed digest"
+          ) {
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              message: hidden,
+              attribution: { scope: "prompt", correlationId },
+            });
+          }
           const messages: Array<PrimeDaemonMessage> = [
             {
               ...prompt,
@@ -2276,6 +2324,18 @@ describe("PrimeAgentDaemonAdapter", () => {
                 : {}),
             },
           ];
+          if (rejection.startsWith("hidden ") && rejection !== "hidden missing observed digest") {
+            messages.unshift(
+              rejection === "hidden changed observed digest"
+                ? { ...hidden, contentDigest: "b".repeat(64) }
+                : hidden,
+            );
+          }
+          if (rejection === "hidden duplicate prefix")
+            messages.unshift({ ...hidden, timestamp: -1 });
+          if (rejection === "hidden suffix") messages.reverse();
+          if (rejection === "hidden extra assistant")
+            messages.push(assistantMessage("unattributed answer"));
           if (rejection === "extra assistant")
             messages.push(assistantMessage("unattributed answer"));
           if (rejection === "repeated user boundary") messages.unshift(prompt);
@@ -2296,13 +2356,18 @@ describe("PrimeAgentDaemonAdapter", () => {
           };
           yield* offer(captures, {
             ...initialSnapshot(),
-            state: { ...initialSnapshot().state, messageCount: messages.length, isStreaming: true },
+            state: {
+              ...initialSnapshot().state,
+              messageCount: messages.length + (rejection === "hidden count mismatch" ? 1 : 0),
+              isStreaming: true,
+            },
             messages,
-            replayContinuity: recovering
-              ? "unknown"
-              : rejection === "unavailable replay"
-                ? "unavailable"
-                : "complete",
+            replayContinuity:
+              recovering || rejection === "hidden unknown replay"
+                ? "unknown"
+                : rejection === "unavailable replay" || rejection === "hidden unavailable replay"
+                  ? "unavailable"
+                  : "complete",
             connectionGeneration: captures.rlmConnectionGeneration,
             replacementSnapshot: rejection === "replacement unknown replay",
             correlatedProofEpoch: rejection === "missing proof epoch" ? undefined : 1,
