@@ -146,6 +146,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server retains the browser profile selected at preview.open. Older servers
       discard that field, so nondefault profiles must not be opened through them. */
   browserProfiles: Schema.optionalKey(Schema.Boolean),
+  /** Server persists machine project defaults and per-project overrides
+      (default model, actions and automatic pull, and the action, automatic
+      pull and browser access override maps). Older servers strip those
+      settings patch keys without an error and clients decode them as
+      defaults, so writes must check this rather than the settings they read. */
+  projectDefaults: Schema.optionalKey(Schema.Boolean),
   /** The desktop app supervising this server can be driven over RPC:
       server.updateServer runs its check -> download -> relaunch. Absent on
       desktop servers whose app predates the remote trigger, where clients

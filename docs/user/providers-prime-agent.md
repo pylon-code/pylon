@@ -361,8 +361,9 @@ instead of silently opening a blank or merely recent Prime session.
 
 ## Browser access
 
-When **Settings → Integrations → Browser → Allow agent browser access** is enabled, new Prime Agent
-sessions receive Pylon's thread-scoped preview tools. This works in daemon-backed sessions and ACP
+When **Agent browser access** is enabled in **Settings → Projects**, new Prime Agent sessions receive
+Pylon's thread-scoped preview tools. Set it under **All projects** for a machine default, or select a
+project to override that default. This works in daemon-backed sessions and ACP
 compatibility mode. The scoped connection is removed when the provider session stops. Turning browser
 access off withholds both the tools and their instructions; it does not affect browser tabs you control.
 

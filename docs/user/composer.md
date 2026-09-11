@@ -83,9 +83,14 @@ uses its account catalog and does not support custom models.
 
 ## Model defaults
 
-Pylon remembers the last provider, model, and model options you selected and reuses that
-selection for new threads. A model configured in a project's settings overrides the remembered
-selection for that project; resetting the project setting returns it to the remembered selection.
+New threads start with the first model that is set, in this order:
+
+1. The project's default model, from its page in **Settings → Projects**.
+2. The default model for the machine the thread runs on, from **All projects** in the same page.
+3. The last provider, model, and model options you selected, which Pylon remembers.
+
+Resetting a project's model returns that project to the machine default. Resetting the machine
+default returns new threads to your remembered selection.
 
 Model options shown as provider defaults remain display values until you choose them in Pylon.
 Pylon only sends options you selected explicitly, so an unset reasoning level or service tier can
