@@ -61,7 +61,7 @@ const GNOME_ACCESS_COPY = {
   },
   unsupported: {
     title: "Automatic capture isn't available",
-    description: "Use Take snapshot from the command palette to choose a window.",
+    description: "Your capture shortcut opens GNOME's window picker so you can choose a window.",
   },
   error: {
     title: "Couldn't set up the extension",

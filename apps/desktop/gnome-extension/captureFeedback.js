@@ -85,7 +85,7 @@ export class CaptureFeedback {
         session.pid,
         title,
       );
-    // A command-palette capture temporarily unmaps Pylon. Wait for its new surface, not a sleep.
+    // Pylon's window can be unmapped while a capture runs. Wait for its new surface, not a sleep.
     const target =
       find() ??
       (await new Promise((resolve) => {
