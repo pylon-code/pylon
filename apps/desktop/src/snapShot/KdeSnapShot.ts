@@ -14,7 +14,10 @@ import { readPortalPng } from "./linuxCaptureSession.ts";
 import { startNativeCaptureFeedback } from "./NativeCaptureFeedback.ts";
 export { isKdeCaptureSession } from "./linuxCaptureSession.ts";
 
-export const KDE_CAPTURE_EXECUTABLE = "t3-kde-snap-shot";
+/** Staged and installed name, visible in process lists; the cargo binary keeps its crate name. */
+export const KDE_CAPTURE_EXECUTABLE = "pylon-kde-snap-shot";
+/** Cargo's output name, used only by development builds that read the crate directly. */
+export const KDE_CAPTURE_BUILD_OUTPUT = "t3-kde-snap-shot";
 const MARKER = "X-Pylon-Capture-Helper=true";
 const decodeCapabilities = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Struct({ feedbackAvailable: Schema.optional(Schema.Boolean) })),

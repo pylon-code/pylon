@@ -43,7 +43,9 @@ hidden desktop entry, not run from the AppImage mount. The install path
 (`$XDG_DATA_HOME/<app-id>/kde-capture`) and the `<app-id>.KdeCapture.desktop` entry are keyed by
 the channel's app ID, so Stable, Nightly, and development builds never replace or remove each
 other's helper. The Hyprland helper uses `$XDG_DATA_HOME/<app-id>/hyprland-capture` for the same
-reason. Two traps:
+reason. Both helpers are staged and installed as `pylon-kde-snap-shot` / `pylon-hyprland-snap-shot`
+while their cargo crates keep `t3-*` binary names: Hyprland's screen-sharing prompt shows the
+installed file name. Two traps:
 
 - `X-KDE-DBUS-Restricted-Interfaces` uses KConfig's comma-separated list syntax. A trailing
   semicolon becomes part of the interface name and KWin rejects it.

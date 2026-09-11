@@ -84,7 +84,7 @@ Remove the helper from **Manage capture** > **Access** > **Advanced**.
 **Hyprland and Omarchy.** Install the bundled helper during setup, then choose a shortcut and select
 **Review changes**. Pylon shows the exact change it will make to your Hyprland config. **Save
 shortcut** writes only that change, keeps a backup, and reloads Hyprland. Approve the screen-sharing
-prompt for the helper if one appears. On Omarchy, bind in your own config, not the shipped defaults.
+prompt for `pylon-hyprland-snap-shot` if one appears. On Omarchy, bind in your own config, not the shipped defaults.
 Some Hyprland versions return an "access denied" image instead of an error when capture is blocked;
 check the helper's screen-sharing permission.
 

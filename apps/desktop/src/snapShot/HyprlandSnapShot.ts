@@ -12,7 +12,13 @@ import { startNativeCaptureFeedback } from "./NativeCaptureFeedback.ts";
 import { HYPRLAND_CAPTURE_ACTION } from "./linuxCaptureSession.ts";
 export { isHyprlandCaptureSession } from "./linuxCaptureSession.ts";
 
-export const HYPRLAND_CAPTURE_EXECUTABLE = "t3-hyprland-snap-shot";
+/**
+ * Staged and installed name. Hyprland's screen-sharing permission prompt shows the
+ * executable's file name, so it names Pylon; the cargo binary keeps its crate name.
+ */
+export const HYPRLAND_CAPTURE_EXECUTABLE = "pylon-hyprland-snap-shot";
+/** Cargo's output name, used only by development builds that read the crate directly. */
+export const HYPRLAND_CAPTURE_BUILD_OUTPUT = "t3-hyprland-snap-shot";
 export type HyprlandCapturePaths = {
   readonly bundle: string;
   readonly dataHome: string;

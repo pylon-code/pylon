@@ -54,6 +54,7 @@ import {
 } from "./linuxCaptureSession.ts";
 import {
   HyprlandCaptureSetup,
+  HYPRLAND_CAPTURE_BUILD_OUTPUT,
   HYPRLAND_CAPTURE_EXECUTABLE,
   isHyprlandCaptureSession,
   hyprlandCaptureShortcut,
@@ -61,6 +62,7 @@ import {
 } from "./HyprlandSnapShot.ts";
 import {
   KdeCaptureSetup,
+  KDE_CAPTURE_BUILD_OUTPUT,
   KDE_CAPTURE_EXECUTABLE,
   isKdeCaptureSession,
   type KdeCapturePaths,
@@ -738,7 +740,7 @@ export const make = Effect.gen(function* () {
       : path.join(
           environment.appRoot,
           "native/kde-snap-shot/target/release",
-          KDE_CAPTURE_EXECUTABLE,
+          KDE_CAPTURE_BUILD_OUTPUT,
         ),
     dataHome: path.dirname(environment.linuxApplicationsDir),
     appId: linuxAppId,
@@ -751,7 +753,7 @@ export const make = Effect.gen(function* () {
       : path.join(
           environment.appRoot,
           "native/hyprland-snap-shot/target/release",
-          HYPRLAND_CAPTURE_EXECUTABLE,
+          HYPRLAND_CAPTURE_BUILD_OUTPUT,
         ),
     dataHome: path.dirname(environment.linuxApplicationsDir),
     appId: linuxAppId,
