@@ -84,6 +84,13 @@ const PRIME_MODELS: ServerProvider["models"] = [
     capabilities: null,
   },
   {
+    slug: "openai/gpt-5.6",
+    name: "GPT-5.6",
+    subProvider: "openai",
+    isCustom: false,
+    capabilities: null,
+  },
+  {
     slug: "prime-inference/qwen",
     name: "Qwen",
     subProvider: "prime-inference",
@@ -232,9 +239,37 @@ describe("deriveComposerUsage", () => {
       expect(usage.backend?.verification).toBe("assumed");
     });
 
+    it.each(["prime-inference/qwen", "openai/gpt-5.6"])(
+      "explains unreported capacity for the known backend of %s",
+      (selectedModel) => {
+        const usage = deriveComposerUsage({
+          providerStatuses: ALL,
+          selectedInstanceId: "primeAgent",
+          selectedModel,
+          enabled: true,
+        });
+
+        expect(usage.accounts).toEqual([]);
+        expect(usage.primary).toBeNull();
+        expect(usage.backend?.driver).toBeNull();
+        expect(usage.backend?.verification).toBe("unreported");
+        expect(hasComposerUsageContent(usage)).toBe(true);
+      },
+    );
+
+    it("respects disabled usage for a known unmapped backend", () => {
+      expect(
+        deriveComposerUsage({
+          providerStatuses: ALL,
+          selectedInstanceId: "primeAgent",
+          selectedModel: "prime-inference/qwen",
+          enabled: false,
+        }),
+      ).toBe(EMPTY_COMPOSER_USAGE);
+    });
+
     it.each([
       ["Prime's own default", "default"],
-      ["a backend Pylon has no driver for", "prime-inference/qwen"],
       ["an unknown slug", "anthropic/not-listed"],
       ["no model", null],
     ])("shows nothing for %s", (_label, selectedModel) => {

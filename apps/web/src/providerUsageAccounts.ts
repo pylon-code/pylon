@@ -31,7 +31,7 @@ const PRIME_AGENT_DRIVER = ProviderDriverKind.make("primeAgent");
  * Prime's backend names, as its model discovery reports them, mapped to the
  * Pylon driver whose accounts hold that backend's subscription. Backends
  * without a Pylon driver (Prime Inference, plain OpenAI keys) have no
- * capacity to show and are left out.
+ * capacity to show; the composer explains that reporting is unavailable.
  */
 const PRIME_AGENT_BACKEND_DRIVERS: Readonly<Record<string, ProviderDriverKind>> = {
   anthropic: ProviderDriverKind.make("claudeAgent"),
@@ -48,21 +48,22 @@ export type ComposerUsageVerification =
   /** Prime is signed in to a different account than any configured here. */
   | "mismatch";
 
-export interface ComposerUsageBackend {
-  readonly driver: ProviderDriverKind;
-  /** Brand label for the driver, e.g. "Claude". */
+export type ComposerUsageBackend = {
+  /** Brand label for the driver, or the unmapped backend name. */
   readonly label: string;
   /** Display name of the Prime model the capacity is being shown for. */
   readonly model: string;
-  readonly verification: ComposerUsageVerification;
-}
+} & (
+  | { readonly driver: ProviderDriverKind; readonly verification: ComposerUsageVerification }
+  | { readonly driver: null; readonly verification: "unreported" }
+);
 
 export interface ComposerUsage {
   /** Accounts the popover compares. Empty when nothing reports capacity. */
   readonly accounts: ReadonlyArray<ProviderUsageAccount>;
   /** The account the strip shows, or null when there is nothing to show. */
   readonly primary: ProviderUsageAccount | null;
-  /** Set when the composer targets Prime Agent and capacity comes from its backend. */
+  /** The selected Prime backend and whether its capacity can be attributed or reported. */
   readonly backend: ComposerUsageBackend | null;
 }
 
@@ -77,9 +78,11 @@ export const EMPTY_COMPOSER_USAGE: ComposerUsage = { accounts: [], primary: null
  * there is one, so any instant answers this question.
  */
 export function hasComposerUsageContent(usage: ComposerUsage): boolean {
-  // Prime signed in elsewhere still reports that, and saying so is content.
+  // Explanations of unavailable capacity keep the strip visible too.
   return (
-    usage.backend?.verification === "mismatch" || getComposerUsageView(usage.primary, 0) !== null
+    usage.backend?.verification === "mismatch" ||
+    usage.backend?.verification === "unreported" ||
+    getComposerUsageView(usage.primary, 0) !== null
   );
 }
 
@@ -106,15 +109,21 @@ function accountsForDriver(
   });
 }
 
-/** The Prime model the composer has selected, when its backend has a Pylon driver. */
+/** The selected Prime model with a known backend, including unmapped backends. */
 function primeAgentBackend(
   prime: ServerProvider,
   selectedModel: string | null | undefined,
-): { readonly driver: ProviderDriverKind; readonly model: ServerProviderModel } | null {
+): {
+  readonly driver: ProviderDriverKind | null;
+  readonly model: ServerProviderModel & { readonly subProvider: string };
+} | null {
   if (!selectedModel) return null;
   const model = prime.models.find((candidate) => candidate.slug === selectedModel);
-  const driver = model?.subProvider ? PRIME_AGENT_BACKEND_DRIVERS[model.subProvider] : undefined;
-  return model && driver ? { driver, model } : null;
+  if (!model?.subProvider) return null;
+  return {
+    driver: PRIME_AGENT_BACKEND_DRIVERS[model.subProvider] ?? null,
+    model: { ...model, subProvider: model.subProvider },
+  };
 }
 
 /**
@@ -194,7 +203,22 @@ export function deriveComposerUsage(input: {
   if (selected.driver === PRIME_AGENT_DRIVER) {
     const backend = primeAgentBackend(selected, input.selectedModel);
     if (!backend) return EMPTY_COMPOSER_USAGE;
-    return primeAgentUsage(input.providerStatuses, selected, backend);
+    if (!backend.driver) {
+      return {
+        accounts: [],
+        primary: null,
+        backend: {
+          driver: null,
+          label: backend.model.subProvider,
+          model: backend.model.shortName ?? backend.model.name,
+          verification: "unreported",
+        },
+      };
+    }
+    return primeAgentUsage(input.providerStatuses, selected, {
+      driver: backend.driver,
+      model: backend.model,
+    });
   }
 
   const accounts = accountsForDriver(input.providerStatuses, selected.driver, selected.instanceId);
