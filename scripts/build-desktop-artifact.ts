@@ -35,6 +35,11 @@ import {
   selectCliRuntimeExternalDependencies,
 } from "./lib/cli-external-packages.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
+import {
+  parseUpdateManifest,
+  serializeUpdateManifest,
+  withMacUpdateMinimumSystemVersion,
+} from "./lib/update-manifest.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -3103,6 +3108,17 @@ export function resolveDesktopAppId(version: string): string {
     : DESKTOP_APP_ID;
 }
 
+/** Oldest macOS the bundled Electron runtime launches on (Electron 44 requires Ventura). */
+export const MAC_MINIMUM_SYSTEM_VERSION = "13.0";
+
+/** Adds the Darwin minimum electron-updater checks to a generated `*-mac.yml` manifest. */
+export function stampMacUpdateManifest(raw: string, sourcePath: string): string {
+  return serializeUpdateManifest(
+    withMacUpdateMinimumSystemVersion(parseUpdateManifest(raw, sourcePath, "macOS")),
+    { platformLabel: "macOS" },
+  );
+}
+
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
@@ -3171,6 +3187,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
+      // Electron 44 dropped macOS 12. The update manifests carry the matching
+      // Darwin floor (see stampMacUpdateManifest) so Monterey is never offered it.
+      minimumSystemVersion: MAC_MINIMUM_SYSTEM_VERSION,
       // Modern macOS rejects Electron's nested linker signatures when the app
       // bundle is left completely unsigned. Ad-hoc signing is the portable
       // fallback; developers can select a local Apple Development certificate
@@ -4454,7 +4473,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     if (!stat || stat.type !== "File") continue;
 
     const to = path.join(options.outputDir, entry);
-    yield* fs.copyFile(from, to);
+    if (options.platform === "mac" && entry.endsWith("-mac.yml")) {
+      yield* fs.writeFileString(to, stampMacUpdateManifest(yield* fs.readFileString(from), from));
+    } else {
+      yield* fs.copyFile(from, to);
+    }
     copiedArtifacts.push(to);
   }
 

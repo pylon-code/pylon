@@ -28,6 +28,7 @@ import {
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
   LINUX_CAPTURE_EXTRA_RESOURCES,
+  MAC_MINIMUM_SYSTEM_VERSION,
   LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
   MAC_FILE_EXCLUSIONS,
   InvalidMacPasskeyRpDomainError,
@@ -71,6 +72,7 @@ import {
   stageDesktopDmgBackground,
   stageResourceMonitor,
   stageLinuxCaptureHelper,
+  stampMacUpdateManifest,
   stageWslRuntimeArchive,
   bundlesWslRuntime,
   STAGE_INSTALL_ARGS,
@@ -519,6 +521,25 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   // A shared bundle id makes the OS treat nightly as another copy of the
   // stable app: same launch-services registration, same per-app state, and the
   // two end up fighting over which one a launch resolves to.
+  it("stamps macOS update manifests with the Darwin floor electron-updater checks", () => {
+    const stamped = stampMacUpdateManifest(
+      `version: 0.0.33
+files:
+  - url: Pylon-0.0.33-arm64.zip
+    sha512: arm64zip
+    size: 125621344
+path: Pylon-0.0.33-arm64.zip
+sha512: arm64zip
+releaseDate: '2026-09-10T10:32:14.587Z'
+`,
+      "latest-mac.yml",
+    );
+
+    assert.equal(MAC_MINIMUM_SYSTEM_VERSION, "13.0");
+    assert.include(stamped, "minimumSystemVersion: '22.0.0'");
+    assert.include(stamped, "  - url: Pylon-0.0.33-arm64.zip");
+  });
+
   it("gives nightly builds their own bundle identifier", () => {
     assert.equal(resolveDesktopAppId("0.0.17"), "com.pylon.code");
     assert.equal(resolveDesktopAppId("0.0.17-nightly.20260413.42"), "com.pylon.code.nightly");
@@ -988,6 +1009,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.deepStrictEqual(win.files, DESKTOP_FILE_EXCLUSIONS);
       assert.deepStrictEqual(winWithoutWslPrebuild.files, win.files);
       assert.notProperty(mac.mac as Record<string, unknown>, "sign");
+      assert.equal((mac.mac as Record<string, unknown>).minimumSystemVersion, "13.0");
       for (const config of [linux, win]) {
         assert.deepStrictEqual(config.electronLanguages, DESKTOP_ELECTRON_LANGUAGES);
       }

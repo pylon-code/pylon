@@ -13,6 +13,7 @@ import {
   mergeUpdateManifests,
   parseUpdateManifest,
   serializeUpdateManifest,
+  withMacUpdateMinimumSystemVersion,
   type UpdateManifest,
 } from "./lib/update-manifest.ts";
 
@@ -36,7 +37,16 @@ export function mergePlatformUpdateManifests(
   primary: UpdateManifest,
   secondary: UpdateManifest,
 ): UpdateManifest {
-  return mergeUpdateManifests(primary, secondary, getPlatformLabel(platform));
+  if (platform !== "mac") {
+    return mergeUpdateManifests(primary, secondary, getPlatformLabel(platform));
+  }
+  return withMacUpdateMinimumSystemVersion(
+    mergeUpdateManifests(
+      withMacUpdateMinimumSystemVersion(primary),
+      withMacUpdateMinimumSystemVersion(secondary),
+      getPlatformLabel(platform),
+    ),
+  );
 }
 
 export function serializePlatformUpdateManifest(
