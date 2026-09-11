@@ -7,6 +7,7 @@ import {
   isProviderSettingsEnvironmentAvailable,
   resolvePrimaryOperateAccess,
   resolveRemoteOperateAccess,
+  resolveProviderSettingsTargetEnvironment,
   resolveSelectedProviderEnvironmentId,
 } from "./ProviderSettingsPanel.logic";
 
@@ -65,6 +66,42 @@ describe("provider environment selection", () => {
       relayId,
     );
     expect(resolveSelectedProviderEnvironmentId([], null, primaryId)).toBeNull();
+  });
+
+  it("keeps a cold-opened setup link loading until the device list is ready", () => {
+    const listed = [{ environmentId: primaryId, label: "This device" }];
+    const target = {
+      primaryEnvironmentId: primaryId,
+      selectedEnvironmentId: relayId,
+      targetEnvironmentId: relayId,
+    };
+
+    expect(
+      resolveProviderSettingsTargetEnvironment({ ...target, environments: [], isReady: false }),
+    ).toEqual({ effectiveEnvironmentId: relayId, targetEnvironmentState: "loading" });
+    // A partially loaded list does not flash another device's providers.
+    expect(
+      resolveProviderSettingsTargetEnvironment({ ...target, environments: listed, isReady: false }),
+    ).toEqual({ effectiveEnvironmentId: relayId, targetEnvironmentState: "loading" });
+    expect(
+      resolveProviderSettingsTargetEnvironment({ ...target, environments: listed, isReady: true }),
+    ).toEqual({ effectiveEnvironmentId: relayId, targetEnvironmentState: "missing" });
+    expect(
+      resolveProviderSettingsTargetEnvironment({
+        ...target,
+        environments: [...listed, { environmentId: relayId, label: "Alpha Relay" }],
+        isReady: false,
+      }),
+    ).toEqual({ effectiveEnvironmentId: relayId, targetEnvironmentState: "listed" });
+    // Choosing another device leaves the link's target behind.
+    expect(
+      resolveProviderSettingsTargetEnvironment({
+        ...target,
+        selectedEnvironmentId: primaryId,
+        environments: listed,
+        isReady: true,
+      }),
+    ).toEqual({ effectiveEnvironmentId: primaryId, targetEnvironmentState: "listed" });
   });
 });
 

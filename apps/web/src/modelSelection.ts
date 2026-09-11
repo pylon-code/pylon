@@ -318,7 +318,17 @@ export function resolveAppModelSelectionForInstance(
       return unavailableSelection;
     }
   }
-  return options.find((option) => option.isDefault)?.slug ?? options[0]?.slug ?? null;
+  // Hiding models is a picker preference, not unavailability: when every
+  // listed model is hidden, stay on this instance's own default rather than
+  // letting a driver-level fallback pick another instance's model. Antigravity
+  // has no model outside its account catalog, so it resolves to nothing.
+  return (
+    options.find((option) => option.isDefault)?.slug ??
+    options[0]?.slug ??
+    (entry.driverKind === "antigravity"
+      ? null
+      : (entry.models.find((model) => model.isDefault)?.slug ?? entry.models[0]?.slug ?? null))
+  );
 }
 
 /**

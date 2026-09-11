@@ -297,6 +297,46 @@ describe("resolveComposerInstanceSelection", () => {
     expect(selection.lockedContinuationGroupKey).toBe("org-a");
     expect(selection.instanceId).toBe("claudeAgent");
     expect(canStartComposerTurn(selection)).toBe(false);
+    // The enabled sibling in the same continuation group is picked explicitly,
+    // so the composer keeps the picker instead of sending the user to settings.
+    expect(selection.unavailableInstanceId).toBeUndefined();
+    expect(
+      resolveComposerProviderSettingsAction({
+        selection,
+        catalogKnown: true,
+        lockedProvider: kind("claudeAgent"),
+        fallbackSetupInstanceId: undefined,
+      }),
+    ).toEqual({ visible: false, instanceId: undefined });
+  });
+
+  it("offers settings for a disabled binding whose only peers are in another continuation group", () => {
+    const work = provider({
+      instanceId: "claude_work",
+      driver: "claudeAgent",
+      continuationGroupKey: "org-a",
+      enabled: false,
+    });
+    const personal = provider({
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      continuationGroupKey: "org-b",
+    });
+    const disabledSibling = provider({
+      instanceId: "claude_work_2",
+      driver: "claudeAgent",
+      continuationGroupKey: "org-a",
+      enabled: false,
+    });
+    const selection = resolveComposerInstanceSelection({
+      ...base,
+      entries: entriesOf(work, personal, disabledSibling),
+      sessionInstanceId: id("claude_work"),
+      lockedProvider: kind("claudeAgent"),
+    });
+
+    expect(selection.instanceId).toBe("claude_work");
+    expect(selection.unavailableInstanceId).toBe("claude_work");
   });
 
   it("reports no provider when nothing is selectable", () => {
