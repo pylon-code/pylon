@@ -342,6 +342,12 @@ interface MessagesTimelineProps {
   turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
   reportedTurnCosts?: ReadonlyMap<TurnId, number>;
   routeThreadKey: string;
+  /**
+   * Thread whose entries are currently painted. Differs from `routeThreadKey`
+   * while a jump is still holding the previous list. Identity for row
+   * projection and list extraData — do not remount on this value.
+   */
+  displayThreadKey?: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   supportsConversationRollback: boolean;
   /** Client-only message ids; see `collectLocalTimelineMessageIds`. */
@@ -406,6 +412,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   turnDiffSummaries,
   reportedTurnCosts,
   routeThreadKey,
+  displayThreadKey,
   onOpenTurnDiff,
   supportsConversationRollback,
   localMessageIds,
@@ -435,17 +442,30 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   loadEarlier = null,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
+  const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
+  const listIdentityKey = displayThreadKey ?? routeThreadKey;
+  const listIdentityRef = useRef(listIdentityKey);
+  const previousLatestTurnRef = useRef(latestTurn);
+  let paintedExpandedTurnIds = expandedTurnIds;
+  let paintedExpandedWorkGroupIds = expandedWorkGroupIds;
+  if (listIdentityRef.current !== listIdentityKey) {
+    listIdentityRef.current = listIdentityKey;
+    previousLatestTurnRef.current = latestTurn;
+    paintedExpandedTurnIds = new Set();
+    paintedExpandedWorkGroupIds = new Set();
+    setExpandedTurnIds(paintedExpandedTurnIds);
+    setExpandedWorkGroupIds(paintedExpandedWorkGroupIds);
+  }
   const citationThreadRef = useMemo(() => parseScopedThreadKey(routeThreadKey), [routeThreadKey]);
   const expandCitedTurn = useCallback((turnId: TurnId) => {
     setExpandedTurnIds((current) =>
       current.has(turnId) ? current : new Set([...current, turnId]),
     );
   }, []);
-  const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
   // Scroll/disclosure state outlives virtualized rows, but never the current thread.
   const workGroupViewState = useMemo<WorkGroupViewState>(
     () => ({ scrollPositions: new Map(), expandedEntries: new Set() }),
-    [routeThreadKey],
+    [listIdentityKey],
   );
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
@@ -537,7 +557,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   // An in-session interrupt leaves its turn expanded so the user keeps their
   // place; the next turn (or a reload, since this is local state) folds it.
-  const previousLatestTurnRef = useRef(latestTurn);
   useEffect(() => {
     const previous = previousLatestTurnRef.current;
     previousLatestTurnRef.current = latestTurn;
@@ -576,8 +595,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         timelineEntries,
         latestTurn,
         runningTurnId,
-        expandedTurnIds,
-        expandedWorkGroupIds,
+        expandedTurnIds: paintedExpandedTurnIds,
+        expandedWorkGroupIds: paintedExpandedWorkGroupIds,
         isWorking,
         activeTurnStartedAt,
         turnDiffSummaries,
@@ -585,21 +604,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         supportsConversationRollback,
         ...(localMessageIds === undefined ? {} : { localMessageIds }),
       },
-      previous?.threadKey === routeThreadKey && previous.workspaceRoot === workspaceRoot
+      previous?.threadKey === listIdentityKey && previous.workspaceRoot === workspaceRoot
         ? previous.projection
         : null,
     );
-    rowsProjectionRef.current = { threadKey: routeThreadKey, workspaceRoot, projection };
+    rowsProjectionRef.current = { threadKey: listIdentityKey, workspaceRoot, projection };
     return projection.rows;
   }, [
     rowsProjectionRef,
-    routeThreadKey,
+    listIdentityKey,
     workspaceRoot,
     timelineEntries,
     latestTurn,
     runningTurnId,
-    expandedTurnIds,
-    expandedWorkGroupIds,
+    paintedExpandedTurnIds,
+    paintedExpandedWorkGroupIds,
     isWorking,
     activeTurnStartedAt,
     turnDiffSummaries,
@@ -607,7 +626,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     supportsConversationRollback,
     localMessageIds,
   ]);
-  const rows = useStableRows(rawRows);
+  const rows = useStableRows(rawRows, listIdentityKey);
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
@@ -855,7 +874,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   if (rows.length === 0 && !isWorking) {
     if (hideEmptyPlaceholder) {
-      return null;
+      // Occupy the pane with the theme surface so a thread switch cannot
+      // punch a hole through to the window chrome (white in light mode).
+      return <div className="h-full min-h-0 bg-background" data-timeline-loading="true" />;
     }
     return (
       <div className="flex h-full items-center justify-center">
@@ -882,7 +903,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           <LegendList<MessagesTimelineRow>
             ref={listRef}
             data={rows}
-            extraData={rows.length}
+            extraData={`${listIdentityKey}:${rows.length}`}
             keyExtractor={keyExtractor}
             getItemType={getItemType}
             renderItem={renderItem}
@@ -2760,17 +2781,23 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
 
 /** Returns a structurally-shared copy of `rows`: for each row whose content
  *  hasn't changed since last call, the previous object reference is reused. */
-function useStableRows(rows: MessagesTimelineRow[]): MessagesTimelineRow[] {
+function useStableRows(rows: MessagesTimelineRow[], identity: string): MessagesTimelineRow[] {
   const prevState = useRef<StableMessagesTimelineRowsState>({
     byId: new Map<string, MessagesTimelineRow>(),
     result: [],
   });
+  const prevIdentity = useRef(identity);
 
   return useMemo(() => {
-    const nextState = computeStableMessagesTimelineRows(rows, prevState.current);
+    const previous =
+      prevIdentity.current === identity
+        ? prevState.current
+        : { byId: new Map<string, MessagesTimelineRow>(), result: [] };
+    prevIdentity.current = identity;
+    const nextState = computeStableMessagesTimelineRows(rows, previous);
     prevState.current = nextState;
     return nextState.result;
-  }, [rows]);
+  }, [identity, rows]);
 }
 
 // ---------------------------------------------------------------------------
