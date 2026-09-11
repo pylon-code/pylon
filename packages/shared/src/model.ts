@@ -415,6 +415,16 @@ export function resolvePromptInjectedEffort(
   return null;
 }
 
+/** Explanations shared by model menus and selection feedback on every client. */
+export const PRIME_AGENT_DEFAULT_MODEL_CHANGE_DESCRIPTION =
+  "Prime Agent cannot hand model choice back to its own default once a conversation is running.";
+export const STARTED_THREAD_MODEL_CHANGE_DESCRIPTION =
+  "This provider does not allow switching models after a conversation has started.";
+
+export function formatModelChangeDisabledReason(description: string): string {
+  return `${description} Start a new thread to use this model.`;
+}
+
 /** Prime Agent's built-in slug for deferring to its own configured model. */
 const PRIME_AGENT_DEFAULT_MODEL_SLUG = "default";
 

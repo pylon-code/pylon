@@ -70,6 +70,7 @@ import {
   applyClaudePromptEffortPrefix,
   createModelSelection,
   resolvePromptInjectedEffort,
+  formatModelChangeDisabledReason,
 } from "@t3tools/shared/model";
 import {
   projectScriptCwd,
@@ -8711,7 +8712,7 @@ export default function ChatView(props: ChatViewProps) {
         currentProviderInstanceId: activeThread.session?.providerInstanceId ?? null,
         nextModelSelection: { instanceId, model },
       });
-      return reason ? `${reason.description} Start a new thread to use this model.` : null;
+      return reason ? formatModelChangeDisabledReason(reason.description) : null;
     },
     [activeThread, providerStatuses, rollbackActive],
   );
