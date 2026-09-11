@@ -56,6 +56,7 @@ import type {
 } from "./PrimeAgentDaemonBridge.ts";
 import {
   PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES,
+  primeAgentDaemonImageDigest,
   type PrimeDaemonEvent,
   type PrimeDaemonMessage,
   type PrimeDaemonPromptLifecycleCancellationResult,
@@ -1192,6 +1193,24 @@ function offer(captures: FakeCaptures, event: PrimeDaemonEvent) {
   return Queue.offer(captures.queue!, event).pipe(Effect.asVoid);
 }
 
+const createContinuityImage = Effect.fn("createContinuityImage")(function* () {
+  const config = yield* ServerConfig;
+  const attachment = {
+    type: "image" as const,
+    id: "prime-daemon-thread-00000000-0000-4000-8000-000000000001",
+    name: "pixel.png",
+    mimeType: "image/png",
+    sizeBytes: 3,
+  };
+  yield* Effect.promise(() =>
+    NodeFSP.writeFile(
+      `${config.attachmentsDir}/${attachmentRelativePath(attachment)}`,
+      Buffer.from([1, 2, 3]),
+    ),
+  );
+  return attachment;
+});
+
 describe("PrimeAgentDaemonAdapter", () => {
   it.effect("stamps every daemon event path from the captured session incarnation", () =>
     Effect.scoped(
@@ -2052,6 +2071,254 @@ describe("PrimeAgentDaemonAdapter", () => {
       }),
     ).pipe(Effect.provide(testLayer)),
   );
+
+  for (const withImage of [false, true]) {
+    it.effect(
+      `reconciles the delivered submitted user from the first complete resync (image: ${withImage})`,
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const captures = makeCaptures();
+            captures.correlatedPromptLifecycleAvailable = true;
+            captures.correlatedRecoveryProofEpoch = 0;
+            captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+            let reportResolution!: (
+              resolution: FakeCaptures["reconnectResolutions"][number],
+            ) => void;
+            const resolutionObserved = new Promise<FakeCaptures["reconnectResolutions"][number]>(
+              (resolve) => {
+                reportResolution = resolve;
+              },
+            );
+            captures.reconnectSnapshotResolutionObserved = reportResolution;
+            const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+              instanceId,
+              runtimeFactory: fakeRuntimeFactory(captures),
+            });
+            const subscription = yield* subscribe(adapter);
+            yield* adapter.startSession({
+              threadId,
+              cwd: process.cwd(),
+              runtimeMode: "full-access",
+            });
+            const text = "List the files and summarize the README in two sentences.";
+            const attachment = withImage ? yield* createContinuityImage() : undefined;
+            const turnFiber = yield* adapter
+              .sendTurn({
+                threadId,
+                input: text,
+                ...(attachment === undefined ? {} : { attachments: [attachment] }),
+              })
+              .pipe(Effect.forkChild);
+            const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+            const delivered = lifecycleSnapshot(correlationId, "delivered", 2);
+            yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: delivered });
+            const prompt = {
+              role: "user",
+              timestamp: 1,
+              text,
+              imageMimeTypes: withImage ? ["image/png"] : [],
+              imageDigests: withImage ? [primeAgentDaemonImageDigest("AQID")] : [],
+            } satisfies PrimeDaemonMessage;
+            const resync = {
+              ...initialSnapshot(),
+              state: { ...initialSnapshot().state, messageCount: 1, isStreaming: true },
+              messages: [prompt],
+              replayContinuity: "complete",
+              connectionGeneration: 0,
+              correlatedProofEpoch: 0,
+              promptLifecycles: { records: [delivered], expired: [] },
+            } satisfies PrimeDaemonEvent;
+            yield* offer(captures, { ...resync, connectionGeneration: -1 });
+            yield* offer(captures, { ...resync, correlatedProofEpoch: -1 });
+            yield* offer(captures, resync);
+            expect(yield* Effect.promise(() => resolutionObserved)).toMatchObject({
+              reconciled: true,
+            });
+            expect(turnFiber.pollUnsafe()).toBeUndefined();
+            expect(captures.reconnectResolutions).toHaveLength(1);
+            yield* offer(captures, resync);
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              message: prompt,
+              attribution: { scope: "prompt", correlationId },
+            });
+            const answer = assistantMessage(
+              "The directory contains README.md. It describes the fixture.",
+            );
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              message: answer,
+              attribution: { scope: "prompt", correlationId },
+            });
+            yield* offer(captures, {
+              _tag: "PromptLifecycleUpdated",
+              lifecycle: lifecycleSnapshot(correlationId, "completed", 3, { usage }),
+            });
+            const result = yield* Fiber.join(turnFiber);
+            const turnEvents = subscription.events.filter(
+              (event) => event.turnId === result.turnId,
+            );
+            expect(turnEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+            expect(turnEvents.findLast((event) => event.type === "turn.completed")).toMatchObject({
+              payload: { state: "completed" },
+            });
+            expect(turnEvents.filter((event) => event.type === "runtime.error")).toEqual([]);
+            expect(
+              turnEvents.filter(
+                (event) => event.type === "content.delta" && event.payload.delta === answer.text,
+              ),
+            ).toHaveLength(1);
+          }),
+        ).pipe(Effect.provide(testLayer)),
+    );
+  }
+
+  for (const rejection of [
+    "different text",
+    "unexpected image MIME",
+    "unexpected image digest",
+    "different image MIME",
+    "different image bytes",
+    "missing proof epoch",
+    "unknown replay",
+    "replacement unknown replay",
+    "worker unknown replay",
+    "unavailable replay",
+    "missing lifecycle",
+    "different owner",
+    "undelivered owner",
+    "undelivered snapshot",
+    "changed lifecycle kind",
+    "stale lifecycle",
+    "extra assistant",
+    "repeated user boundary",
+    "changed observed transcript",
+    "missing observed transcript",
+  ] as const) {
+    it.effect(`rejects submitted-user resync with ${rejection}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const recovering = rejection.includes("unknown replay");
+          const captures = makeCaptures();
+          captures.rlmConnectionGeneration = recovering ? 1 : 0;
+          captures.retryWorkerRecoverySnapshots = rejection === "worker unknown replay";
+          captures.correlatedPromptLifecycleAvailable = true;
+          captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          const text = "exact submitted user";
+          const prompt = {
+            role: "user",
+            timestamp: 1,
+            text,
+            imageMimeTypes: [],
+            imageDigests: [],
+          } satisfies PrimeDaemonMessage;
+          const attachment =
+            rejection === "different image MIME" || rejection === "different image bytes"
+              ? yield* createContinuityImage()
+              : undefined;
+          const turnFiber = yield* adapter
+            .sendTurn({
+              threadId,
+              input: text,
+              ...(attachment === undefined ? {} : { attachments: [attachment] }),
+            })
+            .pipe(Effect.forkChild);
+          const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+          const delivered = lifecycleSnapshot(correlationId, "delivered", 2);
+          if (rejection !== "undelivered owner") {
+            yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: delivered });
+          }
+          if (
+            rejection === "repeated user boundary" ||
+            rejection === "changed observed transcript" ||
+            rejection === "missing observed transcript"
+          ) {
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              message: prompt,
+              attribution: { scope: "prompt", correlationId },
+            });
+          }
+          const messages: Array<PrimeDaemonMessage> = [
+            {
+              ...prompt,
+              ...(attachment === undefined
+                ? {}
+                : {
+                    imageMimeTypes: [
+                      rejection === "different image MIME" ? "image/jpeg" : "image/png",
+                    ],
+                    imageDigests: [
+                      primeAgentDaemonImageDigest(
+                        rejection === "different image bytes" ? "BAUG" : "AQID",
+                      ),
+                    ],
+                  }),
+              ...(rejection === "different text" ? { text: "another user" } : {}),
+              ...(rejection === "unexpected image MIME" ? { imageMimeTypes: ["image/png"] } : {}),
+              ...(rejection === "unexpected image digest"
+                ? { imageDigests: ["different bytes"] }
+                : {}),
+            },
+          ];
+          if (rejection === "extra assistant")
+            messages.push(assistantMessage("unattributed answer"));
+          if (rejection === "repeated user boundary") messages.unshift(prompt);
+          if (rejection === "changed observed transcript")
+            messages.unshift({ ...prompt, text: "changed prior user" });
+          if (rejection === "missing observed transcript") messages.length = 0;
+          if (recovering) {
+            yield* offer(captures, { _tag: "ConnectionStatus", status: "reconnecting" });
+          }
+          const lifecycle = {
+            ...delivered,
+            ...(rejection === "different owner" ? { correlationId: "another-owner" } : {}),
+            ...(rejection === "undelivered snapshot"
+              ? { phase: "owned" as const, deliveryCrossed: false }
+              : {}),
+            ...(rejection === "changed lifecycle kind" ? { kind: "session_command" as const } : {}),
+            ...(rejection === "stale lifecycle" ? { revision: 1 } : {}),
+          };
+          yield* offer(captures, {
+            ...initialSnapshot(),
+            state: { ...initialSnapshot().state, messageCount: messages.length, isStreaming: true },
+            messages,
+            replayContinuity: recovering
+              ? "unknown"
+              : rejection === "unavailable replay"
+                ? "unavailable"
+                : "complete",
+            connectionGeneration: captures.rlmConnectionGeneration,
+            replacementSnapshot: rejection === "replacement unknown replay",
+            correlatedProofEpoch: rejection === "missing proof epoch" ? undefined : 1,
+            promptLifecycles: {
+              records: rejection === "missing lifecycle" ? [] : [lifecycle],
+              expired: [],
+            },
+          });
+          const result = yield* Fiber.join(turnFiber);
+          const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+          expect(captures.reconnectResolutions).toContainEqual({
+            generation: captures.rlmConnectionGeneration,
+            reconciled: false,
+            terminalResponseObserved: false,
+          });
+          expect(turnEvents.findLast((event) => event.type === "turn.completed")).toMatchObject({
+            payload: { state: "failed" },
+          });
+          expect(turnEvents.filter((event) => event.type === "content.delta")).toEqual([]);
+          expect(captures.retryWorkerRecoverySnapshotCalls).toEqual([]);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+    );
+  }
 
   it.effect("accepts exact complete capable recovery with already observed output", () =>
     Effect.scoped(

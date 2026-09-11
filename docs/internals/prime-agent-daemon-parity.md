@@ -170,6 +170,14 @@ fixed payload-free terminal failure, permanently rejects later native commands e
 returns true again, and discards later native close frames. Pylon never retries or downgrades an already-owned
 correlated prompt.
 
+A strict resync still requires complete replay. At a locally submitted turn's original transcript boundary,
+one missing user message may be reconciled only against the exact submitted nonempty text and ordered image
+MIME types and digests, within the existing decoded-message bounds. The observed and snapshot lifecycle
+must identify the same delivered model prompt, with an unchanged or valid advancing revision; queued steering
+or an advanced transcript boundary excludes this case. The submission signature exists only in active-turn
+memory and is absent from adopted restart turns. Unknown replay, changed transcript content, missing ownership
+proof, and additional unattributed output remain rejected.
+
 Ordinary sessions preserve lossless FIFO delivery under transient decoded-queue pressure through a separately
 bounded 256-route, 64 MiB raw staging tail. Reconnect and close admission fence public input synchronously at
 the subscription boundary. Each recovery-sensitive ordinary frame carries its exact ingress-generation fence

@@ -89,6 +89,7 @@ import type {
 import {
   PRIME_AGENT_DAEMON_MESSAGE_TEXT_MAX_CHARS,
   PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES,
+  primeAgentDaemonImageDigest,
   primeAgentPromptLifecycleCanAdvance,
   primeAgentPromptLifecycleIsSame,
   primeAgentPromptLifecycleIsSuccessor,
@@ -244,6 +245,11 @@ interface PrimeAgentDaemonActiveTurn {
   /** Provider-private. Never publish or persist this native ownership token. */
   readonly correlationId?: string | undefined;
   correlatedLifecycle?: PrimeDaemonPromptLifecycleSnapshot | undefined;
+  /** Exact locally submitted payload; absent for adopted recovery turns. */
+  readonly submittedUserMessage?: Pick<
+    Extract<PrimeDaemonMessage, { readonly role: "user" }>,
+    "text" | "imageMimeTypes" | "imageDigests"
+  >;
   cancellationRequested: boolean;
   assistantTextStreamed: boolean;
   assistantTextEmitted: string;
@@ -708,6 +714,26 @@ export function planPrimeAgentRestartReplay(input: {
     valid: true,
     backlog: input.snapshotMessages.slice(input.authorityMessageCount - snapshotStart),
   };
+}
+
+function matchesSubmittedUserMessage(
+  turn: PrimeAgentDaemonActiveTurn,
+  message: PrimeDaemonMessage,
+): boolean {
+  const submitted = turn.submittedUserMessage;
+  return (
+    submitted !== undefined &&
+    message.role === "user" &&
+    submitted.text.trim().length > 0 &&
+    submitted.text.length <= PRIME_AGENT_DAEMON_MESSAGE_TEXT_MAX_CHARS &&
+    message.text === submitted.text &&
+    message.imageMimeTypes.length === submitted.imageMimeTypes.length &&
+    message.imageMimeTypes.every(
+      (mimeType, index) => mimeType === submitted.imageMimeTypes[index],
+    ) &&
+    message.imageDigests.length === submitted.imageDigests.length &&
+    message.imageDigests.every((digest, index) => digest === submitted.imageDigests[index])
+  );
 }
 
 // Reconnect snapshots keep only a bounded completed-message tail. Absolute
@@ -2614,8 +2640,35 @@ export function makePrimeAgentDaemonAdapter(
                       snapshotCount: event.state.messageCount,
                     });
                     const missingMessages = transcriptPlan?.missingMessages ?? [];
+                    const lifecycle =
+                      activeTurn?.correlationId === undefined
+                        ? undefined
+                        : event.promptLifecycles?.records.find(
+                            (candidate) => candidate.correlationId === activeTurn.correlationId,
+                          );
+                    const currentLifecycle = activeTurn?.correlatedLifecycle;
+                    // Complete replay can deliver the submitted user boundary before its
+                    // message event. Reconcile only the exact payload of this delivered owner.
+                    const snapshotRecoversSubmittedUser =
+                      activeTurn !== undefined &&
+                      event.connectionGeneration !== undefined &&
+                      event.correlatedProofEpoch !== undefined &&
+                      activeTurn.queuedInputCount === 0 &&
+                      context.nativeTranscriptMessageCount ===
+                        activeTurn.nativeTranscriptBaselineMessageCount &&
+                      missingMessages.length === 1 &&
+                      missingMessages[0] !== undefined &&
+                      matchesSubmittedUserMessage(activeTurn, missingMessages[0]) &&
+                      currentLifecycle?.kind === "model_prompt" &&
+                      currentLifecycle.phase === "delivered" &&
+                      currentLifecycle.deliveryCrossed &&
+                      lifecycle?.phase === "delivered" &&
+                      lifecycle.deliveryCrossed &&
+                      (primeAgentPromptLifecycleIsSame(currentLifecycle, lifecycle) ||
+                        primeAgentPromptLifecycleCanAdvance(currentLifecycle, lifecycle));
                     const snapshotIsExactOrCurrentTerminal =
                       missingMessages.length === 0 ||
+                      snapshotRecoversSubmittedUser ||
                       (missingMessages.length === 1 &&
                         missingMessages[0]?.role === "assistant" &&
                         context.nativeTranscript.at(-1)?.role === "user");
@@ -2641,12 +2694,6 @@ export function makePrimeAgentDaemonAdapter(
                       reconnectRecoveryFailed = true;
                       return;
                     }
-                    const lifecycle =
-                      activeTurn?.correlationId === undefined
-                        ? undefined
-                        : event.promptLifecycles?.records.find(
-                            (candidate) => candidate.correlationId === activeTurn.correlationId,
-                          );
                     if (activeTurn?.correlationId !== undefined && lifecycle === undefined) {
                       if (reconnectGeneration !== undefined) {
                         context.runtime.resolveReconnectSnapshot(reconnectGeneration, false, false);
@@ -5751,7 +5798,18 @@ export function makePrimeAgentDaemonAdapter(
                 id: turnId,
                 controller: new AbortController(),
                 completed: yield* Deferred.make<void>(),
-                ...(correlationId === undefined ? {} : { correlationId }),
+                ...(correlationId === undefined
+                  ? {}
+                  : {
+                      correlationId,
+                      submittedUserMessage: {
+                        text,
+                        imageMimeTypes: images.map((image) => image.mimeType),
+                        imageDigests: images.map((image) =>
+                          primeAgentDaemonImageDigest(image.data),
+                        ),
+                      },
+                    }),
                 cancellationRequested: false,
                 assistantTextStreamed: false,
                 assistantTextEmitted: "",

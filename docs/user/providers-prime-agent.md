@@ -187,10 +187,11 @@ those checks succeed, root tool work, delegated children, and the parent respons
 original turn. Cancelling the turn stops this wait. If recovery exceeds the bound or Pylon cannot prove
 prompt admission, worker continuity, or stream continuity, it fails the turn once and closes that Prime session
 instead of retrying your prompt or guessing at missing output. When the optional correlated lifecycle is
-negotiated, recovery is stricter: Pylon never copies missing prompt output from a snapshot. Prime must
-provide complete event continuity, and the completed-message transcript must exactly match messages
-Pylon already received through attributed live events. Any extra snapshot message closes the uncertain
-session rather than guessing whether it was your answer or unrelated background output.
+negotiated, recovery is stricter: Prime must provide complete event continuity and a reconciled transcript.
+A synchronization snapshot can confirm the exact text and images you just submitted before their live
+notification arrives, provided Prime identifies your prompt as delivered. It can also recover one missed
+terminal response after an already observed user message. Unreconciled or mixed output closes the uncertain
+session rather than guessing whether it was your answer or unrelated background work.
 An active Full access turn can also survive a Pylon server restart when the exact Prime installation is
 Pylon managed and the replacement server can prove the same retained native execution and complete
 event history. Pylon restores the turn's scoped browser/MCP access before showing recovered activity and
