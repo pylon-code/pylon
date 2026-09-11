@@ -946,10 +946,11 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
       const bodyStarted = Promise.withResolvers<void>();
       const httpClient = HttpClient.make((request) => {
         const response = new Response("{}", { status: 200 });
-        Object.defineProperty(response, "text", {
+        // Effect reads text and JSON bodies through `arrayBuffer`.
+        Object.defineProperty(response, "arrayBuffer", {
           value: () => {
             bodyStarted.resolve();
-            return new Promise<string>(() => undefined);
+            return new Promise<ArrayBuffer>(() => undefined);
           },
         });
         return Effect.succeed(HttpClientResponse.fromWeb(request, response));
