@@ -22,6 +22,7 @@ import {
   CloudIcon,
   CopyIcon,
   LinkIcon,
+  LogInIcon,
   MonitorIcon,
   TerminalIcon,
 } from "lucide-react";
@@ -61,6 +62,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { connectPairing } from "../../connection/onboarding";
 import { getProviderSummary } from "../settings/providerStatus";
 import { getDriverOption } from "../settings/providerDriverMeta";
+import { ProviderSignInDialog } from "../settings/ProviderSignInDialog";
 import { TerminalViewport } from "../ThreadTerminalDrawer";
 import { CloudEnvironmentConnectRows } from "../cloud/CloudEnvironmentConnectList";
 import { ClaudeAI, OpenAI } from "../Icons";
@@ -624,8 +626,8 @@ interface AgentTerminalSession {
  * Claude Code and Codex use live probe status. Install opens the built-in
  * terminal inline with the vendor's standalone installer pre-typed. The update
  * RPC can't install a binary that isn't there yet (it infers the installer from
- * the installed binary's path), and the terminal also handles the interactive
- * login that follows.
+ * the installed binary's path). Codex signs in through that terminal; Claude
+ * Code uses the same sign-in dialog as Settings, which needs no terminal access.
  */
 function AgentsStep({
   environmentIds,
@@ -677,6 +679,7 @@ function ConnectedAgentsStep({
   });
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const [terminalSession, setTerminalSession] = useState<AgentTerminalSession | null>(null);
+  const [signInProvider, setSignInProvider] = useState<ServerProvider | null>(null);
 
   // Re-probe on entry so freshly installed CLIs show up without a manual
   // refresh; harmless when nothing changed (single-flighted per environment).
@@ -701,6 +704,11 @@ function ConnectedAgentsStep({
             provider={provider}
             terminalOpen={terminalSession?.driver === driver}
             terminalAvailable={serverConfig !== null}
+            onSignIn={
+              driver === "claudeAgent" && provider !== undefined
+                ? () => setSignInProvider(provider)
+                : undefined
+            }
             onOpenTerminal={() => {
               if (provider === undefined || serverConfig === null) return;
               setTerminalSession({
@@ -734,6 +742,19 @@ function ConnectedAgentsStep({
           }}
         />
       ) : null}
+      {signInProvider !== null ? (
+        <ProviderSignInDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setSignInProvider(null);
+          }}
+          environmentId={environmentId}
+          instanceId={signInProvider.instanceId}
+          accountLabel={signInProvider.displayName ?? "Claude Code"}
+          knownEmail={signInProvider.auth.email}
+          onSignedIn={() => void refreshProviders({ environmentId, input: {} })}
+        />
+      ) : null}
     </section>
   );
 }
@@ -744,18 +765,22 @@ function AgentCard({
   terminalOpen,
   terminalAvailable,
   onOpenTerminal,
+  onSignIn,
 }: {
   readonly driver: OnboardingAgentDriver;
   readonly provider: ServerProvider | undefined;
   readonly terminalOpen: boolean;
   readonly terminalAvailable: boolean;
   readonly onOpenTerminal: () => void;
+  /** Signs in without a terminal when the provider supports it. */
+  readonly onSignIn?: (() => void) | undefined;
 }) {
   const meta = getDriverOption(ProviderDriverKind.make(driver));
   const Icon = meta?.icon;
   const displayName = driver === "claudeAgent" ? "Claude Code" : (meta?.label ?? driver);
   const summary = getProviderSummary(provider);
   const providerState = getOnboardingProviderState(provider);
+  const signInWithDialog = providerState === "signIn" && onSignIn !== undefined;
 
   return (
     <div className="flex items-center gap-3 rounded-lg border border-border bg-background px-3 py-2.5">
@@ -781,6 +806,11 @@ function AgentCard({
           <span className="text-xs text-muted-foreground">Disabled</span>
         ) : providerState === "attention" ? (
           <span className="text-xs text-muted-foreground">{summary.headline}</span>
+        ) : signInWithDialog ? (
+          <Button size="xs" variant="ghost" onClick={onSignIn}>
+            <LogInIcon className="size-3.5" />
+            Sign in
+          </Button>
         ) : (
           <Button
             size="xs"
