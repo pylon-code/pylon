@@ -268,10 +268,11 @@ const make = Effect.fn("desktop.environment.make")(function* (
       isDevelopment,
       appVersion: input.appVersion,
     }),
+    // Electron sets the WM class and Wayland app ID from the desktop entry name.
     linuxWmClass: byChannel(channel, {
-      dev: "pylon-code-dev",
-      nightly: "pylon-code-nightly",
-      stable: "pylon-code",
+      dev: "com.pylon.code.dev",
+      nightly: "com.pylon.code.nightly",
+      stable: "com.pylon.code",
     }),
     linuxApplicationsDir,
     appImagePath: config.appImagePath,

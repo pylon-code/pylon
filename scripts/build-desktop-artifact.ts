@@ -3235,7 +3235,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       ],
       desktop: {
         entry: {
-          StartupWMClass: "pylon-code",
+          // Electron names every window's WM class and Wayland app ID after the
+          // channel's desktop entry (`com.pylon.code[.nightly]`), so launchers only
+          // group with running windows when this matches the app ID.
+          StartupWMClass: resolveDesktopAppId(version),
         },
       },
     };

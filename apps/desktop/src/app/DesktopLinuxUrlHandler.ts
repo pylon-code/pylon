@@ -20,12 +20,23 @@ import { makeComponentLogger } from "./DesktopObservability.ts";
 // our own handler entry pointing at the current AppImage and claim the
 // scheme default via xdg-mime, exactly what the file manager's "set as
 // default" checkbox would record in mimeapps.list.
+/**
+ * Hidden handler entry every packaged channel wrote before the entry became the
+ * per-channel portal identity (`com.pylon.code[.nightly].desktop`). Once the
+ * scheme default points at the current entry it only duplicates the handler.
+ */
+export const LEGACY_URL_HANDLER_DESKTOP_ENTRY_NAME = "pylon-code-url-handler.desktop";
+
 const { logInfo, logWarning } = makeComponentLogger("desktop-linux-url-handler");
 
 export class DesktopLinuxUrlHandlerRegistrationError extends Schema.TaggedErrorClass<DesktopLinuxUrlHandlerRegistrationError>()(
   "DesktopLinuxUrlHandlerRegistrationError",
   {
-    step: Schema.Literals(["write-desktop-entry", "set-default-handler"]),
+    step: Schema.Literals([
+      "write-desktop-entry",
+      "set-default-handler",
+      "remove-legacy-desktop-entry",
+    ]),
     scheme: Schema.String,
     desktopEntryPath: Schema.optionalKey(Schema.String),
     exitCode: Schema.optionalKey(Schema.Number),
@@ -81,6 +92,16 @@ export function renderUrlHandlerDesktopEntry(input: {
     `MimeType=x-scheme-handler/${input.scheme};`,
     "",
   ].join("\n");
+}
+
+/** True only for the hidden scheme-handler entry Pylon generated, never a user's file. */
+export function isLegacyUrlHandlerDesktopEntry(content: string, scheme: string): boolean {
+  const lines = content.split("\n");
+  return (
+    lines[0] === "[Desktop Entry]" &&
+    lines.includes("NoDisplay=true") &&
+    lines.includes(`MimeType=x-scheme-handler/${scheme};`)
+  );
 }
 
 export class DesktopLinuxUrlHandler extends Context.Service<
@@ -163,6 +184,33 @@ export const make = Effect.gen(function* () {
     ),
   );
 
+  const legacyDesktopEntryPath = environment.path.join(
+    environment.linuxApplicationsDir,
+    LEGACY_URL_HANDLER_DESKTOP_ENTRY_NAME,
+  );
+  // Runs only after the default moved to the current entry, so the scheme never
+  // points at a deleted file.
+  const removeLegacyDesktopEntry = Effect.gen(function* () {
+    const legacy = yield* fileSystem
+      .readFileString(legacyDesktopEntryPath)
+      .pipe(Effect.orElseSucceed(() => null));
+    if (legacy === null || !isLegacyUrlHandlerDesktopEntry(legacy, scheme)) return;
+    yield* fileSystem.remove(legacyDesktopEntryPath);
+    yield* logInfo("removed legacy URL scheme handler entry", {
+      desktopEntryPath: legacyDesktopEntryPath,
+    });
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new DesktopLinuxUrlHandlerRegistrationError({
+          step: "remove-legacy-desktop-entry",
+          scheme,
+          desktopEntryPath: legacyDesktopEntryPath,
+          cause,
+        }),
+    ),
+  );
+
   const register = Effect.gen(function* () {
     if (environment.platform !== "linux") {
       return;
@@ -171,6 +219,7 @@ export const make = Effect.gen(function* () {
     if (!environment.isPackaged) return;
     yield* setDefaultHandler;
     yield* logInfo("registered URL scheme handler", { scheme });
+    yield* removeLegacyDesktopEntry;
   }).pipe(
     // Registration is best-effort: a missing xdg-mime or read-only home must
     // never block startup — the OS chooser remains as fallback.

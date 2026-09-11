@@ -191,8 +191,13 @@ services. On Linux this sets the desktop-entry identity and global-shortcut port
 Chromium initializes its portal connection. Setting the identity later in `DesktopAppIdentity`
 is too late: Chromium caches the first registration, including failures. The identity must match
 the installed entry managed by `DesktopLinuxUrlHandler`, and portals reject application IDs
-without a reverse-DNS dot, so each channel uses `com.pylon.code[.dev|.nightly].desktop` rather
-than its `pylon-code` window class. Pre-ready setup also refreshes that entry's `Exec` path before
+without a reverse-DNS dot, so each channel uses `com.pylon.code[.dev|.nightly].desktop`. Electron
+derives every window's WM class and Wayland app ID from that name, so `linuxWmClass` and the
+AppImage `StartupWMClass` use the same `com.pylon.code[.nightly]` ID; launchers that name
+another class stop grouping with running windows. After the scheme default moves to the new
+entry, the URL handler deletes the `pylon-code-url-handler.desktop` entry earlier builds wrote,
+but only when its content is still Pylon's generated hidden handler, and never while the default
+could not be moved. Pre-ready setup also refreshes that entry's `Exec` path before
 portal registration: AppImage updates can remove the previous executable, which makes the old
 entry invalid even though its filename is correct. The later URL handler avoids rewriting an
 identical entry while the portal may be reading it. On Wayland, Electron's synchronous

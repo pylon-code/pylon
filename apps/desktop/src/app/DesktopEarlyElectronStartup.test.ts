@@ -91,7 +91,7 @@ describe("DesktopEarlyElectronStartup", () => {
 
     assert.deepEqual(options, {
       isDevelopment: true,
-      linuxWmClass: "pylon-code-dev",
+      linuxWmClass: "com.pylon.code.dev",
       linuxDesktopEntryName: "com.pylon.code.dev.desktop",
       passwordStore: "gnome-libsecret",
     });
@@ -172,7 +172,7 @@ describe("DesktopEarlyElectronStartup", () => {
       readFileString: () => JSON.stringify({ linuxPasswordStore: "auto" }),
     });
 
-    assert.equal(options.linuxWmClass, "pylon-code-nightly");
+    assert.equal(options.linuxWmClass, "com.pylon.code.nightly");
     assert.equal(options.linuxDesktopEntryName, "com.pylon.code.nightly.desktop");
     assert.equal(
       resolveLinuxDesktopEntryName({ isDevelopment: false, appVersion: STABLE_VERSION }),

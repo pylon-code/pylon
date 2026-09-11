@@ -962,7 +962,26 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(
         ((linux.linux as Record<string, unknown>).desktop as { entry: { StartupWMClass: string } })
           .entry.StartupWMClass,
-        "pylon-code",
+        "com.pylon.code",
+      );
+      const nightlyLinux = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        "0.0.17-nightly.20260413.42",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      // Electron takes the window's WM class from the channel desktop entry, so the
+      // launcher has to name the same app ID or it never groups with running windows.
+      assert.equal(
+        (
+          (nightlyLinux.linux as Record<string, unknown>).desktop as {
+            entry: { StartupWMClass: string };
+          }
+        ).entry.StartupWMClass,
+        "com.pylon.code.nightly",
       );
       assert.deepStrictEqual(mac.files, [...DESKTOP_FILE_EXCLUSIONS, ...MAC_FILE_EXCLUSIONS]);
       assert.deepStrictEqual(linux.files, DESKTOP_FILE_EXCLUSIONS);

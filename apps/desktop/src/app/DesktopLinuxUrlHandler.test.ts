@@ -14,6 +14,7 @@ import * as DesktopLinuxUrlHandler from "./DesktopLinuxUrlHandler.ts";
 interface RecordedRegistration {
   readonly directories: string[];
   readonly files: Array<{ readonly path: string; readonly content: string }>;
+  readonly removed: string[];
   readonly commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }>;
 }
 
@@ -24,7 +25,7 @@ const makeEnvironment = (overrides: Record<string, unknown> = {}) =>
     isDevelopment: false,
     displayName: "Pylon (Alpha)",
     linuxDesktopEntryName: "com.pylon.code.desktop",
-    linuxWmClass: "pylon-code",
+    linuxWmClass: "com.pylon.code",
     linuxApplicationsDir: "/home/alice/.local/share/applications",
     appImagePath: Option.some("/home/alice/Applications/Pylon.AppImage"),
     path: { join: (...parts: ReadonlyArray<string>) => parts.join("/") },
@@ -53,6 +54,7 @@ const makeHandlerLayer = (
     readonly xdgMimeExitCode?: number;
     readonly writeError?: PlatformError.PlatformError;
     readonly existingEntry?: string;
+    readonly legacyEntry?: string;
   } = {},
 ) =>
   DesktopLinuxUrlHandler.layer.pipe(
@@ -60,7 +62,16 @@ const makeHandlerLayer = (
       Layer.mergeAll(
         Layer.succeed(DesktopEnvironment.DesktopEnvironment, makeEnvironment(input.environment)),
         FileSystem.layerNoop({
-          readFileString: () => Effect.succeed(input.existingEntry ?? ""),
+          readFileString: (path) =>
+            Effect.succeed(
+              path.endsWith(DesktopLinuxUrlHandler.LEGACY_URL_HANDLER_DESKTOP_ENTRY_NAME)
+                ? (input.legacyEntry ?? "")
+                : (input.existingEntry ?? ""),
+            ),
+          remove: (path) =>
+            Effect.sync(() => {
+              recorded.removed.push(path);
+            }),
           makeDirectory: (path) =>
             Effect.sync(() => {
               recorded.directories.push(path);
@@ -102,7 +113,14 @@ const runRegister = (
 const emptyRecording = (): RecordedRegistration => ({
   directories: [],
   files: [],
+  removed: [],
   commands: [],
+});
+
+const legacyHandlerEntry = DesktopLinuxUrlHandler.renderUrlHandlerDesktopEntry({
+  displayName: "Pylon (Nightly)",
+  execTarget: "/home/alice/Applications/Pylon-0.0.31.AppImage",
+  scheme: "pylon-code",
 });
 
 describe("DesktopLinuxUrlHandler", () => {
@@ -230,6 +248,67 @@ describe("DesktopLinuxUrlHandler", () => {
         "/home/alice/.local/share/applications/com.pylon.code.dev.desktop",
       );
       assert.deepEqual(unpackaged.commands, []);
+    });
+  });
+
+  it.effect("removes the pre-rename handler entry once the scheme default has moved", () => {
+    const recorded = emptyRecording();
+
+    return Effect.gen(function* () {
+      yield* runRegister(recorded, { legacyEntry: legacyHandlerEntry });
+
+      assert.deepEqual(recorded.commands, [
+        {
+          command: "xdg-mime",
+          args: ["default", "com.pylon.code.desktop", "x-scheme-handler/pylon-code"],
+        },
+      ]);
+      assert.deepEqual(recorded.removed, [
+        "/home/alice/.local/share/applications/pylon-code-url-handler.desktop",
+      ]);
+    });
+  });
+
+  it.effect("keeps the pre-rename entry while it is still the only working handler", () => {
+    const failedDefault = emptyRecording();
+    const development = emptyRecording();
+
+    return Effect.gen(function* () {
+      yield* runRegister(failedDefault, { legacyEntry: legacyHandlerEntry, xdgMimeExitCode: 1 });
+      yield* runRegister(development, {
+        legacyEntry: legacyHandlerEntry,
+        environment: { isPackaged: false, linuxDesktopEntryName: "com.pylon.code.dev.desktop" },
+      });
+
+      assert.deepEqual(failedDefault.removed, []);
+      assert.deepEqual(development.removed, []);
+    });
+  });
+
+  it.effect("leaves a file with the legacy name alone unless Pylon generated it", () => {
+    const recorded = emptyRecording();
+
+    return Effect.gen(function* () {
+      yield* runRegister(recorded, {
+        legacyEntry: [
+          "[Desktop Entry]",
+          "Type=Application",
+          "Name=My Pylon launcher",
+          "Exec=/opt/pylon/pylon %U",
+          "MimeType=x-scheme-handler/pylon-code;",
+          "",
+        ].join("\n"),
+      });
+
+      assert.deepEqual(recorded.removed, []);
+      assert.equal(
+        DesktopLinuxUrlHandler.isLegacyUrlHandlerDesktopEntry(legacyHandlerEntry, "pylon-code"),
+        true,
+      );
+      assert.equal(
+        DesktopLinuxUrlHandler.isLegacyUrlHandlerDesktopEntry(legacyHandlerEntry, "pylon-code-dev"),
+        false,
+      );
     });
   });
 
