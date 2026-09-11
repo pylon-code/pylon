@@ -7,7 +7,9 @@ import {
   ApprovalRequestId,
   CodexSettings,
   CommandId,
+  EnvironmentId,
   EventId,
+  PREVIEW_RECORDING_STOP_TIMEOUT_MS,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderItemId,
@@ -38,6 +40,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
@@ -301,6 +304,40 @@ validationLayer("CodexAdapterLive validation", (it) => {
         runtimeMode: "full-access",
       });
     }),
+  );
+  it.effect("gives Pylon's MCP tools longer than the slowest tool's budget", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        validationRuntimeFactory.factory.mockClear();
+        const threadId = asThreadId("thread-mcp-timeout");
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            McpProviderSession.setMcpProviderSession({
+              providerSessionId: "provider-session-mcp-timeout",
+              threadId,
+              environmentId: EnvironmentId.make("environment-mcp-timeout"),
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              endpoint: "http://127.0.0.1:4321/mcp",
+              authorizationHeader: "Bearer test-token",
+            }),
+          ),
+          () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+        );
+        const adapter = yield* CodexAdapter;
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        const appServerArgs = validationRuntimeFactory.factory.mock.calls[0]?.[0].appServerArgs;
+        NodeAssert.ok(appServerArgs?.includes("mcp_servers.t3-code.tool_timeout_sec=180.0"));
+        NodeAssert.ok(
+          McpProviderSession.MCP_PROVIDER_TOOL_TIMEOUT_MS > PREVIEW_RECORDING_STOP_TIMEOUT_MS,
+        );
+      }),
+    ),
   );
 });
 
