@@ -392,6 +392,13 @@ export const PRIME_PUBLICATION_POLICIES = Object.freeze([
     stableWorkflowPath: PRIME_STABLE_WORKFLOW,
     stableWorkflowSha256: "0f04d1f55f54312d933087d88de6883e8408bb0cd9f060d3b5851d710698b1af",
   }),
+  Object.freeze({
+    publicationPolicyRevision: 3,
+    previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
+    previewWorkflowSha256: "16f68e46801eccca5e7e99736f346b5ffd96ce7188792d4ac8fbc4580408a736",
+    stableWorkflowPath: PRIME_STABLE_WORKFLOW,
+    stableWorkflowSha256: "96e4f3ccd889a17a391f00b4398d132a4234b5bc337045fedd3605f4eb74c331",
+  }),
 ]);
 
 function publicationPolicyFor(revision: number) {
