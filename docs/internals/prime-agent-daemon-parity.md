@@ -1,7 +1,7 @@
 # Prime Agent daemon parity ledger
 
 This ledger records Pylon's treatment of the public `DaemonAgentConnection` surface shipped by
-Prime Agent 0.9.4 (daemon protocol 7, schema 28) and Pylon's optional fork extension at protocol 7,
+Prime Agent 0.9.4 (daemon protocol 7, schema 27) and Pylon's optional fork extension at protocol 7,
 schema 32. Parity here means that every useful public outcome is either integrated through a typed
 provider-neutral contract or has an explicit product and safety decision. It does not mean exposing a
 raw method tunnel.
@@ -11,7 +11,7 @@ private prompts, diagnostics, and result envelopes terminate at the Prime adapte
 
 Exact checkpoint rollback is a server-private exception to the otherwise deferred history surface. The managed native adapter uses only public `getState()` and `navigateTree()` calls. It stores opaque leaf anchors in private rollback tables, never in contracts or public events. Availability is per thread and requires an idle, quiescent, full-access session with matching provider, runtime-generation, session-incarnation, and native-session identity. Navigation never summarizes an abandoned branch. A nonterminal saga quarantines Prime output, accepts only its source or target leaf after reconnect, and proves the exact committed target before release. Managed recoverable ownership remains idle and adoptable after a settled turn; the next turn cannot rotate that owner until terminal projection and checkpoint quiescence are durable.
 
-Prime Agent 0.9.4 keeps daemon protocol 7 and advances the stock schema to 28. The Pylon fork uses
+Prime Agent 0.9.4 keeps daemon protocol 7 and advances the shipped stock schema to 27. The Pylon fork uses
 schema 32 for its additional capability-gated contract. Pylon supplies the fresh owner runtime
 configuration required to recover a client-owned
 worker, refreshes the RLM roster from the authoritative snapshot method when available, and retains
