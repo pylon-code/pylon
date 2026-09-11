@@ -62,6 +62,7 @@ import {
   type RelayClientInstallProgressEvent,
   ServerSelfUpdateError,
   type ServerSelfUpdateProgressEvent,
+  type ServerLifecycleStreamEvent,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
   AssetWorkspaceContextNotFoundError,
@@ -110,6 +111,7 @@ import {
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
+import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as PrimeManagedMaintenance from "./provider/prime/PrimeManagedMaintenance.ts";
 import { toProviderMessageSessionAgentError } from "./provider/providerMessageSessionAgentRpcError.ts";
@@ -149,6 +151,8 @@ import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import { RollbackSagaRunner } from "./rollback/RollbackSagaRunner.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
+import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
+import { importRecentAgentThreads } from "./project/AgentSessionImporter.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -157,6 +161,7 @@ import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
+import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
@@ -523,6 +528,7 @@ const makeWsRpcLayer = (
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerService = yield* ProviderService.ProviderService;
+      const providerSessionDirectory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
       const rollbackSagaRunner = yield* RollbackSagaRunner;
       const rollbackSagaRepository = yield* RollbackSagaRepository;
       const sideQuestionOwnership = makeSessionSideQuestionOwnership();
@@ -575,6 +581,7 @@ const makeWsRpcLayer = (
         return true;
       });
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
+      const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -610,6 +617,7 @@ const makeWsRpcLayer = (
       const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
       const sessions = yield* SessionStore.SessionStore;
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
+      const hostResources = yield* HostResources.HostResources;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const usage = yield* UsageService.UsageService;
@@ -2323,6 +2331,10 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.serverGetProcessDiagnostics, processDiagnostics.read, {
             "rpc.aggregate": "server",
           }),
+        [WS_METHODS.serverGetHostResources]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverGetHostResources, hostResources.read, {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverGetProcessResourceHistory]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverGetProcessResourceHistory,
@@ -2655,6 +2667,31 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.attachmentsDelete,
             deletePendingAttachment(input.attachmentId),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.agentSessionsScan]: () =>
+          observeRpcEffect(WS_METHODS.agentSessionsScan, agentSessionScanner.scan, {
+            "rpc.aggregate": "workspace",
+          }),
+        [WS_METHODS.agentSessionsImport]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.agentSessionsImport,
+            importRecentAgentThreads(input).pipe(
+              Effect.provideService(AgentSessionScanner.AgentSessionScanner, agentSessionScanner),
+              Effect.provideService(
+                OrchestrationEngine.OrchestrationEngineService,
+                orchestrationEngine,
+              ),
+              Effect.provideService(
+                ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+                projectionSnapshotQuery,
+              ),
+              Effect.provideService(Crypto.Crypto, crypto),
+              Effect.provideService(
+                ProviderSessionDirectory.ProviderSessionDirectory,
+                providerSessionDirectory,
+              ),
+            ),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.assetsCreateUrl]: (input) =>
@@ -3088,11 +3125,18 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(
             WS_METHODS.subscribeServerLifecycle,
             Effect.gen(function* () {
+              const liveBuffer = yield* Queue.unbounded<ServerLifecycleStreamEvent>();
+              yield* Effect.forkScoped(
+                lifecycleEvents.stream.pipe(
+                  Stream.runForEach((event) => Queue.offer(liveBuffer, event)),
+                ),
+                { startImmediately: true },
+              );
               const snapshot = yield* lifecycleEvents.snapshot;
               const snapshotEvents = Array.from(snapshot.events).toSorted(
                 (left, right) => left.sequence - right.sequence,
               );
-              const liveEvents = lifecycleEvents.stream.pipe(
+              const liveEvents = Stream.fromQueue(liveBuffer).pipe(
                 Stream.filter((event) => event.sequence > snapshot.sequence),
               );
               return Stream.concat(Stream.fromIterable(snapshotEvents), liveEvents);
@@ -3185,6 +3229,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         ),
     });
     const pullRequests = yield* PullRequestService.PullRequestService;
+    // Built once for the route so every connection shares the scanner's import
+    // read lock and its per-transcript memory budget.
+    const agentSessionScanner = yield* AgentSessionScanner.make;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3211,6 +3258,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           Effect.provide(
             makeWsRpcLayer(session, clientOrigin, previewAutomationBroker).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
+              Layer.provide(
+                Layer.succeed(AgentSessionScanner.AgentSessionScanner, agentSessionScanner),
+              ),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(PrimeManagedMaintenance.layer),
               Layer.provide(

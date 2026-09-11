@@ -6,14 +6,19 @@ import {
   ClientSettingsSchema,
   ClientSettingsPatch,
   ClaudeSettings,
+  DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
+  decodeStoredClientSettings,
+  encodeStoredClientSettings,
   resolveProviderInstanceEnabled,
+  retainUnreadClientSettings,
   ServerSettings,
   ServerSettingsPatch,
 } from "./settings.ts";
 
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
+const encodeClientSettings = Schema.encodeSync(ClientSettingsSchema);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
@@ -158,6 +163,58 @@ describe("ClientSettings retired status motion", () => {
     );
     expect(decodeClientSettingsPatch({ dotMatrixMotion: "efficient" })).not.toHaveProperty(
       "dotMatrixMotion",
+    );
+  });
+});
+
+describe("stored client settings", () => {
+  it("returns null for a document that is not a settings object", () => {
+    expect(decodeStoredClientSettings("settings")).toBeNull();
+    expect(decodeStoredClientSettings([])).toBeNull();
+    expect(decodeStoredClientSettings(null)).toBeNull();
+  });
+
+  it("defaults only the values it cannot decode and retains them until they change", () => {
+    const stored = decodeStoredClientSettings({
+      confirmQuit: "hold",
+      fontSizeCode: "large",
+      timestampFormat: "12-hour",
+    });
+
+    expect(stored).toEqual({
+      settings: { ...DEFAULT_CLIENT_SETTINGS, timestampFormat: "12-hour" },
+      unreadValues: { confirmQuit: "hold", fontSizeCode: "large" },
+    });
+    const unchanged = retainUnreadClientSettings({ ...stored!.settings, wordWrap: false }, stored);
+    expect(encodeStoredClientSettings(unchanged)).toMatchObject({
+      confirmQuit: "hold",
+      fontSizeCode: "large",
+      timestampFormat: "12-hour",
+      wordWrap: false,
+    });
+    const changed = retainUnreadClientSettings(
+      { ...unchanged.settings, confirmQuit: false },
+      unchanged,
+    );
+    expect(changed.unreadValues).toEqual({ fontSizeCode: "large" });
+    expect(encodeStoredClientSettings(changed)).toMatchObject({
+      confirmQuit: false,
+      fontSizeCode: "large",
+    });
+  });
+});
+
+describe("ClientSettings load balancing", () => {
+  it("requires opt-in when settings are new or omit load balancing", () => {
+    expect(decodeClientSettings({}).loadBalancingEnabled).toBe(false);
+    expect(decodeClientSettings({ loadBalancingWeights: {} }).loadBalancingEnabled).toBe(false);
+  });
+
+  it.each([true, false])("preserves a saved choice of %s", (loadBalancingEnabled) => {
+    const settings = decodeClientSettings({ loadBalancingEnabled });
+    expect(encodeClientSettings(settings).loadBalancingEnabled).toBe(loadBalancingEnabled);
+    expect(decodeClientSettingsPatch({ loadBalancingEnabled }).loadBalancingEnabled).toBe(
+      loadBalancingEnabled,
     );
   });
 });
@@ -409,6 +466,25 @@ describe("ServerSettings Prime Agent provider", () => {
       launchArgs: "--offline",
       customModels: ["anthropic/claude-sonnet-5"],
     });
+  });
+});
+
+describe("ClientSettings pull request merge methods", () => {
+  it("defaults to no project overrides and accepts supported methods", () => {
+    expect(decodeClientSettings({}).pullRequestMergeMethodOverrides).toEqual({});
+    expect(
+      decodeClientSettingsPatch({
+        pullRequestMergeMethodOverrides: { project: "squash" },
+      }).pullRequestMergeMethodOverrides,
+    ).toEqual({ project: "squash" });
+  });
+
+  it("rejects unsupported project merge methods", () => {
+    expect(() =>
+      decodeClientSettingsPatch({
+        pullRequestMergeMethodOverrides: { project: "fast-forward" },
+      }),
+    ).toThrow();
   });
 });
 

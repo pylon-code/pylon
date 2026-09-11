@@ -41,6 +41,7 @@ import { ProviderAuthServiceLive } from "./provider/Layers/ProviderAuthService.t
 import * as ProviderEventLoggers from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
+import { composeProviderRuntimeLayer } from "./provider/providerRuntimeLayer.ts";
 import * as OpenCodeRuntime from "./provider/opencodeRuntime.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as CheckpointStore from "./checkpointing/CheckpointStore.ts";
@@ -114,6 +115,7 @@ import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as DesktopAppUpdate from "./desktopUpdate/DesktopAppUpdate.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
+import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
@@ -124,7 +126,10 @@ import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as CodexResetCredit from "./provider/Layers/codexResetCredit.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as UsageService from "./usage/UsageService.ts";
-import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import {
+  OrchestrationInfrastructureLayerLive,
+  OrchestrationLayerLive,
+} from "./orchestration/runtimeLayer.ts";
 import * as RollbackAdmission from "./rollback/RollbackAdmission.ts";
 import * as RollbackWorkspace from "./rollback/RollbackWorkspace.ts";
 import {
@@ -201,6 +206,7 @@ const BackgroundLayerLive = BackgroundPolicy.layer.pipe(
 const UsageLayerLive = UsageService.layer.pipe(Layer.provide(ServerSettingsLayerLive));
 
 const ResourceDiagnosticsLayerLive = Layer.mergeAll(
+  HostResources.layer,
   ResourceTelemetryLayerLive,
   ProcessDiagnostics.layer.pipe(Layer.provide(ResourceTelemetryLayerLive)),
   ProcessResourceMonitor.layer.pipe(Layer.provide(ResourceTelemetryLayerLive)),
@@ -340,7 +346,7 @@ const PullRequestServiceLive = PullRequestService.layer.pipe(
 );
 
 const GitManagerLayerLive = GitManager.layer.pipe(
-  Layer.provideMerge(ProjectSetupScriptRunner.layer),
+  Layer.provideMerge(ProjectSetupScriptRunner.layer.pipe(Layer.provide(ServerSettingsLayerLive))),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
   Layer.provideMerge(TextGeneration.layer),
@@ -377,7 +383,9 @@ const VcsLayerLive = Layer.empty.pipe(
   Layer.provideMerge(
     VcsStatusBroadcaster.layer.pipe(
       Layer.provide(GitWorkflowLayerLive),
-      Layer.provide(VcsStatusBroadcaster.autoPullPolicyLayer),
+      Layer.provide(
+        VcsStatusBroadcaster.autoPullPolicyLayer.pipe(Layer.provide(ServerSettingsLayerLive)),
+      ),
     ),
   ),
 );
@@ -431,16 +439,16 @@ const CloudManagedEndpointRuntimeLive = Layer.mergeAll(
   ),
 );
 
-const RollbackAdmissionLayerLive = RollbackAdmission.layer.pipe(
-  Layer.provide(ProviderLayerLive),
-  Layer.provide(RollbackWorkspace.layer),
-  Layer.provide(RollbackSagaRepositoryLive),
-);
-
-const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
-  Layer.provideMerge(ProviderLayerLive),
-  Layer.provideMerge(OrchestrationLayerLive.pipe(Layer.provideMerge(RollbackAdmissionLayerLive))),
-);
+const ProviderRuntimeLayerLive = composeProviderRuntimeLayer({
+  provider: ProviderLayerLive,
+  projectionInfrastructure: OrchestrationInfrastructureLayerLive,
+  rollbackAdmission: RollbackAdmission.layer.pipe(
+    Layer.provide(RollbackWorkspace.layer),
+    Layer.provide(RollbackSagaRepositoryLive),
+  ),
+  orchestration: OrchestrationLayerLive,
+  reaper: ProviderSessionReaperLive,
+});
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services

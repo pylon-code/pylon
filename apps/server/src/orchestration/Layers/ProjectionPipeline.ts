@@ -1,10 +1,12 @@
 import {
   ApprovalRequestId,
+  isImportedAgentSessionMessageId,
   type ChatAttachment,
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
   ThreadId,
 } from "@t3tools/contracts";
+import { compareDateTimeStrings } from "@t3tools/shared/dateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -229,7 +231,7 @@ function retainProjectionMessagesAfterRevert(
   }
 
   for (const message of messages) {
-    if (message.role === "system") {
+    if (message.role === "system" || isImportedAgentSessionMessageId(message.messageId)) {
       retainedMessageIds.add(message.messageId);
       continue;
     }
@@ -239,7 +241,10 @@ function retainProjectionMessagesAfterRevert(
   }
 
   const retainedUserCount = messages.filter(
-    (message) => message.role === "user" && retainedMessageIds.has(message.messageId),
+    (message) =>
+      message.role === "user" &&
+      !isImportedAgentSessionMessageId(message.messageId) &&
+      retainedMessageIds.has(message.messageId),
   ).length;
   const missingUserCount = Math.max(0, turnCount - retainedUserCount);
   if (missingUserCount > 0) {
@@ -252,7 +257,7 @@ function retainProjectionMessagesAfterRevert(
       )
       .toSorted(
         (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) ||
+          compareDateTimeStrings(left.createdAt, right.createdAt) ||
           left.messageId.localeCompare(right.messageId),
       )
       .slice(0, missingUserCount);
@@ -262,7 +267,10 @@ function retainProjectionMessagesAfterRevert(
   }
 
   const retainedAssistantCount = messages.filter(
-    (message) => message.role === "assistant" && retainedMessageIds.has(message.messageId),
+    (message) =>
+      message.role === "assistant" &&
+      !isImportedAgentSessionMessageId(message.messageId) &&
+      retainedMessageIds.has(message.messageId),
   ).length;
   const missingAssistantCount = Math.max(0, turnCount - retainedAssistantCount);
   if (missingAssistantCount > 0) {
@@ -275,7 +283,7 @@ function retainProjectionMessagesAfterRevert(
       )
       .toSorted(
         (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) ||
+          compareDateTimeStrings(left.createdAt, right.createdAt) ||
           left.messageId.localeCompare(right.messageId),
       )
       .slice(0, missingAssistantCount);
@@ -896,6 +904,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updatedAt: event.occurredAt,
             latestUserMessageAt:
               event.payload.role === "user" &&
+              !isImportedAgentSessionMessageId(event.payload.messageId) &&
               (previousLatest === null || event.payload.createdAt > previousLatest)
                 ? event.payload.createdAt
                 : previousLatest,

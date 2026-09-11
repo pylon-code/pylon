@@ -35,6 +35,15 @@ import {
   FilesystemBrowseError,
 } from "./filesystem.ts";
 import {
+  AgentSessionImportInput,
+  AgentSessionImportProjectChangedError,
+  AgentSessionImportProjectNotFoundError,
+  AgentSessionImportResult,
+  AgentSessionScanInput,
+  AgentSessionScanResult,
+  AgentSessionScanError,
+} from "./agentSessions.ts";
+import {
   AssetAccessError,
   AssetCreateUrlInput,
   AssetCreateUrlResult,
@@ -261,6 +270,7 @@ import {
   ServerUpsertKeybindingResult,
 } from "./server.ts";
 import {
+  HostResourcesSnapshot,
   ResourceTelemetryHistory,
   ResourceTelemetryHistoryInput,
   ResourceTelemetryRetryResult,
@@ -305,6 +315,8 @@ export const WS_METHODS = {
 
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",
+  agentSessionsScan: "agentSessions.scan",
+  agentSessionsImport: "agentSessions.import",
   assetsCreateUrl: "assets.createUrl",
   attachmentsCreateUploadUrl: "attachments.createUploadUrl",
   attachmentsDelete: "attachments.delete",
@@ -405,6 +417,7 @@ export const WS_METHODS = {
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
+  serverGetHostResources: "server.getHostResources",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
   serverGetResourceTelemetryHistory: "server.getResourceTelemetryHistory",
   serverRetryResourceTelemetry: "server.retryResourceTelemetry",
@@ -815,6 +828,12 @@ const WsServerGetProcessDiagnosticsRpc = Rpc.make(WS_METHODS.serverGetProcessDia
   error: EnvironmentAuthorizationError,
 });
 
+const WsServerGetHostResourcesRpc = Rpc.make(WS_METHODS.serverGetHostResources, {
+  payload: Schema.Struct({}),
+  success: HostResourcesSnapshot,
+  error: EnvironmentAuthorizationError,
+});
+
 const WsServerGetProcessResourceHistoryRpc = Rpc.make(WS_METHODS.serverGetProcessResourceHistory, {
   payload: ServerProcessResourceHistoryInput,
   success: ServerProcessResourceHistoryResult,
@@ -1085,6 +1104,23 @@ const WsFilesystemBrowseRpc = Rpc.make(WS_METHODS.filesystemBrowse, {
   payload: FilesystemBrowseInput,
   success: FilesystemBrowseResult,
   error: Schema.Union([FilesystemBrowseError, EnvironmentAuthorizationError]),
+});
+
+const WsAgentSessionsScanRpc = Rpc.make(WS_METHODS.agentSessionsScan, {
+  payload: AgentSessionScanInput,
+  success: AgentSessionScanResult,
+  error: Schema.Union([AgentSessionScanError, EnvironmentAuthorizationError]),
+});
+
+const WsAgentSessionsImportRpc = Rpc.make(WS_METHODS.agentSessionsImport, {
+  payload: AgentSessionImportInput,
+  success: AgentSessionImportResult,
+  error: Schema.Union([
+    AgentSessionImportProjectChangedError,
+    AgentSessionImportProjectNotFoundError,
+    AgentSessionScanError,
+    EnvironmentAuthorizationError,
+  ]),
 });
 
 const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
@@ -1479,6 +1515,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerDiscoverSourceControlRpc,
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,
+  WsServerGetHostResourcesRpc,
   WsServerGetProcessResourceHistoryRpc,
   WsServerGetResourceTelemetryHistoryRpc,
   WsServerRetryResourceTelemetryRpc,
@@ -1521,6 +1558,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsWriteFileRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
+  WsAgentSessionsScanRpc,
+  WsAgentSessionsImportRpc,
   WsAssetsCreateUrlRpc,
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,

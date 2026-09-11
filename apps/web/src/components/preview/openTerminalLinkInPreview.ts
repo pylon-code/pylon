@@ -64,8 +64,9 @@ export async function openTerminalLinkInPreview<E>(
     targetOrigin: new URL(input.url).origin,
   };
 
+  // A failed settings read rejects instead of guessing a browser without the saved preference.
+  const defaults = await resolveBrowserDefaults();
   try {
-    const defaults = await resolveBrowserDefaults();
     const result = await input.openPreview({
       environmentId: input.threadRef.environmentId,
       input: {

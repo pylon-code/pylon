@@ -7,8 +7,12 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+import { resolveComposerInstanceSelection } from "../composerInstanceSelection";
+import { deriveProviderInstanceEntries } from "../providerInstances";
 
 import type { Thread, ThreadShell, TurnDiffSummary } from "../types";
 import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
@@ -28,6 +32,7 @@ import {
   buildThreadTurnInterruptInput,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  deriveLockedProvider,
   dismissBranchMismatchForSession,
   ENVIRONMENT_RECONNECT_WARNING_GRACE_MS,
   getStartedThreadModelChangeBlockReason,
@@ -809,6 +814,151 @@ describe("buildThreadTurnInterruptInput", () => {
     expect(
       buildThreadTurnInterruptInput(makeThread({ session: { ...readySession, status } })),
     ).toEqual({ threadId });
+  });
+});
+
+describe("deriveLockedProvider for imported history", () => {
+  function entry(driver: string, instanceId = driver, overrides: Partial<ServerProvider> = {}) {
+    return deriveProviderInstanceEntries([
+      {
+        driver: ProviderDriverKind.make(driver),
+        instanceId: ProviderInstanceId.make(instanceId),
+        enabled: true,
+        installed: true,
+        status: "ready",
+        auth: { status: "authenticated" },
+        version: null,
+        checkedAt: now,
+        models: [],
+        slashCommands: [],
+        skills: [],
+        ...overrides,
+      },
+    ])[0]!;
+  }
+
+  function importedThread(instanceId: ProviderInstanceId) {
+    return makeThread({
+      modelSelection: { instanceId, model: "default" },
+      messages: [
+        {
+          id: MessageId.make(`import:${instanceId}:session:000000`),
+          role: "user",
+          text: "Continue the imported conversation",
+          turnId: null,
+          createdAt: now,
+          updatedAt: now,
+          streaming: false,
+        },
+      ],
+    });
+  }
+
+  function selectComposerInstance(input: {
+    readonly entries: ReadonlyArray<ReturnType<typeof entry>>;
+    readonly draftActiveProvider: ProviderInstanceId | null;
+    readonly threadInstanceId: ProviderInstanceId;
+    readonly lockedProvider: ProviderDriverKind | null;
+  }) {
+    return resolveComposerInstanceSelection({
+      entries: input.entries,
+      draftActiveProvider: input.draftActiveProvider,
+      sessionInstanceId: null,
+      threadInstanceId: input.threadInstanceId,
+      projectInstanceId: null,
+      lockedProvider: input.lockedProvider,
+      nowMs: Date.parse(now),
+    });
+  }
+
+  it.each([
+    ["claudeAgent", "claude_work"],
+    ["codex", "codex_work"],
+    ["ollama", "local_models"],
+  ])("keeps imported %s history selectable through its custom instance", (driver, instanceId) => {
+    const importedEntry = entry(driver, instanceId);
+    const entries = [entry(driver === "codex" ? "claudeAgent" : "codex"), importedEntry];
+    const thread = importedThread(importedEntry.instanceId);
+    const lockedProvider = deriveLockedProvider({
+      thread,
+      selectedProvider: entries[0]!.instanceId,
+      threadProvider: thread.modelSelection.instanceId,
+      providers: entries.map((entry) => entry.snapshot),
+    });
+
+    expect(thread.session).toBeNull();
+    expect(lockedProvider).toBe(driver);
+    expect(
+      selectComposerInstance({
+        entries,
+        draftActiveProvider: null,
+        threadInstanceId: thread.modelSelection.instanceId,
+        lockedProvider,
+      }).entry?.instanceId,
+    ).toBe(importedEntry.instanceId);
+  });
+
+  it("keeps the session driver authoritative over instance and draft selections", () => {
+    const selected = entry("claudeAgent", "claude_work");
+    const sessionEntry = entry("ollama", "local_models");
+    const thread = importedThread(selected.instanceId);
+
+    expect(
+      deriveLockedProvider({
+        thread: {
+          ...thread,
+          session: {
+            ...readySession,
+            providerName: sessionEntry.driverKind,
+            providerInstanceId: sessionEntry.instanceId,
+          },
+        },
+        selectedProvider: selected.instanceId,
+        threadProvider: thread.modelSelection.instanceId,
+        providers: [selected.snapshot, sessionEntry.snapshot],
+      }),
+    ).toBe(sessionEntry.driverKind);
+  });
+
+  it.each(["missing", "disabled"] as const)(
+    "does not move imported history to another driver when its instance is %s",
+    (state) => {
+      const imported = entry("claudeAgent", "claude_work", { enabled: false });
+      const other = entry("codex");
+      const entries = state === "missing" ? [other] : [other, imported];
+      const thread = importedThread(imported.instanceId);
+      const lockedProvider = deriveLockedProvider({
+        thread,
+        selectedProvider: other.instanceId,
+        threadProvider: thread.modelSelection.instanceId,
+        providers: entries.map((entry) => entry.snapshot),
+      });
+
+      expect(lockedProvider).not.toBeNull();
+      expect(
+        selectComposerInstance({
+          entries,
+          draftActiveProvider: other.instanceId,
+          threadInstanceId: imported.instanceId,
+          lockedProvider,
+        }).entry,
+      ).toBeUndefined();
+    },
+  );
+
+  it("leaves a new draft free to select a different driver", () => {
+    const original = entry("claudeAgent", "claude_work");
+    const selected = entry("codex", "codex_work");
+    expect(
+      deriveLockedProvider({
+        thread: makeThread({
+          modelSelection: { instanceId: original.instanceId, model: "default" },
+        }),
+        selectedProvider: selected.instanceId,
+        threadProvider: original.instanceId,
+        providers: [original.snapshot, selected.snapshot],
+      }),
+    ).toBeNull();
   });
 });
 

@@ -17,5 +17,14 @@ To change themes:
 Tap a theme card to use it for both light and dark appearance. To mix themes, tap the light or dark
 preview circle inside a card to change only that appearance.
 
+On Android 12 or newer, choose the **Material You** theme to use colors from your wallpaper. Selecting
+another theme replaces those colors. Like other themes, Material You can be selected separately for
+light and dark appearances. If you change your wallpaper, the colors update when you return to
+Pylon.
+
+Android also offers **Material You Layout** in Appearance. It uses rounded panels, pill-shaped
+search fields, tonal selected threads, and Material-style switches. It is off by default and works
+with any theme.
+
 **System** follows the device appearance automatically. Theme, text, code, and terminal appearance
 preferences are stored on the device.

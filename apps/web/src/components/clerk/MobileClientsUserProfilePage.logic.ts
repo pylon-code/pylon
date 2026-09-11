@@ -15,7 +15,18 @@ const NOTIFICATION_PREFERENCES = [
 >;
 
 export function mobileClientPlatformLabel(device: RelayClientDeviceRecord): string {
-  return `iOS ${device.iosMajorVersion}${device.appVersion ? ` · Pylon ${device.appVersion}` : ""}`;
+  const platform =
+    device.platform === "android"
+      ? "Android"
+      : device.iosMajorVersion === null
+        ? "iOS"
+        : `iOS ${device.iosMajorVersion}`;
+  return `${platform}${device.appVersion ? ` · Pylon ${device.appVersion}` : ""}`;
+}
+
+/** Android shows an ongoing notification card; iOS shows a Live Activity. */
+export function mobileClientActivityLabel(device: RelayClientDeviceRecord): string {
+  return device.platform === "android" ? "Ongoing activity" : "Live Activities";
 }
 
 export function mobileClientNotificationDetail(device: RelayClientDeviceRecord): string {

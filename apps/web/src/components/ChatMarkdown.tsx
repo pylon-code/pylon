@@ -178,6 +178,7 @@ import {
   openFileInPreview,
   openUrlInPreview,
   BrowserPreviewUnavailableError,
+  BrowserSettingsReadError,
 } from "../browser/openFileInPreview";
 import { resolveLinkTarget } from "../browser/browserLinkTarget";
 import { useOpenLink } from "../browser/useOpenLink";
@@ -2441,6 +2442,18 @@ function useChatMarkdownState({
       }
       return openUrlInPreview({ threadRef, url, openPreview }).then((result) => {
         if (result._tag === "Success") recordVisitForThread(threadRef, url);
+        else if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          if (error instanceof BrowserSettingsReadError) {
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Unable to open link in browser",
+                description: error.message,
+              }),
+            );
+          }
+        }
         return result;
       });
     },

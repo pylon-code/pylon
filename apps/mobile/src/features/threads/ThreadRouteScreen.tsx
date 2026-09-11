@@ -8,6 +8,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
 import {
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ThreadId,
   type ProjectScript,
@@ -29,7 +30,11 @@ import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
-import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
+import {
+  projectScriptCwd,
+  projectScriptRuntimeEnv,
+  resolveProjectScripts,
+} from "@t3tools/shared/projectScripts";
 import { Alert, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
@@ -87,6 +92,7 @@ import { useSelectedThreadWorktree } from "../../state/use-selected-thread-workt
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { threadEnvironment } from "../../state/threads";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
+import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import {
   useAdaptiveWorkspaceLayout,
   useAdaptiveWorkspacePaneRole,
@@ -204,6 +210,8 @@ function ThreadRouteContent(
     readonly selectedThreadDetailState: ReturnType<typeof useSelectedThreadDetailState>;
   },
 ) {
+  const { materialYouStyleLayoutActive, themeVariables } = useAppearancePreferences();
+  const headerColor = themeVariables["--color-header"];
   const {
     fileInspector,
     layout,
@@ -832,7 +840,12 @@ function ThreadRouteContent(
     mutationBlocked: rollbackActive,
     canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),
     canOpenFiles: Boolean(selectedThreadProject?.workspaceRoot),
-    projectScripts: selectedThreadProject?.scripts ?? [],
+    projectScripts: selectedThreadProject
+      ? resolveProjectScripts(
+          routeEnvironmentRuntime?.serverConfig?.settings ?? DEFAULT_SERVER_SETTINGS,
+          selectedThreadProject,
+        )
+      : [],
     terminalSessions: terminalMenuSessions,
     showDirectFileControl: layout.usesSplitView,
     onOpenTerminal: handleOpenTerminal,
@@ -1069,7 +1082,19 @@ function ThreadRouteContent(
 
       <GitActionProgressOverlay progress={gitActionProgress} onDismiss={dismissGitActionResult} />
 
-      <View className="flex-1 bg-screen">
+      <View
+        className={materialYouStyleLayoutActive ? "flex-1 bg-thread-canvas" : "flex-1 bg-screen"}
+        style={
+          materialYouStyleLayoutActive
+            ? {
+                borderTopLeftRadius: 28,
+                borderTopRightRadius: 28,
+                marginRight: layout.usesSplitView ? 8 : 0,
+                overflow: "hidden",
+              }
+            : undefined
+        }
+      >
         <ThreadDetailScreen
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
           contentPresentation={contentPresentation}
@@ -1164,6 +1189,7 @@ function ThreadRouteContent(
     <>
       {activeInspectorRenderer ? <InspectorPaneRoleActivation /> : null}
       <NativeStackScreenOptions
+        optionsVersion={threadGitControlProps.projectScripts}
         options={{
           // Android draws its own in-flow header (AndroidScreenHeader below);
           // the native stack header stays iOS-only.
@@ -1196,6 +1222,10 @@ function ThreadRouteContent(
               ? () => (layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems)
               : undefined,
           unstable_headerSubtitle: usesNativeHeaderGlass ? headerSubtitle : undefined,
+          contentStyle:
+            Platform.OS === "android" && materialYouStyleLayoutActive
+              ? { backgroundColor: headerColor }
+              : undefined,
         }}
       />
 
@@ -1205,6 +1235,7 @@ function ThreadRouteContent(
           subtitle={headerSubtitle}
           onBack={layout.usesSplitView ? undefined : () => navigation.goBack()}
           actions={androidHeaderActions}
+          hideBottomBorder={materialYouStyleLayoutActive}
         />
       ) : null}
 

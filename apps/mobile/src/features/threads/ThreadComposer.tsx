@@ -1,3 +1,4 @@
+import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useAtomValue } from "@effect/atom-react";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
@@ -303,6 +304,7 @@ export function ComposerSurface(props: {
   /** Morphs between the compact and expanded composer layouts. */
   readonly animateLayout?: boolean;
 }) {
+  const { materialYouStyleLayoutActive } = useAppearancePreferences();
   // Drop shadow lives on a wrapper: `overflow: "hidden"` on the surface itself
   // (needed to clip content to the pill shape) would clip the shadow on iOS.
   //
@@ -343,10 +345,18 @@ export function ComposerSurface(props: {
   };
 
   return (
-    <Animated.View layout={layoutTransition} style={[shadowStyle, animatedShapeStyle]}>
+    <Animated.View
+      layout={layoutTransition}
+      // Material You layout draws the composer as a flat tonal surface.
+      style={[materialYouStyleLayoutActive ? null : shadowStyle, animatedShapeStyle]}
+    >
       <AnimatedGlassSurface
         chrome="none"
-        fallbackClassName="border border-border bg-card-translucent"
+        fallbackClassName={
+          materialYouStyleLayoutActive
+            ? "border border-composer-border bg-composer-surface"
+            : "border border-border bg-card-translucent"
+        }
         glassEffectStyle="regular"
         // Keep native glass out of the interactive content's layout path: the
         // content is now a sibling of this layer, not a child of it.
@@ -369,6 +379,9 @@ export function ComposerSurface(props: {
 }
 
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
+  const { materialYouStyleLayoutActive, themeVariables: materialTheme } =
+    useAppearancePreferences();
+  const composerPanel = materialTheme["--color-composer-panel"];
   const navigation = useNavigation();
   const foregroundColor = useUniwindTheme()["--color-foreground"];
   const bodyText = useScaledTextRole("body");
@@ -1595,13 +1608,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       style={{
         paddingTop: isExpanded ? 8 : 6,
         paddingBottom: (props.bottomInset ?? 0) + (isExpanded ? 8 : 6),
+        backgroundColor: materialYouStyleLayoutActive ? composerPanel : undefined,
       }}
     >
       {/* The backdrop gradient lives on a plain View: Reanimated's Animated.View
           silently drops experimental_backgroundImage on Android, which left this
           strip fully transparent and the feed text legible through the composer. */}
       <View
-        className="absolute inset-0 bg-linear-to-b from-screen/0 via-screen/60 to-screen/90"
+        className={
+          materialYouStyleLayoutActive
+            ? "hidden"
+            : "absolute inset-0 bg-linear-to-b from-screen/0 via-screen/60 to-screen/90"
+        }
         pointerEvents="none"
       />
       <Animated.View

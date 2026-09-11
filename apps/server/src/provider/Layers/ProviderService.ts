@@ -57,6 +57,7 @@ import {
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { resolveProjectAgentBrowserAccess } from "@t3tools/shared/serverSettings";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -105,6 +106,7 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { RollbackSagaRepository } from "../../persistence/Services/RollbackSagas.ts";
+import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
 /** How long a manual context compaction may run before ProviderService gives up on it. */
@@ -431,6 +433,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     }
   });
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const projectionQuery = yield* Effect.serviceOption(
+    ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+  );
   const issueMcpCredential =
     options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
   const revokeMcpCredential =
@@ -969,8 +974,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
    * "off" silently becoming "on" would violate the user's stated choice,
    * whereas the reverse costs an agent one toolset and is visible immediately.
    */
-  const agentBrowserAccessEnabled = serverSettings.getSettings.pipe(
-    Effect.map((settings) => settings.enableAgentBrowserAccess),
+  const agentBrowserAccessEnabled = Effect.fn("ProviderService.agentBrowserAccessEnabled")(
+    function* (threadId: ThreadId) {
+      const settings = yield* serverSettings.getSettings;
+      if (Object.keys(settings.projectAgentBrowserAccessOverrides).length === 0) {
+        return settings.enableAgentBrowserAccess;
+      }
+      // Provider-only runtimes may omit orchestration. An unresolved project
+      // must not bypass an explicit browser override.
+      if (Option.isNone(projectionQuery)) return false;
+      const thread = yield* projectionQuery.value.getThreadShellById(threadId);
+      if (Option.isNone(thread)) return false;
+      return resolveProjectAgentBrowserAccess(settings, thread.value.projectId);
+    },
     Effect.catch((cause) =>
       Effect.logWarning(
         "Could not read server settings; withholding agent browser access for this session.",
@@ -986,7 +1002,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   ) =>
     Effect.gen(function* () {
       const fence = adapter.runtimeFence;
-      if (!(yield* agentBrowserAccessEnabled)) {
+      if (!(yield* agentBrowserAccessEnabled(threadId))) {
         yield* clearMcpSession(threadId, fence);
         return undefined;
       }

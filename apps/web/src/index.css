@@ -633,6 +633,18 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 }
 
 @layer components {
+  /* AnimatedHeight owns resizing for its contents. Nested collapsibles must
+     expose their final layout immediately, otherwise each animation frame
+     restarts the parent's transition and the dialog trails behind its content. */
+  [data-slot="animated-height"] [data-slot="collapsible-panel"] {
+    height: auto !important;
+    transition: none !important;
+  }
+
+  [data-slot="animated-height"] [data-slot="collapsible-panel"][data-closed] {
+    display: none;
+  }
+
   /* Each maintainer palette gives the same line art its own material: rose
      vellum, forest drafting paper, marine cyanotype, copper, and violet ink.
      These colors stay deliberately deep at the top edge so the white stage
@@ -1409,9 +1421,7 @@ html[data-theme-id="t3-chat"] [data-app-sidebar] {
   }
 }
 
-/* Contrast stays in ordinary custom properties so both Tailwind utilities and
-   global/imperative chrome styles resolve the same adjusted role. Redeclare on
-   the sidebar because it owns a local semantic palette. */
+/* Recompute contrast wherever a subtree owns its own semantic color palette. */
 :root,
 [data-app-sidebar] {
   --contrast-toolbar-foreground: color-mix(
