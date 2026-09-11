@@ -23,6 +23,12 @@ Unknown recipes, policy revisions, fields, assets, or tag shapes fail closed. Th
 both publication workflow byte digests. A publication workflow change therefore needs a new reviewed
 policy revision rather than a permissive parser change.
 
+Recipe 1 writes its release manifest as two-space JSON with a final newline, preserving object field
+order. Channel manifests and private receipts use sorted canonical JSON. Verification hashes the
+original release bytes; it never reserializes a manifest before checking its signed digest. Manifest
+downloads remain limited to 64 KiB; frozen workflow downloads have a separate 256 KiB limit because
+the reviewed publication workflows are larger than the manifests.
+
 The immutable registry retains revisions 1 and 2 and supports revision 3, which uses the pinned
 GitHub REST client to upload release assets. Each revision pins its own
 exact preview and stable workflow bytes. A stable receipt's build policy must equal its verified
@@ -41,6 +47,10 @@ SLSA bindings:
 - source commit, full signed source tree in the manifests, and the exact six preview subjects;
 - one stable-manifest subject for stable promotion.
 
+The GitHub-specific Fulcio extensions `1.3.6.1.4.1.57264.1.1` through `.6` contain raw UTF-8 strings,
+as specified by [Fulcio](https://github.com/sigstore/fulcio/blob/main/docs/oid-info.md#extension-values).
+They are checked after signature, certificate-chain, and transparency verification.
+
 The fetch and trusted-root functions are injected. Production keeps Sigstore TUF cache data below the
 Pylon runtime state directory rather than writing to an unrelated user cache. Verified channel,
 publication, attestation, and installer-bundle results use one process-wide repository/channel TTL
@@ -49,8 +59,9 @@ bound retry traffic; explicit maintenance refreshes still reuse a just-fresh sta
 multi-subject preview attestation is fetched and verified once for its exact subject set rather than
 once per subject. Candidate and request counts remain bounded.
 
-Focused tests use deterministic manifests and a cryptographic-verifier seam, then exercise certificate
-and SLSA binding separately. Bridge CI can supply the first immutable artifact set through the
+Focused tests retain deterministic manifests and a cryptographic-verifier seam, and also verify the
+published `pylon-build-g83fe3dfe3f10-r1` manifests and real Fulcio/Rekor bundle against captured Sigstore
+trust material without network requests or cryptographic stubs. Bridge CI supplies an immutable artifact set through the
 fail-closed real-fixture gate. The gate has no skip or metadata-only success mode.
 
 ## Protected real-artifact graduation
@@ -66,7 +77,7 @@ server-owned Sigstore verifier and publication policy as the network loader. It 
 bytes only after every release, subject, source, workflow, recipe, and digest binding succeeds.
 
 The workflow then passes those bytes through the production managed tool store. Stock is not a dispatch
-input. Pylon source freezes the reviewed Prime Agent 0.8.1 repository, release, asset identity, exact URL,
+input. Pylon source freezes the reviewed Prime Agent 0.9.4 repository, release, asset identity, exact URL,
 size, SHA-256, and SHA-512. The downloader checks live metadata only against that identity and treats the
 independently pinned byte digests as the trust root before installing with lifecycle scripts disabled.
 Real opt-in tests consume the artifact directory rather than a source checkout or caller-supplied
@@ -133,7 +144,7 @@ marker; it never compares the values. Settings also shows the distribution label
 that shared view and invoke environment-owned managed maintenance RPCs. Mobile shows read-only host
 maintenance status and host-control instructions for each Prime instance under its environment.
 
-Stock Prime Agent 0.8.1 remains ready and manually maintained. Linux and macOS use private receipts;
+Stock Prime Agent 0.9.4 remains ready and manually maintained. Linux and macOS use private receipts;
 WSL2 follows Linux. Native Windows and `.cmd` receipt admission are explicitly unavailable until Prime
 supports native Windows distributions.
 

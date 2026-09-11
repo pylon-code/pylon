@@ -1,0 +1,49 @@
+{
+  "assets": [
+    {
+      "file": "pylon-prime-agent-0.9.4.tgz",
+      "sha256": "27aed732587efc16ac209c6b6169b637ea4f7b4a221c9e489648d12da5754b85",
+      "sha512": "2fcf75db8ebf8d190f675aba78b5b7b463dc847b542f685f61d862c51424ba3c72aed5aea72a994b6afde0f939d84fcc967f83b9664e3caa7dfc7ce59da17d0e",
+      "size": 10515052
+    },
+    {
+      "file": "pylon-prime-agent-ai-0.9.4.tgz",
+      "sha256": "df12467315d8fc229cff27b08e18253b0e516c64df5271b42883ada8d432e410",
+      "sha512": "a74bc62ff96bd848561476046e986313a2e07a508de6a1dd328190675e46da184b7799d138639fcf13baca0727bccbc34c76141ebdda9f7d4d7e57ebaa932115",
+      "size": 623775
+    },
+    {
+      "file": "pylon-prime-agent-core-0.9.4.tgz",
+      "sha256": "d64573dbe53a7b62ff768d68f1002cf25a9e97323c2e6372fc1e81f40bca2ace",
+      "sha512": "a0b4b79efa6a2552f89d499bd6ba0601f28e78cc4f28f69e64bcbe430f9bb6ad4e7d8a7a404a41a6a0f6f6a153f30ac1564edb15b12bdab24008b4cb0a130c1a",
+      "size": 108624
+    },
+    {
+      "file": "pylon-prime-agent-tui-0.9.4.tgz",
+      "sha256": "994921e7f1b32f5e695d79515a7cdba9f5068eee62ab251f3a7a61e2a2a7026f",
+      "sha512": "a8d4b689e4a2327c2b44a17daec3fae7bef044233e28d2614b3e105ead53bc3e97b42e6337694b3a4bd5e09554f6e562e9cb5d47336ec5ae4a79eb44329ceeb0",
+      "size": 477831
+    }
+  ],
+  "build": {
+    "id": "pylon-build-g83fe3dfe3f10-r1",
+    "recipeRevision": 1,
+    "releaseManifest": {
+      "file": "pylon-prime-agent-release-v1.json",
+      "sha256": "67ed1d7afcf9b219dc71a009e4ed6f59f6e16995671c6c75bd564402dad946c0"
+    },
+    "source": {
+      "commit": "83fe3dfe3f109dc767e6be4a4b7509c0ca1f536d",
+      "repository": "https://github.com/pylon-code/prime-agent",
+      "tree": "6ecea91dcd8534adca55aa42a4398040ce81d0a9"
+    },
+    "tag": "pylon-build-g83fe3dfe3f10-r1"
+  },
+  "channel": "preview",
+  "publicationPolicyRevision": 3,
+  "repository": "https://github.com/pylon-code/prime-agent",
+  "schemaVersion": 1,
+  "sequence": 13,
+  "sequenceEpoch": 1,
+  "workflowRunId": "34630984964"
+}

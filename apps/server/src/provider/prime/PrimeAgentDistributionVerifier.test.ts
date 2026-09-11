@@ -112,7 +112,8 @@ function syntheticPublication(
       digest: { sha256: asset.sha256, sha512: asset.sha512 },
     })),
   };
-  const releaseManifestBytes = Buffer.from(canonicalPrimeDistributionJson(releaseManifest));
+  // Recipe 1 uses writeJson/createReleaseManifest, preserving the declared field order.
+  const releaseManifestBytes = Buffer.from(`${JSON.stringify(releaseManifest, null, 2)}\n`);
   const previewManifest = {
     schemaVersion: 1,
     channel: "preview",

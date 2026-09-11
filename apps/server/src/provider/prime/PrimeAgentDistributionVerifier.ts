@@ -38,6 +38,7 @@ const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
 const WORKFLOW_BUILD_TYPE = "https://actions.github.io/buildtypes/workflow/v1";
 const IN_TOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json";
 const MAX_MANIFEST_BYTES = 64 * 1024;
+const MAX_WORKFLOW_BYTES = 256 * 1024;
 const MAX_PACKAGE_MANIFEST_BYTES = 256 * 1024;
 const MAX_RECEIPT_BYTES = 64 * 1024;
 const MAX_ATTESTATION_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -443,6 +444,7 @@ function parseCanonicalJson<T>(
   name: string,
   maxBytes: number,
   decode: (input: unknown) => T,
+  keyOrder: "sorted" | "preserved" = "sorted",
 ): T {
   if (bytes.byteLength < 1 || bytes.byteLength > maxBytes) {
     throw new Error(`${name} exceeds its bounded size.`);
@@ -454,7 +456,11 @@ function parseCanonicalJson<T>(
     throw new Error(`${name} is not JSON.`, { cause });
   }
   const decoded = decode(parsed);
-  if (canonicalPrimeDistributionJson(decoded) !== bytes.toString("utf8")) {
+  const serialized =
+    keyOrder === "preserved"
+      ? `${JSON.stringify(parsed, null, 2)}\n`
+      : canonicalPrimeDistributionJson(decoded);
+  if (serialized !== bytes.toString("utf8")) {
     throw new Error(`${name} is not canonical publication JSON.`);
   }
   return decoded;
@@ -466,6 +472,8 @@ function parseReleaseManifest(bytes: Buffer): ReleaseManifest {
     "Pylon Prime release manifest",
     MAX_MANIFEST_BYTES,
     decodeReleaseManifest,
+    // Recipe 1 preserves object field order; its exact original bytes remain signed subjects.
+    "preserved",
   );
   if (
     manifest.build.recipeRevision !== PRIME_RELEASE_RECIPE.recipeRevision ||
@@ -614,9 +622,8 @@ function exactRegex(value: string): string {
 }
 
 function certificateExtension(cert: X509Certificate, oid: string): string | undefined {
-  const extension = cert.extension(oid);
-  const value = extension?.valueObj.subs[0]?.value;
-  return value?.toString("utf8");
+  // Fulcio's GitHub-specific .1 through .6 extensions contain raw UTF-8, not DER strings.
+  return cert.extension(oid)?.value.toString("utf8");
 }
 
 function certificateFromBundle(bundle: ReturnType<typeof bundleFromJSON>): X509Certificate {
@@ -1730,7 +1737,7 @@ async function verifyRemoteSourcePolicy(
   }
   const workflowBytes = await dependencies.fetchBytes(
     `https://raw.githubusercontent.com/${PRIME_DISTRIBUTION_REPOSITORY}/${expected.commit}/${expected.workflow}`,
-    MAX_MANIFEST_BYTES,
+    MAX_WORKFLOW_BYTES,
   );
   const expectedDigest =
     expected.workflow === PRIME_PREVIEW_WORKFLOW
@@ -2291,7 +2298,7 @@ export async function verifyPrimePublicationArtifactDirectory(input: {
   const workflowBytes = await readPrimeGraduationFixtureFile(
     root,
     PRIME_GRADUATION_PREVIEW_WORKFLOW,
-    MAX_MANIFEST_BYTES,
+    MAX_WORKFLOW_BYTES,
   );
   const trustedRoot = await getTrustedRoot({
     ...(input.tufCachePath ? { cachePath: input.tufCachePath } : {}),
