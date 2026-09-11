@@ -110,8 +110,9 @@ const PreviewSetAppearanceTool = safeBrowserTool(
     .annotate(Tool.Idempotent, true),
 );
 
-// Not read-only or idempotent: `save: true` writes a new PNG on every call.
-export const PreviewSnapshotTool = safeBrowserTool(
+// Stays read-only for approval purposes: `save: true` writes only to the thread's own
+// browser-artifacts store, never the workspace, and deleting the thread removes it.
+export const PreviewSnapshotTool = readonlyBrowserTool(
   Tool.make("preview_snapshot", {
     description:
       "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Returns page state, semantic elements, diagnostics, action history, and a PNG screenshot. Set includeImage=false for text-only output with the same page metadata. Set save=true to also write the PNG to disk and get screenshotPath back; embed that path in your reply as ![alt](screenshotPath) so the user sees it. This is the only way to show the user a screenshot; the image in the tool result is not saved anywhere.",

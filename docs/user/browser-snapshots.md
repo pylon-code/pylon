@@ -24,9 +24,6 @@ A snapshot’s screenshot is not saved anywhere unless the agent asks. With `sav
 the PNG to the environment the agent runs in and returns its path, so the agent can embed the
 screenshot in its reply for you to see.
 
-Because a snapshot can write a file, it is not marked read-only. Providers that ask before a tool
-changes anything, such as Codex outside Full access, ask before snapshots too.
-
 ## Recordings
 
 When an agent stops a browser recording, the desktop app saves the video. If the agent runs in the
