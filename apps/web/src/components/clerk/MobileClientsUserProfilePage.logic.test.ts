@@ -2,6 +2,7 @@ import type { RelayClientDeviceRecord } from "@t3tools/contracts/relay";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  mobileClientActivityLabel,
   mobileClientNotificationDetail,
   mobileClientPlatformLabel,
   mobileClientUpdatedAtLabel,
@@ -37,6 +38,23 @@ describe("mobile client presentation", () => {
     );
   });
 
+  it("labels Android devices without displaying an iOS version", () => {
+    expect(
+      mobileClientPlatformLabel(
+        device({ platform: "android", iosMajorVersion: null, androidApiLevel: 36 }),
+      ),
+    ).toBe("Android · Pylon 1.2.3");
+  });
+
+  it("names each platform's activity surface", () => {
+    expect(mobileClientActivityLabel(device())).toBe("Live Activities");
+    expect(
+      mobileClientActivityLabel(
+        device({ platform: "android", iosMajorVersion: null, androidApiLevel: 36 }),
+      ),
+    ).toBe("Ongoing activity");
+  });
+
   it("distinguishes disabled notifications from an empty event selection", () => {
     expect(
       mobileClientNotificationDetail(
@@ -59,6 +77,7 @@ describe("mobile client presentation", () => {
   });
 
   it("handles missing app versions and invalid update timestamps", () => {
+    expect(mobileClientPlatformLabel(device({ iosMajorVersion: null }))).toBe("iOS · Pylon 1.2.3");
     expect(mobileClientPlatformLabel(device({ appVersion: null }))).toBe("iOS 18");
     expect(mobileClientUpdatedAtLabel("not-a-date")).toBe("Update time unavailable");
   });

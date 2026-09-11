@@ -95,6 +95,10 @@ const appleTeamId = repoEnv.PYLON_APPLE_TEAM_ID?.trim() || repoEnv.APPLE_TEAM_ID
 const easProjectId = repoEnv.PYLON_EAS_PROJECT_ID?.trim() ?? "";
 const easOwner = repoEnv.PYLON_EAS_OWNER?.trim() ?? "";
 
+// Firebase config for Android push. Pylon ships none by default; builds without
+// it still work but cannot receive agent notifications.
+const androidGoogleServicesFile = repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE?.trim() ?? "";
+
 const VARIANT_CONFIG = {
   development: {
     appName: "Pylon Dev",
@@ -212,15 +216,17 @@ const config: ExpoConfig = {
   userInterfaceStyle: "automatic",
   // Over-the-air updates follow the configured EAS project. Off until one is
   // set: an update URL is a remote code channel, and inheriting T3's would let
-  // their bundles run inside Pylon.
-  updates: easProjectId
-    ? {
-        enabled: true,
-        url: `https://u.expo.dev/${easProjectId}`,
-        checkAutomatically: "ON_LOAD",
-        fallbackToCacheTimeout: 0,
-      }
-    : { enabled: false },
+  // their bundles run inside Pylon. `T3CODE_MOBILE_UPDATES_ENABLED=0` also turns
+  // them off for a private binary built against a configured project.
+  updates:
+    easProjectId && repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0"
+      ? {
+          enabled: true,
+          url: `https://u.expo.dev/${easProjectId}`,
+          checkAutomatically: "ON_LOAD",
+          fallbackToCacheTimeout: 0,
+        }
+      : { enabled: false },
   ios: {
     icon: variant.assets.iosIcon,
     supportsTablet: true,
@@ -243,6 +249,13 @@ const config: ExpoConfig = {
           ],
         }
       : {}),
+    // SecureStore keeps connection credentials in the Keychain. The group is the
+    // bundle ID this build actually signs with, including a personal-team
+    // override, and `$(AppIdentifierPrefix)` resolves to the signing team at
+    // build time, so no team ID is pinned here.
+    entitlements: {
+      "keychain-access-groups": [`$(AppIdentifierPrefix)${iosBundleIdentifier}`],
+    },
     infoPlist: {
       NSAppTransportSecurity: {
         NSAllowsArbitraryLoads: true,
@@ -271,6 +284,7 @@ const config: ExpoConfig = {
   android: {
     icon: variant.assets.appIcon,
     package: variant.androidPackage,
+    ...(androidGoogleServicesFile ? { googleServicesFile: androidGoogleServicesFile } : {}),
     adaptiveIcon: {
       backgroundColor: variant.assets.androidAdaptiveBackgroundColor,
       foregroundImage: variant.assets.androidAdaptiveForeground,
@@ -375,6 +389,10 @@ const config: ExpoConfig = {
     [
       "expo-build-properties",
       {
+        android: {
+          // Keep the supported floor explicit and covered by native notification tests.
+          minSdkVersion: 24,
+        },
         ios: {
           deploymentTarget: "18.0",
           // AppCheckCore 11.3+ includes Swift and needs module maps for these Objective-C dependencies.
@@ -404,6 +422,9 @@ const config: ExpoConfig = {
   extra: {
     appVariant: APP_VARIANT,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
+    // Without Firebase config the app never gets an FCM token, so Settings must
+    // not offer Android notifications it cannot deliver.
+    androidPushConfigured: androidGoogleServicesFile.length > 0,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
     },

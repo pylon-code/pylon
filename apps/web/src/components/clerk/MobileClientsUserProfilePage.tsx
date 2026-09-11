@@ -7,6 +7,7 @@ import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { Skeleton } from "../ui/skeleton";
 import {
+  mobileClientActivityLabel,
   mobileClientNotificationDetail,
   mobileClientPlatformLabel,
   mobileClientUpdatedAtLabel,
@@ -54,7 +55,10 @@ function MobileClientRow({ device }: { readonly device: RelayClientDeviceRecord 
           enabled={device.notifications.enabled}
           label="Push notifications"
         />
-        <MobileClientStatusBadge enabled={device.liveActivities.enabled} label="Live Activities" />
+        <MobileClientStatusBadge
+          enabled={device.liveActivities.enabled}
+          label={mobileClientActivityLabel(device)}
+        />
       </div>
       <p className="mt-1.5 text-xs leading-[1.125rem] text-muted-foreground/80">
         {mobileClientNotificationDetail(device)}
@@ -94,7 +98,8 @@ function EmptyMobileClients() {
       <EmptyHeader>
         <EmptyTitle className="text-[1.0625rem] leading-6">No mobile clients</EmptyTitle>
         <EmptyDescription className="text-[0.8125rem] leading-[1.125rem]">
-          Sign in to Pylon on your iPhone to register it for push notifications and Live Activities.
+          Sign in to Pylon on your phone to register it for push notifications and agent activity
+          updates.
         </EmptyDescription>
       </EmptyHeader>
     </Empty>

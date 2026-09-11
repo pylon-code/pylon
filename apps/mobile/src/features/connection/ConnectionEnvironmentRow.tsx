@@ -5,7 +5,6 @@ import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
-import { ProviderSetupLink } from "../settings/ProviderSetupLink";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useState } from "react";
@@ -114,10 +113,6 @@ export function ConnectionEnvironmentRow(props: {
     environmentId: EnvironmentId,
     updates: { readonly label: string; readonly displayUrl: string },
   ) => Promise<AtomCommandResult<unknown, unknown>>;
-  readonly onSetupProvider: (target: {
-    readonly environmentId: EnvironmentId;
-    readonly instanceId: ProviderInstanceId;
-  }) => void;
 }) {
   const [label, setLabel] = useState(props.environment.environmentLabel);
   const [url, setUrl] = useState(props.environment.displayUrl);
@@ -261,22 +256,6 @@ export function ConnectionEnvironmentRow(props: {
               </View>
             </>
           )}
-
-          {serverConfig?.providers
-            .filter((provider) => provider.setup?.canAuthenticate || provider.setup?.canInstall)
-            .map((provider) => (
-              <ProviderSetupLink
-                key={provider.instanceId}
-                provider={provider}
-                disabled={props.environment.connectionState !== "connected"}
-                onPress={() =>
-                  props.onSetupProvider({
-                    environmentId: props.environment.environmentId,
-                    instanceId: provider.instanceId,
-                  })
-                }
-              />
-            ))}
 
           <PrimeHostMaintenanceStatus environmentId={props.environment.environmentId} />
 
