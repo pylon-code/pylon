@@ -77,7 +77,13 @@ it("downloads to runner temp, verifies before preview extraction, and runs every
   expect(stockInstall).toBeGreaterThan(verify);
   expect(execute).toBeGreaterThan(stockInstall);
   expect(source).toContain("$RUNNER_TEMP/prime-preview");
-  expect(source).toContain("$RUNNER_TEMP/prime-stock/prime-agent-0.8.1.tgz");
+  expect(source).toContain(
+    "${process.env.RUNNER_TEMP}/prime-stock/${PRIME_STOCK_ARTIFACT.assetName}",
+  );
+  expect(source).toContain(
+    'import { PRIME_STOCK_ARTIFACT } from "./apps/server/src/provider/prime/PrimeAgentStockArtifact.ts"',
+  );
+  expect(source).toContain('"$PYLON_PRIME_STOCK_TARBALL"');
   expect(source).toContain("--ignore-scripts");
   expect(source).not.toContain("--passWithNoTests");
   expect(() => assertNoPublishingOrSkippedProof(source)).not.toThrow();
