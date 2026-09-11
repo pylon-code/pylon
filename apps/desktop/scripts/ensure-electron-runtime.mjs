@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
@@ -101,6 +102,44 @@ function invalidRuntimePaths(electronDir, platformPath) {
   ].filter((runtimePath) => NodeFS.existsSync(runtimePath) && !isMachO(runtimePath));
 }
 
+/**
+ * Whether `dist` holds a finished install of `version`. The package installer
+ * writes `path.txt` only after extracting the whole archive, and this script
+ * writes it only after checking a fallback install, so a `dist` without both
+ * markers is a partial extraction, such as parallel lazy installs leave behind.
+ */
+export function hasCompletedElectronInstall(
+  electronDir,
+  platformPath,
+  version,
+  readFile = (filePath) => NodeFS.readFileSync(filePath, "utf8"),
+) {
+  try {
+    return (
+      readFile(NodePath.join(electronDir, "path.txt")) === platformPath &&
+      readDistVersion(electronDir, readFile) === version
+    );
+  } catch {
+    return false;
+  }
+}
+
+function readDistVersion(electronDir, readFile) {
+  return readFile(NodePath.join(electronDir, "dist", "version"))
+    .trim()
+    .replace(/^v/, "");
+}
+
+function distVersionMatches(electronDir, version) {
+  try {
+    return (
+      readDistVersion(electronDir, (filePath) => NodeFS.readFileSync(filePath, "utf8")) === version
+    );
+  } catch {
+    return false;
+  }
+}
+
 function runChecked(command, args) {
   const result = NodeChildProcess.spawnSync(command, args, {
     encoding: "utf8",
@@ -134,20 +173,61 @@ function runPackagedElectronInstaller(installerPath) {
   return result.status === 0;
 }
 
+function sha256File(filePath) {
+  const hash = NodeCrypto.createHash("sha256");
+  const descriptor = NodeFS.openSync(filePath, "r");
+  try {
+    const chunk = new Uint8Array(1024 * 1024);
+    let bytesRead = NodeFS.readSync(descriptor, chunk);
+    while (bytesRead > 0) {
+      hash.update(chunk.subarray(0, bytesRead));
+      bytesRead = NodeFS.readSync(descriptor, chunk);
+    }
+  } finally {
+    NodeFS.closeSync(descriptor);
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * Checks a downloaded archive against the SHA-256 checksums shipped inside the
+ * installed electron package, never against anything fetched from the download
+ * source. A missing entry fails as loudly as a mismatch.
+ */
+export function verifyElectronArchive(zipPath, artifactName, checksums) {
+  const expected = checksums[artifactName];
+  if (typeof expected !== "string") {
+    throw new Error(
+      `Electron's bundled checksums.json has no entry for ${artifactName}; refusing to extract an unverified download.`,
+    );
+  }
+  const actual = sha256File(zipPath);
+  if (actual !== expected.toLowerCase()) {
+    throw new Error(
+      `${artifactName} does not match Electron's bundled checksum (expected SHA-256 ${expected}, got ${actual}); refusing to extract it.`,
+    );
+  }
+}
+
 // Last resort when the packaged installer is missing or fails (for example, a
-// policy blocks its native unzip binding). Unlike install.js it has no checksum
-// verification or download cache.
+// policy blocks its native unzip binding). It has no download cache, but it
+// verifies the archive against the package's bundled checksums like install.js.
 function installElectronRuntime(electronDir, version) {
+  const artifactName = `electron-v${version}-${hostPlatform}-${hostArch}.zip`;
+  const checksums = JSON.parse(
+    NodeFS.readFileSync(NodePath.join(electronDir, "checksums.json"), "utf8"),
+  );
   const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-electron-"));
-  const zipPath = NodePath.join(tempDir, `electron-v${version}-${hostPlatform}-${hostArch}.zip`);
+  const zipPath = NodePath.join(tempDir, artifactName);
 
   try {
     runChecked("curl", [
       "-fsSL",
-      `https://github.com/electron/electron/releases/download/v${version}/electron-v${version}-${hostPlatform}-${hostArch}.zip`,
+      `https://github.com/electron/electron/releases/download/v${version}/${artifactName}`,
       "-o",
       zipPath,
     ]);
+    verifyElectronArchive(zipPath, artifactName, checksums);
     if (hostPlatform === "darwin") {
       runChecked("ditto", ["-x", "-k", zipPath, NodePath.join(electronDir, "dist")]);
     } else {
@@ -167,12 +247,15 @@ export function ensureElectronRuntime() {
   const electronPackageJsonPath = require.resolve("electron/package.json");
   const electronPackageJson = JSON.parse(NodeFS.readFileSync(electronPackageJsonPath, "utf8"));
   const electronDir = NodePath.dirname(electronPackageJsonPath);
+  const { version } = electronPackageJson;
   const platformPath = getPlatformPath();
   const electronPath = NodePath.join(electronDir, "dist", platformPath);
-  const missingBeforeInstall = missingRuntimePaths(electronDir, platformPath);
-  const invalidBeforeInstall = invalidRuntimePaths(electronDir, platformPath);
+  const isInstalled =
+    hasCompletedElectronInstall(electronDir, platformPath, version) &&
+    missingRuntimePaths(electronDir, platformPath).length === 0 &&
+    invalidRuntimePaths(electronDir, platformPath).length === 0;
 
-  if (missingBeforeInstall.length > 0 || invalidBeforeInstall.length > 0) {
+  if (!isInstalled) {
     if (NodeFS.existsSync(NodePath.join(electronDir, "dist"))) {
       NodeFS.rmSync(NodePath.join(electronDir, "dist"), { recursive: true, force: true });
     }
@@ -181,25 +264,34 @@ export function ensureElectronRuntime() {
     const installedByPackage =
       installerPath !== null &&
       runPackagedElectronInstaller(installerPath) &&
+      hasCompletedElectronInstall(electronDir, platformPath, version) &&
       missingRuntimePaths(electronDir, platformPath).length === 0 &&
       invalidRuntimePaths(electronDir, platformPath).length === 0;
     if (!installedByPackage) {
       if (NodeFS.existsSync(NodePath.join(electronDir, "dist"))) {
         NodeFS.rmSync(NodePath.join(electronDir, "dist"), { recursive: true, force: true });
       }
-      installElectronRuntime(electronDir, electronPackageJson.version);
+      NodeFS.rmSync(NodePath.join(electronDir, "path.txt"), { force: true });
+      installElectronRuntime(electronDir, version);
     }
   }
 
   const missingAfterInstall = missingRuntimePaths(electronDir, platformPath);
   const invalidAfterInstall = invalidRuntimePaths(electronDir, platformPath);
-  if (missingAfterInstall.length > 0 || invalidAfterInstall.length > 0) {
+  const versionMatchesAfterInstall = distVersionMatches(electronDir, version);
+  if (
+    missingAfterInstall.length > 0 ||
+    invalidAfterInstall.length > 0 ||
+    !versionMatchesAfterInstall
+  ) {
     throw new Error(
-      `Electron runtime is incomplete after install.\nMissing:\n${missingAfterInstall
+      `Electron ${version} runtime is incomplete after install.\nMissing:\n${missingAfterInstall
         .map((runtimePath) => `- ${runtimePath}`)
         .join("\n")}\nInvalid:\n${invalidAfterInstall
         .map((runtimePath) => `- ${runtimePath}`)
-        .join("\n")}`,
+        .join(
+          "\n",
+        )}${versionMatchesAfterInstall ? "" : `\nVersion: dist/version is not ${version}`}`,
     );
   }
 
