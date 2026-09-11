@@ -480,6 +480,48 @@ function safeArchivePath(raw: string): string {
   return parts.join("/");
 }
 
+function parsePrimeFilePax(bytes: Buffer) {
+  const fields = new Map<string, string>();
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const space = bytes.indexOf(0x20, offset);
+    const lengthText = bytes.subarray(offset, space).toString("utf8");
+    if (space < offset || !/^[1-9][0-9]{0,3}$/u.test(lengthText)) {
+      throw new Error("Prime tarball has malformed per-file extended metadata.");
+    }
+    const end = offset + Number(lengthText);
+    if (end > bytes.byteLength || end <= space + 2 || bytes[end - 1] !== 0x0a) {
+      throw new Error("Prime tarball has an invalid extended record length.");
+    }
+    const valueBytes = bytes.subarray(space + 1, end - 1);
+    const record = valueBytes.toString("utf8");
+    const equals = record.indexOf("=");
+    const key = record.slice(0, equals);
+    const value = record.slice(equals + 1);
+    if (
+      !Buffer.from(record, "utf8").equals(valueBytes) ||
+      /[\0\r\n]/u.test(record) ||
+      !["path", "size", "mtime"].includes(key) ||
+      fields.has(key)
+    ) {
+      throw new Error("Prime tarball has unsupported or repeated extended fields.");
+    }
+    fields.set(key, value);
+    offset = end;
+  }
+  const path = fields.get("path");
+  if (!path) throw new Error("Prime tarball extended metadata omits its file path.");
+  const numeric = (key: string): number | undefined => {
+    const value = fields.get(key);
+    if (value === undefined) return undefined;
+    if (!/^(?:0|[1-9][0-9]*)$/u.test(value) || !Number.isSafeInteger(Number(value))) {
+      throw new Error("Prime tarball extended metadata has an invalid numeric field.");
+    }
+    return Number(value);
+  };
+  return { path: safeArchivePath(path), size: numeric("size"), mtime: numeric("mtime") };
+}
+
 async function parsePrimeTarball(bytes: Buffer): Promise<ReadonlyArray<TarEntry>> {
   const tar = await gunzipBounded(bytes);
   const entries: TarEntry[] = [];
@@ -487,6 +529,7 @@ async function parsePrimeTarball(bytes: Buffer): Promise<ReadonlyArray<TarEntry>
   let offset = 0;
   let zeroBlocks = 0;
   let expandedFiles = 0;
+  let pendingPax: ReturnType<typeof parsePrimeFilePax> | undefined;
   while (offset + 512 <= tar.byteLength) {
     const block = tar.subarray(offset, offset + 512);
     offset += 512;
@@ -499,8 +542,26 @@ async function parsePrimeTarball(bytes: Buffer): Promise<ReadonlyArray<TarEntry>
     verifyTarChecksum(block);
     const name = tarString(block, 0, 100);
     const prefix = tarString(block, 345, 155);
-    const path = safeArchivePath(prefix ? `${prefix}/${name}` : name);
     const type = block[156] ?? 0;
+    const size = tarNumber(block, 124, 12, "entry size");
+    if (type === 0x78) {
+      if (
+        pendingPax ||
+        prefix ||
+        !name.startsWith("PaxHeader/") ||
+        size < 1 ||
+        size > 1024 ||
+        offset + size > tar.byteLength
+      ) {
+        throw new Error("Prime tarball has unbounded or nested per-file extended metadata.");
+      }
+      safeArchivePath(`package/${name}`);
+      pendingPax = parsePrimeFilePax(tar.subarray(offset, offset + size));
+      offset += Math.ceil(size / 512) * 512;
+      continue;
+    }
+    const headerPath = safeArchivePath(prefix ? `${prefix}/${name}` : name);
+    const path = pendingPax?.path ?? headerPath;
     const kind = type === 0 || type === 0x30 ? "file" : type === 0x35 ? "directory" : undefined;
     if (!kind) {
       throw new Error(
@@ -509,7 +570,15 @@ async function parsePrimeTarball(bytes: Buffer): Promise<ReadonlyArray<TarEntry>
     }
     const mode = tarNumber(block, 100, 8, "mode");
     if ((mode & ~0o777) !== 0) throw new Error("Prime tarball contains privileged mode bits.");
-    const size = tarNumber(block, 124, 12, "entry size");
+    if (
+      pendingPax &&
+      (kind !== "file" ||
+        (pendingPax.size !== undefined && pendingPax.size !== size) ||
+        (pendingPax.mtime !== undefined && pendingPax.mtime !== tarNumber(block, 136, 12, "mtime")))
+    ) {
+      throw new Error("Prime tarball extended metadata conflicts with its next regular file.");
+    }
+    pendingPax = undefined;
     if (kind === "directory" && size !== 0) {
       throw new Error("Prime tarball directory contains bytes.");
     }
@@ -534,7 +603,7 @@ async function parsePrimeTarball(bytes: Buffer): Promise<ReadonlyArray<TarEntry>
     });
     offset += Math.ceil(size / 512) * 512;
   }
-  if (zeroBlocks < 2 || tar.subarray(offset).some((byte) => byte !== 0)) {
+  if (pendingPax || zeroBlocks < 2 || tar.subarray(offset).some((byte) => byte !== 0)) {
     throw new Error("Prime tarball has no exact zero-padded end marker.");
   }
   return entries;
