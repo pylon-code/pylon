@@ -40,11 +40,12 @@ proofs use a bounded faux backend.
    update no-op and explicit same-build rollback.
 5. Approve the `prime-graduation` environment deployment after checking the requested tags.
 
-The stock compatibility fixture is not a workflow input. Pylon source freezes stock Prime Agent 0.8.1
-to upstream repository id `1232493406`, release id `376894763`, asset id `530304956`, the exact public
-asset URL and size `9616163`, SHA-256
-`46c24db1782dd31adc35d5c6cbcc75564faba6ced3bf2ccf03d836ee77134475`, and SHA-512
-`28ce7328c386d6d54261ba6a7bebe3cd420bf6f625ed6cb6a9fae6ca4815988c767b8f3f0ff3d3a95037ab566a17e074b181039a3da2ec929f4c6712ba51931d`.
+The stock compatibility fixture is not a workflow input. Pylon source freezes stock Prime Agent 0.9.4
+to upstream repository id `1232493406`, release id `385120922`, asset id `551511768`, the exact public
+asset URL and size `10028862`, SHA-256
+`b8d752a53d11a8c9a7580e1fb5fc24f7ce74ccad979c7e6e6aa8880fc3ad90b0`, and SHA-512
+`e85582bd3892dfea36c97dcd5935504a53cd3f444785ab6ea0ab25dd97ac0a7f12bda812b8343568288fee89b32a1d790175cf6b4dc1164ac02fe3a8e54b8f13`.
+The workflow derives the downloaded tarball filename from that same source identity.
 The upstream release is not immutable. Its live metadata and optional GitHub digest are only identity
 checks and cross-checks; the independently frozen size and two byte digests are the trust root.
 

@@ -50,7 +50,6 @@ jobs:
             else
               echo "PYLON_PRIME_SECOND_ARTIFACT_DIR="
             fi
-            echo "PYLON_PRIME_STOCK_TARBALL=$RUNNER_TEMP/prime-stock/prime-agent-0.8.1.tgz"
             echo "PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN=$RUNNER_TEMP/prime-stock-install/node_modules/.bin/prime-agent"
             echo "PYLON_PRIME_GRADUATION_RESULT=$RUNNER_TEMP/prime-graduation-results/cases.json"
             echo "PYLON_REAL_PRIME_AGENT_MULTI_PROOF=1"
@@ -83,6 +82,10 @@ jobs:
             --artifact-directory "$RUNNER_TEMP/prime-preview"
           node apps/server/scripts/prime-artifact-graduation.ts download-stock \
             --stock-directory "$RUNNER_TEMP/prime-stock"
+          node --input-type=module -e '
+            import { PRIME_STOCK_ARTIFACT } from "./apps/server/src/provider/prime/PrimeAgentStockArtifact.ts";
+            console.log(`PYLON_PRIME_STOCK_TARBALL=${process.env.RUNNER_TEMP}/prime-stock/${PRIME_STOCK_ARTIFACT.assetName}`);
+          ' >> "$GITHUB_ENV"
 
       - name: Download optional exact second preview
         if: inputs.second_preview_tag != ''
