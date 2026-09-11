@@ -279,7 +279,7 @@ const captureTabMediaStream = (frameRate: number): Promise<MediaStream> =>
   // stream already arrives at that tab's native size and needs no source or dimension constraints.
   navigator.mediaDevices.getDisplayMedia({
     audio: false,
-    video: { frameRate: { max: frameRate } },
+    video: { frameRate: { ideal: frameRate, max: frameRate } },
   });
 
 const stopMediaRecorder = async (recorder: MediaRecorder | null): Promise<void> => {

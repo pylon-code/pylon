@@ -275,7 +275,7 @@ describe("browser recording", () => {
 
     expect(getDisplayMedia).toHaveBeenCalledWith({
       audio: false,
-      video: { frameRate: { max: 30 } },
+      video: { frameRate: { ideal: 30, max: 30 } },
     });
     expect(FakeMediaRecorder.instances[0]?.stream).toBe(stream);
     expect(FakeMediaRecorder.instances[0]?.options?.videoBitsPerSecond).toBe(settings.bitrate);
@@ -291,7 +291,7 @@ describe("browser recording", () => {
 
     expect(getDisplayMedia).toHaveBeenCalledWith({
       audio: false,
-      video: { frameRate: { max: 60 } },
+      video: { frameRate: { ideal: 60, max: 60 } },
     });
     await stopBrowserRecording("recording-tab");
   });
