@@ -41,6 +41,7 @@ import { ProviderAuthServiceLive } from "./provider/Layers/ProviderAuthService.t
 import * as ProviderEventLoggers from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
+import { composeProviderRuntimeLayer } from "./provider/providerRuntimeLayer.ts";
 import * as OpenCodeRuntime from "./provider/opencodeRuntime.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as CheckpointStore from "./checkpointing/CheckpointStore.ts";
@@ -314,10 +315,6 @@ const ProviderLayerLive = ProviderAuthServiceLive.pipe(
       Layer.provide(ProviderAdapterRegistryLive),
       Layer.provideMerge(ProviderSessionDirectoryLayerLive),
       Layer.provideMerge(RollbackSagaRepositoryLive),
-      // Project browser-access overrides resolve a thread's project through the
-      // optional projection query. Rollback admission builds this layer before
-      // orchestration, so provide the shared (memoized) projection infrastructure.
-      Layer.provide(OrchestrationInfrastructureLayerLive),
     ),
   ),
 );
@@ -442,16 +439,16 @@ const CloudManagedEndpointRuntimeLive = Layer.mergeAll(
   ),
 );
 
-const RollbackAdmissionLayerLive = RollbackAdmission.layer.pipe(
-  Layer.provide(ProviderLayerLive),
-  Layer.provide(RollbackWorkspace.layer),
-  Layer.provide(RollbackSagaRepositoryLive),
-);
-
-const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
-  Layer.provideMerge(ProviderLayerLive),
-  Layer.provideMerge(OrchestrationLayerLive.pipe(Layer.provideMerge(RollbackAdmissionLayerLive))),
-);
+const ProviderRuntimeLayerLive = composeProviderRuntimeLayer({
+  provider: ProviderLayerLive,
+  projectionInfrastructure: OrchestrationInfrastructureLayerLive,
+  rollbackAdmission: RollbackAdmission.layer.pipe(
+    Layer.provide(RollbackWorkspace.layer),
+    Layer.provide(RollbackSagaRepositoryLive),
+  ),
+  orchestration: OrchestrationLayerLive,
+  reaper: ProviderSessionReaperLive,
+});
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services

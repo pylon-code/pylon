@@ -46,6 +46,7 @@ import { it, assert, describe, vi } from "@effect/vitest";
 import { afterAll } from "vite-plus/test";
 
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -75,6 +76,7 @@ import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
 import { makeProviderServiceLive } from "./ProviderService.ts";
+import { composeProviderRuntimeLayer } from "../providerRuntimeLayer.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -6199,6 +6201,16 @@ boundedListing.layer("ProviderServiceLive session listing", (it) => {
 
 const decodeBrowserAccessThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
 
+class RuntimeRollbackAdmission extends Context.Service<RuntimeRollbackAdmission, {}>()(
+  "t3/provider/Layers/ProviderService.test/RuntimeRollbackAdmission",
+) {}
+class RuntimeOrchestration extends Context.Service<RuntimeOrchestration, {}>()(
+  "t3/provider/Layers/ProviderService.test/RuntimeOrchestration",
+) {}
+class RuntimeReaper extends Context.Service<RuntimeReaper, {}>()(
+  "t3/provider/Layers/ProviderService.test/RuntimeReaper",
+) {}
+
 describe("agent browser access", () => {
   const revokedThreads: Array<ThreadId> = [];
   const projectId = ProjectId.make("project-browser-access");
@@ -6253,7 +6265,12 @@ describe("agent browser access", () => {
     enableAgentBrowserAccess: boolean,
     codex: ReturnType<typeof makeFakeCodexAdapter>,
     options: NonNullable<Parameters<typeof makeProviderServiceLive>[0]>,
-    project?: { readonly threadId: ThreadId; readonly override?: boolean | undefined },
+    project?: {
+      readonly threadId: ThreadId;
+      readonly override?: boolean | undefined;
+      /** False leaves the projection query to the surrounding runtime composition. */
+      readonly provideProjection?: boolean;
+    },
   ) => {
     const providerAdapterLayer = Layer.succeed(
       ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -6267,7 +6284,11 @@ describe("agent browser access", () => {
     return makeProviderServiceLive(options).pipe(
       Layer.provide(providerAdapterLayer),
       Layer.provideMerge(directoryLayer),
-      Layer.provide(project ? makeBrowserAccessProjectionLayer(project.threadId) : Layer.empty),
+      Layer.provide(
+        project && project.provideProjection !== false
+          ? makeBrowserAccessProjectionLayer(project.threadId)
+          : Layer.empty,
+      ),
       Layer.provide(
         ServerSettings.ServerSettingsService.layerTest({
           enableAgentBrowserAccess,
@@ -6573,6 +6594,71 @@ describe("agent browser access", () => {
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-on");
       const issued = yield* startSessionWith(false, threadId, true);
+      assert.deepEqual(issued, [threadId]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  // Mirrors the server's build order: rollback admission needs ProviderService
+  // and orchestration needs rollback admission, so ProviderService is built
+  // before orchestration publishes the projection query.
+  it.effect("resolves project browser overrides in the composed provider runtime", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-runtime-composition");
+      const issued: Array<ThreadId> = [];
+      const codex = makeFakeCodexAdapter();
+      const projection = makeBrowserAccessProjectionLayer(threadId);
+      const runtime = composeProviderRuntimeLayer({
+        provider: makeAgentBrowserProviderLayer(
+          false,
+          codex,
+          {
+            issueMcpCredential: (request) =>
+              Effect.sync(() => {
+                issued.push(request.threadId);
+                return undefined;
+              }),
+            revokeMcpCredential: () => Effect.void,
+          },
+          { threadId, override: true, provideProjection: false },
+        ),
+        projectionInfrastructure: projection,
+        rollbackAdmission: Layer.effect(
+          RuntimeRollbackAdmission,
+          Effect.gen(function* () {
+            yield* ProviderService.ProviderService;
+            return {};
+          }),
+        ),
+        orchestration: Layer.mergeAll(
+          projection,
+          Layer.effect(
+            RuntimeOrchestration,
+            Effect.gen(function* () {
+              yield* RuntimeRollbackAdmission;
+              return {};
+            }),
+          ),
+        ),
+        reaper: Layer.effect(
+          RuntimeReaper,
+          Effect.gen(function* () {
+            yield* ProviderService.ProviderService;
+            yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+            return {};
+          }),
+        ),
+      });
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+      }).pipe(Effect.provide(runtime));
+
       assert.deepEqual(issued, [threadId]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
