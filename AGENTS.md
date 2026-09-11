@@ -58,7 +58,7 @@ The inherited websocket layer (`npx t3`) enables core remote features. Whether u
 
 Pylon has three key app surfaces: **web**, **desktop**, and **mobile**.
 
-**Web** has hosted and local modes. The inherited hosted origin is `app.t3.codes`, while `npx t3` hosts the web app locally. Both modes need support where reasonable until Pylon infrastructure deliberately changes them.
+**Web** has hosted and local modes. Pylon's hosted origin is `app.pylon-code.com`, while `npx t3` hosts the web app locally. Both modes need support where reasonable until Pylon infrastructure deliberately changes them.
 
 **Desktop** is the main surface most users install first. It is an Electron app that bundles the server runner and can host remote connections from the hosted web client or mobile app.
 

@@ -92,7 +92,7 @@ Quit shortcut** chooses how it confirms:
   until that window ends.
 - **Direct**: the first press quits.
 
-In Hold and Double press, the second press quits immediately, and an unrelated shortcut cancels the
-first press. Holding needs keyboard repeat; if holding does not quit, use two quick presses or the
+In Hold and Double press, the second press quits immediately. You can keep Command or Control held
+between presses or release both keys, and an unrelated shortcut cancels the first press. Holding needs keyboard repeat; if holding does not quit, use two quick presses or the
 application menu. Choosing **Quit** from the application menu always quits immediately. If you had
 **Hold to quit** turned off before this setting existed, Pylon starts in **Direct**.

@@ -128,12 +128,15 @@ explicit binary path pointing into that runtime. Removal is refused while the ru
 
 ## Check access and troubleshoot
 
-After an environment restarts, Google sign-in can show as not checked until an authenticated session
-succeeds. To check access and reload models, use **Refresh provider status** in web or desktop
-provider settings, or **Refresh models** in mobile thread settings. Refresh uses the saved sign-in and
-does not open a login page. If asked to sign in again, use setup on web or desktop. The packaged
-runtime can be slow to start, especially on Windows; health checks, model refresh, and sign-out each
-allow up to 90 seconds.
+After a server restart, Antigravity keeps working without asking you to sign in again; the saved
+sign-in is checked when a session starts. To check access and reload your account's model catalog,
+use **Refresh provider status** in web or desktop provider settings, or **Refresh models** in mobile
+thread settings. Refresh uses the saved sign-in and does not open a login page. If asked to sign in
+again, use setup on web or desktop. The packaged runtime can be slow to start, especially on Windows;
+health checks, model refresh, and sign-out each allow up to 90 seconds.
+
+When Pylon cannot send to Antigravity, the composer says why: it is not installed, it is signed out,
+no model is chosen, its models have not loaded, or the thread's saved model is no longer offered.
 
 If Google reports `SUBSCRIPTION_REQUIRED`, an account restriction, or a usage limit, follow the
 provider's message and any retry time. A finished turn can contain an upstream error instead of

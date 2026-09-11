@@ -208,10 +208,11 @@ current client support.
 ## Prime Agent
 
 Prime Agent uses its public detached-daemon APIs as the primary runtime on macOS, Linux, and WSL2,
-with ACP as an explicit compatibility fallback for custom launch arguments or failed daemon setup.
-A native Windows server fails closed before any probe and never falls back to ACP. Multiple enabled
-Prime instances stay disabled until their graduation matrix passes. One scoped daemon belongs to a
-provider instance, while each Pylon thread owns an isolated native session directory.
+with ACP as an explicit compatibility fallback for custom launch arguments or failed daemon setup. A
+native Windows server fails closed before any probe and never falls back to ACP; Windows desktop
+packaging is independent of that provider-runtime support. Multiple enabled Prime instances stay
+disabled until their graduation matrix passes. One scoped daemon belongs to a provider instance,
+while each Pylon thread owns an isolated native session directory.
 
 Prime-native events terminate at the adapter boundary and map to provider-neutral runtime
 contracts. Daemon identifiers, sockets, paths, request IDs, prompts, and native payloads never cross

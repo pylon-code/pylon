@@ -173,7 +173,8 @@ reserved hostnames use a local icon, so those hostnames are not sent to the publ
 
 Follow an agent's file link to read a report or other file outside the workspace. These files open
 read-only. An HTML file outside the workspace cannot load scripts, styles, or images from
-neighboring files.
+neighboring files. POSIX paths are case-sensitive when Pylon decides whether a file belongs to the
+workspace, so `/work/Project` and `/work/project` differ; Windows drive and UNC paths are not.
 
 ## HTML and PDF files in the file viewer
 

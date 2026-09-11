@@ -16,7 +16,9 @@ web and mobile. See [connection runtime](./connection-runtime.md) and
 The [RPC contract](../../packages/contracts/src/rpc.ts) is the boundary between independently
 versioned clients and servers. Subscriptions send the state a client needs, so a client viewing one
 thread does not pay for every thread's history. Authentication of a socket does not authorize every
-method on it. See [environment auth](./environment-auth.md).
+method on it. See [environment auth](./environment-auth.md). On the client, each RPC session makes one
+connection attempt and shares a single `subscribeServerConfig` stream whose first snapshot is the
+session's `initialConfig`; retry policy belongs to the connection supervisor.
 
 Provider-specific behavior belongs behind an adapter. Orchestration works with normalized commands
 and events, so adding a provider should not require branches throughout the domain or clients.

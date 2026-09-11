@@ -47,9 +47,14 @@ new HTTP requests and socket upgrades still require valid credentials.
 
 ## Transport health and data freshness are separate
 
-A socket opening is insufficient evidence that the environment is usable. The
-[RPC session](../../packages/client-runtime/src/rpc/session.ts) waits for the
-initial server configuration before becoming ready. Shell and thread data then
+A socket opening is insufficient evidence that the environment is usable. An
+[RPC session](../../packages/client-runtime/src/rpc/session.ts) exposes `client`,
+`initialConfig`, `subscribeServerConfig`, `ready`, `probe`, and `closed`, and makes
+one attempt without retrying. It opens one shared server-config stream:
+`initialConfig` is that stream's first snapshot, `ready` waits for it, and
+`subscribeServerConfig` with the session's input joins the stream with a replay of
+current state instead of opening another subscription. `closed` fires when the socket
+disconnects and also when that config stream ends or fails. Shell and thread data then
 have their own synchronization state. A failed shell subscription can coexist
 with a healthy connection; labeling that state "reconnecting" promises a
 transport retry that will never happen.

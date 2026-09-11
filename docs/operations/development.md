@@ -34,10 +34,12 @@ cases. Never run a development server against the live `~/.pylon-code/userdata`,
 `~/.t3/userdata`, which belongs to T3 Code and carries upstream migration numbering.
 
 Seed development state from a copy of Pylon's own database. See
-[test data](../../AGENTS.md#test-data) for a consistent `VACUUM INTO` snapshot. `vp run migrate-dev-db`
-seeds a worktree from a trimmed copy of `~/.pylon-code/userdata/state.sqlite`, and
-`node apps/server/scripts/t3-sqlite-state.ts <query|exec> --base-dir <path>` inspects or seeds an
-isolated database after taking a private backup. Both refuse to write to either runtime home.
+[test data](../../AGENTS.md#test-data) for a consistent `VACUUM INTO` snapshot.
+`vp run migrate-dev-db` seeds a worktree from a trimmed copy of
+`~/.pylon-code/userdata/state.sqlite`, and `--source <path>` reads a different database (never
+`~/.t3`). `node apps/server/scripts/t3-sqlite-state.ts <query|exec> --base-dir <path>` inspects or
+seeds an isolated database after taking a private backup. Both refuse to write to either runtime
+home.
 
 Read ports from the `[dev-runner]` output. The defaults are 13773 for the server and 5733 for web.
 Worktrees derive stable preferences from their paths, but occupied ports can shift them.
@@ -97,11 +99,12 @@ options. The artifact script checks prerequisites before building and reports ev
 together.
 
 Packaged builds keep Pylon's desktop identity independent from T3 Code: `com.pylon.code`, the
-`pylon-code://` protocol, the `pylon-code` Electron profile, and `~/.pylon-code` runtime state.
-Development uses the matching `*.dev` and `pylon-code-dev` identities. Do not restore upstream
-desktop identifiers during selective adoption. Set `PYLON_DESKTOP_UPDATE_REPOSITORY=owner/repo`
-when building outside GitHub Actions for artifacts that should use Pylon's updater; GitHub Actions
-derives it from `GITHUB_REPOSITORY`.
+`pylon-code://` protocol, the `pylon-code` Electron profile, and `~/.pylon-code` runtime state. The
+staged Electron package is also named `pylon-code`, so subprocesses use the isolated profile before
+the main process starts. Development uses the matching `*.dev` and `pylon-code-dev` identities. Do
+not restore upstream desktop identifiers during selective adoption. Set
+`PYLON_DESKTOP_UPDATE_REPOSITORY=owner/repo` when building outside GitHub Actions for artifacts that
+should use Pylon's updater; GitHub Actions derives it from `GITHUB_REPOSITORY`.
 
 ### Linux AppImage prerequisites
 
