@@ -316,7 +316,7 @@ describe("browser recording", () => {
 
     expect(getDisplayMedia).toHaveBeenCalledWith({
       audio: false,
-      video: { frameRate: { max: 60 } },
+      video: { frameRate: { ideal: 60, max: 60 } },
     });
     await stopBrowserRecording(tabId);
 
