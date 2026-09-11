@@ -51,7 +51,7 @@ a private prefix:
 git clone https://github.com/pylon-code/prime-agent
 cd prime-agent
 git switch pylon
-git switch --detach aeb1c6368194dc6c88d2e64a6d0c1bfca7c2f7bb
+git switch --detach a70feb1a6273e0e74b5c22e8544ad18c8eed65c1
 fnm install 22.23.2
 fnm exec --using 22.23.2 npm ci --ignore-scripts --no-audit --no-fund
 
