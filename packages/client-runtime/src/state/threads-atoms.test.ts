@@ -129,6 +129,7 @@ const makeHarness = Effect.fn("TestThreadAtoms.makeHarness")(function* (options?
       threadResumeCompletionMarker: true,
       threadSnapshotPagination: true,
     } as never),
+    subscribeServerConfig: (input) => client.subscribeServerConfig(input),
     ready: Effect.void,
     probe: Effect.void,
     closed: Effect.never,

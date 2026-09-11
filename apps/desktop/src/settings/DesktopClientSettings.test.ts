@@ -27,7 +27,7 @@ const clientSettings: ClientSettings = {
   browserAutoShowFloatingPreview: false,
   browserProfiles: [{ id: "work", name: "Work", kind: "persistent" }],
   browserDefaultProfileId: "work",
-  confirmQuit: true,
+  confirmQuit: "double-click",
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   confirmThreadUnpin: false,
@@ -344,22 +344,24 @@ describe("DesktopClientSettings", () => {
         yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
         yield* fileSystem.writeFileString(
           environment.clientSettingsPath,
-          '{"confirmQuit":"hold","timestampFormat":"12-hour"}',
+          '{"confirmQuit":false,"diffLayout":"unified","timestampFormat":"12-hour"}',
         );
 
         const saved = Option.getOrThrow(yield* settings.get);
-        assert.isTrue(saved.confirmQuit);
+        // A legacy boolean is readable: it migrates to its mode and saves canonically.
+        assert.strictEqual(saved.confirmQuit, "direct");
         yield* settings.set({ ...saved, onboardingCompletedAt: "2026-09-10T12:00:00.000Z" });
         assert.deepInclude(yield* readDocument, {
-          confirmQuit: "hold",
+          confirmQuit: "direct",
+          diffLayout: "unified",
           timestampFormat: "12-hour",
           onboardingCompletedAt: "2026-09-10T12:00:00.000Z",
         });
 
-        yield* settings.set({ ...saved, confirmQuit: false });
-        assert.deepInclude(yield* readDocument, { confirmQuit: false });
-        yield* settings.set({ ...saved, confirmQuit: false, wordWrap: false });
-        assert.deepInclude(yield* readDocument, { confirmQuit: false, wordWrap: false });
+        yield* settings.set({ ...saved, diffLayout: "split" });
+        assert.deepInclude(yield* readDocument, { diffLayout: "split" });
+        yield* settings.set({ ...saved, diffLayout: "split", wordWrap: false });
+        assert.deepInclude(yield* readDocument, { diffLayout: "split", wordWrap: false });
       }),
     ),
   );
@@ -376,13 +378,18 @@ describe("DesktopClientSettings", () => {
         ),
         set: () => Effect.void,
       });
-      const disabled = DesktopClientSettings.DesktopClientSettings.of({
-        get: Effect.succeed(Option.some({ ...clientSettings, confirmQuit: false })),
+      const direct = DesktopClientSettings.DesktopClientSettings.of({
+        get: Effect.succeed(Option.some({ ...clientSettings, confirmQuit: "direct" })),
+        set: () => Effect.void,
+      });
+      const missing = DesktopClientSettings.DesktopClientSettings.of({
+        get: Effect.succeed(Option.none()),
         set: () => Effect.void,
       });
 
-      assert.isTrue(yield* DesktopClientSettings.readConfirmQuit(failing));
-      assert.isFalse(yield* DesktopClientSettings.readConfirmQuit(disabled));
+      assert.strictEqual(yield* DesktopClientSettings.readConfirmQuit(failing), "hold");
+      assert.strictEqual(yield* DesktopClientSettings.readConfirmQuit(missing), "hold");
+      assert.strictEqual(yield* DesktopClientSettings.readConfirmQuit(direct), "direct");
     }),
   );
 });

@@ -4,6 +4,7 @@ import {
   encodeStoredClientSettings,
   retainUnreadClientSettings,
   type ClientSettings,
+  type QuitConfirmationMode,
   type StoredClientSettings,
 } from "@t3tools/contracts";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
@@ -134,10 +135,10 @@ const readClientSettings = (
     ),
   );
 
-/** Reads the hold-to-quit preference, keeping the default hold when settings cannot be read. */
+/** Reads the quit shortcut mode, keeping the default hold when settings cannot be read. */
 export const readConfirmQuit = (
   clientSettings: DesktopClientSettings["Service"],
-): Effect.Effect<boolean> =>
+): Effect.Effect<QuitConfirmationMode> =>
   clientSettings.get.pipe(
     Effect.map(
       Option.match({

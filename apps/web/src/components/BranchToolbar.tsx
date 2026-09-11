@@ -427,7 +427,7 @@ function useLabelsOverflow(element: HTMLDivElement | null): boolean {
   // Label widths can change without the strip box moving (font family or
   // size preferences), so re-measure on every render as well as on resize
   // and font loads.
-  useEffect(() => {
+  useLayoutEffect(() => {
     measure();
   });
 
@@ -590,7 +590,7 @@ export const BranchToolbar = memo(function BranchToolbar({
         ) : null}
         <div
           className={cn(
-            "min-w-0 items-center gap-1",
+            "min-w-10 items-center gap-1",
             showGitControls ? "hidden @3xl/composer-surface:flex" : "flex",
           )}
         >

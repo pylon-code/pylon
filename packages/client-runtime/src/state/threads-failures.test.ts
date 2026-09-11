@@ -106,6 +106,7 @@ const makeHarness = Effect.fn("TestThreadFailures.makeHarness")(function* (optio
   const session: RpcSession = {
     client,
     initialConfig: Effect.succeed({ threadResumeCompletionMarker: true } as never),
+    subscribeServerConfig: (input) => client.subscribeServerConfig(input),
     ready: Effect.void,
     probe: Effect.void,
     closed: Effect.never,

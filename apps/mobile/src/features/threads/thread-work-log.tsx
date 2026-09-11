@@ -268,7 +268,7 @@ export function ShimmeringWorkContent(props: {
 
   return (
     <View
-      className={cn("min-w-0 flex-1", props.className)}
+      className={cn("min-w-0 flex-1 overflow-hidden", props.className)}
       onLayout={(event) => setAvailableWidth(event.nativeEvent.layout.width)}
     >
       <ShimmerWorkContent
@@ -294,7 +294,7 @@ export function ShimmeringWorkContent(props: {
           style={[{ width: SHIMMER_WIDTH }, sweepStyle]}
         >
           <MaskedView
-            className="absolute inset-0"
+            style={StyleSheet.absoluteFill}
             maskElement={
               <Svg width="100%" height="100%">
                 <Defs>
