@@ -10,7 +10,7 @@ import {
 export const PRIME_AGENT_INSTANCE_GUIDANCE =
   "Use a distinct, non-nested Agent home for this instance, then sign in separately inside that home. Credentials, settings, model catalogs, sessions, sockets, checkpoints, and MCP state stay with that instance.";
 export const PRIME_AGENT_ACP_GUIDANCE =
-  "Prime Agent is limited to one enabled account in this release. It does not enable multiple Prime instances. ACP compatibility is the explicit degraded fallback for that one account on macOS, Linux, and WSL2, and only after native teardown finishes.";
+  "Prime Agent runs one enabled account per Pylon environment. A stock Prime Agent install runs in ACP compatibility mode (Full access only, model changes need a new thread). Install the Pylon Prime build to enable native mode; see the Prime Agent guide.";
 export const PRIME_AGENT_MAINTENANCE_GUIDANCE =
   "Pylon manages per-instance Prime processes only. OS-user-global Prime update, doctor, shutdown, and stop-all maintenance remains external and is never run for an instance.";
 

@@ -3,8 +3,14 @@ import type { PrimeAgentMaterializedIdentity } from "./PrimeAgentRuntimeContext.
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 
-import type { PrimeAgentDaemonManagerInput } from "./PrimeAgentDaemonManager.ts";
+import {
+  PrimeAgentDaemonManagerError,
+  type PrimeAgentDaemonManagerInput,
+} from "./PrimeAgentDaemonManager.ts";
+
+const isPrimeAgentDaemonManagerError = Schema.is(PrimeAgentDaemonManagerError);
 
 const FALLBACK_MESSAGES = {
   launchArgs:
@@ -12,6 +18,8 @@ const FALLBACK_MESSAGES = {
   resolution:
     "Prime Agent daemon mode could not resolve the configured CLI; using ACP compatibility mode.",
   manager: "Prime Agent daemon integration is unavailable; using ACP compatibility mode.",
+  sdkContract:
+    "The installed Prime Agent is a stock build, so Pylon is using ACP compatibility mode: one account, Full access only, and model changes need a new thread. Install the Pylon Prime build to enable native mode.",
 } as const;
 
 const NATIVE_ONLY_MESSAGES = {
@@ -31,12 +39,16 @@ export type PrimeAgentBackendSelection<Manager> =
   | { readonly runtime: "daemon"; readonly manager: Manager }
   | {
       readonly runtime: "acp";
-      readonly fallbackCategory?: "launch-args" | "binary-resolution" | "daemon-setup";
+      readonly fallbackCategory?:
+        | "launch-args"
+        | "binary-resolution"
+        | "daemon-setup"
+        | "sdk-contract";
       readonly fallbackMessage?: string;
     }
   | {
       readonly runtime: "unavailable";
-      readonly reason: "launch-args" | "binary-resolution" | "daemon-setup";
+      readonly reason: "launch-args" | "binary-resolution" | "daemon-setup" | "sdk-contract";
       readonly message: string;
     };
 
@@ -155,16 +167,22 @@ export function negotiatePrimeAgentBackend<
       }),
     );
     if (Result.isFailure(manager)) {
+      const isStockSdkContract =
+        isPrimeAgentDaemonManagerError(manager.failure) &&
+        manager.failure.reason === "incompatible-hello" &&
+        manager.failure.detail.includes("caller-owned session contract");
       return input.requireNative === true
         ? ({
             runtime: "unavailable",
-            reason: "daemon-setup",
+            reason: isStockSdkContract ? "sdk-contract" : "daemon-setup",
             message: NATIVE_ONLY_MESSAGES.manager,
           } as const)
         : ({
             runtime: "acp",
-            fallbackCategory: "daemon-setup",
-            fallbackMessage: FALLBACK_MESSAGES.manager,
+            fallbackCategory: isStockSdkContract ? "sdk-contract" : "daemon-setup",
+            fallbackMessage: isStockSdkContract
+              ? FALLBACK_MESSAGES.sdkContract
+              : FALLBACK_MESSAGES.manager,
           } as const);
     }
 

@@ -79,8 +79,9 @@ describe("provider multiple-instance presentation", () => {
 
     expect(presentation).toEqual({ supported: false, reason });
     expect(presentation.reason).not.toContain(privateValue);
-    expect(PRIME_AGENT_ACP_GUIDANCE).toContain("limited to one enabled account");
-    expect(PRIME_AGENT_ACP_GUIDANCE).toContain("does not enable multiple Prime instances");
+    expect(PRIME_AGENT_ACP_GUIDANCE).toBe(
+      "Prime Agent runs one enabled account per Pylon environment. A stock Prime Agent install runs in ACP compatibility mode (Full access only, model changes need a new thread). Install the Pylon Prime build to enable native mode; see the Prime Agent guide.",
+    );
     expect(PRIME_AGENT_ACP_GUIDANCE).not.toContain(privateValue);
   });
 

@@ -14,7 +14,10 @@ import {
   negotiatePrimeAgentBackend,
   type PrimeAgentBackendNegotiationInput,
 } from "./PrimeAgentBackendSelection.ts";
-import type { PrimeAgentDaemonManagerInput } from "./PrimeAgentDaemonManager.ts";
+import {
+  PrimeAgentDaemonManagerError,
+  type PrimeAgentDaemonManagerInput,
+} from "./PrimeAgentDaemonManager.ts";
 
 const testManager = (id: string) => ({
   id,
@@ -288,6 +291,29 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
       expect(selected.runtime === "acp" ? selected.fallbackMessage : undefined).not.toContain(
         "private manager cause",
       );
+    }),
+  );
+
+  it.effect("reports a stock Prime SDK as an sdk-contract fallback", () =>
+    Effect.gen(function* () {
+      const selection = yield* negotiatePrimeAgentBackend(baseInput, {
+        resolveExecutable: () => Effect.succeed("/fake/prime-agent"),
+        makeManager: () =>
+          Effect.fail(
+            new PrimeAgentDaemonManagerError({
+              reason: "incompatible-hello",
+              detail:
+                "The installed Prime Agent SDK does not provide the required caller-owned session contract.",
+              socket: "/tmp/fake.sock",
+            }),
+          ),
+      });
+      expect(selection).toEqual({
+        runtime: "acp",
+        fallbackCategory: "sdk-contract",
+        fallbackMessage:
+          "The installed Prime Agent is a stock build, so Pylon is using ACP compatibility mode: one account, Full access only, and model changes need a new thread. Install the Pylon Prime build to enable native mode.",
+      });
     }),
   );
 
