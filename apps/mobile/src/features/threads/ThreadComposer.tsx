@@ -1,7 +1,6 @@
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useAtomValue } from "@effect/atom-react";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
-import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
 import {
   formatSessionGoalStatus,
   type SessionGoalSnapshot,
@@ -47,7 +46,6 @@ import {
   type SessionResourcesSnapshot,
 } from "@t3tools/client-runtime/state/session-resources";
 import { PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS } from "@t3tools/contracts";
-import { isPrimeAgentDefaultModelUnavailable } from "@t3tools/shared/model";
 import type {
   EnvironmentId,
   MessageId,
@@ -139,6 +137,7 @@ import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
 import { ProviderUnavailableNotice } from "./ProviderUnavailableNotice";
 import {
+  getThreadComposerModelChangeDisabledReason,
   resolveThreadComposerAdmissionReason,
   resolveThreadComposerAuthority,
   threadComposerShowsStopAction,
@@ -530,37 +529,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     (selectedProviderStatus?.requiresNewThreadForModelChange === true ||
       activeSessionProviderStatus?.requiresNewThreadForModelChange === true);
   const getModelChangeDisabledReason = useCallback(
-    (option: ModelOption) => {
-      if (props.sessionInputBlocked) {
-        return "Provider changes are blocked while this thread has a pending safety operation";
-      }
-      const boundInstanceId = props.selectedThread.session?.providerInstanceId;
-      if (boundInstanceId) {
-        const transition = resolveProviderContinuationTransition({
-          providers: props.serverConfig?.providers ?? [],
-          currentInstanceId: boundInstanceId,
-          targetInstanceId: option.selection.instanceId,
-        });
-        if (!transition.compatible) return transition.reason;
-      }
-      const isCurrent =
-        option.selection.instanceId === currentModelSelection.instanceId &&
-        option.selection.model === currentModelSelection.model;
-      if (isCurrent || props.selectedThread.session == null) return undefined;
-      if (
-        isPrimeAgentDefaultModelUnavailable({
-          providerDriver: option.providerDriver,
-          nextModel: option.selection.model,
-          currentModel: currentModelSelection.model,
-          hasStartedSession: true,
-        })
-      ) {
-        return "Start a new thread to use Prime Agent Default";
-      }
-      return modelChangesLocked || option.requiresNewThreadForModelChange
-        ? "Start a new thread to use this model"
-        : undefined;
-    },
+    (option: ModelOption) =>
+      getThreadComposerModelChangeDisabledReason({
+        option,
+        currentModelSelection,
+        session: props.selectedThread.session,
+        providers: props.serverConfig?.providers ?? [],
+        sessionInputBlocked: props.sessionInputBlocked,
+        modelChangesLocked,
+      }),
     [
       currentModelSelection,
       modelChangesLocked,

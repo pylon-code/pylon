@@ -1,3 +1,10 @@
+import {
+  formatModelChangeDisabledReason,
+  isPrimeAgentDefaultModelUnavailable,
+  PRIME_AGENT_DEFAULT_MODEL_CHANGE_DESCRIPTION,
+  STARTED_THREAD_MODEL_CHANGE_DESCRIPTION,
+} from "@t3tools/shared/model";
+import type { ModelOption } from "../../lib/modelOptions";
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import { getProviderAdmissionUnavailableReason } from "@t3tools/client-runtime/providerAvailability";
 import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
@@ -77,4 +84,44 @@ export function threadComposerShowsStopAction(
   status: OrchestrationSession["status"] | null | undefined,
 ): boolean {
   return status === "running" || status === "starting";
+}
+
+/** Explain disabled model rows while preserving the session's provider and safety guards. */
+export function getThreadComposerModelChangeDisabledReason(input: {
+  readonly option: ModelOption;
+  readonly currentModelSelection: ModelSelection;
+  readonly session: Pick<OrchestrationSession, "providerInstanceId"> | null | undefined;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly sessionInputBlocked: boolean | undefined;
+  readonly modelChangesLocked: boolean;
+}): string | undefined {
+  if (input.sessionInputBlocked) {
+    return "Provider changes are blocked while this thread has a pending safety operation";
+  }
+  const boundInstanceId = input.session?.providerInstanceId;
+  if (boundInstanceId) {
+    const transition = resolveProviderContinuationTransition({
+      providers: input.providers,
+      currentInstanceId: boundInstanceId,
+      targetInstanceId: input.option.selection.instanceId,
+    });
+    if (!transition.compatible) return transition.reason;
+  }
+  const isCurrent =
+    input.option.selection.instanceId === input.currentModelSelection.instanceId &&
+    input.option.selection.model === input.currentModelSelection.model;
+  if (isCurrent || input.session == null) return undefined;
+  if (
+    isPrimeAgentDefaultModelUnavailable({
+      providerDriver: input.option.providerDriver,
+      nextModel: input.option.selection.model,
+      currentModel: input.currentModelSelection.model,
+      hasStartedSession: true,
+    })
+  ) {
+    return formatModelChangeDisabledReason(PRIME_AGENT_DEFAULT_MODEL_CHANGE_DESCRIPTION);
+  }
+  return input.modelChangesLocked || input.option.requiresNewThreadForModelChange
+    ? formatModelChangeDisabledReason(STARTED_THREAD_MODEL_CHANGE_DESCRIPTION)
+    : undefined;
 }

@@ -4,10 +4,15 @@ import { SymbolView } from "../../components/AppSymbol";
 import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProviderInstanceId,
+  ServerPrimeManagedMaintenance,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import { AsyncResult } from "effect/unstable/reactivity";
-import { useCallback, useState } from "react";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { useCallback, useMemo, useState } from "react";
 import { Alert, Pressable, View } from "react-native";
 import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanimated";
 
@@ -16,7 +21,6 @@ import { cn } from "../../lib/cn";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 import { serverEnvironment } from "../../state/server";
-import { useEnvironmentQuery } from "../../state/query";
 import { ConnectionStatusDot } from "./ConnectionStatusDot";
 
 function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string | null {
@@ -27,70 +31,84 @@ function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string
   });
 }
 
-function PrimeHostMaintenanceInstanceStatus(props: {
-  readonly environmentId: EnvironmentId;
+type PrimeMaintenanceInstance = {
   readonly instanceId: ProviderInstanceId;
   readonly label: string;
   readonly distributionMessage: string | null;
-}) {
-  const { data, error, isPending } = useEnvironmentQuery(
-    serverEnvironment.primeManagedMaintenance({
-      environmentId: props.environmentId,
-      input: { instanceId: props.instanceId },
-    }),
-  );
-  const operation = data?.scheduled ?? data?.operation ?? null;
-  return (
-    <View className="gap-1 rounded-[14px] border border-input-border bg-input px-3.5 py-3">
-      <Text className="text-xs font-t3-bold text-foreground">{props.label}</Text>
-      <Text className="text-xs leading-normal text-foreground-muted">
-        {data?.message ??
-          (isPending ? "Reading host maintenance status." : (error ?? "Status unavailable."))}
-      </Text>
-      {props.distributionMessage ? (
-        <Text className="text-xs leading-normal text-foreground-muted">
-          {props.distributionMessage}
-        </Text>
-      ) : null}
-      {operation ? (
-        <Text
-          className={cn(
-            "text-xs leading-normal",
-            operation.status === "failed" ? "text-adaptive-rose-500-400" : "text-foreground-muted",
-          )}
-        >
-          {operation.status.replaceAll("-", " ")} · {operation.message}
-        </Text>
-      ) : null}
-      {data?.guidance ? (
-        <Text className="text-xs leading-normal text-adaptive-amber-600-400">{data.guidance}</Text>
-      ) : null}
-    </View>
-  );
-}
+  readonly result: AsyncResult.AsyncResult<ServerPrimeManagedMaintenance, unknown>;
+};
 
-function PrimeHostMaintenanceStatus(props: { readonly environmentId: EnvironmentId }) {
-  const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
-  const primeProviders =
-    config?.providers.filter((provider) => provider.driver === "primeAgent") ?? [];
+/** Render the entire maintenance group only when at least one instance has status to show. */
+export function PrimeHostMaintenanceSnapshot(props: {
+  readonly configKnown: boolean;
+  readonly instances: ReadonlyArray<PrimeMaintenanceInstance>;
+}) {
+  const instances = props.instances.flatMap((instance) => {
+    const data = Option.getOrNull(AsyncResult.value(instance.result));
+    const error = instance.result._tag === "Failure" ? Cause.squash(instance.result.cause) : null;
+    const operation = data?.scheduled ?? data?.operation ?? null;
+    if (
+      data?.controlsAvailable === false &&
+      data.availableBuilds.length === 0 &&
+      !instance.result.waiting &&
+      instance.result._tag !== "Failure" &&
+      (operation === null || operation.status === "succeeded")
+    ) {
+      return [];
+    }
+    return [{ ...instance, data, error, operation }];
+  });
+  if (props.instances.length > 0 && instances.length === 0) return null;
   return (
     <View className="gap-2 border-t border-border pt-3">
       <Text className="text-2xs font-t3-bold tracking-[0.8px] uppercase text-foreground-muted">
         Prime host maintenance
       </Text>
-      {primeProviders.length > 0 ? (
-        primeProviders.map((provider) => (
-          <PrimeHostMaintenanceInstanceStatus
-            key={provider.instanceId}
-            environmentId={props.environmentId}
-            instanceId={provider.instanceId}
-            label={provider.displayName ?? "Prime Agent"}
-            distributionMessage={provider.distribution?.message ?? null}
-          />
-        ))
+      {instances.length > 0 ? (
+        instances.map(
+          ({ instanceId, label, distributionMessage, result, data, error, operation }) => (
+            <View
+              key={instanceId}
+              className="gap-1 rounded-[14px] border border-input-border bg-input px-3.5 py-3"
+            >
+              <Text className="text-xs font-t3-bold text-foreground">{label}</Text>
+              <Text className="text-xs leading-normal text-foreground-muted">
+                {error !== null
+                  ? error instanceof Error
+                    ? error.message
+                    : "The environment request failed."
+                  : result.waiting
+                    ? "Reading host maintenance status."
+                    : (data?.message ?? "Status unavailable.")}
+              </Text>
+              {distributionMessage ? (
+                <Text className="text-xs leading-normal text-foreground-muted">
+                  {distributionMessage}
+                </Text>
+              ) : null}
+              {operation ? (
+                <Text
+                  className={cn(
+                    "text-xs leading-normal",
+                    operation.status === "failed"
+                      ? "text-adaptive-rose-500-400"
+                      : "text-foreground-muted",
+                  )}
+                >
+                  {operation.status.replaceAll("-", " ")} · {operation.message}
+                </Text>
+              ) : null}
+              {data?.guidance ? (
+                <Text className="text-xs leading-normal text-adaptive-amber-600-400">
+                  {data.guidance}
+                </Text>
+              ) : null}
+            </View>
+          ),
+        )
       ) : (
         <Text className="text-xs leading-normal text-foreground-muted">
-          {config === null
+          {!props.configKnown
             ? "Connect to read Prime maintenance status."
             : "This environment reports no configured Prime Agent instance."}
         </Text>
@@ -101,6 +119,34 @@ function PrimeHostMaintenanceStatus(props: { readonly environmentId: Environment
       </Text>
     </View>
   );
+}
+
+function PrimeHostMaintenanceStatus(props: { readonly environmentId: EnvironmentId }) {
+  const statusAtom = useMemo(
+    () =>
+      Atom.make((get) => {
+        const config = get(serverEnvironment.configValueAtom(props.environmentId));
+        return {
+          configKnown: config !== null,
+          instances: (config?.providers ?? [])
+            .filter((provider) => provider.driver === "primeAgent")
+            .map((provider) => ({
+              instanceId: provider.instanceId,
+              label: provider.displayName ?? "Prime Agent",
+              distributionMessage: provider.distribution?.message ?? null,
+              result: get(
+                serverEnvironment.primeManagedMaintenance({
+                  environmentId: props.environmentId,
+                  input: { instanceId: provider.instanceId },
+                }),
+              ),
+            })),
+        };
+      }),
+    [props.environmentId],
+  );
+  const status = useAtomValue(statusAtom);
+  return <PrimeHostMaintenanceSnapshot {...status} />;
 }
 
 export function ConnectionEnvironmentRow(props: {

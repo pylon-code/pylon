@@ -16,7 +16,11 @@ import {
   type ThreadLinkedPullRequest,
   type TurnId,
 } from "@t3tools/contracts";
-import { isPrimeAgentDefaultModelUnavailable } from "@t3tools/shared/model";
+import {
+  isPrimeAgentDefaultModelUnavailable,
+  PRIME_AGENT_DEFAULT_MODEL_CHANGE_DESCRIPTION,
+  STARTED_THREAD_MODEL_CHANGE_DESCRIPTION,
+} from "@t3tools/shared/model";
 import { getProviderAdmissionAvailability } from "@t3tools/client-runtime/providerAvailability";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import {
@@ -865,8 +869,7 @@ export function getStartedThreadModelChangeBlockReason(input: {
   ) {
     return {
       title: "Start a new chat to use Prime Agent Default",
-      description:
-        "Prime Agent cannot hand model choice back to its own default once a conversation is running.",
+      description: PRIME_AGENT_DEFAULT_MODEL_CHANGE_DESCRIPTION,
     };
   }
   if (
@@ -877,7 +880,7 @@ export function getStartedThreadModelChangeBlockReason(input: {
   }
   return {
     title: "Start a new chat to change models",
-    description: "This provider does not allow switching models after a conversation has started.",
+    description: STARTED_THREAD_MODEL_CHANGE_DESCRIPTION,
   };
 }
 

@@ -9,6 +9,9 @@ import {
   createModelSelection,
   getModelSelectionBooleanOptionValue,
   isPrimeAgentDefaultModelUnavailable,
+  formatModelChangeDisabledReason,
+  PRIME_AGENT_DEFAULT_MODEL_CHANGE_DESCRIPTION,
+  STARTED_THREAD_MODEL_CHANGE_DESCRIPTION,
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
   readCustomModelEntries,
@@ -275,5 +278,16 @@ describe("readCustomModelEntries", () => {
       name: "X",
       capabilities,
     });
+  });
+});
+
+describe("model change disabled copy", () => {
+  it("keeps the complete shared explanations for model menus", () => {
+    expect(formatModelChangeDisabledReason(PRIME_AGENT_DEFAULT_MODEL_CHANGE_DESCRIPTION)).toBe(
+      "Prime Agent cannot hand model choice back to its own default once a conversation is running. Start a new thread to use this model.",
+    );
+    expect(formatModelChangeDisabledReason(STARTED_THREAD_MODEL_CHANGE_DESCRIPTION)).toBe(
+      "This provider does not allow switching models after a conversation has started. Start a new thread to use this model.",
+    );
   });
 });
