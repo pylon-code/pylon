@@ -33,11 +33,6 @@ export const AgentSessionScanInput = Schema.Struct({});
 export type AgentSessionScanInput = typeof AgentSessionScanInput.Type;
 
 /**
- * A directory that at least one agent CLI has run in, suitable for import as a
- * T3 Code project. `alreadyImported` marks candidates that already have an
- * active project rooted at the same path.
- */
-/**
  * Git identity of a candidate directory, read from `.git/config` without
  * spawning git. `remoteKey` is the normalized origin URL, shared by every
  * clone of the same repository so the client can group them. `repository`
@@ -49,6 +44,11 @@ export const AgentSessionProjectGit = Schema.Struct({
 });
 export type AgentSessionProjectGit = typeof AgentSessionProjectGit.Type;
 
+/**
+ * A directory that at least one agent CLI has run in, suitable for import as a
+ * Pylon project. `alreadyImported` marks candidates that already have an
+ * active project rooted at the same path.
+ */
 export const AgentSessionProjectCandidate = Schema.Struct({
   path: TrimmedNonEmptyString,
   title: TrimmedNonEmptyString,

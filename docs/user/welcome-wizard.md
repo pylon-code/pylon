@@ -1,7 +1,11 @@
 # Welcome wizard
 
 Pylon shows a setup flow when you open a new installation or connect to the
-hosted app for the first time. Existing workspaces skip this flow.
+hosted app for the first time. Existing workspaces skip this flow. An existing
+installation with no projects and no threads shows it once.
+
+To run setup again, for example to import more projects, open the command
+palette and choose **Set up computers and import projects**.
 
 ## Connect your computers
 
@@ -35,11 +39,13 @@ unreadable settings with defaults.
 ## Check your agents
 
 Pylon checks each selected computer for Claude Code and Codex. If an agent is
-not installed or signed in, select its action to open a terminal with the
-correct command ready to run. Install uses the vendor's standalone installer,
-which does not need Node or npm and keeps **Update now** working in Settings.
-Other providers, including Prime Agent, Antigravity, Cursor, Grok, and OpenCode,
-can be added in **Settings → Providers**.
+not installed, **Install** opens a terminal with the vendor's standalone
+installer ready to run; it does not need Node or npm and keeps **Update now**
+working in Settings. If Claude Code is signed out, **Sign in** opens the same
+sign-in dialog as **Settings → Providers**. If Codex is signed out, **Sign in**
+opens a terminal with its login command ready to run. Other providers, including
+Prime Agent, Antigravity, Cursor, Grok, and OpenCode, can be added in
+**Settings → Providers**.
 
 The setup terminal uses the home directory and environment configured for the
 selected provider instance. Sensitive values remain redacted in Settings and
@@ -70,10 +76,12 @@ It omits tool activity and attachments. For Codex, it omits generated setup
 context only when a canonical user event and a valid shared turn ID identify the
 same user turn. Ambiguous legacy or response-only context stays in the imported
 conversation so Pylon does not remove user text. It reads one conversation at
-a time and skips files larger than 16 MiB. It ignores malformed records and skips
-unreadable or unparseable conversations.
+a time and streams past large tool output, such as screenshots, instead of
+loading it. It skips a conversation file larger than 4 GiB, or one whose kept
+messages would exceed 32 MiB. It ignores malformed records and skips unreadable
+or unparseable conversations.
 
-Each import attempt reads up to 100 conversation files and 64 MiB per project,
+Each import attempt reads up to 100 conversation files and 4 GiB per project,
 with up to 100,000 input records. Run import again to continue a large batch.
 Completed conversations are not imported again. You can continue without the
 remaining history.
