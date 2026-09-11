@@ -76,10 +76,14 @@ export function QuestionAttachments(props: {
   const paste = useNativePaste((uris) => {
     const scope = pickerScope.current;
     if (!selectedThread || props.disabled) return;
-    if (!configs.get(selectedThread.environmentId)?.environment.capabilities.questionAttachments) {
+    const environmentConfig = configs.get(selectedThread.environmentId);
+    if (!environmentConfig?.environment.capabilities.questionAttachments) {
+      // Without a config the server has not answered yet, so it may well support files.
       Alert.alert(
         "Could not paste image",
-        "Update this server to send files with question answers.",
+        environmentConfig
+          ? "Update this server to send files with question answers."
+          : "Connect to this environment before adding files to an answer.",
       );
       return;
     }
