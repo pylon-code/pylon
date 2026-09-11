@@ -22,6 +22,7 @@ import {
   parseAttachmentUuid,
   parseAttachmentFileExtension,
   PENDING_ATTACHMENT_THREAD_SEGMENT,
+  resolveThreadBrowserArtifactsDir,
   toSafeThreadAttachmentSegment,
 } from "../../../attachmentStore.ts";
 import { resolveAttachmentRelativePath } from "../../../attachmentPaths.ts";
@@ -85,6 +86,8 @@ const invokeTargeted = <A>(
 const UploadedRecordingArtifact = Schema.Struct({
   ...PreviewAutomationRecordingArtifact.fields,
   uploadedAttachmentId: Schema.optional(Schema.String),
+  /** The desktop runs beside this environment, so its saved path is readable here. */
+  savedInEnvironment: Schema.optional(Schema.Boolean),
 });
 const decodeUploadedRecordingArtifact = Schema.decodeUnknownEffect(UploadedRecordingArtifact);
 
@@ -101,15 +104,31 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
         }),
     ),
   );
+  const {
+    uploadedAttachmentId: _uploadedAttachmentId,
+    savedInEnvironment,
+    ...recording
+  } = artifact;
   if (!artifact.uploadedAttachmentId) {
+    if (savedInEnvironment === true) return recording;
     return yield* new PreviewAutomationRecordingDesktopUpdateRequiredError({ threadId });
   }
   const config = yield* ServerConfig.ServerConfig;
   const uuid = parseAttachmentUuid(artifact.uploadedAttachmentId);
   const extension = parseAttachmentFileExtension(artifact.uploadedAttachmentId);
   const threadSegment = toSafeThreadAttachmentSegment(threadId);
+  const threadArtifactsDir = resolveThreadBrowserArtifactsDir({
+    browserArtifactsDir: config.browserArtifactsDir,
+    threadId,
+  });
   const pendingId = `${PENDING_ATTACHMENT_THREAD_SEGMENT}-${uuid}-${extension}`;
-  if (!uuid || !extension || !threadSegment || artifact.uploadedAttachmentId !== pendingId) {
+  if (
+    !uuid ||
+    !extension ||
+    !threadSegment ||
+    !threadArtifactsDir ||
+    artifact.uploadedAttachmentId !== pendingId
+  ) {
     return yield* new PreviewAutomationRecordingTransferError({
       threadId,
     });
@@ -120,8 +139,10 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
     attachmentsDir: config.attachmentsDir,
     relativePath: `${pendingId}.${extension}`,
   });
+  // Not a thread attachment: reverts prune attachments no message references, and an
+  // agent can embed this recording in a turn that a later revert keeps.
   const finalPath = resolveAttachmentRelativePath({
-    attachmentsDir: config.attachmentsDir,
+    attachmentsDir: threadArtifactsDir,
     relativePath: `${finalId}.${extension}`,
   });
   if (!currentPath || !finalPath) {
@@ -141,6 +162,7 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
     );
   yield* Effect.gen(function* () {
     yield* validateFile(currentPath);
+    yield* fileSystem.makeDirectory(threadArtifactsDir, { recursive: true });
     yield* fileSystem.rename(currentPath, finalPath);
   }).pipe(
     // Another stop may already have claimed this exact upload for this thread.
@@ -151,7 +173,6 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
     ),
     Effect.mapError((cause) => new PreviewAutomationRecordingTransferError({ threadId, cause })),
   );
-  const { uploadedAttachmentId: _uploadedAttachmentId, ...recording } = artifact;
   return { ...recording, id: finalId, path: finalPath };
 });
 

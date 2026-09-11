@@ -15,6 +15,7 @@ import { McpProtocol, McpSchema, McpServer, Tool } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import packageJson from "../../package.json" with { type: "json" };
+import { resolveThreadBrowserArtifactsDir } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
@@ -281,8 +282,9 @@ const screenshotSiteSlug = (rawUrl: string): string => {
   }
 };
 
-/** Writes the snapshot PNG under the browser artifacts directory and returns its path. */
+/** Writes the snapshot PNG under the thread's browser artifacts, removed with the thread. */
 const saveScreenshot = Effect.fn("McpHttpServer.saveScreenshot")(function* (
+  threadId: string,
   pageUrl: string,
   data: Uint8Array,
 ) {
@@ -290,10 +292,15 @@ const saveScreenshot = Effect.fn("McpHttpServer.saveScreenshot")(function* (
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const millis = yield* Clock.currentTimeMillis;
+  const directory =
+    resolveThreadBrowserArtifactsDir({
+      browserArtifactsDir: config.browserArtifactsDir,
+      threadId,
+    }) ?? config.browserArtifactsDir;
   // Two saves in the same millisecond must not overwrite each other.
   const fileName = `browser-screenshot-${screenshotSiteSlug(pageUrl)}-${millis.toString(36)}-${NodeCrypto.randomUUID().slice(0, 8)}.png`;
-  const screenshotPath = path.join(config.browserArtifactsDir, fileName);
-  yield* fileSystem.makeDirectory(config.browserArtifactsDir, { recursive: true }).pipe(
+  const screenshotPath = path.join(directory, fileName);
+  yield* fileSystem.makeDirectory(directory, { recursive: true }).pipe(
     Effect.andThen(fileSystem.writeFile(screenshotPath, data)),
     Effect.mapError((cause) => new PreviewScreenshotSaveError({ screenshotPath, cause })),
   );
@@ -384,7 +391,9 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
               const { screenshot, ...page } = snapshot;
               const png = new Uint8Array(Buffer.from(screenshot.data, "base64"));
               const screenshotPath =
-                payload?.save === true ? yield* saveScreenshot(snapshot.url, png) : undefined;
+                payload?.save === true
+                  ? yield* saveScreenshot(invocation.threadId, snapshot.url, png)
+                  : undefined;
               const metadata = {
                 ...page,
                 screenshot: {

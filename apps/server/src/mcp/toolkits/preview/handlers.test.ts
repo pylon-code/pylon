@@ -67,6 +67,8 @@ describe("claimPreviewRecording", () => {
       expect(yield* claim).toEqual(first);
       expect(yield* fileSystem.readFileString(first.path)).toBe("video!");
       expect(yield* fileSystem.exists(pendingPath)).toBe(false);
+      // Kept with the thread's browser artifacts, where revert cleanup never looks.
+      expect(path.dirname(first.path)).toBe(path.join(config.browserArtifactsDir, "thread-1"));
       const wrongThread = yield* claimPreviewRecording(ThreadId.make("thread-2"), response).pipe(
         Effect.result,
       );
@@ -128,6 +130,35 @@ describe("claimPreviewRecording", () => {
           ),
         ),
       ),
+  );
+
+  it.effect("returns the saved path when the desktop runs beside this environment", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const recording = {
+        id: "desktop-recording",
+        tabId: "tab-1",
+        path: "/desktop/userdata/browser-artifacts/recording.webm",
+        mimeType: "video/webm",
+        sizeBytes: 60 * 1024 * 1024,
+        createdAt: "2026-09-07T00:00:00.000Z",
+      };
+      const result = yield* claimPreviewRecording(ThreadId.make("thread-1"), {
+        ...recording,
+        savedInEnvironment: true,
+      });
+      // No size limit and no second copy: nothing crossed a connection.
+      expect(result).toEqual(recording);
+      expect(yield* fileSystem.readDirectory(config.attachmentsDir)).toEqual([]);
+      expect(yield* fileSystem.exists(config.browserArtifactsDir)).toBe(false);
+    }).pipe(
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-preview-recording-" }).pipe(
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
   );
 
   it.effect("reports an older desktop without returning its inaccessible path", () =>

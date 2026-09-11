@@ -37,7 +37,10 @@ import {
   stopBrowserRecording,
   stopBrowserRecordingForUpload,
 } from "~/browser/browserRecording";
-import { resolveBrowserRecordingStopTarget } from "~/browser/browserRecordingScope";
+import {
+  resolveBrowserRecordingStopTarget,
+  shouldTransferBrowserRecording,
+} from "~/browser/browserRecordingScope";
 import { uploadBrowserRecording } from "~/browser/browserRecordingUpload";
 import {
   acquireBrowserSurfaceActivity,
@@ -49,6 +52,7 @@ import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { isElectron } from "~/env";
 import { useEnvironments } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
+import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
 
@@ -712,11 +716,16 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             const stopRuntimeTabId =
               activeRecordings.find((recording) => recording.serverTabId === stopTabId)
                 ?.runtimeTabId ?? null;
-            const transferToEnvironment =
+            const transferRequested =
               typeof request.input === "object" &&
               request.input !== null &&
               "transferToEnvironment" in request.input &&
               request.input.transferToEnvironment === true;
+            const transferToEnvironment = shouldTransferBrowserRecording({
+              transferRequested,
+              environmentId,
+              primaryEnvironmentId: registry.get(primaryEnvironmentIdAtom),
+            });
             const artifact = stopRuntimeTabId
               ? transferToEnvironment
                 ? await stopBrowserRecordingForUpload(stopRuntimeTabId, (saved, blob) =>
@@ -737,6 +746,9 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             return {
               ...artifact,
               tabId: stopTabId,
+              // Without this, a server that asked for a transfer reads the missing upload
+              // as an outdated desktop.
+              ...(transferRequested && !transferToEnvironment ? { savedInEnvironment: true } : {}),
             };
           }
         }

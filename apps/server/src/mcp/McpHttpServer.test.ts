@@ -307,7 +307,8 @@ it.effect("saves the snapshot PNG on request and reports its path", () =>
       const structured = snapshot.structuredContent as { readonly screenshotPath?: string };
       const screenshotPath = structured.screenshotPath;
       expect(typeof screenshotPath).toBe("string");
-      expect(path.dirname(screenshotPath!)).toBe(config.browserArtifactsDir);
+      // Saved with the thread, so deleting the thread removes it.
+      expect(path.dirname(screenshotPath!)).toBe(path.join(config.browserArtifactsDir, threadId));
       expect(path.basename(screenshotPath!)).toMatch(
         /^browser-screenshot-example-test-[0-9a-z]+-[0-9a-f]{8}\.png$/,
       );
@@ -606,9 +607,11 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(statusTool?.tool.annotations?.idempotentHint).toBe(true);
       expect(statusTool?.tool.annotations?.destructiveHint).toBe(false);
 
+      // `save: true` writes a new file on every call.
       const snapshotTool = server.tools.find(({ tool }) => tool.name === "preview_snapshot");
-      expect(snapshotTool?.tool.annotations?.readOnlyHint).toBe(true);
-      expect(snapshotTool?.tool.annotations?.idempotentHint).toBe(true);
+      expect(snapshotTool?.tool.annotations?.readOnlyHint).toBe(false);
+      expect(snapshotTool?.tool.annotations?.idempotentHint).toBe(false);
+      expect(snapshotTool?.tool.annotations?.destructiveHint).toBe(false);
       expect(snapshotTool?.tool.annotations?.openWorldHint).toBe(true);
 
       const clickTool = server.tools.find(({ tool }) => tool.name === "preview_click");

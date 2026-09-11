@@ -1,3 +1,16 @@
+/**
+ * Whether an agent's recording must be uploaded to its environment. The desktop's
+ * primary environment runs on the desktop's machine, so its agent reads the saved
+ * file where the desktop wrote it.
+ */
+export function shouldTransferBrowserRecording(input: {
+  readonly transferRequested: boolean;
+  readonly environmentId: string;
+  readonly primaryEnvironmentId: string | null;
+}): boolean {
+  return input.transferRequested && input.environmentId !== input.primaryEnvironmentId;
+}
+
 export function resolveBrowserRecordingStopTarget(
   activeTabIds: ReadonlySet<string>,
   implicitTabId: string | null,
