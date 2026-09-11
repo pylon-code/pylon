@@ -57,20 +57,31 @@ describe("resolveThreadStatus", () => {
     ).toBeNull();
   });
 
-  it.each(["running", "starting"] as const)(
-    "uses upstream sky while the session is %s",
-    (status) => {
-      expect(
-        resolveThreadStatus({
-          ...baseThread,
-          session: status === "running" ? { status, activeTurnId: "turn-1" } : { status },
-        } as EnvironmentThreadShell),
-      ).toMatchObject({
-        pillClassName: "bg-adaptive-sky-500-a12-a16",
-        textClassName: "text-adaptive-sky-700-300",
-        iconColor: "#0a84ff",
-        pulse: true,
-      });
-    },
-  );
+  it("uses upstream's Working shade while a turn runs", () => {
+    expect(
+      resolveThreadStatus({
+        ...baseThread,
+        session: { status: "running", activeTurnId: "turn-1" },
+      } as EnvironmentThreadShell),
+    ).toMatchObject({
+      pillClassName: "bg-primary/10",
+      textClassName: "text-adaptive-sky-600-400",
+      iconColor: "#0a84ff",
+      pulse: true,
+    });
+  });
+
+  it("uses sky while the session is starting", () => {
+    expect(
+      resolveThreadStatus({
+        ...baseThread,
+        session: { status: "starting" },
+      } as EnvironmentThreadShell),
+    ).toMatchObject({
+      pillClassName: "bg-adaptive-sky-500-a12-a16",
+      textClassName: "text-adaptive-sky-700-300",
+      iconColor: "#0a84ff",
+      pulse: true,
+    });
+  });
 });

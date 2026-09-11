@@ -44,8 +44,10 @@ spend limit to continue sooner.
 ## Send feedback to OpenAI
 
 In an existing Codex thread, send `/feedback` or `/feedback` followed by a description of the
-issue. Pylon uploads the thread and Codex logs to OpenAI and shows a thread ID that you can copy
-and share with OpenAI employees.
+issue. Pylon uploads the thread and Codex logs to OpenAI and shows the upload's progress and
+result in a notice above the composer, without adding messages to the conversation. When the
+upload succeeds, choose **Copy ID** to copy the thread ID to share with OpenAI employees, then
+dismiss the notice.
 
 ## Answer questions while Codex works
 

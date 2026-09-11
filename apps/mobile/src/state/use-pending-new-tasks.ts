@@ -1,35 +1,38 @@
+import { useAtomValue } from "@effect/atom-react";
+import { Atom } from "effect/unstable/reactivity";
 import { useMemo } from "react";
 
-import { deriveThreadTitleFromPrompt } from "../lib/projectThreadStartTurn";
 import {
-  flattenQueuedThreadMessages,
-  type QueuedThreadCreation,
-  type QueuedThreadMessage,
-} from "./thread-outbox-model";
+  buildPendingNewTasks,
+  makeListedNewTaskDraftsAtom,
+  type PendingNewTask,
+} from "./pending-new-tasks-model";
+import { flattenQueuedThreadMessages } from "./thread-outbox-model";
+import { composerDraftsAtom } from "./use-composer-drafts";
 import { useThreadOutboxMessages } from "./use-thread-outbox";
 
-/** A queued new-task creation, shaped for thread-list presentation. */
-export interface PendingNewTask {
-  readonly message: QueuedThreadMessage;
-  readonly creation: QueuedThreadCreation;
-  readonly title: string;
-}
+// The draft store changes on every keystroke in any composer; the lists only
+// need the stamped new-task drafts that have content.
+const listedNewTaskDraftsAtom = makeListedNewTaskDraftsAtom(composerDraftsAtom).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("mobile:pending-new-tasks:listed-drafts"),
+);
+
+export type {
+  PendingDraftTask,
+  PendingNewTask,
+  PendingQueuedTask,
+} from "./pending-new-tasks-model";
 
 export function usePendingNewTasks(): ReadonlyArray<PendingNewTask> {
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
-  return useMemo(() => {
-    const tasks: PendingNewTask[] = [];
-    for (const message of flattenQueuedThreadMessages(queuedMessagesByThreadKey)) {
-      if (!message.creation) {
-        continue;
-      }
-      tasks.push({
-        message,
-        creation: message.creation,
-        title: deriveThreadTitleFromPrompt(message.text),
-      });
-    }
-    tasks.sort((left, right) => right.message.createdAt.localeCompare(left.message.createdAt));
-    return tasks;
-  }, [queuedMessagesByThreadKey]);
+  const drafts = useAtomValue(listedNewTaskDraftsAtom);
+  return useMemo(
+    () =>
+      buildPendingNewTasks({
+        queuedMessages: flattenQueuedThreadMessages(queuedMessagesByThreadKey),
+        drafts,
+      }),
+    [queuedMessagesByThreadKey, drafts],
+  );
 }

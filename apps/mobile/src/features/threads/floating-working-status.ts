@@ -10,6 +10,9 @@ export type FloatingWorkingStatus =
   | { readonly kind: "working"; readonly startedAt: string; readonly step?: string }
   | { readonly kind: "syncing"; readonly label: string }
   | { readonly kind: "compacting" }
+  // A task whose thread the server has not created yet: the worktree may
+  // still be checking out, so there is no turn to time.
+  | { readonly kind: "preparing"; readonly label: string }
   | {
       readonly kind: "connection";
       readonly tone: "reconnecting" | "unavailable";

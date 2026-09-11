@@ -59,6 +59,26 @@ files directly; see [Composer](./composer.md).
 Project settings are available from the project menu in either sidebar and from the breadcrumb
 context menu when composing a new thread.
 
+## Mobile thread list
+
+On mobile, unsent work appears under **Unsent** at the top of the thread list and the iPad
+sidebar. A new-task draft with text or attachments shows an amber **Draft** label; tap it to
+continue writing, or touch and hold it and choose **Discard**. Each **New Task** starts its own
+draft, so a project can hold several ideas at once. A queued task says what happens next:
+**Sends on reconnect** while its environment is disconnected, **Waiting for upload** while its
+files upload, and **Sending…** once it is on its way. A task Pylon held back reads **Held** until
+you edit or retarget it; touch and hold it and choose **Delete** to remove it.
+
+An existing thread with a message waiting on this device shows a small outbox icon beside its
+status or time. The thread stays in the active list until that message is sent or deleted.
+
+Touch and hold a thread that has a branch and choose **New thread on branch** to start a new task
+there. Pylon checks out the branch before the composer opens, or reuses the thread's existing
+worktree. If the checkout fails, Pylon shows the Git error and returns to the list.
+
+When several accounts share a provider, or an account has an accent color, the provider icon on
+each mobile thread row carries that account's initials in its accent color.
+
 ## Arrange threads
 
 On web and desktop, drag a thread between sections to change its state. Drag a thread up into
@@ -77,7 +97,11 @@ thread is over takes the accent color. Section labels also identify empty sectio
 
 Drag within the pinned or active section to change its order. Other rows slide aside to show the
 spot where the thread will land. Drops into either section keep the position you choose. On
-mobile, open a pinned or active thread's menu and choose **Move up** or **Move down**. The server
+mobile, open a thread's menu and choose **Arrange threads**. Drag a handle within or between
+**Pinned** and **Active** to reorder, pin, or unpin. Drop onto the **Settled** divider to
+settle a thread. The dragged card shows the action before you release it. Expand **Snoozed**
+or **Settled** to drag a parked thread back into either live section. Each drop saves; **Done** returns to the thread list.
+**Move up** and **Move down** are also available in the thread menu. The server
 saves the order, so it survives a refresh and appears on your other connected devices.
 
 On web and desktop, the list also animates section changes made with thread actions such as

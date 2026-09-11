@@ -8,7 +8,7 @@ import type { EnvironmentMachineKind } from "@t3tools/contracts";
 import type { MenuAction } from "@react-native-menu/menu";
 import { SymbolView } from "../../components/AppSymbol";
 import { memo, useCallback, useMemo, type ComponentProps } from "react";
-import { Pressable, useWindowDimensions, View } from "react-native";
+import { Platform, Pressable, useWindowDimensions, View } from "react-native";
 import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import Svg, { Circle, Path } from "react-native-svg";
@@ -22,11 +22,16 @@ import { HOME_HORIZONTAL_INSET } from "../../lib/layoutMetrics";
 import { relativeTime } from "../../lib/time";
 import { themeColorWithAlpha } from "../../lib/mobileTheme";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
+import {
+  PENDING_TASK_DELIVERY_PRESENTATION,
+  type PendingTaskDelivery,
+} from "../../state/pending-new-tasks-model";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useThreadPr, type ThreadPrPresentation } from "../../state/use-thread-pr";
 import type { HomeGroupDisplayAction } from "../home/homeListItems";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
+import { QueuedMessageIcon } from "./queued-message-icon";
 import { resolveThreadStatus } from "./threadPresentation";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 
@@ -270,14 +275,23 @@ const PENDING_TASK_MENU_ACTIONS: MenuAction[] = [
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
 ];
 
+const DRAFT_TASK_MENU_ACTIONS: MenuAction[] = [
+  { id: "delete", title: "Discard", image: "trash", attributes: { destructive: true } },
+];
+
 /**
- * A queued new task waiting in the outbox for its environment to reconnect.
- * Tapping reopens the new-task composer with everything prefilled; the row
- * disappears once the task is delivered and the real thread arrives.
+ * Unsent work: a task queued in the outbox for its environment to reconnect,
+ * or a draft still sitting in the project's new-task composer. Tapping
+ * reopens the composer with everything prefilled; the row disappears once
+ * the work is sent and the real thread arrives. The two kinds differ in what
+ * happens next, so the pill and icon say which one this is: a queued task
+ * sends itself, a draft waits for the user.
  */
 export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   readonly variant: ThreadListVariant;
   readonly pendingTask: PendingNewTask;
+  /** A queued task's next step from this device; null for drafts. */
+  readonly delivery: PendingTaskDelivery | null;
   readonly environmentLabel: string | null;
   readonly environmentMachine?: EnvironmentMachineKind;
   readonly isLast: boolean;
@@ -289,10 +303,19 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   const mutedColor = useUniwindTheme()["--color-foreground-muted"];
 
   const { pendingTask, onSelectPendingTask, onDeletePendingTask } = props;
-  const timestamp = relativeTime(pendingTask.message.createdAt);
-  const subtitleParts = [props.environmentLabel, pendingTask.creation.branch].filter(
-    (part): part is string => Boolean(part),
-  );
+  const isDraft = pendingTask.kind === "draft";
+  const timestamp = isDraft ? null : relativeTime(pendingTask.createdAt);
+  const delivery =
+    props.delivery ?? (!isDraft && pendingTask.message.deliveryHold ? "held" : "offline");
+  const deliveryPresentation = PENDING_TASK_DELIVERY_PRESENTATION[delivery];
+  // The pill only has room for one word, so what happens next goes in the
+  // subtitle: a queued task sends itself, a draft waits for the user. A held
+  // task's pill already says so.
+  const subtitleParts = [
+    isDraft || delivery === "held" ? null : deliveryPresentation.label,
+    props.environmentLabel,
+    pendingTask.branch,
+  ].filter((part): part is string => Boolean(part));
 
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
@@ -302,10 +325,14 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
     [onDeletePendingTask, onSelectPendingTask, pendingTask],
   );
 
-  const statusPill = (
+  const statusPill = isDraft ? (
+    <View className="rounded-full bg-adaptive-amber-500-a12-a16 px-1.5 py-0.5">
+      <Text className="text-3xs font-t3-bold text-adaptive-amber-700-300">Draft</Text>
+    </View>
+  ) : (
     <View className="rounded-full bg-subtle px-1.5 py-0.5">
       <Text className="text-3xs font-t3-bold text-foreground-muted">
-        {pendingTask.message.deliveryHold ? "Held" : "Pending"}
+        {delivery === "held" ? "Held" : "Pending"}
       </Text>
     </View>
   );
@@ -314,7 +341,7 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
     subtitleParts.length > 0 ? (
       <View className="mt-px flex-row items-center gap-1.5">
         <SymbolView
-          name="tray.and.arrow.up"
+          name={isDraft ? "square.and.pencil" : "tray.and.arrow.up"}
           size={10}
           tintColor={compact ? iconSubtleColor : mutedColor}
           type="monochrome"
@@ -339,9 +366,13 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
       </View>
     ) : null;
 
+  const accessibilityHint = isDraft
+    ? "Opens the draft in the new task composer"
+    : deliveryPresentation.accessibilityHint;
+
   const rowContent = compact ? (
     <Pressable
-      accessibilityHint="Opens the queued task for editing"
+      accessibilityHint={accessibilityHint}
       accessibilityLabel={pendingTask.title}
       accessibilityRole="button"
       className="bg-screen active:opacity-70"
@@ -355,7 +386,9 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
             </Text>
             <View className="flex-row items-center gap-2">
               {statusPill}
-              <Text className="text-base tabular-nums text-foreground-tertiary">{timestamp}</Text>
+              {timestamp !== null ? (
+                <Text className="text-base tabular-nums text-foreground-tertiary">{timestamp}</Text>
+              ) : null}
               <SymbolView
                 name="chevron.right"
                 size={13}
@@ -370,7 +403,7 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
     </Pressable>
   ) : (
     <Pressable
-      accessibilityHint="Opens the queued task for editing"
+      accessibilityHint={accessibilityHint}
       accessibilityLabel={pendingTask.title}
       accessibilityRole="button"
       className="active:bg-subtle"
@@ -391,9 +424,11 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
           </Text>
           <View className="flex-row items-center gap-2">
             {statusPill}
-            <Text className="text-xs tabular-nums text-foreground-muted" numberOfLines={1}>
-              {timestamp}
-            </Text>
+            {timestamp !== null ? (
+              <Text className="text-xs tabular-nums text-foreground-muted" numberOfLines={1}>
+                {timestamp}
+              </Text>
+            ) : null}
           </View>
         </View>
         {subtitleRow}
@@ -403,7 +438,7 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
 
   return (
     <ControlPillMenu
-      actions={PENDING_TASK_MENU_ACTIONS}
+      actions={isDraft ? DRAFT_TASK_MENU_ACTIONS : PENDING_TASK_MENU_ACTIONS}
       onPressAction={handleMenuAction}
       shouldOpenOnLongPress
     >
@@ -425,6 +460,8 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly environmentLabel: string | null;
   readonly environmentMachine?: EnvironmentMachineKind;
   readonly projectCwd: string | null;
+  /** A message for this thread is waiting in the outbox. */
+  readonly hasQueuedMessages?: boolean;
   readonly searchMatch?: EnvironmentThreadSearchMatch;
   readonly searchQuery?: string;
   readonly isLast: boolean;
@@ -435,6 +472,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
   readonly onDeleteThread: (thread: EnvironmentThreadShell) => void;
+  readonly onNewThreadOnBranch: (thread: EnvironmentThreadShell) => void;
   readonly onRegenerateThreadTitle: (thread: EnvironmentThreadShell) => void;
   readonly titleRegenerationSupported: boolean;
   readonly onSwipeableWillOpen: (methods: SwipeableMethods) => void;
@@ -458,14 +496,26 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const selectedBackgroundColor = useUniwindTheme()["--color-user-bubble"];
   const selectedForegroundColor = useUniwindTheme()["--color-user-bubble-foreground"];
 
-  const { thread, onSelectThread, onArchiveThread, onDeleteThread, onRegenerateThreadTitle } =
-    props;
+  const {
+    thread,
+    onSelectThread,
+    onArchiveThread,
+    onDeleteThread,
+    onRegenerateThreadTitle,
+    onNewThreadOnBranch,
+  } = props;
   const status = resolveThreadStatus(thread);
   const pr = useThreadPr(thread, props.projectCwd);
   const timestamp = relativeTime(
     thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
   );
-  const threadAccessibilityLabel = pr ? `${thread.title}, ${pr.accessibilityLabel}` : thread.title;
+  const threadAccessibilityLabel = [
+    thread.title,
+    pr?.accessibilityLabel,
+    props.hasQueuedMessages ? "messages queued to send" : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
   const subtitleParts = [props.environmentLabel, thread.branch].filter((part): part is string =>
     Boolean(part),
   );
@@ -491,6 +541,16 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   );
   const menuActions = useMemo<MenuAction[]>(
     () => [
+      ...(thread.branch
+        ? [
+            {
+              id: "new-thread-on-branch",
+              title:
+                Platform.OS === "ios" ? "New thread on branch" : `New thread on ${thread.branch}`,
+              image: "square.and.pencil",
+            },
+          ]
+        : []),
       THREAD_ROW_MENU_ACTIONS[0]!,
       ...buildThreadTitleRegenerationMenuItems({
         supported: props.titleRegenerationSupported,
@@ -498,7 +558,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
       }),
       THREAD_ROW_MENU_ACTIONS[1]!,
     ],
-    [props.titleRegenerationSupported, thread.titleRegeneration],
+    [props.titleRegenerationSupported, thread.branch, thread.titleRegeneration],
   );
   const primaryAction = useMemo(
     () => ({
@@ -511,11 +571,12 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
+      if (nativeEvent.event === "new-thread-on-branch") onNewThreadOnBranch(thread);
       if (nativeEvent.event === "archive") handleArchive();
       if (nativeEvent.event === "regenerate-title") handleRegenerateTitle();
       if (nativeEvent.event === "delete") handleDelete();
     },
-    [handleArchive, handleDelete, handleRegenerateTitle],
+    [handleArchive, handleDelete, handleRegenerateTitle, onNewThreadOnBranch, thread],
   );
 
   const statusPill = effectiveStatus ? (
@@ -596,6 +657,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
                 {thread.title}
               </Text>
               <View className="flex-row items-center gap-2">
+                {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
                 {statusPill}
                 <Text className="text-base tabular-nums text-foreground-tertiary">{timestamp}</Text>
                 <SymbolView
@@ -655,6 +717,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
               {thread.title}
             </Text>
             <View className="flex-row items-center gap-2">
+              {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
               {statusPill}
               <Text
                 className={cn(
@@ -681,6 +744,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
 
   return (
     <ThreadSwipeable
+      threadKey={`${thread.environmentId}:${thread.id}`}
       backgroundColor={backgroundColor}
       containerStyle={
         compact ? undefined : { borderRadius: SIDEBAR_ROW_RADIUS, overflow: "hidden" }
