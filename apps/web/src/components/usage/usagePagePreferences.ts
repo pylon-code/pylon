@@ -10,13 +10,18 @@ const preferencesCodec = Schema.fromJsonString(UsagePagePreferencesSchema);
 const decodePreferences = Schema.decodeSync(preferencesCodec);
 const encodePreferences = Schema.encodeSync(preferencesCodec);
 
+// Limits is what most people open the page for (how much subscription quota is
+// left, and when it resets), so it is the first-visit default; the last picked
+// tab sticks after that.
+const DEFAULT_PREFERENCES: UsagePagePreferences = { metric: "limits", windowDays: 30 };
+
 export function readUsagePagePreferences(): UsagePagePreferences {
   try {
     const stored = typeof window === "undefined" ? null : window.localStorage.getItem(STORAGE_KEY);
-    return stored === null ? { metric: "cost", windowDays: 30 } : decodePreferences(stored);
+    return stored === null ? DEFAULT_PREFERENCES : decodePreferences(stored);
   } catch (error) {
     console.error("Could not read Usage page preferences.", error);
-    return { metric: "cost", windowDays: 30 };
+    return DEFAULT_PREFERENCES;
   }
 }
 
