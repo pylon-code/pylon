@@ -2370,7 +2370,7 @@ function PullRequestsColumn({
             fully below the mask and only content passing under the chrome fades.
             The two live apart now, so raising the fade means raising that padding
             here and on the settings page. */}
-        <WorkspacePageContainer width="expanded" className="gap-4">
+        <WorkspacePageContainer width="expanded" className="min-h-full gap-4">
           <div className="flex flex-col gap-3">
             <div ref={inFlowSearchRef} className="flex flex-wrap items-center gap-2">
               <div className="min-w-0 basis-full @lg/pr-list:basis-0 @lg/pr-list:flex-1">
