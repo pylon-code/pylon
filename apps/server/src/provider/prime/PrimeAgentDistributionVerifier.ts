@@ -374,6 +374,10 @@ export const PRIME_RELEASE_RECIPE = Object.freeze({
   npmVersion: "11.10.1",
   minimumNodeVersion: "22.8.0",
 });
+export const PRIME_RELEASE_RECIPES = Object.freeze([
+  PRIME_RELEASE_RECIPE,
+  Object.freeze({ ...PRIME_RELEASE_RECIPE, recipeRevision: 2 }),
+]);
 export const PRIME_PUBLICATION_SCHEMA_SOURCE = Object.freeze({
   commit: "f4d9ef03b529faf2e07031c8b7cd703363316ae5",
   tree: "b9a14b389aa64f54527008fb4d6119a7c57c2b58",
@@ -399,6 +403,13 @@ export const PRIME_PUBLICATION_POLICIES = Object.freeze([
     previewWorkflowSha256: "16f68e46801eccca5e7e99736f346b5ffd96ce7188792d4ac8fbc4580408a736",
     stableWorkflowPath: PRIME_STABLE_WORKFLOW,
     stableWorkflowSha256: "96e4f3ccd889a17a391f00b4398d132a4234b5bc337045fedd3605f4eb74c331",
+  }),
+  Object.freeze({
+    publicationPolicyRevision: 4,
+    previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
+    previewWorkflowSha256: "8ad08abd8004b7205b04dc3cd9f7cc0e720649c9c6814431622f5b4dfb6e4c32",
+    stableWorkflowPath: PRIME_STABLE_WORKFLOW,
+    stableWorkflowSha256: "52c72e078b08c0a2774ab3dc512283c46ab31c4a87738d87007f55f955662703",
   }),
 ]);
 
@@ -472,14 +483,17 @@ function parseReleaseManifest(bytes: Buffer): ReleaseManifest {
     "Pylon Prime release manifest",
     MAX_MANIFEST_BYTES,
     decodeReleaseManifest,
-    // Recipe 1 preserves object field order; its exact original bytes remain signed subjects.
+    // Release recipes preserve field order; the original bytes remain signed subjects.
     "preserved",
   );
+  const recipe = PRIME_RELEASE_RECIPES.find(
+    (entry) => entry.recipeRevision === manifest.build.recipeRevision,
+  );
   if (
-    manifest.build.recipeRevision !== PRIME_RELEASE_RECIPE.recipeRevision ||
-    manifest.build.node !== PRIME_RELEASE_RECIPE.nodeVersion ||
-    manifest.build.npm !== PRIME_RELEASE_RECIPE.npmVersion ||
-    manifest.package.minimumNode !== PRIME_RELEASE_RECIPE.minimumNodeVersion ||
+    !recipe ||
+    manifest.build.node !== recipe.nodeVersion ||
+    manifest.build.npm !== recipe.npmVersion ||
+    manifest.package.minimumNode !== recipe.minimumNodeVersion ||
     manifest.build.id !==
       `pylon-build-g${manifest.source.commit.slice(0, 12)}-r${manifest.build.recipeRevision}` ||
     manifest.build.assetBaseUrl !==
@@ -576,7 +590,7 @@ function parseStableManifest(bytes: Buffer): StableManifest {
         Number(/^pylon-stable-([0-9]{6})-/.exec(manifest.history.previous.tag)?.[1]) !==
           manifest.sequence - 1) ||
     manifest.build.previewTag !== manifest.build.id ||
-    manifest.build.recipeRevision !== PRIME_RELEASE_RECIPE.recipeRevision
+    !PRIME_RELEASE_RECIPES.some((entry) => entry.recipeRevision === manifest.build.recipeRevision)
   ) {
     throw new Error("Stable manifest is not an exact closed Pylon build receipt.");
   }

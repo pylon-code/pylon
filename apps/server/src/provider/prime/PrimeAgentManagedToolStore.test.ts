@@ -47,7 +47,7 @@ function tarOctal(value: number, length: number): Buffer {
 
 function tarHeader(input: {
   readonly path: string;
-  readonly type?: "file" | "directory" | "symlink" | "hardlink";
+  readonly type?: "file" | "directory" | "symlink" | "hardlink" | "pax" | "global-pax";
   readonly bytes?: Buffer;
   readonly mode?: number;
   readonly link?: string;
@@ -62,7 +62,17 @@ function tarHeader(input: {
   header.fill(0x20, 148, 156);
   const type = input.type ?? "file";
   header[156] =
-    type === "file" ? 0x30 : type === "directory" ? 0x35 : type === "symlink" ? 0x32 : 0x31;
+    type === "pax"
+      ? 0x78
+      : type === "global-pax"
+        ? 0x67
+        : type === "file"
+          ? 0x30
+          : type === "directory"
+            ? 0x35
+            : type === "symlink"
+              ? 0x32
+              : 0x31;
   if (input.link) header.write(input.link, 157, 100, "utf8");
   header.write("ustar\0", 257, 6, "ascii");
   header.write("00", 263, 2, "ascii");
@@ -75,7 +85,7 @@ function tarHeader(input: {
 function makeTarGz(
   entries: ReadonlyArray<{
     readonly path: string;
-    readonly type?: "file" | "directory" | "symlink" | "hardlink";
+    readonly type?: "file" | "directory" | "symlink" | "hardlink" | "pax" | "global-pax";
     readonly bytes?: Buffer;
     readonly mode?: number;
     readonly link?: string;
@@ -92,6 +102,24 @@ function makeTarGz(
   }
   parts.push(Buffer.alloc(1024));
   return NodeZlib.gzipSync(Buffer.concat(parts), { level: 9 });
+}
+
+function paxField(key: string, value: string): Buffer {
+  const body = ` ${key}=${value}\n`;
+  let length = Buffer.byteLength(body) + 1;
+  while (String(length).length + Buffer.byteLength(body) !== length) {
+    length = String(length).length + Buffer.byteLength(body);
+  }
+  return Buffer.from(`${length}${body}`);
+}
+
+function rootWithEntries(entries: Parameters<typeof makeTarGz>[0]): Buffer {
+  return NodeZlib.gzipSync(
+    Buffer.concat([
+      NodeZlib.gunzipSync(safeRootTarball("a".repeat(40), "f".repeat(40))).subarray(0, -1024),
+      NodeZlib.gunzipSync(makeTarGz(entries)),
+    ]),
+  );
 }
 
 function distributionMetadata(sourceCommit: string, sourceTree: string) {
@@ -962,6 +990,124 @@ describe("Pylon-managed Prime tool store", () => {
     expect((await store.status("primeAgent")).selectedBuildId).toBeNull();
     expect(io).toBe(0);
   });
+
+  it("installs npm per-file extended names without leaking metadata to the following file", async () => {
+    const longPath = `package/node_modules/example/${"x".repeat(105)}.d.ts`;
+    const bytes = Buffer.from("export {};\n");
+    const bundle = await publicationBundle({
+      rootBytes: rootWithEntries([
+        {
+          path: "PaxHeader/long",
+          type: "pax",
+          bytes: Buffer.concat([
+            paxField("path", longPath),
+            paxField("size", String(bytes.length)),
+            paxField("mtime", "0"),
+          ]),
+        },
+        { path: "package/short", bytes },
+        { path: "package/following", bytes: Buffer.from("following") },
+      ]),
+    });
+    const harness = await makeHarness({ bundle, installMode: "production" });
+    const result = await harness.store.command({
+      commandId: "pax-install",
+      instanceId: "primeAgent",
+      action: "install",
+    });
+    expect(result.status).toBe("succeeded");
+    const packageRoot = NodePath.resolve(harness.binding.binaryPath, "../../prime-agent");
+    expect(
+      await NodeFSP.readFile(NodePath.join(packageRoot, longPath.slice("package/".length))),
+    ).toEqual(bytes);
+    expect(await NodeFSP.readFile(NodePath.join(packageRoot, "following"), "utf8")).toBe(
+      "following",
+    );
+    await expect(NodeFSP.stat(NodePath.join(packageRoot, "short"))).rejects.toThrow();
+  });
+
+  it.each([
+    ["traversal", paxField("path", "package/../escape")],
+    ["absolute", paxField("path", "/tmp/escape")],
+    ["backslash", paxField("path", "package/..\\escape")],
+    ["oversized path", paxField("path", `package/${"x".repeat(512)}`)],
+    [
+      "duplicate field",
+      Buffer.concat([paxField("path", "package/x"), paxField("path", "package/y")]),
+    ],
+    [
+      "link field",
+      Buffer.concat([paxField("path", "package/x"), paxField("linkpath", "package/y")]),
+    ],
+    ["missing path", paxField("size", "1")],
+    ["size mismatch", Buffer.concat([paxField("path", "package/x"), paxField("size", "2")])],
+    ["mtime mismatch", Buffer.concat([paxField("path", "package/x"), paxField("mtime", "1")])],
+    ["negative size", Buffer.concat([paxField("path", "package/x"), paxField("size", "-1")])],
+    ["fractional time", Buffer.concat([paxField("path", "package/x"), paxField("mtime", "0.5")])],
+    ["malformed length", Buffer.from("999 path=package/x\n")],
+    ["noncanonical length", Buffer.from("019 path=package/x\n")],
+    [
+      "invalid UTF-8",
+      Buffer.concat([Buffer.from("20 path=package/"), Buffer.from([0xff]), Buffer.from("abc\n")]),
+    ],
+    ["metadata bound", Buffer.alloc(1025, 0x61)],
+    ["existing path collision", paxField("path", "package/package.json")],
+    ["case collision", paxField("path", "package/PACKAGE.JSON")],
+  ])(
+    "rejects per-file extended metadata with %s before selecting a build",
+    async (_name, bytes) => {
+      const bundle = await publicationBundle({
+        rootBytes: rootWithEntries([
+          { path: "PaxHeader/entry", type: "pax", bytes },
+          { path: "package/short", bytes: Buffer.from("x") },
+        ]),
+      });
+      const harness = await makeHarness({ bundle, installMode: "production" });
+      const result = await harness.store.command({
+        commandId: "pax-rejection",
+        instanceId: "primeAgent",
+        action: "install",
+      });
+      expect(result.status).toBe("failed");
+      expect(harness.binding.binaryPath).toBe(harness.stock);
+      expect((await harness.store.status("primeAgent")).availableBuilds).toEqual([]);
+    },
+  );
+
+  it.each(["orphan", "nested", "directory", "symlink", "global"] as const)(
+    "rejects %s extended header sequencing",
+    async (kind) => {
+      const header = {
+        path: "PaxHeader/entry",
+        type: "pax" as const,
+        bytes: paxField("path", "package/x"),
+      };
+      const entries: Parameters<typeof makeTarGz>[0] =
+        kind === "orphan"
+          ? [header]
+          : kind === "nested"
+            ? [header, header]
+            : kind === "global"
+              ? [{ ...header, path: "package/global", type: "global-pax" }]
+              : [
+                  header,
+                  {
+                    path: "package/short",
+                    type: kind,
+                    ...(kind === "symlink" ? { link: "outside" } : {}),
+                  },
+                ];
+      const bundle = await publicationBundle({ rootBytes: rootWithEntries(entries) });
+      const harness = await makeHarness({ bundle, installMode: "production" });
+      const result = await harness.store.command({
+        commandId: "pax-sequence",
+        instanceId: "primeAgent",
+        action: "install",
+      });
+      expect(result.status).toBe("failed");
+      expect(harness.binding.binaryPath).toBe(harness.stock);
+    },
+  );
 
   it.each([
     {

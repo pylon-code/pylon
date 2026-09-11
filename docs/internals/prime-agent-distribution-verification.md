@@ -13,7 +13,7 @@ publication head `f4d9ef03b529faf2e07031c8b7cd703363316ae5` (tree
 `b9a14b389aa64f54527008fb4d6119a7c57c2b58`):
 
 - `pylon-prime-agent-release-v1.json` binds the four deterministic package assets, full source commit
-  and tree, recipe revision 1, Node 22.23.2, npm 11.10.1, lockfile digest, and root package identity.
+  and tree, recipe revisions 1 and 2, Node 22.23.2, npm 11.10.1, lockfile digest, and root package identity.
 - `pylon-preview-channel-v1.json` binds the build manifest, preview workflow policy revision, workflow
   run, sequence epoch 1, and monotonic run-number sequence.
 - `pylon-stable-channel-v1.json` binds an exact preview, stable sequence/history link, protected policy
@@ -154,3 +154,9 @@ The verifier itself fetches only bounded public manifests, attestation bundles, 
 optional exact root artifact. It has no extraction, selection, cleanup, or removal authority. The
 managed tool store consumes its verified publication bundle through that narrow seam. Neither module
 generalizes Prime feed semantics to Codex, Claude, Cursor, Grok, OpenCode, or Comet.
+
+## Self-contained recipe 2
+
+Recipe 2 includes the locked production dependency tree in the signed root archive, including nested dependencies, installed peers and every optional platform package. Managed installation remains offline: it extracts verified files and creates the contained launcher without npm, lifecycle scripts or dependency downloads. Historical recipe 1 receipts and publication policies 1–3 remain verifiable; policy 4 binds the new recipe's protected build workflow.
+
+For SDK declaration filenames longer than the basic tar name field, the archive parser accepts one bounded per-file PAX record containing only path, size and mtime. It requires an immediate regular file, exact numeric agreement, and the same package-root, path, collision and size validation as ordinary entries. Global, repeated, nested, orphaned, link-bearing and unknown metadata fail closed. It never creates links from archive entries.
