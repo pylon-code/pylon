@@ -96,7 +96,7 @@ const THREAD_SETTINGS_HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects
   Platform.OS,
   Platform.Version,
 );
-function ModelRow(props: {
+export function ModelRow(props: {
   readonly option: ModelOption;
   readonly selected: boolean;
   readonly disabledReason?: string | undefined;
@@ -108,10 +108,11 @@ function ModelRow(props: {
   const selectedMaterialRow = materialYouStyleLayoutActive && props.selected;
   return (
     <Pressable
-      accessibilityLabel={[props.option.label, props.option.subtitle].filter(Boolean).join(", ")}
+      accessibilityLabel={[props.option.label, props.option.subtitle, props.disabledReason]
+        .filter(Boolean)
+        .join(", ")}
       accessibilityRole="radio"
       accessibilityState={{ checked: props.selected, disabled: props.disabledReason !== undefined }}
-      accessibilityHint={props.disabledReason}
       disabled={props.disabledReason !== undefined}
       onPress={props.onPress}
       className={cn(
@@ -146,12 +147,12 @@ function ModelRow(props: {
             {props.option.subtitle}
           </Text>
         ) : null}
+        {props.disabledReason ? (
+          <Text className="mt-1 text-xs leading-normal text-foreground-muted">
+            {props.disabledReason}
+          </Text>
+        ) : null}
       </View>
-      {props.disabledReason ? (
-        <Text className="max-w-[45%] text-right text-3xs text-foreground-muted" numberOfLines={2}>
-          {props.disabledReason}
-        </Text>
-      ) : null}
       {props.selected ? (
         <SymbolView
           name="checkmark"
