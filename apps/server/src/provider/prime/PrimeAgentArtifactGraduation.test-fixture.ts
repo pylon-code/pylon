@@ -71,6 +71,10 @@ export async function makePrimeArtifactGraduationHarness(input: {
     stateDir,
     platform: input.platform,
     dependencies: {
+      loadLatestVerifiedPublicationMetadata: async (channel) => {
+        const publication = artifacts[artifactIndex]?.publication;
+        return publication?.channel === channel ? publication : null;
+      },
       loadLatestVerifiedPublication: async (): Promise<PrimeManagedPublicationBundle> => {
         const selected = artifacts[artifactIndex];
         if (!selected) throw new Error("The selected Prime graduation artifact is unavailable.");

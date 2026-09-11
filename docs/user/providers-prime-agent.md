@@ -137,6 +137,11 @@ publication on the selected environment host, installs it beside other builds, a
 Prime provider instance's binary path. It does not overwrite or remove a global npm, pnpm, yarn, bun,
 Homebrew, or standalone Prime installation.
 
+The web and desktop card names the detected backend as **Native daemon** or **ACP compatibility**.
+When no managed builds are installed and neither channel has a verifiable publication, maintenance
+controls are disabled and the card points to manual installation. **Refresh status** checks again;
+controls return when a signed stable or preview publication becomes available.
+
 Stable is the default managed channel. Preview requires checking the preview warning before
 **Install/update preview** becomes available. Signed channel sequence and build identity determine
 updates; the package version does not. If the signed feed is offline or invalid, Pylon keeps the

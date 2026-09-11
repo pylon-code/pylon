@@ -344,6 +344,7 @@ async function makeHarness(
     readonly installMode?: "seam" | "production";
     readonly crashAfterCommitOnce?: boolean;
     readonly installationBarrier?: () => Promise<void>;
+    readonly loadMetadata?: PrimeManagedToolStoreDependencies["loadLatestVerifiedPublicationMetadata"];
   } = {},
 ) {
   const stateDir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pylon-prime-managed-"));
@@ -362,10 +363,15 @@ async function makeHarness(
   let crashAfterCommitOnce = input.crashAfterCommitOnce ?? false;
   const reservations = new Set<string>();
   const dependencies: PrimeManagedToolStoreDependencies = {
-    loadLatestVerifiedPublication: async () => {
+    loadLatestVerifiedPublicationMetadata: vi.fn(async (channel) => {
+      if (input.loadMetadata) return await input.loadMetadata(channel);
+      if (loaderError) throw loaderError;
+      return currentBundle.publication;
+    }),
+    loadLatestVerifiedPublication: vi.fn(async () => {
       if (loaderError) throw loaderError;
       return currentBundle;
-    },
+    }),
     readBinding: async () => binding,
     listBindings: async () => [{ instanceId: "primeAgent", binding }],
     listOwnedRuntimeBuildReferences: async () => ownedRuntimeBuildReferences,
@@ -425,6 +431,7 @@ async function makeHarness(
     stateDir,
     stock,
     store,
+    dependencies,
     get binding() {
       return binding;
     },
@@ -459,6 +466,71 @@ function commandId(prefix: string): string {
 }
 
 describe("Pylon-managed Prime tool store", () => {
+  it.each(["absent", "failed"] as const)(
+    "reports %s publications without loading an install archive",
+    async (outcome) => {
+      const harness = await makeHarness({
+        loadMetadata: async () => {
+          if (outcome === "failed") throw new Error("feed unavailable");
+          return null;
+        },
+      });
+      await expect(harness.store.status("primeAgent")).resolves.toMatchObject({
+        mode: "stock",
+        availableBuilds: [],
+        publicationAvailable: false,
+      });
+      expect(harness.dependencies.loadLatestVerifiedPublicationMetadata).toHaveBeenCalledWith(
+        "stable",
+      );
+      expect(harness.dependencies.loadLatestVerifiedPublicationMetadata).toHaveBeenCalledWith(
+        "preview",
+      );
+      expect(harness.dependencies.loadLatestVerifiedPublication).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["stable", "preview"] as const)(
+    "finds a newly available %s publication on a later status read",
+    async (channel) => {
+      const bundle = await publicationBundle({ channel });
+      let published = false;
+      const harness = await makeHarness({
+        loadMetadata: async (requested) => {
+          if (!published || requested !== channel) throw new Error("not published");
+          return bundle.publication;
+        },
+      });
+      expect((await harness.store.status("primeAgent")).publicationAvailable).toBe(false);
+      published = true;
+      expect((await harness.store.status("primeAgent")).publicationAvailable).toBe(true);
+      expect(harness.dependencies.loadLatestVerifiedPublication).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps installed builds usable without probing publications in managed or stock mode", async () => {
+    const harness = await makeHarness({
+      loadMetadata: async () => {
+        throw new Error("offline");
+      },
+    });
+    await harness.store.command({
+      commandId: "install-offline-status",
+      instanceId: "primeAgent",
+      action: "install",
+    });
+    expect((await harness.store.status("primeAgent")).publicationAvailable).toBeNull();
+    await harness.store.command({
+      commandId: "stock-offline-status",
+      instanceId: "primeAgent",
+      action: "use-stock",
+    });
+    const status = await harness.store.status("primeAgent");
+    expect(status).toMatchObject({ mode: "stock", publicationAvailable: null });
+    expect(status.availableBuilds).toHaveLength(1);
+    expect(harness.dependencies.loadLatestVerifiedPublicationMetadata).not.toHaveBeenCalled();
+  });
+
   it("installs stable by default, requires explicit preview opt-in, and never changes stock bytes", async () => {
     const harness = await makeHarness();
     const stockBefore = await NodeFSP.readFile(harness.stock);
@@ -521,7 +593,9 @@ describe("Pylon-managed Prime tool store", () => {
     ).toContain("safe fixture");
   });
 
-  it("publishes durable progress to other clients while installation is still running", async () => {
+  it("publishes durable progress while an earlier metadata status probe remains blocked", async () => {
+    const metadataStarted = Promise.withResolvers<void>();
+    const metadataReleased = Promise.withResolvers<null>();
     let releaseInstallation!: () => void;
     const installationReleased = new Promise<void>((resolve) => {
       releaseInstallation = resolve;
@@ -531,11 +605,17 @@ describe("Pylon-managed Prime tool store", () => {
       reportInstallStart = resolve;
     });
     const harness = await makeHarness({
+      loadMetadata: async () => {
+        metadataStarted.resolve();
+        return await metadataReleased.promise;
+      },
       installationBarrier: async () => {
         reportInstallStart();
         await installationReleased;
       },
     });
+    const waitingStatus = harness.store.status("primeAgent");
+    await metadataStarted.promise;
     const running = harness.store.command({
       commandId: "observable-progress",
       instanceId: "primeAgent",
@@ -543,13 +623,17 @@ describe("Pylon-managed Prime tool store", () => {
     });
     await installStarted;
     await expect(harness.store.status("primeAgent")).resolves.toMatchObject({
+      publicationAvailable: null,
       operation: {
         commandId: "observable-progress",
         status: "installing",
       },
     });
+    expect(harness.dependencies.loadLatestVerifiedPublicationMetadata).toHaveBeenCalledTimes(2);
     releaseInstallation();
     await expect(running).resolves.toMatchObject({ status: "succeeded" });
+    metadataReleased.resolve(null);
+    await waitingStatus;
   });
 
   it("reconciles a crash after settings CAS from the durable selection journal", async () => {
@@ -859,6 +943,7 @@ describe("Pylon-managed Prime tool store", () => {
       stateDir,
       platform: "linux",
       dependencies: {
+        loadLatestVerifiedPublicationMetadata: async () => null,
         loadLatestVerifiedPublication: async () => {
           io += 1;
           throw new Error("not used");
@@ -1108,6 +1193,10 @@ describe("Pylon-managed Prime tool store", () => {
           stateDir,
           platform: "win32",
           dependencies: {
+            loadLatestVerifiedPublicationMetadata: async () => {
+              io += 1;
+              throw new Error("must not run");
+            },
             loadLatestVerifiedPublication: async () => {
               io += 1;
               throw new Error("must not run");

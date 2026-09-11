@@ -394,6 +394,7 @@ function PrimeManagedMaintenanceSection(props: {
   readonly instanceId: ProviderInstanceId;
   readonly readOnly: boolean;
   readonly distributionMessage: string | null;
+  readonly requiresNewThreadForModelChange: boolean | undefined;
 }) {
   const target =
     props.environmentId === undefined
@@ -470,6 +471,11 @@ function PrimeManagedMaintenanceSection(props: {
         {props.distributionMessage ? (
           <p className="text-xs leading-relaxed text-muted-foreground">
             {props.distributionMessage}
+          </p>
+        ) : null}
+        {props.requiresNewThreadForModelChange !== undefined ? (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Backend: {props.requiresNewThreadForModelChange ? "ACP compatibility" : "Native daemon"}
           </p>
         ) : null}
         {maintenance?.guidance ? (
@@ -1247,6 +1253,7 @@ export function ProviderInstanceCard({
               instanceId={instanceId}
               readOnly={readOnly}
               distributionMessage={liveProvider?.distribution?.message ?? null}
+              requiresNewThreadForModelChange={liveProvider?.requiresNewThreadForModelChange}
             />
             <div className="grid max-w-lg gap-1.5 rounded-lg border border-border/70 bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
               <p>{PRIME_AGENT_INSTANCE_GUIDANCE}</p>
