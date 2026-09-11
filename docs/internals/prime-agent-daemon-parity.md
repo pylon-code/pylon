@@ -189,6 +189,12 @@ or an advanced transcript boundary excludes this case. The submission signature 
 memory and is absent from adopted restart turns. Unknown replay, changed transcript content, missing ownership
 proof, and additional unattributed output remain rejected.
 
+Prime 0.9.4 can insert one hidden `harness_digest` before the first submitted user message. Pylon retains
+its timestamp and SHA-256 content/details identity in the native transcript, preserving the native absolute
+message count without publishing harness content. The first-user case permits that single prefix either
+already observed or in the same complete snapshot. Changed or missing observed digests, multiple prefixes,
+unknown custom messages, and extra user/assistant/tool output still fail continuity validation.
+
 Ordinary sessions preserve lossless FIFO delivery under transient decoded-queue pressure through a separately
 bounded 256-route, 64 MiB raw staging tail. Reconnect and close admission fence public input synchronously at
 the subscription boundary. Each recovery-sensitive ordinary frame carries its exact ingress-generation fence

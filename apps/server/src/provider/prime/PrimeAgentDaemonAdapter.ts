@@ -2647,18 +2647,33 @@ export function makePrimeAgentDaemonAdapter(
                             (candidate) => candidate.correlationId === activeTurn.correlationId,
                           );
                     const currentLifecycle = activeTurn?.correlatedLifecycle;
-                    // Complete replay can deliver the submitted user boundary before its
-                    // message event. Reconcile only the exact payload of this delivered owner.
+                    // The first native turn may insert one hidden harness digest before its
+                    // submitted user boundary. Keep its identity in the transcript without
+                    // projecting it or admitting any other unobserved native messages.
+                    const firstHarnessDigestObserved =
+                      activeTurn?.nativeTranscriptBaselineMessageCount === 0 &&
+                      context.nativeTranscriptMessageCount === 1 &&
+                      context.nativeTranscript[0]?.role === "harnessDigest";
+                    const submittedUserIndex =
+                      activeTurn?.nativeTranscriptBaselineMessageCount === 0 &&
+                      context.nativeTranscriptMessageCount === 0 &&
+                      missingMessages[0]?.role === "harnessDigest"
+                        ? 1
+                        : 0;
                     const snapshotRecoversSubmittedUser =
                       activeTurn !== undefined &&
                       event.connectionGeneration !== undefined &&
                       event.correlatedProofEpoch !== undefined &&
                       activeTurn.queuedInputCount === 0 &&
-                      context.nativeTranscriptMessageCount ===
-                        activeTurn.nativeTranscriptBaselineMessageCount &&
-                      missingMessages.length === 1 &&
-                      missingMessages[0] !== undefined &&
-                      matchesSubmittedUserMessage(activeTurn, missingMessages[0]) &&
+                      (context.nativeTranscriptMessageCount ===
+                        activeTurn.nativeTranscriptBaselineMessageCount ||
+                        firstHarnessDigestObserved) &&
+                      missingMessages.length === submittedUserIndex + 1 &&
+                      missingMessages[submittedUserIndex] !== undefined &&
+                      matchesSubmittedUserMessage(
+                        activeTurn,
+                        missingMessages[submittedUserIndex],
+                      ) &&
                       currentLifecycle?.kind === "model_prompt" &&
                       currentLifecycle.phase === "delivered" &&
                       currentLifecycle.deliveryCrossed &&
