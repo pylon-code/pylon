@@ -109,7 +109,7 @@ describe("DesktopClientSettings diagnostics", () => {
     });
   });
 
-  it.effect("reports malformed settings documents and logs the settings path", () =>
+  it.effect("reads malformed settings documents as absent and logs the settings path", () =>
     Effect.gen(function* () {
       const result = yield* readWithLogs(
         FileSystem.layerNoop({
@@ -117,12 +117,8 @@ describe("DesktopClientSettings diagnostics", () => {
         }),
       );
 
-      if (result.result._tag !== "Failure") return assert.fail("expected a decode failure");
-      assert.instanceOf(
-        result.result.failure,
-        DesktopClientSettings.DesktopClientSettingsReadError,
-      );
-      assert.equal(result.result.failure.operation, "decode-document");
+      if (result.result._tag !== "Success") return assert.fail("expected a successful read");
+      assert.isTrue(Option.isNone(result.result.success));
       assert.equal(result.records.length, 1);
       const message = result.records[0]?.message;
       if (!Array.isArray(message)) {
