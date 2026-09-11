@@ -103,14 +103,22 @@ but the new thread does not reuse the worktree created for the thread that just 
 
 ## Desktop quit shortcut
 
-Use `Cmd+Q` on macOS or `Ctrl+Q` on Windows and Linux. With **Hold to quit** enabled,
-hold the shortcut for 1.2 seconds or press it twice within 500 milliseconds. The second
-press quits immediately. You can keep Command or Control held between presses, or release
-both keys. An unrelated shortcut cancels the first tap.
+Use `Cmd+Q` on macOS or `Ctrl+Q` on Windows and Linux. **Settings** → **General** →
+**Confirmations** → **Quit shortcut** chooses how it confirms:
+
+- **Hold** (the default): hold the shortcut for 1.2 seconds, or press it twice within
+  500 milliseconds. A single quick press shows a hint instead of quitting.
+- **Double press**: press the shortcut twice within 500 milliseconds. The first press
+  shows a hint until that window ends.
+- **Direct**: the first press quits.
+
+The second press quits immediately. You can keep Command or Control held between presses,
+or release both keys. An unrelated shortcut cancels the first press.
 
 Holding needs keyboard repeat. If holding does not quit, use two quick presses or choose
-**Quit** from the application menu. Turn off **Hold to quit** in **Settings** → **General**
-to quit on the first press. The application menu's **Quit** action always quits immediately.
+**Quit** from the application menu. The application menu's **Quit** action always quits
+immediately. If Pylon had **Hold to quit** turned off before this setting existed, it starts
+in **Direct**.
 
 ## `when` Conditions
 

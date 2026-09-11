@@ -167,6 +167,42 @@ describe("ClientSettings retired status motion", () => {
   });
 });
 
+describe("ClientSettings quit confirmation", () => {
+  it("defaults to hold", () => {
+    expect(decodeClientSettings({}).confirmQuit).toBe("hold");
+  });
+
+  it.each(["direct", "hold", "double-click"] as const)("accepts the %s mode", (mode) => {
+    expect(decodeClientSettings({ confirmQuit: mode }).confirmQuit).toBe(mode);
+    expect(decodeClientSettingsPatch({ confirmQuit: mode }).confirmQuit).toBe(mode);
+  });
+
+  it.each([
+    [true, "hold"],
+    [false, "direct"],
+  ] as const)("migrates the legacy %s value to %s", (legacyValue, mode) => {
+    const settings = decodeClientSettings({ confirmQuit: legacyValue });
+
+    expect(settings.confirmQuit).toBe(mode);
+    expect(encodeClientSettings(settings).confirmQuit).toBe(mode);
+  });
+
+  it("rejects legacy booleans at the patch boundary", () => {
+    expect(() => decodeClientSettingsPatch({ confirmQuit: true })).toThrow();
+  });
+
+  it("reads a stored mode or legacy boolean without leaving it unread", () => {
+    expect(decodeStoredClientSettings({ confirmQuit: "double-click" })).toEqual({
+      settings: { ...DEFAULT_CLIENT_SETTINGS, confirmQuit: "double-click" },
+      unreadValues: {},
+    });
+    expect(decodeStoredClientSettings({ confirmQuit: false })).toEqual({
+      settings: { ...DEFAULT_CLIENT_SETTINGS, confirmQuit: "direct" },
+      unreadValues: {},
+    });
+  });
+});
+
 describe("stored client settings", () => {
   it("returns null for a document that is not a settings object", () => {
     expect(decodeStoredClientSettings("settings")).toBeNull();
@@ -176,29 +212,29 @@ describe("stored client settings", () => {
 
   it("defaults only the values it cannot decode and retains them until they change", () => {
     const stored = decodeStoredClientSettings({
-      confirmQuit: "hold",
+      diffLayout: "unified",
       fontSizeCode: "large",
       timestampFormat: "12-hour",
     });
 
     expect(stored).toEqual({
       settings: { ...DEFAULT_CLIENT_SETTINGS, timestampFormat: "12-hour" },
-      unreadValues: { confirmQuit: "hold", fontSizeCode: "large" },
+      unreadValues: { diffLayout: "unified", fontSizeCode: "large" },
     });
     const unchanged = retainUnreadClientSettings({ ...stored!.settings, wordWrap: false }, stored);
     expect(encodeStoredClientSettings(unchanged)).toMatchObject({
-      confirmQuit: "hold",
+      diffLayout: "unified",
       fontSizeCode: "large",
       timestampFormat: "12-hour",
       wordWrap: false,
     });
     const changed = retainUnreadClientSettings(
-      { ...unchanged.settings, confirmQuit: false },
+      { ...unchanged.settings, diffLayout: "split" },
       unchanged,
     );
     expect(changed.unreadValues).toEqual({ fontSizeCode: "large" });
     expect(encodeStoredClientSettings(changed)).toMatchObject({
-      confirmQuit: false,
+      diffLayout: "split",
       fontSizeCode: "large",
     });
   });

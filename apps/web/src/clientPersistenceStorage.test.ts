@@ -77,9 +77,11 @@ describe("clientPersistenceStorage", () => {
     },
   );
 
-  // T3 Code served from the same origin writes `confirmQuit` as "hold" | "direct" | "double-click".
+  // Another client served from the same origin, such as T3 Code, can write a
+  // value this build cannot decode next to values it can.
   const t3CodeDocument = JSON.stringify({
-    confirmQuit: "hold",
+    confirmQuit: "double-click",
+    diffLayout: "unified",
     timestampFormat: "12-hour",
     wordWrap: false,
   });
@@ -93,6 +95,7 @@ describe("clientPersistenceStorage", () => {
 
     expect(readBrowserClientSettings()).toEqual({
       ...DEFAULT_CLIENT_SETTINGS,
+      confirmQuit: "double-click",
       timestampFormat: "12-hour",
       wordWrap: false,
     });
@@ -111,6 +114,7 @@ describe("clientPersistenceStorage", () => {
     await ensureClientSettingsHydrated();
     expect(getClientSettings()).toEqual({
       ...DEFAULT_CLIENT_SETTINGS,
+      confirmQuit: "double-click",
       timestampFormat: "12-hour",
       wordWrap: false,
     });
@@ -120,15 +124,16 @@ describe("clientPersistenceStorage", () => {
       onboardingCompletedAt: "2026-09-10T12:00:00.000Z",
     }));
     expect(storedDocument()).toMatchObject({
-      confirmQuit: "hold",
+      confirmQuit: "double-click",
+      diffLayout: "unified",
       timestampFormat: "12-hour",
       onboardingCompletedAt: "2026-09-10T12:00:00.000Z",
     });
 
-    await persistClientSettingsUpdate((current) => ({ ...current, confirmQuit: false }));
-    expect(storedDocument()).toMatchObject({ confirmQuit: false });
+    await persistClientSettingsUpdate((current) => ({ ...current, diffLayout: "split" }));
+    expect(storedDocument()).toMatchObject({ diffLayout: "split" });
     await persistClientSettingsUpdate((current) => ({ ...current, wordWrap: true }));
-    expect(storedDocument()).toMatchObject({ confirmQuit: false, wordWrap: true });
+    expect(storedDocument()).toMatchObject({ diffLayout: "split", wordWrap: true });
   });
 
   it("preserves saved settings across a transient read failure", async () => {
