@@ -79,7 +79,7 @@ export const makeProviderInstallation = Effect.fn("makeProviderInstallation")(fu
         instanceId,
         operation,
         detail:
-          "This instance uses a custom executable. Clear its binary path to manage installation in T3 Code.",
+          "This instance uses a custom executable. Clear its binary path to manage installation in Pylon.",
       });
     }
   });

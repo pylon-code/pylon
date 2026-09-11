@@ -59,7 +59,7 @@ export class DesktopAppUnreachableError extends Schema.TaggedErrorClass<DesktopA
   },
 ) {
   override get message(): string {
-    return "Could not reach the T3 Code desktop app. Start or update the desktop app on this machine, then run `t3 app` again. A running T3 Code server is not enough.";
+    return "Could not reach the Pylon desktop app. Start or update the desktop app on this machine, then run `t3 app` again. A running Pylon server is not enough.";
   }
 }
 
@@ -73,7 +73,7 @@ export class DesktopAppRequestFailedError extends Schema.TaggedErrorClass<Deskto
   },
 ) {
   override get message(): string {
-    return `T3 Code could not open ${this.workspaceRoot} (${this.code}).`;
+    return `Pylon could not open ${this.workspaceRoot} (${this.code}).`;
   }
 }
 
@@ -246,7 +246,7 @@ const runAppCommand = Effect.fn("cli.app")(function* (flags: {
     });
   }
 
-  yield* Console.log(`Opened ${workspaceRoot} in T3 Code.`);
+  yield* Console.log(`Opened ${workspaceRoot} in Pylon.`);
 });
 
 export const appCommand = Command.make("app", {
@@ -256,6 +256,6 @@ export const appCommand = Command.make("app", {
     Argument.optional,
   ),
 }).pipe(
-  Command.withDescription("Open a project in the running T3 Code desktop app."),
+  Command.withDescription("Open a project in the running Pylon desktop app."),
   Command.withHandler(runAppCommand),
 );
