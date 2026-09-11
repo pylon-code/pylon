@@ -7,11 +7,11 @@ import {
   questionAttachmentPreparationAtom,
 } from "./question-attachments";
 import { composerDraftsAtom, clearComposerDraft } from "./use-composer-drafts";
-import { composerAttachmentUploadsAtom } from "./composer-attachment-uploads";
 import {
-  canUploadComposerAttachment,
-  composerAttachmentUploadKey,
-} from "../lib/composerAttachmentUploadQueue";
+  composerAttachmentUploadBlockReason,
+  composerAttachmentsStillUploading,
+  composerAttachmentUploadsAtom,
+} from "./composer-attachment-uploads";
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -211,8 +211,12 @@ export function useSelectedThreadRequests() {
               question.id,
             );
             const attachments = attachmentDrafts[key]?.attachments ?? [];
-            const serverConfig =
-              questionServerConfigs.get(selectedThreadShell.environmentId) ?? null;
+            const uploadInput = {
+              environmentId: selectedThreadShell.environmentId,
+              attachments,
+              serverConfig: questionServerConfigs.get(selectedThreadShell.environmentId) ?? null,
+              states: uploadStates,
+            };
             return [
               question.id,
               {
@@ -225,20 +229,14 @@ export function useSelectedThreadRequests() {
                 attachmentCount: attachments.length,
                 attachmentsBlocked:
                   (attachments.length > 0 &&
-                    serverConfig?.environment.capabilities.questionAttachments !== true) ||
+                    uploadInput.serverConfig?.environment.capabilities.questionAttachments !==
+                      true) ||
                   (preparationCounts[key] ?? 0) > 0 ||
-                  // A question answer waits for every upload the environment accepts,
-                  // whether it is still in flight or failed and needs a retry.
-                  attachments.some(
-                    (attachment) =>
-                      canUploadComposerAttachment(attachment, serverConfig) &&
-                      uploadStates[
-                        composerAttachmentUploadKey(
-                          selectedThreadShell.environmentId,
-                          attachment.id,
-                        )
-                      ]?.status !== "ready",
-                  ),
+                  composerAttachmentsStillUploading(uploadInput) ||
+                  composerAttachmentUploadBlockReason({
+                    ...uploadInput,
+                    connected: true,
+                  }) !== null,
               },
             ];
           }),
