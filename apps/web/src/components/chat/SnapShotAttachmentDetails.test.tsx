@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   snapShotAccessibilityDetails,
+  snapShotAccessibilityFormat,
   snapShotIncludesAccessibility,
 } from "./SnapShotAttachmentDetails";
 
@@ -16,6 +17,7 @@ describe("SnapShotAttachmentDetails", () => {
 
     expect(snapShotIncludesAccessibility(source)).toBe(false);
     expect(snapShotAccessibilityDetails(source)).toBeUndefined();
+    expect(snapShotAccessibilityFormat(source)).toBeUndefined();
   });
 
   it("formats a structured accessibility tree as JSON", () => {
@@ -48,6 +50,7 @@ describe("SnapShotAttachmentDetails", () => {
     expect(snapShotIncludesAccessibility(source)).toBe(true);
     const details = snapShotAccessibilityDetails(source);
     expect(details?.format).toBe("json");
+    expect(snapShotAccessibilityFormat(source)).toBe("json");
     expect(details?.content).toBe(JSON.stringify(source.accessibility, null, 2));
     expect(JSON.parse(details?.content ?? "")).toEqual(source.accessibility);
   });
@@ -97,5 +100,21 @@ describe("SnapShotAttachmentDetails", () => {
       content: "Current terminal text",
       format: "text",
     });
+    expect(snapShotAccessibilityFormat(source)).toBe("text");
+  });
+
+  it("offers no text view for whitespace-only accessibility text", () => {
+    const source = {
+      kind: "snap-shot" as const,
+      capturedAt: "2026-08-27T00:00:00.000Z",
+      appName: "Terminal",
+      windowTitle: "Logs",
+      accessibleText: "legacy text",
+      accessibility: { format: "flat-text" as const, text: " \n\t ", truncated: false },
+    };
+
+    expect(snapShotIncludesAccessibility(source)).toBe(true);
+    expect(snapShotAccessibilityDetails(source)).toBeUndefined();
+    expect(snapShotAccessibilityFormat(source)).toBeUndefined();
   });
 });

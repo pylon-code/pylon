@@ -13,7 +13,7 @@ import { usePreparedConnection } from "../../state/session";
 import {
   SnapShotAccessibilityData,
   SnapShotContentsButton,
-  snapShotAccessibilityDetails,
+  snapShotAccessibilityFormat,
 } from "./SnapShotAttachmentDetails";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { composerFloatingLayerProps } from "./composerEventScope";
@@ -143,12 +143,12 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
     item.originalUrl && resolveExternalWebLinkHost(item.originalUrl) !== null ? (
       <OpenMediaLink originalUrl={item.originalUrl} />
     ) : null;
-  const accessibilityDetails = item.source ? snapShotAccessibilityDetails(item.source) : undefined;
+  const accessibilityFormat = item.source ? snapShotAccessibilityFormat(item.source) : undefined;
   const showingAccessibilityDetails =
-    Boolean(accessibilityDetails) && accessibilityDetailsSrc === item.src;
+    accessibilityFormat !== undefined && accessibilityDetailsSrc === item.src;
   const contentsLabel = showingAccessibilityDetails
     ? "Show screenshot"
-    : accessibilityDetails?.format === "json"
+    : accessibilityFormat === "json"
       ? "Show accessibility JSON"
       : "Show extracted text";
   const ContentsIcon = showingAccessibilityDetails ? ImageIcon : TextIcon;
@@ -194,9 +194,9 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
           {item.type === "video" ? (
             <ExpandedVideo key={index} item={item} />
           ) : showingAccessibilityDetails ? (
-            accessibilityDetails ? (
+            item.source ? (
               <SnapShotAccessibilityData
-                details={accessibilityDetails}
+                source={item.source}
                 className="h-[min(86vh,40rem)] w-[min(92vw,42rem)] animate-[snap-shot-contents-enter_140ms_ease-out] rounded-lg border border-border/70 bg-background p-4 text-xs leading-5 shadow-2xl motion-reduce:animate-none"
               />
             ) : null
@@ -223,7 +223,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
               {item.name}
               {preview.images.length > 1 ? ` (${index + 1}/${preview.images.length})` : ""}
             </span>
-            {accessibilityDetails && item.source ? (
+            {accessibilityFormat !== undefined && item.source ? (
               <Tooltip>
                 <TooltipTrigger
                   render={

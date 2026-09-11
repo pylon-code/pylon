@@ -72,14 +72,20 @@ function HighlightedAccessibilityJson({
   });
 }
 
+/**
+ * Renders a capture's accessibility data. Mount it only while the data is on screen: an element
+ * tree is pretty-printed here, memoized on the source, rather than by every attachment render.
+ */
 export function SnapShotAccessibilityData({
-  details,
+  source,
   className,
 }: {
-  details: SnapShotAccessibilityDetails;
+  source: SnapShotSource;
   className?: string;
 }) {
   const { resolvedTheme } = useTheme();
+  const details = useMemo(() => snapShotAccessibilityDetails(source), [source]);
+  if (!details) return null;
   const content =
     details.format === "json" ? (
       <RenderErrorBoundary fallback={details.content}>
@@ -121,6 +127,18 @@ export function snapShotAccessibilityDetails(
   return text ? { content: text, format: "text" } : undefined;
 }
 
+/** The view `snapShotAccessibilityDetails` would produce, without formatting its content. */
+export function snapShotAccessibilityFormat(
+  source: SnapShotSource,
+): SnapShotAccessibilityDetails["format"] | undefined {
+  if (source.accessibility?.format === "element-tree") return "json";
+  const text =
+    source.accessibility?.format === "flat-text"
+      ? source.accessibility.text
+      : source.accessibleText;
+  return text !== undefined && /\S/.test(text) ? "text" : undefined;
+}
+
 export function snapShotIncludesAccessibility(source: SnapShotSource): boolean {
   return Boolean(source.accessibility || source.accessibleText?.trim());
 }
@@ -136,7 +154,7 @@ export function SnapShotContentsButton({
 }) {
   const includesAccessibility = snapShotIncludesAccessibility(source);
   const ContentsIcon = includesAccessibility ? TextIcon : ImageIcon;
-  const accessibilityDetails = snapShotAccessibilityDetails(source);
+  const hasAccessibilityDetails = snapShotAccessibilityFormat(source) !== undefined;
   const tooltip = includesAccessibility ? "Accessibility data" : "No accessibility data";
 
   return (
@@ -171,9 +189,9 @@ export function SnapShotContentsButton({
       >
         <div className="space-y-2">
           <PopoverTitle className="text-sm leading-5">Accessibility data</PopoverTitle>
-          {accessibilityDetails ? (
+          {hasAccessibilityDetails ? (
             <SnapShotAccessibilityData
-              details={accessibilityDetails}
+              source={source}
               className="max-h-64 rounded-md border border-border/70 bg-muted/45 p-2.5 text-[11px] leading-4"
             />
           ) : includesAccessibility ? (
