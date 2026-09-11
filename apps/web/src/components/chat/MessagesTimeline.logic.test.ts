@@ -12,7 +12,6 @@ import {
 } from "@t3tools/contracts";
 import {
   applyThreadDetailEvent,
-  codexFeedbackMessage,
   createEnvironmentThreadDetailAtoms,
   EMPTY_ENVIRONMENT_THREAD_STATE,
 } from "@t3tools/client-runtime/state/threads";
@@ -425,20 +424,18 @@ describe("streaming row projection", () => {
     expect(firstUserRow(previous)).toMatchObject({ revertTurnCount: 0 });
   });
 
-  it("never anchors a rollback on a local feedback transcript inside a turn", () => {
+  it("never anchors a rollback on a local optimistic message inside a turn", () => {
     const initial = fixture("Partial");
-    const submission = {
-      id: MessageId.make("feedback-1"),
-      command: "/feedback",
+    const optimistic: ChatMessage = {
+      ...initial.messages[0]!,
+      id: MessageId.make("optimistic-1"),
+      text: "Follow-up not yet echoed by the server",
       createdAt: initial.time(1),
-      status: "sent" as const,
-      feedbackId: "feedback-thread",
     };
-    // The transcript sorts between the request and its checkpointed response.
+    // The local send sorts between the request and its checkpointed response.
     const messages: ChatMessage[] = [
       initial.messages[0]!,
-      codexFeedbackMessage(submission),
-      codexFeedbackMessage(submission, "assistant"),
+      optimistic,
       ...initial.messages.slice(1),
     ];
     const checkpoints: TurnDiffSummary[] = [
@@ -462,12 +459,9 @@ describe("streaming row projection", () => {
         completedAt: initial.time(4),
       },
     ];
-    const localMessageIds = collectLocalTimelineMessageIds([], [submission]);
-    expect([...localMessageIds]).toEqual(["feedback-1", "feedback-1:feedback"]);
-    expect(collectLocalTimelineMessageIds([], [])).toBe(collectLocalTimelineMessageIds([], []));
-    expect([
-      ...collectLocalTimelineMessageIds([{ id: MessageId.make("optimistic-1") }], []),
-    ]).toEqual(["optimistic-1"]);
+    const localMessageIds = collectLocalTimelineMessageIds([optimistic]);
+    expect([...localMessageIds]).toEqual(["optimistic-1"]);
+    expect(collectLocalTimelineMessageIds([])).toBe(collectLocalTimelineMessageIds([]));
 
     const timeline = deriveTimelineEntriesWithState(messages, [], initial.work);
     const input = {
@@ -490,9 +484,11 @@ describe("streaming row projection", () => {
       messages: messages.filter((message) => !localMessageIds.has(message.id)),
       checkpoints,
     });
-    // Counted as server messages, the transcript would take the request's target.
+    // Counted as a server message, the local send would take the request's target.
     const { localMessageIds: _localMessageIds, ...withoutLocalIds } = input;
-    expect(revertCounts(deriveMessagesTimelineRows(withoutLocalIds))).toEqual({ "feedback-1": 0 });
+    expect(revertCounts(deriveMessagesTimelineRows(withoutLocalIds))).toEqual({
+      "optimistic-1": 0,
+    });
     const projection = deriveMessagesTimelineRowsWithState(input);
     expect(revertCounts(projection.rows)).toEqual({ "history-user": 0 });
     expect(Object.keys(revertCounts(projection.rows))).toEqual([...serverTargets.keys()]);

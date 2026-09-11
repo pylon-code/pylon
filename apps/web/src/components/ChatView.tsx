@@ -3297,8 +3297,8 @@ export default function ChatView(props: ChatViewProps) {
   // Stable while a turn streams: it changes only when this client sends or
   // resolves a local message, so the row projection keeps its fast path.
   const localTimelineMessageIds = useMemo(
-    () => collectLocalTimelineMessageIds(optimisticUserMessages, feedbackSubmissions),
-    [feedbackSubmissions, optimisticUserMessages],
+    () => collectLocalTimelineMessageIds(optimisticUserMessages),
+    [optimisticUserMessages],
   );
   const timelineProjectionRef = useRef<{
     threadKey: string | null;
