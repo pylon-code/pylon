@@ -1,4 +1,17 @@
 import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
+import { useServerConfigs } from "./entities";
+import { Alert } from "react-native";
+import {
+  questionAttachmentDraftKey,
+  questionAttachmentDraftPrefix,
+  questionAttachmentPreparationAtom,
+} from "./question-attachments";
+import { composerDraftsAtom, clearComposerDraft } from "./use-composer-drafts";
+import {
+  composerAttachmentUploadBlockReason,
+  composerAttachmentsStillUploading,
+  composerAttachmentUploadsAtom,
+} from "./composer-attachment-uploads";
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -10,6 +23,7 @@ import {
   type SessionInteractionResponse,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { Atom } from "effect/unstable/reactivity";
 
 import { threadEnvironment } from "../state/threads";
@@ -37,7 +51,7 @@ import {
   foldSessionInteractionActivities,
 } from "../lib/sessionInteractions";
 import { appAtomRegistry } from "./atom-registry";
-import { useSelectedThreadDetail } from "./use-thread-detail";
+import { useSelectedThreadDetailState } from "./use-thread-detail";
 import { useThreadSelection } from "./use-thread-selection";
 import { useAtomCommand } from "./use-atom-command";
 
@@ -108,9 +122,12 @@ export function useSelectedThreadRequests() {
     "thread user input dismissal",
   );
   const { selectedThread: selectedThreadShell } = useThreadSelection();
-  const selectedThread = useSelectedThreadDetail();
+  const selectedThreadState = useSelectedThreadDetailState();
+  const selectedThread = Option.getOrNull(selectedThreadState.data);
+  const selectedThreadLive = selectedThreadState.status === "live";
   const userInputDraftsByRequestKey = useAtomValue(userInputDraftsByRequestKeyAtom);
   const [respondingApprovalId, setRespondingApprovalId] = useState<ApprovalRequestId | null>(null);
+  const userInputResponsesInFlight = useRef(new Set<string>());
   const [respondingUserInputId, setRespondingUserInputId] = useState<ApprovalRequestId | null>(
     null,
   );
@@ -142,11 +159,88 @@ export function useSelectedThreadRequests() {
   );
   const activePendingApproval = activePendingApprovals[0] ?? null;
   const activePendingUserInput = activePendingUserInputs[0] ?? null;
+  const questionServerConfigs = useServerConfigs();
+  const attachmentDrafts = useAtomValue(composerDraftsAtom);
+  const preparationCounts = useAtomValue(questionAttachmentPreparationAtom);
+  const uploadStates = useAtomValue(composerAttachmentUploadsAtom);
+  useEffect(() => {
+    // A cached snapshot can predate the question, so only live data may discard its drafts.
+    if (!selectedThreadLive || !selectedThreadShell || !selectedThread) return;
+    const prefix = questionAttachmentDraftPrefix(
+      selectedThreadShell.environmentId,
+      selectedThreadShell.id,
+    );
+    const retained = new Set(
+      activePendingUserInputs.flatMap((request) =>
+        request.questions.map((question) =>
+          questionAttachmentDraftKey(
+            selectedThreadShell.environmentId,
+            selectedThreadShell.id,
+            request.requestId,
+            question.id,
+          ),
+        ),
+      ),
+    );
+    const counts = { ...appAtomRegistry.get(questionAttachmentPreparationAtom) };
+    let changed = false;
+    for (const key of new Set([...Object.keys(attachmentDrafts), ...Object.keys(counts)])) {
+      if (!key.startsWith(prefix) || retained.has(key)) continue;
+      if (attachmentDrafts[key]) clearComposerDraft(key);
+      if (key in counts) {
+        delete counts[key];
+        changed = true;
+      }
+    }
+    if (changed) appAtomRegistry.set(questionAttachmentPreparationAtom, counts);
+  }, [
+    activePendingUserInputs,
+    attachmentDrafts,
+    selectedThread,
+    selectedThreadLive,
+    selectedThreadShell,
+  ]);
   const activePendingUserInputDrafts =
     activePendingUserInput && selectedThreadShell
-      ? (userInputDraftsByRequestKey[
-          scopedRequestKey(selectedThreadShell.environmentId, activePendingUserInput.requestId)
-        ] ?? {})
+      ? Object.fromEntries(
+          activePendingUserInput.questions.map((question) => {
+            const key = questionAttachmentDraftKey(
+              selectedThreadShell.environmentId,
+              selectedThreadShell.id,
+              activePendingUserInput.requestId,
+              question.id,
+            );
+            const attachments = attachmentDrafts[key]?.attachments ?? [];
+            const uploadInput = {
+              environmentId: selectedThreadShell.environmentId,
+              attachments,
+              serverConfig: questionServerConfigs.get(selectedThreadShell.environmentId) ?? null,
+              states: uploadStates,
+            };
+            return [
+              question.id,
+              {
+                ...userInputDraftsByRequestKey[
+                  scopedRequestKey(
+                    selectedThreadShell.environmentId,
+                    activePendingUserInput.requestId,
+                  )
+                ]?.[question.id],
+                attachmentCount: attachments.length,
+                attachmentsBlocked:
+                  (attachments.length > 0 &&
+                    uploadInput.serverConfig?.environment.capabilities.questionAttachments !==
+                      true) ||
+                  (preparationCounts[key] ?? 0) > 0 ||
+                  composerAttachmentsStillUploading(uploadInput) ||
+                  composerAttachmentUploadBlockReason({
+                    ...uploadInput,
+                    connected: true,
+                  }) !== null,
+              },
+            ];
+          }),
+        )
       : {};
   const activePendingUserInputAnswers = activePendingUserInput
     ? buildPendingUserInputAnswers(activePendingUserInput.questions, activePendingUserInputDrafts)
@@ -205,6 +299,52 @@ export function useSelectedThreadRequests() {
       return;
     }
 
+    const responseKey = questionAttachmentDraftKey(
+      selectedThreadShell.environmentId,
+      selectedThreadShell.id,
+      activePendingUserInput.requestId,
+      "",
+    );
+    if (userInputResponsesInFlight.current.has(responseKey)) return;
+    const attachmentsByQuestionId = new Map<
+      string,
+      import("@t3tools/contracts").UserInputAttachments[string]
+    >();
+    for (const question of activePendingUserInput.questions) {
+      const key = questionAttachmentDraftKey(
+        selectedThreadShell.environmentId,
+        selectedThreadShell.id,
+        activePendingUserInput.requestId,
+        question.id,
+      );
+      if ((appAtomRegistry.get(questionAttachmentPreparationAtom)[key] ?? 0) > 0) return;
+      const attachments = appAtomRegistry.get(composerDraftsAtom)[key]?.attachments ?? [];
+      if (attachments.length === 0) continue;
+      if (
+        attachments.some(
+          (attachment) =>
+            !attachment.uploadedAttachmentId ||
+            attachment.uploadEnvironmentId !== selectedThreadShell.environmentId,
+        )
+      ) {
+        Alert.alert(
+          "Attachments are not ready",
+          "Wait for uploads to finish, or retry failed uploads.",
+        );
+        return;
+      }
+      attachmentsByQuestionId.set(
+        question.id,
+        attachments.map((attachment) => ({
+          type: attachment.type,
+          id: attachment.uploadedAttachmentId!,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+        })),
+      );
+    }
+    userInputResponsesInFlight.current.add(responseKey);
     setRespondingUserInputId(activePendingUserInput.requestId);
     const result = await respondToUserInput({
       environmentId: selectedThreadShell.environmentId,
@@ -212,8 +352,12 @@ export function useSelectedThreadRequests() {
         threadId: selectedThreadShell.id,
         requestId: activePendingUserInput.requestId,
         answers: activePendingUserInputAnswers,
+        ...(attachmentsByQuestionId.size > 0
+          ? { attachmentsByQuestionId: Object.fromEntries(attachmentsByQuestionId) }
+          : {}),
       },
     });
+    userInputResponsesInFlight.current.delete(responseKey);
     setRespondingUserInputId((current) =>
       current === activePendingUserInput.requestId ? null : current,
     );

@@ -80,6 +80,33 @@ Because persistence and projection share a transaction, the read model cannot du
 the event log. On dispatch failure the engine rereads persisted events past the starting sequence and
 reconciles.
 
+### Attachment cleanup cursor
+
+Attachment files are not event-sourced, so reverts and deletes clean them after commit. Cleanup
+records its progress in its own `projection.attachment-cleanup` row in `projection_state`, meaning
+every event at or below it has been cleaned (`ProjectionPipeline.ts`):
+
+- **Live.** The cursor is written in the same statement as the projector cursors, at the last event
+  whose cleanup finished. Cleanup runs after commit, so it trails the head by the current command.
+  A failed cleanup stops the cursor until the next bootstrap. A transaction that rolls back never
+  ran its cleanup, so it leaves no gap.
+- **Bootstrap.** After every projector has caught up, so message and `user-input.answer-submitted`
+  references are current, bootstrap selects only the `thread.reverted` and `thread.deleted` rows
+  past the cursor, without decoding payloads. It lists the attachments directory once, and the
+  browser artifacts directory once when a delete is in range (transferred recordings and saved
+  snapshots live in `browser-artifacts/<thread>/`, which only deleting the thread removes). Threads
+  with neither kind of file are skipped; if the artifacts listing fails, each deleted thread's
+  folder is removed directly instead. It then moves the cursor to the projector head. That pass is
+  the single retry: a file that still cannot be removed is logged and left behind rather than
+  holding the cursor. A database without the row starts at the lowest cursor of the projectors
+  that record cleanup (threads, messages, activities), because their replay cleaned files before
+  this cursor existed; adding an unrelated projector does not move it. Only a failure to list the
+  attachments directory or read the log leaves the cursor for the next start.
+
+`projection_state` can therefore hold rows that are not projectors. The snapshot sequence comes only
+from the required projectors (`computeSnapshotSequence` in `ProjectionSnapshotQuery.ts`), and code
+reading the table must filter by projector name rather than taking a minimum over every row.
+
 Command and event names live in [`orchestration.ts`][contracts]. Some commands are client
 dispatchable (`thread.create`, `thread.turn.start`, `thread.approval.respond`); others are internal
 and produced only by server-side reactors (`thread.message.assistant.delta`,

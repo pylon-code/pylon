@@ -1,6 +1,8 @@
 import {
   ApprovalRequestId,
   isImportedAgentSessionMessageId,
+  NonNegativeInt,
+  UserInputAttachmentAnswerPayload,
   type ChatAttachment,
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
@@ -12,6 +14,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -19,7 +22,10 @@ import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../per
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
-import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
+import {
+  type ProjectionState,
+  ProjectionStateRepository,
+} from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { type ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import {
@@ -336,6 +342,8 @@ function retainProjectionProposedPlansAfterRevert(
   );
 }
 
+const decodeQuestionAttachmentAnswer = Schema.decodeUnknownOption(UserInputAttachmentAnswerPayload);
+
 function collectThreadAttachmentRelativePaths(
   threadId: string,
   messages: ReadonlyArray<ProjectionThreadMessage>,
@@ -360,126 +368,98 @@ function collectThreadAttachmentRelativePaths(
   return relativePaths;
 }
 
-const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function* (
+/** Cursor row in `projection_state` for attachment cleanup. It is not a projector. */
+const ATTACHMENT_CLEANUP_CURSOR = "projection.attachment-cleanup";
+
+/** One thread's file cleanup, merged from its latest revert and delete. */
+interface AttachmentCleanupTarget {
+  readonly threadId: string;
+  /** Remove every file unless the thread was re-created after this sequence. */
+  readonly deletedAtSequence: number | null;
+  /** Keep only files the thread's current messages and answers reference. */
+  readonly pruned: boolean;
+}
+
+function attachmentCleanupTargets(
+  event: OrchestrationEvent,
   sideEffects: AttachmentSideEffects,
-) {
-  const serverConfig = yield* Effect.service(ServerConfig);
-  const fileSystem = yield* Effect.service(FileSystem.FileSystem);
-  const path = yield* Effect.service(Path.Path);
-
-  const attachmentsRootDir = serverConfig.attachmentsDir;
-  const readAttachmentRootEntries = fileSystem
-    .readDirectory(attachmentsRootDir, { recursive: false })
-    .pipe(Effect.orElseSucceed(() => [] as Array<string>));
-
-  const removeDeletedThreadAttachmentEntry = Effect.fn("removeDeletedThreadAttachmentEntry")(
-    function* (threadSegment: string, entry: string) {
-      const normalizedEntry = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
-      if (normalizedEntry.length === 0 || normalizedEntry.includes("/")) {
-        return;
-      }
-      const attachmentId = parseAttachmentIdFromRelativePath(normalizedEntry);
-      if (!attachmentId) {
-        return;
-      }
-      const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(attachmentId);
-      if (!attachmentThreadSegment || attachmentThreadSegment !== threadSegment) {
-        return;
-      }
-      yield* fileSystem.remove(path.join(attachmentsRootDir, normalizedEntry), {
-        force: true,
-      });
-    },
-  );
-
-  const deleteThreadAttachments = Effect.fn("deleteThreadAttachments")(function* (
-    threadId: string,
-  ) {
-    const threadSegment = toSafeThreadAttachmentSegment(threadId);
-    const threadBrowserArtifactsDir = resolveThreadBrowserArtifactsDir({
-      browserArtifactsDir: serverConfig.browserArtifactsDir,
+): Array<AttachmentCleanupTarget> {
+  const targets: Array<AttachmentCleanupTarget> = [...sideEffects.deletedThreadIds].map(
+    (threadId) => ({
       threadId,
-    });
-    if (!threadSegment || !threadBrowserArtifactsDir) {
-      yield* Effect.logWarning("skipping attachment cleanup for unsafe thread id", {
-        threadId,
-      });
-      return;
+      deletedAtSequence: event.sequence,
+      pruned: sideEffects.prunedThreadRelativePaths.has(threadId),
+    }),
+  );
+  for (const threadId of sideEffects.prunedThreadRelativePaths.keys()) {
+    if (!sideEffects.deletedThreadIds.has(threadId)) {
+      targets.push({ threadId, deletedAtSequence: null, pruned: true });
     }
+  }
+  return targets;
+}
 
-    yield* fileSystem.remove(threadBrowserArtifactsDir, { recursive: true, force: true });
-    const entries = yield* readAttachmentRootEntries;
-    yield* Effect.forEach(
-      entries,
-      (entry) => removeDeletedThreadAttachmentEntry(threadSegment, entry),
-      {
-        concurrency: 1,
-      },
-    );
-  });
-
-  const pruneThreadAttachmentEntry = Effect.fn("pruneThreadAttachmentEntry")(function* (
-    threadSegment: string,
-    keptThreadRelativePaths: Set<string>,
-    entry: string,
-  ) {
+/** Groups attachment directory entries by the thread segment in their attachment ids. */
+function groupAttachmentFilesByThreadSegment(
+  entries: ReadonlyArray<string>,
+): Map<string, Array<string>> {
+  const filesBySegment = new Map<string, Array<string>>();
+  for (const entry of entries) {
     const relativePath = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
     if (relativePath.length === 0 || relativePath.includes("/")) {
-      return;
+      continue;
     }
     const attachmentId = parseAttachmentIdFromRelativePath(relativePath);
-    if (!attachmentId) {
-      return;
-    }
-    const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(attachmentId);
-    if (!attachmentThreadSegment || attachmentThreadSegment !== threadSegment) {
-      return;
-    }
-
-    const absolutePath = path.join(attachmentsRootDir, relativePath);
-    const fileInfo = yield* fileSystem.stat(absolutePath).pipe(Effect.orElseSucceed(() => null));
-    if (!fileInfo || fileInfo.type !== "File") {
-      return;
-    }
-
-    if (!keptThreadRelativePaths.has(relativePath)) {
-      yield* fileSystem.remove(absolutePath, { force: true });
-    }
-  });
-
-  const pruneThreadAttachments = Effect.fn("pruneThreadAttachments")(function* (
-    threadId: string,
-    keptThreadRelativePaths: Set<string>,
-  ) {
-    if (sideEffects.deletedThreadIds.has(threadId)) {
-      return;
-    }
-
-    const threadSegment = toSafeThreadAttachmentSegment(threadId);
+    const threadSegment = attachmentId ? parseThreadSegmentFromAttachmentId(attachmentId) : null;
     if (!threadSegment) {
-      yield* Effect.logWarning("skipping attachment prune for unsafe thread id", { threadId });
-      return;
+      continue;
     }
+    const files = filesBySegment.get(threadSegment);
+    if (files) {
+      files.push(relativePath);
+    } else {
+      filesBySegment.set(threadSegment, [relativePath]);
+    }
+  }
+  return filesBySegment;
+}
 
-    const entries = yield* readAttachmentRootEntries;
-    yield* Effect.forEach(
-      entries,
-      (entry) => pruneThreadAttachmentEntry(threadSegment, keptThreadRelativePaths, entry),
-      { concurrency: 1 },
-    );
-  });
+/**
+ * Projectors whose replay records attachment cleanup (deletes, and message or answer pruning).
+ * Only their cursors can lower where cleanup restarts; adding an unrelated projector must not
+ * re-run every historical revert against today's references.
+ */
+const ATTACHMENT_CLEANUP_PROJECTOR_NAMES: ReadonlyArray<string> = [
+  ORCHESTRATION_PROJECTOR_NAMES.threads,
+  ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
+  ORCHESTRATION_PROJECTOR_NAMES.threadActivities,
+];
 
-  yield* Effect.forEach(sideEffects.deletedThreadIds, deleteThreadAttachments, {
-    concurrency: 1,
-  });
+/** The lowest cursor among the named projectors, or undefined while any of them has none. */
+function lowestProjectorCursor(
+  states: ReadonlyArray<ProjectionState>,
+  names: ReadonlyArray<string> = Object.values(ORCHESTRATION_PROJECTOR_NAMES),
+): ProjectionState | undefined {
+  const byProjector = new Map(states.map((state) => [state.projector, state]));
+  let lowest: ProjectionState | undefined;
+  for (const name of names) {
+    const state = byProjector.get(name);
+    if (!state) {
+      return undefined;
+    }
+    if (!lowest || state.lastAppliedSequence < lowest.lastAppliedSequence) {
+      lowest = state;
+    }
+  }
+  return lowest;
+}
 
-  yield* Effect.forEach(
-    sideEffects.prunedThreadRelativePaths.entries(),
-    ([threadId, keptThreadRelativePaths]) =>
-      pruneThreadAttachments(threadId, keptThreadRelativePaths),
-    { concurrency: 1 },
-  );
+const AttachmentCleanupEventRow = Schema.Struct({
+  sequence: NonNegativeInt,
+  type: Schema.Literals(["thread.reverted", "thread.deleted"]),
+  threadId: ThreadId,
 });
+const decodeAttachmentCleanupEventRow = Schema.decodeUnknownOption(AttachmentCleanupEventRow);
 
 const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjectionPipeline")(
   function* () {
@@ -1193,7 +1173,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
     const applyThreadActivitiesProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadActivitiesProjection",
-    )(function* (event, _attachmentSideEffects) {
+    )(function* (event, attachmentSideEffects) {
       switch (event.type) {
         case "thread.created":
           yield* projectionThreadActivityRepository.deleteByThreadId({
@@ -1241,6 +1221,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* Effect.forEach(keptRows, projectionThreadActivityRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
+          attachmentSideEffects.prunedThreadRelativePaths.set(event.payload.threadId, new Set());
           return;
         }
 
@@ -1983,69 +1964,295 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       },
     ];
 
-    const applyAttachmentSideEffects = Effect.fn("applyAttachmentSideEffects")(
-      function* (event: OrchestrationEvent, sideEffects: AttachmentSideEffects) {
-        if (
-          sideEffects.deletedThreadIds.size === 0 &&
-          sideEffects.prunedThreadRelativePaths.size === 0
-        ) {
-          return;
-        }
+    const attachmentsRootDir = serverConfig.attachmentsDir;
 
-        const deletedThreadIds = new Set<string>();
-        for (const threadId of sideEffects.deletedThreadIds) {
-          const recreatedLater = yield* eventStore.hasEventAfter({
-            aggregateKind: "thread",
-            aggregateId: ThreadId.make(threadId),
-            type: "thread.created",
-            sequenceExclusive: event.sequence,
-          });
-          if (!recreatedLater) {
-            deletedThreadIds.add(threadId);
+    // File failures are logged and reported as false so the remaining files still run.
+    const removeAttachmentFile = (relativePath: string) =>
+      fileSystem.remove(path.join(attachmentsRootDir, relativePath), { force: true }).pipe(
+        Effect.as(true),
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to remove attachment file", { relativePath, cause }).pipe(
+            Effect.as(false),
+          ),
+        ),
+      );
+
+    const pruneAttachmentFile = (relativePath: string) =>
+      fileSystem.stat(path.join(attachmentsRootDir, relativePath)).pipe(
+        Effect.flatMap((info) =>
+          info.type === "File" ? removeAttachmentFile(relativePath) : Effect.succeed(true),
+        ),
+        Effect.catchTags({
+          PlatformError: (cause) =>
+            cause.reason._tag === "NotFound"
+              ? Effect.succeed(true)
+              : Effect.logWarning("failed to inspect attachment file", {
+                  relativePath,
+                  cause,
+                }).pipe(Effect.as(false)),
+        }),
+      );
+
+    // Read after every projector has applied the event, so later references are included.
+    const readRetainedThreadAttachmentPaths = Effect.fn("readRetainedThreadAttachmentPaths")(
+      function* (threadId: ThreadId) {
+        const messages = yield* projectionThreadMessageRepository.listByThreadId({ threadId });
+        const retainedPaths = collectThreadAttachmentRelativePaths(threadId, messages);
+        const answers = yield* projectionThreadActivityRepository.listByThreadId({
+          threadId,
+          activityKinds: ["user-input.answer-submitted"],
+        });
+        for (const activity of answers) {
+          const payload = decodeQuestionAttachmentAnswer(activity.payload);
+          if (Option.isNone(payload)) continue;
+          for (const attachment of Object.values(payload.value.attachmentsByQuestionId).flat()) {
+            const relativePath = attachmentRelativePath(attachment);
+            if (relativePath) retainedPaths.add(relativePath);
           }
         }
-
-        // Later events in the same transaction can add attachment references.
-        const prunedThreadRelativePaths = new Map<string, Set<string>>();
-        for (const threadId of sideEffects.prunedThreadRelativePaths.keys()) {
-          const messages = yield* projectionThreadMessageRepository.listByThreadId({
-            threadId: ThreadId.make(threadId),
-          });
-          prunedThreadRelativePaths.set(
-            threadId,
-            collectThreadAttachmentRelativePaths(threadId, messages),
-          );
-        }
-
-        yield* runAttachmentSideEffects({ deletedThreadIds, prunedThreadRelativePaths });
+        return retainedPaths;
       },
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-      Effect.provideService(ServerConfig, serverConfig),
-      (effect, event) =>
-        effect.pipe(
+    );
+
+    // Transferred recordings and saved snapshots live outside the attachments directory, so
+    // revert pruning never sees them; only deleting the thread removes them.
+    const removeThreadBrowserArtifacts = (threadId: string) => {
+      const directory = resolveThreadBrowserArtifactsDir({
+        browserArtifactsDir: serverConfig.browserArtifactsDir,
+        threadId,
+      });
+      if (directory === null) {
+        return Effect.succeed(true);
+      }
+      return fileSystem.remove(directory, { recursive: true, force: true }).pipe(
+        Effect.as(true),
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to remove thread browser artifacts", { threadId, cause }).pipe(
+            Effect.as(false),
+          ),
+        ),
+      );
+    };
+
+    const cleanupThreadAttachmentFiles = Effect.fn("cleanupThreadAttachmentFiles")(function* (
+      target: AttachmentCleanupTarget,
+      files: ReadonlyArray<string>,
+      hasBrowserArtifacts: boolean,
+    ) {
+      const threadId = ThreadId.make(target.threadId);
+      if (target.deletedAtSequence !== null) {
+        // A draft retry can re-create the id; its files then belong to the later incarnation.
+        const recreatedLater = yield* eventStore.hasEventAfter({
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          type: "thread.created",
+          sequenceExclusive: target.deletedAtSequence,
+        });
+        if (!recreatedLater) {
+          const removed = yield* Effect.forEach(files, removeAttachmentFile, { concurrency: 1 });
+          const artifactsRemoved = hasBrowserArtifacts
+            ? yield* removeThreadBrowserArtifacts(target.threadId)
+            : true;
+          return artifactsRemoved && removed.every(Boolean);
+        }
+      }
+      if (!target.pruned) {
+        return true;
+      }
+      const retainedPaths = yield* readRetainedThreadAttachmentPaths(threadId);
+      const pruned = yield* Effect.forEach(
+        files.filter((file) => !retainedPaths.has(file)),
+        pruneAttachmentFile,
+        { concurrency: 1 },
+      );
+      return pruned.every(Boolean);
+    });
+
+    /**
+     * Lists the attachments directory once (and the browser artifacts directory once when a
+     * target deletes a thread) and cleans each target's files. Threads without files cost no
+     * reads, unless the artifacts listing failed, in which case every deleted thread's folder is
+     * removed directly. Returns false when any thread or file failed (each is logged); fails only
+     * when the attachments directory cannot be listed.
+     */
+    const cleanupAttachments = Effect.fn("cleanupAttachments")(function* (
+      targets: ReadonlyArray<AttachmentCleanupTarget>,
+    ) {
+      const safeTargets: Array<{ target: AttachmentCleanupTarget; threadSegment: string }> = [];
+      for (const target of targets) {
+        const threadSegment = toSafeThreadAttachmentSegment(target.threadId);
+        if (threadSegment) {
+          safeTargets.push({ target, threadSegment });
+        } else {
+          yield* Effect.logWarning("skipping attachment cleanup for unsafe thread id", {
+            threadId: target.threadId,
+          });
+        }
+      }
+      if (safeTargets.length === 0) {
+        return true;
+      }
+      const entries = yield* fileSystem
+        .readDirectory(attachmentsRootDir, { recursive: false })
+        .pipe(
+          Effect.catchTags({
+            PlatformError: (cause) =>
+              cause.reason._tag === "NotFound"
+                ? Effect.succeed<ReadonlyArray<string>>([])
+                : Effect.fail(cause),
+          }),
+        );
+      const filesBySegment = groupAttachmentFilesByThreadSegment(entries);
+      let complete = true;
+      // Null when the listing failed: any deleted thread may then own a folder, so each one is
+      // removed directly (a no-op when absent) instead of being skipped for good.
+      let browserArtifactSegments: Set<string> | null = new Set<string>();
+      if (safeTargets.some(({ target }) => target.deletedAtSequence !== null)) {
+        const artifactEntries = yield* fileSystem
+          .readDirectory(serverConfig.browserArtifactsDir, { recursive: false })
+          .pipe(
+            Effect.catchTags({
+              PlatformError: (cause) =>
+                cause.reason._tag === "NotFound"
+                  ? Effect.succeed<ReadonlyArray<string> | null>([])
+                  : Effect.logWarning("failed to list browser artifacts", { cause }).pipe(
+                      Effect.as<ReadonlyArray<string> | null>(null),
+                    ),
+            }),
+          );
+        browserArtifactSegments =
+          artifactEntries === null
+            ? null
+            : new Set(artifactEntries.map((entry) => entry.replace(/^[/\\]+/, "")));
+      }
+      for (const { target, threadSegment } of safeTargets) {
+        const files = filesBySegment.get(threadSegment) ?? [];
+        const hasBrowserArtifacts =
+          target.deletedAtSequence !== null &&
+          (browserArtifactSegments === null || browserArtifactSegments.has(threadSegment));
+        if (files.length === 0 && !hasBrowserArtifacts) continue;
+        const cleaned = yield* cleanupThreadAttachmentFiles(
+          target,
+          files,
+          hasBrowserArtifacts,
+        ).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("failed to clean thread attachments", {
+              threadId: target.threadId,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        );
+        complete = complete && cleaned;
+      }
+      return complete;
+    });
+
+    // Cleanup has finished for every event up to this cursor. Live projection writes it with the
+    // projector cursors, so it trails the head by the command whose cleanup has not run yet. It is
+    // null before bootstrap and after a failed cleanup, which leaves the persisted cursor behind
+    // that event for the next bootstrap to retry.
+    let cleanupDone: ProjectionState | null = null;
+
+    const applyAttachmentSideEffects = Effect.fn("applyAttachmentSideEffects")(function* (
+      event: OrchestrationEvent,
+      sideEffects: AttachmentSideEffects,
+    ) {
+      const targets = attachmentCleanupTargets(event, sideEffects);
+      const complete =
+        targets.length === 0 ||
+        (yield* cleanupAttachments(targets).pipe(
           Effect.catch((cause) =>
             Effect.logWarning("failed to apply projected attachment side-effects", {
               sequence: event.sequence,
               eventType: event.type,
               cause,
-            }),
+            }).pipe(Effect.as(false)),
+          ),
+        ));
+      cleanupDone =
+        complete && cleanupDone !== null
+          ? {
+              projector: ATTACHMENT_CLEANUP_CURSOR,
+              lastAppliedSequence: event.sequence,
+              updatedAt: event.occurredAt,
+            }
+          : null;
+    });
+
+    // Selects only what cleanup needs, so no payload is decoded and old payloads cannot fail it.
+    const readAttachmentCleanupEvents = Effect.fn("readAttachmentCleanupEvents")(function* (
+      sequenceExclusive: number,
+      sequenceInclusive: number,
+    ) {
+      const rows = yield* sql`
+        SELECT sequence, event_type AS "type", stream_id AS "threadId"
+        FROM orchestration_events
+        WHERE sequence > ${sequenceExclusive}
+          AND sequence <= ${sequenceInclusive}
+          AND aggregate_kind = 'thread'
+          AND event_type IN ('thread.reverted', 'thread.deleted')
+        ORDER BY sequence ASC
+      `;
+      const events: Array<typeof AttachmentCleanupEventRow.Type> = [];
+      for (const row of rows) {
+        const decoded = decodeAttachmentCleanupEventRow(row);
+        if (Option.isSome(decoded)) {
+          events.push(decoded.value);
+        } else {
+          yield* Effect.logWarning("skipping attachment cleanup for an unreadable event", { row });
+        }
+      }
+      return events;
+    });
+
+    /**
+     * Cleans files for reverts and deletes past the cursor once every projector has caught up,
+     * then moves the cursor to the projector head. File failures here are logged and not retried
+     * again, so one persistent failure cannot pin the cursor. Returns the cursor live cleanup
+     * continues from, or null when cleanup could not run and the next bootstrap should retry.
+     */
+    const cleanupAttachmentBacklog = Effect.fn("cleanupAttachmentBacklog")(
+      function* (boundary: ProjectionState) {
+        const head = lowestProjectorCursor(yield* projectionStateRepository.listAll());
+        if (!head || head.lastAppliedSequence <= boundary.lastAppliedSequence) {
+          return boundary;
+        }
+        const targetsByThread = new Map<string, AttachmentCleanupTarget>();
+        for (const event of yield* readAttachmentCleanupEvents(
+          boundary.lastAppliedSequence,
+          head.lastAppliedSequence,
+        )) {
+          const current = targetsByThread.get(event.threadId) ?? {
+            threadId: event.threadId,
+            deletedAtSequence: null,
+            pruned: false,
+          };
+          targetsByThread.set(
+            event.threadId,
+            event.type === "thread.deleted"
+              ? { ...current, deletedAtSequence: event.sequence }
+              : { ...current, pruned: true },
+          );
+        }
+        yield* cleanupAttachments([...targetsByThread.values()]);
+        const cursor = {
+          projector: ATTACHMENT_CLEANUP_CURSOR,
+          lastAppliedSequence: head.lastAppliedSequence,
+          updatedAt: head.updatedAt,
+        };
+        yield* projectionStateRepository.upsert(cursor);
+        return cursor;
+      },
+      (effect) =>
+        effect.pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("attachment cleanup did not run; the next start retries it", {
+              cause,
+            }).pipe(Effect.as(null)),
           ),
         ),
     );
-
-    const applyProjectorForEvent = Effect.fn("applyProjectorForEvent")(function* (
-      projector: ProjectorDefinition,
-      event: OrchestrationEvent,
-      attachmentSideEffects: AttachmentSideEffects,
-    ) {
-      yield* projector.apply(event, attachmentSideEffects);
-      yield* projectionStateRepository.upsert({
-        projector: projector.name,
-        lastAppliedSequence: event.sequence,
-        updatedAt: event.occurredAt,
-      });
-    });
 
     const runProjectorForEvent = Effect.fn("runProjectorForEvent")(function* (
       projector: ProjectorDefinition,
@@ -2056,8 +2263,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         prunedThreadRelativePaths: new Map<string, Set<string>>(),
       };
 
-      yield* sql.withTransaction(applyProjectorForEvent(projector, event, attachmentSideEffects));
-      yield* applyAttachmentSideEffects(event, attachmentSideEffects);
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* projector.apply(event, attachmentSideEffects);
+          yield* projectionStateRepository.upsert({
+            projector: projector.name,
+            lastAppliedSequence: event.sequence,
+            updatedAt: event.occurredAt,
+          });
+        }),
+      );
     });
 
     const bootstrapProjector = (projector: ProjectorDefinition) =>
@@ -2092,22 +2307,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 { concurrency: 1, discard: true },
               );
               // Runtime projectors commit together. Bootstrap still advances each cursor separately.
-              yield* projectionStateRepository.upsertMany(
-                projectors.map((projector) => ({
+              // The cleanup cursor rides in the same statement, at the last finished cleanup.
+              yield* projectionStateRepository.upsertMany([
+                ...projectors.map((projector) => ({
                   projector: projector.name,
                   lastAppliedSequence: event.sequence,
                   updatedAt: event.occurredAt,
                 })),
-              );
+                ...(cleanupDone === null ? [] : [cleanupDone]),
+              ]);
             }),
           );
           // Return the cleanup effect so the caller runs it after the outer transaction commits.
           // @effect-diagnostics-next-line returnEffectInGen:off
           return applyAttachmentSideEffects(event, attachmentSideEffects);
         },
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        Effect.provideService(ServerConfig, serverConfig),
         Effect.catchTag("SqlError", (sqlError) =>
           Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
         ),
@@ -2120,14 +2334,31 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       yield* cleanup;
     });
 
-    const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.forEach(
-      projectors,
-      bootstrapProjector,
-      { concurrency: 1 },
-    ).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-      Effect.provideService(ServerConfig, serverConfig),
+    const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.gen(function* () {
+      const states = yield* projectionStateRepository.listAll();
+      const cleanupState = states.find((state) => state.projector === ATTACHMENT_CLEANUP_CURSOR);
+      const projectorFloor = lowestProjectorCursor(states, ATTACHMENT_CLEANUP_PROJECTOR_NAMES);
+      const projectorStart = projectorFloor?.lastAppliedSequence ?? 0;
+      // Projector replay cleaned files as it went before cleanup had its own cursor, so a
+      // database without one starts where its projectors resume.
+      const boundary: ProjectionState =
+        cleanupState && cleanupState.lastAppliedSequence <= projectorStart
+          ? cleanupState
+          : {
+              projector: ATTACHMENT_CLEANUP_CURSOR,
+              lastAppliedSequence: projectorStart,
+              updatedAt:
+                cleanupState?.updatedAt ?? projectorFloor?.updatedAt ?? "1970-01-01T00:00:00.000Z",
+            };
+      if (boundary !== cleanupState) {
+        // Persist this boundary before replay: a reset projector can encounter an old
+        // revert, then fail after other projectors have committed past that event.
+        yield* projectionStateRepository.upsert(boundary);
+      }
+      cleanupDone = null;
+      yield* Effect.forEach(projectors, bootstrapProjector, { concurrency: 1, discard: true });
+      cleanupDone = yield* cleanupAttachmentBacklog(boundary);
+    }).pipe(
       Effect.asVoid,
       Effect.tap(() =>
         Effect.logDebug("orchestration projection pipeline bootstrapped").pipe(
