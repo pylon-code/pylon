@@ -243,6 +243,11 @@ const config: ExpoConfig = {
           ],
         }
       : {}),
+    // SecureStore keeps connection credentials in the Keychain. `$(AppIdentifierPrefix)`
+    // resolves to the signing team at build time, so no team ID is pinned here.
+    entitlements: {
+      "keychain-access-groups": [`$(AppIdentifierPrefix)${variant.iosBundleIdentifier}`],
+    },
     infoPlist: {
       NSAppTransportSecurity: {
         NSAllowsArbitraryLoads: true,
