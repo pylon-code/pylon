@@ -24,6 +24,10 @@ import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import { cn } from "../../lib/cn";
 import { relativeTime } from "../../lib/time";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
+import {
+  PENDING_TASK_DELIVERY_PRESENTATION,
+  type PendingTaskDelivery,
+} from "../../state/pending-new-tasks-model";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useThreadPr } from "../../state/use-thread-pr";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
@@ -202,12 +206,14 @@ const DRAFT_TASK_MENU_ACTIONS: MenuAction[] = [
 /**
  * Unsent work, in the same idiom as an active v2 row: it is work the user
  * wrote, so it reads like the thread it will become. The status slot says
- * what happens next, not where the item sits: "Sends on reconnect" stays
- * uncolored because nothing is asked of the user; "Draft" takes the amber the
- * web sidebar uses for drafts, because this one waits on the user.
+ * what happens next, not where the item sits: a queued task's delivery label
+ * stays uncolored because nothing is asked of the user; "Draft" takes the
+ * amber the web sidebar uses for drafts, because this one waits on the user.
  */
 export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props: {
   readonly pendingTask: PendingNewTask;
+  /** A queued task's next step from this device; null for drafts. */
+  readonly delivery: PendingTaskDelivery | null;
   readonly project: EnvironmentProject | null;
   readonly projectTitle?: string;
   readonly environmentLabel: string | null;
@@ -226,6 +232,10 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   const isDraft = pendingTask.kind === "draft";
   const projectTitle = props.projectTitle ?? props.project?.title ?? pendingTask.projectTitle ?? "";
   const branch = pendingTask.branch;
+  const deliveryPresentation =
+    PENDING_TASK_DELIVERY_PRESENTATION[
+      props.delivery ?? (!isDraft && pendingTask.message.deliveryHold ? "held" : "offline")
+    ];
 
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
@@ -261,9 +271,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
             <Text className="text-xs text-adaptive-amber-700-300">Draft</Text>
           </View>
         ) : (
-          <Text className="text-xs text-foreground-tertiary">
-            {pendingTask.message.deliveryHold ? "Held" : "Sends on reconnect"}
-          </Text>
+          <Text className="text-xs text-foreground-tertiary">{deliveryPresentation.label}</Text>
         )}
       </View>
       {/* One line, unlike the two an active row allows: a queued title is
@@ -311,9 +319,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
           accessibilityHint={
             isDraft
               ? "Opens the draft in the new task composer"
-              : pendingTask.message.deliveryHold
-                ? "Held until retargeted. Opens the task for editing"
-                : "Sends when the environment reconnects. Opens the task for editing"
+              : deliveryPresentation.accessibilityHint
           }
           accessibilityLabel={pendingTask.title}
           accessibilityRole="button"

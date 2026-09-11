@@ -1,9 +1,22 @@
 import { describe, expect, it } from "@effect/vitest";
-import { CommandId, EnvironmentId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EnvironmentId,
+  MessageId,
+  ProjectId,
+  type ServerConfig,
+  ThreadId,
+} from "@t3tools/contracts";
+import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 import type { ComposerDraft } from "./use-composer-drafts";
-import { buildPendingNewTasks } from "./pending-new-tasks-model";
+import {
+  buildPendingNewTasks,
+  makeListedNewTaskDraftsAtom,
+  resolvePendingTaskDelivery,
+  selectListedNewTaskDrafts,
+} from "./pending-new-tasks-model";
 
 const environmentId = EnvironmentId.make("env-1");
 const projectId = ProjectId.make("project-1");
@@ -116,5 +129,133 @@ describe("buildPendingNewTasks", () => {
     });
 
     expect(tasks.map((task) => task.title)).toEqual(["queued new", "queued old"]);
+  });
+});
+
+describe("listed new-task drafts", () => {
+  const listed = draft("an idea", "2026-09-05T09:00:00.000Z");
+
+  it("keeps its identity while unrelated drafts change", () => {
+    const first = selectListedNewTaskDrafts(
+      { "new-task:idea": listed, "env-1:thread-1": { text: "typ", attachments: [] } },
+      undefined,
+    );
+    expect(first).toEqual({ "new-task:idea": listed });
+
+    const afterThreadKeystroke = selectListedNewTaskDrafts(
+      { "new-task:idea": listed, "env-1:thread-1": { text: "typing", attachments: [] } },
+      first,
+    );
+    expect(afterThreadKeystroke).toBe(first);
+
+    // A model pick on an empty new-task draft is not listed either.
+    const afterEmptyDraftSettings = selectListedNewTaskDrafts(
+      {
+        "new-task:idea": listed,
+        "new-task:empty": draft("", "2026-09-05T10:00:00.000Z", { runtimeMode: "full-access" }),
+      },
+      first,
+    );
+    expect(afterEmptyDraftSettings).toBe(first);
+  });
+
+  it("changes when a listed draft is edited, added, or removed", () => {
+    const first = selectListedNewTaskDrafts({ "new-task:idea": listed }, undefined);
+    const edited = { ...listed, text: "an idea, refined" };
+    const afterEdit = selectListedNewTaskDrafts({ "new-task:idea": edited }, first);
+    expect(afterEdit).not.toBe(first);
+    expect(afterEdit).toEqual({ "new-task:idea": edited });
+    const added = selectListedNewTaskDrafts(
+      { "new-task:idea": listed, "new-task:other": draft("other", "2026-09-05T10:00:00.000Z") },
+      first,
+    );
+    expect(added).not.toBe(first);
+    expect(selectListedNewTaskDrafts({}, first)).toEqual({});
+  });
+
+  it("does not notify list subscribers when a thread composer changes", () => {
+    const registry = AtomRegistry.make();
+    const source = Atom.make<Readonly<Record<string, ComposerDraft>>>({
+      "new-task:idea": listed,
+    });
+    const derived = makeListedNewTaskDraftsAtom(source);
+    const initial = registry.get(derived);
+    let notifications = 0;
+    const unsubscribe = registry.subscribe(derived, () => {
+      notifications += 1;
+    });
+
+    registry.set(source, {
+      ...registry.get(source),
+      "env-1:thread-1": { text: "typing a follow-up", attachments: [] },
+    });
+    expect(registry.get(derived)).toBe(initial);
+    expect(notifications).toBe(0);
+
+    registry.set(source, {
+      ...registry.get(source),
+      "new-task:idea": { ...listed, text: "an idea, refined" },
+    });
+    expect(registry.get(derived)).not.toBe(initial);
+    expect(notifications).toBe(1);
+    unsubscribe();
+  });
+});
+
+describe("resolvePendingTaskDelivery", () => {
+  const uploadConfig = {
+    environment: {
+      capabilities: { attachmentUploads: true, fileAttachments: { maxUploadBytes: 1_000_000 } },
+    },
+  } as unknown as ServerConfig;
+  const image = {
+    id: "image-1",
+    type: "image",
+    name: "screen.png",
+    mimeType: "image/png",
+    sizeBytes: 10,
+    previewUri: "data:image/png;base64,AAAA",
+  } as const;
+
+  it("says Held for a held task whatever the connection", () => {
+    const held: QueuedThreadMessage = {
+      ...queuedCreation("held", "2026-09-05T10:00:00.000Z"),
+      deliveryHold: { kind: "admission-rejected", reason: "Provider refused the turn" },
+    };
+    expect(
+      resolvePendingTaskDelivery({ message: held, connected: true, serverConfig: uploadConfig }),
+    ).toBe("held");
+    expect(
+      resolvePendingTaskDelivery({ message: held, connected: false, serverConfig: uploadConfig }),
+    ).toBe("held");
+  });
+
+  it("only says it sends on reconnect while disconnected", () => {
+    const queued = { ...queuedCreation("q", "2026-09-05T10:00:00.000Z"), attachments: [image] };
+    expect(
+      resolvePendingTaskDelivery({ message: queued, connected: false, serverConfig: uploadConfig }),
+    ).toBe("offline");
+    expect(
+      resolvePendingTaskDelivery({ message: queued, connected: true, serverConfig: uploadConfig }),
+    ).toBe("uploading");
+    expect(
+      resolvePendingTaskDelivery({
+        message: {
+          ...queued,
+          attachments: [
+            { ...image, uploadedAttachmentId: "upload-1", uploadEnvironmentId: environmentId },
+          ],
+        },
+        connected: true,
+        serverConfig: uploadConfig,
+      }),
+    ).toBe("sending");
+    expect(
+      resolvePendingTaskDelivery({
+        message: queuedCreation("plain", "2026-09-05T10:00:00.000Z"),
+        connected: true,
+        serverConfig: uploadConfig,
+      }),
+    ).toBe("sending");
   });
 });

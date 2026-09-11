@@ -22,6 +22,10 @@ import { HOME_HORIZONTAL_INSET } from "../../lib/layoutMetrics";
 import { relativeTime } from "../../lib/time";
 import { themeColorWithAlpha } from "../../lib/mobileTheme";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
+import {
+  PENDING_TASK_DELIVERY_PRESENTATION,
+  type PendingTaskDelivery,
+} from "../../state/pending-new-tasks-model";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useThreadPr, type ThreadPrPresentation } from "../../state/use-thread-pr";
 import type { HomeGroupDisplayAction } from "../home/homeListItems";
@@ -286,6 +290,8 @@ const DRAFT_TASK_MENU_ACTIONS: MenuAction[] = [
 export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   readonly variant: ThreadListVariant;
   readonly pendingTask: PendingNewTask;
+  /** A queued task's next step from this device; null for drafts. */
+  readonly delivery: PendingTaskDelivery | null;
   readonly environmentLabel: string | null;
   readonly environmentMachine?: EnvironmentMachineKind;
   readonly isLast: boolean;
@@ -299,10 +305,14 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   const { pendingTask, onSelectPendingTask, onDeletePendingTask } = props;
   const isDraft = pendingTask.kind === "draft";
   const timestamp = isDraft ? null : relativeTime(pendingTask.createdAt);
+  const delivery =
+    props.delivery ?? (!isDraft && pendingTask.message.deliveryHold ? "held" : "offline");
+  const deliveryPresentation = PENDING_TASK_DELIVERY_PRESENTATION[delivery];
   // The pill only has room for one word, so what happens next goes in the
-  // subtitle: a queued task sends itself, a draft waits for the user.
+  // subtitle: a queued task sends itself, a draft waits for the user. A held
+  // task's pill already says so.
   const subtitleParts = [
-    isDraft || pendingTask.message.deliveryHold ? null : "Sends on reconnect",
+    isDraft || delivery === "held" ? null : deliveryPresentation.label,
     props.environmentLabel,
     pendingTask.branch,
   ].filter((part): part is string => Boolean(part));
@@ -322,7 +332,7 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   ) : (
     <View className="rounded-full bg-subtle px-1.5 py-0.5">
       <Text className="text-3xs font-t3-bold text-foreground-muted">
-        {pendingTask.message.deliveryHold ? "Held" : "Pending"}
+        {delivery === "held" ? "Held" : "Pending"}
       </Text>
     </View>
   );
@@ -358,9 +368,7 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
 
   const accessibilityHint = isDraft
     ? "Opens the draft in the new task composer"
-    : pendingTask.message.deliveryHold
-      ? "Held until retargeted. Opens the task for editing"
-      : "Sends when the environment reconnects. Opens the task for editing";
+    : deliveryPresentation.accessibilityHint;
 
   const rowContent = compact ? (
     <Pressable

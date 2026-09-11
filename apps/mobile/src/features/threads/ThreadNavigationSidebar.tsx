@@ -32,7 +32,8 @@ import { useThreadListV2Enabled } from "./use-thread-list-v2-enabled";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { usePendingThreadOrder } from "../../state/thread-order";
 import { environmentServerConfigsAtom } from "../../state/server";
-import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
+import { resolvePendingTaskDelivery } from "../../state/pending-new-tasks-model";
+import { usePendingNewTasks, type PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
 import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
@@ -416,6 +417,26 @@ function ThreadNavigationSidebarPane(
   // Threads on servers without the settlement capability never classify as
   // settled (the user could neither un-settle nor pin them).
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
+  const connectedEnvironmentIds = useMemo(
+    () =>
+      new Set(
+        workspaceEnvironments
+          .filter((environment) => environment.connectionState === "connected")
+          .map((environment) => environment.environmentId),
+      ),
+    [workspaceEnvironments],
+  );
+  const pendingTaskDelivery = useCallback(
+    (pendingTask: PendingNewTask) =>
+      pendingTask.kind === "pending"
+        ? resolvePendingTaskDelivery({
+            message: pendingTask.message,
+            connected: connectedEnvironmentIds.has(pendingTask.environmentId),
+            serverConfig: serverConfigs.get(pendingTask.environmentId),
+          })
+        : null,
+    [connectedEnvironmentIds, serverConfigs],
+  );
   const settlementEnvironmentIds = useMemo(() => {
     const supported = new Set<EnvironmentId>();
     for (const [environmentId, config] of serverConfigs) {
@@ -877,6 +898,7 @@ function ThreadNavigationSidebarPane(
           return (
             <ThreadListV2PendingRow
               pendingTask={item.pendingTask}
+              delivery={pendingTaskDelivery(item.pendingTask)}
               project={projectByKey.get(pendingScopeKey) ?? null}
               projectTitle={projectTitleByProjectKey.get(pendingScopeKey)}
               environmentLabel={
@@ -1016,6 +1038,7 @@ function ThreadNavigationSidebarPane(
             <PendingTaskListRow
               variant="sidebar"
               pendingTask={item.pendingTask}
+              delivery={pendingTaskDelivery(item.pendingTask)}
               environmentLabel={
                 savedConnectionsById[item.pendingTask.environmentId]?.environmentLabel ?? null
               }
@@ -1090,6 +1113,7 @@ function ThreadNavigationSidebarPane(
       machineByEnvironmentId,
       moveThread,
       openPendingTask,
+      pendingTaskDelivery,
       pinReorderEnvironmentIds,
       pinThread,
       pinningEnvironmentIds,

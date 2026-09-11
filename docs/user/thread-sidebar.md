@@ -64,9 +64,10 @@ context menu when composing a new thread.
 On mobile, unsent work appears under **Unsent** at the top of the thread list and the iPad
 sidebar. A new-task draft with text or attachments shows an amber **Draft** label; tap it to
 continue writing, or touch and hold it and choose **Discard**. Each **New Task** starts its own
-draft, so a project can hold several ideas at once. A task queued while its environment is
-offline reads **Sends on reconnect**, and a task Pylon held back reads **Held** until you edit or
-retarget it.
+draft, so a project can hold several ideas at once. A queued task says what happens next:
+**Sends on reconnect** while its environment is disconnected, **Waiting for upload** while its
+files upload, and **Sending…** once it is on its way. A task Pylon held back reads **Held** until
+you edit or retarget it; touch and hold it and choose **Delete** to remove it.
 
 An existing thread with a message waiting on this device shows a small outbox icon beside its
 status or time. The thread stays in the active list until that message is sent or deleted.
