@@ -14,8 +14,10 @@ by the server, capped at 50 MB. Each message can carry up to eight attachments i
 upload directly to the environment, where your agent can read, copy, or edit them by their file path.
 
 Attachments upload as soon as you add them while connected to a server that supports uploads.
-The send button becomes available after every upload finishes. Failed uploads can be retried or
-removed. In the mobile app, tap **+** to open the photo library from either the compact or expanded
+On web and desktop, the send button becomes available after every upload finishes. In the mobile
+app you can send or start a task while an upload is still running: the message waits on your device
+and sends once its files are on the server. A Prime Agent follow-up still waits for its uploads.
+Failed uploads can be retried or removed. In the mobile app, tap **+** to open the photo library from either the compact or expanded
 composer. When the connected server supports file uploads, **+** opens a menu beside the button with
 **Photo Library** and **Choose Files**. Videos use the server's file upload limit. You can also
 share photos, videos, and files into Pylon from other apps through the system share sheet. Mobile

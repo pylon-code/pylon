@@ -59,6 +59,25 @@ files directly; see [Composer](./composer.md).
 Project settings are available from the project menu in either sidebar and from the breadcrumb
 context menu when composing a new thread.
 
+## Mobile thread list
+
+On mobile, unsent work appears under **Unsent** at the top of the thread list and the iPad
+sidebar. A new-task draft with text or attachments shows an amber **Draft** label; tap it to
+continue writing, or touch and hold it and choose **Discard**. Each **New Task** starts its own
+draft, so a project can hold several ideas at once. A task queued while its environment is
+offline reads **Sends on reconnect**, and a task Pylon held back reads **Held** until you edit or
+retarget it.
+
+An existing thread with a message waiting on this device shows a small outbox icon beside its
+status or time. The thread stays in the active list until that message is sent or deleted.
+
+Touch and hold a thread that has a branch and choose **New thread on branch** to start a new task
+there. Pylon checks out the branch before the composer opens, or reuses the thread's existing
+worktree. If the checkout fails, Pylon shows the Git error and returns to the list.
+
+When several accounts share a provider, or an account has an accent color, the provider icon on
+each mobile thread row carries that account's initials in its accent color.
+
 ## Arrange threads
 
 On web and desktop, drag a thread between sections to change its state. Drag a thread up into
