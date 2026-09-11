@@ -451,6 +451,44 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
     }),
   );
 
+  it.effect("applies the commit guard before an insert-ignore binding write", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const binding = (threadId: ThreadId, resume: string) => ({
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        threadId,
+        status: "stopped" as const,
+        resumeCursor: { threadId: resume },
+      });
+
+      const retiredThreadId = ThreadId.make("import:codex:guard-retired");
+      yield* directory.upsert(binding(retiredThreadId, "retired-session"), {
+        commitGuard: Effect.succeed(false),
+        onConflict: "ignore",
+      });
+      assert.isTrue(Option.isNone(yield* directory.getBinding(retiredThreadId)));
+
+      const currentThreadId = ThreadId.make("import:codex:guard-current");
+      yield* directory.upsert(binding(currentThreadId, "imported-session"), {
+        commitGuard: Effect.succeed(true),
+        onConflict: "ignore",
+      });
+      expect(Option.getOrThrow(yield* directory.getBinding(currentThreadId))).toMatchObject({
+        resumeCursor: { threadId: "imported-session" },
+      });
+
+      // A passing guard still cannot replace a binding that already exists.
+      yield* directory.upsert(binding(currentThreadId, "stale-session"), {
+        commitGuard: Effect.succeed(true),
+        onConflict: "ignore",
+      });
+      expect(Option.getOrThrow(yield* directory.getBinding(currentThreadId))).toMatchObject({
+        resumeCursor: { threadId: "imported-session" },
+      });
+    }),
+  );
+
   it.effect("skips a session binding when its private commit guard retires", () =>
     Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;
