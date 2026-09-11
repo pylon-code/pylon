@@ -170,6 +170,13 @@ fixed payload-free terminal failure, permanently rejects later native commands e
 returns true again, and discards later native close frames. Pylon never retries or downgrades an already-owned
 correlated prompt.
 
+The adapter consumes native events in the session scope, including ordinary startup, deferred first
+admission, and recovered activation. Finishing the worker that started a turn must not stop delivery of
+later approvals, output, or lifecycle events. Session teardown owns consumer interruption; turn completion
+and scoped cancellation retain their existing ownership and terminal-lifecycle checks. After launching
+detached teardown, the initiating consumer's receipt wait is interruptible so session-scope closure does
+not wait on the consumer while the consumer waits for teardown resources to start.
+
 A strict resync still requires complete replay. At a locally submitted turn's original transcript boundary,
 one missing user message may be reconciled only against the exact submitted nonempty text and ordered image
 MIME types and digests, within the existing decoded-message bounds. The observed and snapshot lifecycle

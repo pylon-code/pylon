@@ -162,6 +162,9 @@ native managed build only after exact runtime negotiation succeeds.
 
 ## Turn Completion
 
+Native daemon sessions keep delivering responses and Supervised approval requests across follow-up turns,
+including after an earlier tool request was approved or declined.
+
 A Prime turn can contain several assistant segments around tool work. Pylon keeps those segments in
 native order, so a final response appears after the work that preceded it instead of being appended
 to an older message higher in the thread. If Prime authoritatively finishes without public assistant
