@@ -17,12 +17,15 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as Ref from "effect/Ref";
+import { Command } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   checkPortAvailabilityOnHosts,
   createDevRunnerEnv,
   devPortProbeHosts,
+  devRunnerCliParams,
   findFirstAvailableOffset,
   getDevRunnerModeArgs,
   isBrowserAllowedPort,
@@ -87,6 +90,63 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
       assert.include(output, "[dev-runner] mode=dev");
     }),
   );
+
+  describe("CLI boolean toggles", () => {
+    const parseToggles = (env: Record<string, string>) =>
+      Effect.gen(function* () {
+        const forwarded = yield* Ref.make<NodeJS.ProcessEnv | undefined>(undefined);
+        const command = Command.make("dev-runner", devRunnerCliParams, (input) =>
+          createDevRunnerEnv({
+            mode: input.mode,
+            baseEnv: env,
+            serverOffset: 0,
+            webOffset: 0,
+            t3Home: "/tmp/dev-runner-flag-test",
+            browser: input.browser,
+            autoBootstrapProjectFromCwd: input.autoBootstrapProjectFromCwd,
+            logWebSocketEvents: input.logWebSocketEvents,
+            host: input.host,
+            port: input.port,
+            devUrl: input.devUrl,
+          }).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                assert.strictEqual(input.autoBootstrapProjectFromCwd, false);
+                assert.strictEqual(input.logWebSocketEvents, false);
+              }),
+            ),
+            Effect.flatMap((output) => Ref.set(forwarded, output)),
+          ),
+        );
+        yield* Command.runWith(command, { version: "0.0.0" })(["dev"]).pipe(
+          Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+        );
+        const output = yield* Ref.get(forwarded);
+        assert.isDefined(output);
+        return output;
+      });
+
+    it.effect("resolves omitted toggles to false and forwards them as 0", () =>
+      Effect.gen(function* () {
+        const env = yield* parseToggles({});
+
+        assert.equal(env?.T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD, "0");
+        assert.equal(env?.T3CODE_LOG_WS_EVENTS, "0");
+      }),
+    );
+
+    it.effect("ignores ambient toggle values, including invalid ones", () =>
+      Effect.gen(function* () {
+        const env = yield* parseToggles({
+          T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "1",
+          T3CODE_LOG_WS_EVENTS: "maybe",
+        });
+
+        assert.equal(env?.T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD, "0");
+        assert.equal(env?.T3CODE_LOG_WS_EVENTS, "0");
+      }),
+    );
+  });
 
   describe("getDevRunnerModeArgs", () => {
     it.effect("lets Vite+ honor the desktop dev task graph", () =>

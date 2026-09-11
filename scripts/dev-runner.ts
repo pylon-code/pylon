@@ -211,11 +211,6 @@ const optionalStringConfig = (name: string): Config.Config<string | undefined> =
     Config.option,
     Config.map((value) => Option.getOrUndefined(value)),
   );
-const optionalBooleanConfig = (name: string): Config.Config<boolean | undefined> =>
-  Config.boolean(name).pipe(
-    Config.option,
-    Config.map((value) => Option.getOrUndefined(value)),
-  );
 const optionalPortConfig = (name: string): Config.Config<number | undefined> =>
   Config.port(name).pipe(
     Config.option,
@@ -859,7 +854,12 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
   });
 }
 
-const devRunnerCli = Command.make("dev-runner", {
+/**
+ * Dev runner CLI parameters. Omitted boolean toggles resolve to `false` and are
+ * forwarded as `"0"`; ambient values are never read, so a parent dev app cannot
+ * turn on cwd auto-bootstrap or WebSocket logging in a child runner.
+ */
+export const devRunnerCliParams = {
   mode: Argument.choice("mode", DEV_RUNNER_MODES).pipe(
     Argument.withDescription("Development mode to run."),
   ),
@@ -876,14 +876,16 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   autoBootstrapProjectFromCwd: Flag.boolean("auto-bootstrap-project-from-cwd").pipe(
     Flag.withDescription(
-      "Auto-bootstrap toggle (equivalent to T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD).",
+      "Auto-bootstrap toggle (forwards to T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD; off by default).",
     ),
-    Flag.withFallbackConfig(optionalBooleanConfig("T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD")),
+    Flag.withDefault(false),
   ),
   logWebSocketEvents: Flag.boolean("log-websocket-events").pipe(
-    Flag.withDescription("WebSocket event logging toggle (equivalent to T3CODE_LOG_WS_EVENTS)."),
+    Flag.withDescription(
+      "WebSocket event logging toggle (forwards to T3CODE_LOG_WS_EVENTS; off by default).",
+    ),
     Flag.withAlias("log-ws-events"),
-    Flag.withFallbackConfig(optionalBooleanConfig("T3CODE_LOG_WS_EVENTS")),
+    Flag.withDefault(false),
   ),
   host: Flag.string("host").pipe(
     Flag.withDescription("Server host/interface override (forwards to T3CODE_HOST)."),
@@ -916,7 +918,9 @@ const devRunnerCli = Command.make("dev-runner", {
     Argument.withDescription("Additional Vite+ run args (pass after `--`)."),
     Argument.variadic(),
   ),
-}).pipe(
+};
+
+const devRunnerCli = Command.make("dev-runner", devRunnerCliParams).pipe(
   Command.withDescription("Run monorepo development modes with deterministic port/env wiring."),
   Command.withHandler((input) => runDevRunnerWithInput(input)),
 );
