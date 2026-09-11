@@ -75,12 +75,14 @@ export function QuestionAttachments(props: {
   };
   const paste = useNativePaste((uris) => {
     const scope = pickerScope.current;
-    if (
-      !selectedThread ||
-      props.disabled ||
-      !configs.get(selectedThread.environmentId)?.environment.capabilities.questionAttachments
-    )
+    if (!selectedThread || props.disabled) return;
+    if (!configs.get(selectedThread.environmentId)?.environment.capabilities.questionAttachments) {
+      Alert.alert(
+        "Could not paste image",
+        "Update this server to send files with question answers.",
+      );
       return;
+    }
     const key = questionAttachmentDraftKey(
       selectedThread.environmentId,
       selectedThread.id,

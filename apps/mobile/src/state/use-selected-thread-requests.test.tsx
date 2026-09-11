@@ -6,8 +6,24 @@ const fixture = vi.hoisted(() => ({
   uploads: {} as Record<string, unknown>,
   preparations: {} as Record<string, number>,
   preparationAtom: Symbol("preparation"),
+  threadStatus: "live",
+  questionPending: true,
+  effects: [] as Array<() => void>,
+}));
+vi.mock("react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react")>()),
+  // Server rendering skips effects; collect them and run them after the render.
+  useEffect: (effect: () => void) => {
+    fixture.effects.push(effect);
+  },
 }));
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
+vi.mock("./atom-registry", () => ({
+  appAtomRegistry: {
+    get: (atom: unknown) => (atom === fixture.preparationAtom ? fixture.preparations : {}),
+    set: vi.fn(),
+  },
+}));
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: (atom: unknown) =>
     atom === "drafts"
@@ -54,30 +70,39 @@ vi.mock("./use-thread-selection", () => ({
     selectedThread: { environmentId: "environment-1", id: "thread-1" },
   }),
 }));
-vi.mock("./use-thread-detail", () => ({
-  useSelectedThreadDetail: () => ({
-    activities: [
-      {
-        id: "request-activity",
-        kind: "user-input.requested",
-        createdAt: "2026-09-08T00:00:00Z",
-        payload: {
-          requestId: "request-1",
-          questions: ["first", "second"].map((id) => ({
-            id,
-            header: id,
-            question: `Attach ${id} file`,
-            options: [],
-            allowCustomAnswer: true,
-          })),
-        },
-      },
-    ],
-  }),
-}));
+vi.mock("./use-thread-detail", async () => {
+  const Option = await import("effect/Option");
+  return {
+    useSelectedThreadDetailState: () => ({
+      status: fixture.threadStatus,
+      data: Option.some({
+        activities: fixture.questionPending
+          ? [
+              {
+                id: "request-activity",
+                kind: "user-input.requested",
+                createdAt: "2026-09-08T00:00:00Z",
+                payload: {
+                  requestId: "request-1",
+                  questions: ["first", "second"].map((id) => ({
+                    id,
+                    header: id,
+                    question: `Attach ${id} file`,
+                    options: [],
+                    allowCustomAnswer: true,
+                  })),
+                },
+              },
+            ]
+          : [],
+      }),
+    }),
+  };
+});
 
 import { ApprovalRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { questionAttachmentDraftKey } from "./question-attachments";
+import { clearComposerDraft } from "./use-composer-drafts";
 import { useSelectedThreadRequests } from "./use-selected-thread-requests";
 
 const environmentId = EnvironmentId.make("environment-1");
@@ -93,9 +118,14 @@ function submitButtonMarkup() {
     const { activePendingUserInputAnswers } = useSelectedThreadRequests();
     return <button disabled={activePendingUserInputAnswers === null}>Submit answers</button>;
   }
-  return renderToStaticMarkup(<Probe />);
+  const markup = renderToStaticMarkup(<Probe />);
+  for (const effect of fixture.effects.splice(0)) effect();
+  return markup;
 }
 beforeEach(() => {
+  vi.mocked(clearComposerDraft).mockClear();
+  fixture.threadStatus = "live";
+  fixture.questionPending = true;
   fixture.preparations = {};
   fixture.drafts = Object.fromEntries(
     ["first", "second"].map((id) => [
@@ -136,5 +166,25 @@ describe("question attachment submission readiness", () => {
     fixture.uploads["environment-1:second"] = { status: "ready" };
     fixture.preparations[key("first")] = 1;
     expect(submitButtonMarkup()).toContain("disabled");
+  });
+});
+describe("question attachment draft cleanup", () => {
+  it.each(["cached", "synchronizing"])(
+    "keeps drafts while a %s snapshot does not show the question yet",
+    (status) => {
+      fixture.threadStatus = status;
+      fixture.questionPending = false;
+      submitButtonMarkup();
+      expect(clearComposerDraft).not.toHaveBeenCalled();
+    },
+  );
+  it("keeps drafts for a question that is still pending", () => {
+    submitButtonMarkup();
+    expect(clearComposerDraft).not.toHaveBeenCalled();
+  });
+  it("discards drafts once live data shows the question resolved", () => {
+    fixture.questionPending = false;
+    submitButtonMarkup();
+    expect(vi.mocked(clearComposerDraft).mock.calls).toEqual([[key("first")], [key("second")]]);
   });
 });

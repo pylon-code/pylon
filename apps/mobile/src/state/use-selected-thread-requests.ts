@@ -23,6 +23,7 @@ import {
   type SessionInteractionResponse,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { Atom } from "effect/unstable/reactivity";
 
 import { threadEnvironment } from "../state/threads";
@@ -50,7 +51,7 @@ import {
   foldSessionInteractionActivities,
 } from "../lib/sessionInteractions";
 import { appAtomRegistry } from "./atom-registry";
-import { useSelectedThreadDetail } from "./use-thread-detail";
+import { useSelectedThreadDetailState } from "./use-thread-detail";
 import { useThreadSelection } from "./use-thread-selection";
 import { useAtomCommand } from "./use-atom-command";
 
@@ -121,7 +122,9 @@ export function useSelectedThreadRequests() {
     "thread user input dismissal",
   );
   const { selectedThread: selectedThreadShell } = useThreadSelection();
-  const selectedThread = useSelectedThreadDetail();
+  const selectedThreadState = useSelectedThreadDetailState();
+  const selectedThread = Option.getOrNull(selectedThreadState.data);
+  const selectedThreadLive = selectedThreadState.status === "live";
   const userInputDraftsByRequestKey = useAtomValue(userInputDraftsByRequestKeyAtom);
   const [respondingApprovalId, setRespondingApprovalId] = useState<ApprovalRequestId | null>(null);
   const userInputResponsesInFlight = useRef(new Set<string>());
@@ -161,7 +164,8 @@ export function useSelectedThreadRequests() {
   const preparationCounts = useAtomValue(questionAttachmentPreparationAtom);
   const uploadStates = useAtomValue(composerAttachmentUploadsAtom);
   useEffect(() => {
-    if (!selectedThreadShell || !selectedThread) return;
+    // A cached snapshot can predate the question, so only live data may discard its drafts.
+    if (!selectedThreadLive || !selectedThreadShell || !selectedThread) return;
     const prefix = questionAttachmentDraftPrefix(
       selectedThreadShell.environmentId,
       selectedThreadShell.id,
@@ -189,7 +193,13 @@ export function useSelectedThreadRequests() {
       }
     }
     if (changed) appAtomRegistry.set(questionAttachmentPreparationAtom, counts);
-  }, [activePendingUserInputs, attachmentDrafts, selectedThread, selectedThreadShell]);
+  }, [
+    activePendingUserInputs,
+    attachmentDrafts,
+    selectedThread,
+    selectedThreadLive,
+    selectedThreadShell,
+  ]);
   const activePendingUserInputDrafts =
     activePendingUserInput && selectedThreadShell
       ? Object.fromEntries(
