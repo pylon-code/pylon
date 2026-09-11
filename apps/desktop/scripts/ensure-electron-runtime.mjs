@@ -116,6 +116,27 @@ function runChecked(command, args) {
   );
 }
 
+/**
+ * Electron 42+ ships no install script, so nothing downloads the runtime during
+ * `pnpm install`. The package's own installer verifies the archive against its
+ * bundled checksums and reuses the @electron/get cache.
+ */
+export function resolvePackagedElectronInstaller(electronDir, exists = NodeFS.existsSync) {
+  const installerPath = NodePath.join(electronDir, "install.js");
+  return exists(installerPath) ? installerPath : null;
+}
+
+function runPackagedElectronInstaller(installerPath) {
+  const result = NodeChildProcess.spawnSync(process.execPath, [installerPath], {
+    encoding: "utf8",
+    stdio: "inherit",
+  });
+  return result.status === 0;
+}
+
+// Last resort when the packaged installer is missing or fails (for example, a
+// policy blocks its native unzip binding). Unlike install.js it has no checksum
+// verification or download cache.
 function installElectronRuntime(electronDir, version) {
   const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-electron-"));
   const zipPath = NodePath.join(tempDir, `electron-v${version}-${hostPlatform}-${hostArch}.zip`);
@@ -156,7 +177,18 @@ export function ensureElectronRuntime() {
       NodeFS.rmSync(NodePath.join(electronDir, "dist"), { recursive: true, force: true });
     }
     NodeFS.rmSync(NodePath.join(electronDir, "path.txt"), { force: true });
-    installElectronRuntime(electronDir, electronPackageJson.version);
+    const installerPath = resolvePackagedElectronInstaller(electronDir);
+    const installedByPackage =
+      installerPath !== null &&
+      runPackagedElectronInstaller(installerPath) &&
+      missingRuntimePaths(electronDir, platformPath).length === 0 &&
+      invalidRuntimePaths(electronDir, platformPath).length === 0;
+    if (!installedByPackage) {
+      if (NodeFS.existsSync(NodePath.join(electronDir, "dist"))) {
+        NodeFS.rmSync(NodePath.join(electronDir, "dist"), { recursive: true, force: true });
+      }
+      installElectronRuntime(electronDir, electronPackageJson.version);
+    }
   }
 
   const missingAfterInstall = missingRuntimePaths(electronDir, platformPath);
