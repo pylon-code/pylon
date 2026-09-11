@@ -56,8 +56,8 @@ search results: the thread opens and the files are attached in its composer, rea
 message. Nothing is sent automatically. The same per-message file limits apply as when attaching
 files directly; see [Composer](./composer.md).
 
-Project settings are available from the project menu in either sidebar and from the breadcrumb
-context menu when composing a new thread.
+Project settings are available from the project menu in either sidebar, from any thread's menu,
+and from the breadcrumb context menu when composing a new thread.
 
 ## Mobile thread list
 

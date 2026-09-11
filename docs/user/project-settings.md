@@ -1,8 +1,8 @@
 # Project settings
 
 Open **Settings → Projects**. The project and machine pickers start at **All projects** and
-**All machines**. You can also open a project's settings from the sidebar project filter, the
-chat header, or the command palette.
+**All machines**. You can also open a project's settings from the sidebar project filter, a
+thread's menu, the chat header, or the command palette.
 
 With **All projects** selected, change the default model, workspace, automatic pull, agent browser
 access, or actions for projects that inherit those values. Select an individual project to override
