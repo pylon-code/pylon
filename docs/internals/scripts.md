@@ -80,9 +80,12 @@ authenticated.
 
 ### Linux AppImage prerequisites
 
-Linux AppImage packaging compiles the Rust resource monitor and the libsecret browser import
-helper. Install a Rust toolchain, the standard C/C++ build tools, libsecret development headers,
-pkg-config, and ImageMagick before running `vp run dist:desktop:linux`.
+Linux AppImage packaging compiles the Rust resource monitor, the KDE and Hyprland window capture
+helpers (`native/kde-snap-shot`, `native/hyprland-snap-shot`), and the libsecret browser import
+helper, and bundles the GNOME Shell capture extension. Install a Rust toolchain, the standard C/C++
+build tools, libsecret development headers, pkg-config, and ImageMagick before running
+`vp run dist:desktop:linux`. `T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS=true` reuses already built
+capture helpers, which is how release CI skips Rust on a cache hit.
 
 Ubuntu and Debian:
 

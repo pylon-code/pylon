@@ -43,6 +43,7 @@ policy in [CONTRIBUTING.md](../CONTRIBUTING.md); agent rules in [AGENTS.md](../A
 - [Server updates](./internals/server-updates.md)
 - [Resource telemetry](./internals/resource-telemetry.md)
 - [Product analytics](./internals/product-analytics.md)
+- [Linux window capture](./internals/linux-snap-shot.md)
 - [Environment auth](./internals/environment-auth.md)
 - [Pylon Connect](./internals/t3-connect.md)
 - [CI gates](./internals/ci.md)

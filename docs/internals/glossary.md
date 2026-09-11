@@ -54,6 +54,10 @@ A single user-to-assistant work cycle inside a thread. It starts with user input
 
 A user-visible log item attached to a thread. In [the contracts][1], activities cover important non-message events like approvals, tool actions, and failures. They are projected into thread state in [projector.ts][4].
 
+#### SnapShot
+
+A desktop capture of another app's window, attached to the composer draft as an image whose `source` (`kind: "snap-shot"`) carries the app name, window title, icon and optional accessibility data. [DesktopSnapShot.ts][31] owns the shortcut, native capture and the pending files under the runtime state directory until the renderer saves the attachment; [ProviderService.ts][14] adds the metadata to the provider prompt as fenced, untrusted captured-window data. See [linux-snap-shot.md][32].
+
 #### Turn window
 
 A bounded slice of a thread's turns, so a long thread does not have to load whole. A read asks for the last `turnLimit` turns that carry a user message — subagent and fan-out turns ride along with their anchor — and pages backward with the opaque, exclusive `beforeCursor`. Cursors are keyset-encoded over `(requested_at, turn_id)` by [threadDetailCursor.ts][26]. Windowing is opt-in per request and gated on the `threadSnapshotPagination` server capability, so a request without it still gets the full thread. See [ProjectionSnapshotQuery.ts][10].
@@ -257,3 +261,5 @@ ships Pylon already matching it.
 [28]: ../user/environment-theme.md
 [29]: ../../apps/server/src/persistence/Services/RollbackSagas.ts
 [30]: ../../apps/server/src/rollback/RollbackSagaRunner.ts
+[31]: ../../apps/desktop/src/snapShot/DesktopSnapShot.ts
+[32]: ./linux-snap-shot.md
