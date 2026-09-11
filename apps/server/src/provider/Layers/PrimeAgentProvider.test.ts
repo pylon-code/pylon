@@ -104,6 +104,18 @@ function mockPrimeAgentSpawner(input: {
   );
 }
 
+function mockPrimeAgentDiscoveryTimeoutSpawner() {
+  return Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as { readonly args: ReadonlyArray<string> };
+      return childProcess.args.length === 1 && childProcess.args[0] === "--version"
+        ? Effect.succeed(mockProcess({ stdout: "prime-agent 0.7.1\n" }))
+        : Effect.never;
+    }),
+  );
+}
+
 describe("PrimeAgentProvider distribution", () => {
   it("keeps runtime readiness independent and maps only signed build identity to advisory", () => {
     const snapshot: ServerProvider = {
@@ -591,6 +603,25 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
       ),
     );
   });
+
+  it.effect("explains when RPC model discovery times out", () =>
+    Effect.gen(function* () {
+      const fiber = yield* checkPrimeAgentProviderStatus(
+        decodeSettings({ binaryPath: "/mock/prime-agent" }),
+      ).pipe(
+        Effect.provide(mockPrimeAgentDiscoveryTimeoutSpawner()),
+        Effect.forkChild({ startImmediately: true }),
+      );
+
+      yield* TestClock.adjust("15 seconds");
+      const snapshot = yield* Fiber.join(fiber);
+
+      expect(snapshot.models).toHaveLength(1);
+      expect(snapshot.models[0]?.slug).toBe("default");
+      expect(snapshot.auth.status).toBe("unknown");
+      expect(snapshot.message).toContain("model discovery timed out");
+    }),
+  );
 
   it.effect("skips RPC model discovery after a daemon catalog is published", () => {
     const calls: Array<{

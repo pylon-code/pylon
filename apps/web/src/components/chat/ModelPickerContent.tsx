@@ -557,6 +557,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       ),
     [visibleModels],
   );
+  const selectedProviderMessage = useMemo(() => {
+    if (isSearching || selectedInstanceId === "favorites") {
+      return null;
+    }
+    const entry = entryByInstanceId.get(selectedInstanceId);
+    if (entry?.models.length !== 1) {
+      return null;
+    }
+    return entry.snapshot.message ?? null;
+  }, [entryByInstanceId, isSearching, selectedInstanceId]);
   const updateModelListScrollFades = useCallback(() => {
     const scrollElement = modelListRef.current?.getScrollableNode();
     if (!(scrollElement instanceof HTMLElement)) {
@@ -830,6 +840,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                       />
                     );
                   }}
+                  ListHeaderComponent={
+                    selectedProviderMessage ? (
+                      <p className="px-2 py-1 text-xs text-muted-foreground">
+                        {selectedProviderMessage}
+                      </p>
+                    ) : null
+                  }
                   estimatedItemSize={52}
                   drawDistance={480}
                   recycleItems
