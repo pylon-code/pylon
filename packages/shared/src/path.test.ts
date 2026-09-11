@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  isDriveOrPosixAbsolutePath,
   isExplicitRelativePath,
   isUncPath,
   isWindowsAbsolutePath,
@@ -24,6 +25,18 @@ describe("path helpers", () => {
     expect(isWindowsAbsolutePath("C:\\repo")).toBe(true);
     expect(isWindowsAbsolutePath("\\\\server\\share\\repo")).toBe(true);
     expect(isWindowsAbsolutePath("./repo")).toBe(false);
+  });
+
+  it("accepts drive and POSIX absolute paths but not UNC or device paths", () => {
+    expect(isDriveOrPosixAbsolutePath("/tmp/clip.mp4")).toBe(true);
+    expect(isDriveOrPosixAbsolutePath("C:\\Users\\demo\\clip.mp4")).toBe(true);
+    expect(isDriveOrPosixAbsolutePath("D:/media/frame.png")).toBe(true);
+    expect(isDriveOrPosixAbsolutePath("\\\\attacker.example\\share\\x.png")).toBe(false);
+    expect(isDriveOrPosixAbsolutePath("\\\\?\\C:\\Users\\demo\\clip.mp4")).toBe(false);
+    expect(isDriveOrPosixAbsolutePath("\\\\.\\pipe\\x.png")).toBe(false);
+    expect(isDriveOrPosixAbsolutePath("//attacker.example/share/x.png")).toBe(false);
+    expect(isDriveOrPosixAbsolutePath("/\\attacker.example\\share\\x.png")).toBe(false);
+    expect(isDriveOrPosixAbsolutePath("clip.mp4")).toBe(false);
   });
 
   it("detects explicit relative paths", () => {

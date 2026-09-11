@@ -54,6 +54,7 @@ import {
   attachmentRelativePath,
   parseAttachmentIdFromRelativePath,
   parseThreadSegmentFromAttachmentId,
+  resolveThreadBrowserArtifactsDir,
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
 
@@ -395,13 +396,18 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
     threadId: string,
   ) {
     const threadSegment = toSafeThreadAttachmentSegment(threadId);
-    if (!threadSegment) {
+    const threadBrowserArtifactsDir = resolveThreadBrowserArtifactsDir({
+      browserArtifactsDir: serverConfig.browserArtifactsDir,
+      threadId,
+    });
+    if (!threadSegment || !threadBrowserArtifactsDir) {
       yield* Effect.logWarning("skipping attachment cleanup for unsafe thread id", {
         threadId,
       });
       return;
     }
 
+    yield* fileSystem.remove(threadBrowserArtifactsDir, { recursive: true, force: true });
     const entries = yield* readAttachmentRootEntries;
     yield* Effect.forEach(
       entries,

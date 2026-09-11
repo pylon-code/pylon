@@ -10,6 +10,15 @@ export function isWindowsAbsolutePath(value: string): boolean {
   return isUncPath(value) || isWindowsDrivePath(value);
 }
 
+/**
+ * A POSIX `/`-rooted path or a Windows drive path. UNC and device paths
+ * (`\\server\share`, `\\?\C:\`, `//server/share`) are excluded because a
+ * Windows host opens them over the network or through a device namespace.
+ */
+export function isDriveOrPosixAbsolutePath(value: string): boolean {
+  return isWindowsDrivePath(value) || (value.startsWith("/") && !/^\/[/\\]/.test(value));
+}
+
 export function isExplicitRelativePath(value: string): boolean {
   return (
     value === "." ||

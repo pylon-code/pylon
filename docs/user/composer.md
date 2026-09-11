@@ -178,6 +178,13 @@ Relative paths resolve from the thread's workspace. Absolute paths and `file://`
 the environment's machine, even when you connect remotely or use your phone. Supported media
 can live outside the workspace, including in Downloads or `/tmp`.
 
+On desktop, when a thread from a remote environment embeds an image or video that the remote
+environment cannot find, Pylon tries the same absolute path on the desktop app's own environment.
+Relative paths resolve from the remote thread's workspace first, so a missing relative image can show
+the desktop's file at that same absolute path. A file on the remote environment always wins, network
+share and device paths such as `\\server\share` never fall back, and those previews refresh when the
+desktop app's environment reconnects.
+
 Pylon serves the original file without adding it to attachment storage. If that file is moved
 or deleted, its preview can no longer load from the environment. A browser or device may still
 have a cached copy. Supported video formats and codecs depend on the browser or device.

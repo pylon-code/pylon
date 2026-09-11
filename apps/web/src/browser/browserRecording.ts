@@ -103,6 +103,8 @@ interface ActiveRecording {
   releaseSurfaceActivity: (() => void) | null;
   stream: MediaStream | null;
   recorder: MediaRecorder | null;
+  savedBlob?: Blob;
+  uploadPromise?: Promise<string>;
   lifecycle: BrowserRecordingLifecycle;
 }
 
@@ -583,6 +585,7 @@ const finalizeBrowserRecording = async (
           mimeType,
           new Uint8Array(await blob.arrayBuffer()),
         );
+        recording.savedBlob = blob;
         result = { _tag: "Success", artifact };
       } catch (cause) {
         throw new BrowserRecordingOperationError({
@@ -687,4 +690,17 @@ export function stopBrowserRecording(
     });
   recording.lifecycle = { phase: "stopping", stopPromise };
   return stopPromise;
+}
+
+/** Joins local stops and shares one upload among concurrent automation requests. */
+export async function stopBrowserRecordingForUpload(
+  tabId: string,
+  upload: (artifact: DesktopPreviewRecordingArtifact, blob: Blob) => Promise<string>,
+): Promise<(DesktopPreviewRecordingArtifact & { uploadedAttachmentId: string }) | null> {
+  const recording = activeRecordings.get(tabId);
+  if (!recording) return null;
+  const artifact = await stopBrowserRecording(tabId);
+  if (!artifact || !recording.savedBlob) return null;
+  recording.uploadPromise ??= upload(artifact, recording.savedBlob);
+  return { ...artifact, uploadedAttachmentId: await recording.uploadPromise };
 }
