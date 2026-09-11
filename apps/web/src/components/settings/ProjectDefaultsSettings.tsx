@@ -7,6 +7,7 @@ import {
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { Trash2Icon } from "lucide-react";
 
@@ -52,6 +53,7 @@ export function ProjectDefaultsSettings({
 }: {
   environmentId: EnvironmentId | null;
 }) {
+  const navigate = useNavigate();
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const clientSettings = useClientSettings();
@@ -260,6 +262,13 @@ export function ProjectDefaultsSettings({
                   triggerVariant="outline"
                   triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                   getModelDisabledReason={modelDisabledReason}
+                  onOpenProviderSetup={(instanceId) => {
+                    if (representative)
+                      void navigate({
+                        to: "/settings/providers",
+                        search: { environmentId: representative.environmentId, instanceId },
+                      });
+                  }}
                   onInstanceModelChange={(instanceId, model) =>
                     setModel(createModelSelection(instanceId, model))
                   }

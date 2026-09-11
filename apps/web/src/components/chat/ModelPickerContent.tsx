@@ -11,6 +11,7 @@ import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRe
 import { ChevronRightIcon, SearchIcon } from "lucide-react";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerSidebar } from "./ModelPickerSidebar";
+import { getProviderStatusMessage, hasProviderSetup } from "./ProviderStatusBanner";
 import {
   modelPickerLegacySectionKey,
   modelPickerModelKey,
@@ -38,6 +39,7 @@ import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings"
 import { cn } from "~/lib/utils";
 import { getVirtualizedScrollFadeClassName } from "../ui/scroll-area";
 import { TooltipProvider } from "../ui/tooltip";
+import { Button } from "../ui/button";
 import {
   isProviderInstancePickerReady,
   isProviderInstancePickerVisible,
@@ -73,6 +75,22 @@ export function shouldIncludeModelPickerOption(input: {
     input.entry.instanceId === input.activeInstanceId &&
     input.option.slug === input.activeModel &&
     input.option.isUnavailable === true
+  );
+}
+
+/** Offer provider setup while an enabled instance cannot yet serve a usable model. */
+export function shouldOfferModelPickerSetup(
+  entry: ProviderInstanceEntry,
+  options: ReadonlyArray<ModelEsque>,
+): boolean {
+  return (
+    entry.enabled &&
+    entry.status !== "disabled" &&
+    hasProviderSetup(entry.snapshot) &&
+    (!isProviderInstancePickerReady(entry) ||
+      !entry.installed ||
+      entry.snapshot.auth.status === "unauthenticated" ||
+      !options.some((option) => !option.isUnavailable))
   );
 }
 
@@ -112,6 +130,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   terminalOpen: boolean;
   onRequestClose?: () => void;
+  onOpenProviderSetup?: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
 }) {
@@ -143,11 +162,21 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       }),
     ) &&
     !isProviderInstancePickerReady(activeEntry);
+  const activeInstanceNeedsSetup =
+    props.onOpenProviderSetup !== undefined &&
+    activeEntry !== undefined &&
+    shouldOfferModelPickerSetup(
+      activeEntry,
+      modelOptionsByInstance.get(props.activeInstanceId) ?? [],
+    );
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | "favorites">(
     () => {
-      if (props.lockedProvider !== null || activeInstanceHasSelectableUnavailableModel) {
-        // When locked, prime the sidebar to the currently-active instance
-        // so jumping into the picker keeps the focused instance visible.
+      if (
+        props.lockedProvider !== null ||
+        activeInstanceHasSelectableUnavailableModel ||
+        activeInstanceNeedsSetup
+      ) {
+        // Keep the active instance visible when it is locked or needs setup.
         return props.activeInstanceId;
       }
       return favorites.length > 0 ? "favorites" : props.activeInstanceId;
@@ -234,11 +263,27 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   );
 
   const selectableUnavailableInstanceIds = useMemo(() => {
-    if (!activeInstanceHasSelectableUnavailableModel) {
-      return undefined;
+    const instanceIds = new Set<ProviderInstanceId>();
+    if (activeInstanceHasSelectableUnavailableModel) {
+      instanceIds.add(props.activeInstanceId);
     }
-    return new Set([props.activeInstanceId]);
-  }, [activeInstanceHasSelectableUnavailableModel, props.activeInstanceId]);
+    if (props.onOpenProviderSetup) {
+      for (const entry of instanceEntries) {
+        if (
+          shouldOfferModelPickerSetup(entry, modelOptionsByInstance.get(entry.instanceId) ?? [])
+        ) {
+          instanceIds.add(entry.instanceId);
+        }
+      }
+    }
+    return instanceIds.size > 0 ? instanceIds : undefined;
+  }, [
+    activeInstanceHasSelectableUnavailableModel,
+    instanceEntries,
+    modelOptionsByInstance,
+    props.activeInstanceId,
+    props.onOpenProviderSetup,
+  ]);
 
   // Flatten models into a searchable array. One pass over the
   // instance-keyed map; each model carries its instance id + driver kind
@@ -453,6 +498,23 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       ...(legacySection.isExpanded ? legacySection.legacyModels : []),
     ];
   }, [filteredModels, legacySection]);
+
+  const selectedEntry =
+    selectedInstanceId === "favorites" ? undefined : entryByInstanceId.get(selectedInstanceId);
+  const providerSetupEntries =
+    !isSearching && props.onOpenProviderSetup
+      ? instanceEntries.filter(
+          (entry) =>
+            matchesLockedProvider(entry) &&
+            shouldOfferModelPickerSetup(
+              entry,
+              modelOptionsByInstance.get(entry.instanceId) ?? [],
+            ) &&
+            (selectedEntry
+              ? entry.instanceId === selectedEntry.instanceId
+              : filteredModels.length === 0),
+        )
+      : [];
 
   const toggleLegacySection = useCallback((instanceId: ProviderInstanceId) => {
     setExpandedLegacyInstances((expanded) => {
@@ -864,9 +926,34 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 />
               </ComboboxListVirtualized>
             </div>
-            <ComboboxEmpty className="not-empty:py-6 empty:h-0 text-xs font-normal leading-snug">
-              No models found
-            </ComboboxEmpty>
+            {providerSetupEntries.length > 0 ? (
+              <div className="max-h-44 shrink-0 overflow-y-auto border-t border-border/70 p-2">
+                {providerSetupEntries.map((entry) => (
+                  <div key={entry.instanceId} className="px-1 py-1.5 text-xs leading-snug">
+                    <p className="line-clamp-3 text-muted-foreground">
+                      {getProviderStatusMessage(entry.snapshot)}
+                    </p>
+                    <Button
+                      className="mt-1 px-0 text-foreground"
+                      onClick={() => {
+                        props.onRequestClose?.();
+                        props.onOpenProviderSetup?.(entry.instanceId);
+                      }}
+                      size="xs"
+                      variant="link"
+                    >
+                      {providerSetupEntries.length > 1
+                        ? `Set up ${entry.displayName}`
+                        : "Open provider setup"}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <ComboboxEmpty className="not-empty:py-6 empty:h-0 text-xs font-normal leading-snug">
+                No models found
+              </ComboboxEmpty>
+            )}
           </div>
         </Combobox>
       </div>

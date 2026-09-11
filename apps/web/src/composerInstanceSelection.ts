@@ -85,6 +85,12 @@ export interface ComposerInstanceSelection {
    * thread is unlocked or its instance has no group.
    */
   readonly lockedContinuationGroupKey: string | null;
+  /**
+   * When no entry resolved, the instance the thread asked for (its locked
+   * instance first), so the composer can open that instance's provider
+   * settings. Undefined while an entry resolved or nothing was requested.
+   */
+  readonly unavailableInstanceId: ProviderInstanceId | undefined;
 }
 
 export function resolveComposerInstanceSelection(
@@ -123,6 +129,15 @@ export function resolveComposerInstanceSelection(
   const lockedContinuationGroupKey = lockedInstanceId
     ? (entries.find((entry) => entry.instanceId === lockedInstanceId)?.continuationGroupKey ?? null)
     : null;
+  const requestedInstanceId = [
+    input.draftActiveProvider,
+    sessionInstanceId,
+    input.threadInstanceId,
+    input.projectInstanceId,
+  ].find(
+    (candidate): candidate is ProviderInstanceId =>
+      candidate != null && candidate !== NO_PROVIDER_MODEL_SELECTION.instanceId,
+  );
 
   const candidates: ReadonlyArray<{
     readonly instanceId: ProviderInstanceId | null | undefined;
@@ -152,6 +167,7 @@ export function resolveComposerInstanceSelection(
     blockedByUnavailablePreference,
     draftConflictsWithSessionBinding,
     lockedContinuationGroupKey,
+    unavailableInstanceId: entry ? undefined : (lockedInstanceId ?? requestedInstanceId),
   });
 
   for (const candidate of candidates) {

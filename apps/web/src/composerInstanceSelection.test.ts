@@ -303,5 +303,56 @@ describe("resolveComposerInstanceSelection", () => {
     expect(selection.entry).toBeUndefined();
     expect(selection.driverKind).toBe("unconfigured");
     expect(canStartComposerTurn(selection)).toBe(false);
+    expect(selection.unavailableInstanceId).toBeUndefined();
+  });
+
+  it("names the locked instance to set up when it was removed", () => {
+    const selection = resolveComposerInstanceSelection({
+      ...base,
+      entries: entriesOf(provider({ instanceId: "antigravity", driver: "antigravity" })),
+      draftActiveProvider: id("google_personal"),
+      sessionInstanceId: id("google_work"),
+      lockedProvider: kind("antigravity"),
+    });
+
+    expect(selection.entry).toBeUndefined();
+    expect(selection.unavailableInstanceId).toBe("google_work");
+  });
+
+  it("names the requested instance when nothing else can serve an unlocked draft", () => {
+    const selection = resolveComposerInstanceSelection({
+      ...base,
+      entries: entriesOf(
+        provider({ instanceId: "antigravity", driver: "antigravity", enabled: false }),
+      ),
+      threadInstanceId: id("antigravity"),
+    });
+
+    expect(selection.entry).toBeUndefined();
+    expect(selection.unavailableInstanceId).toBe("antigravity");
+  });
+
+  it("does not treat the empty draft placeholder as a provider setup target", () => {
+    const selection = resolveComposerInstanceSelection({
+      ...base,
+      entries: entriesOf(
+        provider({ instanceId: "antigravity", driver: "antigravity", enabled: false }),
+      ),
+      draftActiveProvider: NO_PROVIDER_MODEL_SELECTION.instanceId,
+    });
+
+    expect(selection.entry).toBeUndefined();
+    expect(selection.unavailableInstanceId).toBeUndefined();
+  });
+
+  it("reports no setup target while an entry resolved", () => {
+    const selection = resolveComposerInstanceSelection({
+      ...base,
+      entries: entriesOf(CODEX),
+      threadInstanceId: id("codex"),
+    });
+
+    expect(selection.entry?.instanceId).toBe("codex");
+    expect(selection.unavailableInstanceId).toBeUndefined();
   });
 });
