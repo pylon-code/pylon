@@ -4,6 +4,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import {
   type ClientOrchestrationCommand,
+  type UserInputAttachments,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   type IsoDateTime,
   type OrchestrationCommand,
   OrchestrationDispatchCommandError,
@@ -131,14 +133,27 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
 
     if (
       canonicalCommand.type !== "thread.turn.start" &&
-      canonicalCommand.type !== "thread.input-queue.follow-up"
+      canonicalCommand.type !== "thread.input-queue.follow-up" &&
+      canonicalCommand.type !== "thread.user-input.respond"
     ) {
       return canonicalCommand as OrchestrationCommand;
     }
 
+    const attachments =
+      canonicalCommand.type === "thread.user-input.respond"
+        ? Object.values(canonicalCommand.attachmentsByQuestionId ?? {}).flat()
+        : canonicalCommand.message.attachments;
+    if (
+      canonicalCommand.type === "thread.user-input.respond" &&
+      attachments.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS
+    ) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per question response.`,
+      });
+    }
     const claimedAttachmentPaths: string[] = [];
     const normalizedAttachments = yield* Effect.forEach(
-      canonicalCommand.message.attachments,
+      attachments,
       (attachment) =>
         Effect.gen(function* () {
           if (!("dataUrl" in attachment)) {
@@ -262,6 +277,25 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       { concurrency: 1 },
     ).pipe(Effect.tapError(() => removeClaimedAttachmentPaths(claimedAttachmentPaths)));
 
+    if (canonicalCommand.type === "thread.user-input.respond") {
+      let index = 0;
+      const attachmentsByQuestionId = Object.fromEntries(
+        Object.entries(canonicalCommand.attachmentsByQuestionId ?? {}).map(
+          ([questionId, original]) => {
+            const claimed = normalizedAttachments.slice(
+              index,
+              index + original.length,
+            ) as UserInputAttachments[string];
+            index += original.length;
+            return [questionId, claimed];
+          },
+        ),
+      );
+      return {
+        ...canonicalCommand,
+        ...(attachments.length > 0 ? { attachmentsByQuestionId } : {}),
+      };
+    }
     return {
       ...canonicalCommand,
       message: {
@@ -274,22 +308,31 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
 export const cleanupFailedUploadedAttachments = Effect.fn(
   "Normalizer.cleanupFailedUploadedAttachments",
 )(function* (command: ClientOrchestrationCommand, normalizedCommand: OrchestrationCommand) {
-  // Both message-carrying commands claim uploaded attachments in
-  // normalizeDispatchCommand, so both have copies to release when the dispatch
-  // fails. thread.input-queue.follow-up is Pylon-only; upstream has no such
-  // command and only guards thread.turn.start.
-  const carriesAttachments =
-    (command.type === "thread.turn.start" && normalizedCommand.type === "thread.turn.start") ||
-    (command.type === "thread.input-queue.follow-up" &&
-      normalizedCommand.type === "thread.input-queue.follow-up");
-  if (!carriesAttachments) {
-    return;
-  }
+  // Every attachment-carrying command claims uploaded attachments in
+  // normalizeDispatchCommand, so each has copies to release when the dispatch
+  // fails. thread.input-queue.follow-up is Pylon-only; upstream guards only
+  // thread.turn.start and thread.user-input.respond.
+  const originalAttachments =
+    command.type === "thread.turn.start" || command.type === "thread.input-queue.follow-up"
+      ? command.message.attachments
+      : command.type === "thread.user-input.respond"
+        ? Object.values(command.attachmentsByQuestionId ?? {}).flat()
+        : [];
+  const normalizedAttachments =
+    command.type !== normalizedCommand.type
+      ? []
+      : normalizedCommand.type === "thread.turn.start" ||
+          normalizedCommand.type === "thread.input-queue.follow-up"
+        ? normalizedCommand.message.attachments
+        : normalizedCommand.type === "thread.user-input.respond"
+          ? Object.values(normalizedCommand.attachmentsByQuestionId ?? {}).flat()
+          : [];
+  if (normalizedAttachments.length === 0) return;
 
   const serverConfig = yield* ServerConfig;
   const claimedPaths: string[] = [];
-  for (const [index, attachment] of normalizedCommand.message.attachments.entries()) {
-    const original = command.message.attachments[index];
+  for (const [index, attachment] of normalizedAttachments.entries()) {
+    const original = originalAttachments[index];
     if (
       !original ||
       "dataUrl" in original ||
