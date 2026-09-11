@@ -327,7 +327,7 @@ index ec78917..342f9d7 100644
 diff --git a/dist/unstable/http/HttpClientResponse.js b/dist/unstable/http/HttpClientResponse.js
 --- a/dist/unstable/http/HttpClientResponse.js
 +++ b/dist/unstable/http/HttpClientResponse.js
-@@ -178,3 +178,3 @@
+@@ -177,3 +177,3 @@
      }
 -    return this.cachedCookies = Cookies.fromSetCookie(this.source.headers.getSetCookie());
 +    return this.cachedCookies = Cookies.fromSetCookie(this.source.headers.getSetCookie?.() ?? []);
@@ -335,7 +335,7 @@ diff --git a/dist/unstable/http/HttpClientResponse.js b/dist/unstable/http/HttpC
 diff --git a/src/unstable/http/HttpClientResponse.ts b/src/unstable/http/HttpClientResponse.ts
 --- a/src/unstable/http/HttpClientResponse.ts
 +++ b/src/unstable/http/HttpClientResponse.ts
-@@ -310,3 +310,3 @@
+@@ -309,3 +309,3 @@
      }
 -    return this.cachedCookies = Cookies.fromSetCookie(this.source.headers.getSetCookie())
 +    return this.cachedCookies = Cookies.fromSetCookie(this.source.headers.getSetCookie?.() ?? [])
