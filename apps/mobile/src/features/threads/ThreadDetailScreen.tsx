@@ -526,10 +526,12 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const showWorkingControl = floatingStatus !== null;
   // Connection and working status occupy the same space. Keep the feed inset
   // stable when reconnecting hands off to syncing and then to a running turn.
+  // A held message waits for the user rather than for delivery, so it
+  // reserves no status space.
   const showFloatingStatus =
     showWorkingControl ||
     props.connectionStateLabel !== "connected" ||
-    props.queuedMessages.length > 0 ||
+    props.queuedMessages.some((message) => message.deliveryHold === undefined) ||
     props.selectedThreadFeed.some(
       (entry) => "acknowledged" in entry && entry.acknowledged === true,
     );

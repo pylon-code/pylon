@@ -36,7 +36,14 @@ export function resolvePendingThreadCreation(input: {
     readonly session: { readonly status: string } | null;
   } | null;
 }): PendingThreadCreation | null {
-  const creation = input.pending ?? input.previous;
+  // A held creation never delivers or fails on its own; once it leaves the
+  // outbox it was deleted or retargeted, so there is nothing left to bridge.
+  const previous = input.previous;
+  const retainedPrevious =
+    previous !== null && previous.outcome === null && previous.message.deliveryHold !== undefined
+      ? null
+      : previous;
+  const creation = input.pending ?? retainedPrevious;
   if (
     creation === null ||
     scopedThreadKey(creation.message.environmentId, creation.message.threadId) !== input.threadKey

@@ -99,6 +99,37 @@ describe("resolvePendingThreadCreation", () => {
     ).toBeNull();
   });
 
+  it("ends when a held creation leaves the outbox", () => {
+    const held: PendingThreadCreation = {
+      message: {
+        ...creation,
+        deliveryHold: { kind: "admission-rejected", reason: "Provider refused the turn" },
+      },
+      outcome: null,
+    };
+    expect(
+      resolvePendingThreadCreation({ threadKey, pending: null, previous: held, detail: null }),
+    ).toBeNull();
+    expect(
+      resolvePendingThreadCreation({
+        threadKey,
+        pending: null,
+        previous: held,
+        detail: { messages: [], latestTurn: null, session: null },
+      }),
+    ).toBeNull();
+  });
+
+  it("bridges a delivered creation until its detail takes over", () => {
+    const delivered: PendingThreadCreation = {
+      message: creation,
+      outcome: { kind: "delivered", message: creation },
+    };
+    expect(
+      resolvePendingThreadCreation({ threadKey, pending: null, previous: delivered, detail: null }),
+    ).toBe(delivered);
+  });
+
   it("keeps the prompt until both the turn and its message have arrived", () => {
     expect(
       resolvePendingThreadCreation({
