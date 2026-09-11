@@ -446,7 +446,9 @@ describe("deriveProviderModelsForDisplay", () => {
     );
 
     expect(markup).toContain("sign in separately");
-    expect(markup).toContain("It does not enable multiple Prime instances");
+    expect(markup).toContain("Prime Agent runs one enabled account per Pylon environment");
+    expect(markup).toContain("A stock Prime Agent install runs in ACP compatibility mode");
+    expect(markup).toContain("Install the Pylon Prime build to enable native mode");
     expect(markup).toContain("stop-all maintenance remains external");
     expect(markup).toContain(`role="status">${reason}`);
   });

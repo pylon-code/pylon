@@ -85,7 +85,11 @@ export interface PrimeAgentNativeProofIdentity {
 export type PrimeAgentRuntimeBackendIdentity =
   | {
       readonly kind: "acp";
-      readonly fallbackCategory?: "launch-args" | "binary-resolution" | "daemon-setup";
+      readonly fallbackCategory?:
+        | "launch-args"
+        | "binary-resolution"
+        | "daemon-setup"
+        | "sdk-contract";
     }
   | {
       readonly kind: "daemon";
