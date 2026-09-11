@@ -294,11 +294,14 @@ function ProviderSettingsPanelContent(target: ProviderSettingsTarget) {
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<EnvironmentId | null>(
     target.environmentId ?? primaryEnvironmentId,
   );
-  const targetEnvironmentMissing =
+  // A requested device that is not listed yet holds the page on loading until
+  // the device list is ready; only a loaded list can prove the device is gone.
+  const targetEnvironmentAbsent =
     target.environmentId !== undefined &&
     selectedEnvironmentId === target.environmentId &&
     !options.some((environment) => environment.environmentId === target.environmentId);
-  const effectiveEnvironmentId = targetEnvironmentMissing
+  const targetEnvironmentMissing = isReady && targetEnvironmentAbsent;
+  const effectiveEnvironmentId = targetEnvironmentAbsent
     ? target.environmentId
     : resolveSelectedProviderEnvironmentId(options, selectedEnvironmentId, primaryEnvironmentId);
   const selectedEnvironment =
@@ -387,7 +390,7 @@ function ProviderSettingsPanelContent(target: ProviderSettingsTarget) {
           description="Reconnect this device to set up its provider, or select another device."
         />
       ) : null}
-      {options.length === 0 && !targetEnvironmentMissing ? (
+      {(options.length === 0 || targetEnvironmentAbsent) && !targetEnvironmentMissing ? (
         <SettingsSection {...searchableSetting("providers")}>
           <SettingsRow
             title={isReady ? "No connected devices" : "Loading devices"}
@@ -634,7 +637,7 @@ export function EnvironmentProviderSettings({
     void (async () => {
       const result = await refreshServerProviders({
         environmentId,
-        input: {},
+        input: { refreshModels: true },
       });
       refreshingRef.current = false;
       setIsRefreshingProviders(false);

@@ -1,5 +1,6 @@
 import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
 import {
+  ANTIGRAVITY_DEFAULT_MODEL,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
@@ -62,16 +63,37 @@ type ModelPickerItem = {
   isUnavailable?: boolean | undefined;
 };
 
+/** Resolve Antigravity's internal default marker to the account catalog's default model. */
+export function resolveModelPickerSelectedModel(input: {
+  driverKind: ProviderDriverKind | undefined;
+  model: string;
+  options: ReadonlyArray<ModelEsque>;
+}) {
+  if (input.driverKind === "antigravity" && input.model === ANTIGRAVITY_DEFAULT_MODEL) {
+    const availableModels = input.options.filter(
+      (option) => option.slug !== ANTIGRAVITY_DEFAULT_MODEL && !option.isUnavailable,
+    );
+    return (
+      availableModels.find((option) => option.aliases?.includes(ANTIGRAVITY_DEFAULT_MODEL)) ??
+      availableModels.find((option) => option.isDefault)
+    );
+  }
+  return input.options.find((option) => option.slug === input.model);
+}
+
 export function shouldIncludeModelPickerOption(input: {
   readonly entry: ProviderInstanceEntry;
   readonly option: ModelEsque;
   readonly activeInstanceId: ProviderInstanceId;
   readonly activeModel: string;
 }): boolean {
+  if (input.entry.driverKind === "antigravity" && input.option.slug === ANTIGRAVITY_DEFAULT_MODEL) {
+    return false;
+  }
   if (isProviderInstancePickerReady(input.entry)) return true;
   return (
     input.entry.enabled &&
-    input.entry.driverKind === "opencode" &&
+    (input.entry.driverKind === "opencode" || input.entry.driverKind === "antigravity") &&
     input.entry.instanceId === input.activeInstanceId &&
     input.option.slug === input.activeModel &&
     input.option.isUnavailable === true
@@ -151,6 +173,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const activeEntry = props.instanceEntries.find(
     (entry) => entry.instanceId === props.activeInstanceId,
   );
+  const activeModel = resolveModelPickerSelectedModel({
+    driverKind: activeEntry?.driverKind,
+    model: props.model,
+    options: modelOptionsByInstance.get(props.activeInstanceId) ?? [],
+  });
+  const activeModelSlug =
+    activeModel?.slug ?? (props.model === ANTIGRAVITY_DEFAULT_MODEL ? "" : props.model);
+  const activeModelKey = activeModelSlug
+    ? modelPickerModelKey(props.activeInstanceId, activeModelSlug)
+    : null;
   const activeInstanceHasSelectableUnavailableModel =
     activeEntry !== undefined &&
     (modelOptionsByInstance.get(props.activeInstanceId) ?? []).some((option) =>
@@ -158,7 +190,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         entry: activeEntry,
         option,
         activeInstanceId: props.activeInstanceId,
-        activeModel: props.model,
+        activeModel: activeModelSlug,
       }),
     ) &&
     !isProviderInstancePickerReady(activeEntry);
@@ -187,7 +219,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       new Set<ProviderInstanceId>(
         modelOptionsByInstance
           .get(props.activeInstanceId)
-          ?.some((model) => model.slug === props.model && model.isLegacy)
+          ?.some((model) => model.slug === activeModelSlug && model.isLegacy)
           ? [props.activeInstanceId]
           : [],
       ),
@@ -304,7 +336,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             entry,
             option: model,
             activeInstanceId: props.activeInstanceId,
-            activeModel: props.model,
+            activeModel: activeModelSlug,
           })
         ) {
           continue;
@@ -328,7 +360,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       }
     }
     return out;
-  }, [modelOptionsByInstance, entryByInstanceId, props.activeInstanceId, props.model]);
+  }, [modelOptionsByInstance, entryByInstanceId, props.activeInstanceId, activeModelSlug]);
 
   const isLocked = props.lockedProvider !== null;
   const isSearching = searchQuery.trim().length > 0;
@@ -755,7 +787,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           autoHighlight
           open
           virtualized
-          value={modelPickerModelKey(props.activeInstanceId, props.model)}
+          value={activeModelKey}
           onItemHighlighted={(modelKey, eventDetails) => {
             highlightedModelKeyRef.current = typeof modelKey === "string" ? modelKey : null;
             if (eventDetails.reason === "keyboard" && eventDetails.index >= 0) {
@@ -888,9 +920,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                         isFavorite={favoritesSet.has(
                           providerModelKey(model.instanceId, model.slug),
                         )}
-                        isSelected={
-                          modelKey === modelPickerModelKey(props.activeInstanceId, props.model)
-                        }
+                        isSelected={modelKey === activeModelKey}
                         showProvider
                         preferShortName={!isLocked}
                         useTriggerLabel={false}

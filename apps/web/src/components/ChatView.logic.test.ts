@@ -1,5 +1,6 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
+  ANTIGRAVITY_DEFAULT_MODEL,
   EnvironmentId,
   MessageId,
   ProjectId,
@@ -67,6 +68,7 @@ import {
   shouldShowPlanFollowUpPrompt,
   shouldWriteThreadErrorToCurrentServerThread,
   toolGroupConsumesUpwardNavigation,
+  getAntigravitySendBlockReason,
 } from "./ChatView.logic";
 
 describe("agent browser close confirmation", () => {
@@ -836,6 +838,107 @@ describe("buildThreadTurnInterruptInput", () => {
         }),
       ),
     ).toEqual({ threadId });
+  });
+});
+
+describe("getAntigravitySendBlockReason", () => {
+  const catalogModels: ServerProvider["models"] = [
+    { slug: "gemini-pro", name: "Gemini Pro", isCustom: false, capabilities: null },
+  ];
+
+  function antigravity(overrides: Partial<ServerProvider> = {}): ServerProvider {
+    return {
+      driver: ProviderDriverKind.make("antigravity"),
+      instanceId: ProviderInstanceId.make("google_work"),
+      enabled: true,
+      installed: true,
+      status: "ready",
+      auth: { status: "authenticated" },
+      version: null,
+      checkedAt: now,
+      models: [],
+      slashCommands: [],
+      skills: [],
+      ...overrides,
+    };
+  }
+
+  it("blocks sends while the selected Antigravity account is signed out", () => {
+    const provider = antigravity({
+      status: "error",
+      auth: { status: "unauthenticated" },
+      models: catalogModels,
+    });
+
+    expect(getAntigravitySendBlockReason(provider, "gemini-pro")).toBe(
+      "Sign in to Antigravity in provider settings before sending.",
+    );
+  });
+
+  it("blocks sends until the selected Antigravity profile is installed", () => {
+    expect(
+      getAntigravitySendBlockReason(
+        antigravity({ installed: false, models: catalogModels }),
+        "gemini-pro",
+      ),
+    ).toBe("Install Antigravity in provider settings before sending.");
+  });
+
+  it("lets Antigravity check saved credentials when resuming after a restart", () => {
+    const provider = antigravity({ status: "warning", auth: { status: "unknown" } });
+
+    expect(getAntigravitySendBlockReason(provider, "gemini-pro")).toBeNull();
+    expect(getAntigravitySendBlockReason(provider, ANTIGRAVITY_DEFAULT_MODEL)).toBeNull();
+    expect(
+      getAntigravitySendBlockReason({ ...provider, models: catalogModels }, "gemini-pro"),
+    ).toBeNull();
+    expect(getAntigravitySendBlockReason(provider, "")).toBe(
+      "Choose an Antigravity model before sending.",
+    );
+  });
+
+  it("blocks saved model sends until Antigravity loads its account catalog", () => {
+    expect(getAntigravitySendBlockReason(antigravity(), "gemini-pro")).toBe(
+      "Refresh Antigravity models in provider settings before sending.",
+    );
+  });
+
+  it("blocks an empty Antigravity selection after the catalog has loaded", () => {
+    expect(getAntigravitySendBlockReason(antigravity({ models: catalogModels }), "")).toBe(
+      "Choose an Antigravity model before sending.",
+    );
+  });
+
+  it("blocks a saved model that a ready catalog no longer lists", () => {
+    const provider = antigravity({ models: catalogModels });
+
+    expect(getAntigravitySendBlockReason(provider, "saved-model-not-in-current-catalog")).toBe(
+      "That Antigravity model is no longer available. Choose another model.",
+    );
+    expect(getAntigravitySendBlockReason(provider, "gemini-pro")).toBeNull();
+    expect(getAntigravitySendBlockReason(provider, ANTIGRAVITY_DEFAULT_MODEL)).toBeNull();
+  });
+
+  it("allows a saved native model to retry after a provider error without changing it", () => {
+    expect(
+      getAntigravitySendBlockReason(
+        antigravity({ status: "error", models: catalogModels }),
+        "saved-model-not-in-current-catalog",
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps existing send behavior for other providers", () => {
+    expect(
+      getAntigravitySendBlockReason(
+        antigravity({
+          driver: ProviderDriverKind.make("codex"),
+          installed: false,
+          auth: { status: "unknown" },
+        }),
+        "gpt-model",
+      ),
+    ).toBeNull();
   });
 });
 

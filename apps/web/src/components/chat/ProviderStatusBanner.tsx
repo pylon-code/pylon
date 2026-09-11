@@ -11,6 +11,17 @@ export function getProviderStatusBannerKey(status: ServerProvider | null): strin
   if (!status) return null;
   const unavailable = getProviderUnavailablePresentation(status);
   if (!unavailable && (status.status === "ready" || status.status === "disabled")) return null;
+  // Antigravity checks saved credentials when a session starts. Its local
+  // health check leaves auth unknown after a restart, which is not a failure.
+  if (
+    !unavailable &&
+    status.driver === "antigravity" &&
+    status.installed &&
+    status.status === "warning" &&
+    status.auth.status === "unknown"
+  ) {
+    return null;
+  }
   return [
     status.instanceId,
     status.availability ?? "available",
@@ -68,9 +79,8 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
   onOpenProviderSetup?: (instanceId: ProviderInstanceId) => void;
   status: ServerProvider | null;
 }) {
-  if (!status) return null;
+  if (!status || getProviderStatusBannerKey(status) === null) return null;
   const unavailable = getProviderUnavailablePresentation(status);
-  if (!unavailable && (status.status === "ready" || status.status === "disabled")) return null;
 
   const providerName = status.displayName?.trim() || formatProviderDriverKindLabel(status.driver);
   const isUnauthenticated =

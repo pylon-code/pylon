@@ -1,4 +1,5 @@
 import {
+  ANTIGRAVITY_DEFAULT_MODEL,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
@@ -10,7 +11,7 @@ import { buttonVariants } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
-import { ModelPickerContent } from "./ModelPickerContent";
+import { ModelPickerContent, resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import {
   ModelEsque,
@@ -70,15 +71,25 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
 
   const activeInstanceId = props.activeInstanceId;
   const selectedInstanceOptions = props.modelOptionsByInstance.get(activeInstanceId) ?? [];
-  // OpenCode can keep a model through a transient catalog refresh. Other
-  // providers keep the active instance's first option as their normal fallback.
+  // Account-specific catalogs (OpenCode, Antigravity) keep the selected model
+  // label while it is unavailable. Other providers fall back to the first option.
   const selectedModel =
-    selectedInstanceOptions.find((option) => option.slug === props.model) ??
-    (activeEntry?.driverKind === "opencode" ? undefined : selectedInstanceOptions[0]);
-  const triggerTitle = selectedModel ? getTriggerDisplayModelName(selectedModel) : props.model;
+    resolveModelPickerSelectedModel({
+      driverKind: activeEntry?.driverKind,
+      model: props.model,
+      options: selectedInstanceOptions,
+    }) ??
+    (activeEntry?.driverKind === "opencode" || activeEntry?.driverKind === "antigravity"
+      ? undefined
+      : selectedInstanceOptions[0]);
+  const triggerTitle = selectedModel
+    ? getTriggerDisplayModelName(selectedModel)
+    : props.model === ANTIGRAVITY_DEFAULT_MODEL
+      ? "Choose model"
+      : props.model || "Choose model";
   const triggerLabel = selectedModel
     ? `${getTriggerDisplayModelLabel(selectedModel)}${selectedModel.isUnavailable ? " (Unavailable)" : ""}`
-    : props.model;
+    : triggerTitle;
   const showInstanceBadge =
     activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
 

@@ -1,4 +1,5 @@
 import {
+  ANTIGRAVITY_DEFAULT_MODEL,
   type AssetCreateUrlInput,
   type AssetCreateUrlResult,
   type ChatFileAttachment,
@@ -401,6 +402,43 @@ export function collectLocalTimelineMessageIds(
  * nothing can be stopped. Mirrors the composer's Stop button: a running turn,
  * or a turn still awaiting provider admission (which has no turn id yet).
  */
+/** Why the composer cannot send to Antigravity yet, or null when the server can take the turn. */
+export function getAntigravitySendBlockReason(
+  provider:
+    | Pick<ServerProvider, "driver" | "installed" | "auth" | "models" | "status">
+    | null
+    | undefined,
+  model: string,
+): string | null {
+  if (provider?.driver !== "antigravity") return null;
+  if (!provider.installed) {
+    return "Install Antigravity in provider settings before sending.";
+  }
+  if (provider.auth.status === "unauthenticated") {
+    return "Sign in to Antigravity in provider settings before sending.";
+  }
+  const slug = model.trim();
+  if (slug.length === 0) return "Choose an Antigravity model before sending.";
+  // A restart clears the account status and catalog. Session startup checks
+  // saved credentials and validates the model before sending the prompt.
+  if (provider.auth.status === "unknown") return null;
+  if (provider.models.length === 0) {
+    return "Refresh Antigravity models in provider settings before sending.";
+  }
+  // A saved model that left the catalog is kept in the picker as unavailable
+  // so the user sees what the thread used. The server rejects it at turn
+  // start, so block here unless the provider is in an error state, where a
+  // retry with the same model is the right move.
+  if (
+    provider.status === "ready" &&
+    slug !== ANTIGRAVITY_DEFAULT_MODEL &&
+    !provider.models.some((entry) => entry.slug === slug || entry.aliases?.includes(slug))
+  ) {
+    return "That Antigravity model is no longer available. Choose another model.";
+  }
+  return null;
+}
+
 export function buildRunningThreadTurnInterruptInput(
   thread: Pick<Thread, "id" | "session"> | null | undefined,
   phase: SessionPhase,

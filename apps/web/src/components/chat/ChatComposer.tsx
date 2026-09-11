@@ -103,6 +103,7 @@ import { DISCONNECTED_COMPOSER_PLACEHOLDER } from "../../composerPlaceholder";
 import {
   buildRunningThreadTurnInterruptInput,
   deriveComposerSendState,
+  getAntigravitySendBlockReason,
   readFileAsDataUrl,
   threadShellHasStarted,
 } from "../ChatView.logic";
@@ -964,6 +965,7 @@ import { getProviderInteractionModeToggle } from "../../providerModels";
 import {
   canStartComposerTurn,
   resolveComposerInstanceSelection,
+  resolveComposerProviderSettingsAction,
 } from "../../composerInstanceSelection";
 import {
   applyProviderInstanceSettings,
@@ -1936,13 +1938,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // the thread's own selection instead of swapping in the setup button and
   // back once the catalog lands.
   const providerCatalogPending = noProviderAvailable && !providerCatalogKnown;
-  const showProviderUnavailable = noProviderAvailable && !providerCatalogPending;
-  const providerSetupInstanceId = noProviderAvailable
-    ? (composerSelection.unavailableInstanceId ??
-      (lockedProvider === null
-        ? providerInstanceEntries.find((entry) => hasProviderSetup(entry.snapshot))?.instanceId
-        : undefined))
-    : undefined;
+  const providerSettingsAction = resolveComposerProviderSettingsAction({
+    selection: composerSelection,
+    catalogKnown: providerCatalogKnown,
+    lockedProvider,
+    fallbackSetupInstanceId: providerInstanceEntries.find((entry) =>
+      hasProviderSetup(entry.snapshot),
+    )?.instanceId,
+  });
+  const providerSetupInstanceId = providerSettingsAction.instanceId;
+  const showProviderSettingsAction = providerSettingsAction.visible;
   const providerSelectionBlocked = composerSelection.blockedByUnavailablePreference;
   const activeSessionInstanceId = activeThread?.session?.providerInstanceId;
   const providerBindingConflict = composerDraft.providerBindingConflict;
@@ -2022,6 +2027,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     projectModelSelection: activeProjectDefaultModelSelection,
     settings,
   });
+  const providerSendBlockReason = getAntigravitySendBlockReason(
+    selectedProviderEntry?.snapshot,
+    selectedModel,
+  );
   const selectedProviderStatus = useMemo(
     () => selectedProviderEntry?.snapshot ?? null,
     [selectedProviderEntry],
@@ -2284,6 +2293,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const sendDisabledReason =
     boundProviderSelectionReason ??
     baseSendDisabledReason ??
+    (activePendingProgress ? null : providerSendBlockReason) ??
     (sessionCompactionBlocksSubmission ? "Context compaction in progress" : null);
   const isSendDisabled = sendDisabledReason !== null;
   const showSessionCompaction = sessionCompactionScopeKey !== null;
@@ -4741,7 +4751,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isStashMenuOpen ||
     isDragOverComposer ||
     isPreparingWorktree ||
-    showProviderUnavailable ||
+    showProviderSettingsAction ||
     projectSelectionRequired ||
     environmentUnavailable !== null ||
     composerSubmissionError !== null ||
@@ -5023,7 +5033,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const hiddenRestingBlockIds = restingBlockDefs
     .slice(restingBlockDefs.length - restingHiddenBlockCount)
     .map((def) => def.id);
-  const composerControls = showProviderUnavailable ? (
+  const composerControls = showProviderSettingsAction ? (
     <Button
       type="button"
       size="sm"
@@ -5877,7 +5887,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         selectedPromptEffort,
         selectedModelOptionsForDispatch,
         selectedModelSelection,
-        providerAvailable: !providerTurnUnavailable,
+        providerAvailable: !providerTurnUnavailable && providerSendBlockReason === null,
         selectedProvider,
         selectedModel,
         selectedProviderModels,
@@ -5926,6 +5936,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedModelOptionsForDispatch,
       selectedModelSelection,
       providerTurnUnavailable,
+      providerSendBlockReason,
       selectedPromptEffort,
       selectedProvider,
       selectedProviderModels,
@@ -6262,7 +6273,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       : prompt.trim() ||
                         (providerSelectionBlocked
                           ? "Select another provider to send"
-                          : showProviderUnavailable
+                          : showProviderSettingsAction
                             ? "Enable a provider in Settings"
                             : "Ask anything...")}
                   </button>
@@ -6787,7 +6798,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                               ? "Choose a project above to start a thread"
                               : providerSelectionBlocked
                                 ? "Select another provider to send a message"
-                                : showProviderUnavailable
+                                : showProviderSettingsAction
                                   ? "Enable a provider in Settings to send a message"
                                   : phase === "disconnected"
                                     ? DISCONNECTED_COMPOSER_PLACEHOLDER

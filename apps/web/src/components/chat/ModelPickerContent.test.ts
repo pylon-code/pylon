@@ -1,8 +1,17 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  ANTIGRAVITY_DEFAULT_MODEL,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
-import { shouldIncludeModelPickerOption, shouldOfferModelPickerSetup } from "./ModelPickerContent";
+import {
+  resolveModelPickerSelectedModel,
+  shouldIncludeModelPickerOption,
+  shouldOfferModelPickerSetup,
+} from "./ModelPickerContent";
 
 function entry(status: ServerProvider["status"], driver = "opencode") {
   return deriveProviderInstanceEntries([
@@ -23,6 +32,48 @@ function entry(status: ServerProvider["status"], driver = "opencode") {
 }
 
 describe("shouldIncludeModelPickerOption", () => {
+  it.each(["ready", "error"] as const)(
+    "never offers the internal Antigravity default marker as a model when %s",
+    (status) => {
+      const providerEntry = entry(status, "antigravity");
+      expect(
+        shouldIncludeModelPickerOption({
+          entry: providerEntry,
+          option: {
+            slug: ANTIGRAVITY_DEFAULT_MODEL,
+            name: ANTIGRAVITY_DEFAULT_MODEL,
+            isUnavailable: true,
+          },
+          activeInstanceId: providerEntry.instanceId,
+          activeModel: ANTIGRAVITY_DEFAULT_MODEL,
+        }),
+      ).toBe(false);
+    },
+  );
+
+  it("keeps only the active synthetic Antigravity row when the provider status is error", () => {
+    const providerEntry = entry("error", "antigravity");
+    const activeModel = "missing-model";
+    const option = { slug: activeModel, name: activeModel, isUnavailable: true };
+
+    expect(
+      shouldIncludeModelPickerOption({
+        entry: providerEntry,
+        option,
+        activeInstanceId: providerEntry.instanceId,
+        activeModel,
+      }),
+    ).toBe(true);
+    expect(
+      shouldIncludeModelPickerOption({
+        entry: providerEntry,
+        option,
+        activeInstanceId: ProviderInstanceId.make("antigravity_personal"),
+        activeModel,
+      }),
+    ).toBe(false);
+  });
+
   it("keeps only the active synthetic OpenCode row when the provider status is error", () => {
     const providerEntry = entry("error");
     const activeInstanceId = ProviderInstanceId.make("opencode_work");
@@ -142,5 +193,51 @@ describe("shouldOfferModelPickerSetup", () => {
         [],
       ),
     ).toBe(true);
+  });
+});
+
+describe("resolveModelPickerSelectedModel", () => {
+  it("follows the catalog default for the marker but keeps an explicit native model", () => {
+    const driverKind = ProviderDriverKind.make("antigravity");
+    const previousOptions = [
+      { slug: "gemini-fast", name: "Gemini Fast", aliases: [ANTIGRAVITY_DEFAULT_MODEL] },
+      { slug: "gemini-pro", name: "Gemini Pro" },
+    ];
+    const nextOptions = [
+      { slug: "gemini-fast", name: "Gemini Fast" },
+      { slug: "gemini-pro", name: "Gemini Pro", aliases: [ANTIGRAVITY_DEFAULT_MODEL] },
+    ];
+
+    expect(
+      resolveModelPickerSelectedModel({
+        driverKind,
+        model: ANTIGRAVITY_DEFAULT_MODEL,
+        options: previousOptions,
+      })?.slug,
+    ).toBe("gemini-fast");
+    expect(
+      resolveModelPickerSelectedModel({
+        driverKind,
+        model: ANTIGRAVITY_DEFAULT_MODEL,
+        options: nextOptions,
+      })?.slug,
+    ).toBe("gemini-pro");
+    expect(
+      resolveModelPickerSelectedModel({
+        driverKind,
+        model: "gemini-fast",
+        options: nextOptions,
+      })?.slug,
+    ).toBe("gemini-fast");
+  });
+
+  it("does not guess the default from the first model in a catalog", () => {
+    expect(
+      resolveModelPickerSelectedModel({
+        driverKind: ProviderDriverKind.make("antigravity"),
+        model: ANTIGRAVITY_DEFAULT_MODEL,
+        options: [{ slug: "gemini-fast", name: "Gemini Fast" }],
+      }),
+    ).toBeUndefined();
   });
 });
