@@ -92,3 +92,21 @@ loaded or owned runtime build context. Binding paths protect exact or canonical 
 when stored selection mode is corrupt. Cleanup ignores unrecognized, linked, incomplete, or
 invalid-receipt directories and removes only an unreferenced build that passes full offline marker and
 receipt validation. External Prime installations are never cleanup targets.
+
+## Manual fork install (interim)
+
+Until managed artifacts are published, users can build the Pylon Prime fork from commit `68603ed89`
+and install its packed packages under a private prefix. The release command is
+`scripts/build-pylon-prime-agent-release.mjs --pack`. It requires Node 22.23.2 and performs the pinned
+offline workspace builds before packing, so the source tree and committed generated model data must
+remain clean.
+
+The private prefix's `package.json` depends on the packed `prime-agent` tarball and uses npm
+`overrides` to point `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and
+`@earendil-works/pi-tui` at the matching local tarballs. Those packages are transitive dependencies of
+the CLI; without the overrides, npm can satisfy their version ranges from the public registry and pair
+the forked CLI with stock packages that do not expose the native SDK capabilities.
+
+[prime-agent#53](https://github.com/pylon-code/prime-agent/issues/53) tracks the publication blocker.
+Once that issue is resolved and signed builds are available, the managed installer replaces this
+manual path.

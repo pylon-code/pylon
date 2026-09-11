@@ -40,6 +40,50 @@ The 0.8.1 live catalog also removes Cloudflare AI Gateway's Workers AI mirror ID
 provider's default to `claude-sonnet-4.5`; Pylon discovers the installed catalog rather than pinning those
 models.
 
+### Enable native mode with the Pylon Prime build
+
+Stock Prime Agent runs in ACP compatibility mode with these limits: one account, Full access only, no
+approvals, model change requires a new thread, and no Goal/Harness/queue/resources controls. To
+enable native mode before Pylon-managed builds are published, build and install the Pylon Prime fork in
+a private prefix:
+
+```bash
+git clone https://github.com/pylon-code/prime-agent
+cd prime-agent
+git switch pylon
+fnm install 22.23.2
+fnm exec --using 22.23.2 npm ci --ignore-scripts --no-audit --no-fund
+
+PRIME_ARTIFACTS="$(mktemp -d)"
+fnm exec --using 22.23.2 node scripts/build-pylon-prime-agent-release.mjs --pack --out-dir "$PRIME_ARTIFACTS"
+PRIME_ARTIFACTS="$PRIME_ARTIFACTS/artifacts"
+
+PRIME_PREFIX="$HOME/.local/prime-agent-pylon"
+rm -rf "$PRIME_PREFIX"
+mkdir -p "$PRIME_PREFIX"
+cd "$PRIME_PREFIX"
+cat > package.json <<EOF
+{
+  "name": "pylon-prime-agent-local",
+  "private": true,
+  "dependencies": {
+    "prime-agent": "file:$PRIME_ARTIFACTS/pylon-prime-agent-0.8.1.tgz"
+  },
+  "overrides": {
+    "@earendil-works/pi-agent-core": "file:$PRIME_ARTIFACTS/pylon-prime-agent-core-0.8.1.tgz",
+    "@earendil-works/pi-ai": "file:$PRIME_ARTIFACTS/pylon-prime-agent-ai-0.8.1.tgz",
+    "@earendil-works/pi-tui": "file:$PRIME_ARTIFACTS/pylon-prime-agent-tui-0.8.1.tgz"
+  }
+}
+EOF
+fnm exec --using 22.23.2 npm install --no-audit --no-fund
+"$PRIME_PREFIX/node_modules/.bin/prime-agent" --version
+```
+
+Then set **Binary path** to `~/.local/prime-agent-pylon/node_modules/.bin/prime-agent`.
+
+Pylon-managed installation will replace this manual process once builds are published.
+
 Pylon uses the existing Prime Agent login. Provider status reports **Authenticated** only when a
 healthy, current catalog contains at least one configured model provider. An empty catalog leaves
 authentication **Unknown** because catalog emptiness is not proof that credentials are absent. This
