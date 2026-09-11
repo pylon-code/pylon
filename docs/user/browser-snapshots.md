@@ -23,3 +23,12 @@ snapshot says what, and the agent can read more of the page with `preview_evalua
 A snapshot’s screenshot is not saved anywhere unless the agent asks. With `save: true`, Pylon writes
 the PNG to the environment the agent runs in and returns its path, so the agent can embed the
 screenshot in its reply for you to see.
+
+## Recordings
+
+When an agent stops a browser recording, the desktop app saves the video and then transfers the
+finished file once to the environment the agent runs in. The agent receives a path it can read even
+when that environment is remote. Transfers are limited to 50 MiB, and saving and transferring share a
+two-minute limit. If a recording is too large, the transfer fails or runs out of time, or the desktop
+app is too old to transfer recordings, the agent receives an error and the saved copy stays on the
+desktop.
