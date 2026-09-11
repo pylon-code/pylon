@@ -24,6 +24,11 @@ export function mobileClientPlatformLabel(device: RelayClientDeviceRecord): stri
   return `${platform}${device.appVersion ? ` · Pylon ${device.appVersion}` : ""}`;
 }
 
+/** Android shows an ongoing notification card; iOS shows a Live Activity. */
+export function mobileClientActivityLabel(device: RelayClientDeviceRecord): string {
+  return device.platform === "android" ? "Ongoing activity" : "Live Activities";
+}
+
 export function mobileClientNotificationDetail(device: RelayClientDeviceRecord): string {
   if (!device.notifications.enabled) {
     return "Push notifications are disabled on this device.";

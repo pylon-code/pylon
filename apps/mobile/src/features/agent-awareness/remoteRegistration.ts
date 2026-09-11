@@ -94,13 +94,23 @@ let appStateSubscription: { remove: () => void } | null = null;
 // not read as enabled.
 export type AgentAwarenessRegistrationStatus = "unknown" | "pending" | "registered" | "failed";
 let registrationStatus: AgentAwarenessRegistrationStatus = "unknown";
+// Whether that accepted registration carried a push token with notifications
+// on. A device can register without one — permission denied, a failed APNs or
+// FCM token lookup, or an Android build without Firebase config — and then the
+// relay has nowhere to deliver alerts.
+let registeredWithPushToken = false;
 const registrationStatusListeners = new Set<() => void>();
 
-function setRegistrationStatus(next: AgentAwarenessRegistrationStatus): void {
-  if (registrationStatus === next) {
+function setRegistrationStatus(
+  next: AgentAwarenessRegistrationStatus,
+  pushTokenRegistered = false,
+): void {
+  const nextPushTokenRegistered = next === "registered" && pushTokenRegistered;
+  if (registrationStatus === next && registeredWithPushToken === nextPushTokenRegistered) {
     return;
   }
   registrationStatus = next;
+  registeredWithPushToken = nextPushTokenRegistered;
   for (const listener of registrationStatusListeners) {
     listener();
   }
@@ -108,6 +118,11 @@ function setRegistrationStatus(next: AgentAwarenessRegistrationStatus): void {
 
 export function getAgentAwarenessRegistrationStatus(): AgentAwarenessRegistrationStatus {
   return registrationStatus;
+}
+
+/** True only when the relay accepted a registration it can deliver alerts to. */
+export function getAgentAwarenessPushDeliveryReady(): boolean {
+  return registrationStatus === "registered" && registeredWithPushToken;
 }
 
 export function subscribeAgentAwarenessRegistrationStatus(listener: () => void): () => void {
@@ -407,7 +422,7 @@ function registerDeviceWithRelay(
       persisted.signature === signature &&
       !needsAndroidReplay
     ) {
-      setRegistrationStatus("registered");
+      setRegistrationStatus("registered", payload.preferences.notificationsEnabled);
       logRegistrationDebug("relay device registration skipped; already registered for account", {
         expectedGeneration,
       });
@@ -433,7 +448,7 @@ function registerDeviceWithRelay(
       return;
     }
     if (body.platform === "android") androidDeviceReplayedAt = Date.now();
-    setRegistrationStatus("registered");
+    setRegistrationStatus("registered", payload.preferences.notificationsEnabled);
     yield* Effect.promise(() =>
       saveAgentAwarenessRegistrationRecord({
         identity,
@@ -748,7 +763,9 @@ function registerDevice(
       input.preferencesOverride,
     );
     if (expectedGeneration !== deviceRegistrationGeneration) return;
-    if (relayTokenProvider && relayTokenProviderIdentity) {
+    // A build that cannot receive pushes should not create notification
+    // channels for alerts that will never arrive.
+    if (relayTokenProvider && relayTokenProviderIdentity && supportsAgentAwarenessPush()) {
       configureAndroidAgentNotifications(
         deviceId,
         relayTokenProviderIdentity,
@@ -925,6 +942,7 @@ export function __resetAgentAwarenessRemoteRegistrationForTest(): void {
   activeDeviceRegistration = null;
   pendingDeviceRegistration = null;
   registrationStatus = "unknown";
+  registeredWithPushToken = false;
   androidDeviceReplayedAt = null;
   registrationStatusListeners.clear();
   registeredActivityPushTokens.clear();

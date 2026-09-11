@@ -30,6 +30,7 @@ import {
   AgentAwarenessOperationError,
   __resetAgentAwarenessRemoteRegistrationForTest,
   armAgentAwarenessLiveActivityForLocalWork,
+  getAgentAwarenessPushDeliveryReady,
   getAgentAwarenessRegistrationStatus,
   mergeAgentAwarenessRegistrationPreferences,
   refreshActiveLiveActivityRemoteRegistration,
@@ -47,6 +48,7 @@ import { Platform } from "react-native";
 import {
   configureAndroidAgentNotifications,
   clearAndroidAgentNotifications,
+  supportsAndroidAgentNotifications,
 } from "./androidNotifications";
 
 vi.mock("./androidNotifications", () => ({
@@ -250,6 +252,34 @@ const runBackgroundOperations = Effect.fn("TestRemoteRegistration.runBackgroundO
   },
 );
 
+/**
+ * Accepts relay auth and device registration on a relay URL of its own,
+ * recording each registration body. Provide `relayLayer` so requests reach
+ * this stub rather than a client another test already built.
+ */
+function stubRelayRegistrations(relayUrl: string) {
+  const registrations: unknown[] = [];
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    if (request.url.endsWith("/v1/client/dpop-token")) {
+      return Response.json({
+        access_token: "relay-dpop-token",
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 300,
+        scope: "mobile:registration",
+      });
+    }
+    registrations.push(await request.json());
+    return Response.json({ ok: true });
+  });
+  Constants.expoConfig!.extra = { relay: { url: relayUrl } };
+  const relayLayer = managedRelayClientLayer(relayUrl).pipe(
+    Layer.provide(Layer.mergeAll(FetchHttpClient.layer, cryptoLayer)),
+  );
+  return { registrations, relayLayer };
+}
+
 describe("makeRelayDeviceRegistrationRequest", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -257,6 +287,7 @@ describe("makeRelayDeviceRegistrationRequest", () => {
       type: "ios",
       data: "apns-token",
     });
+    vi.mocked(supportsAndroidAgentNotifications).mockReturnValue(true);
     vi.unstubAllGlobals();
     vi.stubGlobal("__DEV__", false);
     secureStore.clear();
@@ -1074,6 +1105,7 @@ describe("makeRelayDeviceRegistrationRequest", () => {
       yield* refreshAgentAwarenessRegistration();
       expect(Notifications.getDevicePushTokenAsync).toHaveBeenCalled();
       expect(saveAgentAwarenessRegistrationRecord).toHaveBeenCalled();
+      expect(getAgentAwarenessPushDeliveryReady()).toBe(true);
       expect(registrationRecordStore.current?.signature).toContain("fcm-token");
       expect(registrationRecordStore.current?.signature).toContain("android");
       expect(widgetMocks.getInstances).not.toHaveBeenCalled();
@@ -1083,6 +1115,57 @@ describe("makeRelayDeviceRegistrationRequest", () => {
       expect(clearAndroidAgentNotifications).toHaveBeenCalled();
     }).pipe(Effect.provide(relayTestLayer));
   });
+  it.effect("keeps Android notifications off when the build cannot receive pushes", () => {
+    vi.spyOn(Platform, "OS", "get").mockReturnValue("android");
+    vi.spyOn(Platform, "Version", "get").mockReturnValue(36);
+    // An Android build without Firebase config can never obtain an FCM token.
+    vi.mocked(supportsAndroidAgentNotifications).mockReturnValue(false);
+    vi.mocked(Notifications.getDevicePushTokenAsync).mockClear();
+    vi.mocked(configureAndroidAgentNotifications).mockClear();
+    const { registrations, relayLayer } = stubRelayRegistrations(
+      "https://unprovisioned-relay.example.test",
+    );
+    setAgentAwarenessRelayTokenProvider(() => Promise.resolve("clerk-token-user-a"), "user-a");
+    return Effect.gen(function* () {
+      yield* refreshAgentAwarenessRegistration();
+      expect(getAgentAwarenessRegistrationStatus()).toBe("registered");
+      expect(getAgentAwarenessPushDeliveryReady()).toBe(false);
+      expect(Notifications.getDevicePushTokenAsync).not.toHaveBeenCalled();
+      expect(configureAndroidAgentNotifications).not.toHaveBeenCalled();
+      expect(registrations.at(-1)).toMatchObject({
+        platform: "android",
+        preferences: { notificationsEnabled: false, liveActivitiesEnabled: false },
+      });
+      expect(registrations.at(-1)).not.toHaveProperty("pushToken");
+    }).pipe(
+      Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch),
+      Effect.provide(relayLayer),
+    );
+  });
+
+  it.effect("does not report push delivery when the native token lookup fails", () => {
+    vi.mocked(Notifications.getDevicePushTokenAsync).mockRejectedValue(
+      new Error("no valid aps-environment entitlement"),
+    );
+    const { registrations, relayLayer } = stubRelayRegistrations(
+      "https://token-failure-relay.example.test",
+    );
+    setAgentAwarenessRelayTokenProvider(() => Promise.resolve("clerk-token-user-a"), "user-a");
+    return Effect.gen(function* () {
+      yield* refreshAgentAwarenessRegistration();
+      expect(getAgentAwarenessRegistrationStatus()).toBe("registered");
+      expect(getAgentAwarenessPushDeliveryReady()).toBe(false);
+      expect(registrations.at(-1)).toMatchObject({
+        platform: "ios",
+        preferences: { notificationsEnabled: false },
+      });
+      expect(registrations.at(-1)).not.toHaveProperty("pushToken");
+    }).pipe(
+      Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch),
+      Effect.provide(relayLayer),
+    );
+  });
+
   it.effect(
     "preserves same-account Android notifications and replays on remount and later foreground",
     () => {

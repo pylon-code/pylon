@@ -20,10 +20,12 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
+import { resolveAndroidAgentNotificationsAvailability } from "../agent-awareness/androidNotifications";
 import { supportsAgentAwarenessPush } from "../agent-awareness/capabilities";
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import {
+  getAgentAwarenessPushDeliveryReady,
   getAgentAwarenessRegistrationStatus,
   refreshAgentAwarenessRegistration,
   subscribeAgentAwarenessRegistrationStatus,
@@ -60,7 +62,11 @@ import { useSavedRemoteConnections } from "../../state/use-remote-environment-re
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
-import { resolveAgentAwarenessPlatformPresentation } from "./SettingsRouteScreen.logic";
+import {
+  resolveAgentAwarenessPlatformPresentation,
+  resolveAgentAwarenessSignInMessage,
+  resolveAgentAwarenessSubtitle,
+} from "./SettingsRouteScreen.logic";
 
 type NotificationStatus = "checking" | "enabled" | "disabled" | "unsupported";
 type LiveActivityStatus = "checking" | "enabled" | "disabled" | "signed-out" | "linking";
@@ -76,6 +82,17 @@ function useDeviceRegistered(): boolean {
     () => "unknown" as const,
   );
   return status === "registered";
+}
+
+// Stricter than registration: the accepted registration must also carry a push
+// token. A device registered without one (denied permission, a failed APNs/FCM
+// token lookup) can receive nothing, so notification switches must read off.
+function useDevicePushDeliveryReady(): boolean {
+  return useSyncExternalStore(
+    subscribeAgentAwarenessRegistrationStatus,
+    getAgentAwarenessPushDeliveryReady,
+    () => false,
+  );
 }
 
 export function SettingsRouteScreen() {
@@ -160,10 +177,10 @@ function ConfiguredSettingsRouteScreen() {
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const agentAwarenessPushAvailable = supportsAgentAwarenessPush();
   const agentAwarenessPlatform = resolveAgentAwarenessPlatformPresentation(Platform.OS);
-  const agentAwarenessSubtitle =
-    Platform.OS === "android" && !agentAwarenessPushAvailable
-      ? "Install a newer app build to enable notifications"
-      : agentAwarenessPlatform.subtitle;
+  const agentAwarenessSubtitle = resolveAgentAwarenessSubtitle(
+    Platform.OS,
+    Platform.OS === "android" ? resolveAndroidAgentNotificationsAvailability() : undefined,
+  );
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { getToken, isLoaded, isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
@@ -172,6 +189,11 @@ function ConfiguredSettingsRouteScreen() {
   const [notificationStatus, setNotificationStatus] = useState<NotificationStatus>("checking");
   const [liveActivityStatus, setLiveActivityStatus] = useState<LiveActivityStatus>("checking");
   const deviceRegistered = useDeviceRegistered();
+  const devicePushDeliveryReady = useDevicePushDeliveryReady();
+  // Android's ongoing activity card arrives over the same FCM token as alerts;
+  // iOS Live Activities register their own push-to-start token.
+  const activityUpdatesRegistered =
+    Platform.OS === "android" ? devicePushDeliveryReady : deviceRegistered;
   const liveActivitiesPreferenceEnabled = AsyncResult.isSuccess(preferencesResult)
     ? preferencesResult.value.liveActivitiesEnabled !== false
     : true;
@@ -248,9 +270,15 @@ function ConfiguredSettingsRouteScreen() {
     if (result.value.type === "granted") {
       setNotificationStatus("enabled");
       // Permission alone is not enough: the switch stays off until the relay
-      // registration succeeds, so tell the user the truth about which happened.
-      if (getAgentAwarenessRegistrationStatus() === "registered") {
+      // accepts a registration with a push token, so tell the user the truth
+      // about which happened.
+      if (getAgentAwarenessPushDeliveryReady()) {
         Alert.alert("Notifications enabled", "Agent notifications are enabled for this device.");
+      } else if (getAgentAwarenessRegistrationStatus() === "registered") {
+        Alert.alert(
+          "Couldn't finish enabling notifications",
+          "This device is registered with Pylon Connect, but it could not get a push token, so notifications can't be delivered yet.",
+        );
       } else {
         Alert.alert(
           "Couldn't finish enabling notifications",
@@ -283,17 +311,13 @@ function ConfiguredSettingsRouteScreen() {
   }, []);
 
   const promptSignIn = useCallback(() => {
-    Alert.alert(
-      "Sign in to Pylon Connect",
-      "Live Activity updates require Pylon Connect so relay can deliver updates to this device.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Continue",
-          onPress: () => navigation.navigate("SettingsSheet", { screen: "SettingsAuth" }),
-        },
-      ],
-    );
+    Alert.alert("Sign in to Pylon Connect", resolveAgentAwarenessSignInMessage(Platform.OS), [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Continue",
+        onPress: () => navigation.navigate("SettingsSheet", { screen: "SettingsAuth" }),
+      },
+    ]);
   }, [navigation]);
 
   const linkEnvironments = useCallback(async () => {
@@ -374,9 +398,13 @@ function ConfiguredSettingsRouteScreen() {
     refreshManagedRelayEnvironments();
     setLiveActivityStatus("enabled");
     // The environment link can succeed while this device's own registration
-    // (the push-to-start token the relay needs) has not — don't claim Live
-    // Activities are live until the device is actually registered.
-    if (getAgentAwarenessRegistrationStatus() === "registered") {
+    // (the push-to-start or FCM token the relay needs) has not — don't claim
+    // activity updates are live until the device can actually receive them.
+    if (
+      Platform.OS === "android"
+        ? getAgentAwarenessPushDeliveryReady()
+        : getAgentAwarenessRegistrationStatus() === "registered"
+    ) {
       Alert.alert(
         Platform.OS === "android" ? "Ongoing activity enabled" : "Live Activities enabled",
         environmentCount > 0
@@ -529,11 +557,13 @@ function ConfiguredSettingsRouteScreen() {
               notificationStatus === "unsupported"
             }
             subtitle={agentAwarenessSubtitle}
-            // Only reads as on when this device is actually registered with the
-            // relay; otherwise notifications cannot be delivered regardless of
-            // the local iOS permission.
+            // Only reads as on when the relay accepted this device with a push
+            // token; otherwise notifications cannot be delivered regardless of
+            // the local permission.
             value={
-              agentAwarenessPushAvailable && notificationStatus === "enabled" && deviceRegistered
+              agentAwarenessPushAvailable &&
+              notificationStatus === "enabled" &&
+              devicePushDeliveryReady
             }
             onValueChange={handleDeviceNotificationsChange}
           />
@@ -553,7 +583,7 @@ function ConfiguredSettingsRouteScreen() {
             value={
               agentAwarenessPushAvailable &&
               (liveActivityStatus === "enabled" || liveActivityStatus === "linking") &&
-              deviceRegistered
+              activityUpdatesRegistered
             }
             onValueChange={handleLiveActivitiesChange}
           />

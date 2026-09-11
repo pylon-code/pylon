@@ -12,8 +12,27 @@ const native =
     ? requireOptionalNativeModule<AndroidAgentNotifications>("T3AgentNotifications")
     : null;
 
+/**
+ * Why this Android build can or cannot receive agent notifications. An older
+ * binary lacks the native handler; a build without Firebase config can never
+ * obtain an FCM token, so the relay would have nothing to deliver to.
+ */
+export type AndroidAgentNotificationsAvailability =
+  | "available"
+  | "native-module-missing"
+  | "push-not-configured";
+
+export function resolveAndroidAgentNotificationsAvailability(): AndroidAgentNotificationsAvailability {
+  if (typeof native?.configure !== "function" || typeof native?.clear !== "function") {
+    return "native-module-missing";
+  }
+  return Constants.expoConfig?.extra?.androidPushConfigured === true
+    ? "available"
+    : "push-not-configured";
+}
+
 export function supportsAndroidAgentNotifications(): boolean {
-  return typeof native?.configure === "function" && typeof native?.clear === "function";
+  return resolveAndroidAgentNotificationsAvailability() === "available";
 }
 
 export function configureAndroidAgentNotifications(

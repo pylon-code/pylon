@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 const mocks = vi.hoisted(() => ({
   os: "android",
   native: null as { configure?: ReturnType<typeof vi.fn>; clear?: ReturnType<typeof vi.fn> } | null,
-  config: { scheme: ["pylon-code-preview"], extra: { iosPersonalTeamBuild: false } },
+  config: {
+    scheme: ["pylon-code-preview"],
+    extra: { iosPersonalTeamBuild: false, androidPushConfigured: true },
+  },
   requireModule: vi.fn(),
 }));
 
@@ -22,6 +25,7 @@ beforeEach(() => {
   mocks.os = "android";
   mocks.native = { configure: vi.fn(), clear: vi.fn() };
   mocks.config.extra.iosPersonalTeamBuild = false;
+  mocks.config.extra.androidPushConfigured = true;
   mocks.requireModule.mockReset().mockImplementation(() => mocks.native);
 });
 
@@ -56,6 +60,21 @@ describe("Android native notification capability", () => {
       expect(() => clearAndroidAgentNotifications()).not.toThrow();
     },
   );
+
+  it("disables push on a build without Firebase config even with the native module", async () => {
+    mocks.config.extra.androidPushConfigured = false;
+    const { resolveAndroidAgentNotificationsAvailability } = await import("./androidNotifications");
+    const { supportsAgentAwarenessPush } = await import("./capabilities");
+    expect(resolveAndroidAgentNotificationsAvailability()).toBe("push-not-configured");
+    expect(supportsAgentAwarenessPush()).toBe(false);
+  });
+
+  it("reports a missing native module before missing Firebase config", async () => {
+    mocks.native = null;
+    mocks.config.extra.androidPushConfigured = false;
+    const { resolveAndroidAgentNotificationsAvailability } = await import("./androidNotifications");
+    expect(resolveAndroidAgentNotificationsAvailability()).toBe("native-module-missing");
+  });
 
   it("preserves the iOS personal-team restriction without loading Android code", async () => {
     mocks.os = "ios";

@@ -3,9 +3,19 @@
 The Android app receives Firebase Cloud Messaging (FCM) data messages. The Pylon Connect relay sends
 them directly through FCM HTTP v1; an Expo Push account is not required.
 
-Nothing here is provisioned by default. Until a Firebase project, an Android build with its Google
-services file, and the relay's `FCM_SERVICE_ACCOUNT` secret all exist, the relay logs that Android
-notifications are not configured and skips Android deliveries. iOS delivery is unaffected.
+Nothing here is provisioned by default, and each missing piece degrades on its own:
+
+- An Android build without `T3CODE_ANDROID_GOOGLE_SERVICES_FILE` publishes
+  `extra.androidPushConfigured: false`. Settings keeps **Device Notifications** and **Ongoing Agent
+  Activity** off and disabled with "This app build can't receive notifications", and the app does
+  not create its agent notification channels. The device still registers with the relay, without a push
+  token.
+- A relay without the `FCM_SERVICE_ACCOUNT` secret logs that Android notifications are not
+  configured and skips Android deliveries.
+
+On both platforms, **Device Notifications** (and Android's **Ongoing Agent Activity**) reads on only
+after the relay accepts a registration that carries a push token, so a failed APNs or FCM token
+lookup leaves it off. iOS delivery does not depend on any of the Android setup.
 
 ## Android compatibility and automated checks
 
@@ -231,6 +241,24 @@ secrets to Alchemy. Add that secret there to turn on Android delivery; without i
 succeeds and Android deliveries are skipped. The release Android build also needs the production
 package's `google-services.json` in its native build environment; changing the relay secret alone
 cannot move an installed app to another Firebase project.
+
+#### Rolling back
+
+Once any Android device has registered, redeploying a relay from before Android support is not a
+safe revert. The older worker cannot encode Android device rows, so the web and desktop **Mobile
+clients** page fails to load. It also treats every registered token as an APNs token: it sends FCM
+tokens to APNs, and APNs' `BadDeviceToken` handling then clears those tokens.
+
+Fix forward instead. If the older worker must be redeployed, first delete the Android rows from the
+relay database:
+
+```sql
+DELETE FROM relay_mobile_devices WHERE platform = 'android';
+```
+
+No other relay table references those rows. Affected phones register again, and their Android
+settings reset, the next time they open a relay build that supports Android. The additive
+`20260906042516_android_devices` migration does not need to be reversed.
 
 Android delivery uses `RelayFcmDeliveryQueue` and its dead-letter queue. Failed requests are
 retried; messages expire after five minutes. Before sending, the consumer rechecks the device token,

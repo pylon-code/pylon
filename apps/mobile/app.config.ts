@@ -95,6 +95,10 @@ const appleTeamId = repoEnv.PYLON_APPLE_TEAM_ID?.trim() || repoEnv.APPLE_TEAM_ID
 const easProjectId = repoEnv.PYLON_EAS_PROJECT_ID?.trim() ?? "";
 const easOwner = repoEnv.PYLON_EAS_OWNER?.trim() ?? "";
 
+// Firebase config for Android push. Pylon ships none by default; builds without
+// it still work but cannot receive agent notifications.
+const androidGoogleServicesFile = repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE?.trim() ?? "";
+
 const VARIANT_CONFIG = {
   development: {
     appName: "Pylon Dev",
@@ -245,10 +249,12 @@ const config: ExpoConfig = {
           ],
         }
       : {}),
-    // SecureStore keeps connection credentials in the Keychain. `$(AppIdentifierPrefix)`
-    // resolves to the signing team at build time, so no team ID is pinned here.
+    // SecureStore keeps connection credentials in the Keychain. The group is the
+    // bundle ID this build actually signs with, including a personal-team
+    // override, and `$(AppIdentifierPrefix)` resolves to the signing team at
+    // build time, so no team ID is pinned here.
     entitlements: {
-      "keychain-access-groups": [`$(AppIdentifierPrefix)${variant.iosBundleIdentifier}`],
+      "keychain-access-groups": [`$(AppIdentifierPrefix)${iosBundleIdentifier}`],
     },
     infoPlist: {
       NSAppTransportSecurity: {
@@ -278,9 +284,7 @@ const config: ExpoConfig = {
   android: {
     icon: variant.assets.appIcon,
     package: variant.androidPackage,
-    ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
-      ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
-      : {}),
+    ...(androidGoogleServicesFile ? { googleServicesFile: androidGoogleServicesFile } : {}),
     adaptiveIcon: {
       backgroundColor: variant.assets.androidAdaptiveBackgroundColor,
       foregroundImage: variant.assets.androidAdaptiveForeground,
@@ -418,6 +422,9 @@ const config: ExpoConfig = {
   extra: {
     appVariant: APP_VARIANT,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
+    // Without Firebase config the app never gets an FCM token, so Settings must
+    // not offer Android notifications it cannot deliver.
+    androidPushConfigured: androidGoogleServicesFile.length > 0,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
     },
