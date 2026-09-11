@@ -2002,9 +2002,30 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       },
     );
 
+    // Transferred recordings and saved snapshots live outside the attachments directory, so
+    // revert pruning never sees them; only deleting the thread removes them.
+    const removeThreadBrowserArtifacts = (threadId: string) => {
+      const directory = resolveThreadBrowserArtifactsDir({
+        browserArtifactsDir: serverConfig.browserArtifactsDir,
+        threadId,
+      });
+      if (directory === null) {
+        return Effect.succeed(true);
+      }
+      return fileSystem.remove(directory, { recursive: true, force: true }).pipe(
+        Effect.as(true),
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to remove thread browser artifacts", { threadId, cause }).pipe(
+            Effect.as(false),
+          ),
+        ),
+      );
+    };
+
     const cleanupThreadAttachmentFiles = Effect.fn("cleanupThreadAttachmentFiles")(function* (
       target: AttachmentCleanupTarget,
       files: ReadonlyArray<string>,
+      hasBrowserArtifacts: boolean,
     ) {
       const threadId = ThreadId.make(target.threadId);
       if (target.deletedAtSequence !== null) {
@@ -2017,7 +2038,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         });
         if (!recreatedLater) {
           const removed = yield* Effect.forEach(files, removeAttachmentFile, { concurrency: 1 });
-          return removed.every(Boolean);
+          const artifactsRemoved = hasBrowserArtifacts
+            ? yield* removeThreadBrowserArtifacts(target.threadId)
+            : true;
+          return artifactsRemoved && removed.every(Boolean);
         }
       }
       if (!target.pruned) {
@@ -2033,9 +2057,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     });
 
     /**
-     * Lists the attachments directory once and cleans each target's files. Threads without
-     * files cost no reads. Returns false when any thread or file failed (each is logged); fails
-     * only when the directory cannot be listed.
+     * Lists the attachments directory once (and the browser artifacts directory once when a
+     * target deletes a thread) and cleans each target's files. Threads without files cost no
+     * reads. Returns false when any thread, file, or the artifacts listing failed (each is
+     * logged); fails only when the attachments directory cannot be listed.
      */
     const cleanupAttachments = Effect.fn("cleanupAttachments")(function* (
       targets: ReadonlyArray<AttachmentCleanupTarget>,
@@ -2066,10 +2091,38 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         );
       const filesBySegment = groupAttachmentFilesByThreadSegment(entries);
       let complete = true;
+      const browserArtifactSegments = new Set<string>();
+      if (safeTargets.some(({ target }) => target.deletedAtSequence !== null)) {
+        const artifactEntries = yield* fileSystem
+          .readDirectory(serverConfig.browserArtifactsDir, { recursive: false })
+          .pipe(
+            Effect.catchTags({
+              PlatformError: (cause) =>
+                cause.reason._tag === "NotFound"
+                  ? Effect.succeed<ReadonlyArray<string> | null>([])
+                  : Effect.logWarning("failed to list browser artifacts", { cause }).pipe(
+                      Effect.as<ReadonlyArray<string> | null>(null),
+                    ),
+            }),
+          );
+        if (artifactEntries === null) {
+          complete = false;
+        } else {
+          for (const entry of artifactEntries) {
+            browserArtifactSegments.add(entry.replace(/^[/\\]+/, ""));
+          }
+        }
+      }
       for (const { target, threadSegment } of safeTargets) {
-        const files = filesBySegment.get(threadSegment);
-        if (!files) continue;
-        const cleaned = yield* cleanupThreadAttachmentFiles(target, files).pipe(
+        const files = filesBySegment.get(threadSegment) ?? [];
+        const hasBrowserArtifacts =
+          target.deletedAtSequence !== null && browserArtifactSegments.has(threadSegment);
+        if (files.length === 0 && !hasBrowserArtifacts) continue;
+        const cleaned = yield* cleanupThreadAttachmentFiles(
+          target,
+          files,
+          hasBrowserArtifacts,
+        ).pipe(
           Effect.catch((cause) =>
             Effect.logWarning("failed to clean thread attachments", {
               threadId: target.threadId,

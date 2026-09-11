@@ -24,6 +24,11 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { makeSqlStatementCounter } from "../../../integration/SqlStatementCounter.integration.ts";
+import {
+  createPendingAttachmentId,
+  resolveThreadBrowserArtifactsDir,
+} from "../../attachmentStore.ts";
+import { claimPreviewRecording } from "../../mcp/toolkits/preview/handlers.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import {
@@ -1871,6 +1876,168 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
   },
 );
 
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-browser-artifacts-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect("keeps claimed recordings through a revert and removes them with the thread", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const config = yield* ServerConfig;
+        const now = "2026-01-01T00:00:00.000Z";
+        const threadId = ThreadId.make("thread-browser-artifacts");
+        const revertedAttachmentId =
+          "thread-browser-artifacts-00000000-0000-4000-8000-000000000001";
+
+        const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+          eventStore
+            .append(event)
+            .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+        const eventBase = (id: string) => ({
+          eventId: EventId.make(`evt-browser-artifacts-${id}`),
+          occurredAt: now,
+          commandId: CommandId.make(`cmd-browser-artifacts-${id}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-browser-artifacts-${id}`),
+          metadata: {},
+        });
+        const threadEvent = (id: string) => ({
+          ...eventBase(id),
+          aggregateKind: "thread" as const,
+          aggregateId: threadId,
+        });
+
+        const uploadedAttachmentId = createPendingAttachmentId(".webm");
+        yield* fileSystem.writeFileString(
+          path.join(config.attachmentsDir, `${uploadedAttachmentId}.webm`),
+          "video!",
+        );
+        const recording = yield* claimPreviewRecording(threadId, {
+          id: "desktop-recording",
+          tabId: "tab-1",
+          path: "/desktop/recording.webm",
+          mimeType: "video/webm",
+          sizeBytes: 6,
+          createdAt: now,
+          uploadedAttachmentId,
+        });
+
+        yield* appendAndProject({
+          ...eventBase("1"),
+          type: "project.created",
+          aggregateKind: "project",
+          aggregateId: ProjectId.make("project-browser-artifacts"),
+          payload: {
+            projectId: ProjectId.make("project-browser-artifacts"),
+            title: "Project Browser Artifacts",
+            workspaceRoot: "/tmp/project-browser-artifacts",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+        yield* appendAndProject({
+          ...threadEvent("2"),
+          type: "thread.created",
+          payload: {
+            threadId,
+            projectId: ProjectId.make("project-browser-artifacts"),
+            title: "Thread Browser Artifacts",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+        for (const [turn, messageId] of [
+          [1, "message-recording"],
+          [2, "message-reverted"],
+        ] as const) {
+          yield* appendAndProject({
+            ...threadEvent(`turn-${turn}`),
+            type: "thread.turn-diff-completed",
+            payload: {
+              threadId,
+              turnId: TurnId.make(`turn-${turn}`),
+              checkpointTurnCount: turn,
+              checkpointRef: CheckpointRef.make(
+                `refs/t3/checkpoints/thread-browser-artifacts/turn/${turn}`,
+              ),
+              status: "ready",
+              files: [],
+              assistantMessageId: MessageId.make(messageId),
+              completedAt: now,
+            },
+          });
+          yield* appendAndProject({
+            ...threadEvent(`message-${turn}`),
+            type: "thread.message-sent",
+            payload: {
+              threadId,
+              messageId: MessageId.make(messageId),
+              role: "assistant",
+              // The kept turn embeds the recording; nothing lists it as an attachment.
+              text: turn === 1 ? `![Recording](${recording.path})` : "Reverted",
+              attachments:
+                turn === 1
+                  ? []
+                  : [
+                      {
+                        type: "image",
+                        id: revertedAttachmentId,
+                        name: "reverted.png",
+                        mimeType: "image/png",
+                        sizeBytes: 5,
+                      },
+                    ],
+              turnId: TurnId.make(`turn-${turn}`),
+              streaming: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          });
+        }
+        const revertedAttachmentPath = path.join(
+          config.attachmentsDir,
+          `${revertedAttachmentId}.png`,
+        );
+        yield* fileSystem.writeFileString(revertedAttachmentPath, "reverted");
+        const screenshotPath = path.join(
+          path.dirname(recording.path),
+          "browser-screenshot-example-test.png",
+        );
+        yield* fileSystem.writeFileString(screenshotPath, "png");
+
+        yield* appendAndProject({
+          ...threadEvent("revert"),
+          type: "thread.reverted",
+          payload: { threadId, turnCount: 1 },
+        });
+
+        // Revert cleanup ran, and it left the thread's browser artifacts alone.
+        assert.isFalse(yield* exists(revertedAttachmentPath));
+        assert.equal(yield* fileSystem.readFileString(recording.path), "video!");
+        assert.isTrue(yield* exists(screenshotPath));
+
+        yield* appendAndProject({
+          ...threadEvent("delete"),
+          type: "thread.deleted",
+          payload: { threadId, deletedAt: now },
+        });
+
+        assert.isFalse(yield* exists(recording.path));
+        assert.isFalse(yield* exists(path.dirname(recording.path)));
+        assert.isTrue(yield* exists(config.browserArtifactsDir));
+      }),
+    );
+  },
+);
+
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-delete-")))(
   "OrchestrationProjectionPipeline",
   (it) => {
@@ -2152,7 +2319,7 @@ it.layer(
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
-      const { attachmentsDir } = yield* ServerConfig;
+      const { attachmentsDir, browserArtifactsDir } = yield* ServerConfig;
       const projectId = ProjectId.make("project-cleanup-backlog");
       const deletedThreadCount = 200;
 
@@ -2180,16 +2347,25 @@ it.layer(
       for (const filePath of [deletedFilePath, ...keptFilePaths]) {
         yield* fileSystem.writeFileString(filePath, "file");
       }
+      // A deleted thread whose only files are browser artifacts still gets cleaned.
+      const artifactsOnlyDir = resolveThreadBrowserArtifactsDir({
+        browserArtifactsDir,
+        threadId: "thread-backlog-7",
+      })!;
+      yield* fileSystem.makeDirectory(artifactsOnlyDir, { recursive: true });
+      yield* fileSystem.writeFileString(path.join(artifactsOnlyDir, "recording.webm"), "video");
       yield* seedCleanupBacklog(lastEvent.sequence, 0);
 
       cleanupDirectoryListings.count = 0;
       const counter = makeSqlStatementCounter();
       yield* projectionPipeline.bootstrap.pipe(Effect.withTracer(counter.tracer));
 
-      // One listing, and statements that do not grow with threads that have no files.
-      assert.strictEqual(cleanupDirectoryListings.count, 1);
+      // One listing per cleanup directory (attachments, browser artifacts), and statements
+      // that do not grow with threads that have no files.
+      assert.strictEqual(cleanupDirectoryListings.count, 2);
       assert.isBelow(counter.count(), deletedThreadCount / 4);
       assert.isFalse(yield* exists(deletedFilePath));
+      assert.isFalse(yield* exists(artifactsOnlyDir));
       for (const filePath of keptFilePaths) {
         assert.isTrue(yield* exists(filePath));
       }
