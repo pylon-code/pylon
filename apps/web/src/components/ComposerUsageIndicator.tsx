@@ -20,6 +20,8 @@ import { getComposerUsageView } from "./ComposerUsageIndicator.logic";
 function describeBackend(backend: ComposerUsageBackend, accountCount: number): string {
   const runs = `Prime Agent runs ${backend.model} on ${backend.label}.`;
   switch (backend.verification) {
+    case "unreported":
+      return "Capacity not reported for this backend";
     case "own":
       return `${runs} This is Prime Agent's own ${backend.label} capacity, read from its sign-in.`;
     case "matched":
@@ -95,6 +97,14 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
       }
     })();
   }, [accounts, environmentId, isRefreshing, refreshProviders]);
+
+  if (usage.backend?.verification === "unreported") {
+    return (
+      <span className={cn("px-1 py-0.5 text-xs text-muted-foreground/50", className)}>
+        {describeBackend(usage.backend, accounts.length)}
+      </span>
+    );
+  }
 
   // Prime is signed in to an account that is not configured here: there is
   // no number to show, but silence would read as the gauge being broken.

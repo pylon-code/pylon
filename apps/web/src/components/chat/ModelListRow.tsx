@@ -50,6 +50,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
       hideIndicator
       index={props.index}
       value={modelPickerModelKey(props.instanceId, props.model.slug)}
+      title={props.disabledReason ?? undefined}
       disabled={Boolean(props.disabledReason)}
       contentClassName="flex w-full items-center gap-3"
       className={cn(
