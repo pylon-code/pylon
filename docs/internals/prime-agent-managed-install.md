@@ -95,8 +95,9 @@ receipt validation. External Prime installations are never cleanup targets.
 
 ## Manual fork install (interim)
 
-Until managed artifacts are published, users can build the Pylon Prime fork from commit `68603ed89`
-and install its packed packages under a private prefix. The release command is
+Until managed artifacts are published, users can build the Pylon Prime fork from the tested commit
+`68603ed89bb597cd715fd6a77bc1c39d7e110298` in a detached checkout and install its packed packages
+under a private prefix. The release command is
 `scripts/build-pylon-prime-agent-release.mjs --pack`. It requires Node 22.23.2 and performs the pinned
 offline workspace builds before packing, so the source tree and committed generated model data must
 remain clean.
