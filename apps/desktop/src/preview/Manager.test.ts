@@ -2585,6 +2585,9 @@ describe("PreviewManager", () => {
         );
         yield* TestClock.adjust(100);
         expect(capturePage).toHaveBeenCalledOnce();
+        // No `stayHidden`: Electron counts the capturer and paints a hidden or throttled
+        // background guest for the capture, so agent snapshots need no recording-style unthrottle.
+        expect(capturePage).toHaveBeenCalledWith();
         const evaluate = yield* manager
           .automationEvaluate("tab_1", { expression: "42" })
           .pipe(Effect.forkChild({ startImmediately: true }));
