@@ -47,6 +47,7 @@ import {
   FileSearchIcon,
   FolderIcon,
   FolderPlusIcon,
+  ImportIcon,
   LinkIcon,
   LibraryIcon,
   MessageCircleQuestionIcon,
@@ -1767,6 +1768,28 @@ function OpenCommandPaletteDialog(props: {
       },
     });
   }
+
+  // First-run setup has no other way back in once it is finished.
+  actionItems.push({
+    kind: "action",
+    value: "action:welcome-setup",
+    searchTerms: [
+      "setup",
+      "welcome",
+      "onboarding",
+      "import",
+      "projects",
+      "computers",
+      "agents",
+      "claude",
+      "codex",
+    ],
+    title: "Set up computers and import projects",
+    icon: <ImportIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/welcome" });
+    },
+  });
 
   actionItems.push({
     kind: "action",
