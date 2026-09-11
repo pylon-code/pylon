@@ -1,6 +1,8 @@
+import * as NodePath from "@effect/platform-node/NodePath";
 import { assert, describe, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type { BrowserWindow } from "electron";
 import { beforeEach, vi } from "vite-plus/test";
@@ -20,6 +22,9 @@ vi.mock("electron", () => ({
     showErrorBox: showErrorBoxMock,
   },
 }));
+
+// Picker paths in these tests are POSIX; resolve them the same way on every CI platform.
+const dialogLayer = ElectronDialog.layer.pipe(Layer.provide(NodePath.layerPosix));
 
 describe("ElectronDialog", () => {
   beforeEach(() => {
@@ -49,7 +54,7 @@ describe("ElectronDialog", () => {
       assert.include(error.message, "window 7");
       assert.include(error.message, "/workspace");
       assert.notInclude(error.message, cause.message);
-    }).pipe(Effect.provide(ElectronDialog.layer)),
+    }).pipe(Effect.provide(dialogLayer)),
   );
 
   it.effect("opens a single-file picker when multiple selections are disabled", () =>
@@ -77,7 +82,37 @@ describe("ElectronDialog", () => {
           },
         ],
       ]);
-    }).pipe(Effect.provide(ElectronDialog.layer)),
+    }).pipe(Effect.provide(dialogLayer)),
+  );
+
+  it.effect("reopens pickers without a default path in the last picked directory", () =>
+    Effect.gen(function* () {
+      // Electron 43+ opens these in Downloads and no longer lets the OS remember the directory.
+      showOpenDialogMock
+        .mockResolvedValueOnce({ canceled: true, filePaths: [] })
+        .mockResolvedValueOnce({ canceled: false, filePaths: ["/home/alice/code/pylon"] })
+        .mockResolvedValueOnce({ canceled: false, filePaths: ["/home/alice/themes/dark.json"] })
+        .mockResolvedValueOnce({ canceled: false, filePaths: ["/project/icon.png"] })
+        .mockResolvedValueOnce({ canceled: true, filePaths: [] });
+      const dialog = yield* ElectronDialog.ElectronDialog;
+      const noDefault = { owner: Option.none(), defaultPath: Option.none() };
+
+      yield* dialog.pickFolder(noDefault);
+      yield* dialog.pickFolder(noDefault);
+      yield* dialog.pickFiles({ ...noDefault, filters: [], multiple: true });
+      yield* dialog.pickFiles({
+        owner: Option.none(),
+        defaultPath: Option.some("/project"),
+        filters: [],
+        multiple: false,
+      });
+      yield* dialog.pickFolder(noDefault);
+
+      assert.deepEqual(
+        showOpenDialogMock.mock.calls.map(([options]) => options.defaultPath),
+        [undefined, undefined, "/home/alice/code", "/project", "/project"],
+      );
+    }).pipe(Effect.provide(dialogLayer)),
   );
 
   it.effect("preserves message box request context and cause", () =>
@@ -114,7 +149,7 @@ describe("ElectronDialog", () => {
       assert.notInclude(error.message, "Cancel");
       assert.notInclude(error.message, "Discard");
       assert.notInclude(error.message, cause.message);
-    }).pipe(Effect.provide(ElectronDialog.layer)),
+    }).pipe(Effect.provide(dialogLayer)),
   );
 
   it.effect("preserves error box request context and cause in the defect", () =>
@@ -139,6 +174,6 @@ describe("ElectronDialog", () => {
       assert.notInclude(error.message, "Startup failed");
       assert.notInclude(error.message, "Could not start.");
       assert.notInclude(error.message, cause.message);
-    }).pipe(Effect.provide(ElectronDialog.layer)),
+    }).pipe(Effect.provide(dialogLayer)),
   );
 });
