@@ -79,7 +79,7 @@ export const make = Effect.gen(function* () {
             }).displayName,
             execTarget: process.env.APPIMAGE?.trim() || process.execPath,
             scheme: ElectronProtocol.getDesktopScheme(linux.isDevelopment),
-            // Must match the URL handler's entry byte for byte, or each launch rewrites it.
+            // Must match the URL handler's entry byte for byte, or it rewrites this entry after startup.
             iconPath: resolveLinuxDesktopEntryIconPath({
               dataHome,
               desktopEntryName: linux.linuxDesktopEntryName,
