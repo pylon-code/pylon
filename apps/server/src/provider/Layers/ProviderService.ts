@@ -652,6 +652,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       yield* recordCompletedTurnProperties(properties);
     });
 
+  /** Records every held completion and forgets all turn analytics state, before providers stop. */
+  const flushAllTurnAnalytics = Effect.gen(function* () {
+    const properties = yield* Ref.modify(turnAnalytics, (state) => {
+      const completed: Array<Readonly<Record<string, unknown>>> = [];
+      for (const [sessionKey, session] of state.sessions) {
+        for (const [turnId, completion] of session.deferredCompletionsByTurnId) {
+          const entry = finishTurnAnalytics(state, { sessionKey, turnId, completion });
+          if (entry) completed.push(entry);
+        }
+      }
+      state.sessions.clear();
+      return [completed, state] as const;
+    });
+    yield* recordCompletedTurnProperties(properties);
+  });
+
   const beginTurnAnalytics = Effect.fn("beginTurnAnalytics")(function* (input: {
     readonly providerInstanceId: ProviderInstanceId;
     readonly provider: ProviderDriverKind;
@@ -1429,6 +1445,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       for (const [threadId, incarnation] of currentSessionIncarnations) {
         if (incarnation.instanceId !== instanceId || incarnation.adapter !== oldAdapter) continue;
         yield* clearMcpSession(threadId, oldAdapter.runtimeFence);
+        yield* clearTurnAnalyticsSession(instanceId, threadId);
         currentSessionIncarnations.delete(threadId);
         activeTurnAdmissions.delete(threadId);
       }
@@ -1697,6 +1714,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         instanceId === input.currentInstanceId
           ? Effect.void
           : Effect.gen(function* () {
+              // The new incarnation fences out this instance's later turn events,
+              // so its analytics for the thread can never complete on their own.
+              yield* clearTurnAnalyticsSession(instanceId, input.threadId);
               const hasSession = yield* adapter.hasSession(input.threadId);
               if (!hasSession) {
                 return;
@@ -3924,18 +3944,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       Effect.map((settings) => settings.continueThreadsAfterServerUpdate),
       Effect.orElseSucceed(() => false),
     );
-    const properties = yield* Ref.modify(turnAnalytics, (state) => {
-      const completed: Array<Readonly<Record<string, unknown>>> = [];
-      for (const [sessionKey, session] of state.sessions) {
-        for (const [turnId, completion] of session.deferredCompletionsByTurnId) {
-          const entry = finishTurnAnalytics(state, { sessionKey, turnId, completion });
-          if (entry) completed.push(entry);
-        }
-      }
-      state.sessions.clear();
-      return [completed, state] as const;
-    });
-    yield* recordCompletedTurnProperties(properties);
+    yield* flushAllTurnAnalytics;
     const threadIds = yield* directory.listThreadIds();
     const currentAdapters = yield* getAdapterEntries;
     const activeSessions = yield* Effect.forEach(currentAdapters, ([instanceId, adapter]) =>
@@ -3990,6 +3999,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   });
 
   const runShutdown = Effect.fn("runShutdown")(function* () {
+    // Adapters with their own shutdown skip runStopAll, so flush here as well.
+    yield* flushAllTurnAnalytics;
     const currentAdapters = yield* getAdapterEntries;
     if (currentAdapters.every(([, adapter]) => adapter.shutdown === undefined)) {
       return yield* runStopAll();

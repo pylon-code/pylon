@@ -909,124 +909,141 @@ it.effect("ProviderServiceLive catches stopAll failures during shutdown", () =>
   }),
 );
 
-it.effect("ProviderServiceLive flushes deferred completions during shutdown", () =>
-  Effect.gen(function* () {
-    const recordedAnalytics = makeRecordingAnalytics();
-    const codex = makeFakeCodexAdapter();
-    const registry = makeStaticInstanceRegistry([[codexInstanceId, codex.adapter]]);
-    const providerAdapterLayer = Layer.succeed(
-      ProviderAdapterRegistry.ProviderAdapterRegistry,
-      registry,
-    );
-    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
-      Layer.provide(SqlitePersistenceMemory),
-    );
-    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
-    const providerLayer = Layer.mergeAll(
-      makeProviderServiceLive().pipe(
-        Layer.provide(NodeServices.layer),
-        Layer.provide(providerAdapterLayer),
-        Layer.provide(directoryLayer),
-        Layer.provide(defaultServerSettingsLayer),
-        Layer.provide(serverConfigTestLayer),
-        Layer.provide(recordedAnalytics.layer),
-        Layer.provide(
-          Layer.succeed(
-            ProviderEventLoggers.ProviderEventLoggers,
-            ProviderEventLoggers.NoOpProviderEventLoggers,
+// Pylon's finalizer reaches runStopAll only when no adapter owns shutdown; the
+// Prime daemon adapter does, so both shutdown paths must flush held completions.
+for (const adapterOwnsShutdown of [false, true]) {
+  it.effect(
+    `ProviderServiceLive flushes deferred completions during shutdown${
+      adapterOwnsShutdown ? " when an adapter owns shutdown" : ""
+    }`,
+    () =>
+      Effect.gen(function* () {
+        const recordedAnalytics = makeRecordingAnalytics();
+        const codex = makeFakeCodexAdapter();
+        const registry = makeStaticInstanceRegistry([
+          [
+            codexInstanceId,
+            adapterOwnsShutdown ? { ...codex.adapter, shutdown: () => Effect.void } : codex.adapter,
+          ],
+        ]);
+        const providerAdapterLayer = Layer.succeed(
+          ProviderAdapterRegistry.ProviderAdapterRegistry,
+          registry,
+        );
+        const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+          Layer.provide(SqlitePersistenceMemory),
+        );
+        const directoryLayer = ProviderSessionDirectoryLive.pipe(
+          Layer.provide(runtimeRepositoryLayer),
+        );
+        const providerLayer = Layer.mergeAll(
+          makeProviderServiceLive().pipe(
+            Layer.provide(NodeServices.layer),
+            Layer.provide(providerAdapterLayer),
+            Layer.provide(directoryLayer),
+            Layer.provide(defaultServerSettingsLayer),
+            Layer.provide(serverConfigTestLayer),
+            Layer.provide(recordedAnalytics.layer),
+            Layer.provide(
+              Layer.succeed(
+                ProviderEventLoggers.ProviderEventLoggers,
+                ProviderEventLoggers.NoOpProviderEventLoggers,
+              ),
+            ),
           ),
-        ),
-      ),
-      directoryLayer,
-      runtimeRepositoryLayer,
-      NodeServices.layer,
-    );
-    const scope = yield* Scope.make();
-    const runtimeServices = yield* Layer.build(providerLayer).pipe(Scope.provide(scope));
-    const provider = yield* ProviderService.ProviderService.pipe(Effect.provide(runtimeServices));
-    const threadId = asThreadId("thread-turn-analytics-stop-all-deferred");
-    const firstStarted = yield* Deferred.make<void>();
-    const secondStarted = yield* Deferred.make<void>();
-    const sendRelease = yield* Deferred.make<void>();
-    const turnId = asTurnId("turn-analytics-stop-all-deferred");
-    yield* provider.startSession(threadId, {
-      provider: CODEX_DRIVER,
-      providerInstanceId: codexInstanceId,
-      threadId,
-      runtimeMode: "full-access",
-    });
-    codex.sendTurn
-      .mockImplementationOnce(() =>
-        Effect.gen(function* () {
-          yield* Deferred.succeed(firstStarted, undefined);
-          yield* Deferred.await(sendRelease);
-          return { threadId, turnId };
-        }),
-      )
-      .mockImplementationOnce(() =>
-        Effect.gen(function* () {
-          yield* Deferred.succeed(secondStarted, undefined);
-          yield* Deferred.await(sendRelease);
-          return { threadId, turnId: asTurnId("turn-analytics-stop-all-other") };
-        }),
-      );
+          directoryLayer,
+          runtimeRepositoryLayer,
+          NodeServices.layer,
+        );
+        const scope = yield* Scope.make();
+        const runtimeServices = yield* Layer.build(providerLayer).pipe(Scope.provide(scope));
+        const provider = yield* ProviderService.ProviderService.pipe(
+          Effect.provide(runtimeServices),
+        );
+        const threadId = asThreadId("thread-turn-analytics-stop-all-deferred");
+        const firstStarted = yield* Deferred.make<void>();
+        const secondStarted = yield* Deferred.make<void>();
+        const sendRelease = yield* Deferred.make<void>();
+        const turnId = asTurnId("turn-analytics-stop-all-deferred");
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+        codex.sendTurn
+          .mockImplementationOnce(() =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(firstStarted, undefined);
+              yield* Deferred.await(sendRelease);
+              return { threadId, turnId };
+            }),
+          )
+          .mockImplementationOnce(() =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(secondStarted, undefined);
+              yield* Deferred.await(sendRelease);
+              return { threadId, turnId: asTurnId("turn-analytics-stop-all-other") };
+            }),
+          );
 
-    const firstSend = yield* provider
-      .sendTurn({ threadId, input: "first", attachments: [] })
-      .pipe(Effect.forkChild);
-    yield* Deferred.await(firstStarted);
-    const secondSend = yield* provider
-      .sendTurn({ threadId, input: "second", attachments: [] })
-      .pipe(Effect.forkChild);
-    yield* Deferred.await(secondStarted);
+        const firstSend = yield* provider
+          .sendTurn({ threadId, input: "first", attachments: [] })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(firstStarted);
+        const secondSend = yield* provider
+          .sendTurn({ threadId, input: "second", attachments: [] })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(secondStarted);
 
-    const runtimeEvents = yield* Stream.take(provider.streamEvents, 2).pipe(
-      Stream.runDrain,
-      Effect.forkChild,
-    );
-    yield* Effect.yieldNow;
-    codex.emit({
-      type: "turn.started",
-      eventId: asEventId("evt-turn-analytics-stop-all-deferred-start"),
-      provider: CODEX_DRIVER,
-      createdAt: "2026-01-01T00:00:00.000Z",
-      threadId,
-      turnId,
-      payload: { model: "native-stop-all" },
-    });
-    codex.emit({
-      type: "turn.completed",
-      eventId: asEventId("evt-turn-analytics-stop-all-deferred-complete"),
-      provider: CODEX_DRIVER,
-      createdAt: "2026-01-01T00:00:00.000Z",
-      threadId,
-      turnId,
-      payload: {
-        state: "completed",
-        tokenUsage: {
-          usageStatus: "complete",
-          usageScope: "main_agent",
-          inputTokens: 1_200,
-          outputTokens: 300,
-          hasSubagents: false,
-        },
-      },
-    });
-    yield* Fiber.join(runtimeEvents);
-    assert.equal(recordedAnalytics.eventsByName("provider.turn.completed").length, 0);
+        const runtimeEvents = yield* Stream.take(provider.streamEvents, 2).pipe(
+          Stream.runDrain,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        codex.emit({
+          type: "turn.started",
+          eventId: asEventId("evt-turn-analytics-stop-all-deferred-start"),
+          provider: CODEX_DRIVER,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          threadId,
+          turnId,
+          payload: { model: "native-stop-all" },
+        });
+        codex.emit({
+          type: "turn.completed",
+          eventId: asEventId("evt-turn-analytics-stop-all-deferred-complete"),
+          provider: CODEX_DRIVER,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          threadId,
+          turnId,
+          payload: {
+            state: "completed",
+            tokenUsage: {
+              usageStatus: "complete",
+              usageScope: "main_agent",
+              inputTokens: 1_200,
+              outputTokens: 300,
+              hasSubagents: false,
+            },
+          },
+        });
+        yield* Fiber.join(runtimeEvents);
+        assert.equal(recordedAnalytics.eventsByName("provider.turn.completed").length, 0);
 
-    const closeExit = yield* Scope.close(scope, Exit.void).pipe(Effect.exit);
-    const completed = recordedAnalytics.eventsByName("provider.turn.completed");
-    assert.equal(Exit.isSuccess(closeExit), true);
-    assert.equal(completed.length, 1);
-    assert.equal(completed[0]?.properties?.model, "native-stop-all");
-    assert.equal(completed[0]?.properties?.inputTokens, 1_200);
-    assert.equal(completed[0]?.properties?.outputTokens, 300);
-    yield* Fiber.interrupt(firstSend);
-    yield* Fiber.interrupt(secondSend);
-    assert.equal(recordedAnalytics.eventsByName("provider.turn.completed").length, 1);
-  }),
-);
+        const closeExit = yield* Scope.close(scope, Exit.void).pipe(Effect.exit);
+        const completed = recordedAnalytics.eventsByName("provider.turn.completed");
+        assert.equal(Exit.isSuccess(closeExit), true);
+        assert.equal(completed.length, 1);
+        assert.equal(completed[0]?.properties?.model, "native-stop-all");
+        assert.equal(completed[0]?.properties?.inputTokens, 1_200);
+        assert.equal(completed[0]?.properties?.outputTokens, 300);
+        yield* Fiber.interrupt(firstSend);
+        yield* Fiber.interrupt(secondSend);
+        assert.equal(recordedAnalytics.eventsByName("provider.turn.completed").length, 1);
+      }),
+  );
+}
 
 it.effect("ProviderServiceLive rejects new sessions for disabled providers", () =>
   Effect.gen(function* () {
@@ -4362,6 +4379,120 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
     }),
   );
 
+  it.effect("flushes held turn analytics when a fenced adapter is rebuilt", () =>
+    Effect.gen(function* () {
+      const recordedAnalytics = makeRecordingAnalytics();
+      const oldCodex = makeFakeCodexAdapter();
+      const rebuiltCodex = makeFakeCodexAdapter();
+      const changes = yield* PubSub.unbounded<void>();
+      const rebuiltSubscribed = yield* Deferred.make<void>();
+      const oldAdapter: ProviderAdapterShape<ProviderAdapterError> = {
+        ...oldCodex.adapter,
+        runtimeFence: {
+          generation: {},
+          configRevision: "private-analytics-revision",
+          isCurrent: Effect.succeed(true),
+        },
+      };
+      const rebuiltAdapter: ProviderAdapterShape<ProviderAdapterError> = {
+        ...rebuiltCodex.adapter,
+        streamEvents: rebuiltCodex.adapter.streamEvents.pipe(
+          Stream.onStart(Deferred.succeed(rebuiltSubscribed, undefined)),
+        ),
+      };
+      let currentAdapter = oldAdapter;
+      const registry: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] = {
+        getByInstance: () => Effect.succeed(currentAdapter),
+        getInstanceInfo: (instanceId) =>
+          Effect.succeed({
+            instanceId,
+            driverKind: ProviderDriverKind.make("codex"),
+            displayName: undefined,
+            enabled: true,
+            continuationIdentity: {
+              driverKind: ProviderDriverKind.make("codex"),
+              continuationKey: "codex:instance:codex",
+            },
+          }),
+        listInstances: () => Effect.succeed([codexInstanceId]),
+        subscribeChanges: PubSub.subscribe(changes),
+      };
+      const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = Layer.mergeAll(
+        makeProviderServiceLive().pipe(
+          Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+          Layer.provide(directoryLayer),
+          Layer.provide(defaultServerSettingsLayer),
+          Layer.provide(serverConfigTestLayer),
+          Layer.provide(recordedAnalytics.layer),
+          Layer.provide(
+            Layer.succeed(
+              ProviderEventLoggers.ProviderEventLoggers,
+              ProviderEventLoggers.NoOpProviderEventLoggers,
+            ),
+          ),
+        ),
+        directoryLayer,
+        runtimeRepositoryLayer,
+      ).pipe(Layer.provideMerge(NodeServices.layer));
+      const scope = yield* Scope.make();
+      const services = yield* Layer.build(providerLayer).pipe(Scope.provide(scope));
+      const provider = yield* ProviderService.ProviderService.pipe(Effect.provide(services));
+      const threadId = asThreadId("thread-turn-analytics-fenced-rebuild");
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const sendStarted = yield* Deferred.make<void>();
+      const sendRelease = yield* Deferred.make<void>();
+      oldCodex.sendTurn.mockImplementationOnce(() =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(sendStarted, undefined);
+          yield* Deferred.await(sendRelease);
+          return { threadId, turnId: asTurnId("turn-analytics-fenced-rebuild-send") };
+        }),
+      );
+      const send = yield* provider
+        .sendTurn({ threadId, input: "held", attachments: [] })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(sendStarted);
+      const runtimeEvent = yield* Stream.take(provider.streamEvents, 1).pipe(
+        Stream.runDrain,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      oldCodex.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-turn-analytics-fenced-rebuild-complete"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        turnId: asTurnId("turn-analytics-fenced-rebuild"),
+        payload: { state: "completed" },
+      });
+      yield* Fiber.join(runtimeEvent);
+      assert.equal(recordedAnalytics.eventsByName("provider.turn.completed").length, 0);
+
+      // The rebuild fences out the old session; its held completion is recorded
+      // with it rather than kept until the thread is reused.
+      currentAdapter = rebuiltAdapter;
+      yield* PubSub.publish(changes, undefined);
+      yield* Deferred.await(rebuiltSubscribed);
+      assert.equal(recordedAnalytics.eventsByName("provider.turn.completed").length, 1);
+
+      yield* Fiber.interrupt(send);
+      yield* Scope.close(scope, Exit.void);
+      assert.equal(recordedAnalytics.eventsByName("provider.turn.completed").length, 1);
+    }),
+  );
+
   it.effect("fans out canonical runtime events in emission order", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
@@ -5521,6 +5652,62 @@ turnAnalytics.layer("ProviderServiceLive turn analytics", (it) => {
       assert.equal(completed[0]?.properties?.model, "native-stop");
       yield* Fiber.interrupt(firstSend);
       yield* Fiber.interrupt(secondSend);
+    }),
+  );
+
+  it.effect("flushes a held completion when the thread moves to another instance", () =>
+    Effect.gen(function* () {
+      recordedTurnAnalytics.reset();
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-turn-analytics-instance-move");
+      const sendStarted = yield* Deferred.make<void>();
+      const sendRelease = yield* Deferred.make<void>();
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      primaryAnalyticsCodex.sendTurn.mockImplementationOnce(() =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(sendStarted, undefined);
+          yield* Deferred.await(sendRelease);
+          return { threadId, turnId: asTurnId("turn-analytics-instance-move-send") };
+        }),
+      );
+      const send = yield* provider
+        .sendTurn({ threadId, input: "held", attachments: [] })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(sendStarted);
+
+      const runtimeEvent = yield* Stream.take(provider.streamEvents, 1).pipe(
+        Stream.runDrain,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      primaryAnalyticsCodex.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-turn-analytics-instance-move-complete"),
+        provider: CODEX_DRIVER,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        turnId: asTurnId("turn-analytics-instance-move"),
+        payload: { state: "completed" },
+      });
+      yield* Fiber.join(runtimeEvent);
+      assert.equal(recordedTurnAnalytics.eventsByName("provider.turn.completed").length, 0);
+
+      // The new incarnation fences out the primary session, so its held
+      // completion is recorded now instead of lingering under the old key.
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: secondaryCodexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      assert.equal(recordedTurnAnalytics.eventsByName("provider.turn.completed").length, 1);
+      yield* Fiber.interrupt(send);
+      assert.equal(recordedTurnAnalytics.eventsByName("provider.turn.completed").length, 1);
     }),
   );
 

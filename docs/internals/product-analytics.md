@@ -17,9 +17,10 @@ PostHog person profiles stay disabled.
 records one event per provider instance, thread, and turn when the provider emits
 a completed or aborted turn. [ProviderService](../../apps/server/src/provider/Layers/ProviderService.ts)
 correlates each send with the turn ID the adapter returns before recording, and
-holds a completion that arrives before that response. Session start, stop,
-`session.exited`, and server shutdown flush held completions, and duplicate
-terminal events are recorded once. Analytics observe only events that already
+holds a completion that arrives before that response. Session start and stop,
+`session.exited`, a thread moving to another provider instance or adapter
+generation, and server shutdown flush held completions, including when an adapter
+owns its own shutdown. Duplicate terminal events are recorded once. Analytics observe only events that already
 passed the runtime generation and session incarnation fences.
 
 Send and completion counts need not match. Providers can emit synthetic turns
