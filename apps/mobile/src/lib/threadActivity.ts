@@ -1,4 +1,5 @@
 import * as Option from "effect/Option";
+import { foldUserInputActivities } from "@t3tools/client-runtime/work-log/user-input";
 import * as Schema from "effect/Schema";
 import {
   requestKindFromRequestType,
@@ -414,7 +415,7 @@ function deriveWorkLogEntries(
 ): DerivedWorkLogEntry[] {
   const ordered = Arr.sort(activities, activityOrder);
   const entries: DerivedWorkLogEntry[] = [];
-  for (const activity of ordered) {
+  for (const activity of foldUserInputActivities(ordered)) {
     if (activity.tone !== "error" && isWorktreeSetupActivity(activity.kind)) continue;
     if (activity.kind === "tool.started") continue;
     // Like web: an agent's task.started row anchors its batch. It has a fixed
@@ -959,6 +960,7 @@ function workEntryStatus(entry: WorkLogEntry): ThreadFeedActivity["status"] {
 function workEntryIcon(entry: DerivedWorkLogEntry): ThreadFeedActivity["icon"] {
   if (entry.agentSpawn) return "agent";
   if (
+    entry.questionAnswer ||
     entry.sourceActivityKind === "user-input.requested" ||
     entry.sourceActivityKind === "user-input.resolved"
   ) {
@@ -2232,10 +2234,19 @@ export function buildThreadFeed(
   const oldestLoadedMessageCreatedAt =
     options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
   const reportedTurnCosts = deriveReportedTurnCosts(thread.activities);
-  const activityEntries = getThreadFeedActivityEntries(thread.activities);
+  const activityEntries = getThreadFeedActivityEntries(thread.activities).filter(
+    (entry) => oldestLoadedMessageCreatedAt === null || entry.createdAt >= oldestLoadedMessageCreatedAt,
+  );
+  const foldedAnswerMessageIds = new Set(
+    activityEntries.flatMap((entry) =>
+      entry.activity.workEntry.questionAnswer
+        ? [`async-answer:${entry.activity.workEntry.questionAnswer.requestId}`]
+        : [],
+    ),
+  );
   const entries = Arr.sortWith(
     [
-      ...messages.map((message) => {
+      ...messages.filter((message) => message.role !== "user" || !foldedAnswerMessageIds.has(message.id)).map((message) => {
         const reportedCostLabel =
           message.role === "assistant" && message.turnId !== null
             ? (formatReportedTurnCost(reportedTurnCosts.get(message.turnId) ?? -1) ?? undefined)
@@ -2253,10 +2264,7 @@ export function buildThreadFeed(
         }
         return entry;
       }),
-      ...activityEntries.filter(
-        (entry) =>
-          oldestLoadedMessageCreatedAt === null || entry.createdAt >= oldestLoadedMessageCreatedAt,
-      ),
+      ...activityEntries,
     ],
     (s) => new Date(s.createdAt),
     Order.Date,
