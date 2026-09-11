@@ -56,16 +56,21 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
         data-composer-context-control
       >
         {activeWorktreePath ? (
-          <>
-            <FolderGitIcon className="size-3" />
-            {resolveLockedWorkspaceLabel(activeWorktreePath)}
-          </>
+          <FolderGitIcon className="size-3 shrink-0" />
         ) : (
-          <>
-            <FolderIcon className="size-3" />
-            {resolveLockedWorkspaceLabel(activeWorktreePath)}
-          </>
+          <FolderIcon className="size-3 shrink-0" />
         )}
+        <span
+          data-composer-label
+          className="min-w-0 max-w-[240px] group-data-[compact]/composer-context:max-w-0"
+        >
+          <span
+            data-composer-label-motion
+            className="block w-full min-w-0 max-w-[240px] truncate transition-opacity duration-180 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-[compact]/composer-context:opacity-0 motion-reduce:transition-none"
+          >
+            {resolveLockedWorkspaceLabel(activeWorktreePath)}
+          </span>
+        </span>
       </span>
     );
   }
