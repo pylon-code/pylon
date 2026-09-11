@@ -681,7 +681,7 @@ export const makeEnvironmentServerWelcomeState = Effect.fn("EnvironmentServerWel
   },
 );
 
-export function serverWelcomeStateChanges(environmentId: EnvironmentId) {
+function serverWelcomeStateChanges(environmentId: EnvironmentId) {
   return followStreamInEnvironment(
     environmentId,
     Stream.unwrap(
