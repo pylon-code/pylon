@@ -51,7 +51,6 @@ import {
   composerDraftsAtom,
   createNewTaskDraft,
   getComposerDraftSnapshot,
-  isComposerDraftEmpty,
   isNewTaskDraftKey,
   removeComposerDraftAttachment,
   replaceComposerDraftAttachments,
@@ -63,10 +62,12 @@ import {
   useComposerDraft,
   useStickyComposerModelSelection,
 } from "../../state/use-composer-drafts";
+import { pendingTaskDraftKey } from "../../state/new-task-draft-key";
 import {
   capturePendingTaskEditorWriteBaseline,
   flushPendingTaskEditorWrite,
 } from "../../state/pending-task-editor-writes";
+import { hydratePendingTaskEditorDraft } from "../../state/recover-failed-thread-draft";
 import { useDebouncedValue, usePaginatedBranches } from "../../state/queries";
 import { vcsEnvironment } from "../../state/vcs";
 import {
@@ -104,10 +105,6 @@ import { resolveProjectThreadCreationBranch } from "./projectThreadCreationValid
 type WorkspaceMode = "local" | "worktree";
 
 const BRANCH_SEARCH_DEBOUNCE_MS = 150;
-
-function pendingTaskDraftKey(messageId: string): string {
-  return `pending-task:${messageId}`;
-}
 
 // The message id owned by the currently active editing session, tracked
 // across provider instances. An in-flight flush from a dismissed session
@@ -939,24 +936,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     if (!message?.creation) {
       return false;
     }
-    const draftKey = pendingTaskDraftKey(message.messageId);
-    // Only hydrate a fresh editing draft; reopening mid-edit keeps newer edits.
-    if (isComposerDraftEmpty(getComposerDraftSnapshot(draftKey))) {
-      setComposerDraftText(draftKey, message.text);
-      replaceComposerDraftAttachments(draftKey, message.attachments);
-      updateComposerDraftSettings(draftKey, {
-        modelSelection: message.modelSelection,
-        providerSelectionExplicit: message.modelSelection !== undefined,
-        runtimeMode: message.runtimeMode,
-        interactionMode: message.interactionMode,
-        workspaceSelection: {
-          mode: message.creation.workspaceMode,
-          branch: message.creation.branch,
-          worktreePath: message.creation.worktreePath,
-          startFromOrigin: message.creation.startFromOrigin ?? false,
-        },
-      });
-    }
+    hydratePendingTaskEditorDraft(message);
     setSelectedEnvironmentId(message.environmentId);
     setSelectedProjectKey(scopedProjectKey(message.environmentId, message.creation.projectId));
     activeEditingMessageId = message.messageId;

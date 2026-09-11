@@ -9,6 +9,11 @@ export function isNewTaskDraftKey(draftKey: string): boolean {
   return draftKey.startsWith(NEW_TASK_DRAFT_PREFIX);
 }
 
+/** The editor draft for a queued new task, while it is open for editing. */
+export function pendingTaskDraftKey(messageId: string): string {
+  return `pending-task:${messageId}`;
+}
+
 /**
  * The draft a rejected queued task's content is restored into. The outbox
  * drain writes it and the thread screen's "Edit task" action opens it, so both

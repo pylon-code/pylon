@@ -35,7 +35,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
 import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
 import { clearPendingThreadCreationOutcome } from "../../state/pending-thread-creation";
-import { recoverFailedThreadDraft } from "../../state/recover-failed-thread-draft";
+import {
+  recoverFailedThreadDraft,
+  recoverHeldCreationDraft,
+} from "../../state/recover-failed-thread-draft";
 import { useEnvironmentQuery } from "../../state/query";
 import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vcs-action-state";
 import { vcsEnvironment } from "../../state/vcs";
@@ -964,11 +967,22 @@ function ThreadRouteContent(
     );
   }, [navigation, routeThreadIdentity, selectedThreadCreation, selectedThreadProject]);
   // A creation the drain held (the provider or server refused admission) stays
-  // in the outbox rather than returning to a draft; its pending-task editor
-  // offers the retarget, edit and delete actions.
-  const handleEditHeldCreation = useCallback(() => {
+  // in the outbox rather than returning to a draft. Its pending-task editor
+  // edits or retargets it; deleting it stays in the thread list's menu.
+  const handleEditHeldCreation = useCallback(async () => {
     const creation = selectedThreadCreation?.message;
     if (!creation?.creation) {
+      return;
+    }
+    // Text typed here during setup belongs to a thread the server never
+    // created; carry it into the editor alongside the queued prompt.
+    try {
+      await recoverHeldCreationDraft(creation);
+    } catch (error) {
+      Alert.alert(
+        "Could not restore draft",
+        error instanceof Error ? error.message : String(error),
+      );
       return;
     }
     navigation.dispatch(

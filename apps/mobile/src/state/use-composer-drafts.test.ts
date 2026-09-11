@@ -148,7 +148,9 @@ vi.mock("../features/sharing/incoming-share-storage", () => ({
 
 import type { DraftComposerAttachment } from "../lib/composerImages";
 import { appAtomRegistry } from "./atom-registry";
+import { recoverHeldCreationDraft } from "./recover-failed-thread-draft";
 import { threadOutboxManager } from "./thread-outbox";
+import type { QueuedThreadMessage } from "./thread-outbox-model";
 import {
   appendComposerDraftAttachments,
   archiveCloudComposerDrafts,
@@ -1958,6 +1960,81 @@ describe("mobile composer drafts", () => {
     await releaseUnusedComposerAttachmentFiles([first, reowned]);
 
     expect(composerAttachmentCleanupMocks.remove.mock.calls).toEqual([[first.fileUri]]);
+  });
+
+  describe("held creation recovery", () => {
+    // Inline images: file-backed attachments would start an async ownership
+    // sweep that outlives the test.
+    const queuedFile = {
+      id: "image-queued",
+      type: "image" as const,
+      name: "before.png",
+      mimeType: "image/png",
+      sizeBytes: 3,
+      previewUri: "data:image/png;base64,YWJj",
+      dataUrl: "data:image/png;base64,YWJj",
+    };
+    const typedFile = {
+      id: "image-typed",
+      type: "image" as const,
+      name: "after.png",
+      mimeType: "image/png",
+      sizeBytes: 3,
+      previewUri: "data:image/png;base64,ZGVm",
+      dataUrl: "data:image/png;base64,ZGVm",
+    };
+    const heldCreation: QueuedThreadMessage = {
+      environmentId: EnvironmentId.make("environment-1"),
+      threadId: ThreadId.make("thread-held"),
+      messageId: MessageId.make("message-held"),
+      commandId: CommandId.make("command-held"),
+      text: "Fix the flaky login test",
+      attachments: [queuedFile],
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      runtimeMode: "approval-required",
+      deliveryHold: { kind: "admission-rejected", reason: "Provider refused the turn" },
+      creation: {
+        projectId: ProjectId.make("project-1"),
+        workspaceMode: "worktree",
+        branch: "main",
+        worktreePath: null,
+      },
+      createdAt: "2026-09-10T12:00:00.000Z",
+    };
+
+    it("carries text typed during setup into the held task's editor after its prompt", async () => {
+      appAtomRegistry.set(composerDraftsAtom, {
+        "environment-1:thread-held": { text: "Also check CI", attachments: [typedFile] },
+      });
+
+      await recoverHeldCreationDraft(heldCreation);
+
+      const editor = getComposerDraftSnapshot("pending-task:message-held");
+      expect(editor).toMatchObject({
+        text: "Fix the flaky login test\n\nAlso check CI",
+        attachments: [queuedFile, typedFile],
+        modelSelection: heldCreation.modelSelection,
+        providerSelectionExplicit: true,
+        runtimeMode: "approval-required",
+        workspaceSelection: { mode: "worktree", branch: "main", worktreePath: null },
+      });
+      expect(getComposerDraftSnapshot("environment-1:thread-held")).toMatchObject({
+        text: "",
+        attachments: [],
+      });
+      // The move is durable before the thread draft is cleared.
+      expect(
+        decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument())).drafts[
+          "pending-task:message-held"
+        ]?.text,
+      ).toBe("Fix the flaky login test\n\nAlso check CI");
+    });
+
+    it("leaves the editor to hydrate itself when nothing was typed", async () => {
+      await recoverHeldCreationDraft(heldCreation);
+
+      expect(appAtomRegistry.get(composerDraftsAtom)["pending-task:message-held"]).toBeUndefined();
+    });
   });
 
   // Uses a fresh module instance (hydration is one-shot), so it stays last.
