@@ -453,6 +453,60 @@ describe("deriveProviderModelsForDisplay", () => {
     expect(markup).toContain(`role="status">${reason}`);
   });
 
+  it.each([
+    [true, "Backend: ACP compatibility"],
+    [false, "Backend: Native daemon"],
+    [undefined, null],
+  ] as const)(
+    "shows the established Prime backend for flag %s",
+    (requiresNewThreadForModelChange, label) => {
+      const instanceId = ProviderInstanceId.make("primeAgent");
+      const driver = ProviderDriverKind.make("primeAgent");
+      const liveProvider: ServerProvider = {
+        instanceId,
+        driver,
+        enabled: true,
+        installed: true,
+        version: "0.9.4",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-09-10T00:00:00.000Z",
+        models: [],
+        slashCommands: [],
+        skills: [],
+        ...(requiresNewThreadForModelChange === undefined
+          ? {}
+          : { requiresNewThreadForModelChange }),
+      };
+      const render = (provider: ServerProvider | undefined) =>
+        renderToStaticMarkup(
+          createElement(ProviderInstanceCard, {
+            instanceId,
+            instance: { driver },
+            driverOption: undefined,
+            liveProvider: provider,
+            mode: "editor",
+            timestampFormat: DEFAULT_TIMESTAMP_FORMAT,
+            onUpdate: () => undefined,
+            hiddenModels: [],
+            favoriteModels: [],
+            modelOrder: [],
+            onHiddenModelsChange: () => undefined,
+            onFavoriteModelsChange: () => undefined,
+            onModelOrderChange: () => undefined,
+          }),
+        );
+      const markup = render(liveProvider);
+      if (label) {
+        expect(markup).toContain(label);
+        expect(markup.indexOf(label)).toBeLessThan(markup.indexOf("Install stable"));
+      } else {
+        expect(markup).not.toContain("Backend:");
+        expect(render(undefined)).not.toContain("Backend:");
+      }
+    },
+  );
+
   it("keeps managed maintenance visible but disabled while rollback owns the instance", () => {
     const instanceId = ProviderInstanceId.make("primeAgent");
     const driver = ProviderDriverKind.make("primeAgent");

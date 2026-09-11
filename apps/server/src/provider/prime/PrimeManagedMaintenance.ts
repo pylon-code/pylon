@@ -18,9 +18,11 @@ import { ProviderService } from "../Services/ProviderService.ts";
 import {
   PrimeAgentManagedToolStore,
   type PrimeManagedCommandReceipt,
+  type PrimeManagedInstanceStatus,
 } from "./PrimeAgentManagedToolStore.ts";
 import {
   makeLatestPrimePublicationBundleLoader,
+  makeLatestPrimePublicationLoader,
   makePrimeDistributionNetworkDependencies,
 } from "./PrimeAgentDistributionVerifier.ts";
 
@@ -56,6 +58,33 @@ function contractReceipt(receipt: PrimeManagedCommandReceipt): ServerPrimeManage
     message: receipt.message,
     startedAt: receipt.startedAt,
     finishedAt: receipt.finishedAt,
+  };
+}
+
+export function toPrimeManagedMaintenance(
+  result: PrimeManagedInstanceStatus,
+): ServerPrimeManagedMaintenance {
+  const unpublished =
+    result.mode === "stock" &&
+    result.availableBuilds.length === 0 &&
+    result.publicationAvailable === false;
+  return {
+    supported: true,
+    controlsAvailable: !unpublished,
+    mode: result.mode,
+    selectedBuildId: result.selectedBuildId,
+    channel: result.channel,
+    availableBuilds: result.availableBuilds.map((build) => ({
+      buildId: build.buildId,
+      channel: build.channel,
+      sequence: build.sequence,
+    })),
+    scheduled: result.scheduled ? contractReceipt(result.scheduled) : null,
+    operation: result.operation ? contractReceipt(result.operation) : null,
+    message: result.message,
+    guidance: unpublished
+      ? "Pylon-managed Prime builds are not published yet. Install the Pylon Prime build manually; see the Prime Agent guide."
+      : null,
   };
 }
 
@@ -109,16 +138,18 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
   const reserveProviderMaintenance = providerService.reserveProviderMaintenance!;
   const releaseProviderMaintenance = providerService.releaseProviderMaintenance!;
 
-  const loadLatestVerifiedPublication = makeLatestPrimePublicationBundleLoader(
-    makePrimeDistributionNetworkDependencies({
-      tufCachePath: `${config.stateDir}/sigstore-tuf`,
-    }),
-  );
+  const networkDependencies = makePrimeDistributionNetworkDependencies({
+    tufCachePath: `${config.stateDir}/sigstore-tuf`,
+  });
+  const loadLatestVerifiedPublication = makeLatestPrimePublicationBundleLoader(networkDependencies);
+  const loadLatestVerifiedPublicationMetadata =
+    makeLatestPrimePublicationLoader(networkDependencies);
   const store = new PrimeAgentManagedToolStore({
     stateDir: config.stateDir,
     platform,
     dependencies: {
       loadLatestVerifiedPublication,
+      loadLatestVerifiedPublicationMetadata,
       readBinding: async (instanceId) => {
         const binding = await runPromise(
           readPrimeAgentBinaryBinding(instanceId).pipe(Effect.orDie),
@@ -207,22 +238,7 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
     Effect.tryPromise({
       try: async () => {
         const result = await store.status(instanceId);
-        return {
-          supported: true,
-          controlsAvailable: true,
-          mode: result.mode,
-          selectedBuildId: result.selectedBuildId,
-          channel: result.channel,
-          availableBuilds: result.availableBuilds.map((build) => ({
-            buildId: build.buildId,
-            channel: build.channel,
-            sequence: build.sequence,
-          })),
-          scheduled: result.scheduled ? contractReceipt(result.scheduled) : null,
-          operation: result.operation ? contractReceipt(result.operation) : null,
-          message: result.message,
-          guidance: null,
-        } satisfies ServerPrimeManagedMaintenance;
+        return toPrimeManagedMaintenance(result);
       },
       catch: (cause) => maintenanceError(instanceId, cause),
     });

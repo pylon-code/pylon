@@ -74,6 +74,10 @@ export interface PrimeManagedPublicationBundle {
 }
 
 export interface PrimeManagedToolStoreDependencies {
+  /** Signed publication metadata only; status must never download an install archive. */
+  readonly loadLatestVerifiedPublicationMetadata: (
+    channel: ServerProviderDistributionChannel,
+  ) => Promise<VerifiedPrimePublication | null>;
   readonly loadLatestVerifiedPublication: (
     channel: ServerProviderDistributionChannel,
     options?: { readonly refresh?: boolean },
@@ -142,6 +146,8 @@ export interface PrimeManagedInstalledBuild {
 }
 
 export interface PrimeManagedInstanceStatus {
+  /** Null when no probe is needed, including while a command is still running. */
+  readonly publicationAvailable: boolean | null;
   readonly instanceId: string;
   readonly mode: "stock" | "managed";
   readonly selectedBuildId: string | null;
@@ -893,7 +899,26 @@ export class PrimeAgentManagedToolStore {
             .filter((candidate) => candidate.instanceId === instanceId)
             .toSorted((left, right) => right.startedAt.localeCompare(left.startedAt))[0] ?? null));
     const mode = selection?.mode ?? "stock";
+    const operationActive = operation !== null && operation.finishedAt === null;
+    const publicationAvailable =
+      mode === "stock" && availableBuilds.length === 0 && !operationActive
+        ? (
+            await Promise.all(
+              (["stable", "preview"] as const).map(async (channel) => {
+                try {
+                  return (
+                    (await this.#dependencies.loadLatestVerifiedPublicationMetadata(channel)) !==
+                    null
+                  );
+                } catch {
+                  return false;
+                }
+              }),
+            )
+          ).some(Boolean)
+        : null;
     return {
+      publicationAvailable,
       instanceId,
       mode,
       selectedBuildId: selection?.selectedBuildId ?? null,
