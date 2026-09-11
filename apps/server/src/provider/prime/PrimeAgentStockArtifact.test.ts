@@ -27,20 +27,37 @@ const release = {
 };
 
 describe("frozen stock Prime artifact", () => {
+  it("matches the reviewed Prime Agent 0.9.4 release and archive", () => {
+    expect(PRIME_STOCK_ARTIFACT).toEqual({
+      repository: "PrimeIntellect-ai/prime-agent",
+      repositoryId: 1_232_493_406,
+      version: "0.9.4",
+      releaseId: 385_120_922,
+      tag: "v0.9.4",
+      assetId: 551_511_768,
+      assetName: "prime-agent-0.9.4.tgz",
+      size: 10_028_862,
+      url: "https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v0.9.4/prime-agent-0.9.4.tgz",
+      sha256: "b8d752a53d11a8c9a7580e1fb5fc24f7ce74ccad979c7e6e6aa8880fc3ad90b0",
+      sha512:
+        "e85582bd3892dfea36c97dcd5935504a53cd3f444785ab6ea0ab25dd97ac0a7f12bda812b8343568288fee89b32a1d790175cf6b4dc1164ac02fe3a8e54b8f13",
+    });
+  });
+
   it("accepts only the reviewed repository, release, and asset metadata", () => {
     expect(() => verifyPrimeStockReleaseMetadata(repository, release)).not.toThrow();
     for (const mutation of [
       { repository: { ...repository, id: repository.id + 1 }, release },
       { repository: { ...repository, full_name: "other/prime-agent" }, release },
       { repository, release: { ...release, id: release.id + 1 } },
-      { repository, release: { ...release, tag_name: "v0.8.2" } },
+      { repository, release: { ...release, tag_name: "v0.9.5" } },
       {
         repository,
         release: { ...release, assets: [{ ...asset, id: asset.id + 1 }] },
       },
       {
         repository,
-        release: { ...release, assets: [{ ...asset, name: "prime-agent-0.8.2.tgz" }] },
+        release: { ...release, assets: [{ ...asset, name: "prime-agent-0.9.5.tgz" }] },
       },
       {
         repository,
