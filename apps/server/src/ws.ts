@@ -3223,6 +3223,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         ),
     });
     const pullRequests = yield* PullRequestService.PullRequestService;
+    // Built once for the route so every connection shares the scanner's import
+    // read lock and its per-transcript memory budget.
+    const agentSessionScanner = yield* AgentSessionScanner.make;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3249,7 +3252,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           Effect.provide(
             makeWsRpcLayer(session, clientOrigin, previewAutomationBroker).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
-              Layer.provide(AgentSessionScanner.layer),
+              Layer.provide(
+                Layer.succeed(AgentSessionScanner.AgentSessionScanner, agentSessionScanner),
+              ),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(PrimeManagedMaintenance.layer),
               Layer.provide(
