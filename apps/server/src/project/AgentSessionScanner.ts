@@ -536,15 +536,19 @@ function shouldRetainDecodedRecord(
 }
 
 /**
- * T3 Code runs its own agent sessions inside disposable worktrees. Their
+ * Pylon runs its own agent sessions inside disposable worktrees. Their
  * transcripts look exactly like user sessions, but re-importing the app's own
  * sandboxes as projects is never right. Matches this server's configured
- * worktrees directory plus the conventional `.t3/worktrees` layout, which
- * also catches sandboxes from other T3 homes on the same machine. Separators
- * are normalized (and, on Windows, case folded) so the prefix match holds
- * there too. Callers check both the recorded spelling and its realpath so a
- * symlink into the worktrees directory cannot bypass the filter.
+ * worktrees directory plus the conventional `.pylon-code/worktrees` layout
+ * (including channel homes such as `.pylon-code-nightly`) and T3 Code's
+ * `.t3/worktrees`, which also catches sandboxes from other homes on the same
+ * machine. Separators are normalized (and, on Windows, case folded) so the
+ * prefix match holds there too. Callers check both the recorded spelling and
+ * its realpath so a symlink into the worktrees directory cannot bypass the
+ * filter.
  */
+const RUNTIME_HOME_WORKTREES_PATTERN = /\/\.pylon-code(?:-[a-z0-9]+)?\/worktrees\//;
+
 function normalizeForWorktreeMatch(value: string, caseFold: boolean): string {
   const normalized = `${value.replaceAll("\\", "/")}/`;
   return caseFold ? normalized.toLowerCase() : normalized;
@@ -558,7 +562,8 @@ function isT3ManagedWorktree(
   const normalized = normalizeForWorktreeMatch(candidatePath, caseFold);
   return (
     normalized.startsWith(normalizeForWorktreeMatch(worktreesDir, caseFold)) ||
-    normalized.includes("/.t3/worktrees/")
+    normalized.includes("/.t3/worktrees/") ||
+    RUNTIME_HOME_WORKTREES_PATTERN.test(normalized)
   );
 }
 
