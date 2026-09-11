@@ -5,6 +5,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSendTurnInput,
+  RuntimeSessionId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -43,6 +44,8 @@ const makeThread = (
   archivedAt,
   deletedAt,
   interactionMode: "default" as const,
+  modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
+  runtimeMode: "full-access" as const,
   session: {
     threadId: ThreadId.make(id),
     status,
@@ -94,6 +97,26 @@ const makeProviderService = (
     uploadFeedback: () => Effect.die("unused"),
     streamEvents: Stream.empty,
   }) satisfies ProviderService.ProviderService["Service"];
+
+// A restarted server has no live runtime, so recovery mints a fresh
+// incarnation for the thread. Continuation must bind this exact id.
+const recoveredIncarnationId = (threadId: ThreadId) =>
+  RuntimeSessionId.make(`recovered-${String(threadId)}`);
+const fakeStartSession: ProviderService.ProviderService["Service"]["startSession"] = (
+  threadId,
+  input,
+) =>
+  Effect.succeed({
+    provider: input.provider ?? ProviderDriverKind.make("codex"),
+    providerInstanceId: input.providerInstanceId ?? providerInstanceId,
+    status: "ready" as const,
+    runtimeMode: input.runtimeMode,
+    threadId,
+    resumeCursor: input.resumeCursor,
+    sessionIncarnationId: recoveredIncarnationId(threadId),
+    createdAt: "2026-08-20T12:05:00.000Z",
+    updatedAt: "2026-08-20T12:05:00.000Z",
+  });
 
 const queryWithThreads = (threads: ReadonlyArray<ReturnType<typeof makeThread>>) =>
   ({
@@ -265,6 +288,7 @@ it.effect.each(
           },
         ]),
       );
+      const starts: Array<{ readonly threadId: ThreadId; readonly beforeSend: boolean }> = [];
       const providerService: ProviderService.ProviderService["Service"] = {
         ...makeProviderService(),
         getCapabilities: (instanceId) =>
@@ -272,6 +296,13 @@ it.effect.each(
             sessionModelSwitch: "in-session",
             ...(instanceId === providerInstanceId ? { promptlessTurnContinuation: true } : {}),
           }),
+        startSession: (threadId, input) =>
+          Effect.sync(() => {
+            starts.push({
+              threadId,
+              beforeSend: !sends.some((send) => send.threadId === threadId),
+            });
+          }).pipe(Effect.andThen(fakeStartSession(threadId, input))),
         sendTurn: (input) =>
           Effect.gen(function* () {
             sends.push(input);
@@ -348,27 +379,53 @@ it.effect.each(
           },
         ],
       );
-      assert.deepStrictEqual(
-        dispatched.map((command) =>
-          command.type === "thread.session.set"
-            ? {
+      // Each thread first shows "starting" for the recovery, then binds the
+      // recovered incarnation as an idle running session so the continuation's
+      // turn.started is admitted as a provider-initiated turn.
+      const sessionSets = dispatched.flatMap((command) =>
+        command.type === "thread.session.set"
+          ? [
+              {
                 threadId: command.threadId,
                 status: command.session.status,
                 activeTurnId: command.session.activeTurnId,
-              }
-            : null,
+                sessionIncarnationId: command.session.sessionIncarnationId,
+                activeTurnRequestId: command.session.activeTurnRequestId,
+                restored: command.session.restored,
+              },
+            ]
+          : [],
+      );
+      for (const thread of [codex, fallback]) {
+        assert.deepStrictEqual(
+          sessionSets.filter((set) => set.threadId === thread.id),
+          [
+            {
+              threadId: thread.id,
+              status: "starting",
+              activeTurnId: null,
+              sessionIncarnationId: undefined,
+              activeTurnRequestId: undefined,
+              restored: undefined,
+            },
+            {
+              threadId: thread.id,
+              status: "running",
+              activeTurnId: null,
+              sessionIncarnationId: recoveredIncarnationId(thread.id),
+              activeTurnRequestId: undefined,
+              restored: true,
+            },
+          ],
+        );
+      }
+      assert.deepStrictEqual(
+        starts.toSorted((left, right) =>
+          String(left.threadId).localeCompare(String(right.threadId)),
         ),
         [
-          {
-            threadId: codex.id,
-            status: "starting",
-            activeTurnId: null,
-          },
-          {
-            threadId: fallback.id,
-            status: "starting",
-            activeTurnId: null,
-          },
+          { threadId: codex.id, beforeSend: true },
+          { threadId: fallback.id, beforeSend: true },
         ],
       );
       for (const [thread, continuationTurnId] of [
@@ -930,6 +987,7 @@ for (const preparedStatus of [
               sessionModelSwitch: "in-session" as const,
               promptlessTurnContinuation: true,
             }),
+          startSession: fakeStartSession,
           sendTurn: (input: ProviderSendTurnInput) =>
             Effect.sync(() => {
               sends.push(input);
@@ -1036,6 +1094,7 @@ it.effect("settles failed opt-in recovery without retrying the provider turn", (
         ...makeProviderService(),
         getCapabilities: () =>
           Effect.succeed({ sessionModelSwitch: "in-session", promptlessTurnContinuation: true }),
+        startSession: fakeStartSession,
         sendTurn: (input) =>
           Effect.gen(function* () {
             sends.push(input);
@@ -1075,17 +1134,30 @@ it.effect("settles failed opt-in recovery without retrying the provider turn", (
         continueAfterServerUpdatePrepared: true,
       },
     ]);
+    // The error settle keeps the recovered incarnation. The recovered runtime
+    // is still live, and reverting to the pre-restart id would fence every
+    // later user turn with a session incarnation mismatch.
     assert.deepStrictEqual(
       dispatched.map(
         (command) =>
           command.type === "thread.session.set" && {
             status: command.session.status,
             activeTurnId: command.session.activeTurnId,
+            sessionIncarnationId: command.session.sessionIncarnationId,
           },
       ),
       [
-        { status: "starting", activeTurnId: null },
-        { status: "error", activeTurnId: null },
+        { status: "starting", activeTurnId: null, sessionIncarnationId: undefined },
+        {
+          status: "running",
+          activeTurnId: null,
+          sessionIncarnationId: recoveredIncarnationId(thread.id),
+        },
+        {
+          status: "error",
+          activeTurnId: null,
+          sessionIncarnationId: recoveredIncarnationId(thread.id),
+        },
       ],
     );
     assert.equal(binding.status, "stopped");

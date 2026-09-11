@@ -5,6 +5,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   type ModelSelection,
   type OrchestrationProjectShell,
+  type OrchestrationSession,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -615,6 +616,10 @@ export const reconcileProviderSessions = Effect.gen(function* () {
       Option.isSome(binding) &&
       binding.value.status === "running" &&
       binding.value.resumeCursor != null;
+    // Once the continuation has bound a recovered incarnation, an error settle
+    // must keep that id: the recovered runtime stays live, and reverting the
+    // projection to the pre-restart incarnation would fence every later turn.
+    let boundSession: OrchestrationSession = session;
     const settleAsError = (lastError: string) =>
       Effect.gen(function* () {
         yield* Effect.gen(function* () {
@@ -652,7 +657,7 @@ export const reconcileProviderSessions = Effect.gen(function* () {
             commandId: CommandId.make(yield* crypto.randomUUIDv4),
             threadId: thread.id,
             session: {
-              ...session,
+              ...boundSession,
               status: "error",
               activeTurnId: null,
               lastError,
@@ -730,6 +735,50 @@ export const reconcileProviderSessions = Effect.gen(function* () {
                 threadId: thread.id,
               });
             }
+            // The restarted process has no live runtime for this thread, so
+            // recovery mints a new session incarnation. Ingestion fences every
+            // runtime event whose incarnation differs from the projected one,
+            // and turn admission compares against the same projected id, so
+            // the recovered incarnation has to be bound before the
+            // continuation turn is sent. Binding it idle lets the turn.started
+            // pass as a provider-initiated turn, exactly like a Claude
+            // background continuation.
+            const recovered = yield* providerService.startSession(thread.id, {
+              threadId: thread.id,
+              providerInstanceId,
+              runtimeMode: session.runtimeMode,
+              ...(thread.modelSelection.instanceId === providerInstanceId
+                ? { modelSelection: thread.modelSelection }
+                : {}),
+              resumeCursor: binding.value.resumeCursor,
+            });
+            if (recovered.sessionIncarnationId === undefined) {
+              return yield* new ProviderSessionContinuationError({
+                threadId: thread.id,
+              });
+            }
+            const boundAt = DateTime.formatIso(yield* DateTime.now);
+            const recoveredBinding: OrchestrationSession = {
+              threadId: thread.id,
+              status: "running",
+              providerName: recovered.provider,
+              providerInstanceId: recovered.providerInstanceId ?? providerInstanceId,
+              runtimeMode: recovered.runtimeMode,
+              restored: true,
+              startedAt: recovered.createdAt,
+              sessionIncarnationId: recovered.sessionIncarnationId,
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: boundAt,
+            };
+            yield* orchestrationEngine.dispatch({
+              type: "thread.session.set",
+              commandId: CommandId.make(yield* crypto.randomUUIDv4),
+              threadId: thread.id,
+              session: recoveredBinding,
+              createdAt: boundAt,
+            });
+            boundSession = recoveredBinding;
             const capabilities = yield* providerService.getCapabilities(providerInstanceId);
             yield* providerService.sendTurn({
               threadId: thread.id,

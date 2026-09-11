@@ -8,6 +8,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSendTurnInput,
+  RuntimeSessionId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -392,6 +393,9 @@ it.effect.each(["opt-in desktop restart", "marked remote update"] as const)(
       const activeTurnId = TurnId.make("turn-started-after-original-send");
       const originalTurnId = TurnId.make("turn-from-original-send");
       const sent = yield* Deferred.make<ProviderSendTurnInput>();
+      // The restarted process has no live runtime, so recovery mints a new
+      // incarnation. The continuation must bind it before sending.
+      const recoveredIncarnationId = RuntimeSessionId.make("incarnation-after-restart");
 
       yield* Effect.gen(function* () {
         const engine = yield* OrchestrationEngine.OrchestrationEngineService;
@@ -469,10 +473,28 @@ it.effect.each(["opt-in desktop restart", "marked remote update"] as const)(
                 sessionModelSwitch: "in-session",
                 promptlessTurnContinuation: true,
               }),
+            startSession: (startThreadId, input) =>
+              Effect.succeed({
+                provider: ProviderDriverKind.make("codex"),
+                providerInstanceId: input.providerInstanceId ?? providerInstanceId,
+                status: "ready" as const,
+                runtimeMode: input.runtimeMode,
+                threadId: startThreadId,
+                resumeCursor: input.resumeCursor,
+                sessionIncarnationId: recoveredIncarnationId,
+                createdAt,
+                updatedAt: createdAt,
+              }),
             sendTurn: (input) =>
-              Deferred.succeed(sent, input).pipe(
-                Effect.as({ threadId, turnId: TurnId.make("continued-turn") }),
-              ),
+              Effect.gen(function* () {
+                // Binding must be durable before the turn goes out.
+                const bound = Option.getOrThrow(yield* query.getThreadDetailById(threadId));
+                assert.equal(bound.session?.status, "running");
+                assert.equal(bound.session?.sessionIncarnationId, recoveredIncarnationId);
+                assert.equal(bound.session?.activeTurnId, null);
+                yield* Deferred.succeed(sent, input);
+                return { threadId, turnId: TurnId.make("continued-turn") };
+              }),
           }),
           Effect.provide(
             ServerSettings.layerTest({

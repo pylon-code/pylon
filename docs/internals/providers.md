@@ -463,6 +463,15 @@ an idle legacy session with no pending turn. Migration backfill joins the curren
 unambiguous historical request and leaves ambiguous rows unset. Projection replay reconstructs the
 same pending state from the event log.
 
+A server restart leaves the projection holding the incarnation of a runtime that no longer exists.
+Prime restart adoption re-attaches the persisted incarnation itself. For every other provider, the
+startup continuation in `serverRuntimeStartup.ts` starts the session through `ProviderService`,
+binds the recovered incarnation to the projection as an idle running session, and only then sends
+the continuation turn, so its uncorrelated `turn.started` is admitted as a provider-initiated turn.
+An error settle after that point keeps the recovered incarnation. Skipping the bind fences every
+runtime event from the recovered session and fails later user turns with a session incarnation
+mismatch.
+
 ### Buffered assistant delivery
 
 A thread in `buffered` assistant delivery mode accumulates assistant text instead of streaming each
