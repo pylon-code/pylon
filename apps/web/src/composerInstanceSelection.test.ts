@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   canStartComposerTurn,
   resolveComposerInstanceSelection,
+  resolveComposerProviderSettingsAction,
 } from "./composerInstanceSelection";
 import { deriveProviderInstanceEntries, NO_PROVIDER_MODEL_SELECTION } from "./providerInstances";
 
@@ -155,6 +156,8 @@ describe("resolveComposerInstanceSelection", () => {
       expect(selection.entry?.snapshot.unavailableReason).toBe(PRIME_UNAVAILABLE_REASON);
       expect(selection.entry?.snapshot.availability).toBe("unavailable");
       expect(canStartComposerTurn(selection)).toBe(false);
+      // Enabling cannot fix explicit unavailability; the picker stays so another provider can be chosen.
+      expect(selection.unavailableInstanceId).toBeUndefined();
     },
   );
 
@@ -303,5 +306,133 @@ describe("resolveComposerInstanceSelection", () => {
     expect(selection.entry).toBeUndefined();
     expect(selection.driverKind).toBe("unconfigured");
     expect(canStartComposerTurn(selection)).toBe(false);
+    expect(selection.unavailableInstanceId).toBeUndefined();
+  });
+
+  it("names the locked instance to set up when it was removed", () => {
+    const selection = resolveComposerInstanceSelection({
+      ...base,
+      entries: entriesOf(provider({ instanceId: "antigravity", driver: "antigravity" })),
+      draftActiveProvider: id("google_personal"),
+      sessionInstanceId: id("google_work"),
+      lockedProvider: kind("antigravity"),
+    });
+
+    expect(selection.entry).toBeUndefined();
+    expect(selection.unavailableInstanceId).toBe("google_work");
+  });
+
+  it("names the requested instance when nothing else can serve an unlocked draft", () => {
+    const selection = resolveComposerInstanceSelection({
+      ...base,
+      entries: entriesOf(
+        provider({ instanceId: "antigravity", driver: "antigravity", enabled: false }),
+      ),
+      threadInstanceId: id("antigravity"),
+    });
+
+    expect(selection.entry).toBeUndefined();
+    expect(selection.unavailableInstanceId).toBe("antigravity");
+  });
+
+  it("does not treat the empty draft placeholder as a provider setup target", () => {
+    const selection = resolveComposerInstanceSelection({
+      ...base,
+      entries: entriesOf(
+        provider({ instanceId: "antigravity", driver: "antigravity", enabled: false }),
+      ),
+      draftActiveProvider: NO_PROVIDER_MODEL_SELECTION.instanceId,
+    });
+
+    expect(selection.entry).toBeUndefined();
+    expect(selection.unavailableInstanceId).toBeUndefined();
+  });
+
+  it("names a disabled instance the live session is still bound to", () => {
+    const selection = resolveComposerInstanceSelection({
+      ...base,
+      entries: entriesOf(provider({ instanceId: "codex", driver: "codex", enabled: false })),
+      sessionInstanceId: id("codex"),
+      lockedProvider: kind("codex"),
+    });
+
+    expect(selection.entry?.instanceId).toBe("codex");
+    expect(canStartComposerTurn(selection)).toBe(false);
+    expect(selection.unavailableInstanceId).toBe("codex");
+  });
+
+  it("reports no setup target while an entry resolved", () => {
+    const selection = resolveComposerInstanceSelection({
+      ...base,
+      entries: entriesOf(CODEX),
+      threadInstanceId: id("codex"),
+    });
+
+    expect(selection.entry?.instanceId).toBe("codex");
+    expect(selection.unavailableInstanceId).toBeUndefined();
+  });
+});
+
+describe("resolveComposerProviderSettingsAction", () => {
+  const settings = {
+    catalogKnown: true,
+    lockedProvider: null,
+    fallbackSetupInstanceId: undefined,
+  } as const;
+
+  it("replaces the picker with settings for a disabled instance the session is bound to", () => {
+    const selection = resolveComposerInstanceSelection({
+      ...base,
+      entries: entriesOf(provider({ instanceId: "codex", driver: "codex", enabled: false })),
+      sessionInstanceId: id("codex"),
+      lockedProvider: kind("codex"),
+    });
+
+    expect(
+      resolveComposerProviderSettingsAction({
+        ...settings,
+        selection,
+        lockedProvider: kind("codex"),
+      }),
+    ).toEqual({ visible: true, instanceId: "codex" });
+  });
+
+  it("keeps the picker for an enabled instance and for explicit unavailability", () => {
+    for (const selection of [
+      resolveComposerInstanceSelection({ ...base, entries: entriesOf(CODEX) }),
+      resolveComposerInstanceSelection({
+        ...base,
+        entries: entriesOf(PRIME_UNAVAILABLE, CODEX),
+        threadInstanceId: id("primeAgent"),
+      }),
+    ]) {
+      expect(resolveComposerProviderSettingsAction({ ...settings, selection })).toEqual({
+        visible: false,
+        instanceId: undefined,
+      });
+    }
+  });
+
+  it("waits for the catalog and offers setup when nothing resolved", () => {
+    const selection = resolveComposerInstanceSelection({ ...base, entries: [] });
+
+    expect(
+      resolveComposerProviderSettingsAction({ ...settings, selection, catalogKnown: false }),
+    ).toEqual({ visible: false, instanceId: undefined });
+    expect(
+      resolveComposerProviderSettingsAction({
+        ...settings,
+        selection,
+        fallbackSetupInstanceId: id("antigravity"),
+      }),
+    ).toEqual({ visible: true, instanceId: "antigravity" });
+    expect(
+      resolveComposerProviderSettingsAction({
+        ...settings,
+        selection,
+        lockedProvider: kind("codex"),
+        fallbackSetupInstanceId: id("antigravity"),
+      }),
+    ).toEqual({ visible: true, instanceId: undefined });
   });
 });

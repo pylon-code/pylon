@@ -25,7 +25,10 @@ describe("mobile provider catalog refresh", () => {
 
     expect(second).toBe(first);
     expect(refreshProviders).toHaveBeenCalledOnce();
-    expect(refreshProviders).toHaveBeenCalledWith({ environmentId, input: {} });
+    expect(refreshProviders).toHaveBeenCalledWith({
+      environmentId,
+      input: { refreshModels: true },
+    });
 
     resolveRefresh?.("refreshed");
     await expect(first).resolves.toBe("refreshed");

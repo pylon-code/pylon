@@ -85,6 +85,15 @@ export interface ComposerInstanceSelection {
    * thread is unlocked or its instance has no group.
    */
   readonly lockedContinuationGroupKey: string | null;
+  /**
+   * The instance whose provider settings the composer should open because the
+   * turn cannot start there: the resolved entry when it is disabled, or, when
+   * no entry resolved, the instance the thread asked for (its locked instance
+   * first). Undefined while the resolved entry is enabled, when it is blocked by
+   * explicit unavailability (enabling it cannot help; pick another provider),
+   * or when nothing was requested.
+   */
+  readonly unavailableInstanceId: ProviderInstanceId | undefined;
 }
 
 export function resolveComposerInstanceSelection(
@@ -123,6 +132,15 @@ export function resolveComposerInstanceSelection(
   const lockedContinuationGroupKey = lockedInstanceId
     ? (entries.find((entry) => entry.instanceId === lockedInstanceId)?.continuationGroupKey ?? null)
     : null;
+  const requestedInstanceId = [
+    input.draftActiveProvider,
+    sessionInstanceId,
+    input.threadInstanceId,
+    input.projectInstanceId,
+  ].find(
+    (candidate): candidate is ProviderInstanceId =>
+      candidate != null && candidate !== NO_PROVIDER_MODEL_SELECTION.instanceId,
+  );
 
   const candidates: ReadonlyArray<{
     readonly instanceId: ProviderInstanceId | null | undefined;
@@ -152,6 +170,12 @@ export function resolveComposerInstanceSelection(
     blockedByUnavailablePreference,
     draftConflictsWithSessionBinding,
     lockedContinuationGroupKey,
+    unavailableInstanceId:
+      entry === undefined
+        ? (lockedInstanceId ?? requestedInstanceId)
+        : entry.enabled || blockedByUnavailablePreference
+          ? undefined
+          : entry.instanceId,
   });
 
   for (const candidate of candidates) {
@@ -208,6 +232,30 @@ export function resolveComposerInstanceSelection(
     resolveSelectableProviderInstanceEntry(requestedDriverEntries, undefined, nowMs) ??
     resolveSelectableProviderInstanceEntry(compatibleEntries, undefined, nowMs);
   return finish(fallback?.instanceId ?? NO_PROVIDER_MODEL_SELECTION.instanceId, fallback);
+}
+
+/**
+ * The composer's provider settings action. It replaces the model picker when
+ * no provider resolved (once the catalog is known) or when the resolved
+ * instance is disabled, and names the instance whose settings to open.
+ */
+export function resolveComposerProviderSettingsAction(input: {
+  readonly selection: ComposerInstanceSelection;
+  readonly catalogKnown: boolean;
+  readonly lockedProvider: ProviderDriverKind | null;
+  /** First instance with integrated setup, offered when an unlocked thread resolves nothing. */
+  readonly fallbackSetupInstanceId: ProviderInstanceId | undefined;
+}): { readonly visible: boolean; readonly instanceId: ProviderInstanceId | undefined } {
+  if (input.selection.entry !== undefined) {
+    const instanceId = input.selection.unavailableInstanceId;
+    return { visible: instanceId !== undefined, instanceId };
+  }
+  return {
+    visible: input.catalogKnown,
+    instanceId:
+      input.selection.unavailableInstanceId ??
+      (input.lockedProvider === null ? input.fallbackSetupInstanceId : undefined),
+  };
 }
 
 /** Whether the resolved routing target may be admitted as a provider turn. */
