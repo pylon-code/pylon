@@ -296,7 +296,7 @@ describe("window capture target resolution", () => {
 
 describe("durable snapshot delivery", () => {
   it.each([false, true])(
-    "retains a capture on quota failure and retries without duplicates (staged: %s)",
+    "attaches and acknowledges a capture once when the draft cannot save it (staged: %s)",
     async (staged) => {
       const target = scopeThreadRef(environmentId, ThreadId.make("quota-thread"));
       const capture = {
@@ -333,16 +333,21 @@ describe("durable snapshot delivery", () => {
           });
           void store.syncPersistedAttachments(target, [capture]);
         }
-        await expect(deliverSnapShot(bridge, capture, target)).rejects.toThrow(
-          "could not be saved",
-        );
-        expect(acknowledgeSnapShot).not.toHaveBeenCalled();
-        expect(
-          useComposerDraftStore.getState().getComposerDraft(target)?.nonPersistedImageIds,
-        ).toContain(capture.id);
-        storage.setItem.mockImplementation(write);
-        await deliverSnapShot(bridge, capture, target);
+
+        // Storage is full, but the capture still lands in the draft and leaves the pending queue,
+        // so later drains do not re-attach it, replay the sound, or re-toast.
+        await expect(deliverSnapShot(bridge, capture, target)).resolves.toEqual({
+          persisted: false,
+        });
+        const draft = useComposerDraftStore.getState().getComposerDraft(target);
+        expect(draft?.images.map(({ id }) => id)).toEqual([capture.id]);
+        expect(draft?.nonPersistedImageIds).toContain(capture.id);
         expect(acknowledgeSnapShot).toHaveBeenCalledExactlyOnceWith(capture.id);
+
+        storage.setItem.mockImplementation(write);
+        await expect(deliverSnapShot(bridge, capture, target)).resolves.toEqual({
+          persisted: true,
+        });
         expect(useComposerDraftStore.getState().getComposerDraft(target)?.images).toHaveLength(1);
         expect(
           useComposerDraftStore.getState().getComposerDraft(target)?.persistedAttachments,

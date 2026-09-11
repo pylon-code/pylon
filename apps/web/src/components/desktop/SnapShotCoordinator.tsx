@@ -131,11 +131,16 @@ async function afterNextPaint(): Promise<void> {
   });
 }
 
+export interface SnapShotDelivery {
+  /** False when the draft could not save the image locally, e.g. storage is over quota. */
+  readonly persisted: boolean;
+}
+
 export async function deliverSnapShot(
   bridge: DesktopSnapShotBridge,
   item: DesktopPendingSnapShot,
   target: CaptureTarget,
-): Promise<void> {
+): Promise<SnapShotDelivery> {
   const store = useComposerDraftStore.getState();
   updateSnapShotAnimationSource(item.id, item.source);
   const capture = await bridge.readSnapShot(item.id);
@@ -178,9 +183,12 @@ export async function deliverSnapShot(
       .getComposerDraft(target)
       ?.persistedAttachments.filter((attachment) => attachment.id !== capture.id) ?? [];
   await store.syncPersistedAttachments(target, [...persistedAttachments, persisted]);
-  if (!store.getComposerDraft(target)?.persistedAttachments.some(({ id }) => id === capture.id)) {
-    throw new Error("The captured window could not be saved to the draft.");
-  }
+  // A draft that cannot save the image (storage over quota) still holds it in memory and marks it
+  // non-persisted. Acknowledge the capture anyway: leaving it pending would re-attach it, replay
+  // the sound and re-toast on every focus.
+  const savedLocally =
+    store.getComposerDraft(target)?.persistedAttachments.some(({ id }) => id === capture.id) ??
+    false;
 
   // Reveal the attachment under the flying capture before the desktop tears the overlay down,
   // otherwise the tile is missing for the frames between the landing and its first paint.
@@ -192,6 +200,7 @@ export async function deliverSnapShot(
   }
   await bridge.acknowledgeSnapShot(capture.id);
   dispatchSnapShotComposerFocus();
+  return { persisted: savedLocally };
 }
 
 export function SnapShotCoordinator() {
@@ -293,9 +302,19 @@ export function SnapShotCoordinator() {
           }
 
           try {
-            await deliverSnapShot(bridge, item, target);
+            const delivery = await deliverSnapShot(bridge, item, target);
             captureTargetsRef.current.delete(item.id);
             soundedCaptureIdsRef.current.delete(item.id);
+            if (!delivery.persisted) {
+              toastManager.add(
+                stackedThreadToast({
+                  type: "warning",
+                  title: "Snapshot attached, but not saved",
+                  description:
+                    "Pylon couldn't save it with your draft, so it will be lost if the app reloads before you send it.",
+                }),
+              );
+            }
           } catch (error) {
             await dismissSnapShotAnimation(item.id);
             soundedCaptureIdsRef.current.delete(item.id);
