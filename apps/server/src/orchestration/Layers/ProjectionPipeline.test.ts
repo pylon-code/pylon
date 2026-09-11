@@ -19,6 +19,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -2286,7 +2287,7 @@ const readCleanupCursor = Effect.gen(function* () {
   `;
 });
 
-const cleanupDirectoryListings = { count: 0 };
+const cleanupDirectoryListings = { count: 0, failPaths: new Set<string>() };
 const CountingFileSystemLayer = Layer.effect(
   FileSystem.FileSystem,
   Effect.gen(function* () {
@@ -2295,6 +2296,16 @@ const CountingFileSystemLayer = Layer.effect(
       ...fileSystem,
       readDirectory: (...args: Parameters<typeof fileSystem.readDirectory>) => {
         cleanupDirectoryListings.count += 1;
+        if (cleanupDirectoryListings.failPaths.has(args[0])) {
+          return Effect.fail(
+            PlatformError.systemError({
+              _tag: "Unknown",
+              module: "FileSystem",
+              method: "readDirectory",
+              description: "listing denied for the test",
+            }),
+          );
+        }
         return fileSystem.readDirectory(...args);
       },
     };
@@ -2375,6 +2386,83 @@ it.layer(
       cleanupDirectoryListings.count = 0;
       yield* projectionPipeline.bootstrap;
       assert.strictEqual(cleanupDirectoryListings.count, 0);
+    }),
+  );
+});
+
+it.layer(
+  Layer.fresh(
+    OrchestrationProjectionPipelineLive.pipe(
+      Layer.provideMerge(OrchestrationEventStoreLive),
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-projection-artifacts-listing-" }),
+      ),
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(CountingFileSystemLayer),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+  ),
+)("OrchestrationProjectionPipeline attachment cleanup backlog", (it) => {
+  it.effect("removes a deleted thread's browser artifacts when they cannot be listed", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const { browserArtifactsDir } = yield* ServerConfig;
+      const projectId = ProjectId.make("project-artifacts-listing");
+      const threadId = ThreadId.make("thread-artifacts-listing");
+
+      yield* appendCleanupProject(projectId);
+      yield* appendCleanupThreadCreated(projectId, threadId);
+      const lastEvent = yield* appendCleanupThreadDeleted(threadId);
+      const artifactsDir = resolveThreadBrowserArtifactsDir({ browserArtifactsDir, threadId })!;
+      yield* fileSystem.makeDirectory(artifactsDir, { recursive: true });
+      yield* fileSystem.writeFileString(path.join(artifactsDir, "recording.webm"), "video");
+      yield* seedCleanupBacklog(lastEvent.sequence, 0);
+
+      // The cursor still moves to the head at startup, so a failed listing must not skip removal.
+      cleanupDirectoryListings.failPaths.add(browserArtifactsDir);
+      yield* projectionPipeline.bootstrap.pipe(
+        Effect.ensuring(
+          Effect.sync(() => cleanupDirectoryListings.failPaths.delete(browserArtifactsDir)),
+        ),
+      );
+      assert.isFalse(yield* exists(artifactsDir));
+      assert.isTrue(yield* exists(browserArtifactsDir));
+      assert.deepEqual(yield* readCleanupCursor, [{ lastAppliedSequence: lastEvent.sequence }]);
+    }),
+  );
+
+  it.effect("keeps finished cleanup when a projector without cleanup lacks a cursor", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const sql = yield* SqlClient.SqlClient;
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const { attachmentsDir } = yield* ServerConfig;
+      const projectId = ProjectId.make("project-new-projector");
+      const threadId = ThreadId.make("thread-new-projector");
+
+      yield* appendCleanupProject(projectId);
+      yield* appendCleanupThreadCreated(projectId, threadId);
+      const lastEvent = yield* appendCleanupThreadDeleted(threadId);
+      yield* seedCleanupBacklog(lastEvent.sequence, lastEvent.sequence);
+      // A projector added in a later release starts without a row.
+      yield* sql`
+        DELETE FROM projection_state
+        WHERE projector = ${ORCHESTRATION_PROJECTOR_NAMES.pendingApprovals}
+      `;
+      const laterFilePath = path.join(
+        attachmentsDir,
+        "thread-new-projector-00000000-0000-4000-8000-000000000001.png",
+      );
+      yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFileString(laterFilePath, "not part of the finished cleanup");
+
+      yield* projectionPipeline.bootstrap;
+
+      assert.isTrue(yield* exists(laterFilePath));
+      assert.deepEqual(yield* readCleanupCursor, [{ lastAppliedSequence: lastEvent.sequence }]);
     }),
   );
 });
@@ -4923,6 +5011,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       const projectId = ProjectId.make("project-outer-rollback");
       const threadId = ThreadId.make("thread-outer-rollback");
       const cleanupFailureThreadId = ThreadId.make("thread-cleanup-failure");
+      const cleanupAfterFailureThreadId = ThreadId.make("thread-cleanup-after-failure");
       const cleanupRetryThreadId = ThreadId.make("thread-cleanup-retry");
       const commandId = CommandId.make("cmd-outer-rollback-delete");
       const attachmentPath = path.join(
@@ -4937,6 +5026,10 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         attachmentsDir,
         "thread-cleanup-retry-00000000-0000-4000-8000-000000000001.png",
       );
+      const cleanedAfterFailurePath = path.join(
+        attachmentsDir,
+        "thread-cleanup-after-failure-00000000-0000-4000-8000-000000000001.png",
+      );
 
       yield* engine.dispatch({
         type: "project.create",
@@ -4946,7 +5039,12 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         workspaceRoot: "/tmp/project-outer-rollback",
         createdAt,
       });
-      for (const id of [threadId, cleanupFailureThreadId, cleanupRetryThreadId]) {
+      for (const id of [
+        threadId,
+        cleanupFailureThreadId,
+        cleanupAfterFailureThreadId,
+        cleanupRetryThreadId,
+      ]) {
         yield* engine.dispatch({
           type: "thread.create",
           commandId: CommandId.make(`cmd-create-${id}`),
@@ -5040,6 +5138,14 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         commandId: cleanupFailureCommandId,
         threadId: cleanupFailureThreadId,
       });
+      // A later cleanup that succeeds must not carry the cursor past the failed one.
+      yield* fileSystem.writeFileString(cleanedAfterFailurePath, "remove this attachment");
+      yield* engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("cmd-cleanup-after-failure-delete"),
+        threadId: cleanupAfterFailureThreadId,
+      });
+      assert.isFalse(yield* exists(cleanedAfterFailurePath));
       const retryDelete = yield* engine.dispatch({
         type: "thread.delete",
         commandId: CommandId.make("cmd-cleanup-retry-delete"),

@@ -92,12 +92,16 @@ every event at or below it has been cleaned (`ProjectionPipeline.ts`):
   ran its cleanup, so it leaves no gap.
 - **Bootstrap.** After every projector has caught up, so message and `user-input.answer-submitted`
   references are current, bootstrap selects only the `thread.reverted` and `thread.deleted` rows
-  past the cursor, without decoding payloads. It lists the attachments directory once, skips
-  threads that have no files, and moves the cursor to the projector head. That pass is the single
-  retry: a file that still cannot be removed is logged and left behind rather than holding the
-  cursor. A database without the row starts at its lowest projector cursor, because projector
-  replay cleaned files before this cursor existed. Only a failure to list the directory or read the
-  log leaves the cursor for the next start.
+  past the cursor, without decoding payloads. It lists the attachments directory once, and the
+  browser artifacts directory once when a delete is in range (transferred recordings and saved
+  snapshots live in `browser-artifacts/<thread>/`, which only deleting the thread removes). Threads
+  with neither kind of file are skipped; if the artifacts listing fails, each deleted thread's
+  folder is removed directly instead. It then moves the cursor to the projector head. That pass is
+  the single retry: a file that still cannot be removed is logged and left behind rather than
+  holding the cursor. A database without the row starts at the lowest cursor of the projectors
+  that record cleanup (threads, messages, activities), because their replay cleaned files before
+  this cursor existed; adding an unrelated projector does not move it. Only a failure to list the
+  attachments directory or read the log leaves the cursor for the next start.
 
 `projection_state` can therefore hold rows that are not projectors. The snapshot sequence comes only
 from the required projectors (`computeSnapshotSequence` in `ProjectionSnapshotQuery.ts`), and code

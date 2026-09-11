@@ -424,13 +424,25 @@ function groupAttachmentFilesByThreadSegment(
   return filesBySegment;
 }
 
-/** The lowest projector cursor, or undefined while any projector has none. */
+/**
+ * Projectors whose replay records attachment cleanup (deletes, and message or answer pruning).
+ * Only their cursors can lower where cleanup restarts; adding an unrelated projector must not
+ * re-run every historical revert against today's references.
+ */
+const ATTACHMENT_CLEANUP_PROJECTOR_NAMES: ReadonlyArray<string> = [
+  ORCHESTRATION_PROJECTOR_NAMES.threads,
+  ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
+  ORCHESTRATION_PROJECTOR_NAMES.threadActivities,
+];
+
+/** The lowest cursor among the named projectors, or undefined while any of them has none. */
 function lowestProjectorCursor(
   states: ReadonlyArray<ProjectionState>,
+  names: ReadonlyArray<string> = Object.values(ORCHESTRATION_PROJECTOR_NAMES),
 ): ProjectionState | undefined {
   const byProjector = new Map(states.map((state) => [state.projector, state]));
   let lowest: ProjectionState | undefined;
-  for (const name of Object.values(ORCHESTRATION_PROJECTOR_NAMES)) {
+  for (const name of names) {
     const state = byProjector.get(name);
     if (!state) {
       return undefined;
@@ -2059,8 +2071,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     /**
      * Lists the attachments directory once (and the browser artifacts directory once when a
      * target deletes a thread) and cleans each target's files. Threads without files cost no
-     * reads. Returns false when any thread, file, or the artifacts listing failed (each is
-     * logged); fails only when the attachments directory cannot be listed.
+     * reads, unless the artifacts listing failed, in which case every deleted thread's folder is
+     * removed directly. Returns false when any thread or file failed (each is logged); fails only
+     * when the attachments directory cannot be listed.
      */
     const cleanupAttachments = Effect.fn("cleanupAttachments")(function* (
       targets: ReadonlyArray<AttachmentCleanupTarget>,
@@ -2091,7 +2104,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         );
       const filesBySegment = groupAttachmentFilesByThreadSegment(entries);
       let complete = true;
-      const browserArtifactSegments = new Set<string>();
+      // Null when the listing failed: any deleted thread may then own a folder, so each one is
+      // removed directly (a no-op when absent) instead of being skipped for good.
+      let browserArtifactSegments: Set<string> | null = new Set<string>();
       if (safeTargets.some(({ target }) => target.deletedAtSequence !== null)) {
         const artifactEntries = yield* fileSystem
           .readDirectory(serverConfig.browserArtifactsDir, { recursive: false })
@@ -2105,18 +2120,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                     ),
             }),
           );
-        if (artifactEntries === null) {
-          complete = false;
-        } else {
-          for (const entry of artifactEntries) {
-            browserArtifactSegments.add(entry.replace(/^[/\\]+/, ""));
-          }
-        }
+        browserArtifactSegments =
+          artifactEntries === null
+            ? null
+            : new Set(artifactEntries.map((entry) => entry.replace(/^[/\\]+/, "")));
       }
       for (const { target, threadSegment } of safeTargets) {
         const files = filesBySegment.get(threadSegment) ?? [];
         const hasBrowserArtifacts =
-          target.deletedAtSequence !== null && browserArtifactSegments.has(threadSegment);
+          target.deletedAtSequence !== null &&
+          (browserArtifactSegments === null || browserArtifactSegments.has(threadSegment));
         if (files.length === 0 && !hasBrowserArtifacts) continue;
         const cleaned = yield* cleanupThreadAttachmentFiles(
           target,
@@ -2324,7 +2337,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.gen(function* () {
       const states = yield* projectionStateRepository.listAll();
       const cleanupState = states.find((state) => state.projector === ATTACHMENT_CLEANUP_CURSOR);
-      const projectorFloor = lowestProjectorCursor(states);
+      const projectorFloor = lowestProjectorCursor(states, ATTACHMENT_CLEANUP_PROJECTOR_NAMES);
       const projectorStart = projectorFloor?.lastAppliedSequence ?? 0;
       // Projector replay cleaned files as it went before cleanup had its own cursor, so a
       // database without one starts where its projectors resume.
