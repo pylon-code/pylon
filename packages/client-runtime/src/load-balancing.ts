@@ -1,5 +1,23 @@
 import type { HostResourcesSnapshot } from "@t3tools/contracts";
 
+export type LoadBalancingStatus = "balanced" | "checking" | "unavailable";
+
+/**
+ * What Auto balance can promise an unresolved draft. A finished check that
+ * chose no machine is unavailable even without a failed request: no eligible
+ * candidates, or every candidate stale, saturated or excluded, also blocks send.
+ */
+export function resolveLoadBalancingStatus(input: {
+  readonly balancedEnvironmentId: string | null | undefined;
+  readonly pending: boolean;
+  readonly chosenEnvironmentId: string | null;
+}): LoadBalancingStatus {
+  if (input.balancedEnvironmentId) return "balanced";
+  if (input.pending) return "checking";
+  // A chosen machine the draft has not stored yet is still being saved.
+  return input.chosenEnvironmentId === null ? "unavailable" : "balanced";
+}
+
 /** Callers supply only connected machines hosting the project and selected provider. */
 export function chooseLoadBalancedEnvironment(
   candidates: ReadonlyArray<{

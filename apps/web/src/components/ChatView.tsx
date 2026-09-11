@@ -1,4 +1,5 @@
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
+import { resolveLoadBalancingStatus } from "@t3tools/client-runtime/load-balancing";
 import {
   resolveProjectScriptsWrite,
   supportsProjectDefaults,
@@ -3648,14 +3649,17 @@ export default function ChatView(props: ChatViewProps) {
     logicalProjectEnvironments,
     composerHasAttachments,
   ]);
+  const loadBalancingStatus = resolveLoadBalancingStatus({
+    balancedEnvironmentId: draftThread?.loadBalancedEnvironmentId,
+    pending: loadBalancing.pending,
+    chosenEnvironmentId: loadBalancing.environmentId,
+  });
   const autoEnvironmentLabel = automaticEnvironment
-    ? draftThread?.loadBalancedEnvironmentId
-      ? "Auto balance"
-      : loadBalancing.pending
-        ? "Checking machines…"
-        : loadBalancing.failed
-          ? "Auto balance unavailable"
-          : "Auto balance"
+    ? loadBalancingStatus === "checking"
+      ? "Checking machines…"
+      : loadBalancingStatus === "unavailable"
+        ? "Auto balance unavailable"
+        : "Auto balance"
     : undefined;
 
   // Handle environment change for draft threads.  When the user picks a

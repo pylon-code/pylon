@@ -30,7 +30,6 @@ export function useLoadBalancedEnvironment(
             resources: result._tag === "Success" ? result.value : null,
             receivedAt: result._tag === "Success" ? result.timestamp : 0,
             pending: result._tag === "Initial" || result.waiting,
-            failed: result._tag === "Failure",
           };
         }),
       ),
@@ -45,10 +44,5 @@ export function useLoadBalancedEnvironment(
     })),
     Date.now(),
   ) as EnvironmentId | null;
-  return {
-    refresh,
-    pending,
-    environmentId,
-    failed: !pending && environmentId === null && resources.some((resource) => resource.failed),
-  };
+  return { refresh, pending, environmentId };
 }
