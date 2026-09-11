@@ -108,7 +108,7 @@ import {
   type ProviderOperateAccess,
   resolvePrimaryOperateAccess,
   resolveRemoteOperateAccess,
-  resolveSelectedProviderEnvironmentId,
+  resolveProviderSettingsTargetEnvironment,
 } from "./ProviderSettingsPanel.logic";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
 
@@ -294,16 +294,15 @@ function ProviderSettingsPanelContent(target: ProviderSettingsTarget) {
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<EnvironmentId | null>(
     target.environmentId ?? primaryEnvironmentId,
   );
-  // A requested device that is not listed yet holds the page on loading until
-  // the device list is ready; only a loaded list can prove the device is gone.
-  const targetEnvironmentAbsent =
-    target.environmentId !== undefined &&
-    selectedEnvironmentId === target.environmentId &&
-    !options.some((environment) => environment.environmentId === target.environmentId);
-  const targetEnvironmentMissing = isReady && targetEnvironmentAbsent;
-  const effectiveEnvironmentId = targetEnvironmentAbsent
-    ? target.environmentId
-    : resolveSelectedProviderEnvironmentId(options, selectedEnvironmentId, primaryEnvironmentId);
+  const { effectiveEnvironmentId, targetEnvironmentState } =
+    resolveProviderSettingsTargetEnvironment({
+      environments: options,
+      isReady,
+      selectedEnvironmentId,
+      primaryEnvironmentId,
+      targetEnvironmentId: target.environmentId,
+    });
+  const targetEnvironmentMissing = targetEnvironmentState === "missing";
   const selectedEnvironment =
     options.find((environment) => environment.environmentId === effectiveEnvironmentId) ?? null;
   const selectedEnvironmentCanRenderSettings =
@@ -390,7 +389,8 @@ function ProviderSettingsPanelContent(target: ProviderSettingsTarget) {
           description="Reconnect this device to set up its provider, or select another device."
         />
       ) : null}
-      {(options.length === 0 || targetEnvironmentAbsent) && !targetEnvironmentMissing ? (
+      {(options.length === 0 || targetEnvironmentState === "loading") &&
+      !targetEnvironmentMissing ? (
         <SettingsSection {...searchableSetting("providers")}>
           <SettingsRow
             title={isReady ? "No connected devices" : "Loading devices"}

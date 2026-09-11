@@ -25,16 +25,44 @@
 import type {
   OrchestrationMessage,
   ProviderInstanceId,
+  ServerProvider,
   ThreadHandoffEstimate,
 } from "@t3tools/contracts";
 import { estimateThreadHandoff, formatHandoffTokenCost } from "@t3tools/contracts";
+import type { UnifiedSettings } from "@t3tools/contracts/settings";
 
 import { getDiffLineStat, getRenderablePatch, resolveFileDiffPath } from "../../lib/diffRendering";
+import { resolveAppModelSelectionForInstance } from "../../modelSelection";
 import {
+  getDefaultProviderInstanceModel,
   isProviderInstanceDrained,
   sortProviderInstancesForRouting,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
+
+/**
+ * Model for continuing a thread on another account: the current model when the
+ * target account can run it, otherwise the target's own default. Hidden models
+ * are a picker preference and never block the handoff; null means the target
+ * reports no model at all.
+ */
+export function resolveThreadHandoffTargetModel(input: {
+  readonly targetInstanceId: ProviderInstanceId;
+  readonly settings: UnifiedSettings;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly selectedModel: string;
+}): string | null {
+  return (
+    resolveAppModelSelectionForInstance(
+      input.targetInstanceId,
+      input.settings,
+      input.providers,
+      input.selectedModel,
+    ) ??
+    getDefaultProviderInstanceModel(input.providers, input.targetInstanceId) ??
+    null
+  );
+}
 
 /**
  * Turns kept verbatim when a thread is too large to replay whole.

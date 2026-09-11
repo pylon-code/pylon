@@ -87,11 +87,12 @@ export interface ComposerInstanceSelection {
   readonly lockedContinuationGroupKey: string | null;
   /**
    * The instance whose provider settings the composer should open because the
-   * turn cannot start there: the resolved entry when it is disabled, or, when
-   * no entry resolved, the instance the thread asked for (its locked instance
-   * first). Undefined while the resolved entry is enabled, when it is blocked by
-   * explicit unavailability (enabling it cannot help; pick another provider),
-   * or when nothing was requested.
+   * turn cannot start there: the resolved entry when it is disabled and no
+   * enabled, available continuation peer can take the thread, or, when no entry
+   * resolved, the instance the thread asked for (its locked instance first).
+   * Undefined while the resolved entry is enabled, when a continuation peer can
+   * be picked instead, when explicit unavailability blocks it (enabling it cannot
+   * help; pick another provider), or when nothing was requested.
    */
   readonly unavailableInstanceId: ProviderInstanceId | undefined;
 }
@@ -158,6 +159,20 @@ export function resolveComposerInstanceSelection(
         { instanceId: input.projectInstanceId, pinned: false },
       ];
 
+  // A disabled binding needs settings only when the picker has nothing to
+  // offer: an enabled, available continuation peer is the deliberate remedy.
+  const hasEnabledContinuationPeer = (entry: ProviderInstanceEntry) =>
+    entries.some(
+      (peer) =>
+        peer.instanceId !== entry.instanceId &&
+        peer.enabled &&
+        peer.isAvailable &&
+        resolveProviderContinuationTransition({
+          providers,
+          currentInstanceId: entry.instanceId,
+          targetInstanceId: peer.instanceId,
+        }).compatible,
+    );
   const finish = (
     instanceId: ProviderInstanceId,
     entry: ProviderInstanceEntry | undefined,
@@ -173,7 +188,7 @@ export function resolveComposerInstanceSelection(
     unavailableInstanceId:
       entry === undefined
         ? (lockedInstanceId ?? requestedInstanceId)
-        : entry.enabled || blockedByUnavailablePreference
+        : entry.enabled || blockedByUnavailablePreference || hasEnabledContinuationPeer(entry)
           ? undefined
           : entry.instanceId,
   });

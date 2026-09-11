@@ -397,11 +397,6 @@ export function collectLocalTimelineMessageIds(
   return new Set(optimisticUserMessages.map((message) => message.id));
 }
 
-/**
- * The interrupt a Stop action may send for the focused thread, or null when
- * nothing can be stopped. Mirrors the composer's Stop button: a running turn,
- * or a turn still awaiting provider admission (which has no turn id yet).
- */
 /** Why the composer cannot send to Antigravity yet, or null when the server can take the turn. */
 export function getAntigravitySendBlockReason(
   provider:
@@ -418,7 +413,12 @@ export function getAntigravitySendBlockReason(
     return "Sign in to Antigravity in provider settings before sending.";
   }
   const slug = model.trim();
-  if (slug.length === 0) return "Choose an Antigravity model before sending.";
+  if (slug.length === 0) {
+    // With no catalog there is nothing to choose from; reloading it is the next step.
+    return provider.models.length === 0
+      ? "Refresh Antigravity models in provider settings before sending."
+      : "Choose an Antigravity model before sending.";
+  }
   // A restart clears the account status and catalog. Session startup checks
   // saved credentials and validates the model before sending the prompt.
   if (provider.auth.status === "unknown") return null;
@@ -439,6 +439,11 @@ export function getAntigravitySendBlockReason(
   return null;
 }
 
+/**
+ * The interrupt a Stop action may send for the focused thread, or null when
+ * nothing can be stopped. Mirrors the composer's Stop button: a running turn,
+ * or a turn still awaiting provider admission (which has no turn id yet).
+ */
 export function buildRunningThreadTurnInterruptInput(
   thread: Pick<Thread, "id" | "session"> | null | undefined,
   phase: SessionPhase,

@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MODEL_BY_PROVIDER,
   MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -6,6 +7,7 @@ import {
   type ServerProvider,
   type ThreadHandoffEstimate,
 } from "@t3tools/contracts";
+import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vite-plus/test";
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
@@ -15,6 +17,7 @@ import {
   getThreadContinuationLinks,
   getThreadHandoffOffer,
   HANDOFF_DIFF_FILE_LIMIT,
+  resolveThreadHandoffTargetModel,
   selectHandoffMessages,
   summarizeHandoffDiff,
 } from "./ThreadHandoff.logic";
@@ -295,6 +298,74 @@ describe("getThreadContinuationLinks", () => {
     });
 
     expect(links).toEqual([]);
+  });
+});
+
+describe("resolveThreadHandoffTargetModel", () => {
+  const targetInstanceId = ProviderInstanceId.make("claude_personal");
+  const target = (models: ReadonlyArray<string>, driver = "claudeAgent"): ServerProvider => ({
+    instanceId: targetInstanceId,
+    driver: ProviderDriverKind.make(driver),
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-08-05T17:00:00.000Z",
+    models: models.map((slug) => ({ slug, name: slug, isCustom: false, capabilities: null })),
+    slashCommands: [],
+    skills: [],
+  });
+  const hiding = (hiddenModels: ReadonlyArray<string>): UnifiedSettings => ({
+    ...DEFAULT_UNIFIED_SETTINGS,
+    providerModelPreferences: {
+      [targetInstanceId]: { hiddenModels: [...hiddenModels], modelOrder: [] },
+    },
+  });
+
+  it("carries the current model over when the target account serves it", () => {
+    expect(
+      resolveThreadHandoffTargetModel({
+        targetInstanceId,
+        settings: DEFAULT_UNIFIED_SETTINGS,
+        providers: [target(["claude-opus-4-6", "claude-sonnet-4-6"])],
+        selectedModel: "claude-sonnet-4-6",
+      }),
+    ).toBe("claude-sonnet-4-6");
+  });
+
+  it("still continues when every model on the target account is hidden", () => {
+    expect(
+      resolveThreadHandoffTargetModel({
+        targetInstanceId,
+        settings: hiding(["claude-opus-4-6", "claude-sonnet-4-6"]),
+        providers: [target(["claude-opus-4-6", "claude-sonnet-4-6"])],
+        selectedModel: "claude-sonnet-4-6",
+      }),
+    ).toBe("claude-opus-4-6");
+  });
+
+  it("falls back to the target driver's default before its catalog loads", () => {
+    expect(
+      resolveThreadHandoffTargetModel({
+        targetInstanceId,
+        settings: DEFAULT_UNIFIED_SETTINGS,
+        providers: [target([])],
+        selectedModel: "claude-sonnet-4-6",
+      }),
+    ).toBe(DEFAULT_MODEL_BY_PROVIDER[ProviderDriverKind.make("claudeAgent")]);
+  });
+
+  it("returns null only when the target account reports no model at all", () => {
+    expect(
+      resolveThreadHandoffTargetModel({
+        targetInstanceId,
+        settings: DEFAULT_UNIFIED_SETTINGS,
+        // A fork driver has no built-in default model to fall back to.
+        providers: [target([], "forkDriver")],
+        selectedModel: "fork-model",
+      }),
+    ).toBeNull();
   });
 });
 

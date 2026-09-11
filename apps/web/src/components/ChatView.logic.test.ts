@@ -892,8 +892,10 @@ describe("getAntigravitySendBlockReason", () => {
     expect(
       getAntigravitySendBlockReason({ ...provider, models: catalogModels }, "gemini-pro"),
     ).toBeNull();
+    // A new thread or a default-model selection resolves to no model while the
+    // catalog is empty; the actionable step is reloading the catalog.
     expect(getAntigravitySendBlockReason(provider, "")).toBe(
-      "Choose an Antigravity model before sending.",
+      "Refresh Antigravity models in provider settings before sending.",
     );
   });
 
