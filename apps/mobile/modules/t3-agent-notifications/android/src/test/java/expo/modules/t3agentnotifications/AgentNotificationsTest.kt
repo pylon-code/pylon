@@ -160,7 +160,10 @@ class AgentNotificationsTest {
     val alert = manager.activeNotifications.single()
     assertEquals("5 agents finished", alert.notification.extras.getString(Notification.EXTRA_TITLE))
     assertEquals(titles, alert.notification.extras.getString(Notification.EXTRA_BIG_TEXT))
-    assertEquals("pylon-code-dev://", shadowOf(alert.notification.contentIntent).savedIntent.dataString)
+    assertEquals(
+      "pylon-code-dev://",
+      shadowOf(alert.notification.contentIntent).savedIntent.dataString
+    )
   }
 
   @Test
