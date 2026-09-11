@@ -467,6 +467,54 @@ it.effect("preserves window capture metadata in thread.turn.start", () =>
   }),
 );
 
+// Capture metadata travels on persisted events and thread streams, so a source this
+// build cannot decode (a newer shape, or a tree over the limits) must drop only the
+// metadata. Failing it would fail the whole message or command.
+it.effect("keeps an image attachment whose capture metadata has an unknown shape", () =>
+  Effect.gen(function* () {
+    const image = {
+      type: "image",
+      id: "thread-1-00000000-0000-4000-8000-000000000004",
+      name: "window.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+      source: { kind: "snap-shot-v2", capturedAt: 42, frames: ["a", "b"] },
+    };
+
+    const message = yield* decodeOrchestrationMessage({
+      id: "message-1",
+      role: "user",
+      text: "look at this window",
+      attachments: [image],
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const attachment = message.attachments?.[0] as ChatImageAttachment | undefined;
+    assert.strictEqual(attachment?.name, "window.png");
+    assert.strictEqual(attachment?.source, undefined);
+
+    const command = yield* decodeThreadTurnStartCommand({
+      type: "thread.turn.start",
+      commandId: "cmd-snap-shot-future",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-snap-shot-future",
+        role: "user",
+        text: "Review this window",
+        attachments: [image],
+      },
+      createdAt: "2026-08-24T11:00:00.000Z",
+    });
+    assert.strictEqual(command.message.attachments[0]?.type, "image");
+    assert.strictEqual(
+      (command.message.attachments[0] as { readonly source?: unknown }).source,
+      undefined,
+    );
+  }),
+);
+
 it.effect("rejects accessibility trees above the serialized payload limit", () =>
   Effect.gen(function* () {
     const result = yield* Effect.exit(

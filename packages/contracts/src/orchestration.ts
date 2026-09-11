@@ -11,6 +11,7 @@ import {
   ClientSurface,
   CommandId,
   EventId,
+  ForwardCompatibleOptional,
   IsoDateTime,
   MessageId,
   NonNegativeInt,
@@ -299,7 +300,9 @@ export const ChatImageAttachment = Schema.Struct({
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
   mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100), Schema.isPattern(/^image\//i)),
   sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)),
-  source: Schema.optional(SnapShotSource),
+  // Capture metadata rides on persisted events and thread streams. A shape this
+  // build cannot decode drops the metadata instead of failing the attachment.
+  source: ForwardCompatibleOptional(SnapShotSource),
 });
 export type ChatImageAttachment = typeof ChatImageAttachment.Type;
 
@@ -345,7 +348,7 @@ const UploadChatImageAttachment = Schema.Struct({
   dataUrl: TrimmedNonEmptyString.check(
     Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS),
   ),
-  source: Schema.optional(SnapShotSource),
+  source: ForwardCompatibleOptional(SnapShotSource),
 });
 export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
 

@@ -17,6 +17,7 @@ import {
   type ScopedProjectRef,
   type ScopedThreadRef,
   ThreadId,
+  ForwardCompatibleOptional,
   SnapShotSource,
 } from "@t3tools/contracts";
 import {
@@ -121,7 +122,8 @@ export const PersistedComposerImageAttachment = Schema.Struct({
   name: Schema.String,
   mimeType: Schema.String,
   sizeBytes: Schema.Number,
-  source: Schema.optional(SnapShotSource),
+  // A capture shape this build cannot decode must not discard the saved image.
+  source: ForwardCompatibleOptional(SnapShotSource),
   dataUrl: Schema.String,
 });
 export type PersistedComposerImageAttachment = typeof PersistedComposerImageAttachment.Type;

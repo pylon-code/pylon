@@ -74,6 +74,7 @@ import {
   composerFileNeedsReattach,
   partializeComposerDraftStoreState,
   flushComposerDraftStore,
+  PersistedComposerImageAttachment,
   useComposerDraftStore,
   DraftId,
 } from "./composerDraftStore";
@@ -190,6 +191,22 @@ function draftFor(threadId: ThreadId, environmentId: EnvironmentId = LEGACY_TEST
 function draftByKey(key: string) {
   return useComposerDraftStore.getState().draftsByThreadKey[key] ?? undefined;
 }
+
+describe("PersistedComposerImageAttachment", () => {
+  it("keeps a saved image whose capture metadata this build cannot decode", () => {
+    const decoded = Schema.decodeUnknownSync(PersistedComposerImageAttachment)({
+      id: "saved-window",
+      name: "window.png",
+      mimeType: "image/png",
+      sizeBytes: 3,
+      dataUrl: "data:image/png;base64,AQID",
+      source: { kind: "snap-shot-v2", frames: [] },
+    });
+
+    expect(decoded.name).toBe("window.png");
+    expect(decoded.source).toBeUndefined();
+  });
+});
 
 describe("composerDraftStore assistant citations", () => {
   beforeEach(resetComposerDraftStore);
