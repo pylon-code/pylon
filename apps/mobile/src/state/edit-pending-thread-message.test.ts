@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { CommandId, EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EnvironmentId,
+  MessageId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 
 const state = vi.hoisted(() => ({
@@ -9,6 +15,7 @@ const state = vi.hoisted(() => ({
   confirm: vi.fn(async () => true),
   remove: vi.fn(async () => true),
   flush: vi.fn(async () => {}),
+  settings: vi.fn((_key: string, _settings: Record<string, unknown>) => {}),
 }));
 vi.mock("./atom-registry", () => ({
   appAtomRegistry: {
@@ -39,7 +46,7 @@ vi.mock("./use-composer-drafts", () => ({
       attachments: [...state.draft.attachments, ...message.attachments],
     };
   },
-  updateComposerDraftSettings: () => {},
+  updateComposerDraftSettings: state.settings,
   flushComposerDrafts: state.flush,
   undoComposerDraftMerge: async (_key: string, snapshot: typeof state.draft) => {
     state.draft = snapshot;
@@ -88,6 +95,14 @@ describe("editing a pending message", () => {
     });
     expect(await editPendingThreadMessage(message)).toBe(true);
     expect(state.held).toEqual({});
+  });
+  it("restores the queued provider choice as an explicit selection", async () => {
+    const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
+    expect(await editPendingThreadMessage({ ...message, modelSelection })).toBe(true);
+    expect(state.settings).toHaveBeenCalledWith("env:thread", {
+      modelSelection,
+      providerSelectionExplicit: true,
+    });
   });
   it("does not reclaim a message already being dispatched", async () => {
     state.dispatching = message.messageId;
