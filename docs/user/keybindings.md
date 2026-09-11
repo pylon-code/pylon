@@ -66,6 +66,12 @@ link, or its thread ID when no pull request is available. Its default shortcut i
 terminal copy keeps its existing shortcut. The command is also available from the command palette
 and on mobile hardware keyboards.
 
+`thread.stop` stops the running turn in the focused thread, including a turn that is still waiting
+to start. It does the same thing as the composer's Stop button and **Stop the running turn** in the
+command palette. It has no default shortcut, so add one in **Settings** → **Keybindings** if you want
+to use it. When nothing is running, the shortcut does nothing and leaves the key free for other
+commands, such as `Escape` closing a dialog.
+
 `thread.settle` settles the active thread or restores it when it is already settled. Its default
 shortcut is `mod+shift+s`, and it does not run while the terminal has focus.
 

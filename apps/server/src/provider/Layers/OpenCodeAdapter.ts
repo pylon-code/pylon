@@ -2881,6 +2881,8 @@ export function makeOpenCodeAdapter(
                         Authorization: mcpSession.authorizationHeader,
                       },
                       oauth: false,
+                      // OpenCode also applies this to connecting and listing tools.
+                      timeout: McpProviderSession.MCP_PROVIDER_TOOL_TIMEOUT_MS,
                     },
                   }),
                 );

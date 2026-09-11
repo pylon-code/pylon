@@ -372,6 +372,9 @@ export const ServerProvider = Schema.Struct({
   // legacy producers retain their exact behavior through compatibility helpers.
   featureCapabilities: Schema.optionalKey(ProviderFeatureCapabilities),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),
+  // The driver streams context window usage, so a started thread will have a
+  // meter once its activities load. Clients reserve the meter's space on it.
+  reportsContextWindow: Schema.optional(Schema.Boolean),
   requiresNewThreadForModelChange: Schema.optional(Schema.Boolean),
   supportedRuntimeModes: Schema.optional(Schema.Array(RuntimeMode)),
   supportsBackgroundTextGeneration: Schema.optional(Schema.Boolean),

@@ -40,6 +40,19 @@ export function toSafeThreadAttachmentSegment(threadId: string): string | null {
   return segment === PENDING_ATTACHMENT_THREAD_SEGMENT ? "_pending" : segment;
 }
 
+/**
+ * Holds the screenshots an agent saves and the recordings it receives for one thread.
+ * No message references these files, so reverts leave the directory alone and only
+ * deleting the thread removes it.
+ */
+export function resolveThreadBrowserArtifactsDir(input: {
+  readonly browserArtifactsDir: string;
+  readonly threadId: string;
+}): string | null {
+  const threadSegment = toSafeThreadAttachmentSegment(input.threadId);
+  return threadSegment ? NodePath.join(input.browserArtifactsDir, threadSegment) : null;
+}
+
 export function attachmentFileExtension(fileName: string): string {
   const extension = NodePath.extname(fileName).toLowerCase();
   // ".part" is reserved for in-flight uploads; a stored "archive.part" would
