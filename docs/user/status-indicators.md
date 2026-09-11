@@ -21,7 +21,9 @@ green liveness halo. Reduce Motion hides both halos.
 
 Task lists use `✓` for completed steps, `●` for the current step, and `○` for
 pending or passive waiting steps. A step that is specifically waiting for you
-uses an amber `●`.
+uses an amber `●`. In the composer's task list, each row also names its state
+as **Completed**, **Running**, **Pending**, or **Waiting**, and the tasks bar
+shows progress as a count such as `2/5 complete`.
 
 A working thread also carries its plan progress as a step count, such as
 `3/7`, on sidebar rows and mobile thread rows. The count appears once the
