@@ -9,7 +9,12 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
-import { FetchHttpClient } from "effect/unstable/http";
+import {
+  Cookies,
+  FetchHttpClient,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/unstable/http";
 import { ManagedRelay } from "@t3tools/client-runtime/relay";
 
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -1056,8 +1061,12 @@ describe("makeRelayDeviceRegistrationRequest", () => {
     setAgentAwarenessRelayTokenProvider(() => Promise.resolve("clerk-token-user-a"), "user-a");
 
     return Effect.gen(function* () {
-      // Headers lack getSetCookie here, as on Hermes. Reading response cookies
-      // safely is the Effect patch's concern; this checks the typed failure.
+      // Hermes' compiled error hashing reads the response's cookie getter.
+      const httpResponse = HttpClientResponse.fromWeb(
+        HttpClientRequest.post("https://relay.example.test/v1/mobile/devices"),
+        rejectedResponse,
+      );
+      expect(httpResponse.cookies).toEqual(Cookies.empty);
       const result = yield* Effect.exit(
         updateAgentAwarenessRegistrationPreferences({ liveActivitiesEnabled: true }),
       );
