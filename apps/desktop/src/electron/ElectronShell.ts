@@ -86,8 +86,16 @@ export const make = ElectronShell.of({
         () => false,
       ),
     ),
+  // Electron 44's clipboard writes are async and can reject. A failed copy must not
+  // fail the menu action that asked for it, but it should leave a trace.
   copyText: (text) =>
-    Effect.promise(() => Electron.clipboard.writeText(text).catch(() => undefined)),
+    Effect.tryPromise(() => Electron.clipboard.writeText(text)).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Clipboard write failed.", { cause: error.cause }).pipe(
+          Effect.annotateLogs({ component: "electron-shell" }),
+        ),
+      ),
+    ),
 });
 
 export const layer = Layer.succeed(ElectronShell, make);
