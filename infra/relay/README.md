@@ -9,7 +9,7 @@ optional mobile notifications and Live Activities.
 
 The relay is intentionally not in the hot path for normal T3 Code traffic. After a client connects,
 regular API and WebSocket traffic goes directly between that client and the selected environment.
-See the [Pylon Connect architecture overview](../../docs/internals/t3-code-connect-auth-flow.html) for the larger system
+See the [Pylon Connect architecture note](../../docs/internals/t3-connect.md) for the larger system
 design.
 
 ## Responsibilities
@@ -159,8 +159,6 @@ and hosted web builds.
 
 See:
 
-- [Pylon Connect Clerk Setup](../../docs/internals/t3-connect.md) for Clerk keys, JWT templates, and sign-up restrictions
-  setup.
+- [Pylon Connect setup](../../docs/operations/connect-setup.md) for Clerk keys, JWT templates, and sign-up restrictions.
 - [Relay Observability](../../docs/operations/relay-observability.md) for deployment tracing and diagnostics.
-- [Pylon Connect Architecture Overview](../../docs/internals/t3-code-connect-auth-flow.html) for the full link,
-  connect, endpoint, and notification flows.
+- [Pylon Connect architecture](../../docs/internals/t3-connect.md) for environment linking and trust boundaries.

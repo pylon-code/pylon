@@ -79,7 +79,7 @@ EAS file variable named `T3CODE_ANDROID_GOOGLE_SERVICES_FILE` for the Google ser
 file available to fingerprint generation as well as the native build. FCM service-account
 credentials belong on the relay, not in EAS's app environment. If deploying a separate relay,
 configure the build's Pylon Connect public settings for that relay and Clerk application as
-described in [Pylon Connect](../internals/t3-connect.md).
+described in [Pylon Connect setup](./connect-setup.md#public-application-configuration).
 
 Over-the-air updates are already off unless `PYLON_EAS_PROJECT_ID` is set. When it is set, also set
 `T3CODE_MOBILE_UPDATES_ENABLED=0` before prebuild and bundling a private binary to keep it off the
@@ -98,7 +98,7 @@ clerk://com.pylon.code.dev.callback
 
 A "redirect url ... does not match an authorized redirect URI" error requires a Clerk configuration
 change; rebuilding the same APK does not fix it. Reopen sign-in after the administrator saves the
-entry. See [Android native sign-in redirects](../internals/t3-connect.md#android-native-sign-in-redirects)
+entry. See [Android native sign-in redirects](./connect-setup.md#android-native-sign-in-redirects)
 for the other variants.
 
 A build that uses the production publishable key selects the production Clerk instance; changing its
