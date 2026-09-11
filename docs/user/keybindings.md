@@ -1,16 +1,14 @@
 # Keybindings
 
-Edit keybindings from **Settings** → **Keybindings**. That page lists every command, its current
-shortcut, whether it is a default or your own, and warns about conflicts. In the desktop app it
-also warns when a shortcut matches your SnapShot shortcut, which is claimed system-wide and never
-reaches Pylon while SnapShots are on.
+Customize shortcuts in **Settings → Keybindings** on web and desktop. That page lists the command IDs
+and defaults available in your version and warns about conflicts. In the desktop app it also warns
+when a shortcut matches your SnapShot shortcut, which is claimed system-wide and never reaches Pylon
+while SnapShots are on.
 
-The same configuration lives in `~/.pylon-code/userdata/keybindings.json` on the machine running
-the server, if you prefer editing it directly. Pylon writes the built-in defaults into that file on
-first run, and adds any new defaults on later startups unless a rule of yours already claims the
-command or the shortcut.
+## Edit the configuration file
 
-The file is a JSON array of rules.
+Keybindings live on the environment's machine, in `~/.pylon-code/userdata/keybindings.json` by
+default. You can edit this file directly. It is a JSON array of rules:
 
 ```json
 [
@@ -19,125 +17,82 @@ The file is a JSON array of rules.
 ]
 ```
 
-Invalid rules are ignored. An invalid file is ignored entirely, and the server logs a warning.
+Pylon creates the file with its defaults and adds new defaults on later startups unless one of your
+rules already claims that command or shortcut. Invalid rules are ignored; if the file cannot be
+parsed, Pylon uses defaults and the server logs a warning.
 
-## Rule Shape
+## Rule shape
 
-- `key` (required): shortcut string, like `mod+j`, `ctrl+k`, `cmd+shift+d`
-- `command` (required): the command ID to run
-- `when` (optional): boolean expression controlling when the shortcut is active
+Each rule requires a `key` shortcut and a `command` ID. An optional `when` expression restricts when
+it runs.
 
-## Key Syntax
+Project scripts use `script.{id}.run`, such as `script.test.run`. Script IDs with a shortcut use 1–24
+lowercase letters, digits, or hyphens and start with a letter or digit. Older scripts with other IDs
+can still run, but cannot have a shortcut.
 
-Modifiers: `mod` (`cmd` on macOS, `ctrl` elsewhere), `cmd` / `meta`, `ctrl` / `control`, `shift`,
-`alt` / `option`.
+## Key syntax
 
-Examples: `mod+j`, `mod+shift+d`, `ctrl+l`, `cmd+k`.
+Join modifiers and a key with `+`, such as `mod+shift+d` or `ctrl+l`. `mod` means Command on macOS
+and Control elsewhere. Other modifiers are `cmd` / `meta`, `ctrl` / `control`, `alt` / `option`, and
+`shift`.
 
-## Commands
+## When conditions
 
-Commands are IDs like `terminal.toggle`, `commandPalette.toggle`, `preview.refresh`, and
-`chat.new`. Project scripts are addressable as `script.{id}.run`, for example `script.test.run`.
+Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`, `previewOpen`, and
+`modelPickerOpen`. Unknown keys evaluate to `false`.
 
-New script IDs use 1–24 lowercase letters, digits, or hyphens and start with a letter or digit.
-Older scripts with other IDs remain available to run, edit, and delete, but cannot have a keyboard shortcut.
+Combine keys with `!` for not, `&&` for and, `||` for or, and parentheses:
 
-`filePicker.toggle` opens file search for the active project and defaults to `mod+p`.
-`projectSearch.toggle` searches inside the active project's files and defaults to `mod+shift+f`.
-Repeating either shortcut closes that search, and switching shortcuts replaces the open search.
-`themeEditor.toggle` opens or closes the floating theme editor and defaults to
-`mod+alt+shift+t`. Select a color label to spotlight the elements that use it; select the label
-again to clear the spotlight. The swatch and hex field keep that color selected while you edit it.
-Advanced mode groups related app tokens into a smaller set of color families. Changing a family
-updates its paired text and interaction states while leaving every unrelated imported color intact.
-Use **Inspect** to pick an element in the app and reveal its color token. Inspect disarms after one
-successful pick; its hover glow and badge preview the element and color family that click will select.
-**Cancel** or `Escape` exits Inspect and clears its selection and spotlight.
-
-`rightPanel.toggleMaximized` maximizes or restores the open right panel. It has no default shortcut,
-so add one in **Settings** → **Keybindings** if you want to use it.
-
-`rightPanel.close` closes the active right panel tab and defaults to `mod+w`. Press it again to close
-the next tab. With the terminal focused, `mod+w` closes the terminal instead, and with nothing left
-to close it closes the desktop window as before. Browsers reserve `mod+w` for closing their own tab
-and never pass it to the page, so in a browser rebind this command (and `terminal.close`) to a
-shortcut the browser leaves alone, such as `alt+w`.
-
-`thread.copyReference` copies the open pull request panel URL, then the active thread’s pull request
-link, or its thread ID when no pull request is available. Its default shortcut is `mod+shift+c`;
-terminal copy keeps its existing shortcut. The command is also available from the command palette
-and on mobile hardware keyboards.
-
-`thread.stop` stops the running turn in the focused thread, including a turn that is still waiting
-to start. It does the same thing as the composer's Stop button and **Stop the running turn** in the
-command palette. It has no default shortcut, so add one in **Settings** → **Keybindings** if you want
-to use it. When nothing is running, the shortcut does nothing and leaves the key free for other
-commands, such as `Escape` closing a dialog.
-
-`thread.settle` settles the active thread or restores it when it is already settled. Its default
-shortcut is `mod+shift+s`, and it does not run while the terminal has focus.
-
-`thread.pin` pins the active thread to the pinned section of the sidebar, or unpins it when it is
-already pinned. Its default shortcut is `mod+shift+p`, and it does not run while the terminal has
-focus. See [Organizing threads](./thread-sidebar.md) for how pinned threads are ordered.
-
-The command palette searches settings, active thread titles, projects, branches, user messages, and
-final agent responses across connected environments. A setting result opens its exact control or
-section. Message matches show one labeled excerpt while keeping the thread's project, branch, and
-machine context visible. Message search begins after two characters and uses SQLite's ASCII
-case-insensitive matching.
-
-The full command list and the current defaults are shown in **Settings** → **Keybindings**, which
-always matches the build you are running. Use that rather than a copied list.
-
-Note that `chat.new` and `chat.newLocal` both create a thread through the same path. A new thread
-inherits the project you were in, along with model and mode selections. Branch, worktree, and
-environment mode always come from your configured defaults, not from the thread you were looking
-at. To keep a worktree, use the explicit "new thread in this worktree" action in the branch
-toolbar. The only difference between the two commands: with the current sidebar and more than one
-project, `chat.new` opens a project chooser first.
-
-Background submission from a new thread is the exception. `mod+enter` starts that thread and opens
-another new thread with the same workspace mode and base branch. **New worktree** remains selected,
-but the new thread does not reuse the worktree created for the thread that just started.
-
-## Desktop quit shortcut
-
-Use `Cmd+Q` on macOS or `Ctrl+Q` on Windows and Linux. **Settings** → **General** →
-**Confirmations** → **Quit shortcut** chooses how it confirms:
-
-- **Hold** (the default): hold the shortcut for 1.2 seconds, or press it twice within
-  500 milliseconds. A single quick press shows a hint instead of quitting.
-- **Double press**: press the shortcut twice within 500 milliseconds. The first press
-  shows a hint until that window ends.
-- **Direct**: the first press quits.
-
-The second press quits immediately. You can keep Command or Control held between presses,
-or release both keys. An unrelated shortcut cancels the first press.
-
-Holding needs keyboard repeat. If holding does not quit, use two quick presses or choose
-**Quit** from the application menu. The application menu's **Quit** action always quits
-immediately. If Pylon had **Hold to quit** turned off before this setting existed, it starts
-in **Direct**.
-
-## `when` Conditions
-
-A `when` expression is evaluated against context keys describing the current UI state. The keys
-the app supplies today are `terminalFocus`, `terminalOpen`, `previewFocus`, `previewOpen`, and
-`modelPickerOpen`. The set is open and grows over time, so treat that as the current list rather
-than a fixed one. Any key the running app does not supply evaluates to `false`.
-
-Operators: `!` (not), `&&` (and), `||` (or), and parentheses.
-
-Examples:
-
-- `"when": "terminalFocus"`
-- `"when": "terminalOpen && !terminalFocus"`
-- `"when": "!terminalFocus"`
+```json
+{ "key": "mod+j", "command": "terminal.toggle", "when": "terminalOpen && !terminalFocus" }
+```
 
 ## Precedence
 
-- Rules are evaluated in array order.
-- For a key event, the last rule where both `key` matches and `when` evaluates to `true` wins.
-- Precedence is across commands, not only within the same command. A later rule for a different
-  command can take a key away from an earlier one.
+The last rule whose key and condition both match wins, even if it belongs to a different command.
+Put a more specific rule after a general one when they share a shortcut.
+
+## Commands with special behavior
+
+`chat.new` may ask you to choose a project when there is more than one. `chat.newLocal` skips that
+chooser. Both use your [new-thread defaults](./thread-sidebar.md#start-a-thread).
+
+`filePicker.toggle` (`mod+p`) opens file search for the active project, and `projectSearch.toggle`
+(`mod+shift+f`) searches inside its files. Repeating either shortcut closes that search.
+
+`thread.copyReference` (`mod+shift+c`) copies the open pull request panel URL, then the thread's pull
+request link, or its thread ID when no pull request is available. `thread.settle` (`mod+shift+s`)
+settles the active thread or restores it, and `thread.pin` (`mod+shift+p`) pins or unpins it.
+
+`thread.stop` stops the running turn in the focused thread, including a turn still waiting to
+start. `rightPanel.toggleMaximized` maximizes or restores the right panel. Neither has a default
+shortcut; assign one here. When nothing is running, `thread.stop` leaves the key free for other
+commands.
+
+`themeEditor.toggle` (`mod+alt+shift+t`) opens or closes the floating theme editor. See
+[Appearance and themes](./appearance.md#custom-themes).
+
+## Reserved shortcuts
+
+`mod+w` closes the active right-panel tab, or the terminal when it has focus. In the desktop app,
+when nothing remains to close, it closes the window. In a browser, `mod+w` closes the browser tab;
+rebind `rightPanel.close` and `terminal.close` to an available shortcut such as `alt+w`.
+
+Many defaults include `!terminalFocus` so they do not intercept terminal input. Keep that condition
+when remapping them if you want the same behavior.
+
+## Desktop quit shortcut
+
+Use `Cmd+Q` on macOS or `Ctrl+Q` on Windows and Linux. **Settings → General → Confirmations →
+Quit shortcut** chooses how it confirms:
+
+- **Hold** (the default): hold the shortcut for 1.2 seconds, or press it twice within 500
+  milliseconds. A single quick press shows a hint instead of quitting.
+- **Double press**: press the shortcut twice within 500 milliseconds. The first press shows a hint
+  until that window ends.
+- **Direct**: the first press quits.
+
+In Hold and Double press, the second press quits immediately, and an unrelated shortcut cancels the
+first press. Holding needs keyboard repeat; if holding does not quit, use two quick presses or the
+application menu. Choosing **Quit** from the application menu always quits immediately. If you had
+**Hold to quit** turned off before this setting existed, Pylon starts in **Direct**.

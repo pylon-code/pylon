@@ -1,46 +1,66 @@
-# Review usage
+# Usage and limits
 
-The Usage page combines Codex, Claude Code, and Grok Build activity from your connected
-environments. It reads the providers' local session history and shows API-equivalent token cost,
-processed tokens, cache savings, provider shares, and model breakdowns. Subscription billing is
-separate from the raw token cost shown here.
+## Understand your usage
 
-Grok Build totals come from persisted session updates. Interactive turns that never wrote a
-completed-turn record will not appear.
+**Usage** combines Codex, Claude Code, and Grok Build session history from your connected
+environments. It shows token use, cache savings, provider shares, model breakdowns, and estimated
+API-equivalent cost. These estimates are not your subscription bill.
 
-Use **Past 24h** for an hourly chart covering the exact rolling 24-hour period. The **7 days**,
-**30 days**, and **90 days** ranges use daily resolution. Cost and token toggles update both the
-headline and chart. The environment filter applies to both Usage and Limits; refreshing rescans the selected connected environments and refetches model pricing so newly listed models receive a price without waiting for the daily update. On web and desktop, Pylon remembers your view, period, metric, and environment selection.
+Totals depend on the history available on each server. Grok turns without a saved completed-turn
+record are missing from the totals.
+
+**Past 24h** shows an hourly chart of the rolling 24-hour period; **7 days**, **30 days**, and
+**90 days** use daily resolution. The environment filter applies to both Usage and Limits. On web and
+desktop, Pylon remembers your view, period, metric, and environment selection.
+
+If recent work is missing or a new model shows no cost, refresh to rescan the selected environments'
+session history and update model pricing.
 
 ## Set custom model prices
 
 On web or desktop, open the environment dropdown on **Usage**, then choose **Model prices** to add,
-edit, or reset a model's estimated price. **Apply to** starts with your current Usage filter;
-choose all environments or select individual destinations. Enter the exact model ID and USD
-rates per million input and output tokens. You can enter any model ID, including models
-without public pricing.
+edit, or reset a model's estimated price. **Apply to** starts with your current Usage filter; choose
+all environments or individual destinations. Enter the exact model ID and USD rates per million input
+and output tokens, including for models without public pricing.
 
-Cache read and cache write rates are optional and use the input rate when blank. Enter `0` for
-tokens that are free. Saved prices replace automatic pricing for all of that environment's
-history and are shared with clients connected to it. When environments have different prices,
-cells show **Mixed**. Edit rates directly in the table, then choose **Save changes** to apply all
-edited rows. Untouched cells keep each environment's rate. Select one environment to inspect its
-prices. **Reset to automatic** marks a model's override for removal when you save; you can undo
-it before saving.
+Cache read and cache write rates are optional and use the input rate when blank. Enter `0` for tokens
+that are free. Saved prices replace automatic pricing for all of that environment's history and are
+shared with clients connected to it. When environments have different prices, cells show **Mixed**.
+Edit rates in the table and choose **Save changes**; untouched cells keep each environment's rate.
+**Reset to automatic** marks an override for removal when you save.
 
-Each destination reports whether the change saved. Offline or unavailable environments are
-marked **Not saved**. Reconnect them and choose **Retry failed saves** to finish the same change
-without writing again to environments that already saved. Changes are not queued after you close
-the dialog. If a recovered environment needs a complete price, discard the pending changes, select that environment, and enter both required rates. Prices already saved elsewhere are kept.
+Each destination reports whether the change saved. Offline or unavailable environments are marked
+**Not saved**; reconnect them and choose **Retry failed saves** to finish the same change without
+writing again to environments that already saved. If a recovered environment needs a complete price,
+discard the pending changes, select that environment, and enter both required rates. Changes are not
+queued after you close the dialog.
 
-## Subscription limits
+## Track subscription limits
 
-Choose **Limits** to see remaining quota, reset times, and pace across your connected accounts. Accounts for the same provider are pooled across the selected environments; expand a pool to inspect its accounts. Limits are provider-reported subscription allowances, separate from the Usage page’s estimated token costs. Refresh to update the readings and reset countdowns.
+**Usage → Limits** shows remaining quota, reset times, and pace for your subscription accounts. It
+pools accounts for the same provider across the selected environments, so you read one number per
+window; expand a pool to inspect its accounts. Each window's bar has one segment per account, kept in
+the same column across windows and ordered by the soonest 5-hour reset. A gap means the account does
+not report that window. Refresh to update the readings.
 
-Each window's bar has one segment per account, and an account keeps the same column across windows. Accounts are ordered by their 5-hour reset, soonest first, or by the first available window when no account reports a 5-hour limit. A gap means the account does not report that window.
+API-key accounts may not report subscription limits. This also applies to Claude connections using a
+proxy through `ANTHROPIC_AUTH_TOKEN`.
 
-In a thread, submit **/usage-limits** by itself to show the current provider’s quota above the composer without starting an agent turn. Dismiss the panel with its close control; a successful message send clears it. Provider-defined commands with the same name keep their own behavior. On mobile, use Usage → Limits before creating a thread.
+In a thread, send `/usage-limits` by itself to show the current provider's quota above the composer
+without starting an agent turn. Dismiss the panel, or send a message, to clear it. Provider commands
+with the same name keep their own behavior. On mobile, use **Usage → Limits** before creating a
+thread.
 
-When Codex reports reset credits, **Use reset** asks you to confirm before redeeming one. A confirmed result remains visible even if refreshing the balance fails. If the request’s outcome is uncertain, retrying checks the same attempt.
+When Codex reports banked reset credits, **Use reset** asks you to confirm before redeeming one. A
+confirmed result stays visible even if refreshing the balance fails, and retrying an uncertain request
+checks the same attempt.
 
-You can add a CLIProxyAPI hub in **Settings → Providers → Usage providers** on web or desktop, using the management URL and key for the selected environment. Its Codex and Claude quotas appear on all connected clients, including mobile. Remove the source there to stop including it. A failed source or account read is shown in Limits.
+## Connect a CLIProxyAPI hub
+
+To see pooled accounts, open **Settings → Providers → Usage providers → Add hub** on web or desktop.
+Choose the environment that will connect to the hub and enter its management URL and key.
+
+The hub's Codex and Claude quotas appear under **Usage → Limits** on all connected clients, including
+mobile, and a failed hub or account read is shown there. This connection supplies usage information;
+configure the provider separately to send agent requests through the hub. Remove the hub from the same
+settings section when you no longer need it.

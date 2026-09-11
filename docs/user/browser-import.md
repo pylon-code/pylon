@@ -1,29 +1,34 @@
-# Import browser logins
+# Import browser sessions
 
-In the desktop app, open **Settings → Integrations → Browser profiles → Add profile**
-and choose a browser under **Import from**. The import copies cookies into a Pylon browser
-profile so you can use existing logins in the preview browser. Changes made afterward stay
-separate from the source browser.
+The desktop app can import cookies from another browser so you can reuse its signed-in sessions
+in the preview browser.
 
-Linux discovery includes Helium and both native and Snap installations of Firefox. Windows
-discovery includes Firefox and Helium builds that still use Windows' standard profile
-encryption. Other Chromium-based browsers on Windows use app-bound cookie encryption and cannot
-be imported. A browser appears once it has a profile with a cookie database. Close the source
-browser before importing; the import wizard will prompt you if it is still running.
+Open **Settings → Integrations → Browser profiles → Add profile**, then choose a browser under
+**Import from**. A browser appears once it has a profile with a cookie database. Close the source
+browser before importing, and allow an operating-system keyring unlock prompt if one appears.
 
-On Linux, Chromium-based browsers use your desktop keyring to protect their cookies. Pylon
-includes the keyring reader; no separate command-line tool is needed. Allow the desktop unlock
-prompt if one appears. If the keyring cannot be accessed, Pylon reports that failure when no
-cookies can be imported. Partitioned cookies are skipped.
+This is a one-time copy. Later login changes stay separate between the two browsers, and some
+sites may still require you to sign in again. Partitioned cookies are skipped on all platforms.
 
-On macOS, Safari protects its cookies with Full Disk Access. The import wizard’s **Open System
-Settings** button takes you to that permission pane. macOS may require you to quit and reopen Pylon
-after granting access. You can revoke Full Disk Access after importing. Choose the Safari profile whose cookies you want to import, including named profiles.
+## Platform notes
 
-Browser profiles keep separate logins for each connected environment on this desktop. Default
-uses the existing browser data; Incognito keeps data only until the app closes. Choose a default
-profile in Settings or pick a profile when opening a browser tab. Existing tabs keep their profile.
+On Linux, import finds Helium and both native and Snap installations of Firefox. Chromium-based
+browsers protect their cookies with your desktop keyring; Pylon reports a keyring failure when no
+cookies can be imported.
 
-Custom profiles and Incognito require an updated Pylon server for the connected environment.
-If its server is older, Pylon asks you to update it before opening those profiles. Default remains
-available.
+On macOS, Safari protects its cookies with Full Disk Access. The import wizard's
+**Open System Settings** button opens that permission pane, and macOS may ask you to quit and
+reopen Pylon before the grant applies. Choose the Safari profile to import, including named
+profiles. You can revoke Full Disk Access afterward.
+
+On Windows, import supports Firefox and Helium profiles that use standard profile encryption.
+Other Chromium-based browsers use app-bound encryption and cannot be imported.
+
+## Browser profiles
+
+Browser profiles keep separate logins for each connected environment on this desktop. **Default**
+uses the existing browser data; **Incognito** keeps data only until the app closes. Choose a default
+profile in Settings or pick one when opening a browser tab. Existing tabs keep their profile.
+
+Custom profiles and Incognito require an updated Pylon server for the connected environment. If its
+server is older, Pylon asks you to update it before opening those profiles.
