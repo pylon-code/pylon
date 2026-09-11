@@ -377,13 +377,30 @@ export const PRIME_PUBLICATION_SCHEMA_SOURCE = Object.freeze({
   commit: "f4d9ef03b529faf2e07031c8b7cd703363316ae5",
   tree: "b9a14b389aa64f54527008fb4d6119a7c57c2b58",
 });
-export const PRIME_PUBLICATION_POLICY = Object.freeze({
-  publicationPolicyRevision: 1,
-  previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
-  previewWorkflowSha256: "e790a5da7063bd40fbd886e84945c3200291194fdbd5b002079349e45356a41d",
-  stableWorkflowPath: PRIME_STABLE_WORKFLOW,
-  stableWorkflowSha256: "dfcecdf6b58f143f9b7a543eadd124c190350ae29ac9eadccb907f1398b0958a",
-});
+export const PRIME_PUBLICATION_POLICIES = Object.freeze([
+  Object.freeze({
+    publicationPolicyRevision: 1,
+    previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
+    previewWorkflowSha256: "e790a5da7063bd40fbd886e84945c3200291194fdbd5b002079349e45356a41d",
+    stableWorkflowPath: PRIME_STABLE_WORKFLOW,
+    stableWorkflowSha256: "dfcecdf6b58f143f9b7a543eadd124c190350ae29ac9eadccb907f1398b0958a",
+  }),
+  Object.freeze({
+    publicationPolicyRevision: 2,
+    previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
+    previewWorkflowSha256: "9f4e3f38fb0bdb9c11662310c5369fb792765a3090e0f74b0ec0b34127b43ed8",
+    stableWorkflowPath: PRIME_STABLE_WORKFLOW,
+    stableWorkflowSha256: "0f04d1f55f54312d933087d88de6883e8408bb0cd9f060d3b5851d710698b1af",
+  }),
+]);
+
+function publicationPolicyFor(revision: number) {
+  const policy = PRIME_PUBLICATION_POLICIES.find(
+    (candidate) => candidate.publicationPolicyRevision === revision,
+  );
+  if (!policy) throw new Error("Unsupported Pylon publication policy revision.");
+  return policy;
+}
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -499,8 +516,8 @@ function parsePreviewManifest(
     MAX_MANIFEST_BYTES,
     decodePreviewManifest,
   );
+  publicationPolicyFor(manifest.publicationPolicyRevision);
   if (
-    manifest.publicationPolicyRevision !== PRIME_PUBLICATION_POLICY.publicationPolicyRevision ||
     manifest.build.tag !== release.build.id ||
     manifest.build.id !== release.build.id ||
     manifest.build.recipeRevision !== release.build.recipeRevision ||
@@ -529,6 +546,8 @@ function parseStableManifest(bytes: Buffer): StableManifest {
     MAX_MANIFEST_BYTES,
     decodeStableManifest,
   );
+  publicationPolicyFor(manifest.build.publicationPolicyRevision);
+  publicationPolicyFor(manifest.promotion.publicationPolicyRevision);
   const stableMatch = /^pylon-stable-([0-9]{6})-g([0-9a-f]{12})-r([1-9][0-9]*)$/.exec(manifest.tag);
   if (
     !stableMatch ||
@@ -542,11 +561,7 @@ function parseStableManifest(bytes: Buffer): StableManifest {
         Number(/^pylon-stable-([0-9]{6})-/.exec(manifest.history.previous.tag)?.[1]) !==
           manifest.sequence - 1) ||
     manifest.build.previewTag !== manifest.build.id ||
-    manifest.build.recipeRevision !== PRIME_RELEASE_RECIPE.recipeRevision ||
-    manifest.build.publicationPolicyRevision !==
-      PRIME_PUBLICATION_POLICY.publicationPolicyRevision ||
-    manifest.promotion.publicationPolicyRevision !==
-      PRIME_PUBLICATION_POLICY.publicationPolicyRevision
+    manifest.build.recipeRevision !== PRIME_RELEASE_RECIPE.recipeRevision
   ) {
     throw new Error("Stable manifest is not an exact closed Pylon build receipt.");
   }
@@ -842,6 +857,7 @@ export async function verifyPrimePublicationFixture(
       stable.build.previewTag !== preview.build.tag ||
       stable.build.id !== preview.build.id ||
       stable.build.recipeRevision !== preview.build.recipeRevision ||
+      stable.build.publicationPolicyRevision !== preview.publicationPolicyRevision ||
       canonicalPrimeDistributionJson(stable.build.source) !==
         canonicalPrimeDistributionJson(preview.build.source) ||
       canonicalPrimeDistributionJson(stable.build.assets) !==
@@ -1695,9 +1711,7 @@ async function verifyRemoteSourcePolicy(
   expected: PrimeSourcePolicyExpectation,
   dependencies: PrimeDistributionNetworkDependencies,
 ): Promise<void> {
-  if (expected.publicationPolicyRevision !== PRIME_PUBLICATION_POLICY.publicationPolicyRevision) {
-    throw new Error("Unsupported Pylon publication policy revision.");
-  }
+  const policy = publicationPolicyFor(expected.publicationPolicyRevision);
   const commit = decodeGitHubCommit(
     await dependencies.fetchJson(
       `https://api.github.com/repos/${PRIME_DISTRIBUTION_REPOSITORY}/git/commits/${expected.commit}`,
@@ -1713,8 +1727,8 @@ async function verifyRemoteSourcePolicy(
   );
   const expectedDigest =
     expected.workflow === PRIME_PREVIEW_WORKFLOW
-      ? PRIME_PUBLICATION_POLICY.previewWorkflowSha256
-      : PRIME_PUBLICATION_POLICY.stableWorkflowSha256;
+      ? policy.previewWorkflowSha256
+      : policy.stableWorkflowSha256;
   if (sha256(workflowBytes) !== expectedDigest) {
     throw new Error("Signer workflow bytes do not match the frozen publication policy revision.");
   }
@@ -2281,12 +2295,12 @@ export async function verifyPrimePublicationArtifactDirectory(input: {
     verifyBundle: async (bundle, expected) =>
       verifyPrimeSigstoreBundle(bundle, trustedRoot, expected),
     verifySourcePolicy: async (expected) => {
+      const policy = publicationPolicyFor(expected.publicationPolicyRevision);
       if (
         expected.workflow !== PRIME_PREVIEW_WORKFLOW ||
-        expected.publicationPolicyRevision !== PRIME_PUBLICATION_POLICY.publicationPolicyRevision ||
         expected.commit !== commit.sha ||
         expected.tree !== commit.tree.sha ||
-        sha256(workflowBytes) !== PRIME_PUBLICATION_POLICY.previewWorkflowSha256
+        sha256(workflowBytes) !== policy.previewWorkflowSha256
       ) {
         throw new Error(
           "Prime graduation source head, tree, workflow, or policy revision is not exact.",
