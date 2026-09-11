@@ -373,6 +373,231 @@ not copy refinement diffs or native goal internals into the event store. Resourc
 single idle, full-access operation that refreshes Prime-owned settings, authentication, MCP providers,
 resources, runtime, and extensions before Pylon replaces its safe catalogs.
 
+## Adapter boundary rules
+
+These rules describe how the integrated outcomes above cross Pylon's provider boundary. The
+[provider constraints](./providers.md#prime-agent) summarize the runtime selection they depend on.
+
+### Sessions and model catalog
+
+The client-visible continuation cursor stays an opaque marker; a server-private sidecar binds it to
+the exact stable Prime transcript identity and verifies the saved file before cold resume. On POSIX
+filesystems the thread session directory is owner-only, and its identity, managed-extension, and
+native transcript files are protected before the session becomes usable.
+
+Each ready rollback anchor binds one exact leaf to its checkpoint ref, object ID, turn ID, and source
+revision, and a conflicting recapture cannot overwrite it. Cleanup releases the rollback quarantine
+only after the public projection commit and a final exact-target proof.
+
+A short-lived RPC probe bootstraps the qualified model catalog. After a compatible daemon session
+attaches, the adapter reads the public catalog, filters it to configured providers, discards
+sensitive native fields, and publishes a bounded last-good model overlay through the existing
+provider snapshot stream. Once that overlay exists, provider health checks retain it without
+repeating the RPC discovery probe or reporting a stale fallback warning. Cached models never
+override a disabled, missing, or unhealthy probe's authentication state. The synthetic `default`
+model means "do not force a model", while discovered model metadata drives generic thinking and
+service-tier composer options. The ACP fallback snapshot strips daemon-only model options and
+capabilities rather than rendering controls ACP would ignore.
+
+### Background text generation
+
+Background text generation is deliberately independent of both interactive backends. The
+instance-bound factory resolves the configured executable through the instance's merged environment,
+locates that exact installation's package-owned public ESM entry with the daemon bridge's safe
+locator, and spawns a fresh Node helper with an explicit non-extending environment and cwd. The
+bounded prompt and validated attachment-store image bytes travel over stdin; no prompt is placed in
+argv. The helper uses only Prime's public session and resource-loader APIs. The selected home remains
+explicit for credentials and models; the file-backed settings manager can read that home, but Pylon
+calls only its provider, model, thinking-level, and service-tier default getters before copying those
+values into an in-memory manager.
+
+The child overrides Prime's SDK-global home with a separate scoped empty directory, so selected
+continual harness entries cannot load. Prime Agent 0.8.1 still adds its fixed zero-entry harness
+guidance; Pylon bounds and validates that exact empty block, adds an exact final isolation boundary,
+and rejects nonzero entries or extra prompt text. That fixed block has real input-token overhead. The
+helper disables tools and every optional resource, persistence, autonomous, retry, refinement,
+compaction, kernel, MCP, and telemetry path. It permits one model request and proves the transcript
+contains exactly one user and one assistant message with no tool content.
+
+Named selectors split only at the first `/`, while `default` omits a model override. Thinking and
+service-tier inheritance stay distinct from an explicit `default` tier; Prime may clamp inherited
+values to the selected model's supported controls. The parent owns the exact child in an Effect scope
+with a 180-second deadline, bounded output, and bounded TERM-to-KILL cleanup, then applies the shared
+JSON extraction, schemas, and text sanitizers. Expected SDK, model, auth, quota, timeout, crash, and
+output failures cross the boundary only as safe `TextGenerationError` details. Prime attempts ask the
+provider registry to refresh capacity, so its volatile overlay and snapshot stream remain the only
+usage publication path. Both daemon and ACP snapshots advertise versioned
+`background-text-generation`; daemon snapshots add `side-questions` when that public API is present.
+
+### Input queue and follow-ups
+
+The daemon adapter can switch models before a turn, steer an active turn, admit explicit follow-ups,
+choose all-at-once or one-at-a-time delivery independently for steering and follow-up inputs, clear
+pending inputs, and remove the sole item in either lane without aborting current work. Only bounded
+steering and follow-up counts and normalized delivery modes use the stable
+`session.input-queue.updated` activity projection. Sole-item removal privately reads Prime's preview,
+performs one compare-and-delete through an isolated non-recovering daemon client, closes that
+connection so transport recovery cannot replay an ambiguous outcome, and then reconciles the
+authoritative queue. These writes share the thread-mutation lock with lifecycle, reload, depth, and
+agent-control mutations. The adapter closes the session only when authoritative queue reconciliation
+also fails.
+
+Follow-up text follows the normal durable user-message command path, so an admission failure leaves
+the message in history with an explicit not-queued activity rather than deleting user intent.
+Clearing pending native inputs likewise does not erase durable history. Queued native runs stay
+inside one Pylon turn until the queue settles. Mobile's file-backed device outbox remains a separate
+reliability layer.
+
+### Supervised execution gate
+
+Approval-required sessions materialize a server-owned, token-correlated Prime extension, disable
+extension discovery, verify the generated source plus the loaded extension-sourced marker through
+public resource APIs, set and verify RLM depth zero before prompt admission, reject slash-command
+prompts that bypass tool hooks, and disable unverified daemon recovery so transport loss requires a
+fresh verified session. Its blocking hooks map reviewable built-in edit, shell, and IPython requests
+privately to canonical Pylon approval events; unknown tools and oversized inputs are denied rather
+than incompletely presented. Native request IDs and policy tokens remain adapter-local. The gate fails
+closed, but it is not an OS sandbox, so approved IPython and shell calls retain host access.
+
+### Session state projections
+
+Provider-exposed final reasoning is bounded into the shared work-log item shape; incremental deltas
+and provider-private reasoning metadata are discarded. Public daemon session statistics are decoded
+behind an identity check and reduced to the active context estimate, current model window, and exact
+automatic-compaction setting. A typed provider-neutral clear barrier retracts stale meters while
+Prime reports post-compaction context as unknown; aggregate retained-session counts and native
+identity, path, percentage, and cost fields are not conflated with active context usage.
+
+The adapter decodes Prime's RLM depth status into a stable provider-neutral session activity and
+accepts only per-session depth writes from 0 through 4 while idle. Explicit session, global, and
+`RLM_MAX_DEPTH` sources remain authoritative, and the setter never passes the global persistence
+option. The settable-now flag also tracks native runs, bash, child agents, compaction, blocking
+interactions, approvals, and resource reloads, so remote clients do not offer a write that would only
+fail as busy. Supervised sessions remain policy-fixed at zero.
+
+Compaction start and terminal events replace one provider-neutral lifecycle activity row; native
+instructions, summaries, result details, token metadata, and error text are discarded before
+canonical runtime mapping. A separate stable `session.compaction.updated` projection carries only
+availability, `idle`/`starting`/`compacting`/`abort-requested` status, the authoritative
+automatic-compaction boolean, abortability, writability, and idle-only manual settable state. Manual
+compaction calls public `compact()` without instructions only after a state-only read confirms there
+is no native run, bash action, queued action, child, approval, interaction, resource reload, or
+compaction. The long native promise runs under the owned session scope while start and end events
+and public state remain lifecycle authority. `abortCompaction()` marks only request acceptance until
+terminal state arrives. `setAutoCompactionEnabled()` is exposed with scope
+`session-and-provider-default` because Prime persists its provider-wide default. All three mutations
+share the thread mutation lock, perform no automatic retry, reconcile once after rejection, and close
+an ambiguous session. Supervised sessions and ACP publish unavailable control barriers.
+
+Goal observation follows the same model: `session.goal.updated` stores only availability, active
+state, normalized status, a bounded objective, token budget and usage, elapsed seconds, and
+continuation count. Native goal IDs, timestamps, reasons, and errors terminate at the boundary.
+Clients select the latest stable snapshot for the active provider instance, require the advertised
+`goals.observe` capability and a live full-access runtime, and treat unavailable snapshots and
+runtime or provider changes as clear barriers. Web, desktop, and mobile expose this state as a
+read-only composer control, and Pylon reports goal mutations as unavailable rather than simulating
+them. The same ingestion boundary drops compacted-state detail from other providers.
+
+Finite non-negative `turn.completed.totalCostUsd` values become stable, turn-linked `turn.cost`
+metadata activities. Clients exclude cost metadata from work logs and show the provider-reported
+estimate only beside the terminal assistant message. Prime's retained-session statistics cost is never
+treated as a lifetime or per-turn total. Retry and refinement events likewise cross the boundary only
+as safe numeric lifecycle state; ingestion replaces stable provider-neutral rows and represents
+partially applied refinements separately from total failure.
+
+Explicit local harness refinement is an operate-scoped `provider.refineSessionHarness` RPC with only
+`{ threadId }` on the wire. The runtime advertises it only when the public
+`DaemonAgentConnection.refine` method is present, and invokes that method exactly once with
+`{ global: false }`. Only new full-access daemon sessions are eligible: supervised, restored, ACP,
+missing-method, and concurrent-refinement paths fail closed. The sanitized public method response is
+authoritative for the RPC; public `refine_complete` and `refine_failed` events remain uncorrelated
+observational rows, so automatic or agent-initiated refinement cannot satisfy a Pylon request. A
+rejected or timed-out request is reported as outcome-unknown, never retried, and keeps the session
+reservation closed to another refinement until teardown, because Prime may still apply it. Pylon
+projects only `running`, `available`, or `outcome-unknown` on that session incarnation, so remounted
+and remote clients share the same control barrier. Before refinement is available, Pylon creates the
+derived native artifact and harness directories as owner-only; after confirmed success it also
+protects known harness files as owner-readable and writable only. Stop, close, disposal, and provider
+shutdown clear and fail the reservation.
+
+### Agent control
+
+Agent cancellation uses a provider-neutral, operate-scoped RPC keyed by the Pylon thread and the
+already-projected opaque task ID. The adapter validates that ID against the thread's known active
+descendant roster before calling public `cancelRlmChild`; it never accepts a native active-session
+selector. Duplicate requests coalesce while the native terminal update is pending. Native
+cancellation has a fixed deadline; `false`, a racing completion, a failed call, or a timed-out
+response triggers one reconciliation against the latest decoded roster rather than a mutation retry,
+and the session closes if that roster cannot restore authority.
+
+Prime's public `getInitialSnapshot()` does not refetch live children, so the runtime seeds the private
+roster from attach and resync snapshots and updates it synchronously from bounded child events before
+exposing those events. A previously active child missing from an authoritative live-descendant
+snapshot is settled, so clients cannot retain an uncontrollable working row. The first native terminal
+child update is authoritative; later terminal repeats are ignored. Tool results containing native
+child handles or session paths are replaced at the decoding boundary.
+
+Native agent messaging is a separate operate-scoped RPC keyed by the same task ID. The adapter resolves
+that ID through its private roster to a bounded native endpoint and invokes public `sendAgentMessage`
+exactly once under the thread mutation lock. Only `delivered` or `queued` acceptance crosses back to
+the initiating client; native receipt IDs, sender and target identities, timestamps, echoed text, and
+delivery errors are discarded. Pylon persists no sent content or receipt activity, while Prime
+necessarily retains the message in the child session's private transcript. Post-invocation failure is
+reported as delivery uncertainty without an automatic retry. A provider-neutral `messageable`
+boolean tells clients which live rows have an endpoint without exposing it. Web, desktop, and mobile
+gate message and stop affordances on the active session's advertised agent operations.
+
+### Tool lifecycle and live child activity
+
+Main-thread tool lifecycle is durable orchestration activity, but its correlation and presentation
+are provider-specific at ingestion: stable opaque IDs replace native item IDs, and start, update, and
+completion upsert one row. Both daemon and ACP producers are reduced to fixed allowlisted labels before
+persistence; arguments, progress text, results, paths, commands, native titles, IDs, and error text are
+discarded. Other providers keep their existing event IDs, status, detail, and data behavior.
+
+Live child activity is a separate read-scoped, non-orchestration stream. The client supplies a task ID
+already present in the thread's active-agent projection, and the adapter resolves it only through its
+private roster before calling public `watchSession`. Concurrent subscribers for the same child share
+one reference-counted read-only native attachment, while revisions and lifetime quotas remain
+subscriber-local. The existing `entries` field remains assistant-only for older clients;
+timeline-aware clients read the additive `activity` field, which holds only non-empty assistant text or
+a coarse tool row with a fixed safe label, subscriber-local numeric ID, and status. Known tool names map
+to fixed labels (`ipython` and `functions.ipython` become **Code**) and unknown names become **Tool**.
+
+Snapshot size, entry count, update count, lifetime characters, initialization events, and concurrent
+watchers are hard-capped. Watcher events are sanitized before bounded initialization admission,
+preserving the subscribe-before-read race without retaining native payloads. Duplicate snapshots are
+suppressed and assistant event bursts are debounced. No runtime event or
+orchestration activity is created, and durable child lifecycle projections discard native answer
+previews, recaps, and errors, so neither SQLite nor clients without an open view receive the assistant
+text. Stream finalizers close the shared watcher after its last owner leaves, or on WebSocket
+cancellation, roster settlement, endpoint replacement, session stop, provider replacement, or scope
+shutdown. Prime can attach only to a currently live child and exposes no atomic history cursor, so
+capability and UI wording promise only **Live activity**, never a durable transcript.
+
+### Quick questions
+
+Quick questions use a separate operate-scoped unary RPC and never enter provider runtime ingestion or
+orchestration. The per-WebSocket handler owns a Pylon request ID, while the adapter maps it to an
+unguessable native ID and accepts only exact correlated terminal events. Prompt text, cumulative native
+updates, errors, IDs, and lifecycle never cross into durable state or other clients. Questions and
+answers have UTF-8 and character bounds, cumulative native traffic is capped, and at most one question
+per thread plus a provider-wide concurrency limit can run for two minutes. Cancellation, timeout,
+request interruption, disconnect, session replacement, and scope shutdown run one best-effort native
+abort without retry. Because side agents inherit provider extension hooks even with `tools: []`, the
+operation is admitted only in fresh supervised sessions, where discovery is disabled and Pylon's
+verified permission extension cannot act on a tool-free response.
+
+### Heartbeats
+
+Heartbeat methods exist on the public daemon connection but are not advertised. A heartbeat can start
+a native run without a dispatch identity that Pylon can map to an autonomous turn and filesystem
+checkpoints, and `setHeartbeat` promotes a client-owned worker to resident ownership that the public
+connection cannot inspect, demote, or terminate after clear. Pylon's reaper, thread deletion reactor,
+and restart attachment model assume client-owned sessions, so shipping creation first would permit
+invisible mutations or orphaned scheduled work. This is an integration lifecycle blocker, not a claim
+that Prime lacks heartbeat CRUD.
+
 ## Outcomes not available from the Prime Agent 0.8.1 daemon connection
 
 These are daemon-connection gaps rather than hidden Pylon omissions: unified login/logout/account

@@ -1,45 +1,29 @@
 # Model manifest
 
-`apps/server/src/provider/model-manifest.json` is bundled for offline startup and fetched from
-`model-catalog.json` on Pylon's public releases repository at runtime. A remote fetch replaces
-the in-memory and on-disk cache only after generic
-catalog references and provider-owned adapter data validate. A failed or invalid fetch keeps the
-last successful remote manifest. The bundle is used only when no valid remote cache exists.
+The [bundled manifest](../../apps/server/src/provider/model-manifest.json) allows
+offline startup; fetching `model-catalog.json` from Pylon's public releases repository
+lets model metadata change between releases. Failed fetches or invalid data preserve
+the last usable manifest. Remote data must pass both catalog-reference validation and
+the owning provider's adapter validation before replacing the cache.
 
-The top-level provider catalog is generic: models contain presentation metadata, aliases, status,
-an optional badge, and a reusable capability profile. The profile and model `adapter` fields are
-opaque until the owning provider validates them with its own allowlisted schema.
+The on-disk copy of the last successful fetch outranks the bundle even when it is
+stale; the bundle is used only when no valid remote cache exists. Editing the bundled
+file therefore does not correct model data for an environment that already holds a
+cached catalog. Publish the change through the
+[publishing runbook](../operations/model-manifest.md), which also produces a
+`model-manifest.json` compatibility feed with only `version` and `currentModels` for
+older releases whose strict schemas reject provider catalogs.
 
-Claude Code uses the manifest as its complete built-in model catalog. To add a Claude model that
-uses an existing profile, add one object to `providers.claudeAgent.models`. Do not add a test or
-change application code. Add or change a profile in the same JSON file only when the model exposes
-a capability combination that does not already exist.
+Generic catalog data describes presentation and capabilities. Each provider owns
+its adapter schema and dispatch mappings. Claude uses the manifest for its entire
+built-in catalog. Adding a model with an existing capability profile is a JSON
+edit; a new profile is needed only for a new capability combination. Codex still
+gets its model list from its app server.
 
-`currentModels.claudeAgent` is retained as a frozen compatibility field for releases that predate
-catalog discovery. New Claude models do not need to be added there. Codex still discovers models
-from its app server and uses `currentModels.codex` only as a legacy-classification overlay.
+`currentModels.claudeAgent` is frozen for releases that predate catalog discovery.
+Do not extend it when adding Claude models. Codex uses `currentModels.codex` as a
+legacy-classification overlay for discovered models.
 
-Publication also produces `model-manifest.json` with only `version` and `currentModels` for
-older releases whose strict schemas reject provider catalogs. Both files are generated from
-the same validated source and published in one commit. See the [publishing runbook](../operations/model-manifest.md).
-
-Claude model entries support:
-
-- `aliases`, `status`, `badge`, and `profile` for client presentation and selection.
-- `adapter.claudeCode.minVersion` and `maxVersionExclusive` for installed-runtime compatibility.
-- Profile-level effort mappings, model suffixes, and context-window metadata for dispatch.
-
-## Test policy
-
-Changing model data does not require tests. Do not add or update tests for a model slug, display
-name, alias, legacy status, version boundary, badge, or profile assignment. The bundled manifest is
-configuration and is validated by its schema when imported.
-
-Add tests only when implementation behavior changes:
-
-- Fetching, caching, fallback, or schema-version handling changes in the manifest service.
-- Provider-neutral profile resolution gains new semantics.
-- A provider adapter gains a new compatibility or dispatch mapping type.
-
-Resolver tests must use synthetic providers and model names so normal JSON edits never create test
-churn.
+Model data is schema-validated configuration. Tests should cover resolver, cache,
+and adapter semantics with synthetic model names, so adding a model never requires
+tests that repeat the configuration.

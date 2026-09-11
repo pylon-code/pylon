@@ -1,7 +1,5 @@
 # Dev container
 
-> For maintainers. Using Pylon? See [docs/user](../user/).
-
 `.devcontainer/` gives you a ready-to-code Linux environment matching CI: Ubuntu 24.04, Node 24, pnpm, Rust stable, the repository-pinned global `vp` CLI, and the GitHub CLI. Open the repo in VS Code and "Reopen in Container", or create a GitHub Codespace. Dependency install (`vp i`), the Electron exec-bit repair, and the Vite dep-cache warmup all run automatically before you attach.
 
 ## What works in the container
