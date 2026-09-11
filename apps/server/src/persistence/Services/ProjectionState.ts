@@ -50,16 +50,9 @@ export interface ProjectionStateRepositoryShape {
   ) => Effect.Effect<Option.Option<ProjectionState>, ProjectionRepositoryError>;
 
   /**
-   * List all projector cursor rows.
+   * List all cursor rows, including non-projector cursors such as attachment cleanup.
    */
   readonly listAll: () => Effect.Effect<ReadonlyArray<ProjectionState>, ProjectionRepositoryError>;
-
-  /**
-   * Read the minimum applied sequence across all projectors.
-   *
-   * Returns `null` when no projector state rows exist.
-   */
-  readonly minLastAppliedSequence: () => Effect.Effect<number | null, ProjectionRepositoryError>;
 }
 
 /**

@@ -20,6 +20,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { makeSqlStatementCounter } from "../../../integration/SqlStatementCounter.integration.ts";
@@ -2017,6 +2018,287 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
     );
   },
 );
+
+const cleanupBacklogNow = "2026-01-01T00:00:00.000Z";
+
+const appendCleanupProject = Effect.fn("appendCleanupProject")(function* (projectId: ProjectId) {
+  const eventStore = yield* OrchestrationEventStore;
+  return yield* eventStore.append({
+    type: "project.created",
+    eventId: EventId.make(`evt-create-${projectId}`),
+    aggregateKind: "project",
+    aggregateId: projectId,
+    occurredAt: cleanupBacklogNow,
+    commandId: CommandId.make(`cmd-create-${projectId}`),
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    payload: {
+      projectId,
+      title: "Cleanup backlog",
+      workspaceRoot: "/tmp/project-cleanup-backlog",
+      defaultModelSelection: null,
+      scripts: [],
+      createdAt: cleanupBacklogNow,
+      updatedAt: cleanupBacklogNow,
+    },
+  });
+});
+
+const appendCleanupThreadCreated = Effect.fn("appendCleanupThreadCreated")(function* (
+  projectId: ProjectId,
+  threadId: ThreadId,
+) {
+  const eventStore = yield* OrchestrationEventStore;
+  return yield* eventStore.append({
+    type: "thread.created",
+    eventId: EventId.make(`evt-create-${threadId}`),
+    aggregateKind: "thread",
+    aggregateId: threadId,
+    occurredAt: cleanupBacklogNow,
+    commandId: CommandId.make(`cmd-create-${threadId}`),
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    payload: {
+      threadId,
+      projectId,
+      title: "Cleanup backlog thread",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+      runtimeMode: "full-access",
+      branch: null,
+      worktreePath: null,
+      createdAt: cleanupBacklogNow,
+      updatedAt: cleanupBacklogNow,
+    },
+  });
+});
+
+const appendCleanupThreadDeleted = Effect.fn("appendCleanupThreadDeleted")(function* (
+  threadId: ThreadId,
+) {
+  const eventStore = yield* OrchestrationEventStore;
+  return yield* eventStore.append({
+    type: "thread.deleted",
+    eventId: EventId.make(`evt-delete-${threadId}`),
+    aggregateKind: "thread",
+    aggregateId: threadId,
+    occurredAt: cleanupBacklogNow,
+    commandId: CommandId.make(`cmd-delete-${threadId}`),
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    payload: { threadId, deletedAt: cleanupBacklogNow },
+  });
+});
+
+// Every projector is current; attachment cleanup still has everything after `cleanupSequence`.
+const seedCleanupBacklog = Effect.fn("seedCleanupBacklog")(function* (
+  projectorSequence: number,
+  cleanupSequence: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`DELETE FROM projection_state`;
+  for (const projector of Object.values(ORCHESTRATION_PROJECTOR_NAMES)) {
+    yield* sql`
+      INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+      VALUES (${projector}, ${projectorSequence}, ${cleanupBacklogNow})
+    `;
+  }
+  yield* sql`
+    INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+    VALUES ('projection.attachment-cleanup', ${cleanupSequence}, ${cleanupBacklogNow})
+  `;
+});
+
+const readCleanupCursor = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ readonly lastAppliedSequence: number }>`
+    SELECT last_applied_sequence AS "lastAppliedSequence" FROM projection_state
+    WHERE projector = 'projection.attachment-cleanup'
+  `;
+});
+
+const cleanupDirectoryListings = { count: 0 };
+const CountingFileSystemLayer = Layer.effect(
+  FileSystem.FileSystem,
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    return {
+      ...fileSystem,
+      readDirectory: (...args: Parameters<typeof fileSystem.readDirectory>) => {
+        cleanupDirectoryListings.count += 1;
+        return fileSystem.readDirectory(...args);
+      },
+    };
+  }),
+).pipe(Layer.provide(NodeServices.layer));
+
+it.layer(
+  Layer.fresh(
+    OrchestrationProjectionPipelineLive.pipe(
+      Layer.provideMerge(OrchestrationEventStoreLive),
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-projection-attachments-backlog-" }),
+      ),
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(CountingFileSystemLayer),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+  ),
+)("OrchestrationProjectionPipeline attachment cleanup backlog", (it) => {
+  it.effect("bounds bootstrap cleanup by threads that still have files", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const { attachmentsDir } = yield* ServerConfig;
+      const projectId = ProjectId.make("project-cleanup-backlog");
+      const deletedThreadCount = 200;
+
+      yield* appendCleanupProject(projectId);
+      for (let index = 0; index < deletedThreadCount; index += 1) {
+        const threadId = ThreadId.make(`thread-backlog-${index}`);
+        yield* appendCleanupThreadCreated(projectId, threadId);
+        yield* appendCleanupThreadDeleted(threadId);
+      }
+      const filesThreadId = ThreadId.make("thread-backlog-files");
+      yield* appendCleanupThreadCreated(projectId, filesThreadId);
+      const lastEvent = yield* appendCleanupThreadDeleted(filesThreadId);
+
+      const deletedFilePath = path.join(
+        attachmentsDir,
+        "thread-backlog-files-00000000-0000-4000-8000-000000000001.png",
+      );
+      const keptFilePaths = Array.from({ length: 50 }, (_, index) =>
+        path.join(
+          attachmentsDir,
+          `thread-backlog-kept-00000000-0000-4000-8000-${String(index).padStart(12, "0")}.png`,
+        ),
+      );
+      yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+      for (const filePath of [deletedFilePath, ...keptFilePaths]) {
+        yield* fileSystem.writeFileString(filePath, "file");
+      }
+      yield* seedCleanupBacklog(lastEvent.sequence, 0);
+
+      cleanupDirectoryListings.count = 0;
+      const counter = makeSqlStatementCounter();
+      yield* projectionPipeline.bootstrap.pipe(Effect.withTracer(counter.tracer));
+
+      // One listing, and statements that do not grow with threads that have no files.
+      assert.strictEqual(cleanupDirectoryListings.count, 1);
+      assert.isBelow(counter.count(), deletedThreadCount / 4);
+      assert.isFalse(yield* exists(deletedFilePath));
+      for (const filePath of keptFilePaths) {
+        assert.isTrue(yield* exists(filePath));
+      }
+      assert.deepEqual(yield* readCleanupCursor, [{ lastAppliedSequence: lastEvent.sequence }]);
+
+      // With the cursor current, a restart lists nothing.
+      cleanupDirectoryListings.count = 0;
+      yield* projectionPipeline.bootstrap;
+      assert.strictEqual(cleanupDirectoryListings.count, 0);
+    }),
+  );
+});
+
+it.layer(
+  Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-undecodable-")),
+)("OrchestrationProjectionPipeline attachment cleanup backlog", (it) => {
+  it.effect("starts when an old event no longer decodes", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const { attachmentsDir } = yield* ServerConfig;
+      const projectId = ProjectId.make("project-cleanup-undecodable");
+      const threadId = ThreadId.make("thread-undecodable");
+
+      yield* appendCleanupProject(projectId);
+      yield* appendCleanupThreadCreated(projectId, threadId);
+      // An old message whose payload today's schema rejects, and a delete with an unreadable id.
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json
+        )
+        VALUES
+          ('evt-legacy-message', 'thread', ${threadId}, 1, 'thread.message-sent',
+            ${cleanupBacklogNow}, NULL, NULL, NULL, 'client', '{"legacy":true}', '{}'),
+          ('evt-unreadable-delete', 'thread', ' ', 0, 'thread.deleted',
+            ${cleanupBacklogNow}, NULL, NULL, NULL, 'client', '{}', '{}')
+      `;
+      const deleted = yield* appendCleanupThreadDeleted(threadId);
+      const readError = yield* Stream.runDrain(eventStore.readFromSequence(0)).pipe(Effect.flip);
+      assert.strictEqual(readError._tag, "PersistenceDecodeError");
+
+      const attachmentPath = path.join(
+        attachmentsDir,
+        "thread-undecodable-00000000-0000-4000-8000-000000000001.png",
+      );
+      yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFileString(attachmentPath, "file");
+      yield* seedCleanupBacklog(deleted.sequence, 0);
+
+      yield* projectionPipeline.bootstrap;
+
+      assert.isFalse(yield* exists(attachmentPath));
+      assert.deepEqual(yield* readCleanupCursor, [{ lastAppliedSequence: deleted.sequence }]);
+    }),
+  );
+});
+
+it.layer(
+  Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-file-failure-")),
+)("OrchestrationProjectionPipeline attachment cleanup backlog", (it) => {
+  it.effect("cleans past a file that cannot be removed without pinning the cursor", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const { attachmentsDir } = yield* ServerConfig;
+      const projectId = ProjectId.make("project-cleanup-file-failure");
+      const blockedThreadId = ThreadId.make("thread-blocked-file");
+      const laterThreadId = ThreadId.make("thread-after-blocked");
+
+      yield* appendCleanupProject(projectId);
+      for (const threadId of [blockedThreadId, laterThreadId]) {
+        yield* appendCleanupThreadCreated(projectId, threadId);
+      }
+      yield* appendCleanupThreadDeleted(blockedThreadId);
+      const lastEvent = yield* appendCleanupThreadDeleted(laterThreadId);
+
+      const blockedPath = path.join(
+        attachmentsDir,
+        "thread-blocked-file-00000000-0000-4000-8000-000000000001.png",
+      );
+      const siblingPath = path.join(
+        attachmentsDir,
+        "thread-blocked-file-00000000-0000-4000-8000-000000000002.png",
+      );
+      const laterPath = path.join(
+        attachmentsDir,
+        "thread-after-blocked-00000000-0000-4000-8000-000000000003.png",
+      );
+      // Removing a nonempty directory as a file fails.
+      yield* fileSystem.makeDirectory(blockedPath, { recursive: true });
+      yield* fileSystem.writeFileString(path.join(blockedPath, "keep.txt"), "keep");
+      yield* fileSystem.writeFileString(siblingPath, "file");
+      yield* fileSystem.writeFileString(laterPath, "file");
+      yield* seedCleanupBacklog(lastEvent.sequence, 0);
+
+      yield* projectionPipeline.bootstrap;
+
+      assert.isTrue(yield* exists(blockedPath));
+      assert.isFalse(yield* exists(siblingPath));
+      assert.isFalse(yield* exists(laterPath));
+      assert.deepEqual(yield* readCleanupCursor, [{ lastAppliedSequence: lastEvent.sequence }]);
+    }),
+  );
+});
 
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
   it.effect("replays a bootstrap backlog larger than the event store default limit", () =>
@@ -4465,6 +4747,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       const projectId = ProjectId.make("project-outer-rollback");
       const threadId = ThreadId.make("thread-outer-rollback");
       const cleanupFailureThreadId = ThreadId.make("thread-cleanup-failure");
+      const cleanupRetryThreadId = ThreadId.make("thread-cleanup-retry");
       const commandId = CommandId.make("cmd-outer-rollback-delete");
       const attachmentPath = path.join(
         attachmentsDir,
@@ -4473,6 +4756,10 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       const blockedAttachmentPath = path.join(
         attachmentsDir,
         "thread-cleanup-failure-00000000-0000-4000-8000-000000000001.png",
+      );
+      const retriedAttachmentPath = path.join(
+        attachmentsDir,
+        "thread-cleanup-retry-00000000-0000-4000-8000-000000000001.png",
       );
 
       yield* engine.dispatch({
@@ -4483,7 +4770,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         workspaceRoot: "/tmp/project-outer-rollback",
         createdAt,
       });
-      for (const id of [threadId, cleanupFailureThreadId]) {
+      for (const id of [threadId, cleanupFailureThreadId, cleanupRetryThreadId]) {
         yield* engine.dispatch({
           type: "thread.create",
           commandId: CommandId.make(`cmd-create-${id}`),
@@ -4539,14 +4826,18 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       assert.deepEqual(rolledBackReceipts, []);
       yield* sql`DROP TRIGGER fail_attachment_command_receipt`;
 
+      const sequenceBeforeDelete = cursorsBeforeFailure.find(
+        (cursor) => cursor.projector === "projection.projects",
+      )!.lastAppliedSequence;
       const result = yield* engine.dispatch(deleteCommand);
+      // Cleanup runs after commit, so its cursor rides with the next command's projector cursors.
       assert.deepEqual(
         yield* readCursors,
         cursorsBeforeFailure.map((cursor) => ({
           ...cursor,
           lastAppliedSequence:
             cursor.projector === "projection.attachment-cleanup"
-              ? cursor.lastAppliedSequence
+              ? sequenceBeforeDelete
               : result.sequence,
         })),
       );
@@ -4563,15 +4854,23 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       ]);
 
       // Removing a nonempty directory as a file fails after the command commits.
-      yield* fileSystem.makeDirectory(blockedAttachmentPath);
-      yield* fileSystem.writeFileString(path.join(blockedAttachmentPath, "keep.txt"), "keep");
+      for (const blockedPath of [blockedAttachmentPath, retriedAttachmentPath]) {
+        yield* fileSystem.makeDirectory(blockedPath);
+        yield* fileSystem.writeFileString(path.join(blockedPath, "keep.txt"), "keep");
+      }
       const cleanupFailureCommandId = CommandId.make("cmd-cleanup-failure-delete");
       yield* engine.dispatch({
         type: "thread.delete",
         commandId: cleanupFailureCommandId,
         threadId: cleanupFailureThreadId,
       });
+      const retryDelete = yield* engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("cmd-cleanup-retry-delete"),
+        threadId: cleanupRetryThreadId,
+      });
       assert.isTrue(yield* exists(blockedAttachmentPath));
+      assert.isTrue(yield* exists(retriedAttachmentPath));
       const cleanupFailureReceipts = yield* sql<{ readonly status: string }>`
         SELECT status FROM orchestration_command_receipts
         WHERE command_id = ${cleanupFailureCommandId}
@@ -4583,19 +4882,17 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         SELECT last_applied_sequence AS "lastAppliedSequence" FROM projection_state
         WHERE projector = 'projection.attachment-cleanup'
       `;
-      const cursorBeforeRetry = yield* cleanupCursor;
-      yield* pipeline.bootstrap;
-      assert.deepEqual(yield* cleanupCursor, cursorBeforeRetry);
-      assert.isTrue(yield* exists(blockedAttachmentPath));
+      // A failed cleanup holds the cursor at the last cleanup that finished.
+      assert.deepEqual(yield* cleanupCursor, [{ lastAppliedSequence: result.sequence }]);
 
-      yield* fileSystem.remove(blockedAttachmentPath, { recursive: true });
-      yield* fileSystem.writeFileString(blockedAttachmentPath, "retry this attachment");
+      // The next start retries both deletes once: the cleared one succeeds, and the persistent
+      // failure is logged and left behind instead of pinning the cursor.
+      yield* fileSystem.remove(retriedAttachmentPath, { recursive: true });
+      yield* fileSystem.writeFileString(retriedAttachmentPath, "retry this attachment");
       yield* pipeline.bootstrap;
-      assert.isFalse(yield* exists(blockedAttachmentPath));
-      assert.isAbove(
-        (yield* cleanupCursor)[0]!.lastAppliedSequence,
-        cursorBeforeRetry[0]!.lastAppliedSequence,
-      );
+      assert.isFalse(yield* exists(retriedAttachmentPath));
+      assert.isTrue(yield* exists(blockedAttachmentPath));
+      assert.deepEqual(yield* cleanupCursor, [{ lastAppliedSequence: retryDelete.sequence }]);
     }),
   );
 });
