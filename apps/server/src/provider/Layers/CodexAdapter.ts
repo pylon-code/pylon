@@ -26,6 +26,7 @@ import {
   RuntimeRequestId,
   RuntimeTaskId,
   type RuntimeTaskUsage,
+  type TurnTokenUsage,
   ProviderApprovalDecision,
   ThreadId,
   type TurnId,
@@ -73,6 +74,11 @@ import {
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
+import {
+  type CodexRateLimitSnapshot,
+  codexUsageLimitMessage,
+  mergeCodexRateLimits,
+} from "./codexUsageLimits.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
@@ -107,7 +113,32 @@ interface CodexAdapterSessionContext {
     readonly sessionIncarnationId: NonNullable<ProviderSendTurnInput["sessionIncarnationId"]>;
     turnId?: TurnId;
   }>;
+  readonly turnTokenUsage: CodexTurnTokenUsageState;
   stopped: boolean;
+}
+
+type CodexCumulativeTokenUsage = {
+  readonly inputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly cacheCreationTokens?: number;
+  readonly outputTokens: number;
+  readonly reasoningTokens: number;
+};
+
+interface CodexTurnTokenUsageAccumulator {
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationTokens: number | undefined;
+  outputTokens: number;
+  reasoningTokens: number;
+  observed: boolean;
+  hasSubagents: boolean;
+}
+
+interface CodexTurnTokenUsageState {
+  baseline: CodexCumulativeTokenUsage | undefined;
+  activeTurnId: string | undefined;
+  readonly byTurnId: Map<string, CodexTurnTokenUsageAccumulator>;
 }
 
 function mapCodexRuntimeError(
@@ -443,6 +474,162 @@ function normalizeCodexTokenUsage(
       ? { lastReasoningOutputTokens: reasoningOutputTokens }
       : {}),
     compactsAutomatically: true,
+  };
+}
+
+function codexTokenUsageBreakdown(
+  usage: EffectCodexSchema.V2ThreadTokenUsageUpdatedNotification__TokenUsageBreakdown,
+): CodexCumulativeTokenUsage {
+  return {
+    inputTokens: usage.inputTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    ...(usage.cacheWriteInputTokens !== undefined
+      ? { cacheCreationTokens: usage.cacheWriteInputTokens }
+      : {}),
+    outputTokens: usage.outputTokens,
+    reasoningTokens: usage.reasoningOutputTokens,
+  };
+}
+
+function makeCodexTurnTokenUsageState(): CodexTurnTokenUsageState {
+  return {
+    baseline: undefined,
+    activeTurnId: undefined,
+    byTurnId: new Map(),
+  };
+}
+
+function getCodexTurnAccumulator(
+  state: CodexTurnTokenUsageState,
+  turnId: string,
+): CodexTurnTokenUsageAccumulator {
+  const existing = state.byTurnId.get(turnId);
+  if (existing) return existing;
+  const created: CodexTurnTokenUsageAccumulator = {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheCreationTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    observed: false,
+    hasSubagents: false,
+  };
+  state.byTurnId.set(turnId, created);
+  return created;
+}
+
+/**
+ * Usage added by one `thread/tokenUsage/updated` notification. Codex reports a
+ * running `total` for the thread and `last`, the usage of the newest model
+ * response. Within a turn the growth of `total` equals `last`. Without a prior
+ * total (first update after resume or rollback), or when Codex reset the
+ * running total, `last` is the delta.
+ */
+function codexTurnTokenUsageDelta(
+  previous: CodexCumulativeTokenUsage | undefined,
+  current: CodexCumulativeTokenUsage,
+  last: CodexCumulativeTokenUsage,
+): CodexCumulativeTokenUsage {
+  if (
+    previous === undefined ||
+    current.inputTokens < previous.inputTokens ||
+    current.cachedInputTokens < previous.cachedInputTokens ||
+    current.outputTokens < previous.outputTokens ||
+    current.reasoningTokens < previous.reasoningTokens
+  ) {
+    return last;
+  }
+  return {
+    inputTokens: current.inputTokens - previous.inputTokens,
+    cachedInputTokens: current.cachedInputTokens - previous.cachedInputTokens,
+    ...(current.cacheCreationTokens !== undefined &&
+    previous.cacheCreationTokens !== undefined &&
+    current.cacheCreationTokens >= previous.cacheCreationTokens
+      ? { cacheCreationTokens: current.cacheCreationTokens - previous.cacheCreationTokens }
+      : {}),
+    outputTokens: current.outputTokens - previous.outputTokens,
+    reasoningTokens: current.reasoningTokens - previous.reasoningTokens,
+  };
+}
+
+function accumulateCodexTurnTokenUsage(
+  state: CodexTurnTokenUsageState,
+  turnId: string,
+  usage: EffectCodexSchema.V2ThreadTokenUsageUpdatedNotification["tokenUsage"],
+): void {
+  const current = codexTokenUsageBreakdown(usage.total);
+  if (state.activeTurnId !== turnId) {
+    // The total is thread-wide, so every update moves the baseline. A late
+    // update for a finished turn is not counted toward the live turn.
+    state.baseline = current;
+    return;
+  }
+
+  const accumulator = getCodexTurnAccumulator(state, turnId);
+  const delta = codexTurnTokenUsageDelta(
+    state.baseline,
+    current,
+    codexTokenUsageBreakdown(usage.last),
+  );
+  state.baseline = current;
+
+  if (
+    delta.inputTokens > 0 ||
+    delta.cachedInputTokens > 0 ||
+    delta.outputTokens > 0 ||
+    delta.reasoningTokens > 0
+  ) {
+    accumulator.observed = true;
+  }
+  accumulator.inputTokens += delta.inputTokens;
+  accumulator.cachedInputTokens += delta.cachedInputTokens;
+  accumulator.outputTokens += delta.outputTokens;
+  accumulator.reasoningTokens += delta.reasoningTokens;
+  if (delta.cacheCreationTokens === undefined) {
+    accumulator.cacheCreationTokens = undefined;
+  } else if (accumulator.cacheCreationTokens !== undefined) {
+    accumulator.cacheCreationTokens += delta.cacheCreationTokens;
+  }
+}
+
+function completeCodexTurnTokenUsage(
+  state: CodexTurnTokenUsageState,
+  turnId: string,
+  completed: boolean,
+): TurnTokenUsage {
+  const usage = state.byTurnId.get(turnId);
+  state.byTurnId.delete(turnId);
+  if (state.activeTurnId === turnId) state.activeTurnId = undefined;
+  if (!usage) {
+    return {
+      usageStatus: "unavailable",
+      usageScope: "main_agent",
+      hasSubagents: false,
+    };
+  }
+
+  if (!usage.observed) {
+    return {
+      usageStatus: "unavailable",
+      usageScope: "main_agent",
+      hasSubagents: usage.hasSubagents,
+    };
+  }
+
+  // Codex counts cache reads and writes inside inputTokens. Clamp the
+  // subsets so the record keeps the documented relationships even if a
+  // counter drifts.
+  return {
+    usageStatus: completed ? "complete" : "partial",
+    usageScope: "main_agent",
+    inputTokens: usage.inputTokens,
+    cachedInputTokens: Math.min(usage.inputTokens, usage.cachedInputTokens),
+    ...(usage.cacheCreationTokens !== undefined
+      ? { cacheCreationTokens: Math.min(usage.inputTokens, usage.cacheCreationTokens) }
+      : {}),
+    outputTokens: usage.outputTokens,
+    reasoningTokens: Math.min(usage.outputTokens, usage.reasoningTokens),
+    hasSubagents: usage.hasSubagents,
   };
 }
 
@@ -2115,6 +2302,13 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               }
             : {}),
         };
+        const turnTokenUsage = makeCodexTurnTokenUsageState();
+        // Codex reports a usage-limit stop as OpenAI's own sentence, which on a
+        // Business workspace blames credits for a window that ran out. The
+        // snapshot naming that window arrives in its own notification, before or
+        // after the stop and often sparse, so keep the session's merged view of
+        // it and read it when a turn fails on the limit.
+        let rateLimits: CodexRateLimitSnapshot | undefined;
         const sessionScope = yield* Scope.make("sequential");
         let sessionScopeTransferred = false;
         yield* Effect.addFinalizer(() =>
@@ -2145,12 +2339,114 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
           Effect.gen(function* () {
             yield* writeNativeEvent(event);
-            const runtimeEvents = mapToRuntimeEvents(event, event.threadId).map((runtimeEvent) => {
+            if (event.method === "turn/started" && event.turnId) {
+              if (turnTokenUsage.activeTurnId !== event.turnId) {
+                turnTokenUsage.byTurnId.clear();
+                turnTokenUsage.activeTurnId = event.turnId;
+                getCodexTurnAccumulator(turnTokenUsage, event.turnId);
+              }
+            } else if (event.method === "thread/tokenUsage/updated") {
+              const payload = readPayload(
+                EffectCodexSchema.V2ThreadTokenUsageUpdatedNotification,
+                event.payload,
+              );
+              if (payload) {
+                accumulateCodexTurnTokenUsage(turnTokenUsage, payload.turnId, payload.tokenUsage);
+              }
+            } else if (turnTokenUsage.activeTurnId) {
+              const collabPayload =
+                typeof event.payload === "object" && event.payload !== null
+                  ? (event.payload as Record<string, unknown>)
+                  : undefined;
+              const isCollabSpawn =
+                event.method === "collabAgent/started" ||
+                (event.method === "collabAgent/activity" &&
+                  collabPayload?.activityKind === "started");
+              if (isCollabSpawn && event.turnId === turnTokenUsage.activeTurnId) {
+                getCodexTurnAccumulator(turnTokenUsage, turnTokenUsage.activeTurnId).hasSubagents =
+                  true;
+              }
+            }
+
+            if (event.method === "account/rateLimits/updated") {
+              const limitsPayload = readPayload(
+                EffectCodexSchema.V2AccountRateLimitsUpdatedNotification,
+                event.payload,
+              );
+              if (limitsPayload) {
+                rateLimits = mergeCodexRateLimits(rateLimits, limitsPayload.rateLimits);
+              }
+            } else if (event.method === "error") {
+              const errorPayload = readPayload(
+                EffectCodexSchema.V2ErrorNotification,
+                event.payload,
+              );
+              // The failed `turn/completed` repeats this sentence and is answered
+              // below; relaying both would show the limit twice.
+              if (errorPayload?.error.codexErrorInfo === "usageLimitExceeded") return;
+            }
+
+            let usageLimitError: ProviderRuntimeEvent | undefined;
+            let usageLimitMessage: string | undefined;
+            if (event.method === "turn/completed") {
+              const completedPayload = readPayload(
+                EffectCodexSchema.V2TurnCompletedNotification,
+                event.payload,
+              );
+              const turnError =
+                completedPayload?.turn.status === "failed"
+                  ? completedPayload.turn.error
+                  : undefined;
+              if (turnError?.codexErrorInfo === "usageLimitExceeded") {
+                usageLimitMessage = codexUsageLimitMessage(rateLimits, event.createdAt);
+                usageLimitError = {
+                  ...runtimeEventBase(event, event.threadId),
+                  ...(input.sessionIncarnationId !== undefined
+                    ? { sessionIncarnationId: input.sessionIncarnationId }
+                    : {}),
+                  type: "runtime.error",
+                  payload: {
+                    message: usageLimitMessage,
+                    class: "provider_error",
+                    ...(turnError.message ? { detail: turnError.message } : {}),
+                  },
+                };
+              }
+            }
+
+            const mappedEvents = mapToRuntimeEvents(event, event.threadId).map((runtimeEvent) => {
               const stampedRuntimeEvent =
                 runtimeEvent.sessionIncarnationId !== undefined ||
                 input.sessionIncarnationId === undefined
                   ? runtimeEvent
                   : { ...runtimeEvent, sessionIncarnationId: input.sessionIncarnationId };
+              if (stampedRuntimeEvent.type === "turn.completed" && stampedRuntimeEvent.turnId) {
+                return {
+                  ...stampedRuntimeEvent,
+                  payload: {
+                    ...stampedRuntimeEvent.payload,
+                    ...(usageLimitMessage ? { errorMessage: usageLimitMessage } : {}),
+                    tokenUsage: completeCodexTurnTokenUsage(
+                      turnTokenUsage,
+                      String(stampedRuntimeEvent.turnId),
+                      stampedRuntimeEvent.payload.state === "completed",
+                    ),
+                  },
+                } satisfies ProviderRuntimeEvent;
+              }
+              if (stampedRuntimeEvent.type === "turn.aborted" && stampedRuntimeEvent.turnId) {
+                return {
+                  ...stampedRuntimeEvent,
+                  payload: {
+                    ...stampedRuntimeEvent.payload,
+                    tokenUsage: completeCodexTurnTokenUsage(
+                      turnTokenUsage,
+                      String(stampedRuntimeEvent.turnId),
+                      false,
+                    ),
+                  },
+                } satisfies ProviderRuntimeEvent;
+              }
               if (stampedRuntimeEvent.type !== "turn.started") return stampedRuntimeEvent;
               const exactIndex = pendingAdmissions.findIndex(
                 (admission) => admission.turnId === stampedRuntimeEvent.turnId,
@@ -2165,6 +2461,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               const { turnId: _turnId, ...correlation } = admission;
               return { ...stampedRuntimeEvent, ...correlation };
             });
+            const runtimeEvents = usageLimitError
+              ? [usageLimitError, ...mappedEvents]
+              : mappedEvents;
             if (runtimeEvents.length === 0) {
               yield* Effect.logDebug("ignoring unhandled Codex provider event", {
                 method: event.method,
@@ -2204,6 +2503,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           eventFiber,
           admissionSemaphore: yield* Semaphore.make(1),
           pendingAdmissions,
+          turnTokenUsage,
           stopped: false,
         });
         sessionScopeTransferred = true;
@@ -2362,7 +2662,17 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     }
 
     return requireSession(threadId).pipe(
-      Effect.flatMap((session) => session.runtime.rollbackThread(numTurns)),
+      Effect.flatMap((session) =>
+        session.runtime.rollbackThread(numTurns).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              session.turnTokenUsage.baseline = undefined;
+              session.turnTokenUsage.activeTurnId = undefined;
+              session.turnTokenUsage.byTurnId.clear();
+            }),
+          ),
+        ),
+      ),
       Effect.mapError((cause) =>
         cause._tag === "ProviderAdapterSessionNotFoundError"
           ? cause

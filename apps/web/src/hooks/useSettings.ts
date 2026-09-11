@@ -432,6 +432,9 @@ function useUpdateSettingsTarget(
             }
           }
           if (Object.keys(sharedPatch).length > 0) {
+            const sourceSettings = environments.find(
+              (target) => target.environmentId === environmentId,
+            )?.serverConfig?.settings;
             const targets = new Set(
               environments.filter(supportsSharedSettingsSync).map((target) => target.environmentId),
             );
@@ -442,6 +445,9 @@ function useUpdateSettingsTarget(
               const targetPatch = filterSharedServerPatch(
                 sharedPatch,
                 target?.serverConfig?.environment.capabilities,
+                target?.serverConfig?.settings,
+                sourceSettings,
+                targetId === environmentId,
               );
               if (Object.keys(targetPatch).length === 0) continue;
               wroteToTarget = true;
@@ -527,7 +533,12 @@ export function useSharedSettingsSync() {
       void persistServerSettings({
         environmentId: mismatch.environmentId,
         input: {
-          patch: filterSharedServerPatch(patch, target?.serverConfig?.environment.capabilities),
+          patch: filterSharedServerPatch(
+            patch,
+            target?.serverConfig?.environment.capabilities,
+            target?.serverConfig?.settings,
+            primarySettings,
+          ),
         },
       });
     }

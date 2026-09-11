@@ -51,6 +51,11 @@ them together. Your unpin confirmation setting applies. Both sidebar layouts con
 deletion after a thread fails, keeping failed threads selected for retry. A worktree removal
 failure is reported separately when the thread itself was deleted successfully.
 
+On web and desktop, you can also drag files from your computer onto any thread row, including
+search results: the thread opens and the files are attached in its composer, ready for your next
+message. Nothing is sent automatically. The same per-message file limits apply as when attaching
+files directly; see [Composer](./composer.md).
+
 Project settings are available from the project menu in either sidebar and from the breadcrumb
 context menu when composing a new thread.
 
