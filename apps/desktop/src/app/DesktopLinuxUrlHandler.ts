@@ -8,6 +8,7 @@ import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
+import * as DesktopAssets from "./DesktopAssets.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
 
@@ -36,6 +37,7 @@ export class DesktopLinuxUrlHandlerRegistrationError extends Schema.TaggedErrorC
       "write-desktop-entry",
       "set-default-handler",
       "remove-legacy-desktop-entry",
+      "install-icon",
     ]),
     scheme: Schema.String,
     desktopEntryPath: Schema.optionalKey(Schema.String),
@@ -50,6 +52,9 @@ export class DesktopLinuxUrlHandlerRegistrationError extends Schema.TaggedErrorC
 }
 
 const isRegistrationError = Schema.is(DesktopLinuxUrlHandlerRegistrationError);
+
+const sameBytes = (left: Uint8Array, right: Uint8Array): boolean =>
+  left.length === right.length && left.every((byte, index) => byte === right[index]);
 
 const escapeDesktopEntryString = (value: string): string =>
   value
@@ -74,17 +79,31 @@ export function escapeDesktopEntryExecArgument(value: string): string {
   return escapeDesktopEntryString(`"${quoted}"`);
 }
 
-// The AppImage integration entry owns the window identity and icon. This
-// hidden URL-only entry must not compete with it for StartupWMClass matching.
+/**
+ * Stable copy of the app icon for the channel's desktop entry. Inside an AppImage
+ * the bundled icon lives under a mount path that changes on every launch.
+ */
+export const resolveLinuxDesktopEntryIconPath = (input: {
+  readonly dataHome: string;
+  readonly desktopEntryName: string;
+  readonly join: (...parts: ReadonlyArray<string>) => string;
+}): string =>
+  input.join(input.dataHome, input.desktopEntryName.replace(/\.desktop$/, ""), "icon.png");
+
+// The AppImage integration entry owns the launcher. This hidden entry must not
+// compete with it for StartupWMClass matching, but desktops that match a window
+// by its app ID land here, so it still carries the app's name and icon.
 export function renderUrlHandlerDesktopEntry(input: {
   readonly displayName: string;
   readonly execTarget: string;
   readonly scheme: string;
+  readonly iconPath?: string;
 }): string {
   return [
     "[Desktop Entry]",
     "Type=Application",
     `Name=${escapeDesktopEntryString(input.displayName)}`,
+    ...(input.iconPath === undefined ? [] : [`Icon=${escapeDesktopEntryString(input.iconPath)}`]),
     `Exec=${escapeDesktopEntryExecArgument(input.execTarget)} %U`,
     "Terminal=false",
     "NoDisplay=true",
@@ -113,6 +132,7 @@ export class DesktopLinuxUrlHandler extends Context.Service<
 
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const assets = yield* DesktopAssets.DesktopAssets;
   const fileSystem = yield* FileSystem.FileSystem;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
@@ -120,6 +140,31 @@ export const make = Effect.gen(function* () {
   const desktopEntryPath = environment.path.join(
     environment.linuxApplicationsDir,
     environment.linuxDesktopEntryName,
+  );
+
+  const iconPath = resolveLinuxDesktopEntryIconPath({
+    dataHome: environment.path.dirname(environment.linuxApplicationsDir),
+    desktopEntryName: environment.linuxDesktopEntryName,
+    join: (...parts) => environment.path.join(...parts),
+  });
+
+  const installIcon = Effect.gen(function* () {
+    const source = (yield* assets.iconPaths).png;
+    if (Option.isNone(source)) return;
+    const icon = yield* fileSystem.readFile(source.value);
+    const installed = yield* fileSystem.readFile(iconPath).pipe(Effect.orElseSucceed(() => null));
+    if (installed !== null && sameBytes(installed, icon)) return;
+    yield* fileSystem.makeDirectory(environment.path.dirname(iconPath), { recursive: true });
+    yield* fileSystem.writeFile(iconPath, icon);
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new DesktopLinuxUrlHandlerRegistrationError({
+          step: "install-icon",
+          scheme,
+          cause,
+        }),
+    ),
   );
 
   const writeDesktopEntry = Effect.gen(function* () {
@@ -130,6 +175,7 @@ export const make = Effect.gen(function* () {
       displayName: environment.displayName,
       execTarget,
       scheme,
+      iconPath,
     });
     // Pre-ready setup normally wrote this already. Avoid truncating a valid
     // entry while the portal may be reading it during startup.
@@ -215,6 +261,12 @@ export const make = Effect.gen(function* () {
     if (environment.platform !== "linux") {
       return;
     }
+    // The icon only decorates the entry, so a failure must not block registration.
+    yield* installIcon.pipe(
+      Effect.catch((error) =>
+        logWarning("desktop entry icon install failed", { scheme, message: error.message }),
+      ),
+    );
     yield* writeDesktopEntry;
     if (!environment.isPackaged) return;
     yield* setDefaultHandler;

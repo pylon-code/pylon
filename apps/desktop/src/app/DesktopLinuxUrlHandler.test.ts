@@ -8,13 +8,18 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
+import * as DesktopAssets from "./DesktopAssets.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopLinuxUrlHandler from "./DesktopLinuxUrlHandler.ts";
+
+const BUNDLED_ICON_PATH = "/tmp/.mount_pylon/resources/icon.png";
+const INSTALLED_ICON_PATH = "/home/alice/.local/share/com.pylon.code/icon.png";
 
 interface RecordedRegistration {
   readonly directories: string[];
   readonly files: Array<{ readonly path: string; readonly content: string }>;
   readonly removed: string[];
+  readonly binaryFiles: Array<{ readonly path: string; readonly bytes: Uint8Array }>;
   readonly commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }>;
 }
 
@@ -28,7 +33,10 @@ const makeEnvironment = (overrides: Record<string, unknown> = {}) =>
     linuxWmClass: "com.pylon.code",
     linuxApplicationsDir: "/home/alice/.local/share/applications",
     appImagePath: Option.some("/home/alice/Applications/Pylon.AppImage"),
-    path: { join: (...parts: ReadonlyArray<string>) => parts.join("/") },
+    path: {
+      join: (...parts: ReadonlyArray<string>) => parts.join("/"),
+      dirname: (path: string) => path.slice(0, path.lastIndexOf("/")),
+    },
     ...overrides,
   } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
 
@@ -55,13 +63,48 @@ const makeHandlerLayer = (
     readonly writeError?: PlatformError.PlatformError;
     readonly existingEntry?: string;
     readonly legacyEntry?: string;
+    readonly bundledIcon?: Uint8Array;
+    readonly installedIcon?: Uint8Array;
   } = {},
 ) =>
   DesktopLinuxUrlHandler.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         Layer.succeed(DesktopEnvironment.DesktopEnvironment, makeEnvironment(input.environment)),
+        Layer.succeed(
+          DesktopAssets.DesktopAssets,
+          DesktopAssets.DesktopAssets.of({
+            iconPaths: Effect.succeed({
+              ico: Option.none(),
+              icns: Option.none(),
+              png: input.bundledIcon ? Option.some(BUNDLED_ICON_PATH) : Option.none(),
+            }),
+            resolveResourcePath: () => Effect.succeed(Option.none()),
+          }),
+        ),
         FileSystem.layerNoop({
+          readFile: (path) => {
+            const bytes =
+              path === BUNDLED_ICON_PATH
+                ? input.bundledIcon
+                : path === INSTALLED_ICON_PATH
+                  ? input.installedIcon
+                  : undefined;
+            return bytes
+              ? Effect.succeed(bytes)
+              : Effect.fail(
+                  PlatformError.systemError({
+                    _tag: "NotFound",
+                    module: "FileSystem",
+                    method: "readFile",
+                    pathOrDescriptor: path,
+                  }),
+                );
+          },
+          writeFile: (path, bytes) =>
+            Effect.sync(() => {
+              recorded.binaryFiles.push({ path, bytes });
+            }),
           readFileString: (path) =>
             Effect.succeed(
               path.endsWith(DesktopLinuxUrlHandler.LEGACY_URL_HANDLER_DESKTOP_ENTRY_NAME)
@@ -114,6 +157,7 @@ const emptyRecording = (): RecordedRegistration => ({
   directories: [],
   files: [],
   removed: [],
+  binaryFiles: [],
   commands: [],
 });
 
@@ -220,6 +264,7 @@ describe("DesktopLinuxUrlHandler", () => {
           displayName: "Pylon (Alpha)",
           execTarget: "/home/alice/Applications/Pylon.AppImage",
           scheme: "pylon-code",
+          iconPath: INSTALLED_ICON_PATH,
         }),
       });
 
@@ -248,6 +293,22 @@ describe("DesktopLinuxUrlHandler", () => {
         "/home/alice/.local/share/applications/com.pylon.code.dev.desktop",
       );
       assert.deepEqual(unpackaged.commands, []);
+    });
+  });
+
+  it.effect("gives the channel entry a stable icon copy outside the AppImage mount", () => {
+    const fresh = emptyRecording();
+    const unchanged = emptyRecording();
+    const bundledIcon = new Uint8Array([137, 80, 78, 71]);
+
+    return Effect.gen(function* () {
+      yield* runRegister(fresh, { bundledIcon });
+      yield* runRegister(unchanged, { bundledIcon, installedIcon: new Uint8Array(bundledIcon) });
+
+      assert.deepEqual(fresh.binaryFiles, [{ path: INSTALLED_ICON_PATH, bytes: bundledIcon }]);
+      assert.include(fresh.directories, "/home/alice/.local/share/com.pylon.code");
+      assert.include(fresh.files[0]?.content, `Icon=${INSTALLED_ICON_PATH}`);
+      assert.deepEqual(unchanged.binaryFiles, []);
     });
   });
 

@@ -194,7 +194,10 @@ the installed entry managed by `DesktopLinuxUrlHandler`, and portals reject appl
 without a reverse-DNS dot, so each channel uses `com.pylon.code[.dev|.nightly].desktop`. Electron
 derives every window's WM class and Wayland app ID from that name, so `linuxWmClass` and the
 AppImage `StartupWMClass` use the same `com.pylon.code[.nightly]` ID; launchers that name
-another class stop grouping with running windows. After the scheme default moves to the new
+another class stop grouping with running windows. Desktops that match a window by app ID land on the
+hidden entry, so it carries the channel's name and an `Icon=` pointing at a copy of the bundled
+icon under `$XDG_DATA_HOME/<app-id>/icon.png` (the AppImage mount path changes every launch).
+After the scheme default moves to the new
 entry, the URL handler deletes the `pylon-code-url-handler.desktop` entry earlier builds wrote,
 but only when its content is still Pylon's generated hidden handler, and never while the default
 could not be moved. Pre-ready setup also refreshes that entry's `Exec` path before

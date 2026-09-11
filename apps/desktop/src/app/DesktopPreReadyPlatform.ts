@@ -11,7 +11,10 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import * as DesktopEarlyElectronStartup from "./DesktopEarlyElectronStartup.ts";
 import { resolveDesktopAppBranding } from "./DesktopEnvironment.ts";
-import { renderUrlHandlerDesktopEntry } from "./DesktopLinuxUrlHandler.ts";
+import {
+  renderUrlHandlerDesktopEntry,
+  resolveLinuxDesktopEntryIconPath,
+} from "./DesktopLinuxUrlHandler.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 
 export interface DesktopPreReadyCommandLineReader {
@@ -62,11 +65,10 @@ export const make = Effect.gen(function* () {
       // The portal also requires a valid desktop entry. An AppImage update may
       // have removed the executable referenced by the previous launch's entry.
       try {
-        const applicationsDir = NodePath.posix.join(
+        const dataHome =
           process.env.XDG_DATA_HOME?.trim() ||
-            NodePath.posix.join(NodeOS.homedir(), ".local", "share"),
-          "applications",
-        );
+          NodePath.posix.join(NodeOS.homedir(), ".local", "share");
+        const applicationsDir = NodePath.posix.join(dataHome, "applications");
         NodeFS.mkdirSync(applicationsDir, { recursive: true });
         NodeFS.writeFileSync(
           NodePath.posix.join(applicationsDir, linux.linuxDesktopEntryName),
@@ -77,6 +79,12 @@ export const make = Effect.gen(function* () {
             }).displayName,
             execTarget: process.env.APPIMAGE?.trim() || process.execPath,
             scheme: ElectronProtocol.getDesktopScheme(linux.isDevelopment),
+            // Must match the URL handler's entry byte for byte, or each launch rewrites it.
+            iconPath: resolveLinuxDesktopEntryIconPath({
+              dataHome,
+              desktopEntryName: linux.linuxDesktopEntryName,
+              join: NodePath.posix.join,
+            }),
           }),
           "utf8",
         );
