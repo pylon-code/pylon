@@ -1,6 +1,7 @@
 // @effect-diagnostics globalTimers:off -- Capture timeouts and Electron overlay animation timers run at native callback boundaries outside Effect fibers.
 
 import {
+  compactSnapShotSource,
   DEFAULT_CLIENT_SETTINGS,
   DesktopPendingSnapShot,
   isModifierPairShortcut,
@@ -936,7 +937,7 @@ export const make = Effect.gen(function* () {
         name: `window-${capturedAt.replaceAll(":", "-")}.png`,
         mimeType: "image/png",
         sizeBytes: png.byteLength,
-        source: {
+        source: compactSnapShotSource({
           kind: "snap-shot",
           capturedAt,
           appName:
@@ -955,7 +956,7 @@ export const make = Effect.gen(function* () {
             : {}),
           ...(appIdentifier ? { appIdentifier } : {}),
           ...(appIconDataUrl ? { appIconDataUrl } : {}),
-        },
+        }),
       });
       if (!imageTempReady) yield* fileSystem.writeFile(imageTempPath, png);
       yield* fileSystem.rename(imageTempPath, imagePath);

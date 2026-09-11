@@ -294,6 +294,16 @@ export const SnapShotSource = Schema.Struct({
 });
 export type SnapShotSource = typeof SnapShotSource.Type;
 
+/**
+ * Capture metadata rides on every event, projection and thread page that carries
+ * the attachment. Every reader prefers `accessibility`, so `accessibleText` is only
+ * kept when it is the sole accessibility data.
+ */
+export function compactSnapShotSource(source: SnapShotSource): SnapShotSource {
+  if (source.accessibility === undefined || source.accessibleText === undefined) return source;
+  return Struct.omit(source, ["accessibleText"]);
+}
+
 export const ChatImageAttachment = Schema.Struct({
   type: Schema.Literal("image"),
   id: ChatAttachmentId,

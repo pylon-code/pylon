@@ -33,6 +33,7 @@ import {
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
   SnapShotAccessibility,
+  compactSnapShotSource,
   isProviderSendTurnSupportedImageMimeType,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
 } from "./orchestration.ts";
@@ -514,6 +515,27 @@ it.effect("keeps an image attachment whose capture metadata has an unknown shape
     );
   }),
 );
+
+it("stores accessible text only when it is the sole accessibility data", () => {
+  const base = {
+    kind: "snap-shot" as const,
+    capturedAt: "2026-08-24T11:00:00.000Z",
+    appName: "Editor",
+    windowTitle: "main.ts",
+  };
+  const textOnly = { ...base, accessibleText: "const answer = 42;" };
+  const accessibility = {
+    format: "flat-text" as const,
+    text: "const answer = 42;",
+    truncated: false,
+  };
+
+  assert.strictEqual(compactSnapShotSource(textOnly), textOnly);
+  assert.deepStrictEqual(
+    compactSnapShotSource({ ...base, accessibleText: "duplicate", accessibility }),
+    { ...base, accessibility },
+  );
+});
 
 it.effect("rejects accessibility trees above the serialized payload limit", () =>
   Effect.gen(function* () {
