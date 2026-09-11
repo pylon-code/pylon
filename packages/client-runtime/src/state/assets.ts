@@ -7,7 +7,7 @@ import {
   WS_METHODS,
 } from "@t3tools/contracts";
 import { mediaMimeTypeFromExtension } from "@t3tools/shared/filePreview";
-import { isWindowsAbsolutePath } from "@t3tools/shared/path";
+import { isDriveOrPosixAbsolutePath } from "@t3tools/shared/path";
 import {
   getProjectFaviconResourceKey,
   isProjectFaviconFallbackUrl,
@@ -120,7 +120,8 @@ export function createAssetEnvironmentAtoms<R, E>(
         error._tag === "AssetWorkspaceContextNotFoundError"
       ) ||
       resource._tag !== "media-file" ||
-      !(resource.path.startsWith("/") || isWindowsAbsolutePath(resource.path)) ||
+      // A remote thread must not make this machine open a UNC or device path.
+      !isDriveOrPosixAbsolutePath(resource.path) ||
       mediaMimeTypeFromExtension(resource.path.slice(resource.path.lastIndexOf("."))) === null
     )
       return yield* error;
