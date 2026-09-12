@@ -68,6 +68,8 @@ import {
 } from "../providerUpdateSettings.ts";
 import { makeClaudeCapabilitiesCacheKey, makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
 import { discoverClaudeSkills } from "./ClaudeSkills.ts";
+import { reconcileClaudeUsage } from "../claudeUsageReconciliation.ts";
+import { USAGE_RECONCILIATION_DELAY_MS } from "../coalescedUsageRefresh.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
@@ -296,6 +298,23 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
               Effect.provideService(Path.Path, path),
             );
 
+      const reconcileUsage: NonNullable<ProviderInstance["reconcileUsage"]> = ({ isCurrent }) =>
+        reconcileClaudeUsage({
+          enabled: effectiveConfig.enabled,
+          getSnapshot: snapshot.getSnapshot,
+          isCurrent,
+          read: probeClaudeUsageLimits(effectiveConfig, processEnv, cwd, {
+            freshForMs: USAGE_RECONCILIATION_DELAY_MS,
+            shareFailures: true,
+            commitGuard: isCurrent,
+          }).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+            Effect.provideService(Path.Path, path),
+          ),
+        });
+
       return {
         instanceId,
         driverKind: DRIVER_KIND,
@@ -310,6 +329,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         snapshotForCwd,
         adapter,
         textGeneration,
+        reconcileUsage,
       } satisfies ProviderInstance;
     }),
 };

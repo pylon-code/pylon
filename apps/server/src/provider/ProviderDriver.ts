@@ -96,6 +96,16 @@ export interface ProviderInstance {
    * drivers that use Pylon's configured accounts have nothing to read.
    */
   readonly capacity?: ProviderCapacitySource | undefined;
+  /** Reconcile native-account quota signals through the driver's authoritative usage reader. */
+  readonly reconcileUsage?: (input: {
+    readonly isCurrent: Effect.Effect<boolean>;
+  }) => Effect.Effect<
+    | {
+        readonly accountIdentity: string;
+        readonly usageLimits: NonNullable<ServerProvider["usageLimits"]>;
+      }
+    | undefined
+  >;
   /** Explicit account action, separate from starting or resuming a turn. */
   readonly consumeResetCredit?: (input: {
     readonly requestId?: string | undefined;

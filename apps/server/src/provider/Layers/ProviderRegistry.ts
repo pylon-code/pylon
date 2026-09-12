@@ -45,6 +45,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
+import * as Scope from "effect/Scope";
 
 import { ServerConfig } from "../../config.ts";
 import {
@@ -71,6 +72,7 @@ import {
 } from "../ProviderDriver.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
+import { makeCoalescedUsageRefresh } from "../coalescedUsageRefresh.ts";
 
 const loadProviders = (
   providerSources: ReadonlyArray<ProviderSnapshotSource>,
@@ -439,6 +441,25 @@ export const ProviderRegistryLive = Layer.effect(
       >
     >(new Map());
     const registryScope = yield* Effect.scope;
+    const reconciledUsageRef = yield* Ref.make<
+      ReadonlyMap<
+        ProviderInstanceId,
+        {
+          readonly accountIdentity: string;
+          readonly usageLimits: NonNullable<ServerProvider["usageLimits"]>;
+        }
+      >
+    >(new Map());
+    const usageRefreshLock = yield* Semaphore.make(1);
+    const usageRefreshesRef = yield* Ref.make<
+      ReadonlyMap<
+        ProviderInstance,
+        {
+          readonly request: Effect.Effect<void>;
+          readonly stop: Effect.Effect<void>;
+        }
+      >
+    >(new Map());
 
     // Live-source registry — the dynamic counterpart to the boot-time
     // `bootSources`. Keyed by `instanceId`; the stored `ProviderInstance`
@@ -526,6 +547,19 @@ export const ProviderRegistryLive = Layer.effect(
     const applyProviderUsageLimits = Effect.fn("applyProviderUsageLimits")(function* (
       provider: ServerProvider,
     ) {
+      // OAuth supplies the complete, named scope set. Keep it separate from
+      // sparse pushes: their duration matcher intentionally targets only the
+      // account-wide weekly window. A later periodic reading supersedes it.
+      const reconciled = (yield* Ref.get(reconciledUsageRef)).get(provider.instanceId);
+      if (
+        reconciled &&
+        provider.auth.status === "authenticated" &&
+        provider.auth.email?.trim() === reconciled.accountIdentity &&
+        (provider.usageLimits === undefined ||
+          Date.parse(reconciled.usageLimits.checkedAt) > Date.parse(provider.usageLimits.checkedAt))
+      ) {
+        provider = { ...provider, usageLimits: reconciled.usageLimits };
+      }
       const pushed = (yield* Ref.get(pushedUsageRef)).get(provider.instanceId);
       if (!pushed) return provider;
       const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
@@ -798,6 +832,77 @@ export const ProviderRegistryLive = Layer.effect(
     ) {
       if (capturedFence !== undefined && !(yield* capturedFence.isCurrent)) return;
       const instance = (yield* Ref.get(liveSubsRef)).get(instanceId);
+      // Reconciliation follows the authoritative instance immediately, even
+      // while its snapshot subscription is still being attached.
+      const usageInstance = yield* instanceRegistry.getInstance(instanceId);
+      if (usageInstance?.reconcileUsage) {
+        if (
+          capturedFence !== undefined &&
+          usageInstance.runtimeFence?.generation !== capturedFence.generation
+        )
+          return;
+        const reconcileUsage = usageInstance.reconcileUsage;
+        const isCurrent = Effect.gen(function* () {
+          if ((yield* instanceRegistry.getInstance(instanceId)) !== usageInstance) return false;
+          return usageInstance.runtimeFence ? yield* usageInstance.runtimeFence.isCurrent : true;
+        });
+        yield* usageRefreshLock.withPermits(1)(
+          Effect.gen(function* () {
+            if (!(yield* isCurrent)) return;
+            let job = (yield* Ref.get(usageRefreshesRef)).get(usageInstance);
+            if (!job) {
+              job = yield* makeCoalescedUsageRefresh(
+                Effect.gen(function* () {
+                  if (!(yield* isCurrent)) return;
+                  const result = yield* reconcileUsage({ isCurrent });
+                  if (!result || !(yield* isCurrent)) return;
+                  const provider = (yield* Ref.get(providersRef)).find(
+                    (item) => item.instanceId === instanceId,
+                  );
+                  if (
+                    provider?.auth.status !== "authenticated" ||
+                    provider.auth.email?.trim() !== result.accountIdentity
+                  )
+                    return;
+                  const previous = (yield* Ref.get(reconciledUsageRef)).get(instanceId);
+                  if (
+                    previous &&
+                    Date.parse(previous.usageLimits.checkedAt) >
+                      Date.parse(result.usageLimits.checkedAt)
+                  )
+                    return;
+                  yield* Ref.update(reconciledUsageRef, (entries) =>
+                    new Map(entries).set(instanceId, result),
+                  );
+                  // Start from the full reading, then overlay newer account-wide
+                  // pushes. Comparing the resulting timestamp also protects a
+                  // genuinely newer periodic read from this delayed response.
+                  const nextProvider = yield* applyProviderUsageLimits({
+                    ...provider,
+                    usageLimits: result.usageLimits,
+                  });
+                  if (
+                    provider.usageLimits &&
+                    Date.parse(provider.usageLimits.checkedAt) >
+                      Date.parse(nextProvider.usageLimits!.checkedAt)
+                  )
+                    return;
+                  yield* upsertProviders([nextProvider], {
+                    persist: false,
+                    runtimeFence: { generation: usageInstance, isCurrent },
+                  });
+                }),
+              ).pipe(Effect.provideService(Scope.Scope, registryScope));
+              const addedJob = job;
+              yield* Ref.update(usageRefreshesRef, (previous) =>
+                new Map(previous).set(usageInstance, addedJob),
+              );
+            }
+            yield* job.request;
+          }),
+        );
+        return;
+      }
       const capacity = instance?.capacity;
       if (!capacity) return;
       const runtimeFence = capturedFence ?? instance.runtimeFence;
@@ -980,6 +1085,23 @@ export const ProviderRegistryLive = Layer.effect(
           knownInstanceIds.add(snapshotInstanceKey(provider));
         }
         const previousSubs = yield* Ref.get(liveSubsRef);
+        yield* usageRefreshLock.withPermits(1)(
+          Effect.gen(function* () {
+            const jobs = yield* Ref.get(usageRefreshesRef);
+            const retained = new Map(jobs);
+            for (const [instance, job] of jobs) {
+              if (nextByInstance.get(instance.instanceId) === instance) continue;
+              yield* job.stop;
+              retained.delete(instance);
+              yield* Ref.update(reconciledUsageRef, (entries) => {
+                const next = new Map(entries);
+                next.delete(instance.instanceId);
+                return next;
+              });
+            }
+            yield* Ref.set(usageRefreshesRef, retained);
+          }),
+        );
 
         // Carry over subscriptions for instances whose identity is
         // unchanged (reconcile treated them as no-op). Instances that

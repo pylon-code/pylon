@@ -452,6 +452,11 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
   claudeSettings: ClaudeSettings,
   environment?: NodeJS.ProcessEnv,
   cwd?: string,
+  options?: {
+    readonly freshForMs?: number;
+    readonly shareFailures?: boolean;
+    readonly commitGuard?: Effect.Effect<boolean>;
+  },
 ): Effect.fn.Return<
   | {
       readonly accountIdentity: string | undefined;
@@ -477,7 +482,7 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
         Effect.map(Option.flatten),
         Effect.catchCause(() => Effect.succeed(Option.none<CommandResult>())),
       ),
-      fetchClaudeOAuthUsage(claudeSettings, checkedAt).pipe(
+      fetchClaudeOAuthUsage(claudeSettings, checkedAt, options).pipe(
         Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
         Effect.catchCause(() => Effect.succeed(Option.none<ClaudeOAuthUsageRead>())),
         Effect.map(Option.getOrUndefined),

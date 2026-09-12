@@ -482,7 +482,12 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
 export const fetchClaudeOAuthUsage = Effect.fn("fetchClaudeOAuthUsage")(function* (
   config: Pick<ClaudeSettings, "homePath">,
   checkedAt: string,
-  options?: { readonly sharedCacheDir?: string | undefined },
+  options?: {
+    readonly sharedCacheDir?: string | undefined;
+    readonly freshForMs?: number | undefined;
+    readonly shareFailures?: boolean | undefined;
+    readonly commitGuard?: Effect.Effect<boolean> | undefined;
+  },
 ): Effect.fn.Return<
   ClaudeOAuthUsageRead,
   never,
@@ -494,11 +499,28 @@ export const fetchClaudeOAuthUsage = Effect.fn("fetchClaudeOAuthUsage")(function
   const token = yield* readClaudeAccessToken(config);
   if (!token) return NOT_READ;
   const { configDir } = yield* resolveClaudeCredentialConfigDir(config);
-  return yield* fetchOAuthUsageWithToken({
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const isCurrent = Effect.gen(function* () {
+    if (options?.commitGuard && !(yield* options.commitGuard)) return false;
+    return (yield* readClaudeAccessToken(config)) === token;
+  }).pipe(
+    Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    Effect.provideService(FileSystem.FileSystem, fileSystem),
+    Effect.provideService(Path.Path, path),
+  );
+  const result = yield* fetchOAuthUsageWithToken({
     token,
-    cacheKey: sharedUsageReadKey(["claude", configDir]),
+    // Re-login in the same home must never serve another credential's retained scopes.
+    // sharedUsageReadKey hashes all parts; credential material never enters filenames or JSON.
+    cacheKey: sharedUsageReadKey(["claude", configDir, token]),
     checkedAt,
     source: "claudeOAuth",
     sharedCacheDir: options?.sharedCacheDir,
+    freshForMs: options?.freshForMs,
+    shareFailures: options?.shareFailures,
+    commitGuard: options?.commitGuard ? isCurrent : undefined,
   });
+  return options?.commitGuard && !(yield* isCurrent) ? NOT_READ : result;
 });

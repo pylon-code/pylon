@@ -1618,7 +1618,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             status: "ready",
             enabled: true,
             installed: true,
-            auth: { status: "authenticated" },
+            auth: { status: "authenticated", email: "claude@example.com" },
             checkedAt: probedAt,
             version: "2.1.220",
             models: [],
@@ -1634,6 +1634,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             },
           } as const satisfies ServerProvider;
           const changes = yield* PubSub.unbounded<ServerProvider>();
+          const reconciliationStarted = yield* Deferred.make<void>();
+          const releaseReconciliation = yield* Deferred.make<void>();
+          const reconciliationReads = yield* Ref.make(0);
           const instance = {
             instanceId: claudeInstanceId,
             driverKind: claudeDriver,
@@ -1641,6 +1644,26 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               driverKind: claudeDriver,
               continuationKey: "claude:instance:claude_personal",
             },
+            reconcileUsage: () =>
+              Effect.gen(function* () {
+                yield* Ref.update(reconciliationReads, (n) => n + 1);
+                const checkedAt = DateTime.formatIso(yield* DateTime.now);
+                yield* Deferred.succeed(reconciliationStarted, undefined);
+                yield* Deferred.await(releaseReconciliation);
+                return {
+                  accountIdentity: "claude@example.com",
+                  usageLimits: {
+                    source: "claudeOAuth",
+                    checkedAt,
+                    windows: [
+                      { label: "Session", usedPercent: 31, windowDurationMins: 300 },
+                      { label: "Weekly (all models)", usedPercent: 42, windowDurationMins: 10_080 },
+                      { label: "Weekly (Model A)", usedPercent: 55, windowDurationMins: 10_080 },
+                      { label: "Weekly (Model B)", usedPercent: 66, windowDurationMins: 10_080 },
+                    ],
+                  },
+                };
+              }),
             displayName: undefined,
             enabled: true,
             snapshot: {
@@ -1755,6 +1778,70 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             });
             assert.strictEqual(unknown.length, 1);
             assert.deepStrictEqual(percents(unknown), [20, 43]);
+
+            const reconciled = yield* registry.streamChanges.pipe(
+              Stream.filter(
+                (items) =>
+                  items[0]?.usageLimits?.windows.some(
+                    (window) => window.label === "Weekly (Model B)",
+                  ) === true,
+              ),
+              Stream.runHead,
+              Effect.map(Option.getOrThrow),
+              Effect.forkChild,
+            );
+            yield* registry.refreshProviderCapacity(claudeInstanceId);
+            yield* registry.refreshProviderCapacity(claudeInstanceId);
+            yield* TestClock.adjust("1 minute");
+            yield* Deferred.await(reconciliationStarted);
+            // Account-wide pushes remain immediate while the authoritative read is pending.
+            yield* TestClock.adjust("1 second");
+            yield* registry.mergeProviderUsageWindows({
+              instanceId: claudeInstanceId,
+              source: "claudeRateLimitEvent",
+              observedAt: DateTime.formatIso(yield* DateTime.now),
+              windows: [{ label: "Session", usedPercent: 99, windowDurationMins: 300 }],
+            });
+            yield* Deferred.succeed(releaseReconciliation, undefined);
+            const afterReconciliation = yield* Fiber.join(reconciled);
+            assert.deepStrictEqual(percents(afterReconciliation), [99, 42, 55, 66]);
+            assert.strictEqual(yield* Ref.get(reconciliationReads), 1);
+
+            // A periodic status refresh can still carry the older shared OAuth
+            // reading; retain the complete reconciled scope set until a newer read.
+            yield* TestClock.adjust("1 second");
+            const periodicAt = DateTime.formatIso(yield* DateTime.now);
+            const periodic = yield* (yield* registry.subscribeChanges).pipe(
+              Stream.filter((items) => items[0]?.checkedAt === periodicAt),
+              Stream.runHead,
+              Effect.map(Option.getOrThrow),
+              Effect.forkChild,
+            );
+            yield* PubSub.publish(changes, { ...initialProvider, checkedAt: periodicAt });
+            assert.deepStrictEqual(percents(yield* Fiber.join(periodic)), [99, 42, 55, 66]);
+            yield* TestClock.adjust("1 second");
+            const newerAt = DateTime.formatIso(yield* DateTime.now);
+            const newer = yield* (yield* registry.subscribeChanges).pipe(
+              Stream.filter((items) => items[0]?.checkedAt === newerAt),
+              Stream.runHead,
+              Effect.map(Option.getOrThrow),
+              Effect.forkChild,
+            );
+            yield* PubSub.publish(changes, {
+              ...initialProvider,
+              checkedAt: newerAt,
+              usageLimits: {
+                source: "claudeOAuth",
+                checkedAt: newerAt,
+                windows: [
+                  { label: "Session", usedPercent: 1, windowDurationMins: 300 },
+                  { label: "Weekly (all models)", usedPercent: 2, windowDurationMins: 10_080 },
+                  { label: "Weekly (Model A)", usedPercent: 3, windowDurationMins: 10_080 },
+                  { label: "Weekly (Model B)", usedPercent: 4, windowDurationMins: 10_080 },
+                ],
+              },
+            });
+            assert.deepStrictEqual(percents(yield* Fiber.join(newer)), [1, 2, 3, 4]);
           }).pipe(Effect.provide(runtimeServices));
         }),
       );

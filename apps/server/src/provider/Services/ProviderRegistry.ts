@@ -131,7 +131,9 @@ export interface ProviderRegistryShape {
    * own credential is guaranteed fresh. Returns as soon as the read is
    * admitted — it runs off the caller's path — and is floored per instance so
    * a burst of short turns costs one read. Unknown instances and instances
-   * without a capacity source are no-ops.
+   * without a capacity source are no-ops, except native-account drivers that
+   * expose reconcileUsage: their turn/scoped-quota signals coalesce into a
+   * bounded authoritative read, preserving immediate account-wide pushes.
    */
   readonly refreshProviderCapacity: (
     instanceId: ProviderInstanceId,

@@ -44,6 +44,7 @@ import type { ProviderRuntimeFence } from "../../provider/ProviderDriver.ts";
 import { PrimeAgentRecoveryLedger } from "../../provider/prime/PrimeAgentRecoveryLedger.ts";
 import {
   rateLimitFromRuntimeEventPayload,
+  requiresClaudeUsageReconciliation,
   usageWindowsFromRuntimeEventPayload,
 } from "../../provider/providerRateLimitEvents.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
@@ -2205,6 +2206,9 @@ const make = Effect.gen(function* () {
         windows: usage.windows,
         runtimeFence,
       });
+    }
+    if (event.provider === "claudeAgent" && requiresClaudeUsageReconciliation(event.payload)) {
+      yield* providerRegistry.refreshProviderCapacity(event.providerInstanceId, runtimeFence);
     }
   });
 
