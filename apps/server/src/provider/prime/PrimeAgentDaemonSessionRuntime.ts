@@ -473,6 +473,12 @@ const createSessionAlreadyActiveFailureSchema = Schema.Struct({
     activeSessionId: Schema.optional(Schema.String),
   }),
 });
+const abortAndClearQueueSuccessSchema = Schema.Struct({
+  type: Schema.Literal("response"),
+  command: Schema.Literal("abort_and_clear_queue"),
+  success: Schema.Literal(true),
+  data: Schema.Unknown,
+});
 const resumeQueueSuccessSchema = Schema.Struct({
   type: Schema.Literal("response"),
   command: Schema.Literal("resume_queue"),
@@ -649,6 +655,7 @@ const decodeCreateFailure = Schema.decodeUnknownOption(createFailureSchema);
 const decodeCreateSessionAlreadyActiveFailure = Schema.decodeUnknownOption(
   createSessionAlreadyActiveFailureSchema,
 );
+const decodeAbortAndClearQueueSuccess = Schema.decodeUnknownOption(abortAndClearQueueSuccessSchema);
 const decodeResumeQueueSuccess = Schema.decodeUnknownOption(resumeQueueSuccessSchema);
 const decodeResumeQueueEmpty = Schema.decodeUnknownOption(resumeQueueEmptySchema);
 const decodeSessionListSuccess = Schema.decodeUnknownOption(sessionListSuccessSchema);
@@ -1184,6 +1191,7 @@ export interface PrimeAgentDaemonSessionRuntime {
   ) => Effect.Effect<PrimeDaemonPromptLifecycleSnapshot, PrimeAgentDaemonSessionRuntimeError>;
   readonly cancelPromptLifecycle: (
     correlationId: string,
+    options?: { readonly interruptDelivered: true },
   ) => Effect.Effect<
     PrimeDaemonPromptLifecycleCancellationResult,
     PrimeAgentDaemonSessionRuntimeError
@@ -2374,7 +2382,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }
     }
     let ownedSessionContractProofCurrent = true;
-    const requireCurrentOwnedSessionContract = (operation: "prompt" | "steer" | "follow-up") =>
+    const requireCurrentOwnedSessionContract = (
+      operation: "prompt" | "steer" | "follow-up" | "abort",
+    ) =>
       Effect.suspend(() => {
         const proof = currentOwnedSessionContractProof(connection!, client);
         ownedSessionContractProofCurrent = ownedSessionContractProofCurrent && proof !== undefined;
@@ -7370,7 +7380,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     });
 
     const cancelPromptLifecycle = Effect.fn("PrimeAgentDaemonSessionRuntime.cancelPromptLifecycle")(
-      function* (correlationId: string) {
+      function* (correlationId: string, options?: { readonly interruptDelivered: true }) {
         yield* ensureOpen("abort");
         yield* requireCorrelatedPromptLifecycleAdmission("abort");
         const proofEpoch = yield* requireCurrentCorrelatedPromptLifecycleProof("abort");
@@ -7418,6 +7428,53 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 commitPromptLifecycleStateMerge(observation.plan);
               });
             }
+          }
+        }
+        if (
+          options?.interruptDelivered === true &&
+          result.status === "too_late" &&
+          result.lifecycle.phase === "delivered" &&
+          promptLifecycles.get(correlationId)?.phase === "delivered"
+        ) {
+          const targetConnection = connection!;
+          const targetActiveSessionId = activeSessionId;
+          yield* requireCurrentOwnedSessionContract("abort");
+          yield* requireUnchangedCorrelatedPromptLifecycleProof("abort", proofEpoch);
+          yield* requireCorrelatedPromptLifecycleAdmission("abort");
+          if (connection !== targetConnection || activeSessionId !== targetActiveSessionId) {
+            return yield* runtimeError(
+              "abort",
+              "request-failed",
+              "Prime Agent changed its owned attachment before interruption.",
+            );
+          }
+          if (promptLifecycles.get(correlationId)?.phase !== "delivered") return result;
+          // Stop is a session operation after delivery. Never replay it against
+          // a reattached/replaced session; the terminal lifecycle settles the turn.
+          needsResumeAfterAbort = true;
+          const response = yield* Effect.tryPromise({
+            try: () =>
+              client.request(
+                { type: "abort_and_clear_queue", activeSessionId: targetActiveSessionId },
+                COMMAND_TIMEOUT_MS,
+                { recoverable: false, recoverAcrossReconnect: false },
+              ),
+            catch: () =>
+              runtimeError(
+                "abort",
+                "request-failed",
+                "Could not interrupt the owned Prime Agent session.",
+              ),
+          });
+          yield* requireUnchangedCorrelatedPromptLifecycleProof("abort", proofEpoch);
+          yield* requireCurrentOwnedSessionContract("abort");
+          const decoded = decodeAbortAndClearQueueSuccess(response);
+          if (Option.isNone(decoded) || Option.isNone(decodeInputQueueCounts(decoded.value.data))) {
+            return yield* runtimeError(
+              "abort",
+              "invalid-response",
+              "Prime Agent returned an invalid owned interruption response.",
+            );
           }
         }
         return result;

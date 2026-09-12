@@ -202,6 +202,7 @@ interface FakeCaptures {
     readonly queueIfBusy: true;
   }>;
   readonly correlatedPromptCancellations: Array<string>;
+  readonly correlatedPromptInterruptions: Array<string>;
   correlatedPromptObserved: Queue.Queue<string> | undefined;
   correlatedPromptSubmitResult: PrimeDaemonPromptLifecycleSnapshot | undefined;
   correlatedPromptCancellationResult: PrimeDaemonPromptLifecycleCancellationResult | undefined;
@@ -391,6 +392,7 @@ function makeCaptures(): FakeCaptures {
     correlatedPromptLifecycleAvailable: false,
     correlatedPromptSubmissions: [],
     correlatedPromptCancellations: [],
+    correlatedPromptInterruptions: [],
     correlatedPromptObserved: undefined,
     correlatedPromptSubmitResult: undefined,
     correlatedPromptCancellationResult: undefined,
@@ -939,9 +941,11 @@ function fakeRuntimeFactory(
               }
             );
           }),
-        cancelPromptLifecycle: (correlationId) =>
+        cancelPromptLifecycle: (correlationId, options) =>
           Effect.gen(function* () {
             captures.correlatedPromptCancellations.push(correlationId);
+            if (options?.interruptDelivered === true)
+              captures.correlatedPromptInterruptions.push(correlationId);
             if (captures.correlatedPromptCancellationObserved !== undefined) {
               yield* Queue.offer(captures.correlatedPromptCancellationObserved, undefined);
             }
@@ -1305,6 +1309,82 @@ describe("PrimeAgentDaemonAdapter", () => {
       }),
     ).pipe(Effect.provide(testLayer)),
   );
+
+  for (const variant of ["recovered-final", "later-tool-use", "tool-only"] as const) {
+    it.effect(`preserves correlated completion message order: ${variant}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          captures.correlatedPromptLifecycleAvailable = true;
+          captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          const turnFiber = yield* adapter
+            .sendTurn({ threadId, input: "recovered completion order" })
+            .pipe(Effect.forkChild);
+          const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+          const attribution = { scope: "prompt" as const, correlationId };
+          yield* offer(captures, {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+          });
+          const earlierTool = {
+            ...assistantMessage("inspecting fixture"),
+            timestamp: 1,
+            stopReason: "toolUse" as const,
+            toolCalls: [{ id: "earlier-tool", name: "ipython" }],
+          };
+          const final = { ...assistantMessage("the recovered final answer"), timestamp: 2 };
+          const laterTool = {
+            ...earlierTool,
+            timestamp: 3,
+            toolCalls: [{ id: "later-tool", name: "ipython" }],
+          };
+          // An adopted subscriber sees the suffix before agent_end supplies
+          // the earlier messages from the same attributed run.
+          yield* offer(captures, {
+            _tag: "MessageCompleted",
+            message: variant === "tool-only" ? earlierTool : final,
+            attribution,
+          });
+          if (variant === "later-tool-use") {
+            yield* offer(captures, { _tag: "MessageCompleted", message: laterTool, attribution });
+          }
+          yield* offer(captures, {
+            _tag: "RunCompleted",
+            messages: variant === "tool-only" ? [earlierTool] : [earlierTool, final],
+            attribution,
+          });
+          yield* offer(captures, {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: lifecycleSnapshot(correlationId, "completed", 3, { usage }),
+          });
+          const result = yield* Fiber.join(turnFiber);
+          yield* awaitObservedType(subscription.observed, "turn.completed");
+          const events = subscription.events.filter((event) => event.turnId === result.turnId);
+          expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+          expect(events.find((event) => event.type === "turn.completed")).toMatchObject({
+            payload: { state: "completed" },
+          });
+          expect(events.some((event) => event.type === "runtime.warning")).toBe(
+            variant !== "recovered-final",
+          );
+          expect(events.filter((event) => event.type === "runtime.error")).toHaveLength(0);
+          if (variant !== "tool-only") {
+            expect(
+              events.filter(
+                (event) => event.type === "content.delta" && event.payload.delta === final.text,
+              ),
+            ).toHaveLength(1);
+          }
+        }),
+      ).pipe(Effect.provide(testLayer)),
+    );
+  }
 
   it.effect("rechecks correlated recovery before committing a new strict turn", () =>
     Effect.scoped(
@@ -1816,6 +1896,7 @@ describe("PrimeAgentDaemonAdapter", () => {
           lifecycle: interactionDelivered,
         };
         yield* adapter.interruptTurn(threadId);
+        expect(captures.correlatedPromptInterruptions).toEqual([interactionCorrelationId]);
         yield* offer(captures, {
           _tag: "ExtensionRequest",
           request: { id: "late-interaction", method: "confirm", title: "Too late" },

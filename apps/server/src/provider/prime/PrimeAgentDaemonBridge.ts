@@ -113,6 +113,7 @@ export interface PrimeAgentDaemonClient {
   readonly request: (
     command: Readonly<Record<string, unknown>>,
     timeoutMs?: number,
+    options?: { readonly recoverable?: boolean; readonly recoverAcrossReconnect?: boolean },
   ) => Promise<unknown>;
   readonly enableRequestRecovery?: () => void;
   readonly supportsServerCapability?: {
