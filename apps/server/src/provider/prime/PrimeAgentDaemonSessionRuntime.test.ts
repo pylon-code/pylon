@@ -1475,107 +1475,246 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
-  it.effect("suppresses only exact tool completions already published in a correlated resync", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const test = fixture({
-          correlatedPromptLifecycleCapability: true,
-          rawSnapshot: { ...snapshot(), promptLifecycles: { records: [], expired: [] } },
-        });
-        const runtime = yield* test.make();
-        const received = yield* collectEvents(runtime, 7).pipe(
-          Effect.forkChild({ startImmediately: true }),
-        );
-        const result = {
-          role: "toolResult",
-          toolCallId: "tool-recovered",
-          toolName: "read",
-          content: [{ type: "text", text: "recovered result" }],
-          isError: false,
-          timestamp: 2,
-        };
-        test.setCorrelatedPromptLifecycleProof(false);
-        yield* Effect.promise(() =>
-          test.emit({ type: "connection_status", status: "reconnecting" }),
-        );
-        test.setCorrelatedPromptLifecycleProof(true);
-        yield* Effect.promise(() =>
-          test.emit({
-            type: "session_resynced",
-            snapshot: {
-              ...snapshot(9),
-              state: { ...snapshot(9).state, messageCount: 1 },
-              messages: [result],
-              promptLifecycles: { records: [], expired: [] },
-              replay: {
-                status: "complete",
-                toSequence: 9,
-                toCursor: { generation: "daemon-1", sequence: 9 },
+  for (const role of ["toolResult", "assistant"] as const) {
+    it.effect(
+      `suppresses only exact ${role} completions already published in a correlated resync`,
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const test = fixture({
+              correlatedPromptLifecycleCapability: true,
+              rawSnapshot: { ...snapshot(), promptLifecycles: { records: [], expired: [] } },
+            });
+            const runtime = yield* test.make();
+            const received = yield* collectEvents(runtime, 7).pipe(
+              Effect.forkChild({ startImmediately: true }),
+            );
+            const result =
+              role === "assistant"
+                ? terminalAssistantMessage("recovered result", 2)
+                : {
+                    role: "toolResult",
+                    toolCallId: "tool-recovered",
+                    toolName: "read",
+                    content: [{ type: "text", text: "recovered result" }],
+                    isError: false,
+                    timestamp: 2,
+                  };
+            test.setCorrelatedPromptLifecycleProof(false);
+            yield* Effect.promise(() =>
+              test.emit({ type: "connection_status", status: "reconnecting" }),
+            );
+            test.setCorrelatedPromptLifecycleProof(true);
+            yield* Effect.promise(() =>
+              test.emit({
+                type: "session_resynced",
+                snapshot: {
+                  ...snapshot(9),
+                  state: { ...snapshot(9).state, messageCount: 1 },
+                  messages: [result],
+                  promptLifecycles: { records: [], expired: [] },
+                  replay: {
+                    status: "complete",
+                    toSequence: 9,
+                    toCursor: { generation: "daemon-1", sequence: 9 },
+                  },
+                },
+              }),
+            );
+            expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+            yield* Effect.promise(() =>
+              test.emit({ type: "connection_status", status: "connected" }),
+            );
+            yield* Effect.promise(() =>
+              test.emit({
+                type: "session_event",
+                attribution: { scope: "session" },
+                meta: { cursor: { generation: "daemon-1", sequence: 10 } },
+                event: { type: "message_end", promptCorrelationId: null, message: result },
+              }),
+            );
+            yield* Effect.promise(() =>
+              test.emit({
+                type: "session_event",
+                attribution: { scope: "session" },
+                meta: { cursor: { generation: "daemon-1", sequence: 11 } },
+                event: {
+                  type: "message_end",
+                  promptCorrelationId: null,
+                  message: {
+                    ...result,
+                    timestamp: 2,
+                    content: [{ type: "text", text: "different result" }],
+                  },
+                },
+              }),
+            );
+            yield* Effect.promise(() =>
+              test.emit({
+                type: "session_event",
+                attribution: { scope: "session" },
+                event: {
+                  type: "message_end",
+                  promptCorrelationId: null,
+                  message: { ...result, timestamp: 3 },
+                },
+              }),
+            );
+            yield* Effect.promise(() =>
+              test.emit({
+                type: "session_event",
+                attribution: { scope: "session" },
+                event: {
+                  type: "message_end",
+                  promptCorrelationId: null,
+                  message: terminalAssistantMessage(),
+                },
+              }),
+            );
+            const events = yield* Fiber.join(received);
+            const completed = events.filter((event) => event._tag === "MessageCompleted");
+            expect(completed).toHaveLength(3);
+            expect(completed[0]).toMatchObject({
+              message: { role, text: "different result", timestamp: 2 },
+            });
+            expect(completed[1]).toMatchObject({
+              message: { role, text: "recovered result", timestamp: 3 },
+            });
+            expect(completed[2]).toMatchObject({ message: { role: "assistant" } });
+          }),
+        ),
+    );
+  }
+
+  for (const variant of ["replayed", "different completion", "new prompt", "overflow"] as const) {
+    it.effect(`reconciles a delayed assistant segment after a snapshot: ${variant}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const correlationId = "recovered-prompt";
+          const lifecycle = promptLifecycle(correlationId, "delivered", 2);
+          const test = fixture({
+            correlatedPromptLifecycleCapability: true,
+            rawSnapshot: { ...snapshot(), promptLifecycles: { records: [], expired: [] } },
+          });
+          const runtime = yield* test.make();
+          const expectedCount = variant === "overflow" ? 5 : variant === "replayed" ? 7 : 10;
+          const received = yield* collectEvents(runtime, expectedCount).pipe(
+            Effect.forkChild({ startImmediately: true }),
+          );
+          const recovered = terminalAssistantMessage("recovered result", 2);
+          test.setCorrelatedPromptLifecycleProof(false);
+          yield* Effect.promise(() =>
+            test.emit({ type: "connection_status", status: "reconnecting" }),
+          );
+          test.setCorrelatedPromptLifecycleProof(true);
+          yield* Effect.promise(() =>
+            test.emit({
+              type: "session_resynced",
+              snapshot: {
+                ...snapshot(9),
+                state: { ...snapshot(9).state, messageCount: 1 },
+                messages: [recovered],
+                promptLifecycles: { records: [lifecycle], expired: [] },
+                replay: {
+                  status: "complete",
+                  toSequence: 9,
+                  toCursor: { generation: "daemon-1", sequence: 9 },
+                },
               },
-            },
-          }),
-        );
-        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
-        yield* Effect.promise(() => test.emit({ type: "connection_status", status: "connected" }));
-        yield* Effect.promise(() =>
-          test.emit({
-            type: "session_event",
-            attribution: { scope: "session" },
-            meta: { cursor: { generation: "daemon-1", sequence: 10 } },
-            event: { type: "message_end", promptCorrelationId: null, message: result },
-          }),
-        );
-        yield* Effect.promise(() =>
-          test.emit({
-            type: "session_event",
-            attribution: { scope: "session" },
-            meta: { cursor: { generation: "daemon-1", sequence: 11 } },
-            event: {
-              type: "message_end",
-              promptCorrelationId: null,
-              message: {
-                ...result,
-                timestamp: 2,
-                content: [{ type: "text", text: "different result" }],
+            }),
+          );
+          expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+          yield* Effect.promise(() =>
+            test.emit({ type: "connection_status", status: "connected" }),
+          );
+          const attributedId = variant === "new prompt" ? "new-prompt" : correlationId;
+          const emit = (event: Record<string, unknown>) =>
+            Effect.promise(() =>
+              test.emit({
+                type: "session_event",
+                attribution: { scope: "prompt", correlationId: attributedId },
+                event: { ...event, promptCorrelationId: attributedId },
+              }),
+            );
+          yield* emit({ type: "message_start", message: { ...recovered, content: [] } });
+          if (variant === "overflow") {
+            for (let index = 0; index < 256; index += 1) {
+              yield* emit({
+                type: "message_update",
+                message: recovered,
+                assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "r" },
+              });
+            }
+            expect(yield* Fiber.join(received)).toEqual([
+              expect.objectContaining({ _tag: "SessionResynced" }),
+              expect.objectContaining({ _tag: "ConnectionStatus" }),
+              expect.objectContaining({ _tag: "SessionResynced" }),
+              expect.objectContaining({ _tag: "ConnectionStatus" }),
+              {
+                _tag: "SessionClosed",
+                error: "Prime Agent event ingress exceeded its bounded capacity.",
               },
+            ]);
+            return;
+          }
+          yield* emit({
+            type: "message_update",
+            message: recovered,
+            assistantMessageEvent: {
+              type: "text_delta",
+              contentIndex: 0,
+              delta: "recovered result",
             },
-          }),
-        );
-        yield* Effect.promise(() =>
-          test.emit({
-            type: "session_event",
-            attribution: { scope: "session" },
-            event: {
-              type: "message_end",
-              promptCorrelationId: null,
-              message: { ...result, timestamp: 3 },
+          });
+          yield* emit({
+            type: "message_end",
+            message:
+              variant === "different completion" ? { ...recovered, timestamp: 3 } : recovered,
+          });
+          const next = terminalAssistantMessage("next genuine result", 4);
+          yield* emit({ type: "message_start", message: { ...next, content: [] } });
+          yield* emit({
+            type: "message_update",
+            message: next,
+            assistantMessageEvent: {
+              type: "text_delta",
+              contentIndex: 0,
+              delta: "next genuine result",
             },
-          }),
-        );
-        yield* Effect.promise(() =>
-          test.emit({
-            type: "session_event",
-            attribution: { scope: "session" },
-            event: {
-              type: "message_end",
-              promptCorrelationId: null,
-              message: terminalAssistantMessage(),
-            },
-          }),
-        );
-        const events = yield* Fiber.join(received);
-        const completed = events.filter((event) => event._tag === "MessageCompleted");
-        expect(completed).toHaveLength(3);
-        expect(completed[0]).toMatchObject({
-          message: { role: "toolResult", text: "different result", timestamp: 2 },
-        });
-        expect(completed[1]).toMatchObject({
-          message: { role: "toolResult", text: "recovered result", timestamp: 3 },
-        });
-        expect(completed[2]).toMatchObject({ message: { role: "assistant" } });
-      }),
-    ),
-  );
+          });
+          yield* emit({ type: "message_end", message: next });
+          const events = yield* Fiber.join(received);
+          const output = events.filter(
+            (event) =>
+              event._tag === "MessageStarted" ||
+              event._tag === "AssistantStream" ||
+              event._tag === "MessageCompleted",
+          );
+          const expected = [
+            expect.objectContaining({ _tag: "MessageStarted" }),
+            expect.objectContaining({ _tag: "AssistantStream", delta: "next genuine result" }),
+            expect.objectContaining({
+              _tag: "MessageCompleted",
+              message: expect.objectContaining({ text: "next genuine result" }),
+            }),
+          ];
+          expect(output).toEqual(
+            variant === "replayed"
+              ? expected
+              : [
+                  expect.objectContaining({ _tag: "MessageStarted" }),
+                  expect.objectContaining({ _tag: "AssistantStream", delta: "recovered result" }),
+                  expect.objectContaining({
+                    _tag: "MessageCompleted",
+                    message: expect.objectContaining({ text: "recovered result" }),
+                  }),
+                  ...expected,
+                ],
+          );
+        }),
+      ),
+    );
+  }
 
   it.effect("blocks correlated commands until the reconnect snapshot is adapter-settled", () =>
     Effect.scoped(

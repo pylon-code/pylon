@@ -213,8 +213,9 @@ prompt admission, worker continuity, or stream continuity, it fails the turn onc
 instead of retrying your prompt or guessing at missing output. When the optional correlated lifecycle is
 negotiated, recovery is stricter: Prime must provide complete event continuity and a reconciled transcript.
 A synchronization snapshot can confirm the exact text and images you just submitted before their live
-notification arrives, provided Prime identifies your prompt as delivered. It can also recover one missed
-terminal response after an already observed user message. Unreconciled or mixed output closes the uncertain
+notification arrives, provided Prime identifies your prompt as delivered. It can also recover completed
+tool calls with matching results, or one missed terminal response after an already observed user message.
+Recovered messages appear once even if their live notifications arrive later. Unreconciled output closes the uncertain
 session rather than guessing whether it was your answer or unrelated background work.
 An active Full access turn can also survive a Pylon server restart when the exact Prime installation is
 Pylon managed and the replacement server can prove the same retained native execution and complete

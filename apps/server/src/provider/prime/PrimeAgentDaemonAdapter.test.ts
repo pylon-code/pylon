@@ -2745,6 +2745,161 @@ describe("PrimeAgentDaemonAdapter", () => {
     );
   }
 
+  for (const variant of [
+    "complete",
+    "missing result",
+    "result first",
+    "reused call",
+    "wrong name",
+    "duplicate call",
+    "duplicate result",
+    "foreign user",
+  ] as const) {
+    it.effect(`reconciles a current correlated tool cycle: ${variant}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          captures.correlatedPromptLifecycleAvailable = true;
+          captures.correlatedRecoveryProofEpoch = 0;
+          captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+          const resolutions =
+            yield* Queue.unbounded<FakeCaptures["reconnectResolutions"][number]>();
+          captures.reconnectSnapshotResolutionObserved = (resolution) => {
+            Queue.offerUnsafe(resolutions, resolution);
+          };
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          const turnFiber = yield* adapter
+            .sendTurn({ threadId, input: "Read both fixture files" })
+            .pipe(Effect.forkChild);
+          const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+          const delivered = lifecycleSnapshot(correlationId, "delivered", 2);
+          yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: delivered });
+          const prompt = {
+            role: "user",
+            timestamp: 1,
+            text: "Read both fixture files",
+            imageMimeTypes: [],
+            imageDigests: [],
+          } satisfies PrimeDaemonMessage;
+          const firstCall = {
+            ...assistantMessage("", "toolUse"),
+            timestamp: 2,
+            toolCalls: [{ id: "first-read", name: "read" }],
+          };
+          const firstResult = {
+            role: "toolResult",
+            timestamp: 3,
+            toolCallId: "first-read",
+            toolName: "read",
+            text: "First fixture",
+            imageMimeTypes: [],
+            isError: false,
+          } satisfies PrimeDaemonMessage;
+          for (const message of [prompt, firstCall, firstResult]) {
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              message,
+              attribution: { scope: "prompt", correlationId },
+            });
+          }
+          const secondCall = {
+            ...assistantMessage("Reading the second fixture.", "toolUse"),
+            timestamp: 4,
+            toolCalls: [{ id: "second-read", name: "read" }],
+          };
+          const secondResult = {
+            ...firstResult,
+            timestamp: 5,
+            toolCallId: "second-read",
+            text: "Second fixture",
+          };
+          const tail =
+            variant === "missing result"
+              ? [secondCall]
+              : variant === "result first"
+                ? [secondResult, secondCall]
+                : variant === "reused call"
+                  ? [
+                      { ...secondCall, toolCalls: firstCall.toolCalls },
+                      { ...secondResult, toolCallId: "first-read" },
+                    ]
+                  : variant === "wrong name"
+                    ? [secondCall, { ...secondResult, toolName: "other" }]
+                    : variant === "duplicate call"
+                      ? [
+                          {
+                            ...secondCall,
+                            toolCalls: [...secondCall.toolCalls, ...secondCall.toolCalls],
+                          },
+                          secondResult,
+                        ]
+                      : variant === "duplicate result"
+                        ? [secondCall, secondResult, { ...secondResult, timestamp: 6 }]
+                        : variant === "foreign user"
+                          ? [
+                              secondCall,
+                              secondResult,
+                              { ...prompt, timestamp: 6, text: "foreign prompt" },
+                            ]
+                          : [secondCall, secondResult];
+          const messages = [prompt, firstCall, firstResult, ...tail];
+          yield* offer(captures, {
+            ...initialSnapshot(),
+            state: { ...initialSnapshot().state, isStreaming: true, messageCount: messages.length },
+            messages,
+            replayContinuity: "complete",
+            connectionGeneration: 0,
+            correlatedProofEpoch: 0,
+            promptLifecycles: { records: [delivered], expired: [] },
+          });
+          const accepted = variant === "complete";
+          expect((yield* Queue.take(resolutions)).reconciled).toBe(accepted);
+          if (accepted) {
+            const final = { ...assistantMessage("Both fixture files read."), timestamp: 6 };
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              message: final,
+              attribution: { scope: "prompt", correlationId },
+            });
+            yield* offer(captures, {
+              _tag: "PromptLifecycleUpdated",
+              lifecycle: lifecycleSnapshot(correlationId, "completed", 3, { usage }),
+            });
+          }
+          const settled = yield* Fiber.join(turnFiber);
+          const events = subscription.events.filter((event) => event.turnId === settled.turnId);
+          expect(events.filter((event) => event.type === "runtime.error")).toHaveLength(
+            accepted ? 0 : 1,
+          );
+          expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+          expect(events.findLast((event) => event.type === "turn.completed")).toMatchObject({
+            payload: { state: accepted ? "completed" : "failed" },
+          });
+          if (accepted) {
+            expect(
+              events.filter(
+                (event) =>
+                  event.type === "item.completed" && event.payload.itemType === "dynamic_tool_call",
+              ),
+            ).toHaveLength(2);
+            expect(
+              events.filter(
+                (event) =>
+                  event.type === "content.delta" &&
+                  event.payload.delta === "Both fixture files read.",
+              ),
+            ).toHaveLength(1);
+          }
+        }),
+      ).pipe(Effect.provide(testLayer)),
+    );
+  }
+
   it.effect("accepts exact complete capable recovery with already observed output", () =>
     Effect.scoped(
       Effect.gen(function* () {
