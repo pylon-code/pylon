@@ -1,4 +1,5 @@
 import {
+  ToolActivityIcon,
   PreviewAutomationClickInput,
   PreviewAutomationError,
   PreviewAutomationEvaluateInput,
@@ -31,7 +32,9 @@ const dependencies = [
   PreviewAutomationBroker.PreviewAutomationBroker,
 ];
 
-const PreviewActionResult = Schema.Record(Schema.String, Schema.Never).annotate({
+const presentationFields = { toolIcon: Schema.optional(ToolActivityIcon) };
+
+const PreviewActionResult = Schema.Struct(presentationFields).annotate({
   description: "The preview action completed successfully.",
 });
 
@@ -89,7 +92,7 @@ const PreviewResizeTool = safeBrowserTool(
     description:
       "Resize a collaborative browser tab, optionally selected by tabId. Use {mode:'fill'}, {mode:'freeform',width:1024,height:768}, or {mode:'preset',preset:'iphone-12-pro',orientation:'portrait'}. This changes CSS layout breakpoints without changing the desktop browser user agent.",
     parameters: PreviewAutomationResizeInput,
-    success: PreviewAutomationResizeResult,
+    success: Schema.Struct({ ...PreviewAutomationResizeResult.fields, ...presentationFields }),
     failure: PreviewAutomationError,
     dependencies,
   })
@@ -102,7 +105,10 @@ const PreviewSetAppearanceTool = safeBrowserTool(
     description:
       "Emulate prefers-color-scheme in a collaborative browser tab, optionally selected by tabId. Use {colorScheme:'dark'} or {colorScheme:'light'} to preview the page in that appearance, and {colorScheme:'system'} to clear the override and follow the OS appearance.",
     parameters: PreviewAutomationSetColorSchemeInput,
-    success: PreviewAutomationSetColorSchemeResult,
+    success: Schema.Struct({
+      ...PreviewAutomationSetColorSchemeResult.fields,
+      ...presentationFields,
+    }),
     failure: PreviewAutomationError,
     dependencies,
   })
@@ -187,6 +193,7 @@ const PreviewScrollTool = safeBrowserTool(
  * null valid instead of failing only for non-object expressions.
  */
 export const PreviewEvaluateResult = Schema.Struct({
+  ...presentationFields,
   value: Schema.Unknown.annotate({
     description: "The JSON-serializable value the expression produced, or null.",
   }),
@@ -219,7 +226,7 @@ const PreviewRecordingStartTool = safeBrowserTool(
     description:
       "Start recording the collaborative browser tab selected by tabId, or this agent session's current tab when omitted.",
     parameters: PreviewAutomationTabTargetInput,
-    success: PreviewAutomationRecordingStatus,
+    success: Schema.Struct({ ...PreviewAutomationRecordingStatus.fields, ...presentationFields }),
     failure: PreviewAutomationError,
     dependencies,
   }).annotate(Tool.Title, "Start browser recording"),
@@ -230,7 +237,7 @@ const PreviewRecordingStopTool = safeBrowserTool(
     description:
       "Stop recording the collaborative browser tab selected by tabId, or this agent session's current tab when omitted. Returns a path to the recording that is readable in this agent's environment. When the desktop app runs on another machine, the compressed recording (up to 50 MiB) is transferred once before the path is returned.",
     parameters: PreviewAutomationTabTargetInput,
-    success: PreviewAutomationRecordingArtifact,
+    success: Schema.Struct({ ...PreviewAutomationRecordingArtifact.fields, ...presentationFields }),
     failure: PreviewAutomationError,
     dependencies: [...dependencies, FileSystem.FileSystem, ServerConfig.ServerConfig],
   }).annotate(Tool.Title, "Stop browser recording"),

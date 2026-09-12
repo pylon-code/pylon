@@ -2935,6 +2935,7 @@ describe("PrimeAgentDaemonAdapter", () => {
               providerInstanceId: ProviderInstanceId.make("prime-daemon-other"),
               endpoint: "http://127.0.0.1:4321/mcp/mismatch",
               authorizationHeader: "Bearer must-not-route",
+              capabilities: new Set(["preview"]),
             }),
           ),
           () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(mismatchedThread)),
@@ -2975,6 +2976,7 @@ describe("PrimeAgentDaemonAdapter", () => {
           providerInstanceId: instanceId,
           endpoint: "http://127.0.0.1:4321/mcp/provider-session-prime-test",
           authorizationHeader: "Bearer scoped-secret",
+          capabilities: new Set(["preview"]),
           expiresAt: 4_000_000_000_000,
         };
         yield* Effect.acquireRelease(

@@ -60,6 +60,7 @@ import {
   type ProviderSession,
 } from "@t3tools/contracts";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveProjectAgentBrowserAccess } from "@t3tools/shared/serverSettings";
@@ -69,6 +70,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -80,6 +82,9 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import { appendUserInputAttachmentPaths } from "../userInputAttachments.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
+import * as DeviceService from "../../device/DeviceService.ts";
+import { ensureAgentDeviceShim } from "../../device/AgentDeviceShim.ts";
+import type * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import {
   increment,
   providerMetricAttributes,
@@ -621,6 +626,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const revokeMcpCredential =
     options?.revokeMcpCredential ?? McpSessionRegistry.revokeActiveMcpThread;
   const fileSystem = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const currentSessionIncarnations = new Map<
     ThreadId,
@@ -1175,6 +1181,52 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     ),
   );
 
+  const agentDeviceAccessEnabled = serverSettings.getSettings.pipe(
+    Effect.map((settings) => settings.enableAgentDeviceAccess),
+    Effect.catch((cause) =>
+      Effect.logWarning(
+        "Could not read server settings; withholding agent device access for this session.",
+        { cause },
+      ).pipe(Effect.as(false)),
+    ),
+  );
+
+  const agentAccessCapabilities = Effect.fn("ProviderService.agentAccessCapabilities")(function* (
+    threadId: ThreadId,
+  ) {
+    const capabilities = new Set<McpInvocationContext.McpCapability>();
+    if (yield* agentBrowserAccessEnabled(threadId)) capabilities.add("preview");
+    if (yield* agentDeviceAccessEnabled) capabilities.add("device");
+    return capabilities;
+  });
+
+  /** Install only the local CLI here. device_open supplies a separate config for each host. */
+  const hostPlatform = yield* HostProcessPlatform;
+  const devices = yield* Effect.serviceOption(DeviceService.DeviceService);
+  const agentDeviceEnvironment = Effect.gen(function* () {
+    if (Option.isNone(devices)) return undefined;
+    const entryPath = yield* devices.value.agentCli.pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Agent device CLI unavailable", { cause }).pipe(Effect.as(null)),
+      ),
+    );
+    if (!entryPath) return undefined;
+    const shimDir = yield* ensureAgentDeviceShim({
+      entryPath,
+      stateDir: serverConfig.stateDir,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, pathService),
+      Effect.orElseSucceed(() => undefined),
+    );
+    if (!shimDir) return undefined;
+    return {
+      PATH: shimDir,
+      PATH_SEPARATOR: hostPlatform === "win32" ? ";" : ":",
+      AGENT_DEVICE_NO_UPDATE_NOTIFIER: "1",
+    } satisfies Record<string, string>;
+  });
+
   const prepareMcpSession = (
     threadId: ThreadId,
     providerInstanceId: ProviderInstanceId,
@@ -1182,12 +1234,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   ) =>
     Effect.gen(function* () {
       const fence = adapter.runtimeFence;
-      if (!(yield* agentBrowserAccessEnabled(threadId))) {
+      const capabilities = yield* agentAccessCapabilities(threadId);
+      if (capabilities.size === 0) {
         yield* clearMcpSession(threadId, fence);
         return undefined;
       }
+      // CLI setup can yield while a provider generation is replaced. Prepare it
+      // before the registry's guarded issue so retired work cannot publish over
+      // the replacement generation's MCP session.
+      const deviceEnvironment = capabilities.has("device")
+        ? yield* agentDeviceEnvironment
+        : undefined;
       const credential = yield* issueMcpCredential(
-        { threadId, providerInstanceId },
+        { threadId, providerInstanceId, capabilities },
         fence?.isCurrent ?? Effect.succeed(true),
       );
       if (credential === undefined) return undefined;
@@ -1197,7 +1256,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         );
         return undefined;
       }
-      yield* Effect.sync(() => McpProviderSession.setMcpProviderSession(credential.config, fence));
+      yield* Effect.sync(() =>
+        McpProviderSession.setMcpProviderSession(
+          {
+            ...credential.config,
+            ...(deviceEnvironment ? { agentDeviceEnvironment: deviceEnvironment } : {}),
+          },
+          fence,
+        ),
+      );
       if (fence !== undefined && !(yield* fence.isCurrent)) {
         yield* McpSessionRegistry.revokeActiveMcpProviderSession(
           credential.config.providerSessionId,

@@ -318,6 +318,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
               providerInstanceId: ProviderInstanceId.make("codex"),
               endpoint: "http://127.0.0.1:4321/mcp",
               authorizationHeader: "Bearer test-token",
+              capabilities: new Set(["preview"]),
             }),
           ),
           () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),

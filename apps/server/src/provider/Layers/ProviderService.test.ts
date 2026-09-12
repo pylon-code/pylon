@@ -75,6 +75,8 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
+import { DeviceService } from "../../device/DeviceService.ts";
+import { DeviceHostUnavailableError } from "@t3tools/contracts";
 import { makeProviderServiceLive } from "./ProviderService.ts";
 import { composeProviderRuntimeLayer } from "../providerRuntimeLayer.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
@@ -6635,6 +6637,7 @@ describe("agent browser access", () => {
       /** False leaves the projection query to the surrounding runtime composition. */
       readonly provideProjection?: boolean;
     },
+    enableAgentDeviceAccess = false,
   ) => {
     const providerAdapterLayer = Layer.succeed(
       ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -6656,6 +6659,7 @@ describe("agent browser access", () => {
       Layer.provide(
         ServerSettings.ServerSettingsService.layerTest({
           enableAgentBrowserAccess,
+          enableAgentDeviceAccess,
           projectAgentBrowserAccessOverrides:
             projectOverride === undefined ? {} : { [projectId]: projectOverride },
         }),
@@ -6714,8 +6718,129 @@ describe("agent browser access", () => {
       providerInstanceId: codexInstanceId,
       endpoint: `http://127.0.0.1:4321/mcp/provider-session-${threadId}`,
       authorizationHeader: "Bearer scoped-secret",
+      capabilities: new Set(["preview"]),
     },
   });
+
+  it.effect("grants browser and device capabilities independently", () =>
+    Effect.gen(function* () {
+      for (const [browser, device, expected] of [
+        [false, true, ["device"]],
+        [true, false, ["preview"]],
+        [true, true, ["device", "preview"]],
+      ] as const) {
+        const threadId = asThreadId(`thread-capabilities-${browser}-${device}`);
+        const issued: string[][] = [];
+        const codex = makeFakeCodexAdapter();
+        const layer = makeAgentBrowserProviderLayer(
+          browser,
+          codex,
+          {
+            issueMcpCredential: (request) =>
+              Effect.sync(() => {
+                issued.push([...request.capabilities].sort());
+                return undefined;
+              }),
+          },
+          undefined,
+          device,
+        );
+        yield* Effect.gen(function* () {
+          const provider = yield* ProviderService.ProviderService;
+          yield* provider.startSession(threadId, {
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            threadId,
+            runtimeMode: "full-access",
+          });
+        }).pipe(Effect.provide(layer));
+        assert.deepEqual(issued, [[...expected]]);
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("does not publish retired MCP ownership after device CLI preparation yields", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-device-generation-fence");
+      const current = yield* Ref.make(true);
+      const cliEntered = yield* Deferred.make<void>();
+      const releaseCli = yield* Deferred.make<void>();
+      const codex = makeFakeCodexAdapter();
+      const fence = { generation: {}, configRevision: "old", isCurrent: Ref.get(current) };
+      const adapter = { ...codex.adapter, runtimeFence: fence };
+      const replacement = {
+        ...issuedBrowserCredential(threadId).config,
+        providerSessionId: "replacement",
+      };
+      const replacementFence = {
+        generation: {},
+        configRevision: "new",
+        isCurrent: Effect.succeed(true),
+      };
+      const unused = () => Effect.die("unused device operation");
+      const devices = Layer.succeed(DeviceService, {
+        agentCli: Deferred.succeed(cliEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseCli)),
+          Effect.andThen(
+            Effect.fail(
+              new DeviceHostUnavailableError({ hostId: "local", reason: "test CLI unavailable" }),
+            ),
+          ),
+        ),
+        testHost: unused,
+        agentTarget: unused,
+        state: unused(),
+        subscribe: unused(),
+        configure: unused,
+        list: unused(),
+        open: unused,
+        close: unused,
+        shutdown: unused,
+        detail: unused,
+        action: unused,
+        screenshot: unused,
+        readiness: unused,
+        readinessIfSupported: unused,
+        agentReadinessIfSupported: unused,
+        currentReadiness: unused,
+        sessionsForThread: unused,
+      });
+      const providerLayer = makeAgentBrowserProviderLayer(
+        false,
+        { ...codex, adapter },
+        {
+          issueMcpCredential: (request, isCurrent = Effect.succeed(true)) =>
+            isCurrent.pipe(
+              Effect.map((active) =>
+                active ? issuedBrowserCredential(request.threadId) : undefined,
+              ),
+            ),
+        },
+        undefined,
+        true,
+      ).pipe(Layer.provide(devices));
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const started = yield* provider
+          .startSession(threadId, {
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            threadId,
+            runtimeMode: "full-access",
+          })
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* Deferred.await(cliEntered);
+        yield* Ref.set(current, false);
+        McpProviderSession.setMcpProviderSession(replacement, replacementFence);
+        yield* Deferred.succeed(releaseCli, undefined);
+        yield* Fiber.join(started);
+        assert.strictEqual(McpProviderSession.readMcpProviderSession(threadId), replacement);
+      }).pipe(
+        Effect.provide(providerLayer),
+        Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 
   // Credential issuance is the observable that matters: it is the only place a
   // credential is minted, and `/mcp` accepts nothing else, so withholding it is
