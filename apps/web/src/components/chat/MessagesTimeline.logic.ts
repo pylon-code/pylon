@@ -676,6 +676,10 @@ function deriveTurnFolds(input: {
       if (!isCompaction && index > terminalEntryIndex && !isSingleTrailingActivity) {
         continue;
       }
+      // User input stays visible after the surrounding work settles.
+      if (entry.kind === "work" && entry.entry.questionAnswer !== undefined) {
+        continue;
+      }
       // Agent-spawn CTA rows never fold: workflows outlive their launching
       // turn (dynamic spawns, background execution), and folding the CTA
       // when the turn settles makes a still-running fleet invisible.
@@ -914,6 +918,7 @@ export function deriveMessagesTimelineRows(input: {
       entry.kind !== "work" ||
       entry.entry.agentSpawn !== undefined ||
       delegationActivity(entry.entry)?.name === "delegate_thread" ||
+      entry.entry.questionAnswer !== undefined ||
       entry.entry.sourceActivityKind === "context-compaction" ||
       entry.entry.tone === "error"
     ) {
@@ -1041,6 +1046,7 @@ export function deriveMessagesTimelineRows(input: {
       if (
         timelineEntry.entry.agentSpawn !== undefined ||
         delegationActivity(timelineEntry.entry)?.name === "delegate_thread" ||
+        timelineEntry.entry.questionAnswer !== undefined ||
         timelineEntry.entry.tone === "error"
       ) {
         nextRows.push({
@@ -1063,6 +1069,7 @@ export function deriveMessagesTimelineRows(input: {
           workLogEntryIsMissingResponse(nextEntry.entry) ||
           nextEntry.entry.agentSpawn !== undefined ||
           delegationActivity(nextEntry.entry)?.name === "delegate_thread" ||
+          nextEntry.entry.questionAnswer !== undefined ||
           nextEntry.entry.sourceActivityKind === "context-compaction" ||
           nextEntry.entry.tone === "error" ||
           activeWorkEntryIds.has(nextEntry.id) ||
