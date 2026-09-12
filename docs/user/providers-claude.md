@@ -143,3 +143,7 @@ put the router's endpoint and credential variables in that instance's **Environm
 router must run where the environment can reach it. Follow the
 [Claude Code Router instructions](https://github.com/musistudio/claude-code-router) for its
 installation and routing configuration.
+
+## Rewind a conversation
+
+Eligible completed turns support rewinding with either restored files or your current files. Pylon verifies private native history snapshots before selecting a restored conversation. Empty roots, older turns without snapshots, and checkpoints whose boundaries were removed by compaction remain unavailable. Finish pending tools and questions before rewinding. Ordinary resume remains usable when exact history cannot be verified.
