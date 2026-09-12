@@ -944,3 +944,26 @@ it("validates remote device hosts and rejects ambiguous host ids", () => {
   ).toThrow();
   expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, port: 0 }] })).toThrow();
 });
+
+describe("optional computer access", () => {
+  it("keeps older saved environments disabled and defaults to background", () => {
+    expect(decodeServerSettings({})).toMatchObject({
+      enableAgentComputerAccess: false,
+      allowAgentComputerForeground: false,
+      computerUseBinaryPath: "cua-driver",
+    });
+  });
+  it("round-trips access, foreground revocation, and executable patches", () => {
+    for (const enabled of [true, false]) {
+      const patch = {
+        enableAgentComputerAccess: enabled,
+        allowAgentComputerForeground: enabled,
+        computerUseBinaryPath: "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
+      };
+      expect(decodeServerSettingsPatch(patch)).toEqual(patch);
+      expect(decodeServerSettings(encodeServerSettings(decodeServerSettings(patch)))).toMatchObject(
+        patch,
+      );
+    }
+  });
+});

@@ -1,3 +1,6 @@
+import { ComputerSetupService } from "./computer/ComputerSetupService.ts";
+import { CuaDriverBackend } from "./computer/CuaDriverBackend.ts";
+import { ComputerRuntimeGate } from "./computer/ComputerRuntimeGate.ts";
 import { EnvironmentHttpApi } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -56,6 +59,7 @@ import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as CuaService from "./computer/CuaService.ts";
 import { deviceHubProxyRouteLayer } from "./device/DeviceHubProxy.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
@@ -573,8 +577,14 @@ export const makeRoutesLayer = Layer.mergeAll(
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
   ),
-  McpHttpServer.layer.pipe(Layer.provide(McpSessionRegistry.layer)),
+  McpHttpServer.layer.pipe(
+    Layer.provide(McpSessionRegistry.layer),
+    Layer.provide(CuaService.layer.pipe(Layer.provide(ServerSettingsLayerLive))),
+  ),
 ).pipe(
+  Layer.provide(ComputerSetupService.layer.pipe(Layer.provide(ServerSettingsLayerLive))),
+  Layer.provide(CuaDriverBackend.layer),
+  Layer.provide(ComputerRuntimeGate.layer),
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),

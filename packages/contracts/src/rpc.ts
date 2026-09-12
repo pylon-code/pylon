@@ -1,4 +1,11 @@
 import {
+  ComputerSetupError,
+  ComputerSetupState,
+  ComputerSetupStartInput,
+  ComputerSetupCancelInput,
+  ComputerSetupRefreshInput,
+} from "./computerSetup.ts";
+import {
   ProviderConsumeResetCreditInput,
   ProviderConsumeResetCreditResult,
   ProviderConsumeResetCreditError,
@@ -345,6 +352,10 @@ export const WS_METHODS = {
   providerAuthCancel: "provider.auth.cancel",
   providerAuthLogout: "provider.auth.logout",
   providerAuthSubscribe: "provider.auth.subscribe",
+  computerSetupSubscribe: "computer.setup.subscribe",
+  computerSetupRefresh: "computer.setup.refresh",
+  computerSetupStart: "computer.setup.start",
+  computerSetupCancel: "computer.setup.cancel",
   providerInstallStart: "provider.install.start",
   providerInstallCancel: "provider.install.cancel",
   providerInstallSubscribe: "provider.install.subscribe",
@@ -766,6 +777,28 @@ const WsProviderAuthSubscribeRpc = Rpc.make(WS_METHODS.providerAuthSubscribe, {
   success: ProviderAuthState,
   error: ProviderSetupRpcError,
   stream: true,
+});
+
+const WsComputerSetupSubscribeRpc = Rpc.make(WS_METHODS.computerSetupSubscribe, {
+  payload: Schema.Struct({}),
+  success: ComputerSetupState,
+  error: Schema.Union([ComputerSetupError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+const WsComputerSetupRefreshRpc = Rpc.make(WS_METHODS.computerSetupRefresh, {
+  payload: ComputerSetupRefreshInput,
+  success: ComputerSetupState,
+  error: Schema.Union([ComputerSetupError, EnvironmentAuthorizationError]),
+});
+const WsComputerSetupStartRpc = Rpc.make(WS_METHODS.computerSetupStart, {
+  payload: ComputerSetupStartInput,
+  success: ComputerSetupState,
+  error: Schema.Union([ComputerSetupError, EnvironmentAuthorizationError]),
+});
+const WsComputerSetupCancelRpc = Rpc.make(WS_METHODS.computerSetupCancel, {
+  payload: ComputerSetupCancelInput,
+  success: ComputerSetupState,
+  error: Schema.Union([ComputerSetupError, EnvironmentAuthorizationError]),
 });
 
 const WsProviderInstallStartRpc = Rpc.make(WS_METHODS.providerInstallStart, {
@@ -1594,6 +1627,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderAuthCancelRpc,
   WsProviderAuthLogoutRpc,
   WsProviderAuthSubscribeRpc,
+  WsComputerSetupSubscribeRpc,
+  WsComputerSetupRefreshRpc,
+  WsComputerSetupStartRpc,
+  WsComputerSetupCancelRpc,
   WsProviderInstallStartRpc,
   WsProviderInstallCancelRpc,
   WsProviderInstallSubscribeRpc,

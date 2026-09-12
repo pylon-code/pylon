@@ -1,3 +1,4 @@
+import { ComputerSetupService } from "./computer/ComputerSetupService.ts";
 import {
   withUsageLimitsCommands,
   sameUsageLimitCommandCoverage,
@@ -557,6 +558,7 @@ const makeWsRpcLayer = (
       const primeManagedMaintenance = yield* PrimeManagedMaintenance.PrimeManagedMaintenance;
       const providerLogin = yield* ProviderLoginCoordinator;
       const providerAuth = yield* ProviderAuthService;
+      const computerSetup = yield* ComputerSetupService;
       const providerInstallation = yield* makeProviderInstallation();
       const serverUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
@@ -2219,6 +2221,26 @@ const makeWsRpcLayer = (
             providerAuth.subscribe(input, currentSessionId),
             { "rpc.aggregate": "provider" },
           ),
+        [WS_METHODS.computerSetupSubscribe]: () =>
+          observeRpcStream(WS_METHODS.computerSetupSubscribe, computerSetup.changes, {
+            "rpc.aggregate": "computer",
+          }),
+        [WS_METHODS.computerSetupRefresh]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.computerSetupRefresh,
+            computerSetup.refresh(input.checkUpdates ?? false),
+            { "rpc.aggregate": "computer" },
+          ),
+        [WS_METHODS.computerSetupStart]: (input) =>
+          observeRpcEffect(WS_METHODS.computerSetupStart, computerSetup.start(input), {
+            "rpc.aggregate": "computer",
+          }),
+        [WS_METHODS.computerSetupCancel]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.computerSetupCancel,
+            computerSetup.cancel(input.operationId),
+            { "rpc.aggregate": "computer" },
+          ),
         [WS_METHODS.providerInstallStart]: (input) =>
           observeRpcEffect(WS_METHODS.providerInstallStart, providerInstallation.start(input), {
             "rpc.aggregate": "provider",
@@ -3364,6 +3386,7 @@ const makeWsRpcLayer = (
 
 export const websocketRpcRouteLayer = Layer.unwrap(
   Effect.gen(function* () {
+    const computerSetup = yield* ComputerSetupService;
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const baseServerSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const config = yield* ServerConfig.ServerConfig;
@@ -3421,6 +3444,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         }).pipe(
           Effect.provide(
             makeWsRpcLayer(session, clientOrigin, previewAutomationBroker).pipe(
+              Layer.provide(Layer.succeed(ComputerSetupService, computerSetup)),
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(

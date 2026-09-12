@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { CuaService } from "../computer/CuaService.ts";
 import * as Effect from "effect/Effect";
 import { HttpServer } from "effect/unstable/http";
 
@@ -184,3 +185,43 @@ it.effect("keeps the current exact credential when retired issue and cleanup arr
     expect((yield* registry.resolve(replacementToken))?.threadId).toBe(threadId);
   }),
 );
+
+for (const action of ["thread", "all", "replace", "expire"] as const) {
+  it.effect(`retires Cua credential IDs on ${action}`, () =>
+    Effect.gen(function* () {
+      let timestamp = 1000;
+      const retired: string[] = [];
+      const cua = CuaService.of({
+        tools: () => Effect.die("unused"),
+        call: () => Effect.die("unused"),
+        closeSession: (id) =>
+          Effect.sync(() => {
+            retired.push(id);
+          }),
+        closeThread: () => Effect.void,
+        closeAll: Effect.void,
+      });
+      const registry = yield* makeRegistry(() => timestamp).pipe(
+        Effect.provideService(CuaService, cua),
+      );
+      const request = {
+        threadId: ThreadId.make("computer-thread"),
+        providerInstanceId: ProviderInstanceId.make("claude"),
+        capabilities: new Set(["computer"] as const),
+      };
+      const first = yield* registry.issue(request);
+      const oldToken = first.config.authorizationHeader.replace(/^Bearer\s+/, "");
+      // The old scope may already be held by an in-flight HTTP request.
+      expect(yield* registry.resolve(oldToken)).toBeDefined();
+      if (action === "thread") yield* registry.revokeThread(request.threadId);
+      else if (action === "all") yield* registry.revokeAll;
+      else if (action === "replace") yield* registry.issueIfCurrent(request, Effect.succeed(true));
+      else {
+        timestamp += 101;
+        yield* registry.resolve(oldToken);
+      }
+      expect(retired).toContain(first.config.providerSessionId);
+      expect(yield* registry.resolve(oldToken)).toBeUndefined();
+    }),
+  );
+}

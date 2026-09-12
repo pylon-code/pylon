@@ -989,6 +989,24 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:provider:auth-logout",
       tag: WS_METHODS.providerAuthLogout,
     }),
+    computerSetupState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:computer:setup-state",
+      tag: WS_METHODS.computerSetupSubscribe,
+      idleTtlMs: 0,
+    }),
+    refreshComputerSetup: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:computer:setup-refresh",
+      tag: WS_METHODS.computerSetupRefresh,
+    }),
+    startComputerSetup: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:computer:setup-start",
+      tag: WS_METHODS.computerSetupStart,
+      concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
+    }),
+    cancelComputerSetup: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:computer:setup-cancel",
+      tag: WS_METHODS.computerSetupCancel,
+    }),
     providerInstallState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:provider:install-state",
       tag: WS_METHODS.providerInstallSubscribe,

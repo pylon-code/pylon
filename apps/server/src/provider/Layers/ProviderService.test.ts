@@ -6862,6 +6862,7 @@ describe("agent browser access", () => {
       readonly projectionStatus?: "found" | "missing" | "failed";
     },
     enableAgentDeviceAccess = false,
+    enableAgentComputerAccess = false,
   ) => {
     const providerAdapterLayer = Layer.succeed(
       ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -6884,6 +6885,7 @@ describe("agent browser access", () => {
         ServerSettings.ServerSettingsService.layerTest({
           enableAgentBrowserAccess,
           enableAgentDeviceAccess,
+          enableAgentComputerAccess,
           projectSettingsOverrides:
             projectOverride === undefined
               ? {}
@@ -6962,15 +6964,17 @@ describe("agent browser access", () => {
     },
   });
 
-  it.effect("grants browser and device capabilities independently", () =>
+  it.effect("grants browser, device, and computer capabilities independently", () =>
     Effect.gen(function* () {
-      for (const [browser, device, expected] of [
-        [false, false, ["pull-requests"]],
-        [false, true, ["device", "pull-requests"]],
-        [true, false, ["preview", "pull-requests"]],
-        [true, true, ["device", "preview", "pull-requests"]],
+      for (const [browser, device, computer, expected] of [
+        [false, false, false, ["pull-requests"]],
+        [false, true, false, ["device", "pull-requests"]],
+        [true, false, false, ["preview", "pull-requests"]],
+        [true, true, false, ["device", "preview", "pull-requests"]],
+        [false, false, true, ["computer", "pull-requests"]],
+        [true, true, true, ["computer", "device", "preview", "pull-requests"]],
       ] as const) {
-        const threadId = asThreadId(`thread-capabilities-${browser}-${device}`);
+        const threadId = asThreadId(`thread-capabilities-${browser}-${device}-${computer}`);
         const issued: string[][] = [];
         const codex = makeFakeCodexAdapter();
         const layer = makeAgentBrowserProviderLayer(
@@ -6985,6 +6989,7 @@ describe("agent browser access", () => {
           },
           undefined,
           device,
+          computer,
         );
         yield* Effect.gen(function* () {
           const provider = yield* ProviderService.ProviderService;

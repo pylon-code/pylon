@@ -1168,6 +1168,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const environment = {
         browser: settings.enableAgentBrowserAccess,
         device: settings.enableAgentDeviceAccess,
+        computer: settings.enableAgentComputerAccess,
       };
       if (!browserOverridden && !deviceOverridden) return environment;
       // Provider-only runtimes may omit orchestration. An unresolved project
@@ -1176,6 +1177,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const denied = {
         browser: browserOverridden ? false : environment.browser,
         device: deviceOverridden ? false : environment.device,
+        computer: environment.computer,
       };
       if (Option.isNone(projectionQuery)) return denied;
       const thread = yield* projectionQuery.value
@@ -1186,13 +1188,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       return {
         browser: resolved.enableAgentBrowserAccess,
         device: resolved.enableAgentDeviceAccess,
+        computer: environment.computer,
       };
     },
     Effect.catch((cause) =>
       Effect.logWarning(
         "Could not read server settings; withholding agent browser and device access for this session.",
         { cause },
-      ).pipe(Effect.as({ browser: false, device: false })),
+      ).pipe(Effect.as({ browser: false, device: false, computer: false })),
     ),
   );
 
@@ -1203,6 +1206,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     const access = yield* agentAccessSettings(threadId);
     if (access.browser) capabilities.add("preview");
     if (access.device) capabilities.add("device");
+    if (access.computer) capabilities.add("computer");
     return capabilities;
   });
 
