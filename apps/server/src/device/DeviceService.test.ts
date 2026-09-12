@@ -2,7 +2,10 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   DeviceId,
+  EnvironmentId,
   LOCAL_DEVICE_HOST_ID,
+  ProjectId,
+  ProviderInstanceId,
   ThreadId,
   type DeviceServiceState,
 } from "@t3tools/contracts";
@@ -15,6 +18,8 @@ import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ServerSettingsService } from "../serverSettings.ts";
 import * as DeviceHost from "./DeviceHost.ts";
+import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 
 import { type DeviceService, makeWithHosts, stateStream } from "./DeviceService.ts";
 
@@ -66,6 +71,7 @@ const fixture = Effect.fn("fixture")(function* (
   const starts: string[] = [];
   const agentStarts: string[] = [];
   const agentStops: string[] = [];
+  const agentConfigs: string[] = [];
   const requests: string[] = [];
   let booted = false;
   let shutDown = false;
@@ -109,7 +115,12 @@ const fixture = Effect.fn("fixture")(function* (
       starts.push("stop");
     }),
   };
-  const service = yield* makeWithHosts(new Map([[host.id, host]])).pipe(
+  const service = yield* makeWithHosts(new Map([[host.id, host]]), undefined, (hostId) =>
+    Effect.sync(() => {
+      agentConfigs.push(hostId);
+      return "/test-agent-config.json";
+    }),
+  ).pipe(
     Effect.provideService(DeviceHost.DeviceHost, host),
     Effect.provideService(
       ServerSettingsService,
@@ -185,10 +196,70 @@ const fixture = Effect.fn("fixture")(function* (
       ),
     ),
   );
-  return { service, starts, agentStarts, agentStops, requests, settings };
+  return { service, starts, agentStarts, agentStops, agentConfigs, requests, settings };
 });
 
 describe("device setup consent", () => {
+  it.effect("honors authenticated project device grants and keeps reverse transitions closed", () =>
+    Effect.gen(function* () {
+      const { service, settings, agentStarts, agentConfigs } = yield* fixture();
+      const projectId = ProjectId.make("project-device-permission");
+      const threadId = ThreadId.make("thread-device-permission");
+      const input = { threadId, hostId: LOCAL_DEVICE_HOST_ID, deviceId: "Pixel_API_35" };
+      const invocation = (capabilities: ReadonlyArray<McpInvocationContext.McpCapability>) => ({
+        environmentId: EnvironmentId.make("environment-device-permission"),
+        threadId,
+        providerSessionId: "provider-device-permission",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        capabilities: new Set(capabilities),
+        issuedAt: 1,
+      });
+      const targetWith = (scope: McpInvocationContext.McpInvocationScope) =>
+        service
+          .agentTarget(input)
+          .pipe(Effect.provideService(McpInvocationContext.McpInvocationContext, scope));
+      yield* service.configure({ enabled: true });
+      yield* Ref.update(settings, (value) => ({
+        ...value,
+        enableAgentDeviceAccess: false,
+        projectSettingsOverrides: { [projectId]: { enableAgentDeviceAccess: true } },
+      }));
+      const allowed = resolveProjectSettings(yield* Ref.get(settings), projectId).settings;
+      expect(allowed.enableAgentDeviceAccess).toBe(true);
+      expect(yield* service.agentReadinessIfSupported()).toBeNull();
+      const target = yield* targetWith(
+        invocation(allowed.enableAgentDeviceAccess ? ["device"] : []),
+      );
+      expect(target).toContain("/test-agent-config.json");
+      expect(agentStarts).toEqual(["start"]);
+      expect(agentConfigs).toEqual([LOCAL_DEVICE_HOST_ID]);
+
+      yield* Ref.update(settings, (value) => ({
+        ...value,
+        enableAgentDeviceAccess: true,
+        projectSettingsOverrides: { [projectId]: { enableAgentDeviceAccess: false } },
+      }));
+      const denied = resolveProjectSettings(yield* Ref.get(settings), projectId).settings;
+      expect(denied.enableAgentDeviceAccess).toBe(false);
+      expect(
+        (yield* targetWith(invocation(denied.enableAgentDeviceAccess ? ["device"] : [])).pipe(
+          Effect.result,
+        ))._tag,
+      ).toBe("Failure");
+      expect((yield* targetWith(invocation(["preview"])).pipe(Effect.result))._tag).toBe("Failure");
+      expect(
+        (yield* targetWith({
+          ...invocation(["device"]),
+          threadId: ThreadId.make("another-thread"),
+        }).pipe(Effect.result))._tag,
+      ).toBe("Failure");
+      yield* service.configure({ enabled: false });
+      expect((yield* targetWith(invocation(["device"])).pipe(Effect.result))._tag).toBe("Failure");
+      expect(agentStarts).toEqual(["start"]);
+      expect(agentConfigs).toEqual([LOCAL_DEVICE_HOST_ID]);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("listing and provider startup do not start helpers before consent", () =>
     Effect.gen(function* () {
       const { service, starts, requests } = yield* fixture();

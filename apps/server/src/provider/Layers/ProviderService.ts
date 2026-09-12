@@ -54,16 +54,18 @@ import {
   ProviderSessionStartInput,
   ProviderStopSessionInput,
   ProviderUploadFeedbackInput,
+  type ProjectId,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
-import { resolveProjectAgentBrowserAccess } from "@t3tools/shared/serverSettings";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -1154,34 +1156,42 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
    * "off" silently becoming "on" would violate the user's stated choice,
    * whereas the reverse costs an agent one toolset and is visible immediately.
    */
-  const agentBrowserAccessEnabled = Effect.fn("ProviderService.agentBrowserAccessEnabled")(
+  const agentAccessSettings = Effect.fn("ProviderService.agentAccessSettings")(
     function* (threadId: ThreadId) {
       const settings = yield* serverSettings.getSettings;
-      if (Object.keys(settings.projectAgentBrowserAccessOverrides).length === 0) {
-        return settings.enableAgentBrowserAccess;
-      }
+      const entries = Object.values(settings.projectSettingsOverrides);
+      const browserOverridden = entries.some(
+        (entry) => entry.enableAgentBrowserAccess !== undefined,
+      );
+      const deviceOverridden = entries.some((entry) => entry.enableAgentDeviceAccess !== undefined);
+      const environment = {
+        browser: settings.enableAgentBrowserAccess,
+        device: settings.enableAgentDeviceAccess,
+      };
+      if (!browserOverridden && !deviceOverridden) return environment;
       // Provider-only runtimes may omit orchestration. An unresolved project
-      // must not bypass an explicit browser override.
-      if (Option.isNone(projectionQuery)) return false;
-      const thread = yield* projectionQuery.value.getThreadShellById(threadId);
-      if (Option.isNone(thread)) return false;
-      return resolveProjectAgentBrowserAccess(settings, thread.value.projectId);
+      // must not bypass an explicit project override, but a capability no
+      // project overrides keeps its environment value.
+      const denied = {
+        browser: browserOverridden ? false : environment.browser,
+        device: deviceOverridden ? false : environment.device,
+      };
+      if (Option.isNone(projectionQuery)) return denied;
+      const thread = yield* projectionQuery.value
+        .getThreadShellById(threadId)
+        .pipe(Effect.orElseSucceed(() => Option.none()));
+      if (Option.isNone(thread)) return denied;
+      const resolved = resolveProjectSettings(settings, thread.value.projectId).settings;
+      return {
+        browser: resolved.enableAgentBrowserAccess,
+        device: resolved.enableAgentDeviceAccess,
+      };
     },
     Effect.catch((cause) =>
       Effect.logWarning(
-        "Could not read server settings; withholding agent browser access for this session.",
+        "Could not read server settings; withholding agent browser and device access for this session.",
         { cause },
-      ).pipe(Effect.as(false)),
-    ),
-  );
-
-  const agentDeviceAccessEnabled = serverSettings.getSettings.pipe(
-    Effect.map((settings) => settings.enableAgentDeviceAccess),
-    Effect.catch((cause) =>
-      Effect.logWarning(
-        "Could not read server settings; withholding agent device access for this session.",
-        { cause },
-      ).pipe(Effect.as(false)),
+      ).pipe(Effect.as({ browser: false, device: false })),
     ),
   );
 
@@ -1189,8 +1199,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     threadId: ThreadId,
   ) {
     const capabilities = new Set<McpInvocationContext.McpCapability>(["pull-requests"]);
-    if (yield* agentBrowserAccessEnabled(threadId)) capabilities.add("preview");
-    if (yield* agentDeviceAccessEnabled) capabilities.add("device");
+    const access = yield* agentAccessSettings(threadId);
+    if (access.browser) capabilities.add("preview");
+    if (access.device) capabilities.add("device");
     return capabilities;
   });
 
@@ -4196,11 +4207,36 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
-  const runStopAll = Effect.fn("runStopAll")(function* () {
-    const continueAfterRestart = yield* serverSettings.getSettings.pipe(
-      Effect.map((settings) => settings.continueThreadsAfterServerUpdate),
-      Effect.orElseSucceed(() => false),
+  // Snapshot settings once per stop operation, then resolve continuation against
+  // each session's project in both the ordinary and mixed-adapter shutdown paths.
+  const readStopSettings = serverSettings.getSettings.pipe(
+    Effect.map(Option.some),
+    Effect.orElseSucceed(() => Option.none<ServerSettingsValue>()),
+  );
+  const continueAfterRestartFor = Effect.fn("continueAfterRestartFor")(function* (
+    stopSettings: Option.Option<ServerSettingsValue>,
+    threadId: ThreadId,
+  ) {
+    if (Option.isNone(stopSettings)) return false;
+    const settings = stopSettings.value;
+    const overridden = Object.values(settings.projectSettingsOverrides).some(
+      (entry) => entry.continueThreadsAfterServerUpdate !== undefined,
     );
+    if (!overridden || Option.isNone(projectionQuery)) {
+      return settings.continueThreadsAfterServerUpdate;
+    }
+    const thread = yield* projectionQuery.value
+      .getThreadShellById(threadId)
+      .pipe(Effect.orElseSucceed(() => Option.none<{ projectId: ProjectId }>()));
+    // With project overrides present, a missing or failed lookup cannot establish
+    // that continuation was allowed for this session.
+    if (Option.isNone(thread)) return false;
+    return resolveProjectSettings(settings, thread.value.projectId).settings
+      .continueThreadsAfterServerUpdate;
+  });
+
+  const runStopAll = Effect.fn("runStopAll")(function* () {
+    const stopSettings = yield* readStopSettings;
     yield* flushAllTurnAnalytics;
     const threadIds = yield* directory.listThreadIds();
     const currentAdapters = yield* getAdapterEntries;
@@ -4215,15 +4251,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       ),
     ).pipe(Effect.map((sessionsByAdapter) => sessionsByAdapter.flatMap((sessions) => sessions)));
     yield* Effect.forEach(activeSessions, (session) =>
-      Effect.flatMap(nowIso, (lastRuntimeEventAt) =>
-        upsertSessionBinding(session, session.threadId, {
-          ...(continueAfterRestart && session.status === "running" && session.activeTurnId
+      Effect.gen(function* () {
+        const continueAfterRestart =
+          session.status === "running" && session.activeTurnId
+            ? yield* continueAfterRestartFor(stopSettings, session.threadId)
+            : false;
+        const lastRuntimeEventAt = yield* nowIso;
+        yield* upsertSessionBinding(session, session.threadId, {
+          ...(continueAfterRestart && session.activeTurnId
             ? { continueAfterServerUpdate: session.activeTurnId }
             : {}),
           lastRuntimeEvent: "provider.stopAll",
           lastRuntimeEventAt,
-        }),
-      ),
+        });
+      }),
     ).pipe(Effect.asVoid);
     yield* Effect.forEach(currentAdapters, ([, adapter]) => adapter.stopAll()).pipe(
       Effect.asVoid,
@@ -4262,10 +4303,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     if (currentAdapters.every(([, adapter]) => adapter.shutdown === undefined)) {
       return yield* runStopAll();
     }
-    const continueAfterRestart = yield* serverSettings.getSettings.pipe(
-      Effect.map((settings) => settings.continueThreadsAfterServerUpdate),
-      Effect.orElseSucceed(() => false),
-    );
+    const stopSettings = yield* readStopSettings;
     const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
     yield* Effect.forEach(
       currentAdapters,
@@ -4275,21 +4313,24 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           : Effect.gen(function* () {
               const activeSessions = yield* adapter.listSessions();
               yield* Effect.forEach(activeSessions, (session) =>
-                Effect.flatMap(nowIso, (lastRuntimeEventAt) =>
-                  upsertSessionBinding(
+                Effect.gen(function* () {
+                  const continueAfterRestart =
+                    session.status === "running" && session.activeTurnId
+                      ? yield* continueAfterRestartFor(stopSettings, session.threadId)
+                      : false;
+                  const lastRuntimeEventAt = yield* nowIso;
+                  yield* upsertSessionBinding(
                     { ...session, providerInstanceId: instanceId },
                     session.threadId,
                     {
-                      ...(continueAfterRestart &&
-                      session.status === "running" &&
-                      session.activeTurnId
+                      ...(continueAfterRestart && session.activeTurnId
                         ? { continueAfterServerUpdate: session.activeTurnId }
                         : {}),
                       lastRuntimeEvent: "provider.stopAll",
                       lastRuntimeEventAt,
                     },
-                  ),
-                ),
+                  );
+                }),
               );
               yield* adapter.stopAll().pipe(
                 Effect.ensuring(

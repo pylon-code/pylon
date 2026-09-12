@@ -84,6 +84,7 @@ import {
   projectScriptRuntimeEnv,
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { truncate } from "@t3tools/shared/String";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { resolveThreadReferenceCopyTarget } from "@t3tools/shared/threadReference";
@@ -173,7 +174,6 @@ import {
 } from "../proposedPlan";
 import {
   DEFAULT_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
@@ -354,7 +354,6 @@ import {
   environmentServerConfigsAtom,
   primaryServerAvailableEditorsAtom,
   primaryServerKeybindingsAtom,
-  primaryServerSettingsAtom,
   serverEnvironment,
 } from "../state/server";
 import { terminalEnvironment } from "../state/terminal";
@@ -1650,7 +1649,6 @@ export default function ChatView(props: ChatViewProps) {
   }, [routeKind, routeThreadRef, routeThreadState]);
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const settings = useEnvironmentSettings(environmentId);
-  const primaryServerSettings = useAtomValue(primaryServerSettingsAtom);
   const setStickyComposerModelSelection = useComposerDraftStore(
     (store) => store.setStickyModelSelection,
   );
@@ -1941,17 +1939,14 @@ export default function ChatView(props: ChatViewProps) {
         ? buildLocalDraftThread(
             threadId,
             draftThread,
-            fallbackDraftProject?.defaultModelSelection ??
-              settings.defaultModelSelection ??
-              NO_PROVIDER_MODEL_SELECTION,
+            resolveProjectSettings(
+              settings,
+              fallbackDraftProject?.id ?? null,
+              fallbackDraftProject ?? undefined,
+            ).settings.defaultModelSelection ?? NO_PROVIDER_MODEL_SELECTION,
           )
         : undefined,
-    [
-      draftThread,
-      fallbackDraftProject?.defaultModelSelection,
-      settings.defaultModelSelection,
-      threadId,
-    ],
+    [draftThread, fallbackDraftProject, settings, threadId],
   );
   // Promotion is data-driven: the draft route keeps rendering while the
   // server thread (same pre-allocated ref) starts, so live state must not
@@ -1979,7 +1974,11 @@ export default function ChatView(props: ChatViewProps) {
   // session.lastError. Bump a tick so the banner hides immediately. Mirrors
   // the branch mismatch banner.
   const [, setThreadErrorBannerDismissTick] = useState(0);
-  const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+  const defaultRuntimeMode = resolveProjectSettings(settings, activeThread?.projectId ?? null)
+    .settings.defaultRuntimeMode;
+  // Implicit drafts follow their current project/environment, including retargets.
+  // Explicit composer choices and existing server threads retain their permissions.
+  const runtimeMode = composerRuntimeMode ?? activeServerThread?.runtimeMode ?? defaultRuntimeMode;
   const planModeEnabled = useClientSettings((clientSettings) => clientSettings.planModeEnabled);
   // With legacy plan mode off, force the effective mode to "default" so a
   // thread saved in plan mode is not stranded there with its toggle hidden.
@@ -2184,12 +2183,16 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread?.environmentId, activeThread?.projectId],
   );
   const activeProject = useProject(activeProjectRef);
+  // Environment settings with the active project's overrides applied.
+  const activeProjectSettings = useMemo(
+    () => resolveProjectSettings(settings, activeProject?.id ?? null, activeProject ?? undefined),
+    [activeProject, settings],
+  );
   const activeProjectScripts = useMemo(
     () => (activeProject ? resolveProjectScripts(settings, activeProject) : []),
     [activeProject, settings],
   );
-  const activeProjectDefaultModelSelection =
-    activeProject?.defaultModelSelection ?? settings.defaultModelSelection;
+  const activeProjectDefaultModelSelection = activeProjectSettings.settings.defaultModelSelection;
   const handleNewThreadInActiveProject = useCallback(() => {
     startNewThreadForProject(activeProjectRef, handleNewThread);
   }, [activeProjectRef, handleNewThread]);
@@ -2439,7 +2442,8 @@ export default function ChatView(props: ChatViewProps) {
       setLogicalProjectDraftThreadId(logicalProjectKey, activeProjectRef, nextDraftId, {
         threadId: nextThreadId,
         createdAt: new Date().toISOString(),
-        runtimeMode: DEFAULT_RUNTIME_MODE,
+        runtimeMode: resolveProjectSettings(settings, activeProject.id, activeProject).settings
+          .defaultRuntimeMode,
         interactionMode: DEFAULT_INTERACTION_MODE,
         ...input,
       });
@@ -2458,6 +2462,7 @@ export default function ChatView(props: ChatViewProps) {
       navigate,
       projectGroupingSettings,
       routeKind,
+      settings,
       setDraftThreadContext,
       setLogicalProjectDraftThreadId,
     ],
@@ -4227,6 +4232,9 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
+  const supportsProjectSettingsOverrides =
+    environmentById.get(environmentId)?.serverConfig?.environment.capabilities
+      .projectSettingsOverrides === true;
   const persistProjectScripts = useCallback(
     async (input: {
       projectId: ProjectId;
@@ -4251,7 +4259,21 @@ export default function ChatView(props: ChatViewProps) {
       const updateResult =
         write.kind === "settings"
           ? mapAtomCommandResult(
-              await updateProjectScriptSettings({ environmentId, input: { patch: write.patch } }),
+              await updateProjectScriptSettings({
+                environmentId,
+                input: {
+                  patch: supportsProjectSettingsOverrides
+                    ? {
+                        projectSettingsOverrides: {
+                          [input.projectId]: {
+                            ...settings.projectSettingsOverrides[input.projectId],
+                            defaultProjectScripts: input.nextScripts,
+                          },
+                        },
+                      }
+                    : write.patch,
+                },
+              }),
               () => undefined,
             )
           : mapAtomCommandResult(
@@ -4281,7 +4303,15 @@ export default function ChatView(props: ChatViewProps) {
       }
       return updateResult;
     },
-    [environmentById, environmentId, updateProject, updateProjectScriptSettings, upsertKeybinding],
+    [
+      environmentById,
+      environmentId,
+      settings.projectSettingsOverrides,
+      supportsProjectSettingsOverrides,
+      updateProject,
+      updateProjectScriptSettings,
+      upsertKeybinding,
+    ],
   );
   const saveProjectScript = useCallback(
     async (input: NewProjectScriptInput): Promise<AtomCommandResult<void, unknown>> => {
@@ -5700,7 +5730,7 @@ export default function ChatView(props: ChatViewProps) {
     ? (draftThread?.startFromOrigin ?? false)
     : canOverrideServerThreadEnvMode
       ? (pendingServerThreadStartFromOriginByThreadId[activeThread?.id ?? ""] ??
-        primaryServerSettings.newWorktreesStartFromOrigin)
+        activeProjectSettings.settings.newWorktreesStartFromOrigin)
       : false;
   const sendEnvMode = resolveSendEnvMode({
     requestedEnvMode: envMode,
@@ -8781,7 +8811,7 @@ export default function ChatView(props: ChatViewProps) {
         projectId: activeProject.id,
         title: nextThreadTitle,
         modelSelection: nextThreadModelSelection,
-        runtimeMode,
+        runtimeMode: defaultRuntimeMode,
         interactionMode: "default",
         branch: activeThreadBranch,
         worktreePath: activeThread.worktreePath,
@@ -8804,7 +8834,7 @@ export default function ChatView(props: ChatViewProps) {
           },
           modelSelection: ctxSelectedModelSelection,
           titleSeed: nextThreadTitle,
-          runtimeMode,
+          runtimeMode: defaultRuntimeMode,
           interactionMode: "default",
           sourceEpoch: 0,
           sourceProposedPlan: {
@@ -8879,7 +8909,7 @@ export default function ChatView(props: ChatViewProps) {
     isServerThread,
     navigate,
     resetLocalDispatch,
-    runtimeMode,
+    defaultRuntimeMode,
     startThreadTurn,
     environmentId,
     composerRef,
@@ -9284,7 +9314,7 @@ export default function ChatView(props: ChatViewProps) {
           envMode: mode,
           startFromOrigin: resolveNewDraftStartFromOrigin({
             envMode: mode,
-            newWorktreesStartFromOrigin: primaryServerSettings.newWorktreesStartFromOrigin,
+            newWorktreesStartFromOrigin: activeProjectSettings.settings.newWorktreesStartFromOrigin,
           }),
           ...(mode === "worktree" && draftThread?.worktreePath ? { worktreePath: null } : {}),
         });
@@ -9296,7 +9326,7 @@ export default function ChatView(props: ChatViewProps) {
       composerDraftTarget,
       draftThread?.worktreePath,
       isLocalDraftThread,
-      primaryServerSettings.newWorktreesStartFromOrigin,
+      activeProjectSettings.settings.newWorktreesStartFromOrigin,
       setPendingServerThreadEnvMode,
       scheduleComposerFocus,
       setDraftThreadContext,

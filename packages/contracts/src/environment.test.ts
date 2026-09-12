@@ -16,6 +16,11 @@ const descriptor = {
 describe("ExecutionEnvironmentDescriptor", () => {
   it("requires an explicit browser profile capability under version skew", () => {
     expect(decodeDescriptor(descriptor).capabilities.browserProfiles).toBeUndefined();
+    expect(decodeDescriptor(descriptor).capabilities.defaultRuntimeMode).toBeUndefined();
+    expect(
+      decodeDescriptor({ ...descriptor, capabilities: { defaultRuntimeMode: true } }).capabilities
+        .defaultRuntimeMode,
+    ).toBe(true);
     expect(
       decodeDescriptor({ ...descriptor, capabilities: { browserProfiles: true } }).capabilities
         .browserProfiles,

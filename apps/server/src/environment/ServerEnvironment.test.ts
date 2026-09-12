@@ -170,6 +170,8 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
       expect(second.capabilities.usagePriceOverrides).toBe(true);
       expect(second.capabilities.browserProfiles).toBe(true);
       expect(second.capabilities.projectDefaults).toBe(true);
+      expect(second.capabilities.projectSettingsOverrides).toBe(true);
+      expect(second.capabilities.defaultRuntimeMode).toBe(true);
       expect(second.capabilities.threadTitleRegeneration).toBe(true);
       expect(second.capabilities.threadPullRequests).toBe(true);
       expect(second.capabilities.threadPullRequestLinking).toBe(true);

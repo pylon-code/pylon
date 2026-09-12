@@ -14,10 +14,15 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  DEFAULT_SERVER_SETTINGS,
   MessageId,
   T3_PROJECT_FILE_NAME,
   ThreadId,
 } from "@t3tools/contracts";
+import {
+  projectDefaultModelPreference,
+  resolveProjectSettings,
+} from "@t3tools/shared/projectSettings";
 import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import {
   isDefaultThreadEnvModeSettled,
@@ -429,17 +434,32 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     if (t3ProjectFileData === null || t3ProjectFileData.truncated) return null;
     return parseT3ProjectFile(t3ProjectFileData.contents)?.defaultThreadEnvMode ?? null;
   }, [t3ProjectFileData]);
+  // Environment settings with the project's overrides applied; the
+  // aggregate's own legacy fields still count until the server folds them.
+  const projectSettings = useMemo(
+    () =>
+      resolveProjectSettings(
+        selectedEnvironmentServerConfig?.settings ?? DEFAULT_SERVER_SETTINGS,
+        selectedProject?.id ?? null,
+        selectedProject,
+      ),
+    [selectedEnvironmentServerConfig?.settings, selectedProject],
+  );
+  const projectThreadEnvMode =
+    projectSettings.sources.defaultThreadEnvMode === "project"
+      ? projectSettings.settings.defaultThreadEnvMode
+      : undefined;
   const defaultWorkspaceMode: WorkspaceMode = resolveDefaultThreadEnvMode({
-    projectSetting: selectedProject?.defaultThreadEnvMode,
+    projectSetting: projectThreadEnvMode,
     projectFile: t3ProjectFileDefaultMode,
-    globalDefault: selectedEnvironmentServerConfig?.settings.defaultThreadEnvMode ?? "local",
+    globalDefault: projectSettings.settings.defaultThreadEnvMode,
   });
   // While unsettled the resolved default is provisional. Nothing may write
   // it into the draft during that window (the auto-branch effect does), or
   // the frozen interim value beats the t3.json default once it loads.
   const defaultWorkspaceModeSettled = isDefaultThreadEnvModeSettled({
     explicitMode: selectedProjectDraft.workspaceSelection?.mode,
-    projectSetting: selectedProject?.defaultThreadEnvMode,
+    projectSetting: projectThreadEnvMode,
     projectFilePending: t3ProjectFileQuery.isPending,
   });
   const workspaceMode = selectedProjectDraft.workspaceSelection?.mode ?? defaultWorkspaceMode;
@@ -450,10 +470,11 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   // value keeps tracking the server setting when the config loads late.
   const draftStartFromOrigin = selectedProjectDraft.workspaceSelection?.startFromOrigin;
   const startFromOrigin =
-    draftStartFromOrigin ??
-    selectedEnvironmentServerConfig?.settings.newWorktreesStartFromOrigin ??
-    true;
-  const draftRuntimeMode = selectedProjectDraft.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+    draftStartFromOrigin ?? projectSettings.settings.newWorktreesStartFromOrigin;
+  const defaultRuntimeMode = editingPendingTask
+    ? (editingPendingTask.runtimeMode ?? DEFAULT_RUNTIME_MODE)
+    : projectSettings.settings.defaultRuntimeMode;
+  const draftRuntimeMode = selectedProjectDraft.runtimeMode ?? defaultRuntimeMode;
   const draftInteractionMode =
     selectedProjectDraft.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
 
@@ -463,10 +484,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   // server status for remediation and require a new pick instead of silently
   // switching providers. Project and sticky defaults also reject legacy models.
   const storedDraftModelSelection = selectedProjectDraft.modelSelection ?? null;
-  const storedProjectDefaultModelSelection =
-    selectedProject?.defaultModelSelection ??
-    selectedEnvironmentServerConfig?.settings.defaultModelSelection ??
-    null;
+  const storedProjectDefaultModelSelection = projectDefaultModelPreference(projectSettings);
   const storedStickyModelSelection = useStickyComposerModelSelection();
   const unavailablePreferredProvider = resolveNewTaskUnavailableProvider(
     selectedEnvironmentServerConfig,
@@ -998,7 +1016,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         runtimeMode: resolveModelSelectionRuntimeMode(
           selectedEnvironmentServerConfig,
           draftModelSelection,
-          draft.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+          draft.runtimeMode ?? defaultRuntimeMode,
         ),
         ...(preservedDeliveryHold === undefined ? {} : { deliveryHold: preservedDeliveryHold }),
         interactionMode:
@@ -1040,6 +1058,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       };
     },
     [
+      defaultRuntimeMode,
       editingPendingProject,
       editingPendingTask,
       selectedEnvironmentServerConfig,

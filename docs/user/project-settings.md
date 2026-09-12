@@ -1,35 +1,51 @@
-# Project settings
+# Settings and project overrides
 
-Open **Settings → Projects**, or open a project's settings from the sidebar project filter, a
-thread's menu, the chat header, or the command palette. The project and machine pickers start at **All projects** and
-**All machines**.
+The Settings breadcrumb ends with the environment and project a change applies to. They start
+at **All environments** and **All projects** and stay selected as you move between categories or
+search for a setting.
 
-## Defaults and overrides
+Preferences saved on this device, such as appearance, confirmations and browser profiles, always
+show and ignore the selection. Everything else is stored on a server. Choose one environment to
+edit its settings, or leave **All environments** to edit every connected environment at once.
+Offline environments keep their current values; this is a bulk edit, not a synced global default.
 
-With **All projects** selected, change the default model, workspace, automatic pull, agent browser
-access, or actions for projects that inherit those values. Select an individual project to override
-a default, and reset its row to inherit again. Changing a default keeps explicit project overrides.
-A workspace preference in `t3.json` takes precedence over machine defaults when the project has no
-workspace override of its own.
+Choose a project to override settings for it on the selected environments. A layers icon beside
+each server row's title shows where the value comes from: the built-in default, the environment,
+or a project override. Click it to see that chain on every selected environment. An override can
+be reset to inherit again. Settings that cannot be overridden by a project are shown read-only
+while a project is selected.
 
-Select a machine to limit edits to it. **All machines** writes defaults to connected machines;
-offline machines keep their previous values. When selected machines or checkouts disagree, the row
-says so. Browser access changes apply when an agent session next starts. A machine running an older
-Pylon server can need an update before it saves some defaults; Settings names the machines to
-update.
+When the selected environments disagree, the control shows **Mixed** in place of a value and the
+layers icon turns amber. Picking a value applies it to every selected environment.
 
-Project grouping has a default for this client, with individual checkout overrides. Shared actions
-apply to projects that inherit them; editing a project's actions creates an independent list for
-that checkout, and resetting it uses shared actions again. Project names, icons, removal, and
-importing actions from a checkout's `t3.json` stay specific to a project. When a project has several
-checkouts, the checkout picker chooses which one to edit.
+Changing an environment value never touches a project's own override. When projects override the
+setting you are editing, the layers icon counts them and the chain lists each one with its value:
+click a project to jump to it, or **Reset all** to make those projects follow the environment
+again.
+
+Providers and diagnostics are per machine: they show one environment at a time, the primary
+one until you pick another. Every other setting fans out to the selection.
+
+## Defaults and inheritance
+
+General contains the model and workspace for new threads. Integrations controls agent browser
+access. Source Control contains automatic pull, the default pull request merge method and text
+generation. The same rows edit environment defaults or project overrides depending on the
+project crumb.
+
+The Project category, shown while a project is selected, holds the project's name, icon, actions,
+checkouts and removal. Actions belong to a project: editing them creates the project's own list
+on each selected environment, and reset returns to the environment's shared list. A project's
+`t3.json` actions can be imported there.
+
+For workspace mode, a project's `t3.json` preference applies when the project has no override.
+Browser access changes apply when an agent session next starts.
 
 ## Project icons
 
-Select a project, then in **Project icon** choose an icon and color, an emoji, or an image from the
-project. **Reset** returns to automatic selection, which checks `t3.json`, common favicon and app
-icon paths, and icon links in project HTML files, then falls back to an icon chosen from the
-project name.
+Select the project and open Project to choose an icon, emoji, or image. The choice applies to
+every checkout in the project group and appears on connected clients. Choose **Automatic** to let
+Pylon detect an icon again.
 
 Icon and image choices apply to the selected checkouts in a project group and appear on connected
 clients. Every environment in the group must support saved icons before custom icons are available.
@@ -39,8 +55,8 @@ cached project images and can clear them.
 
 ## Keep the default branch current
 
-Turn on **Automatically pull** to keep a default-branch checkout up to date with its configured
-upstream. Set it under **All projects** to make it the default, or select a project to override it.
+In Source Control, enable **Automatically pull** to keep the default-branch checkout up to date
+with its configured upstream. Choose an environment to set the default or a project to override it.
 
 Pylon checks in the background and when the server starts. It only pulls when it can fast-forward
 and the checkout has no changed files, untracked files, or local commits. It skips checkouts on

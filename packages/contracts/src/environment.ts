@@ -99,6 +99,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadAutoSettlement: Schema.optionalKey(Schema.Boolean),
   /** Server persists the opt-in for continuing interrupted threads after restarts. */
   threadRestartContinuation: Schema.optionalKey(Schema.Boolean),
+  /** Server resolves `projectSettingsOverrides`; older servers ignore the key. */
+  projectSettingsOverrides: Schema.optionalKey(Schema.Boolean),
+  /** Server accepts and applies the default permission mode for new threads. */
+  defaultRuntimeMode: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.snooze / thread.unsnooze commands. Same
       version-skew contract as threadSettlement. */
   threadSnooze: Schema.optionalKey(Schema.Boolean),

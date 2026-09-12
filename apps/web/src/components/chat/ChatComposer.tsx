@@ -1,5 +1,6 @@
 import { observeResponsiveBreakpointFade, usePanelAnimationSettings } from "../../panelAnimations";
 import { measureRestingComposerControls } from "./restingComposerControlsMeasurement";
+import { runtimeModeConfig, runtimeModeOptions } from "./runtimeModeConfig";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import {
   questionAttachmentDraftId,
@@ -945,11 +946,6 @@ import {
   PencilRulerIcon,
   MessageCircleQuestionIcon,
   PlayIcon,
-  type LucideIcon,
-  LockIcon,
-  LockOpenIcon,
-  PenLineIcon,
-  SparklesIcon,
   XIcon,
 } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
@@ -1014,33 +1010,6 @@ import { SessionResourcesDialog } from "./SessionResourcesDialog";
 
 const WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS = 10_000;
 
-const runtimeModeConfig: Record<
-  RuntimeMode,
-  { label: string; description: string; icon: LucideIcon }
-> = {
-  "approval-required": {
-    label: "Supervised",
-    description: "Ask before commands and file changes.",
-    icon: LockIcon,
-  },
-  "auto-accept-edits": {
-    label: "Auto-accept edits",
-    description: "Auto-approve edits, ask before other actions.",
-    icon: PenLineIcon,
-  },
-  auto: {
-    label: "Auto",
-    description: "Supported providers approve routine actions; others still ask.",
-    icon: SparklesIcon,
-  },
-  "full-access": {
-    label: "Full access",
-    description: "Allow commands and edits without prompts.",
-    icon: LockOpenIcon,
-  },
-};
-
-const runtimeModeOptions = Object.keys(runtimeModeConfig) as RuntimeMode[];
 const extendReplacementRangeForTrailingSpace = (
   text: string,
   rangeEnd: number,
