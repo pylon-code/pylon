@@ -106,6 +106,12 @@ All implementation PRs require independent adversarial review and green Actions 
 
 The opening trigger audit found WATCH-1's upstream #8097 still open and unmerged, and no identifying metadata to resolve DEF-16. DEF-7, WATCH-2 and WATCH-3 retain their earliest 2026-11-01 checks. Preserve those registers and #479’s mobile Antigravity catalog/marker exception. This closure advances the decision cursor without merging upstream ancestry or claiming verbatim adoption.
 
+## Active cycle through `b1e223e2b0`
+
+| Group / bounded head                                                      | Sources                                             | Outcome and remaining scope                                                                                                                                                                                       | Pylon PR / verification                                                                                                                                     |
+| ------------------------------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PR project-query performance / `b1e223e2b0d87124883b1410ab52dd6a1338e40d` | `b1e223e2b0d87124883b1410ab52dd6a1338e40d` (#11299) | Adopted across all 12 source paths. PR reads select active project shells before decoding or resolving identities, retaining Pylon project fields and multi-PR authority. No excluded behavior; cursor unchanged. | [#518](https://github.com/pylon-code/pylon/pull/518); 269 focused tests, server typecheck, scoped lint; independent review and final-head CI tracked in PR. |
+
 ## Deferred register
 
 Open decisions retain their original dates and revisit conditions. Check triggers once per integration cycle using the skill; detailed history is in the archive.
