@@ -202,9 +202,17 @@ const make = Effect.gen(function* () {
           })
           .pipe(
             Effect.as(false),
-            // The decider rejects a second link of the same PR; for the agent that is
-            // the outcome it asked for, not an error.
-            Effect.catchTags({ OrchestrationCommandInvariantError: () => Effect.succeed(true) }),
+            // A failed command is idempotent only if a fresh projection proves
+            // the requested state; a disappeared thread or another invariant is a failure.
+            Effect.catchTag("OrchestrationCommandInvariantError", (cause) =>
+              Effect.gen(function* () {
+                const current = yield* requireThread(PullRequestLinkFailedError);
+                const linked = visibleThreadPullRequests(current.pullRequests).some(
+                  (link) => threadPullRequestKeyOf(link) === threadPullRequestKeyOf(target),
+                );
+                return linked ? true : yield* cause;
+              }),
+            ),
             Effect.catchCause(dispatchFailure(PullRequestLinkFailedError)),
           );
         return { ...target, alreadyLinked };
@@ -225,7 +233,15 @@ const make = Effect.gen(function* () {
           })
           .pipe(
             Effect.as(true),
-            Effect.catchTags({ OrchestrationCommandInvariantError: () => Effect.succeed(false) }),
+            Effect.catchTag("OrchestrationCommandInvariantError", (cause) =>
+              Effect.gen(function* () {
+                const current = yield* requireThread(PullRequestUnlinkFailedError);
+                const linked = visibleThreadPullRequests(current.pullRequests).some(
+                  (link) => threadPullRequestKeyOf(link) === threadPullRequestKeyOf(target),
+                );
+                return linked ? yield* cause : false;
+              }),
+            ),
             Effect.catchCause(dispatchFailure(PullRequestUnlinkFailedError)),
           );
         return {

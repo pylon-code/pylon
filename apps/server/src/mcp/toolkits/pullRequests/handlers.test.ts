@@ -132,6 +132,7 @@ function makeLink(
 interface HarnessOptions {
   readonly thread?: OrchestrationThreadShell | null;
   readonly project?: OrchestrationProjectShell | null;
+  readonly disappearOnDispatch?: boolean;
   readonly reject?: (command: OrchestrationCommand) => OrchestrationCommandInvariantError | null;
 }
 
@@ -139,10 +140,11 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
   options: HarnessOptions = {},
 ) {
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
-  const thread = options.thread === undefined ? makeThread([]) : options.thread;
+  let thread = options.thread === undefined ? makeThread([]) : options.thread;
   const project = options.project === undefined ? makeProject() : options.project;
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {
+      if (options.disappearOnDispatch) thread = null;
       const rejection = options.reject?.(command) ?? null;
       if (rejection !== null) return yield* rejection;
       yield* Ref.update(commands, (recorded) => [...recorded, command]);
@@ -331,6 +333,56 @@ describe("pull request toolkit handlers", () => {
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.unlink", number: 5 },
       ]);
+    }),
+  );
+
+  it.effect("does not turn unrelated link and unlink invariant failures into success", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        thread: makeThread([makeLink(5)]),
+        reject: (command) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "synthetic unrelated invariant",
+          }),
+      });
+      const linkFailure = yield* harness
+        .call("link_pull_request", {
+          url: "https://github.com/t3tools/t3code/pull/9",
+        })
+        .pipe(Effect.flip);
+      expect(linkFailure).toMatchObject({ _tag: "PullRequestLinkFailedError" });
+      const unlinkFailure = yield* harness
+        .call("unlink_pull_request", {
+          url: "https://github.com/t3tools/t3code/pull/5",
+        })
+        .pipe(Effect.flip);
+      expect(unlinkFailure).toMatchObject({ _tag: "PullRequestUnlinkFailedError" });
+    }),
+  );
+
+  it.effect("does not report idempotent success when the thread disappears during dispatch", () =>
+    Effect.gen(function* () {
+      for (const [tool, expected] of [
+        ["link_pull_request", "PullRequestLinkFailedError"],
+        ["unlink_pull_request", "PullRequestUnlinkFailedError"],
+      ] as const) {
+        const harness = yield* makeHarness({
+          thread: makeThread([makeLink(5)]),
+          disappearOnDispatch: true,
+          reject: (command) =>
+            new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "Thread no longer exists",
+            }),
+        });
+        const failure = yield* harness
+          .call(tool, {
+            url: "https://github.com/t3tools/t3code/pull/5",
+          })
+          .pipe(Effect.flip);
+        expect(failure).toMatchObject({ _tag: expected });
+      }
     }),
   );
 

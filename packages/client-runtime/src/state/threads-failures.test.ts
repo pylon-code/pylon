@@ -66,6 +66,7 @@ const THREAD: OrchestrationThread = {
   proposedPlans: [],
   activities: [],
   checkpoints: [],
+  pullRequests: [],
   session: null,
 };
 const SNAPSHOT = { snapshotSequence: 7, thread: THREAD };
