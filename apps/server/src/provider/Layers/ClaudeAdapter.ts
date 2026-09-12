@@ -24,6 +24,7 @@ import {
   type ModelUsage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import {
   ApprovalRequestId,
@@ -72,6 +73,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Semaphore from "effect/Semaphore";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -112,7 +114,21 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
-import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
+import {
+  BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES,
+  type ProviderAbsoluteConversationRollback,
+} from "../Services/ProviderAdapter.ts";
+import {
+  proveClaudeHistory,
+  proveClaudeNativeHistory,
+  isVerifiedClaudeFork,
+  readClaudeConversationAnchor,
+  readClaudeExactCursor,
+  type ClaudeConversationAnchor,
+  type ClaudeExactCursor,
+  type ClaudeIdleHistory,
+} from "../claudeConversationHistory.ts";
+import { readClaudeNativeHistoryFile } from "../claudeNativeHistoryFile.ts";
 import { spawnAndCollect } from "../providerSnapshot.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
@@ -127,6 +143,8 @@ const decodeSessionMessages = Schema.decodeSync(
       Schema.Struct({
         type: Schema.Literals(["user", "assistant", "system"]),
         uuid: Schema.String,
+        session_id: Schema.optionalKey(Schema.String),
+        parent_agent_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
         parent_tool_use_id: Schema.NullOr(Schema.String),
         message: Schema.Unknown,
       }),
@@ -370,6 +388,12 @@ interface ClaudeSessionContext {
   /** Limits already announced for the running turn, keyed `window:resetsAt`. */
   announcedUsageLimits: { turnId: string; keys: Set<string> } | undefined;
   stopped: boolean;
+  readonly conversationLock: Semaphore.Semaphore;
+  historyEpoch: number;
+  exactCursor: ClaudeExactCursor | undefined;
+  readonly completedHistories: Map<string, ClaudeIdleHistory>;
+  quarantined: boolean;
+  recoveryHeld: boolean;
 }
 
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
@@ -892,6 +916,12 @@ function asCanonicalTurnId(value: TurnId): TurnId {
 
 function asRuntimeRequestId(value: ApprovalRequestId): RuntimeRequestId {
   return RuntimeRequestId.make(value);
+}
+
+function publicClaudeResumeCursor(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const { claudeExact: _privateExact, ...publicCursor } = raw as Record<string, unknown>;
+  return publicCursor;
 }
 
 function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undefined {
@@ -2058,10 +2088,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     sessionIncarnationId: ProviderSession["sessionIncarnationId"],
     event: ProviderRuntimeEvent,
   ): Effect.Effect<void> =>
-    Queue.offer(
-      runtimeEventQueue,
-      sessionIncarnationId === undefined ? event : { ...event, sessionIncarnationId },
-    ).pipe(Effect.asVoid);
+    Effect.suspend(() => {
+      const context = sessions.get(event.threadId);
+      if (context?.quarantined && context.sessionIncarnationId === sessionIncarnationId)
+        return Effect.void;
+      return Queue.offer(
+        runtimeEventQueue,
+        sessionIncarnationId === undefined ? event : { ...event, sessionIncarnationId },
+      ).pipe(Effect.asVoid);
+    });
 
   const logNativeSdkMessage = Effect.fnUntraced(function* (
     context: ClaudeSessionContext,
@@ -2120,6 +2155,230 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   });
 
+  const makeHistoryAccess = Effect.fn("makeHistoryAccess")(function* (context: {
+    readonly session: Pick<ProviderSession, "cwd" | "threadId">;
+  }) {
+    const historyWorkerPath = yield* path
+      .fromFileUrl(
+        new URL(
+          import.meta.url.endsWith(".ts")
+            ? "../../claudeHistoryWorker.ts"
+            : "./claudeHistoryWorker.mjs",
+          import.meta.url,
+        ),
+      )
+      .pipe(
+        Effect.mapError((cause) =>
+          toRequestError(context.session.threadId, "thread/rollback", cause),
+        ),
+      );
+    const runScopedHistoryCommand = (
+      method: "getSessionMessages" | "forkSession",
+      args: object,
+      historySessionId: string,
+    ) =>
+      spawnAndCollect(
+        process.execPath,
+        ChildProcess.make(
+          process.execPath,
+          [historyWorkerPath, method, historySessionId, encodeHistoryArgs(args)],
+          { env: { ...claudeEnvironment, ELECTRON_RUN_AS_NODE: "1" } },
+        ),
+      ).pipe(
+        Effect.timeout("30 seconds"),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.mapError((cause) =>
+          toRequestError(context.session.threadId, "thread/rollback", cause),
+        ),
+        Effect.flatMap((result) =>
+          result.code === 0
+            ? Effect.succeed(result.stdout)
+            : Effect.fail(
+                toRequestError(
+                  context.session.threadId,
+                  "thread/rollback",
+                  new Error(result.stderr || "Claude history command failed."),
+                ),
+              ),
+        ),
+      );
+    const readHistory = (historySessionId: string) => {
+      const readOptions = {
+        ...(context.session.cwd ? { dir: context.session.cwd } : {}),
+        includeSystemMessages: true,
+      };
+      const read = options?.getSessionMessages ?? getSessionMessages;
+      // Keep process ownership inside the calling Effect scope so interruption
+      // terminates the worker instead of leaving an independent runtime alive.
+      return options?.getSessionMessages ||
+        claudeEnvironment.CLAUDE_CONFIG_DIR === process.env.CLAUDE_CONFIG_DIR
+        ? Effect.tryPromise({
+            try: () => read(historySessionId, readOptions),
+            catch: (cause) => toRequestError(context.session.threadId, "thread/rollback", cause),
+          })
+        : runScopedHistoryCommand("getSessionMessages", readOptions, historySessionId).pipe(
+            Effect.flatMap((source) =>
+              Effect.try({
+                try: () => decodeSessionMessages(source),
+                catch: (cause) =>
+                  toRequestError(context.session.threadId, "thread/rollback", cause),
+              }),
+            ),
+          );
+    };
+    const forkHistory = (sessionId: string, upToMessageId?: string) => {
+      const args = {
+        ...(context.session.cwd ? { dir: context.session.cwd } : {}),
+        ...(upToMessageId ? { upToMessageId } : {}),
+      };
+      return options?.forkSession ||
+        claudeEnvironment.CLAUDE_CONFIG_DIR === process.env.CLAUDE_CONFIG_DIR
+        ? Effect.tryPromise({
+            try: () => (options?.forkSession ?? forkSession)(sessionId, args),
+            catch: (cause) => toRequestError(context.session.threadId, "thread/rollback", cause),
+          })
+        : runScopedHistoryCommand("forkSession", args, sessionId).pipe(
+            Effect.flatMap((source) =>
+              Effect.try({
+                try: () => decodeHistoryFork(source),
+                catch: (cause) =>
+                  toRequestError(context.session.threadId, "thread/rollback", cause),
+              }),
+            ),
+          );
+    };
+    return { readHistory, forkHistory };
+  });
+
+  const exactUnavailable = () =>
+    new ProviderAdapterRequestError({
+      provider: PROVIDER,
+      method: "conversation/exact",
+      reason: "unsupported",
+      detail:
+        "Claude cannot prove this exact conversation boundary. Its native history may be missing, changed, compacted, or unsupported.",
+    });
+  const invalidateExactHistory = (context: ClaudeSessionContext) => {
+    context.historyEpoch += 1;
+    if (context.exactCursor) {
+      const { idle: _idle, selected: _selected, ...cursor } = context.exactCursor;
+      context.exactCursor = cursor;
+    }
+  };
+  const isIdle = (context: ClaudeSessionContext) =>
+    !context.stopped &&
+    !context.turnState &&
+    context.inFlightTools.size === 0 &&
+    context.liveTaskIds.size === 0 &&
+    context.pendingApprovals.size === 0 &&
+    context.pendingUserInputs.size === 0 &&
+    Queue.sizeUnsafe(context.promptQueue) === 0;
+  const requireExactCurrent = (context: ClaudeSessionContext, epoch: number) =>
+    Effect.suspend(() =>
+      sessions.get(context.session.threadId) === context &&
+      !context.stopped &&
+      context.historyEpoch === epoch
+        ? Effect.void
+        : Effect.fail(exactUnavailable()),
+    );
+  const readExactHistory = Effect.fn("readExactHistory")(
+    function* (
+      context: { readonly session: Pick<ProviderSession, "cwd" | "threadId"> },
+      nativeSessionId: string,
+    ) {
+      const cwd = context.session.cwd;
+      if (!cwd || !isUuid(nativeSessionId)) return yield* exactUnavailable();
+      const canonicalCwd = yield* fileSystem
+        .realPath(cwd)
+        .pipe(Effect.mapError(() => exactUnavailable()));
+      const source = yield* readClaudeNativeHistoryFile({
+        sessionId: nativeSessionId,
+        canonicalCwd,
+        environment: claudeEnvironment,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.mapError(() => exactUnavailable()),
+      );
+      const native = proveClaudeNativeHistory(
+        source,
+        nativeSessionId,
+        new Set([cwd, canonicalCwd]),
+      );
+      const access = yield* makeHistoryAccess(context);
+      const projected = proveClaudeHistory(
+        yield* access.readHistory(nativeSessionId).pipe(
+          Effect.timeout("30 seconds"),
+          Effect.mapError(() => exactUnavailable()),
+        ),
+        nativeSessionId,
+      );
+      if (
+        !native ||
+        !projected ||
+        projected.messages.length === 0 ||
+        projected.messages.some((message) => {
+          const index = native.ids.get(message.uuid);
+          const row = index === undefined ? undefined : native.rows[index];
+          return (
+            !row ||
+            row.type !== message.type ||
+            stableStringify(row.message) !== stableStringify(message.message)
+          );
+        })
+      )
+        return yield* exactUnavailable();
+      return { ...native, projected: projected.messages, canonicalCwd, source };
+    },
+    (effect) =>
+      effect.pipe(
+        Effect.timeout("30 seconds"),
+        Effect.mapError(() => exactUnavailable()),
+      ),
+  );
+  const recordCompletedHistory = Effect.fn("recordCompletedHistory")(function* (
+    context: ClaudeSessionContext,
+    completedTurnId: TurnId,
+  ) {
+    if (
+      !context.sessionIncarnationId ||
+      !context.resumeSessionId ||
+      !context.lastAssistantUuid ||
+      !isIdle(context) ||
+      context.quarantined
+    )
+      return;
+    const epoch = context.historyEpoch;
+    const proof = yield* readExactHistory(context, context.resumeSessionId).pipe(Effect.option);
+    if (
+      proof._tag === "None" ||
+      sessions.get(context.session.threadId) !== context ||
+      !isIdle(context) ||
+      context.historyEpoch !== epoch ||
+      proof.value.rows.at(-1)?.uuid !== context.lastAssistantUuid
+    )
+      return;
+    const idle: ClaudeIdleHistory = {
+      nativeSessionId: context.resumeSessionId,
+      digest: proof.value.digest,
+      messageCount: proof.value.rows.length,
+      lastAssistantUuid: context.lastAssistantUuid,
+      completedTurnId,
+      turnCount: context.turnStartMessageIds.length,
+      turnStartMessageIds: [...context.turnStartMessageIds],
+    };
+    context.completedHistories.set(completedTurnId, idle);
+    context.exactCursor = {
+      version: 1,
+      providerInstanceId: boundInstanceId,
+      sessionIncarnationId: context.sessionIncarnationId,
+      threadId: context.session.threadId,
+      cwd: proof.value.canonicalCwd,
+      idle,
+      anchors: context.exactCursor?.anchors ?? [],
+    };
+  });
+
   const updateResumeCursor = Effect.fn("updateResumeCursor")(function* (
     context: ClaudeSessionContext,
   ) {
@@ -2132,6 +2391,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       ...(context.lastAssistantUuid ? { resumeSessionAt: context.lastAssistantUuid } : {}),
       turnCount: context.turnStartMessageIds.length,
       turnStartMessageIds: [...context.turnStartMessageIds],
+      ...(context.exactCursor ? { claudeExact: context.exactCursor } : {}),
     };
 
     context.session = {
@@ -2494,6 +2754,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       readonly rawSource: "claude.sdk.message" | "claude.sdk.permission";
       readonly rawMethod: string;
       readonly rawPayload: unknown;
+      readonly ownsCallback?: () => boolean;
     },
   ) {
     const turnState = context.turnState;
@@ -2512,6 +2773,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     turnState.capturedProposedPlanKeys.add(captureKey);
 
     const stamp = yield* makeEventStamp();
+    if (input.ownsCallback && !input.ownsCallback()) return;
     yield* offerRuntimeEvent(context.sessionIncarnationId, {
       type: "turn.proposed.completed",
       eventId: stamp.eventId,
@@ -2568,7 +2830,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
-  const completeTurn = Effect.fn("completeTurn")(function* (
+  const completeTurnUnlocked = Effect.fn("completeTurn")(function* (
     context: ClaudeSessionContext,
     status: ProviderRuntimeTurnStatus,
     errorMessage?: string,
@@ -2735,6 +2997,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       rawPayload: result ?? { status },
     });
 
+    const updatedAt = yield* nowIso;
+    context.turnState = undefined;
+    context.session = {
+      ...context.session,
+      status: "ready",
+      activeTurnId: undefined,
+      updatedAt,
+      ...(status === "failed" && errorMessage ? { lastError: errorMessage } : {}),
+    };
+    if (status === "completed") yield* recordCompletedHistory(context, turnState.turnId);
+    yield* updateResumeCursor(context);
+
     const stamp = yield* makeEventStamp();
     yield* offerRuntimeEvent(context.sessionIncarnationId, {
       type: "turn.completed",
@@ -2756,18 +3030,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       },
       providerRefs: nativeProviderRefs(context),
     });
-
-    const updatedAt = yield* nowIso;
-    context.turnState = undefined;
-    context.session = {
-      ...context.session,
-      status: "ready",
-      activeTurnId: undefined,
-      updatedAt,
-      ...(status === "failed" && errorMessage ? { lastError: errorMessage } : {}),
-    };
-    yield* updateResumeCursor(context);
   });
+
+  const completeTurn = (
+    context: ClaudeSessionContext,
+    status: ProviderRuntimeTurnStatus,
+    errorMessage?: string,
+    result?: SDKResultMessage,
+  ) =>
+    context.conversationLock.withPermits(1)(
+      completeTurnUnlocked(context, status, errorMessage, result),
+    );
 
   const handleStreamEvent = Effect.fn("handleStreamEvent")(function* (
     context: ClaudeSessionContext,
@@ -4091,6 +4364,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
   ) {
+    if (context.quarantined) return;
+    if (
+      message.type === "user" ||
+      message.type === "assistant" ||
+      message.type === "stream_event" ||
+      message.type === "conversation_reset" ||
+      (message.type === "system" && message.subtype === "compact_boundary")
+    ) {
+      invalidateExactHistory(context);
+    }
     yield* logNativeSdkMessage(context, message);
     yield* ensureThreadId(context, message);
 
@@ -4268,12 +4551,24 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     // Same reason as the approvals above: a request nobody can answer any more
     // must not stay open, or the thread can never be settled.
-    for (const pending of context.pendingUserInputs.values()) {
+    for (const [requestId, pending] of context.pendingUserInputs) {
       yield* pending.cancel;
+      const stamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent(context.sessionIncarnationId, {
+        type: "user-input.resolved",
+        eventId: stamp.eventId,
+        provider: PROVIDER,
+        createdAt: stamp.createdAt,
+        threadId: context.session.threadId,
+        ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+        requestId: asRuntimeRequestId(requestId),
+        payload: { answers: {} },
+        providerRefs: nativeProviderRefs(context),
+      });
     }
 
     if (context.turnState) {
-      yield* completeTurn(context, "interrupted", "Session stopped.");
+      yield* completeTurnUnlocked(context, "interrupted", "Session stopped.");
     }
 
     yield* Queue.shutdown(context.promptQueue);
@@ -4343,6 +4638,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     input: Parameters<ClaudeAdapterShape["startSession"]>[0],
     token: object,
     expectedContext?: ClaudeSessionContext,
+    exactStart?: {
+      readonly cursor: ClaudeExactCursor;
+      readonly guard: Effect.Effect<void, ProviderAdapterError>;
+      readonly recoveryHeld?: boolean;
+    },
   ) {
     const modelCatalog = yield* modelCatalogEffect;
     yield* requireLifecycleToken(input.threadId, token);
@@ -4360,6 +4660,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
+    if (exactStart) yield* exactStart.guard;
     const existingContext = sessions.get(input.threadId);
     if (existingContext) {
       yield* Effect.logWarning("claude.session.replacing", {
@@ -4412,6 +4713,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const liveTaskIds = new Set<string>();
 
     const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
+    const callbackCancelled = () => ({
+      behavior: "deny" as const,
+      message: "User cancelled tool execution.",
+    });
+    const callbackUnavailable = () => ({
+      behavior: "deny" as const,
+      message: "Claude session is stopped, replaced, or reserved for exact conversation recovery.",
+    });
+    // Pin the native selection rather than the streaming frame epoch: ordinary
+    // parallel tool frames may arrive while a user is answering an approval.
+    const callbackOwnership = (context: ClaudeSessionContext) => {
+      const nativeSessionId = context.resumeSessionId;
+      const selected = context.exactCursor?.selected;
+      return () =>
+        sessions.get(context.session.threadId) === context &&
+        !context.stopped &&
+        !context.quarantined &&
+        context.resumeSessionId === nativeSessionId &&
+        context.exactCursor?.selected === selected;
+    };
 
     /**
      * Handle AskUserQuestion tool calls by emitting a `user-input.requested`
@@ -4425,6 +4746,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         readonly toolUseID?: string;
       },
     ) {
+      const ownsCallback = callbackOwnership(context);
+      if (!ownsCallback()) return callbackUnavailable();
       const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
 
       // Parse questions from the SDK's AskUserQuestion input.
@@ -4466,8 +4789,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         cancel: settleAsAborted,
       };
 
-      // Emit user-input.requested so the UI can present the questions.
+      // Publish pending ownership before the event can yield to exact capture.
       const requestedStamp = yield* makeEventStamp();
+      if (!ownsCallback()) return callbackUnavailable();
+      pendingUserInputs.set(requestId, pendingInput);
       yield* offerRuntimeEvent(input.sessionIncarnationId, {
         type: "user-input.requested",
         eventId: requestedStamp.eventId,
@@ -4494,7 +4819,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
       });
 
-      pendingUserInputs.set(requestId, pendingInput);
+      if (!ownsCallback()) {
+        pendingUserInputs.delete(requestId);
+        return aborted ? callbackCancelled() : callbackUnavailable();
+      }
 
       // Handle abort (e.g. turn interrupted while waiting for user input).
       const onAbort = () => {
@@ -4516,6 +4844,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       // Emit user-input.resolved so the UI knows the interaction completed.
       const resolvedStamp = yield* makeEventStamp();
+      if (!ownsCallback()) return aborted ? callbackCancelled() : callbackUnavailable();
       yield* offerRuntimeEvent(input.sessionIncarnationId, {
         type: "user-input.resolved",
         eventId: resolvedStamp.eventId,
@@ -4539,6 +4868,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
       });
 
+      if (!ownsCallback()) return aborted ? callbackCancelled() : callbackUnavailable();
       if (aborted) {
         return {
           behavior: "deny",
@@ -4566,9 +4896,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       const context = yield* Ref.get(contextRef);
-      if (!context) {
+      if (!context || !callbackOwnership(context)()) {
         return { behavior: "cancelled" as const };
       }
+      const ownsCallback = callbackOwnership(context);
 
       // The question copy lives in @t3tools/shared/claudeCompaction because
       // the web client recognizes this exact text (and the "never" answer)
@@ -4608,7 +4939,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
       );
 
-      if (result.behavior !== "allow") {
+      if (result.behavior !== "allow" || !ownsCallback()) {
         return { behavior: "cancelled" as const };
       }
 
@@ -4633,12 +4964,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       callbackOptions: Parameters<CanUseTool>[2],
     ) {
       const context = yield* Ref.get(contextRef);
-      if (!context) {
-        return {
-          behavior: "deny",
-          message: "Claude session context is unavailable.",
-        } satisfies PermissionResult;
-      }
+      if (!context) return callbackUnavailable();
+      const ownsCallback = callbackOwnership(context);
+      if (!ownsCallback()) return callbackUnavailable();
 
       // Handle AskUserQuestion: surface clarifying questions to the
       // user via the user-input runtime event channel, regardless of
@@ -4655,6 +4983,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             toolUseId: callbackOptions.toolUseID,
             rawSource: "claude.sdk.permission",
             rawMethod: "canUseTool/ExitPlanMode",
+            ownsCallback,
             rawPayload: {
               toolName,
               input: toolInput,
@@ -4689,6 +5018,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
 
       const requestedStamp = yield* makeEventStamp();
+      if (!ownsCallback()) return callbackUnavailable();
+      pendingApprovals.set(requestId, pendingApproval);
       yield* offerRuntimeEvent(input.sessionIncarnationId, {
         type: "request.opened",
         eventId: requestedStamp.eventId,
@@ -4719,7 +5050,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
       });
 
-      pendingApprovals.set(requestId, pendingApproval);
+      if (!ownsCallback()) {
+        pendingApprovals.delete(requestId);
+        return callbackUnavailable();
+      }
 
       const onAbort = () => {
         if (!pendingApprovals.has(requestId)) {
@@ -4742,6 +5076,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       pendingApprovals.delete(requestId);
 
       const resolvedStamp = yield* makeEventStamp();
+      if (!ownsCallback()) return callbackUnavailable();
       yield* offerRuntimeEvent(input.sessionIncarnationId, {
         type: "request.resolved",
         eventId: resolvedStamp.eventId,
@@ -4766,6 +5101,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
       });
 
+      if (!ownsCallback()) return callbackUnavailable();
       if (decision === "accept" || decision === "acceptForSession" || decision === "acceptAlways") {
         return {
           behavior: "allow",
@@ -4983,8 +5319,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       updatedAt: startedAt,
     };
 
+    const conversationLock = yield* Semaphore.make(1);
     const context: ClaudeSessionContext = {
       session,
+      conversationLock,
+      historyEpoch: 0,
+      exactCursor: exactStart?.cursor,
+      completedHistories: new Map(),
+      quarantined: exactStart !== undefined,
+      recoveryHeld: exactStart?.recoveryHeld ?? false,
       sessionIncarnationId: input.sessionIncarnationId,
       startInput: input,
       turnStartMessageIds: resumeState?.turnStartMessageIds
@@ -5047,7 +5390,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         provider: PROVIDER,
         createdAt: sessionStartedStamp.createdAt,
         threadId,
-        payload: input.resumeCursor !== undefined ? { resume: input.resumeCursor } : {},
+        payload:
+          input.resumeCursor !== undefined
+            ? { resume: publicClaudeResumeCursor(input.resumeCursor) }
+            : {},
         providerRefs: {},
       });
 
@@ -5133,8 +5479,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       );
     });
 
-  const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
+  const sendTurnUnlocked: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
+    if (context.quarantined) return yield* exactUnavailable();
+    invalidateExactHistory(context);
+    yield* updateResumeCursor(context);
     const modelCatalog = yield* modelCatalogEffect;
     const selectedModel =
       input.modelSelection !== undefined && input.modelSelection.instanceId === boundInstanceId
@@ -5155,7 +5504,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const steeringTurnState =
       context.turnState && context.turnState.synthetic !== true ? context.turnState : null;
     if (context.turnState && steeringTurnState === null) {
-      yield* completeTurn(context, "completed");
+      yield* completeTurnUnlocked(context, "completed");
     }
 
     if (modelSelection?.model) {
@@ -5290,6 +5639,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   });
 
+  const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
+    requireSession(input.threadId).pipe(
+      Effect.flatMap((context) => context.conversationLock.withPermits(1)(sendTurnUnlocked(input))),
+    );
+
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (threadId, _turnId) {
       sessionLifecycleTokens.delete(threadId);
@@ -5355,67 +5709,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           detail: "Claude session id is unavailable.",
         });
       }
-      const historyWorkerPath = yield* path
-        .fromFileUrl(
-          new URL(
-            import.meta.url.endsWith(".ts")
-              ? "../../claudeHistoryWorker.ts"
-              : "./claudeHistoryWorker.mjs",
-            import.meta.url,
-          ),
-        )
-        .pipe(Effect.mapError((cause) => toRequestError(threadId, "thread/rollback", cause)));
-      const runScopedHistoryCommand = (
-        method: "getSessionMessages" | "forkSession",
-        args: object,
-        historySessionId = sessionId,
-      ) =>
-        spawnAndCollect(
-          process.execPath,
-          ChildProcess.make(
-            process.execPath,
-            [historyWorkerPath, method, historySessionId, encodeHistoryArgs(args)],
-            { env: { ...claudeEnvironment, ELECTRON_RUN_AS_NODE: "1" } },
-          ),
-        ).pipe(
-          Effect.timeout("30 seconds"),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.mapError((cause) => toRequestError(threadId, "thread/rollback", cause)),
-          Effect.flatMap((result) =>
-            result.code === 0
-              ? Effect.succeed(result.stdout)
-              : Effect.fail(
-                  toRequestError(
-                    threadId,
-                    "thread/rollback",
-                    new Error(result.stderr || "Claude history command failed."),
-                  ),
-                ),
-          ),
-        );
-      const readHistory = (historySessionId: string) => {
-        const readOptions = {
-          ...(context.session.cwd ? { dir: context.session.cwd } : {}),
-          includeSystemMessages: true,
-        };
-        const read = options?.getSessionMessages ?? getSessionMessages;
-        // Keep process ownership inside the calling Effect scope so interruption
-        // terminates the worker instead of leaving an independent runtime alive.
-        return options?.getSessionMessages ||
-          claudeEnvironment.CLAUDE_CONFIG_DIR === process.env.CLAUDE_CONFIG_DIR
-          ? Effect.tryPromise({
-              try: () => read(historySessionId, readOptions),
-              catch: (cause) => toRequestError(threadId, "thread/rollback", cause),
-            })
-          : runScopedHistoryCommand("getSessionMessages", readOptions, historySessionId).pipe(
-              Effect.flatMap((source) =>
-                Effect.try({
-                  try: () => decodeSessionMessages(source),
-                  catch: (cause) => toRequestError(threadId, "thread/rollback", cause),
-                }),
-              ),
-            );
-      };
+      const { readHistory, forkHistory } = yield* makeHistoryAccess(context);
       const messages = yield* readHistory(sessionId);
       yield* requireCurrent;
       // Tool results are user-role messages too. Only human prompts begin a turn.
@@ -5473,26 +5767,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
       const rollbackAt = retainedCount > 0 ? messages[firstRemoved - 1]?.uuid : undefined;
       const retainedTurns = context.turns.slice(0, Math.max(0, context.turns.length - numTurns));
-      const forkOptions = {
-        ...(context.session.cwd ? { dir: context.session.cwd } : {}),
-        ...(rollbackAt ? { upToMessageId: rollbackAt } : {}),
-      };
-      const fork = rollbackAt
-        ? yield* options?.forkSession ||
-          claudeEnvironment.CLAUDE_CONFIG_DIR === process.env.CLAUDE_CONFIG_DIR
-            ? Effect.tryPromise({
-                try: () => (options?.forkSession ?? forkSession)(sessionId, forkOptions),
-                catch: (cause) => toRequestError(threadId, "thread/rollback", cause),
-              })
-            : runScopedHistoryCommand("forkSession", forkOptions).pipe(
-                Effect.flatMap((source) =>
-                  Effect.try({
-                    try: () => decodeHistoryFork(source),
-                    catch: (cause) => toRequestError(threadId, "thread/rollback", cause),
-                  }),
-                ),
-              )
-        : undefined;
+      const fork = rollbackAt ? yield* forkHistory(sessionId, rollbackAt) : undefined;
       yield* requireCurrent;
       const retainedBoundaries = boundaries.slice(0, retainedCount);
       if (fork) {
@@ -5526,6 +5801,376 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return yield* snapshotThread(restarted);
     },
   );
+
+  const requireOwnedAnchor = (context: ClaudeSessionContext, raw: unknown) => {
+    const anchor = readClaudeConversationAnchor(raw);
+    return anchor &&
+      anchor.providerInstanceId === boundInstanceId &&
+      anchor.sessionIncarnationId === context.sessionIncarnationId &&
+      anchor.threadId === context.session.threadId &&
+      anchor.cwd === context.exactCursor?.cwd
+      ? anchor
+      : undefined;
+  };
+  const withExactContext = <A>(
+    threadId: ThreadId,
+    operation: (context: ClaudeSessionContext) => Effect.Effect<A, ProviderAdapterError>,
+  ) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((context) =>
+        context.conversationLock.withPermits(1)(
+          Effect.suspend(() =>
+            isIdle(context) && context.exactCursor?.idle && context.sessionIncarnationId
+              ? operation(context)
+              : Effect.fail(exactUnavailable()),
+          ),
+        ),
+      ),
+    );
+  const inspectExact = Effect.fn("inspectClaudeExact")(function* (context: ClaudeSessionContext) {
+    const idle = context.exactCursor?.idle;
+    if (!idle || !isIdle(context)) return yield* exactUnavailable();
+    const epoch = context.historyEpoch;
+    const proof = yield* readExactHistory(context, idle.nativeSessionId);
+    yield* requireExactCurrent(context, epoch);
+    if (
+      proof.canonicalCwd !== context.exactCursor?.cwd ||
+      proof.digest !== idle.digest ||
+      proof.rows.length !== idle.messageCount ||
+      proof.rows.at(-1)?.uuid !== idle.lastAssistantUuid
+    )
+      return yield* exactUnavailable();
+    return proof;
+  });
+  const verifySnapshot = Effect.fn("verifyClaudeSnapshot")(function* (
+    context: ClaudeSessionContext,
+    anchor: ClaudeConversationAnchor,
+  ) {
+    const proof = yield* readExactHistory(context, anchor.snapshotSessionId);
+    if (
+      proof.canonicalCwd !== anchor.cwd ||
+      proof.digest !== anchor.digest ||
+      proof.rows.length !== anchor.messageCount
+    )
+      return yield* exactUnavailable();
+    return proof;
+  });
+  const forkExact = Effect.fn("forkClaudeExact")(function* (
+    context: ClaudeSessionContext,
+    sourceSessionId: string,
+    source: { readonly rows: ReadonlyArray<Schema.JsonObject>; readonly digest: string },
+    upToMessageId?: string,
+  ) {
+    const { forkHistory } = yield* makeHistoryAccess(context);
+    const fork = yield* forkHistory(sourceSessionId, upToMessageId).pipe(
+      Effect.timeout("30 seconds"),
+      Effect.mapError(() => exactUnavailable()),
+    );
+    if (!isUuid(fork.sessionId) || fork.sessionId === sourceSessionId)
+      return yield* exactUnavailable();
+    const proof = yield* readExactHistory(context, fork.sessionId);
+    const sourceIds = new Set(source.rows.map((row) => row.uuid));
+    if (
+      proof.digest !== source.digest ||
+      !isVerifiedClaudeFork(sourceSessionId, source.rows, proof.rows) ||
+      proof.rows.some((row) => row.uuid !== undefined && sourceIds.has(row.uuid))
+    )
+      return yield* exactUnavailable();
+    return { ...proof, sessionId: fork.sessionId };
+  });
+  const absoluteConversationRollback: ProviderAbsoluteConversationRollback<ProviderAdapterError> = {
+    isAvailable: (threadId) =>
+      Effect.sync(() => {
+        const context = sessions.get(threadId);
+        return (
+          context !== undefined &&
+          isIdle(context) &&
+          context.sessionIncarnationId !== undefined &&
+          context.exactCursor?.idle !== undefined
+        );
+      }),
+    captureAnchor: ({ threadId, binding }) =>
+      withExactContext(threadId, (context) =>
+        Effect.gen(function* () {
+          if (binding.turnId === null) return yield* exactUnavailable();
+          const epoch = context.historyEpoch;
+          const cursor = context.exactCursor!;
+          const idle = cursor.idle!;
+          const current = yield* inspectExact(context);
+          const boundary =
+            context.completedHistories.get(binding.turnId) ??
+            (idle.completedTurnId === binding.turnId ? idle : undefined);
+          if (
+            !boundary ||
+            boundary.nativeSessionId !== idle.nativeSessionId ||
+            !boundary.lastAssistantUuid
+          )
+            return yield* exactUnavailable();
+          const prefix = proveClaudeNativeHistory(
+            current.source,
+            idle.nativeSessionId,
+            new Set([context.session.cwd!, cursor.cwd]),
+            boundary.lastAssistantUuid,
+          );
+          if (
+            !prefix ||
+            prefix.digest !== boundary.digest ||
+            prefix.rows.length !== boundary.messageCount
+          )
+            return yield* exactUnavailable();
+          const previous = cursor.anchors.find(
+            (anchor) =>
+              anchor.completedTurnId === binding.turnId &&
+              anchor.checkpointRef === binding.checkpointRef &&
+              anchor.checkpointOid === binding.checkpointOid,
+          );
+          if (
+            binding.kind === "source" &&
+            (!previous ||
+              idle.completedTurnId !== binding.turnId ||
+              current.digest !== boundary.digest)
+          )
+            return yield* exactUnavailable();
+          const checkpointTurnCount =
+            binding.kind === "checkpoint"
+              ? binding.checkpointTurnCount
+              : previous!.checkpointTurnCount;
+          const snapshot = yield* forkExact(
+            context,
+            idle.nativeSessionId,
+            prefix,
+            boundary.lastAssistantUuid,
+          );
+          yield* requireExactCurrent(context, epoch);
+          const after = yield* inspectExact(context);
+          if (after.digest !== current.digest) return yield* exactUnavailable();
+          const anchor: ClaudeConversationAnchor = {
+            version: 1,
+            providerInstanceId: boundInstanceId,
+            sessionIncarnationId: context.sessionIncarnationId!,
+            threadId,
+            cwd: cursor.cwd,
+            snapshotSessionId: snapshot.sessionId,
+            digest: snapshot.digest,
+            messageCount: snapshot.rows.length,
+            completedTurnId: binding.turnId,
+            checkpointTurnCount,
+            checkpointRef: binding.checkpointRef,
+            checkpointOid: binding.checkpointOid,
+            sourceRevision: binding.sourceRevision,
+            turnStartMessageIndices: boundary.turnStartMessageIds.map((id) =>
+              id === null ? null : (prefix.ids.get(id) ?? null),
+            ),
+          };
+          yield* requireExactCurrent(context, epoch);
+          if (!isIdle(context)) return yield* exactUnavailable();
+          if (binding.kind === "source") context.quarantined = true;
+          context.exactCursor = {
+            ...cursor,
+            ...(current.digest === anchor.digest
+              ? { selected: anchor, idle: { ...idle, turnCount: checkpointTurnCount } }
+              : {}),
+            anchors:
+              binding.kind === "checkpoint"
+                ? [
+                    ...cursor.anchors.filter((entry) => entry.completedTurnId !== binding.turnId),
+                    anchor,
+                  ]
+                : cursor.anchors,
+          };
+          yield* updateResumeCursor(context);
+          return { anchor, digest: anchor.digest };
+        }),
+      ),
+    inspectAnchor: (threadId) =>
+      withExactContext(threadId, (context) =>
+        Effect.gen(function* () {
+          const proof = yield* inspectExact(context);
+          const anchor = requireOwnedAnchor(context, context.exactCursor?.selected);
+          if (!anchor || anchor.digest !== proof.digest) return yield* exactUnavailable();
+          return { anchor, digest: anchor.digest };
+        }),
+      ),
+    applyAnchor: (threadId, raw) =>
+      withExactContext(threadId, (context) =>
+        Effect.gen(function* () {
+          const anchor = requireOwnedAnchor(context, raw);
+          if (!anchor) return yield* exactUnavailable();
+          const epoch = context.historyEpoch;
+          const current = yield* inspectExact(context);
+          if (current.digest === anchor.digest) {
+            const turnStartMessageIds = anchor.turnStartMessageIndices.map((index) =>
+              index === null || typeof current.rows[index]?.uuid !== "string"
+                ? null
+                : (current.rows[index]!.uuid as string),
+            );
+            context.turnStartMessageIds.splice(
+              0,
+              context.turnStartMessageIds.length,
+              ...turnStartMessageIds,
+            );
+            context.exactCursor = {
+              ...context.exactCursor!,
+              selected: anchor,
+              idle: {
+                ...context.exactCursor!.idle!,
+                completedTurnId: anchor.completedTurnId,
+                turnCount: anchor.checkpointTurnCount,
+                turnStartMessageIds,
+              },
+            };
+            context.quarantined = true;
+            yield* updateResumeCursor(context);
+            return;
+          }
+          const snapshot = yield* verifySnapshot(context, anchor);
+          const fork = yield* forkExact(context, anchor.snapshotSessionId, snapshot);
+          yield* requireExactCurrent(context, epoch);
+          yield* inspectExact(context);
+          const token = sessionLifecycleTokens.get(threadId);
+          if (!token) return yield* exactUnavailable();
+          const lastAssistantUuid = fork.rows.at(-1)?.uuid;
+          if (typeof lastAssistantUuid !== "string") return yield* exactUnavailable();
+          const turnStartMessageIds = anchor.turnStartMessageIndices.map((index) =>
+            index === null
+              ? null
+              : typeof fork.rows[index]?.uuid === "string"
+                ? (fork.rows[index]!.uuid as string)
+                : null,
+          );
+          const idle: ClaudeIdleHistory = {
+            nativeSessionId: fork.sessionId,
+            digest: anchor.digest,
+            messageCount: fork.rows.length,
+            lastAssistantUuid,
+            completedTurnId: anchor.completedTurnId,
+            turnCount: anchor.checkpointTurnCount,
+            turnStartMessageIds,
+          };
+          const cursor: ClaudeExactCursor = { ...context.exactCursor!, idle, selected: anchor };
+          const restarted = yield* startSessionInternal(
+            {
+              ...context.startInput,
+              runtimeMode: context.session.runtimeMode,
+              sessionIncarnationId: context.sessionIncarnationId,
+              resumeCursor: {
+                resume: fork.sessionId,
+                resumeSessionAt: lastAssistantUuid,
+                turnCount: anchor.checkpointTurnCount,
+                turnStartMessageIds,
+              },
+            },
+            token,
+            context,
+            { cursor, guard: requireExactCurrent(context, epoch) },
+          );
+          yield* inspectExact(restarted);
+          yield* updateResumeCursor(restarted);
+        }),
+      ),
+    releaseAnchor: (threadId, raw) =>
+      withExactContext(threadId, (context) =>
+        Effect.gen(function* () {
+          const anchor = requireOwnedAnchor(context, raw);
+          const proof = yield* inspectExact(context);
+          if (
+            !anchor ||
+            context.exactCursor?.selected?.digest !== anchor.digest ||
+            proof.digest !== anchor.digest
+          )
+            return yield* exactUnavailable();
+          context.quarantined = false;
+          context.recoveryHeld = false;
+          yield* updateResumeCursor(context);
+        }),
+      ),
+    prepareRecovery: ({ threadId, sourceAnchor, desiredAnchor, expectedAnchor }) =>
+      withExactContext(threadId, (context) =>
+        Effect.gen(function* () {
+          if (
+            !requireOwnedAnchor(context, sourceAnchor) ||
+            !requireOwnedAnchor(context, desiredAnchor)
+          )
+            return yield* exactUnavailable();
+          const expected = requireOwnedAnchor(context, expectedAnchor);
+          const proof = yield* inspectExact(context);
+          if (!expected || proof.digest !== expected.digest) return yield* exactUnavailable();
+          context.exactCursor = { ...context.exactCursor!, selected: expected };
+          context.quarantined = true;
+          context.recoveryHeld = false;
+          yield* updateResumeCursor(context);
+        }),
+      ),
+  };
+  const recoverSession: NonNullable<ClaudeAdapterShape["recoverSession"]> = (input) =>
+    Effect.gen(function* () {
+      if (input.providerInstanceId !== boundInstanceId || sessions.has(input.threadId)) return null;
+      const raw = input.resumeCursor as { claudeExact?: unknown } | null;
+      const cursor = readClaudeExactCursor(raw?.claudeExact);
+      const resume = readClaudeResumeState(input.resumeCursor);
+      if (
+        !cursor?.idle ||
+        cursor.providerInstanceId !== boundInstanceId ||
+        cursor.sessionIncarnationId !== input.sessionIncarnationId ||
+        cursor.threadId !== input.threadId ||
+        resume?.resume !== cursor.idle.nativeSessionId
+      )
+        return null;
+      const token = {};
+      sessionLifecycleTokens.set(input.threadId, token);
+      const proof = yield* readExactHistory({ session: input }, cursor.idle.nativeSessionId).pipe(
+        Effect.option,
+      );
+      if (
+        proof._tag === "None" ||
+        proof.value.canonicalCwd !== cursor.cwd ||
+        proof.value.digest !== cursor.idle.digest ||
+        proof.value.rows.length !== cursor.idle.messageCount
+      )
+        return null;
+      yield* requireLifecycleToken(input.threadId, token);
+      const context = yield* startSessionInternal(
+        {
+          ...input,
+          provider: PROVIDER,
+          resumeCursor: {
+            resume: cursor.idle.nativeSessionId,
+            ...(cursor.idle.lastAssistantUuid
+              ? { resumeSessionAt: cursor.idle.lastAssistantUuid }
+              : {}),
+            turnCount: cursor.idle.turnCount,
+            turnStartMessageIds: cursor.idle.turnStartMessageIds,
+          },
+        },
+        token,
+        undefined,
+        {
+          cursor,
+          guard: requireLifecycleToken(input.threadId, token),
+          recoveryHeld: true,
+        },
+      );
+      return yield* inspectExact(context).pipe(
+        Effect.andThen(updateResumeCursor(context)),
+        Effect.map(() => ({ ...context.session })),
+        Effect.onError(() =>
+          stopSessionInternal(context, { emitExitEvent: false }).pipe(
+            Effect.ignoreCause({ log: true }),
+          ),
+        ),
+      );
+    });
+  const activateRecoveredSession: NonNullable<ClaudeAdapterShape["activateRecoveredSession"]> = (
+    threadId,
+  ) =>
+    withExactContext(threadId, (context) =>
+      Effect.gen(function* () {
+        if (!context.recoveryHeld) return;
+        yield* inspectExact(context);
+        context.recoveryHeld = false;
+        context.quarantined = false;
+      }),
+    );
 
   const respondToRequest: ClaudeAdapterShape["respondToRequest"] = Effect.fn("respondToRequest")(
     function* (threadId, requestId, decision) {
@@ -5621,6 +6266,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     interruptTurn,
     readThread,
     rollbackThread,
+    absoluteConversationRollback,
+    recoverSession,
+    activateRecoveredSession,
     respondToRequest,
     respondToUserInput,
     stopSession,
