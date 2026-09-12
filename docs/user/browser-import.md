@@ -16,10 +16,10 @@ On Linux, import finds Helium and both native and Snap installations of Firefox.
 browsers protect their cookies with your desktop keyring; Pylon reports a keyring failure when no
 cookies can be imported.
 
-On macOS, Safari protects its cookies with Full Disk Access. The import wizard's
-**Open System Settings** button opens that permission pane, and macOS may ask you to quit and
-reopen Pylon before the grant applies. Choose the Safari profile to import, including named
-profiles. You can revoke Full Disk Access afterward.
+On macOS, Safari imports need Full Disk Access. Choose **Allow**, drag Pylon into the
+System Settings permission list, and turn access on. **Continue** becomes available when access
+is detected. macOS may require you to quit and reopen Pylon before the grant applies; reopen
+the import wizard afterward. You can revoke Full Disk Access once the import is done.
 
 On Windows, import supports Firefox and Helium profiles that use standard profile encryption.
 Other Chromium-based browsers use app-bound encryption and cannot be imported.
