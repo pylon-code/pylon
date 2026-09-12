@@ -22,7 +22,7 @@ import {
 } from "../persistence/Services/RollbackSagas.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { make as makeRollbackAdmission } from "./RollbackAdmission.ts";
-import { RollbackWorkspace } from "./RollbackWorkspace.ts";
+import { RollbackWorkspace, RollbackWorkspaceError } from "./RollbackWorkspace.ts";
 
 const threadId = ThreadId.make("thread-admission");
 const projectId = ProjectId.make("project-admission");
@@ -188,11 +188,16 @@ const makeHarness = (options: HarnessOptions = {}) => {
 
   const workspace = {
     resolveIdentity: (cwd: string) =>
-      Effect.succeed({
-        cwd,
-        workspaceKey: cwd === "/workspace/exact" ? "exact-key" : "other-key",
-        gitCommonDir: "/git/common",
-      }),
+      cwd === "/workspace/unavailable"
+        ? Effect.fail(new RollbackWorkspaceError({ code: "identity" }))
+        : Effect.succeed({
+            cwd,
+            workspaceKey:
+              cwd === "/workspace/exact" || cwd === "/workspace/exact-alias"
+                ? "exact-key"
+                : "other-key",
+            gitCommonDir: "/git/common",
+          }),
     resolveCheckpoint: (input: { readonly checkpointRef: CheckpointRef }) =>
       Effect.succeed(
         input.checkpointRef === turnTwoRef
@@ -297,6 +302,80 @@ for (const keepFiles of [false, true]) {
         }
         // Once the reactor removes compaction ownership, idle admission works again.
         assert.isTrue(Option.isSome(yield* prepare({}, 1, 2, keepFiles)));
+      }),
+  );
+  it.effect(
+    `proves queued sibling separation without retaining deleted owners (keepFiles=${keepFiles})`,
+    () =>
+      Effect.gen(function* () {
+        for (const scenario of [
+          { state: "live", worktreePath: null, admitted: false },
+          { state: "live", worktreePath: "/workspace/exact-alias", admitted: false },
+          { state: "archived", worktreePath: null, admitted: false },
+          { state: "deleted", worktreePath: "/workspace/unavailable", admitted: true },
+          { state: "missing-project", worktreePath: null, admitted: false },
+          { state: "deleted-project", worktreePath: null, admitted: false },
+          { state: "live", worktreePath: "/workspace/unavailable", admitted: false },
+          { state: "live", worktreePath: "/workspace/other-worktree", admitted: true },
+        ] as const) {
+          const harness = makeHarness();
+          const baseThread = harness.readModel.threads[0]!;
+          const baseProject = harness.readModel.projects[0]!;
+          const siblingProjectId =
+            scenario.state === "missing-project" || scenario.state === "deleted-project"
+              ? ProjectId.make("sibling-project")
+              : projectId;
+          const result = yield* (yield* harness.admission)
+            .prepare({
+              command: {
+                type: keepFiles ? "thread.conversation.revert" : "thread.checkpoint.revert",
+                commandId: CommandId.make("sibling-admission"),
+                threadId,
+                turnCount: 1,
+                expectedSourceRevision: 2,
+                createdAt: now,
+              },
+              requestEventId: "sibling-admission-event",
+              readModel: {
+                ...harness.readModel,
+                projects: [
+                  ...harness.readModel.projects,
+                  ...(scenario.state === "deleted-project"
+                    ? [{ ...baseProject, id: siblingProjectId, deletedAt: now }]
+                    : []),
+                ],
+                threads: [
+                  baseThread,
+                  {
+                    ...baseThread,
+                    id: ThreadId.make("compacting-sibling"),
+                    projectId: siblingProjectId,
+                    worktreePath: scenario.worktreePath,
+                    deletedAt: scenario.state === "deleted" ? now : null,
+                    archivedAt: scenario.state === "archived" ? now : null,
+                    session: {
+                      ...baseThread.session!,
+                      threadId: ThreadId.make("compacting-sibling"),
+                      compactionQueue: {
+                        requestId: CommandId.make("compact"),
+                        phase: "draining",
+                        queued: [],
+                      },
+                    },
+                  },
+                ],
+              },
+            })
+            .pipe(Effect.result);
+          assert.equal(
+            result._tag,
+            scenario.admitted ? "Success" : "Failure",
+            `${scenario.state}: ${scenario.worktreePath}`,
+          );
+          if (result._tag === "Failure")
+            assert.include(result.failure.detail, "pending compaction");
+          else assert.isTrue(Option.isSome(result.success));
+        }
       }),
   );
 }

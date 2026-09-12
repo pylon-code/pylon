@@ -39,6 +39,7 @@ const providerInstanceId = ProviderInstanceId.make("fake-absolute");
 const sessionIncarnationId = RuntimeSessionId.make("session-rollback-compaction");
 const modelSelection = { instanceId: providerInstanceId, model: "fake-model" };
 const workspaceCwd = "/workspace/rollback-compaction";
+const otherWorktreeCwd = "/workspace/other-worktree";
 const compactionRequestId = CommandId.make("compact");
 
 const admission = RollbackAdmission.layer.pipe(
@@ -75,10 +76,11 @@ const admission = RollbackAdmission.layer.pipe(
   ),
   Layer.provide(
     Layer.succeed(RollbackWorkspace, {
-      resolveIdentity: () =>
+      resolveIdentity: (cwd: string) =>
         Effect.succeed({
-          cwd: workspaceCwd,
-          workspaceKey: "workspace-rollback-compaction",
+          cwd,
+          workspaceKey:
+            cwd === otherWorktreeCwd ? "other-worktree" : "workspace-rollback-compaction",
           gitCommonDir: "/git/common",
         }),
       resolveCheckpoint: ({ checkpointRef }: { readonly checkpointRef: string }) =>
@@ -112,152 +114,183 @@ const app = Layer.mergeAll(engine, OrchestrationProjectionSnapshotQueryLive).pip
 );
 
 for (const commandType of ["thread.checkpoint.revert", "thread.conversation.revert"] as const) {
-  it.layer(app)(`compaction and ${commandType}`, (it) => {
-    it.effect("rejects rewind before leasing and leaves the draining FIFO able to resume", () =>
-      Effect.gen(function* () {
-        const orchestration = yield* OrchestrationEngineService;
-        const snapshots = yield* ProjectionSnapshotQuery;
-        const repository = yield* RollbackSagaRepository;
-        yield* orchestration.dispatch({
-          type: "project.create",
-          commandId: CommandId.make("create-project"),
-          projectId,
-          title: "Compaction rollback",
-          workspaceRoot: workspaceCwd,
-          defaultModelSelection: modelSelection,
-          createdAt: now,
-        });
-        yield* orchestration.dispatch({
-          type: "thread.create",
-          commandId: CommandId.make("create-thread"),
-          threadId,
-          projectId,
-          title: "Compaction rollback",
-          modelSelection,
-          interactionMode: "default",
-          runtimeMode: "full-access",
-          branch: null,
-          worktreePath: null,
-          createdAt: now,
-        });
-        for (const revision of [1, 2]) {
+  for (const owner of ["target", "sibling", "other-worktree"] as const) {
+    const compactionThreadId = owner === "target" ? threadId : ThreadId.make("compacting-sibling");
+    const threadIds = [...new Set([threadId, compactionThreadId])];
+    it.layer(app)(`${owner} compaction and ${commandType}`, (it) => {
+      it.effect("preserves the FIFO and leases only a workspace independent of compaction", () =>
+        Effect.gen(function* () {
+          const orchestration = yield* OrchestrationEngineService;
+          const snapshots = yield* ProjectionSnapshotQuery;
+          const repository = yield* RollbackSagaRepository;
           yield* orchestration.dispatch({
-            type: "thread.turn.diff.complete",
-            commandId: CommandId.make(`checkpoint-${revision}`),
-            threadId,
-            turnId: TurnId.make(`turn-${revision}`),
-            completedAt: now,
-            checkpointRef: checkpointRefForThreadTurn(threadId, revision),
-            checkpointTurnCount: revision,
-            status: "ready",
-            files: [],
+            type: "project.create",
+            commandId: CommandId.make("create-project"),
+            projectId,
+            title: "Compaction rollback",
+            workspaceRoot: workspaceCwd,
+            defaultModelSelection: modelSelection,
             createdAt: now,
           });
-        }
-        yield* repository.putCheckpointAnchor({
-          threadId,
-          checkpointTurnCount: 1,
-          turnId: TurnId.make("turn-1"),
-          sourceRevision: 1,
-          providerInstanceId,
-          sessionIncarnationId,
-          checkpointRef: checkpointRefForThreadTurn(threadId, 1),
-          checkpointOid: "1".repeat(40),
-          anchor: { leafId: "target" },
-          anchorDigest: "target-anchor",
-          capturedAt: now,
-        });
-        yield* orchestration.dispatch({
-          type: "thread.session.set",
-          commandId: CommandId.make("ready-session"),
-          threadId,
-          session: {
+          for (const id of threadIds)
+            yield* orchestration.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make(`create-${id}`),
+              threadId: id,
+              projectId,
+              title: "Compaction rollback",
+              modelSelection,
+              interactionMode: "default",
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath:
+                id === compactionThreadId && owner === "other-worktree" ? otherWorktreeCwd : null,
+              createdAt: now,
+            });
+          for (const revision of [1, 2]) {
+            yield* orchestration.dispatch({
+              type: "thread.turn.diff.complete",
+              commandId: CommandId.make(`checkpoint-${revision}`),
+              threadId,
+              turnId: TurnId.make(`turn-${revision}`),
+              completedAt: now,
+              checkpointRef: checkpointRefForThreadTurn(threadId, revision),
+              checkpointTurnCount: revision,
+              status: "ready",
+              files: [],
+              createdAt: now,
+            });
+          }
+          yield* repository.putCheckpointAnchor({
             threadId,
-            providerName: "fake",
+            checkpointTurnCount: 1,
+            turnId: TurnId.make("turn-1"),
+            sourceRevision: 1,
             providerInstanceId,
             sessionIncarnationId,
-            status: "ready",
-            runtimeMode: "full-access",
-            activeTurnId: null,
-            lastError: null,
-            updatedAt: now,
-          },
-          createdAt: now,
-        });
-        for (const [id, text] of [
-          [compactionRequestId, "/compact"],
-          [CommandId.make("first"), "first queued prompt"],
-          [CommandId.make("second"), "second queued prompt"],
-        ] as const) {
+            checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+            checkpointOid: "1".repeat(40),
+            anchor: { leafId: "target" },
+            anchorDigest: "target-anchor",
+            capturedAt: now,
+          });
+          for (const id of threadIds)
+            yield* orchestration.dispatch({
+              type: "thread.session.set",
+              commandId: CommandId.make(`ready-${id}`),
+              threadId: id,
+              session: {
+                threadId: id,
+                providerName: "fake",
+                providerInstanceId,
+                sessionIncarnationId,
+                status: "ready",
+                runtimeMode: "full-access",
+                activeTurnId: null,
+                lastError: null,
+                updatedAt: now,
+              },
+              createdAt: now,
+            });
+          for (const [id, text] of [
+            [compactionRequestId, "/compact"],
+            [CommandId.make("first"), "first queued prompt"],
+            [CommandId.make("second"), "second queued prompt"],
+          ] as const) {
+            yield* orchestration.dispatch({
+              type: "thread.turn.start",
+              commandId: id,
+              threadId: compactionThreadId,
+              message: { messageId: MessageId.make(id), role: "user", text, attachments: [] },
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              sourceEpoch: 0,
+              createdAt: now,
+            });
+          }
           yield* orchestration.dispatch({
-            type: "thread.turn.start",
-            commandId: id,
-            threadId,
-            message: { messageId: MessageId.make(id), role: "user", text, attachments: [] },
-            modelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            sourceEpoch: 0,
+            type: "thread.compaction.complete",
+            commandId: CommandId.make("complete-compaction"),
+            threadId: compactionThreadId,
+            requestId: compactionRequestId,
+            success: true,
+            expectedProviderInstanceId: providerInstanceId,
+            expectedSessionIncarnationId: sessionIncarnationId,
             createdAt: now,
           });
-        }
-        yield* orchestration.dispatch({
-          type: "thread.compaction.complete",
-          commandId: CommandId.make("complete-compaction"),
-          threadId,
-          requestId: compactionRequestId,
-          success: true,
-          expectedProviderInstanceId: providerInstanceId,
-          expectedSessionIncarnationId: sessionIncarnationId,
-          createdAt: now,
-        });
 
-        // The provider is ready and its native queue is empty, but the reactor
-        // has not yet resumed the durable prompts accepted during compaction.
-        const before = yield* snapshots.getSnapshot();
-        const session = before.threads[0]?.session;
-        assert.equal(session?.status, "ready");
-        assert.isUndefined(session?.pendingTurnRequestId);
-        assert.equal(session?.compactionQueue?.phase, "draining");
-        assert.equal(session?.compactionQueue?.queued.length, 2);
-        const sequenceBefore = yield* orchestration.latestSequence;
-        const result = yield* orchestration
-          .dispatch({
-            type: commandType,
-            commandId: CommandId.make("rewind"),
-            threadId,
-            turnCount: 1,
-            expectedSourceRevision: 2,
+          // The provider is ready and its native queue is empty, but the reactor
+          // has not yet resumed the durable prompts accepted during compaction.
+          const before = yield* snapshots.getSnapshot();
+          const session = before.threads.find(
+            (thread) => thread.id === compactionThreadId,
+          )?.session;
+          assert.equal(session?.status, "ready");
+          assert.isUndefined(session?.pendingTurnRequestId);
+          assert.equal(session?.compactionQueue?.phase, "draining");
+          assert.equal(session?.compactionQueue?.queued.length, 2);
+          const sequenceBefore = yield* orchestration.latestSequence;
+          const result = yield* orchestration
+            .dispatch({
+              type: commandType,
+              commandId: CommandId.make("rewind"),
+              threadId,
+              turnCount: 1,
+              expectedSourceRevision: 2,
+              createdAt: now,
+            })
+            .pipe(Effect.result);
+          assert.equal(result._tag, owner === "other-worktree" ? "Success" : "Failure");
+          if (result._tag === "Failure") {
+            assert.equal(result.failure._tag, "OrchestrationCommandInvariantError");
+            assert.include(
+              result.failure.message,
+              owner === "target" ? "exactly idle" : "pending compaction",
+            );
+          }
+          if (owner === "other-worktree") {
+            assert.deepEqual(
+              (yield* snapshots.getSnapshot()).threads.find(
+                (thread) => thread.id === compactionThreadId,
+              ),
+              before.threads.find((thread) => thread.id === compactionThreadId),
+            );
+            assert.isTrue(Option.isSome(yield* repository.getActiveByThread(threadId)));
+            assert.isTrue(
+              Option.isSome(
+                yield* repository.findLeaseByWorkspace("workspace-rollback-compaction"),
+              ),
+            );
+          } else {
+            assert.equal(yield* orchestration.latestSequence, sequenceBefore);
+            assert.deepEqual(yield* snapshots.getSnapshot(), before);
+            assert.isTrue(Option.isNone(yield* repository.getActiveByThread(threadId)));
+            assert.isTrue(
+              Option.isNone(
+                yield* repository.findLeaseByWorkspace("workspace-rollback-compaction"),
+              ),
+            );
+          }
+
+          yield* orchestration.dispatch({
+            type: "thread.compaction.queue.resume",
+            commandId: CommandId.make("resume-first"),
+            threadId: compactionThreadId,
+            requestId: compactionRequestId,
             createdAt: now,
-          })
-          .pipe(Effect.result);
-        assert.equal(result._tag, "Failure");
-        if (result._tag === "Failure") {
-          assert.equal(result.failure._tag, "OrchestrationCommandInvariantError");
-          assert.include(result.failure.message, "exactly idle");
-        }
-        assert.equal(yield* orchestration.latestSequence, sequenceBefore);
-        assert.deepEqual(yield* snapshots.getSnapshot(), before);
-        assert.isTrue(Option.isNone(yield* repository.getActiveByThread(threadId)));
-        assert.isTrue(
-          Option.isNone(yield* repository.findLeaseByWorkspace("workspace-rollback-compaction")),
-        );
-
-        yield* orchestration.dispatch({
-          type: "thread.compaction.queue.resume",
-          commandId: CommandId.make("resume-first"),
-          threadId,
-          requestId: compactionRequestId,
-          createdAt: now,
-        });
-        const resumed = (yield* snapshots.getSnapshot()).threads[0]?.session;
-        assert.equal(resumed?.pendingTurnMessageId, MessageId.make("first"));
-        assert.equal(resumed?.compactionQueue?.inFlightMessageId, MessageId.make("first"));
-        assert.deepEqual(
-          resumed?.compactionQueue?.queued.map((message) => message.messageId),
-          [MessageId.make("second")],
-        );
-      }),
-    );
-  });
+          });
+          const resumed = (yield* snapshots.getSnapshot()).threads.find(
+            (thread) => thread.id === compactionThreadId,
+          )?.session;
+          assert.equal(resumed?.pendingTurnMessageId, MessageId.make("first"));
+          assert.equal(resumed?.compactionQueue?.inFlightMessageId, MessageId.make("first"));
+          assert.deepEqual(
+            resumed?.compactionQueue?.queued.map((message) => message.messageId),
+            [MessageId.make("second")],
+          );
+        }),
+      );
+    });
+  }
 }

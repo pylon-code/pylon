@@ -147,6 +147,33 @@ export const make = Effect.gen(function* () {
         return yield* invariant("The provider session is not bound to the exact thread workspace.");
       }
 
+      // A workspace lease would also fence a sibling's next FIFO delivery. Keep
+      // accepted prompts intact by waiting for that ownership to drain first.
+      for (const sibling of readModel.threads) {
+        if (
+          sibling.id === thread.id ||
+          sibling.deletedAt !== null ||
+          sibling.session?.compactionQueue === undefined
+        )
+          continue;
+        const siblingProject = readModel.projects.find(
+          (candidate) => candidate.id === sibling.projectId,
+        );
+        if (!siblingProject || siblingProject.deletedAt !== null) {
+          return yield* invariant("The project owning pending compaction could not be proved.");
+        }
+        const siblingIdentity = yield* workspace
+          .resolveIdentity(sibling.worktreePath ?? siblingProject.workspaceRoot)
+          .pipe(
+            Effect.mapError(() =>
+              invariant("The workspace owning pending compaction could not be proved."),
+            ),
+          );
+        if (siblingIdentity.workspaceKey === sessionIdentity.workspaceKey) {
+          return yield* invariant("Rollback requires a workspace with no pending compaction.");
+        }
+      }
+
       const sourceRevision = thread.checkpoints.reduce(
         (max, checkpoint) => Math.max(max, checkpoint.checkpointTurnCount),
         0,
