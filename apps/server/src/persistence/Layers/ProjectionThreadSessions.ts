@@ -1,3 +1,4 @@
+import { OrchestrationCompactionQueue } from "@t3tools/contracts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Effect from "effect/Effect";
@@ -17,6 +18,7 @@ import {
 
 const ProjectionThreadSessionDbRow = Schema.Struct({
   ...ProjectionThreadSession.fields,
+  compactionQueue: Schema.NullOr(Schema.fromJsonString(OrchestrationCompactionQueue)),
   restored: Schema.Number,
   pendingTurnRequestAmbiguous: Schema.Number,
 });
@@ -46,6 +48,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           started_at,
           session_incarnation_id,
           harness_refinement_status,
+          compaction_queue_json,
           pending_turn_request_id,
           pending_turn_request_ambiguous,
           pending_turn_message_id,
@@ -73,6 +76,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.startedAt},
           ${row.sessionIncarnationId},
           ${row.harnessRefinementStatus},
+          ${row.compactionQueue ? JSON.stringify(row.compactionQueue) : null},
           ${row.pendingTurnRequestId},
           ${row.pendingTurnRequestAmbiguous ? 1 : 0},
           ${row.pendingTurnMessageId},
@@ -100,6 +104,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           started_at = excluded.started_at,
           session_incarnation_id = excluded.session_incarnation_id,
           harness_refinement_status = excluded.harness_refinement_status,
+          compaction_queue_json = excluded.compaction_queue_json,
           pending_turn_request_id = excluded.pending_turn_request_id,
           pending_turn_request_ambiguous = excluded.pending_turn_request_ambiguous,
           pending_turn_message_id = excluded.pending_turn_message_id,
@@ -134,6 +139,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           started_at AS "startedAt",
           session_incarnation_id AS "sessionIncarnationId",
           harness_refinement_status AS "harnessRefinementStatus",
+          compaction_queue_json AS "compactionQueue",
           pending_turn_request_id AS "pendingTurnRequestId",
           pending_turn_request_ambiguous AS "pendingTurnRequestAmbiguous",
           pending_turn_message_id AS "pendingTurnMessageId",

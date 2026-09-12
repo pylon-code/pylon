@@ -154,6 +154,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       const safeForOwnedThread =
         command.type === "thread.rollback.status.set" ||
         command.type === "thread.revert.complete" ||
+        command.type === "thread.compaction.complete" ||
+        command.type === "thread.compaction.queue.sent" ||
         (command.type === "thread.session.set" &&
           ["idle", "ready", "interrupted", "stopped", "error"].includes(command.session.status));
       const owned = active.find((record) => record.threadId === command.threadId);
@@ -165,6 +167,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       }
       if (
         command.type !== "thread.turn.start" &&
+        command.type !== "thread.compaction.queue.resume" &&
         command.type !== "thread.input-queue.follow-up" &&
         command.type !== "thread.approval.respond" &&
         command.type !== "thread.user-input.respond" &&
@@ -485,6 +488,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 envelope.command.type === "thread.meta.update" ||
                 envelope.command.type === "thread.runtime-mode.set" ||
                 envelope.command.type === "thread.interaction-mode.set" ||
+                envelope.command.type === "thread.compaction.complete" ||
+                envelope.command.type === "thread.compaction.queue.resume" ||
+                envelope.command.type === "thread.compaction.queue.sent" ||
                 envelope.command.type === "thread.turn.admission.accept" ||
                 envelope.command.type === "thread.turn.admission.fail" ||
                 envelope.command.type === "thread.session.bind-pending" ||

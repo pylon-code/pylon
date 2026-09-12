@@ -541,6 +541,31 @@ export const OrchestrationSessionStatus = Schema.Literals([
 ]);
 export type OrchestrationSessionStatus = typeof OrchestrationSessionStatus.Type;
 
+/** Durable FIFO while the exact slash-command compaction owns turn admission. */
+export const OrchestrationCompactionQueue = Schema.Struct({
+  requestId: CommandId,
+  phase: Schema.Literals(["running", "draining"]),
+  inFlightRequestId: Schema.optional(CommandId),
+  inFlightMessageId: Schema.optional(MessageId),
+  expectedSessionIncarnationId: Schema.optional(Schema.NullOr(RuntimeSessionId)),
+  expectedProviderInstanceId: Schema.optional(Schema.NullOr(ProviderInstanceId)),
+  queued: Schema.Array(
+    Schema.Struct({
+      requestId: CommandId,
+      messageId: MessageId,
+      text: Schema.String,
+      attachments: Schema.Array(ChatAttachment),
+      modelSelection: ModelSelection,
+      runtimeMode: RuntimeMode,
+      interactionMode: ProviderInteractionMode,
+      sourceEpoch: NonNegativeInt,
+      sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+      titleSeed: Schema.optional(TrimmedNonEmptyString),
+      createdAt: IsoDateTime,
+    }),
+  ),
+});
+
 export const OrchestrationSession = Schema.Struct({
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
@@ -554,6 +579,7 @@ export const OrchestrationSession = Schema.Struct({
   /** Immutable identity of the current provider-session incarnation. */
   sessionIncarnationId: Schema.optional(RuntimeSessionId),
   harnessRefinementStatus: Schema.optional(SessionHarnessRefinementStatus),
+  compactionQueue: Schema.optional(OrchestrationCompactionQueue),
   /** Correlates the user message currently waiting for provider turn admission. */
   pendingTurnRequestId: Schema.optional(CommandId),
   /** Exact user message owned by the pending admission. */
@@ -1837,7 +1863,38 @@ const ThreadPullRequestLinkSyncCommand = Schema.Struct({
   stack: Schema.NullOr(ThreadPullRequestStack),
 });
 
+const ThreadCompactionCompleteCommand = Schema.Struct({
+  type: Schema.Literal("thread.compaction.complete"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CommandId,
+  success: Schema.Boolean,
+  expectedSessionIncarnationId: Schema.optional(Schema.NullOr(RuntimeSessionId)),
+  expectedProviderInstanceId: Schema.optional(Schema.NullOr(ProviderInstanceId)),
+  reconcileInFlight: Schema.optional(Schema.Boolean),
+  detail: Schema.optional(TrimmedNonEmptyString),
+  createdAt: IsoDateTime,
+});
+const ThreadCompactionQueueResumeCommand = Schema.Struct({
+  type: Schema.Literal("thread.compaction.queue.resume"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CommandId,
+  createdAt: IsoDateTime,
+});
+const ThreadCompactionQueueSentCommand = Schema.Struct({
+  type: Schema.Literal("thread.compaction.queue.sent"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CommandId,
+  sentRequestId: CommandId,
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadCompactionCompleteCommand,
+  ThreadCompactionQueueResumeCommand,
+  ThreadCompactionQueueSentCommand,
   ThreadAutoSettleCommand,
   ThreadPullRequestSyncCommand,
   ThreadPullRequestLinkSyncCommand,

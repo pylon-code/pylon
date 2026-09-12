@@ -7057,13 +7057,9 @@ export default function ChatView(props: ChatViewProps) {
     try {
       const settingsResult = await persistThreadSettingsForNextTurn({
         threadId,
-        createdAt,
-        modelSelection: context.selectedModelSelection,
         ...(localCheckoutBranchMismatch
           ? { branch: localCheckoutBranchMismatch.currentBranch }
           : {}),
-        runtimeMode,
-        interactionMode: context.interactionMode,
       });
       const result =
         settingsResult._tag === "Failure"
@@ -7075,7 +7071,8 @@ export default function ChatView(props: ChatViewProps) {
                 message: { messageId, role: "user", text: "/compact", attachments: [] },
                 modelSelection: context.selectedModelSelection,
                 runtimeMode,
-                interactionMode: context.interactionMode,
+                interactionMode,
+                sourceEpoch: activeThread.sourceEpoch ?? 0,
                 createdAt,
               },
             });
@@ -7092,7 +7089,7 @@ export default function ChatView(props: ChatViewProps) {
           );
         }
       } else {
-        clearUsageLimitsFor(routeThreadKey);
+        setUsageLimitsNotice((current) => (current?.threadKey === routeThreadKey ? null : current));
       }
     } finally {
       sendInFlightRef.current = false;

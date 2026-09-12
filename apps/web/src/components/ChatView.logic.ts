@@ -1201,6 +1201,18 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   ) {
     return true;
   }
+  const compactionQueue = input.session?.compactionQueue;
+  if (
+    compactionQueue &&
+    input.latestUserMessageId !== input.localDispatch.latestUserMessageId &&
+    (input.session?.pendingTurnMessageId === input.latestUserMessageId ||
+      compactionQueue.inFlightMessageId === input.latestUserMessageId ||
+      compactionQueue.queued.some((message) => message.messageId === input.latestUserMessageId))
+  ) {
+    // The persisted compaction FIFO is an acknowledgment even while the
+    // provider is starting. Keep the composer available for another message.
+    return true;
+  }
   if (input.phase === "connecting") {
     return false;
   }

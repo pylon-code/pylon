@@ -7,6 +7,7 @@ import {
   UserInputRequestedPayload,
   isImportedAgentSessionMessageId,
   type OrchestrationCommand,
+  type OrchestrationSession,
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type OrchestrationThread,
@@ -216,6 +217,86 @@ const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
   }
 
   return plannedEvents;
+});
+
+const compactionSessionEvent = Effect.fnUntraced(function* (
+  command: {
+    readonly commandId: OrchestrationCommand["commandId"];
+    readonly threadId: OrchestrationThread["id"];
+    readonly createdAt: string;
+  },
+  session: OrchestrationSession,
+): Effect.fn.Return<PlannedOrchestrationEvent, PlatformError.PlatformError, Crypto.Crypto> {
+  return {
+    ...(yield* withEventBase({
+      aggregateKind: "thread",
+      aggregateId: command.threadId,
+      occurredAt: command.createdAt,
+      commandId: command.commandId,
+    })),
+    type: "thread.session-set",
+    payload: { threadId: command.threadId, session },
+  };
+});
+
+const canceledCompactionMessages = Effect.fnUntraced(function* (
+  command: {
+    readonly commandId: OrchestrationCommand["commandId"];
+    readonly threadId: OrchestrationThread["id"];
+    readonly createdAt: string;
+  },
+  session: OrchestrationSession | null,
+  detail: string,
+  reconcileInFlight = false,
+): Effect.fn.Return<
+  ReadonlyArray<PlannedOrchestrationEvent>,
+  PlatformError.PlatformError,
+  Crypto.Crypto
+> {
+  const queue = session?.compactionQueue;
+  const messages = [...(queue?.queued ?? [])];
+  const uncertainMessageId =
+    reconcileInFlight && queue?.inFlightRequestId !== session?.activeTurnRequestId
+      ? queue?.inFlightMessageId
+      : undefined;
+  return yield* Effect.forEach(
+    [...(uncertainMessageId ? [{ messageId: uncertainMessageId }] : []), ...messages],
+    (queued) =>
+      Effect.gen(function* () {
+        const base = yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        });
+        return {
+          ...base,
+          type: "thread.activity-appended" as const,
+          payload: {
+            threadId: command.threadId,
+            activity: {
+              id: base.eventId,
+              kind: "provider.turn.start.failed",
+              summary: "Queued message was not sent",
+              tone: "error" as const,
+              turnId: null,
+              createdAt: command.createdAt,
+              payload: { requestId: queued.messageId, detail },
+            },
+          },
+        };
+      }),
+  );
+});
+
+// Provider snapshots do not own the server's FIFO. Preserve the newest queue
+// across lifecycle writes, and never resurrect a queue from a stale snapshot.
+const preserveCompactionQueue = (
+  current: OrchestrationSession | null,
+  incoming: OrchestrationSession,
+): OrchestrationSession => ({
+  ...incoming,
+  compactionQueue: current?.compactionQueue,
 });
 
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
@@ -1389,6 +1470,108 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Proposed plan '${sourceProposedPlan?.planId}' belongs to thread '${sourceThread.id}' in a different project.`,
         });
       }
+      // Real activity resets ANY override: it wakes an explicitly settled
+      // thread, and it clears a keep-active pin back to neutral so the
+      // thread can auto-settle again after this burst of work goes stale.
+      // A snooze clears the same way — sending a message to a snoozed
+      // thread is the user re-engaging, so the return ticket is spent.
+      const lifecycleResetEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      if (targetThread.settledOverride !== null) {
+        lifecycleResetEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.unsettled",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      if (targetThread.snoozedUntil != null) {
+        lifecycleResetEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.unsnoozed",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      const isCompaction =
+        command.message.attachments.length === 0 &&
+        command.message.text.trim().toLowerCase() === "/compact";
+      if (isCompaction && targetThread.session?.status === "running") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Context compaction is unavailable while a provider turn is running.",
+        });
+      }
+      const compaction = targetThread.session?.compactionQueue;
+      if (compaction && targetThread.session) {
+        if (isCompaction)
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail:
+              "Wait for context compaction and its queued messages to finish before compacting again.",
+          });
+        return [
+          ...lifecycleResetEvents,
+          {
+            ...(yield* withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            })),
+            type: "thread.message-sent",
+            payload: {
+              threadId: command.threadId,
+              messageId: command.message.messageId,
+              role: "user",
+              text: command.message.text,
+              attachments: command.message.attachments,
+              turnId: null,
+              streaming: false,
+              createdAt: command.createdAt,
+              updatedAt: command.createdAt,
+            },
+          },
+          yield* compactionSessionEvent(command, {
+            ...targetThread.session,
+            compactionQueue: {
+              ...compaction,
+              queued: [
+                ...compaction.queued,
+                {
+                  requestId: command.commandId,
+                  messageId: command.message.messageId,
+                  text: command.message.text,
+                  attachments: command.message.attachments,
+                  modelSelection: effectiveModelSelection,
+                  runtimeMode: command.runtimeMode,
+                  interactionMode: command.interactionMode,
+                  sourceEpoch: actualSourceEpoch,
+                  ...(sourceProposedPlan ? { sourceProposedPlan } : {}),
+                  ...(command.titleSeed ? { titleSeed: command.titleSeed } : {}),
+                  createdAt: command.createdAt,
+                },
+              ],
+            },
+            updatedAt: command.createdAt,
+          }),
+        ];
+      }
       if (
         targetThread.session?.status === "starting" &&
         targetThread.session.pendingTurnRequestId !== undefined &&
@@ -1497,6 +1680,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 ? { providerInstanceId: targetThread.session.providerInstanceId }
                 : {}),
               runtimeMode: targetThread.session?.runtimeMode ?? targetThread.runtimeMode,
+              ...(isCompaction
+                ? {
+                    compactionQueue: {
+                      requestId: command.commandId,
+                      phase: "running" as const,
+                      queued: [],
+                    },
+                  }
+                : {}),
               pendingTurnRequestId: command.commandId,
               pendingTurnMessageId: command.message.messageId,
               pendingTurnRequestedAt: admissionRequestedAt,
@@ -1513,49 +1705,177 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
-      // Real activity resets ANY override: it wakes an explicitly settled
-      // thread, and it clears a keep-active pin back to neutral so the
-      // thread can auto-settle again after this burst of work goes stale.
-      // A snooze clears the same way — sending a message to a snoozed
-      // thread is the user re-engaging, so the return ticket is spent.
-      const lifecycleResetEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
-      if (targetThread.settledOverride !== null) {
-        lifecycleResetEvents.push({
-          ...(yield* withEventBase({
-            aggregateKind: "thread",
-            aggregateId: command.threadId,
-            occurredAt: command.createdAt,
-            commandId: command.commandId,
-          })),
-          type: "thread.unsettled",
-          payload: {
-            threadId: command.threadId,
-            reason: "activity",
-            updatedAt: command.createdAt,
-          },
-        });
-      }
-      if (targetThread.snoozedUntil != null) {
-        lifecycleResetEvents.push({
-          ...(yield* withEventBase({
-            aggregateKind: "thread",
-            aggregateId: command.threadId,
-            occurredAt: command.createdAt,
-            commandId: command.commandId,
-          })),
-          type: "thread.unsnoozed",
-          payload: {
-            threadId: command.threadId,
-            reason: "activity",
-            updatedAt: command.createdAt,
-          },
-        });
-      }
       return [
         ...lifecycleResetEvents,
         userMessageEvent,
         ...admissionPendingEvents,
         turnStartRequestedEvent,
+      ];
+    }
+
+    case "thread.compaction.complete": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const session = thread.session;
+      const compaction = session?.compactionQueue;
+      if (!session || !compaction || compaction.requestId !== command.requestId) return [];
+      const sameIncarnation =
+        (command.expectedSessionIncarnationId === undefined ||
+          command.expectedSessionIncarnationId === (session.sessionIncarnationId ?? null)) &&
+        (command.expectedProviderInstanceId === undefined ||
+          command.expectedProviderInstanceId === (session.providerInstanceId ?? null));
+      const ownsAdmission = session.pendingTurnRequestId === command.requestId && sameIncarnation;
+      const failed =
+        !command.success ||
+        !sameIncarnation ||
+        session.status === "stopped" ||
+        session.status === "error";
+      return [
+        ...(failed
+          ? yield* canceledCompactionMessages(
+              command,
+              session,
+              command.detail ??
+                "Context compaction did not complete on the original session. Send this message again to continue.",
+              command.reconcileInFlight,
+            )
+          : []),
+        yield* compactionSessionEvent(command, {
+          ...session,
+          ...(ownsAdmission
+            ? {
+                status: session.status === "stopped" ? ("stopped" as const) : ("ready" as const),
+                pendingTurnRequestId: undefined,
+                pendingTurnMessageId: undefined,
+                pendingTurnRequestedAt: undefined,
+                pendingTurnDeadlineAt: undefined,
+                pendingTurnSessionId: undefined,
+                activeTurnRequestId: undefined,
+                activeTurnId: null,
+              }
+            : {}),
+          compactionQueue: failed
+            ? undefined
+            : {
+                ...compaction,
+                phase: "draining",
+                expectedSessionIncarnationId: command.expectedSessionIncarnationId,
+                expectedProviderInstanceId: command.expectedProviderInstanceId,
+              },
+          updatedAt: command.createdAt,
+        }),
+      ];
+    }
+    case "thread.compaction.queue.sent": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const session = thread.session;
+      const compaction = session?.compactionQueue;
+      if (
+        !session ||
+        !compaction ||
+        compaction.requestId !== command.requestId ||
+        compaction.inFlightRequestId !== command.sentRequestId
+      )
+        return [];
+      return yield* compactionSessionEvent(command, {
+        ...session,
+        compactionQueue: {
+          ...compaction,
+          inFlightRequestId: undefined,
+          inFlightMessageId: undefined,
+        },
+        updatedAt: command.createdAt,
+      });
+    }
+    case "thread.compaction.queue.resume": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const session = thread.session;
+      const compaction = session?.compactionQueue;
+      if (
+        !session ||
+        !compaction ||
+        compaction.requestId !== command.requestId ||
+        compaction.phase !== "draining" ||
+        compaction.inFlightRequestId !== undefined
+      )
+        return [];
+      const sameIncarnation =
+        (compaction.expectedSessionIncarnationId === undefined ||
+          compaction.expectedSessionIncarnationId === (session.sessionIncarnationId ?? null)) &&
+        (compaction.expectedProviderInstanceId === undefined ||
+          compaction.expectedProviderInstanceId === (session.providerInstanceId ?? null));
+      if (!sameIncarnation || session.status === "stopped" || session.status === "error")
+        return [
+          ...(yield* canceledCompactionMessages(
+            command,
+            session,
+            "The session stopped before its queued messages could be sent. Send this message again to continue.",
+          )),
+          yield* compactionSessionEvent(command, {
+            ...session,
+            compactionQueue: undefined,
+            updatedAt: command.createdAt,
+          }),
+        ];
+      if (session.pendingTurnRequestId !== undefined) return [];
+      const queued = compaction.queued[0];
+      if (!queued)
+        return yield* compactionSessionEvent(command, {
+          ...session,
+          compactionQueue: undefined,
+          updatedAt: command.createdAt,
+        });
+      // Decide the normal admission against a temporary queue-free view, then
+      // persist the new reservation and dequeue atomically in the same transaction.
+      const admissionReadModel = {
+        ...readModel,
+        threads: readModel.threads.map((entry) =>
+          entry.id === thread.id
+            ? { ...entry, session: { ...session, compactionQueue: undefined } }
+            : entry,
+        ),
+      };
+      const result = yield* decideOrchestrationCommand({
+        readModel: admissionReadModel,
+        command: {
+          type: "thread.turn.start",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          message: {
+            messageId: queued.messageId,
+            role: "user",
+            text: queued.text,
+            attachments: queued.attachments,
+          },
+          modelSelection: queued.modelSelection,
+          runtimeMode: queued.runtimeMode,
+          interactionMode: queued.interactionMode,
+          sourceEpoch: queued.sourceEpoch,
+          sourceProposedPlan: queued.sourceProposedPlan,
+          titleSeed: queued.titleSeed,
+          createdAt: queued.createdAt,
+        },
+      });
+      const events = Array.isArray(result) ? result : [result];
+      let projected: OrchestrationReadModel = admissionReadModel;
+      for (const event of events)
+        projected = yield* projectEvent(projected, {
+          ...event,
+          sequence: projected.snapshotSequence + 1,
+        }).pipe(Effect.orDie);
+      const admittedSession =
+        projected.threads.find((entry) => entry.id === thread.id)?.session ?? session;
+      return [
+        ...events,
+        yield* compactionSessionEvent(command, {
+          ...admittedSession,
+          compactionQueue: {
+            ...compaction,
+            queued: compaction.queued.slice(1),
+            inFlightRequestId: command.commandId,
+            inFlightMessageId: queued.messageId,
+          },
+          updatedAt: command.createdAt,
+        }),
       ];
     }
 
@@ -1767,12 +2087,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.interrupt": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
+      const interruptedEvent: PlannedOrchestrationEvent = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1786,6 +2106,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+      if (!thread.session?.compactionQueue) return interruptedEvent;
+      return [
+        ...(yield* canceledCompactionMessages(
+          command,
+          thread.session,
+          "Context compaction was interrupted. Send this message again to continue.",
+        )),
+        yield* compactionSessionEvent(command, {
+          ...thread.session,
+          compactionQueue: { ...thread.session.compactionQueue, queued: [] },
+          updatedAt: command.createdAt,
+        }),
+        interruptedEvent,
+      ];
     }
 
     case "thread.approval.respond": {
@@ -2113,6 +2447,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               lastError: null,
             }),
             status: "stopped",
+            compactionQueue: undefined,
             pendingStopRequestId: command.commandId,
             pendingStopProviderInstanceId: targetSession?.providerInstanceId ?? null,
             pendingStopSessionIncarnationId: targetSession?.sessionIncarnationId ?? null,
@@ -2127,7 +2462,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         },
       };
-      return [stopRequestedEvent, stoppedEvent];
+      return [
+        ...(yield* canceledCompactionMessages(
+          command,
+          targetSession,
+          "The session was stopped during context compaction. Send this message again to continue.",
+        )),
+        stopRequestedEvent,
+        stoppedEvent,
+      ];
     }
 
     case "thread.session.apply-lifecycle": {
@@ -2171,7 +2514,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.session-set",
         payload: {
           threadId: command.threadId,
-          session: command.session,
+          session: preserveCompactionQueue(thread.session, command.session),
         },
       };
       const isSessionActivity =
@@ -2276,7 +2619,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.session-set",
         payload: {
           threadId: command.threadId,
-          session: command.session,
+          session: {
+            ...preserveCompactionQueue(thread.session, command.session),
+            ...(thread.session?.compactionQueue?.inFlightRequestId === command.requestId
+              ? {
+                  compactionQueue: {
+                    ...thread.session.compactionQueue,
+                    expectedProviderInstanceId: command.session.providerInstanceId ?? null,
+                    expectedSessionIncarnationId: command.session.sessionIncarnationId ?? null,
+                  },
+                }
+              : {}),
+          },
         },
       });
       return acceptedEvents;
@@ -2293,7 +2647,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         thread.session?.pendingTurnRequestId !== undefined &&
         (command.session.pendingTurnRequestId === undefined ||
           command.session.pendingTurnRequestId === thread.session.pendingTurnRequestId);
-      const session = preservesPendingAdmission
+      const providerSession = preservesPendingAdmission
         ? {
             ...thread.session,
             ...command.session,
@@ -2305,6 +2659,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               command.session.pendingTurnSessionId ?? thread.session.pendingTurnSessionId,
           }
         : command.session;
+      const session = preserveCompactionQueue(thread.session, providerSession);
       const sessionSetEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",

@@ -12,6 +12,7 @@ import {
   IsoDateTime,
   MessageId,
   OrchestrationSessionStatus,
+  OrchestrationCompactionQueue,
   SessionHarnessRefinementStatus,
   ProviderInstanceId,
   RuntimeSessionId,
@@ -35,6 +36,7 @@ export const ProjectionThreadSession = Schema.Struct({
   startedAt: Schema.NullOr(IsoDateTime),
   sessionIncarnationId: Schema.NullOr(RuntimeSessionId),
   harnessRefinementStatus: Schema.NullOr(SessionHarnessRefinementStatus),
+  compactionQueue: Schema.optional(Schema.NullOr(OrchestrationCompactionQueue)),
   pendingTurnRequestId: Schema.NullOr(CommandId),
   /** Internal replay state: duplicate legacy events cannot identify one exact request. */
   pendingTurnRequestAmbiguous: Schema.Boolean,

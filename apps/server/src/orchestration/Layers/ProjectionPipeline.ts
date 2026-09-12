@@ -1424,6 +1424,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         startedAt: incoming.startedAt ?? null,
         sessionIncarnationId: incoming.sessionIncarnationId ?? null,
         harnessRefinementStatus: incoming.harnessRefinementStatus ?? null,
+        compactionQueue: incoming.compactionQueue ?? null,
         pendingTurnRequestId: preserveHistoricalPending
           ? preserved.pendingTurnRequestId
           : (incoming.pendingTurnRequestId ?? null),

@@ -575,7 +575,8 @@ describe("ProviderCommandReactor", () => {
               }
             }
             return (
-              command.type === "thread.session.set" && command.session.status === "ready"
+              (command.type === "thread.session.set" && command.session.status === "ready") ||
+              (command.type === "thread.compaction.complete" && command.success)
                 ? (input?.beforeReadySessionDispatch?.() ?? Effect.void)
                 : Effect.void
             ).pipe(Effect.andThen(engine.dispatch(command)));
@@ -1108,13 +1109,20 @@ describe("ProviderCommandReactor", () => {
     }),
   );
 
-  effectIt.effect("keeps turns blocked until compaction restores the session", () =>
+  effectIt.effect("queues turns until compaction restores the exact session reservation", () =>
     Effect.gen(function* () {
+      const queuedSent = yield* Deferred.make<void>();
+      let sendCount = 0;
       const readyDispatchStarted = yield* Deferred.make<void>();
       const releaseReadyDispatch = yield* Deferred.make<void>();
       let blockReadyDispatch = false;
       const harness = yield* Effect.promise(() =>
         createHarness({
+          sendTurnEffect: () =>
+            Effect.gen(function* () {
+              if (++sendCount === 3) yield* Deferred.succeed(queuedSent, undefined);
+              return { threadId: ThreadId.make("thread-1"), turnId: asTurnId("turn-1") };
+            }),
           beforeReadySessionDispatch: () =>
             blockReadyDispatch
               ? Deferred.succeed(readyDispatchStarted, undefined).pipe(
@@ -1125,7 +1133,12 @@ describe("ProviderCommandReactor", () => {
       );
       const threadId = ThreadId.make("thread-1");
       const now = "2026-01-01T00:00:00.000Z";
-      const dispatchTurn = (id: string, text: string, createdAt: string) =>
+      const dispatchTurn = (
+        id: string,
+        text: string,
+        createdAt: string,
+        runtimeMode: "approval-required" | "full-access" = "approval-required",
+      ) =>
         harness.engine.dispatch({
           type: "thread.turn.start",
           commandId: CommandId.make(`cmd-${id}`),
@@ -1137,7 +1150,7 @@ describe("ProviderCommandReactor", () => {
             attachments: [],
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: "approval-required",
+          runtimeMode,
           createdAt,
         });
 
@@ -1164,28 +1177,99 @@ describe("ProviderCommandReactor", () => {
       yield* dispatchTurn("blocked-compact", "/compact", "2026-01-01T00:00:01.000Z");
       yield* Deferred.await(readyDispatchStarted);
 
-      // Upstream blocks this in the reactor and records a failure activity.
-      // Pylon's decider owns turn exclusivity: the compaction still holds the
-      // thread's pending admission, so the command is refused outright and
-      // never reaches the reactor's own `compactingThreadIds` guard.
-      const blockedTurn = yield* dispatchTurn(
+      yield* dispatchTurn(
         "during-compact-recovery",
-        "too soon",
+        "queued after compact",
         "2026-01-01T00:00:02.000Z",
-      ).pipe(Effect.result);
-      expect(blockedTurn._tag).toBe("Failure");
+      );
+      yield* dispatchTurn(
+        "during-compact-second",
+        "second queued message",
+        "2026-01-01T00:00:03.000Z",
+        "full-access",
+      );
+      const queuedThread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(queuedThread?.session?.pendingTurnRequestId).toBe("cmd-blocked-compact");
+      expect(queuedThread?.session?.compactionQueue?.queued.map((entry) => entry.text)).toEqual([
+        "queued after compact",
+        "second queued message",
+      ]);
       expect(harness.sendTurn).toHaveBeenCalledTimes(1);
       expect(yield* Effect.promise(() => harness.readPendingTurnStarts())).toEqual([
         { threadId: "thread-1" },
       ]);
 
       yield* Deferred.succeed(releaseReadyDispatch, undefined);
-      yield* Effect.promise(() =>
-        waitFor(async () => {
-          const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
-          return thread?.session?.status === "ready";
+      yield* Deferred.await(queuedSent);
+      yield* Effect.promise(() => harness.drain());
+      expect(harness.sendTurn).toHaveBeenCalledTimes(3);
+      expect(harness.sendTurn).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ input: "queued after compact" }),
+      );
+      expect(harness.sendTurn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ input: "second queued message" }),
+      );
+      const resumed = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(resumed?.runtimeMode).toBe("full-access");
+      expect(
+        resumed?.messages.filter(
+          (message) => message.id === "user-message-during-compact-recovery",
+        ),
+      ).toHaveLength(1);
+    }),
+  );
+
+  effectIt.effect("reconciles persisted compaction messages explicitly after restart", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          beforeReactorStart: Effect.gen(function* () {
+            const engine = yield* OrchestrationEngineService;
+            for (const [id, text] of [
+              ["restarted-compact", "/compact"],
+              ["restarted-one", "first"],
+              ["restarted-two", "second"],
+            ]) {
+              yield* engine.dispatch({
+                type: "thread.turn.start",
+                commandId: CommandId.make(id!),
+                threadId: ThreadId.make("thread-1"),
+                message: {
+                  messageId: MessageId.make(`message-${id}`),
+                  role: "user",
+                  text: text!,
+                  attachments: [],
+                },
+                runtimeMode: "approval-required",
+                interactionMode: "default",
+                createdAt: "2026-01-01T00:00:00.000Z",
+              });
+            }
+          }),
         }),
       );
+      yield* Effect.promise(() => harness.drain());
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads[0];
+      expect(thread?.session?.compactionQueue).toBeUndefined();
+      expect(thread?.session?.pendingTurnRequestId).toBeUndefined();
+      expect(
+        thread?.activities
+          .filter((activity) => activity.kind === "provider.turn.start.failed")
+          .map((activity) =>
+            activity.payload &&
+            typeof activity.payload === "object" &&
+            "requestId" in activity.payload
+              ? activity.payload.requestId
+              : undefined,
+          ),
+      ).toEqual(["message-restarted-one", "message-restarted-two"]);
+      expect(harness.compactThread).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
     }),
   );
 
