@@ -1,6 +1,6 @@
 ---
 name: ios-debugger-agent
-description: Build, launch, inspect, and drive iOS apps with the repository-configured XcodeBuildMCP server. Use on macOS for iOS Simulator builds, focused native test runs, semantic UI automation, screenshots, logs, or debugging, including Pylon Mobile verification.
+description: Build, inspect, and debug an iOS Simulator app using the pinned XcodeBuildMCP tools.
 ---
 
 # iOS Debugger Agent
