@@ -26,6 +26,8 @@ import type {
 
 import {
   ApprovalRequestId,
+  CheckpointRef,
+  TurnId,
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -57,11 +59,14 @@ class OpenCodeAdapter extends Context.Service<OpenCodeAdapter, OpenCodeAdapterSh
 ) {}
 
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
+const encodeTestJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 type MessageEntry = {
   info: {
     id: string;
     role: "user" | "assistant";
+    sessionID?: string;
+    parentID?: string;
   };
   parts: Array<unknown>;
 };
@@ -90,6 +95,7 @@ const runtimeMock = {
     messageFailures: 0,
     promptCalls: [] as Array<unknown>,
     summarizeCalls: [] as Array<unknown>,
+    summarizeImplementation: null as (() => Promise<void>) | null,
     promptAsyncError: null as Error | null,
     promptAsyncImplementation: null as (() => Promise<void>) | null,
     autoPromptEcho: true,
@@ -133,6 +139,8 @@ const runtimeMock = {
     sessionUpdateCalls: [] as Array<{ sessionID: string; permission: unknown }>,
     forkCalls: [] as Array<{ sessionID: string; directory?: string; messageID?: string }>,
     forkImplementation: null as (() => Promise<void>) | null,
+    forkTransform: null as ((messages: MessageEntry[]) => MessageEntry[]) | null,
+    fullForkCount: 0,
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -153,6 +161,7 @@ const runtimeMock = {
     this.state.messageFailures = 0;
     this.state.promptCalls.length = 0;
     this.state.summarizeCalls.length = 0;
+    this.state.summarizeImplementation = null;
     this.state.promptAsyncError = null;
     this.state.promptAsyncImplementation = null;
     this.state.autoPromptEcho = true;
@@ -191,6 +200,8 @@ const runtimeMock = {
     this.state.sessionUpdateCalls.length = 0;
     this.state.forkCalls.length = 0;
     this.state.forkImplementation = null;
+    this.state.forkTransform = null;
+    this.state.fullForkCount = 0;
   },
 };
 
@@ -295,25 +306,58 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         }) => {
           await runtimeMock.state.forkImplementation?.();
           // Fork clones history into a new session bound to the directory.
-          const forkedId = `${sessionID}_fork`;
+          const forkedId =
+            messageID || ++runtimeMock.state.fullForkCount === 1
+              ? `${sessionID}_fork`
+              : `${sessionID}_fork_${runtimeMock.state.fullForkCount}`;
           runtimeMock.state.forkCalls.push({
             sessionID,
             ...(directory ? { directory } : {}),
             ...(messageID ? { messageID } : {}),
           });
-          if (messageID) {
+          {
             const messages =
               runtimeMock.state.forkMessagesBySession.get(sessionID) ?? runtimeMock.state.messages;
-            const boundary = messages.findIndex((entry) => entry.info.id === messageID);
+            const boundary = messageID
+              ? messages.findIndex((entry) => entry.info.id === messageID)
+              : messages.length;
             NodeAssert.notEqual(boundary, -1);
+            const ids = new Map(
+              messages.slice(0, boundary).map((entry) => [entry.info.id, `${entry.info.id}_fork`]),
+            );
+            const copied = structuredClone(
+              messages.slice(
+                0,
+                runtimeMock.state.forkPreservesBoundary ? boundary : messages.length,
+              ),
+            ).map((entry) => ({
+              ...entry,
+              info: {
+                ...entry.info,
+                id: `${entry.info.id}_fork`,
+                ...(entry.info.sessionID !== undefined ? { sessionID: forkedId } : {}),
+                ...(entry.info.parentID !== undefined
+                  ? { parentID: ids.get(entry.info.parentID) ?? entry.info.parentID }
+                  : {}),
+              },
+              parts: entry.parts.map((rawPart) => {
+                if (typeof rawPart !== "object" || rawPart === null || !("messageID" in rawPart))
+                  return rawPart;
+                const part = rawPart as Record<string, unknown>;
+                return {
+                  ...part,
+                  id: `${part.id}_fork`,
+                  messageID: `${entry.info.id}_fork`,
+                  sessionID: forkedId,
+                  ...(part.type === "compaction" && typeof part.tail_start_id === "string"
+                    ? { tail_start_id: ids.get(part.tail_start_id) }
+                    : {}),
+                };
+              }),
+            }));
             runtimeMock.state.forkMessagesBySession.set(
               forkedId,
-              messages
-                .slice(0, runtimeMock.state.forkPreservesBoundary ? boundary : messages.length)
-                .map((entry) => ({
-                  ...entry,
-                  info: { ...entry.info, id: `${entry.info.id}_fork` },
-                })),
+              runtimeMock.state.forkTransform?.(copied) ?? copied,
             );
           }
           if (directory) {
@@ -392,6 +436,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         },
         summarize: async (input: unknown) => {
           runtimeMock.state.summarizeCalls.push(input);
+          await runtimeMock.state.summarizeImplementation?.();
           return { data: true };
         },
         messages: async ({ sessionID }: { sessionID: string }) => ({
@@ -7753,5 +7798,724 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.equal(sessions[0]?.threadId, "thread-native-log-failure");
       NodeAssert.deepEqual(closeCallsDuringRun, []);
     }),
+  );
+});
+
+const exactCheckpointBinding = (count: number, turnId: TurnId | null) => ({
+  kind: "checkpoint" as const,
+  checkpointTurnCount: count,
+  turnId,
+  checkpointRef: CheckpointRef.make(`refs/t3/checkpoints/exact/${count}`),
+  checkpointOid: `oid-${count}`,
+  sourceRevision: count,
+});
+const exactSourceBinding = (count: number, turnId: TurnId | null) => ({
+  kind: "source" as const,
+  sourceRevision: count,
+  turnId,
+  checkpointRef: CheckpointRef.make(`refs/t3/checkpoints/exact/${count}`),
+  checkpointOid: `oid-${count}`,
+});
+const startExactOpenCodeSession = (adapter: OpenCodeAdapterShape, threadId: ThreadId) =>
+  Effect.gen(function* () {
+    runtimeMock.state.createdSessionIds.push("ses_exact");
+    runtimeMock.state.sessionDirectoryById.set("ses_exact", process.cwd());
+    return yield* adapter.startSession({
+      threadId,
+      runtimeMode: "full-access",
+      cwd: process.cwd(),
+      sessionIncarnationId: RuntimeSessionId.make("exact-incarnation"),
+      modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+    });
+  });
+const completeExactOpenCodeTurn = (
+  adapter: OpenCodeAdapterShape,
+  push: (event: unknown) => void,
+  threadId: ThreadId,
+  text: string,
+) =>
+  Effect.gen(function* () {
+    const completed = yield* Deferred.make<TurnId>();
+    const observer = yield* adapter.streamEvents.pipe(
+      Stream.runForEach((event) =>
+        event.type === "turn.completed" && event.threadId === threadId && event.turnId !== undefined
+          ? Deferred.succeed(completed, event.turnId).pipe(Effect.asVoid)
+          : Effect.void,
+      ),
+      Effect.forkChild,
+    );
+    const turn = yield* adapter.sendTurn({
+      threadId,
+      input: text,
+      modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+    });
+    const prompt = runtimeMock.state.promptCalls.at(-1) as { sessionID: string; messageID: string };
+    const messages =
+      runtimeMock.state.forkMessagesBySession.get(prompt.sessionID) ?? runtimeMock.state.messages;
+    const user = messages.find((entry) => entry.info.id === prompt.messageID)!;
+    user.info.sessionID = prompt.sessionID;
+    user.parts = [
+      {
+        id: `${prompt.messageID}-part`,
+        messageID: prompt.messageID,
+        sessionID: prompt.sessionID,
+        type: "text",
+        text,
+      },
+    ];
+    messages.push({
+      info: {
+        id: `${prompt.messageID}-answer`,
+        sessionID: prompt.sessionID,
+        role: "assistant",
+        parentID: prompt.messageID,
+      },
+      parts: [
+        {
+          id: `${prompt.messageID}-answer-part`,
+          messageID: `${prompt.messageID}-answer`,
+          sessionID: prompt.sessionID,
+          type: "text",
+          text: `Reply to ${text}`,
+        },
+      ],
+    });
+    push({
+      type: "session.status",
+      properties: { sessionID: prompt.sessionID, status: { type: "idle" } },
+    });
+    const turnId = yield* Deferred.await(completed);
+    yield* Fiber.interrupt(observer);
+    NodeAssert.equal(turnId, turn.turnId);
+    yield* adapter.absoluteConversationRollback!.captureAnchor({
+      threadId,
+      binding: exactCheckpointBinding(
+        messages.filter((entry) => entry.info.role === "user").length,
+        turnId,
+      ),
+    });
+    return turnId;
+  });
+
+it.layer(OpenCodeAdapterTestLayer)("OpenCode exact rollback", (it) => {
+  it.effect(
+    "captures absolute completed turns, applies idempotently, and compensates without changing source history",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("exact-rewind");
+        const push = makeOpenCodeEventQueue();
+        yield* startExactOpenCodeSession(adapter, threadId);
+        const exact = adapter.absoluteConversationRollback!;
+        const root = yield* exact.captureAnchor({
+          threadId,
+          binding: exactCheckpointBinding(0, null),
+        });
+        const first = yield* completeExactOpenCodeTurn(adapter, push, threadId, "first");
+        const second = yield* completeExactOpenCodeTurn(adapter, push, threadId, "second");
+        const target = yield* exact.captureAnchor({
+          threadId,
+          binding: exactCheckpointBinding(1, first),
+        });
+        const unknown = yield* exact
+          .captureAnchor({
+            threadId,
+            binding: exactCheckpointBinding(1, TurnId.make("not-a-native-assistant-count")),
+          })
+          .pipe(Effect.flip);
+        NodeAssert.match(unknown.message, /completed OpenCode turn snapshot is unavailable/);
+        const sourceHistory = structuredClone(runtimeMock.state.messages);
+        const source = yield* exact.captureAnchor({
+          threadId,
+          binding: exactSourceBinding(2, second),
+        });
+        yield* exact.applyAnchor(threadId, target.anchor);
+        const after = (yield* adapter.listSessions()).find(
+          (session) => session.threadId === threadId,
+        )!.resumeCursor;
+        const forkCount = runtimeMock.state.forkCalls.length;
+        yield* exact.applyAnchor(threadId, target.anchor);
+        NodeAssert.deepEqual(
+          (yield* adapter.listSessions()).find((session) => session.threadId === threadId)!
+            .resumeCursor,
+          after,
+        );
+        NodeAssert.equal(runtimeMock.state.forkCalls.length, forkCount);
+        NodeAssert.equal((yield* exact.inspectAnchor(threadId)).digest, target.digest);
+        NodeAssert.deepEqual(runtimeMock.state.messages, sourceHistory);
+        NodeAssert.deepEqual(runtimeMock.state.revertCalls, []);
+        yield* exact.applyAnchor(threadId, source.anchor);
+        NodeAssert.equal((yield* exact.inspectAnchor(threadId)).digest, source.digest);
+        yield* exact.releaseAnchor(threadId, source.anchor);
+        const freshSource = yield* exact.captureAnchor({
+          threadId,
+          binding: exactSourceBinding(2, second),
+        });
+        yield* exact.applyAnchor(threadId, root.anchor);
+        NodeAssert.equal((yield* exact.inspectAnchor(threadId)).digest, root.digest);
+        yield* exact.applyAnchor(threadId, freshSource.anchor);
+        yield* exact.releaseAnchor(threadId, freshSource.anchor);
+        NodeAssert.deepEqual(runtimeMock.state.messages, sourceHistory);
+      }),
+  );
+
+  it.effect(
+    "rejects same-length fork corruption before selection and retains source compensation",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("exact-corrupt-fork");
+        const push = makeOpenCodeEventQueue();
+        yield* startExactOpenCodeSession(adapter, threadId);
+        const exact = adapter.absoluteConversationRollback!;
+        const first = yield* completeExactOpenCodeTurn(adapter, push, threadId, "first");
+        const target = yield* exact.captureAnchor({
+          threadId,
+          binding: exactCheckpointBinding(1, first),
+        });
+        const second = yield* completeExactOpenCodeTurn(adapter, push, threadId, "second");
+        const source = yield* exact.captureAnchor({
+          threadId,
+          binding: exactSourceBinding(2, second),
+        });
+        const before = (yield* adapter.listSessions()).find(
+          (session) => session.threadId === threadId,
+        )!.resumeCursor;
+        runtimeMock.state.forkTransform = (messages) =>
+          messages.map((entry) => ({
+            ...entry,
+            parts: entry.parts.map((part) => ({ ...(part as object), text: "corrupted" })),
+          }));
+        const error = yield* exact.applyAnchor(threadId, target.anchor).pipe(Effect.flip);
+        NodeAssert.match(error.message, /snapshot contents/);
+        NodeAssert.deepEqual(
+          (yield* adapter.listSessions()).find((session) => session.threadId === threadId)!
+            .resumeCursor,
+          before,
+        );
+        NodeAssert.equal((yield* exact.inspectAnchor(threadId)).digest, source.digest);
+        yield* exact.releaseAnchor(threadId, source.anchor);
+      }),
+  );
+
+  it.effect(
+    "recovers a persisted selection with the same incarnation and quarantines input until exact release",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("exact-recover");
+        const push = makeOpenCodeEventQueue();
+        yield* startExactOpenCodeSession(adapter, threadId);
+        const exact = adapter.absoluteConversationRollback!;
+        const target = yield* exact.captureAnchor({
+          threadId,
+          binding: exactCheckpointBinding(0, null),
+        });
+        const turnId = yield* completeExactOpenCodeTurn(adapter, push, threadId, "source");
+        const source = yield* exact.captureAnchor({
+          threadId,
+          binding: exactSourceBinding(1, turnId),
+        });
+        yield* exact.applyAnchor(threadId, target.anchor);
+        const selected = (yield* adapter.listSessions()).find(
+          (session) => session.threadId === threadId,
+        )!;
+        yield* adapter.stopSession(threadId);
+        const recovered = yield* adapter.recoverSession!({
+          threadId,
+          providerInstanceId: ProviderInstanceId.make("opencode"),
+          sessionIncarnationId: selected.sessionIncarnationId!,
+          runtimeMode: "full-access",
+          cwd: process.cwd(),
+          modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+          resumeCursor: selected.resumeCursor,
+        });
+        NodeAssert.equal(recovered?.sessionIncarnationId, selected.sessionIncarnationId);
+        const denied = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "must wait",
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("opencode"),
+              "openai/gpt-5",
+            ),
+          })
+          .pipe(Effect.flip);
+        NodeAssert.match(denied.message, /fenced/);
+        yield* exact.prepareRecovery!({
+          threadId,
+          sourceAnchor: source.anchor,
+          desiredAnchor: target.anchor,
+          expectedAnchor: target.anchor,
+        });
+        yield* adapter.activateRecoveredSession!(threadId);
+        NodeAssert.ok(adapter.compaction?.type === "native");
+        const stillDenied = yield* adapter.compaction.start(threadId).pipe(Effect.flip);
+        NodeAssert.match(stillDenied.message, /fenced/);
+        NodeAssert.equal((yield* exact.inspectAnchor(threadId)).digest, target.digest);
+        yield* exact.releaseAnchor(threadId, target.anchor);
+        yield* adapter.sendTurn({
+          threadId,
+          input: "released",
+          modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+        });
+      }),
+  );
+
+  it.effect(
+    "fails closed when a persisted exact native selection disappears instead of creating an empty session",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("exact-missing-recover");
+        yield* startExactOpenCodeSession(adapter, threadId);
+        const selected = (yield* adapter.listSessions()).find(
+          (session) => session.threadId === threadId,
+        )!;
+        const cursor = selected.resumeCursor as { sessionId: string };
+        yield* adapter.stopSession(threadId);
+        runtimeMock.state.missingSessionIds.add(cursor.sessionId);
+        const createCount = runtimeMock.state.sessionCreateInputs.length;
+        yield* adapter.recoverSession!({
+          threadId,
+          providerInstanceId: ProviderInstanceId.make("opencode"),
+          sessionIncarnationId: selected.sessionIncarnationId!,
+          runtimeMode: "full-access",
+          cwd: process.cwd(),
+          resumeCursor: selected.resumeCursor,
+        }).pipe(Effect.flip);
+        NodeAssert.equal(runtimeMock.state.sessionCreateInputs.length, createCount);
+        NodeAssert.equal(yield* adapter.hasSession(threadId), false);
+      }),
+  );
+  it.effect("rejects native child work and pending input while allowing unrelated sessions", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("exact-native-idle");
+      yield* startExactOpenCodeSession(adapter, threadId);
+      const exact = adapter.absoluteConversationRollback!;
+      runtimeMock.state.sessionParentById.set("ses_child", "ses_exact");
+      runtimeMock.state.sessionStatusImplementation = async () => ({
+        data: { ses_child: { type: "busy" } },
+      });
+      const busy = yield* exact
+        .captureAnchor({ threadId, binding: exactSourceBinding(0, null) })
+        .pipe(Effect.flip);
+      NodeAssert.match(busy.message, /child session is still active/);
+      runtimeMock.state.sessionStatusImplementation = null;
+      runtimeMock.state.pendingQuestions.push(
+        questionRequest("hidden-child-question", "ses_child"),
+      );
+      const pending = yield* exact
+        .captureAnchor({ threadId, binding: exactSourceBinding(0, null) })
+        .pipe(Effect.flip);
+      NodeAssert.match(pending.message, /pending native input/);
+      runtimeMock.state.pendingQuestions.length = 0;
+      runtimeMock.state.sessionStatusImplementation = async () => ({
+        data: { ses_unrelated: { type: "busy" } },
+      });
+      const source = yield* exact.captureAnchor({ threadId, binding: exactSourceBinding(0, null) });
+      yield* exact.releaseAnchor(threadId, source.anchor);
+    }),
+  );
+
+  it.effect(
+    "bounds a stalled snapshot without selecting a late fork or leaving a local fence",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("exact-timeout");
+        yield* startExactOpenCodeSession(adapter, threadId);
+        const exact = adapter.absoluteConversationRollback!;
+        const before = (yield* adapter.listSessions()).find(
+          (session) => session.threadId === threadId,
+        )!.resumeCursor;
+        const entered = promiseWithResolvers<void>();
+        const release = promiseWithResolvers<void>();
+        runtimeMock.state.forkImplementation = () => {
+          entered.resolve();
+          return release.promise;
+        };
+        const capture = yield* exact
+          .captureAnchor({ threadId, binding: exactSourceBinding(0, null) })
+          .pipe(Effect.result, Effect.forkChild);
+        yield* Effect.promise(() => entered.promise);
+        yield* TestClock.adjust("30 seconds");
+        const result = yield* Fiber.join(capture);
+        NodeAssert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") NodeAssert.match(result.failure.message, /timed out/);
+        runtimeMock.state.forkImplementation = null;
+        release.resolve();
+        yield* Effect.yieldNow;
+        NodeAssert.deepEqual(
+          (yield* adapter.listSessions()).find((session) => session.threadId === threadId)!
+            .resumeCursor,
+          before,
+        );
+        yield* adapter.sendTurn({
+          threadId,
+          input: "after timeout",
+          modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+        });
+      }),
+  );
+
+  it.effect("cannot select an absolute fork after Stop and a replacement owner", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("exact-replaced");
+      const push = makeOpenCodeEventQueue();
+      yield* startExactOpenCodeSession(adapter, threadId);
+      const exact = adapter.absoluteConversationRollback!;
+      const root = yield* exact.captureAnchor({
+        threadId,
+        binding: exactCheckpointBinding(0, null),
+      });
+      const turnId = yield* completeExactOpenCodeTurn(adapter, push, threadId, "source");
+      yield* exact.captureAnchor({ threadId, binding: exactSourceBinding(1, turnId) });
+      const entered = promiseWithResolvers<void>();
+      const release = promiseWithResolvers<void>();
+      runtimeMock.state.forkImplementation = () => {
+        entered.resolve();
+        return release.promise;
+      };
+      const applying = yield* exact
+        .applyAnchor(threadId, root.anchor)
+        .pipe(Effect.result, Effect.forkChild);
+      yield* Effect.promise(() => entered.promise);
+      yield* adapter.stopSession(threadId);
+      runtimeMock.state.createdSessionIds.push("ses_replacement");
+      const replacement = yield* adapter.startSession({
+        threadId,
+        sessionIncarnationId: RuntimeSessionId.make("replacement-incarnation"),
+        runtimeMode: "full-access",
+      });
+      release.resolve();
+      const result = yield* Fiber.join(applying);
+      NodeAssert.equal(result._tag, "Failure");
+      NodeAssert.deepEqual(
+        (yield* adapter.listSessions()).find((session) => session.threadId === threadId),
+        replacement,
+      );
+    }),
+  );
+  for (const runtimeMode of ["full-access", "approval-required"] as const) {
+    it.effect(
+      `preserves ordinary Stop and ${runtimeMode} resume while dropping old exact incarnation`,
+      () =>
+        Effect.gen(function* () {
+          const adapter = yield* OpenCodeAdapter;
+          const threadId = asThreadId(`exact-normal-resume-${runtimeMode}`);
+          const push = makeOpenCodeEventQueue();
+          yield* startExactOpenCodeSession(adapter, threadId);
+          yield* completeExactOpenCodeTurn(adapter, push, threadId, "retained history");
+          const selected = (yield* adapter.listSessions()).find(
+            (session) => session.threadId === threadId,
+          )!;
+          const history = structuredClone(runtimeMock.state.messages);
+          yield* adapter.stopSession(threadId);
+          const resumed = yield* adapter.startSession({
+            threadId,
+            runtimeMode,
+            cwd: process.cwd(),
+            sessionIncarnationId: RuntimeSessionId.make(`resumed-${runtimeMode}`),
+            resumeCursor: selected.resumeCursor,
+          });
+          NodeAssert.deepEqual(resumed.resumeCursor, { schemaVersion: 1, sessionId: "ses_exact" });
+          NodeAssert.deepEqual(runtimeMock.state.messages, history);
+          NodeAssert.equal(runtimeMock.state.sessionCreateInputs.length, 1);
+          NodeAssert.equal(resumed.runtimeMode, runtimeMode);
+          yield* adapter
+            .absoluteConversationRollback!.captureAnchor({
+              threadId,
+              binding: exactSourceBinding(1, TurnId.make("old-turn")),
+            })
+            .pipe(Effect.flip);
+        }),
+    );
+  }
+
+  it.effect(
+    "rejects an external native append and incorrect projected revision before any source fork",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("exact-source-proof");
+        const push = makeOpenCodeEventQueue();
+        yield* startExactOpenCodeSession(adapter, threadId);
+        const turnId = yield* completeExactOpenCodeTurn(adapter, push, threadId, "known");
+        const exact = adapter.absoluteConversationRollback!;
+        const count = runtimeMock.state.forkCalls.length;
+        yield* exact
+          .captureAnchor({ threadId, binding: exactSourceBinding(2, turnId) })
+          .pipe(Effect.flip);
+        runtimeMock.state.messages.push({
+          info: { id: "external-message", sessionID: "ses_exact", role: "user" },
+          parts: [],
+        });
+        const error = yield* exact
+          .captureAnchor({ threadId, binding: exactSourceBinding(1, turnId) })
+          .pipe(Effect.flip);
+        NodeAssert.match(error.message, /outside the projected source/);
+        NodeAssert.equal(runtimeMock.state.forkCalls.length, count);
+      }),
+  );
+
+  it.effect("rejects missing native workspace and mixed native message session identities", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("exact-native-identity");
+      yield* startExactOpenCodeSession(adapter, threadId);
+      const exact = adapter.absoluteConversationRollback!;
+      runtimeMock.state.sessionDirectoryById.delete("ses_exact");
+      const missing = yield* exact.inspectAnchor(threadId).pipe(Effect.flip);
+      NodeAssert.match(missing.message, /identity is unavailable/);
+      runtimeMock.state.sessionDirectoryById.set("ses_exact", process.cwd());
+      runtimeMock.state.messages.push({
+        info: { id: "foreign-user", sessionID: "other-session", role: "user" },
+        parts: [],
+      });
+      const mixed = yield* exact.inspectAnchor(threadId).pipe(Effect.flip);
+      NodeAssert.match(mixed.message, /cannot be verified exactly/);
+    }),
+  );
+
+  it.effect("does not publish or return an old startup after empty-root snapshot awaits", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("exact-start-replaced");
+      const entered = promiseWithResolvers<void>();
+      const release = promiseWithResolvers<void>();
+      runtimeMock.state.forkImplementation = () => {
+        entered.resolve();
+        return release.promise;
+      };
+      const starting = yield* startExactOpenCodeSession(adapter, threadId).pipe(
+        Effect.result,
+        Effect.forkChild,
+      );
+      yield* Effect.promise(() => entered.promise);
+      yield* adapter.stopSession(threadId);
+      runtimeMock.state.createdSessionIds.push("ses_new_owner");
+      const replacement = yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      runtimeMock.state.forkImplementation = null;
+      release.resolve();
+      const result = yield* Fiber.join(starting);
+      NodeAssert.equal(result._tag, "Failure");
+      NodeAssert.deepEqual(
+        (yield* adapter.listSessions()).find((session) => session.threadId === threadId),
+        replacement,
+      );
+    }),
+  );
+  it.effect(
+    "refreshes successful compaction source proof while retaining immutable checkpoint targets",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("exact-compaction");
+        const push = makeOpenCodeEventQueue();
+        yield* startExactOpenCodeSession(adapter, threadId);
+        const turnId = yield* completeExactOpenCodeTurn(adapter, push, threadId, "before compact");
+        const exact = adapter.absoluteConversationRollback!;
+        const target = yield* exact.captureAnchor({
+          threadId,
+          binding: exactCheckpointBinding(1, turnId),
+        });
+        runtimeMock.state.summarizeImplementation = async () => {
+          runtimeMock.state.messages.push({
+            info: { id: "compact-marker", sessionID: "ses_exact", role: "user" },
+            parts: [
+              {
+                id: "compact-part",
+                messageID: "compact-marker",
+                sessionID: "ses_exact",
+                type: "compaction",
+                auto: false,
+                tail_start_id: runtimeMock.state.messages[0]!.info.id,
+              },
+            ],
+          });
+        };
+        NodeAssert.ok(adapter.compaction?.type === "native");
+        yield* adapter.compaction.start(threadId);
+        const source = yield* exact.captureAnchor({
+          threadId,
+          binding: exactSourceBinding(1, turnId),
+        });
+        NodeAssert.notEqual(source.digest, target.digest);
+        NodeAssert.equal(
+          (yield* exact.captureAnchor({ threadId, binding: exactCheckpointBinding(1, turnId) }))
+            .digest,
+          target.digest,
+        );
+        yield* exact.applyAnchor(threadId, target.anchor);
+        NodeAssert.equal((yield* exact.inspectAnchor(threadId)).digest, target.digest);
+        yield* exact.applyAnchor(threadId, source.anchor);
+        yield* exact.releaseAnchor(threadId, source.anchor);
+        runtimeMock.state.summarizeImplementation = async () => {
+          throw new Error("uncertain summarize");
+        };
+        yield* adapter.compaction.start(threadId).pipe(Effect.flip);
+        const cursor = (yield* adapter.listSessions()).find(
+          (session) => session.threadId === threadId,
+        )!.resumeCursor;
+        NodeAssert.ok(typeof cursor === "object" && cursor !== null && "sessionId" in cursor);
+        NodeAssert.equal("exactRollback" in cursor, false);
+      }),
+  );
+  it.effect(
+    "rejects a source that changes between its projected proof and native snapshot read",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("exact-source-read-race");
+        const push = makeOpenCodeEventQueue();
+        yield* startExactOpenCodeSession(adapter, threadId);
+        const turnId = yield* completeExactOpenCodeTurn(adapter, push, threadId, "known source");
+        let reads = 0;
+        runtimeMock.state.sessionGetImplementation = async (sessionID) => {
+          if (sessionID === "ses_exact" && ++reads === 2)
+            runtimeMock.state.messages.push({
+              info: { id: "late-external", sessionID, role: "user" },
+              parts: [],
+            });
+        };
+        const error = yield* adapter
+          .absoluteConversationRollback!.captureAnchor({
+            threadId,
+            binding: exactSourceBinding(1, turnId),
+          })
+          .pipe(Effect.flip);
+        NodeAssert.match(error.message, /during snapshot capture/);
+        runtimeMock.state.sessionGetImplementation = null;
+        yield* adapter.sendTurn({
+          threadId,
+          input: "ordinary continuation",
+          modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+        });
+      }),
+  );
+
+  for (const requestKind of ["permission", "question"] as const) {
+    it.effect(`drops a delayed ${requestKind} stamp after rollback releases its source`, () =>
+      Effect.gen(function* () {
+        const threadId = asThreadId(`exact-stale-${requestKind}`);
+        const push = makeOpenCodeEventQueue();
+        const stampStarted = yield* Deferred.make<void>();
+        const stampRelease = yield* Deferred.make<void>();
+        const drained = yield* Deferred.make<void>();
+        let blockNextUuid = false;
+        const crypto = yield* Crypto.Crypto;
+        const adapter = yield* makeOpenCodeAdapter(openCodeAdapterTestSettings, {
+          nativeEventLogger: {
+            filePath: "memory://exact-stale-request",
+            write: (record) =>
+              (record as { event?: { type?: string } }).event?.type === "session.updated"
+                ? Deferred.succeed(drained, undefined).pipe(Effect.asVoid)
+                : Effect.void,
+            close: () => Effect.void,
+          },
+        }).pipe(
+          Effect.provideService(Crypto.Crypto, {
+            ...crypto,
+            randomUUIDv4: Effect.suspend(() => {
+              if (!blockNextUuid) return crypto.randomUUIDv4;
+              blockNextUuid = false;
+              return Deferred.succeed(stampStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(stampRelease)),
+                Effect.andThen(crypto.randomUUIDv4),
+              );
+            }),
+          }),
+        );
+        runtimeMock.state.createdSessionIds.push("ses_exact");
+        runtimeMock.state.sessionDirectoryById.set("ses_exact", process.cwd());
+        yield* adapter.startSession({
+          threadId,
+          runtimeMode: "approval-required",
+          cwd: process.cwd(),
+          sessionIncarnationId: RuntimeSessionId.make("exact-stamp-incarnation"),
+        });
+        const events: Array<unknown> = [];
+        const observer = yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) => Effect.sync(() => events.push(event))),
+          Effect.forkChild,
+        );
+        blockNextUuid = true;
+        if (requestKind === "permission")
+          push({
+            type: "permission.asked",
+            properties: permissionRequest("stale-ask", "ses_exact"),
+          });
+        else
+          push({ type: "question.asked", properties: questionRequest("stale-ask", "ses_exact") });
+        yield* Deferred.await(stampStarted);
+        runtimeMock.state.pendingPermissions.length = 0;
+        runtimeMock.state.pendingQuestions.length = 0;
+        const exact = adapter.absoluteConversationRollback!;
+        const source = yield* exact.captureAnchor({
+          threadId,
+          binding: exactSourceBinding(0, null),
+        });
+        yield* exact.releaseAnchor(threadId, source.anchor);
+        yield* Deferred.succeed(stampRelease, undefined);
+        push({ type: "session.updated", properties: { info: { id: "ses_exact" } } });
+        yield* Deferred.await(drained);
+        NodeAssert.equal((yield* exact.inspectAnchor(threadId)).digest, source.digest);
+        yield* Fiber.interrupt(observer);
+        NodeAssert.equal(
+          events.some(
+            (event) =>
+              typeof event === "object" &&
+              event !== null &&
+              "type" in event &&
+              (event.type === "request.opened" || event.type === "user-input.requested"),
+          ),
+          false,
+        );
+        NodeAssert.equal(encodeTestJson(events).includes("exactRollback"), false);
+        NodeAssert.equal(encodeTestJson(events).includes("snapshotSessionId"), false);
+      }),
+    );
+  }
+  it.effect(
+    "fails closed on cyclic or over-bound native ancestry and malformed pending ownership",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("exact-ancestry-unknown");
+        yield* startExactOpenCodeSession(adapter, threadId);
+        const exact = adapter.absoluteConversationRollback!;
+        runtimeMock.state.sessionParentById.set("cycle", "cycle");
+        runtimeMock.state.sessionStatusImplementation = async () => ({
+          data: { cycle: { type: "busy" } },
+        });
+        const cycle = yield* exact
+          .captureAnchor({ threadId, binding: exactSourceBinding(0, null) })
+          .pipe(Effect.flip);
+        NodeAssert.match(cycle.message, /ancestry is cyclic/);
+        for (let index = 0; index < 35; index++)
+          runtimeMock.state.sessionParentById.set(
+            `deep-${index}`,
+            index === 34 ? "ses_exact" : `deep-${index + 1}`,
+          );
+        runtimeMock.state.sessionStatusImplementation = async () => ({
+          data: { "deep-0": { type: "busy" } },
+        });
+        const deep = yield* exact
+          .captureAnchor({ threadId, binding: exactSourceBinding(0, null) })
+          .pipe(Effect.flip);
+        NodeAssert.match(deep.message, /exceeds the exact verification bound/);
+        runtimeMock.state.sessionStatusImplementation = null;
+        runtimeMock.state.pendingQuestions.push({
+          id: "missing-owner",
+          questions: [],
+        } as unknown as QuestionRequest);
+        const malformed = yield* exact
+          .captureAnchor({ threadId, binding: exactSourceBinding(0, null) })
+          .pipe(Effect.flip);
+        NodeAssert.match(malformed.message, /ownership is malformed/);
+      }),
   );
 });
