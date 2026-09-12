@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   rateLimitFromRuntimeEventPayload,
+  requiresClaudeUsageReconciliation,
   usageWindowsFromRuntimeEventPayload,
 } from "./providerRateLimitEvents.ts";
 
@@ -273,4 +274,46 @@ describe("usageWindowsFromRuntimeEventPayload", () => {
   ])("returns undefined for a payload that is %s", (_label, payload) => {
     expect(usageWindowsFromRuntimeEventPayload(payload)).toBeUndefined();
   });
+});
+
+describe("requiresClaudeUsageReconciliation", () => {
+  it.each(["seven_day_overage_included", "seven_day_opus", "seven_day_sonnet"])(
+    "refreshes authoritative scopes for %s without guessing a window",
+    (rateLimitType) => {
+      const payload = {
+        rateLimits: {
+          type: "rate_limit_event",
+          rate_limit_info: {
+            status: "allowed_warning",
+            rateLimitType,
+            utilization: 0.8,
+          },
+        },
+      };
+      expect(requiresClaudeUsageReconciliation(payload)).toBe(true);
+      expect(usageWindowsFromRuntimeEventPayload(payload)).toBeUndefined();
+    },
+  );
+  it.each(["five_hour", "seven_day", "overage", "unknown"])(
+    "does not reconcile an account-wide or unsupported event %s",
+    (rateLimitType) => {
+      expect(
+        requiresClaudeUsageReconciliation({
+          rateLimits: {
+            rate_limit_info: {
+              status: "allowed",
+              rateLimitType,
+            },
+          },
+        }),
+      ).toBe(false);
+    },
+  );
+  it.each([
+    null,
+    {},
+    { rateLimits: { rate_limit_info: { rateLimitType: "seven_day_overage_included" } } },
+  ])("ignores malformed input", (payload) =>
+    expect(requiresClaudeUsageReconciliation(payload)).toBe(false),
+  );
 });

@@ -43,6 +43,10 @@ window; expand a pool to inspect its accounts. Each window's bar has one segment
 the same column across windows and ordered by the soonest 5-hour reset. A gap means the account does
 not report that window. Refresh to update the readings.
 
+During native Claude sessions, account-wide quota reports update immediately. Model-specific weekly
+limits reconcile with the signed-in account after about a minute; provider throttling can delay them.
+Pylon keeps the last reading when it cannot verify the account.
+
 API-key accounts may not report subscription limits. This also applies to Claude connections using a
 proxy through `ANTHROPIC_AUTH_TOKEN`.
 

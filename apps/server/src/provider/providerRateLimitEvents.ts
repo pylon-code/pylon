@@ -219,3 +219,17 @@ export function usageWindowsFromRuntimeEventPayload(
   }
   return usageWindowsFromCodexEvent(message);
 }
+
+/** Scoped Claude pushes identify a changed allowance, but cannot name its OAuth model bucket. */
+export function requiresClaudeUsageReconciliation(payload: unknown): boolean {
+  const envelope = asRecord(payload);
+  const message = asRecord(envelope?.["rateLimits"]);
+  const info = asRecord(message?.["rate_limit_info"]);
+  if (!info || typeof info["status"] !== "string" || !RATE_LIMIT_STATUSES.has(info["status"]))
+    return false;
+  return (
+    info["rateLimitType"] === "seven_day_overage_included" ||
+    info["rateLimitType"] === "seven_day_opus" ||
+    info["rateLimitType"] === "seven_day_sonnet"
+  );
+}

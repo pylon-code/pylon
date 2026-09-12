@@ -637,6 +637,7 @@ describe("ProviderRuntimeIngestion", () => {
       options: {
         readonly eventId: string;
         readonly payload: unknown;
+        readonly provider?: ProviderDriverKind;
         readonly instanceId?: ProviderInstanceId;
         readonly threadId?: string;
         readonly createdAt?: string;
@@ -645,7 +646,7 @@ describe("ProviderRuntimeIngestion", () => {
       harness.emit({
         type: "account.rate-limits.updated",
         eventId: asEventId(options.eventId),
-        provider: ProviderDriverKind.make("claude"),
+        provider: options.provider ?? ProviderDriverKind.make("claudeAgent"),
         threadId: asThreadId(options.threadId ?? "thread-1"),
         createdAt: options.createdAt ?? "2026-08-04T18:30:00.000Z",
         ...(options.instanceId ? { providerInstanceId: options.instanceId } : {}),
@@ -656,6 +657,39 @@ describe("ProviderRuntimeIngestion", () => {
     // The adapters wrap the driver's own message under `rateLimits`.
     const claudeRateLimits = (info: Record<string, unknown>) => ({
       rateLimits: { type: "rate_limit_event", rate_limit_info: info },
+    });
+
+    it("requests scoped Claude reconciliation without blocking the verdict or requiring a thread", async () => {
+      const harness = await createHarness();
+      emitRateLimits(harness, {
+        eventId: "evt-scoped-quota",
+        instanceId: claudeInstance,
+        threadId: "missing-thread",
+        payload: claudeRateLimits({
+          status: "allowed_warning",
+          rateLimitType: "seven_day_overage_included",
+          utilization: 0.83,
+        }),
+      });
+      await harness.drain();
+      expect(harness.capacityCalls).toEqual([claudeInstance]);
+      expect(harness.rateLimitCalls.map((call) => call.state?.status)).toEqual(["allowed_warning"]);
+      expect(harness.usageWindowCalls).toEqual([]);
+    });
+
+    it("does not schedule Claude reconciliation for another driver", async () => {
+      const harness = await createHarness();
+      emitRateLimits(harness, {
+        eventId: "evt-non-claude-scoped-quota",
+        instanceId: claudeInstance,
+        provider: ProviderDriverKind.make("codex"),
+        payload: claudeRateLimits({
+          status: "allowed",
+          rateLimitType: "seven_day_overage_included",
+        }),
+      });
+      await harness.drain();
+      expect(harness.capacityCalls).toEqual([]);
     });
 
     it("pushes a rejected verdict at the reporting instance", async () => {
