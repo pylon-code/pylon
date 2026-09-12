@@ -216,7 +216,9 @@ function supportsScopedPatch(
   if (projectScope && capabilities?.projectSettingsOverrides !== true) return false;
   return keys.every((key) => {
     if (key === "defaultRuntimeMode") return capabilities?.defaultRuntimeMode === true;
-    if (key === "projectSettingsOverrides") return capabilities?.projectSettingsOverrides === true;
+    if (key === "projectSettingsOverrides" || key === "pullRequestMergeMethod") {
+      return capabilities?.projectSettingsOverrides === true;
+    }
     // Generic overrides imply support for the original project-scoped keys.
     if (capabilities?.projectSettingsOverrides === true) return true;
     if (settingRequiresProjectDefaults(key as keyof ServerSettingsPatch)) {

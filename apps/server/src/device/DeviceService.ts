@@ -58,6 +58,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 
 import * as ServerSettings from "../serverSettings.ts";
+import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 
 import { readDeviceDetail, runDeviceAction } from "./DeviceActions.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -116,7 +117,11 @@ export class DeviceService extends Context.Service<
       threadId: ThreadId;
       hostId: DeviceHostId;
       deviceId: DeviceId;
-    }) => Effect.Effect<ReadonlyArray<string>, DeviceError>;
+    }) => Effect.Effect<
+      ReadonlyArray<string>,
+      DeviceError,
+      McpInvocationContext.McpInvocationContext
+    >;
     readonly state: Effect.Effect<DeviceServiceState>;
     readonly subscribe: Effect.Effect<PubSub.Subscription<DeviceServiceState>, never, Scope.Scope>;
     readonly configure: (
@@ -289,29 +294,39 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     return yield* readiness(host.id);
   });
 
-  const agentReadinessIfSupported: DeviceService["Service"]["agentReadinessIfSupported"] =
-    Effect.fn("DeviceService.agentReadinessIfSupported")(function* (hostId) {
-      const deviceSettings = yield* readDeviceSettings;
-      if (!deviceSettings.enabled || !deviceSettings.agentAccessEnabled) return null;
-      const host = yield* resolveHost(hostId);
-      const summary = yield* host.summary;
-      if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available))
-        return null;
-      const ready = yield* host
-        .ensureAgentReady((phase) => setHostStatus(host.id, { status: phase }).pipe(Effect.asVoid))
-        .pipe(
-          Effect.tapError((error) =>
-            setHostStatus(host.id, { status: "failed", detail: error.message }),
-          ),
-          Effect.mapError(
-            (error) => new DeviceHostUnavailableError({ hostId: host.id, reason: error.message }),
-          ),
-        );
-      const hostSummaries = yield* Effect.forEach(hosts.values(), (candidate) => candidate.summary);
-      yield* publish((state) => ({ ...state, hosts: hostSummaries }));
-      yield* setHostStatus(host.id, { status: "ready" });
-      return { hostId: host.id, ...ready };
-    }, lifecycleLock.withPermit);
+  const prepareAgentReadiness = Effect.fn("DeviceService.prepareAgentReadiness")(function* (
+    hostId: DeviceHostId | undefined,
+    authorization: "environment" | "credential",
+  ) {
+    const deviceSettings = yield* readDeviceSettings;
+    if (
+      !deviceSettings.enabled ||
+      (authorization === "environment" && !deviceSettings.agentAccessEnabled)
+    )
+      return null;
+    const host = yield* resolveHost(hostId);
+    const summary = yield* host.summary;
+    if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available))
+      return null;
+    const ready = yield* host
+      .ensureAgentReady((phase) => setHostStatus(host.id, { status: phase }).pipe(Effect.asVoid))
+      .pipe(
+        Effect.tapError((error) =>
+          setHostStatus(host.id, { status: "failed", detail: error.message }),
+        ),
+        Effect.mapError(
+          (error) => new DeviceHostUnavailableError({ hostId: host.id, reason: error.message }),
+        ),
+      );
+    const hostSummaries = yield* Effect.forEach(hosts.values(), (candidate) => candidate.summary);
+    yield* publish((state) => ({ ...state, hosts: hostSummaries }));
+    yield* setHostStatus(host.id, { status: "ready" });
+    return { hostId: host.id, ...ready };
+  }, lifecycleLock.withPermit);
+
+  const agentReadinessIfSupported: DeviceService["Service"]["agentReadinessIfSupported"] = (
+    hostId,
+  ) => prepareAgentReadiness(hostId, "environment");
 
   const currentReadiness: DeviceService["Service"]["currentReadiness"] = (hostId) =>
     resolveHost(hostId).pipe(
@@ -804,8 +819,25 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       ),
       agentTarget: (input) =>
         Effect.gen(function* () {
+          // The authenticated credential already resolves this thread's project
+          // override. Rechecking the environment default would reject an allowed
+          // project; unrelated or unprivileged invocations must never mint a CLI target.
+          const invocation = yield* McpInvocationContext.requireMcpCapability("device").pipe(
+            Effect.mapError(
+              () =>
+                new DeviceHostUnavailableError({
+                  hostId: input.hostId,
+                  reason: "The authenticated agent session does not grant device access.",
+                }),
+            ),
+          );
+          if (invocation.threadId !== input.threadId)
+            return yield* new DeviceHostUnavailableError({
+              hostId: input.hostId,
+              reason: "The authenticated agent session belongs to another thread.",
+            });
           const host = yield* resolveHost(input.hostId);
-          const ready = yield* agentReadinessIfSupported(input.hostId);
+          const ready = yield* prepareAgentReadiness(input.hostId, "credential");
           if (!ready)
             return yield* new DeviceHostUnavailableError({
               hostId: input.hostId,
@@ -814,6 +846,11 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             });
           const configPath = yield* lifecycleLock.withPermit(
             Effect.gen(function* () {
+              if (!(yield* readDeviceSettings).enabled)
+                return yield* new DeviceHostUnavailableError({
+                  hostId: input.hostId,
+                  reason: "Device support was disabled. Enable it before opening an agent target.",
+                });
               if (hosts.get(host.id) !== host)
                 return yield* new DeviceHostUnavailableError({
                   hostId: host.id,

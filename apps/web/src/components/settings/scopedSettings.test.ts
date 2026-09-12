@@ -192,6 +192,15 @@ describe("scoped settings targets", () => {
 });
 
 describe("scoped settings writes", () => {
+  it("stores project device permission without changing the environment's permission", () => {
+    const plan = planScopedSettingsPatch(checkout, [server], { enableAgentDeviceAccess: true });
+    expect(plan.serverWrites[0]?.patch).toEqual({
+      projectSettingsOverrides: {
+        [projectId]: { enableAgentDeviceAccess: true },
+      },
+    });
+    expect(server.serverConfig?.settings.enableAgentDeviceAccess).toBe(false);
+  });
   it.each([
     ["projectDefaults", { defaultModelSelection: null }],
     ["threadRestartContinuation", { continueThreadsAfterServerUpdate: true }],
@@ -223,6 +232,12 @@ describe("scoped settings writes", () => {
     });
     expect(plan.serverWrites).toEqual([]);
     expect(plan.unavailableReason).toContain("Update");
+    // The environment merge-method default was introduced with generic overrides.
+    const mergeMethod = planScopedSettingsPatch(named, [legacy], {
+      pullRequestMergeMethod: "squash",
+    });
+    expect(mergeMethod.serverWrites).toEqual([]);
+    expect(mergeMethod.unavailableReason).toContain("Update");
   });
 
   it("requires the permissions-default capability even on an environment with generic overrides", () => {

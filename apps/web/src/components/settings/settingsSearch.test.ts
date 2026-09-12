@@ -309,9 +309,11 @@ describe("settings search targets", () => {
   it.each(["all", "environment", "project", "checkout"] as const)(
     "makes browser access editable at the %s scope",
     (kind) => {
-      const setting = getSettingsSearchTargetScope("agent-browser-access")!;
-      expect(isSettingsSearchScopeAvailable(setting.scope, kind)).toBe(true);
-      expect(isSettingsSearchScopeAvailable(setting.scope, "unavailable")).toBe(false);
+      for (const id of ["agent-browser-access", "agent-device-access"]) {
+        const setting = getSettingsSearchTargetScope(id)!;
+        expect(isSettingsSearchScopeAvailable(setting.scope, kind)).toBe(true);
+        expect(isSettingsSearchScopeAvailable(setting.scope, "unavailable")).toBe(false);
+      }
     },
   );
 

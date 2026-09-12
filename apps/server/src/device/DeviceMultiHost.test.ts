@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
@@ -7,6 +7,7 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { DeviceHostError, DeviceHost } from "./DeviceHost.ts";
 import { makeWithHosts } from "./DeviceService.ts";
+import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 
 it.effect("keeps hosts independent when serials collide and another host fails", () =>
   Effect.gen(function* () {
@@ -89,7 +90,17 @@ it.effect("keeps hosts independent when serials collide and another host fails",
     expect(state.hostStatuses.offline?.status).toBe("failed");
     const targeting = yield* service
       .agentTarget({ threadId, hostId: "b", deviceId: "emulator-5554" })
-      .pipe(Effect.forkChild);
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, {
+          environmentId: EnvironmentId.make("environment-device-hosts"),
+          threadId,
+          providerSessionId: "provider-device-hosts",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          capabilities: new Set<McpInvocationContext.McpCapability>(["device"]),
+          issuedAt: 1,
+        }),
+        Effect.forkChild,
+      );
     yield* Deferred.await(writeStarted);
     const replacing = yield* service
       .withLifecycleLock(

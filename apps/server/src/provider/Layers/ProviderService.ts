@@ -1177,7 +1177,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         device: deviceOverridden ? false : environment.device,
       };
       if (Option.isNone(projectionQuery)) return denied;
-      const thread = yield* projectionQuery.value.getThreadShellById(threadId);
+      const thread = yield* projectionQuery.value
+        .getThreadShellById(threadId)
+        .pipe(Effect.orElseSucceed(() => Option.none()));
       if (Option.isNone(thread)) return denied;
       const resolved = resolveProjectSettings(settings, thread.value.projectId).settings;
       return {

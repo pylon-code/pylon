@@ -583,6 +583,7 @@ function DeviceIntegrationSettings() {
         hosts={selected?.serverConfig?.settings.deviceHosts ?? []}
         enabled={selected?.serverConfig?.settings.enableDeviceSupport ?? false}
         agentAccessEnabled={selected?.serverConfig?.settings.enableAgentDeviceAccess ?? false}
+        showAgentAccess={scope.kind !== "project" && scope.kind !== "checkout"}
       />
     </SettingsSection>
   );
@@ -593,11 +594,13 @@ function DeviceIntegrationControls({
   hosts,
   enabled,
   agentAccessEnabled,
+  showAgentAccess,
 }: {
   environmentId: EnvironmentId | null;
   hosts: ReadonlyArray<SshDeviceHostConfig>;
   enabled: boolean;
   agentAccessEnabled: boolean;
+  showAgentAccess: boolean;
 }) {
   const { state, loaded } = useDeviceState(environmentId);
   const configure = useAtomCommand(deviceEnvironment.configure);
@@ -680,23 +683,27 @@ function DeviceIntegrationControls({
           />
         ) : null}
       </AnimatedHeight>
-      <SettingsRow
-        {...searchableSetting("agent-device-access")}
-        description={agentDeviceDescription}
-        control={
-          <>
-            {pending === "agent" ? <AgentDeviceSetupStatus state={state} pending compact /> : null}
-            <Switch
-              checked={agentAccessEnabled}
-              disabled={!loaded || !environmentId || !enabled || busy || pending !== null}
-              aria-label="Agent device access"
-              onCheckedChange={(checked) =>
-                void update("agent", { agentAccessEnabled: Boolean(checked) })
-              }
-            />
-          </>
-        }
-      />
+      {showAgentAccess ? (
+        <SettingsRow
+          {...searchableSetting("agent-device-access")}
+          description={agentDeviceDescription}
+          control={
+            <>
+              {pending === "agent" ? (
+                <AgentDeviceSetupStatus state={state} pending compact />
+              ) : null}
+              <Switch
+                checked={agentAccessEnabled}
+                disabled={!loaded || !environmentId || !enabled || busy || pending !== null}
+                aria-label="Agent device access"
+                onCheckedChange={(checked) =>
+                  void update("agent", { agentAccessEnabled: Boolean(checked) })
+                }
+              />
+            </>
+          }
+        />
+      ) : null}
       {state.hostStatus === "failed" && state.hostStatusDetail ? (
         <p role="alert" className="px-4 py-3 text-xs text-destructive">
           {state.hostStatusDetail}

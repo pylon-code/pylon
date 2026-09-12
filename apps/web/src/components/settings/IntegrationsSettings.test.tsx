@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 const { listBrowserImportSources, selectedDeviceEnvironment } = vi.hoisted(() => ({
   listBrowserImportSources: vi.fn().mockResolvedValue([]),
-  selectedDeviceEnvironment: { id: null as string | null, aggregate: false },
+  selectedDeviceEnvironment: { id: null as string | null, aggregate: false, projectScope: false },
 }));
 
 vi.mock("../preview/previewBridge", () => ({
@@ -45,7 +45,7 @@ vi.mock("./ProjectDefaultsSettings", () => ({ ProjectDefaultsSettings: () => nul
 vi.mock("./SettingsScopeContext", () => ({
   useSettingsScope: () => ({
     scope: {
-      kind: "all",
+      kind: selectedDeviceEnvironment.projectScope ? "project" : "all",
       environmentIds: selectedDeviceEnvironment.aggregate ? ["remote", "other"] : [],
     },
     environment: selectedDeviceEnvironment.id
@@ -72,6 +72,7 @@ beforeEach(() => {
   listBrowserImportSources.mockClear();
   selectedDeviceEnvironment.id = null;
   selectedDeviceEnvironment.aggregate = false;
+  selectedDeviceEnvironment.projectScope = false;
 });
 
 afterEach(async () => {
@@ -127,6 +128,20 @@ describe("Integrations browser discovery", () => {
     expect(
       section.findAll((node) => node.props["aria-label"] === "Device environment"),
     ).toHaveLength(0);
+  });
+
+  it("keeps environment device helpers but removes their permission switch at a project scope", async () => {
+    selectedDeviceEnvironment.projectScope = true;
+    await openSettings();
+    const section = renderer!.root.findAll(
+      (node) => node.type === "section" && node.props.id === "devices",
+    )[0]!;
+    expect(
+      section.findAll((node) => node.props["aria-label"] === "Agent device access"),
+    ).toHaveLength(0);
+    expect(
+      section.findAll((node) => node.props["aria-label"] === "Device hub").length,
+    ).toBeGreaterThan(0);
   });
 });
 

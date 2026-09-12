@@ -471,7 +471,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "agent-device-access",
     title: "Agent device access",
     to: "/settings/integrations",
-    targetId: "devices",
+    scope: "project-defaults",
     searchTerms: ["allow simulator emulator ios android drive tools sessions"],
   },
   {

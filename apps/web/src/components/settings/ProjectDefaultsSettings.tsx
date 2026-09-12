@@ -72,6 +72,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const PermissionIcon = runtimeModeConfig[settings.defaultRuntimeMode].icon;
   const mixedWorkspace = useScopedSettingsMixed(["defaultThreadEnvMode"]);
   const mixedBrowser = useScopedSettingsMixed(["enableAgentBrowserAccess"]);
+  const mixedDevice = useScopedSettingsMixed(["enableAgentDeviceAccess"]);
   const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
   const mixedMergeMethod = useScopedSettingsMixed(["pullRequestMergeMethod"]);
   const modelSource = useScopedSettingSource(["defaultModelSelection"]);
@@ -145,7 +146,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
         category === "general"
           ? "New threads"
           : category === "integrations"
-            ? "Browser"
+            ? "Agent access"
             : "Repositories"
       }
     >
@@ -452,6 +453,25 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
               />
             }
           />
+          {isProjectScope ? (
+            <SettingsRow
+              serverScoped
+              settingKeys={["enableAgentDeviceAccess"]}
+              mixed={mixedDevice}
+              {...searchableSetting("agent-device-access")}
+              description="Allow agents in this project to control simulators and emulators. Device support must also be enabled on each environment. Applies when the agent session next starts."
+              control={
+                <Switch
+                  aria-label="Agent device access"
+                  mixed={mixedDevice}
+                  checked={mixedDevice ? false : settings.enableAgentDeviceAccess}
+                  onCheckedChange={(enabled) =>
+                    updateSettings({ enableAgentDeviceAccess: enabled })
+                  }
+                />
+              }
+            />
+          ) : null}
         </>
       )}
     </SettingsSection>

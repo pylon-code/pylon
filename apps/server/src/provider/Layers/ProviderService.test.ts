@@ -6667,8 +6667,10 @@ class RuntimeReaper extends Context.Service<RuntimeReaper, {}>()(
 describe("agent browser access", () => {
   const projectId = ProjectId.make("project-browser-access");
 
-  const makeBrowserAccessProjectionLayer = (threadId: ThreadId) =>
-    makeThreadProjectProjectionLayer(threadId, projectId);
+  const makeBrowserAccessProjectionLayer = (
+    threadId: ThreadId,
+    status: "found" | "missing" | "failed" = "found",
+  ) => makeThreadProjectProjectionLayer(threadId, projectId, () => status);
 
   const makeAgentBrowserProviderLayer = (
     enableAgentBrowserAccess: boolean,
@@ -6682,6 +6684,7 @@ describe("agent browser access", () => {
         | undefined;
       /** False leaves the projection query to the surrounding runtime composition. */
       readonly provideProjection?: boolean;
+      readonly projectionStatus?: "found" | "missing" | "failed";
     },
     enableAgentDeviceAccess = false,
   ) => {
@@ -6699,7 +6702,7 @@ describe("agent browser access", () => {
       Layer.provideMerge(directoryLayer),
       Layer.provide(
         project && project.provideProjection !== false
-          ? makeBrowserAccessProjectionLayer(project.threadId)
+          ? makeBrowserAccessProjectionLayer(project.threadId, project.projectionStatus)
           : Layer.empty,
       ),
       Layer.provide(
@@ -6826,11 +6829,19 @@ describe("agent browser access", () => {
     "resolves project device overrides and withholds only overridden unresolved capabilities",
     () =>
       Effect.gen(function* () {
-        for (const [browser, device, override, provideProjection, expected] of [
+        for (const [
+          browser,
+          device,
+          override,
+          provideProjection,
+          expected,
+          projectionStatus = "found",
+        ] of [
           [false, false, { device: true }, true, ["device"]],
           [true, true, { device: false }, true, ["preview"]],
           [true, true, { device: false }, false, ["preview"]],
           [false, false, { device: true }, false, []],
+          [true, true, { device: false }, true, ["preview"], "failed"],
         ] as const) {
           const threadId = asThreadId(
             `thread-project-device-${browser}-${device}-${provideProjection}`,
@@ -6847,7 +6858,7 @@ describe("agent browser access", () => {
                   return undefined;
                 }),
             },
-            { threadId, override, provideProjection },
+            { threadId, override, provideProjection, projectionStatus },
             device,
           );
           yield* Effect.gen(function* () {
