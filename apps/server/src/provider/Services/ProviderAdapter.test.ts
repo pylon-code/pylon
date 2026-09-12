@@ -6,7 +6,7 @@ describe("built-in provider conversation rollback modes", () => {
   it("classifies production adapters by their verified rollback support", () => {
     expect(BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES).toEqual({
       antigravity: "unsupported",
-      codex: "relative",
+      codex: "absolute",
       claude: "relative",
       cursor: "unsupported",
       grok: "unsupported",

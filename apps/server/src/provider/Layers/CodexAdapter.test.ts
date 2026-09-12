@@ -5,6 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import {
   ApprovalRequestId,
+  CheckpointRef,
   CodexSettings,
   CommandId,
   EnvironmentId,
@@ -27,6 +28,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, vi } from "@effect/vitest";
 
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -52,6 +54,9 @@ import {
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
 import { makeCodexAdapter } from "./CodexAdapter.ts";
+import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { readCodexExactCursor } from "./CodexAbsoluteRollback.ts";
+import type { CodexConversationSnapshot } from "./CodexAbsoluteHistory.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* CodexAdapter`.
@@ -65,6 +70,7 @@ const asEventId = (value: string): EventId => EventId.make(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.make(value);
 
 class FakeCodexRuntime implements CodexSessionRuntimeShape {
+  declare absoluteConversation?: NonNullable<CodexSessionRuntimeShape["absoluteConversation"]>;
   private readonly eventQueue = Effect.runSync(Queue.unbounded<ProviderEvent>());
   private readonly now = "2026-01-01T00:00:00.000Z";
 
@@ -174,10 +180,11 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   }
 }
 
-function makeRuntimeFactory() {
+function makeRuntimeFactory(configure?: (runtime: FakeCodexRuntime) => void) {
   const runtimes: Array<FakeCodexRuntime> = [];
   const factory = vi.fn((options: CodexSessionRuntimeOptions) => {
     const runtime = new FakeCodexRuntime(options);
+    configure?.(runtime);
     runtimes.push(runtime);
     return Effect.succeed(runtime);
   });
@@ -3158,3 +3165,468 @@ usageLimitLayer("CodexAdapterLive usage limits", (it) => {
     }),
   );
 });
+
+function makeExactAdapterFixture(
+  nativeEventLogger?: EventNdjsonLogger,
+  onRead?: Effect.Effect<void>,
+) {
+  const histories = new Map<string, CodexConversationSnapshot>();
+  let selected = "native-live";
+  let count = 0;
+  const factory = makeRuntimeFactory((runtime) => {
+    selected = runtime.options.resumeCursor?.threadId ?? "native-live";
+    if (!histories.has(selected))
+      histories.set(selected, {
+        threadId: selected,
+        cwd: runtime.options.cwd,
+        turns: [],
+        nativeGoal: null,
+        nativeRecords: [{ type: "test-native-proof" }],
+        rolloutPath: "/tmp/codex-adapter-native.jsonl",
+      });
+    const originalStart = runtime.startImpl.getMockImplementation()!;
+    runtime.startImpl.mockImplementation(async () => ({
+      ...(await originalStart()),
+      resumeCursor: { threadId: selected },
+    }));
+    runtime.absoluteConversation = {
+      isIdle: Effect.succeed(true),
+      read: (id) =>
+        Effect.gen(function* () {
+          if (onRead) yield* onRead;
+          const value = histories.get(id ?? selected);
+          NodeAssert.ok(value);
+          return structuredClone(value);
+        }),
+      fork: ({ source }) =>
+        Effect.sync(() => {
+          const snapshot = { ...structuredClone(source), threadId: `private-${++count}` };
+          histories.set(snapshot.threadId, snapshot);
+          return snapshot;
+        }),
+      select: (snapshot) =>
+        Effect.sync(() => {
+          selected = snapshot.threadId;
+        }),
+      quarantine: () => Effect.void,
+    };
+  });
+  const layer = Layer.effect(
+    CodexAdapter,
+    makeCodexAdapter(decodeCodexSettings({}), {
+      makeRuntime: factory.factory,
+      ...(nativeEventLogger ? { nativeEventLogger } : {}),
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  const threadId = asThreadId("thread-1");
+  const binding = {
+    kind: "checkpoint" as const,
+    checkpointTurnCount: 1,
+    turnId: asTurnId("turn-exact"),
+    checkpointRef: CheckpointRef.make("checkpoint-exact"),
+    checkpointOid: "oid-exact",
+    sourceRevision: 1,
+  };
+  const start = {
+    provider: ProviderDriverKind.make("codex"),
+    threadId,
+    runtimeMode: "full-access" as const,
+    cwd: process.cwd(),
+    sessionIncarnationId: RuntimeSessionId.make("exact-incarnation"),
+  };
+  const completed = (adapter: CodexAdapterShape, owned = true) =>
+    Effect.gen(function* () {
+      const runtime = factory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.sendTurnImpl.mockImplementation(async () => ({
+        threadId,
+        turnId: asTurnId("turn-exact"),
+      }));
+      if (owned) yield* adapter.sendTurn({ threadId, input: "owned prompt" });
+      histories.set(selected, {
+        threadId: selected,
+        cwd: process.cwd(),
+        nativeGoal: null,
+        nativeRecords: [{ type: "test-native-proof" }],
+        rolloutPath: "/tmp/codex-adapter-native.jsonl",
+        turns: [
+          {
+            id: "turn-exact",
+            status: "completed",
+            itemsView: "full",
+            items: [
+              {
+                id: "message-exact",
+                type: "userMessage",
+                content: [{ type: "text", text: "retained history" }],
+              },
+            ],
+          },
+        ],
+      });
+      const receipt = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.completed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* runtime.emit(codexTurnEvent("turn/completed", "turn-exact"));
+      yield* Fiber.join(receipt);
+      return yield* adapter.absoluteConversationRollback!.captureAnchor({ threadId, binding });
+    });
+  return {
+    layer,
+    factory,
+    histories,
+    start,
+    binding,
+    completed,
+    get selected() {
+      return selected;
+    },
+  };
+}
+
+it.effect(
+  "exact Codex checkpoints precede Pylon completion and ordinary Stop/mode resume preserves native history",
+  () => {
+    const fixture = makeExactAdapterFixture();
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession(fixture.start);
+      const anchor = yield* fixture.completed(adapter);
+      const cursor = readCodexExactCursor((yield* adapter.listSessions())[0]?.resumeCursor);
+      NodeAssert.ok(cursor);
+      const history = structuredClone(fixture.histories.get(fixture.selected));
+      for (const runtimeMode of ["full-access", "approval-required"] as const) {
+        yield* adapter.stopSession(fixture.start.threadId);
+        const started: ProviderSession = yield* adapter.startSession({
+          ...fixture.start,
+          runtimeMode,
+          sessionIncarnationId: RuntimeSessionId.make(`resumed-${runtimeMode}`),
+          resumeCursor: cursor,
+        });
+        const runtime = fixture.factory.lastRuntime;
+        NodeAssert.ok(runtime);
+        NodeAssert.equal(runtime.options.strictResume, true);
+        NodeAssert.deepEqual(runtime.options.resumeCursor, { threadId: cursor.threadId });
+        NodeAssert.deepEqual(started.resumeCursor, { threadId: cursor.threadId });
+        NodeAssert.deepEqual(fixture.histories.get(fixture.selected), history);
+        const rebound = readCodexExactCursor((yield* adapter.listSessions())[0]?.resumeCursor);
+        NodeAssert.ok(rebound);
+        NodeAssert.equal(
+          rebound.exactRollback.anchor.sessionIncarnationId,
+          `resumed-${runtimeMode}`,
+        );
+        const verified = yield* adapter.absoluteConversationRollback!.captureAnchor({
+          threadId: fixture.start.threadId,
+          binding: { ...fixture.binding, kind: "source" },
+        });
+        NodeAssert.equal(verified.digest, anchor.digest);
+        yield* adapter.absoluteConversationRollback!.releaseAnchor(
+          fixture.start.threadId,
+          verified.anchor,
+        );
+      }
+    }).pipe(Effect.provide(fixture.layer));
+  },
+);
+
+it.effect(
+  "Codex same-incarnation adoption starts quarantined, strips private proof, and holds input until prepared release",
+  () => {
+    const fixture = makeExactAdapterFixture();
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession(fixture.start);
+      const target = yield* fixture.completed(adapter);
+      const source = yield* adapter.absoluteConversationRollback!.captureAnchor({
+        threadId: fixture.start.threadId,
+        binding: { ...fixture.binding, kind: "source" },
+      });
+      const cursor = readCodexExactCursor((yield* adapter.listSessions())[0]?.resumeCursor);
+      NodeAssert.ok(cursor);
+      yield* adapter.stopSession(fixture.start.threadId);
+      const recovered = yield* adapter.recoverSession!({
+        ...fixture.start,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        resumeCursor: cursor,
+      });
+      NodeAssert.ok(recovered);
+      const runtime = fixture.factory.lastRuntime;
+      NodeAssert.ok(runtime);
+      NodeAssert.equal(runtime.options.quarantined, true);
+      NodeAssert.deepEqual(recovered.resumeCursor, { threadId: cursor.threadId });
+      const send = {
+        threadId: fixture.start.threadId,
+        input: "next",
+        runtimeMode: "full-access" as const,
+      };
+      NodeAssert.ok(Exit.isFailure(yield* Effect.exit(adapter.sendTurn(send))));
+      yield* adapter.absoluteConversationRollback!.prepareRecovery!({
+        threadId: fixture.start.threadId,
+        sourceAnchor: source.anchor,
+        desiredAnchor: target.anchor,
+        expectedAnchor: source.anchor,
+      });
+      yield* adapter.activateRecoveredSession!(fixture.start.threadId);
+      NodeAssert.ok(Exit.isFailure(yield* Effect.exit(adapter.sendTurn(send))));
+      yield* adapter.absoluteConversationRollback!.releaseAnchor(
+        fixture.start.threadId,
+        source.anchor,
+      );
+      yield* adapter.sendTurn(send);
+      NodeAssert.equal(
+        readCodexExactCursor((yield* adapter.listSessions())[0]?.resumeCursor),
+        undefined,
+      );
+    }).pipe(Effect.provide(fixture.layer));
+  },
+);
+
+it.effect("Codex rejects public or mismatched recovery cursors before opening a runtime", () => {
+  const fixture = makeExactAdapterFixture();
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    const input = {
+      ...fixture.start,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      resumeCursor: { threadId: "native-live" },
+    };
+    NodeAssert.equal(yield* adapter.recoverSession!(input), null);
+    NodeAssert.equal(fixture.factory.factory.mock.calls.length, 0);
+    yield* adapter.startSession(fixture.start);
+    yield* fixture.completed(adapter);
+    const cursor = readCodexExactCursor((yield* adapter.listSessions())[0]?.resumeCursor);
+    NodeAssert.ok(cursor);
+    const calls = fixture.factory.factory.mock.calls.length;
+    NodeAssert.equal(
+      yield* adapter.recoverSession!({
+        ...input,
+        sessionIncarnationId: RuntimeSessionId.make("other"),
+        resumeCursor: cursor,
+      }),
+      null,
+    );
+    NodeAssert.equal(fixture.factory.factory.mock.calls.length, calls);
+  }).pipe(Effect.provide(fixture.layer));
+});
+
+it.effect("Codex external completion cannot establish an owned Pylon checkpoint", () => {
+  const fixture = makeExactAdapterFixture();
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    yield* adapter.startSession(fixture.start);
+    NodeAssert.ok(Exit.isFailure(yield* Effect.exit(fixture.completed(adapter, false))));
+    NodeAssert.equal(
+      readCodexExactCursor((yield* adapter.listSessions())[0]?.resumeCursor),
+      undefined,
+    );
+    NodeAssert.ok(
+      Exit.isFailure(
+        yield* Effect.exit(
+          adapter.absoluteConversationRollback!.captureAnchor({
+            threadId: fixture.start.threadId,
+            binding: { ...fixture.binding, kind: "source" },
+          }),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(fixture.layer));
+});
+
+it.effect(
+  "Codex quarantine fences queued adapter output and a suspended native logger across release",
+  () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const logged: string[] = [];
+      const fixture = makeExactAdapterFixture({
+        filePath: "unused-test-logger",
+        close: () => Effect.void,
+        write: (event, _threadId, guard) =>
+          Effect.gen(function* () {
+            const id =
+              typeof event === "object" &&
+              event !== null &&
+              "id" in event &&
+              typeof event.id === "string"
+                ? event.id
+                : "";
+            if (id === "blocked-old") {
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+            }
+            if (guard && !(yield* guard)) return;
+            logged.push(id);
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        yield* adapter.startSession(fixture.start);
+        yield* fixture.completed(adapter);
+        const runtime = fixture.factory.lastRuntime;
+        NodeAssert.ok(runtime);
+        const delta = (id: string): ProviderEvent => ({
+          id: asEventId(id),
+          provider: ProviderDriverKind.make("codex"),
+          kind: "notification",
+          threadId: fixture.start.threadId,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method: "item/agentMessage/delta",
+          payload: {
+            threadId: "native-live",
+            turnId: "turn-exact",
+            itemId: "assistant-exact",
+            delta: id,
+          },
+        });
+        yield* runtime.emit(delta("queued-old"));
+        yield* runtime.emit(delta("blocked-old"));
+        yield* Deferred.await(entered);
+        const source = yield* adapter.absoluteConversationRollback!.captureAnchor({
+          threadId: fixture.start.threadId,
+          binding: { ...fixture.binding, kind: "source" },
+        });
+        yield* adapter.absoluteConversationRollback!.releaseAnchor(
+          fixture.start.threadId,
+          source.anchor,
+        );
+        yield* Deferred.succeed(release, undefined);
+        const next = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "content.delta"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* runtime.emit(delta("fresh"));
+        const event = yield* Fiber.join(next);
+        NodeAssert.ok(Option.isSome(event));
+        NodeAssert.equal(event.value.eventId, "fresh");
+        NodeAssert.equal(logged.includes("blocked-old"), false);
+      }).pipe(Effect.provide(fixture.layer));
+    }),
+);
+
+it.effect(
+  "Codex compaction completion persists a current proof without replacing its original checkpoint",
+  () => {
+    const fixture = makeExactAdapterFixture();
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession(fixture.start);
+      const original = yield* fixture.completed(adapter);
+      const compaction = adapter.compaction;
+      NodeAssert.ok(compaction?.type === "native");
+      yield* compaction.start(fixture.start.threadId);
+      NodeAssert.equal(
+        readCodexExactCursor((yield* adapter.listSessions())[0]?.resumeCursor),
+        undefined,
+      );
+      const before = fixture.histories.get(fixture.selected);
+      NodeAssert.ok(before);
+      fixture.histories.set(fixture.selected, {
+        ...before,
+        turns: [
+          ...before.turns,
+          {
+            id: "compact-turn",
+            status: "completed",
+            itemsView: "full",
+            items: [{ id: "compact-item", type: "contextCompaction" }],
+          },
+        ],
+      });
+      const receipt = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.type === "thread.state.changed" && event.payload.state === "compacted",
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const runtime = fixture.factory.lastRuntime;
+      NodeAssert.ok(runtime);
+      yield* runtime.emit({
+        id: asEventId("compacted"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: fixture.start.threadId,
+        turnId: asTurnId("compact-turn"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/completed",
+        payload: {
+          threadId: "native-live",
+          turnId: "compact-turn",
+          item: { id: "compact-item", type: "contextCompaction" },
+          completedAtMs: 1,
+        },
+      });
+      yield* Fiber.join(receipt);
+      const cursor = readCodexExactCursor((yield* adapter.listSessions())[0]?.resumeCursor);
+      NodeAssert.ok(cursor);
+      NodeAssert.equal(cursor.exactRollback.anchor.compactionTurnId, "compact-turn");
+      const source = yield* adapter.absoluteConversationRollback!.captureAnchor({
+        threadId: fixture.start.threadId,
+        binding: { ...fixture.binding, kind: "source" },
+      });
+      NodeAssert.notEqual(source.digest, original.digest);
+      NodeAssert.equal(
+        (yield* adapter.absoluteConversationRollback!.captureAnchor({
+          threadId: fixture.start.threadId,
+          binding: fixture.binding,
+        })).digest,
+        original.digest,
+      );
+      yield* adapter.absoluteConversationRollback!.applyAnchor(
+        fixture.start.threadId,
+        original.anchor,
+      );
+      yield* adapter.absoluteConversationRollback!.releaseAnchor(
+        fixture.start.threadId,
+        original.anchor,
+      );
+      NodeAssert.deepEqual(fixture.histories.get(fixture.selected)?.turns, before.turns);
+      NodeAssert.equal(runtime.rollbackThreadImpl.mock.calls.length, 0);
+    }).pipe(Effect.provide(fixture.layer));
+  },
+);
+
+it.effect("Codex initialization cannot return a stopped owner or remove its replacement", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let block = true;
+    const fixture = makeExactAdapterFixture(
+      undefined,
+      Effect.suspend(() => {
+        if (!block) return Effect.void;
+        block = false;
+        return Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)));
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const first = yield* adapter.startSession(fixture.start).pipe(Effect.exit, Effect.forkChild);
+      yield* Deferred.await(entered);
+      yield* adapter.stopSession(fixture.start.threadId);
+      const replacementIncarnation = RuntimeSessionId.make("replacement-incarnation");
+      yield* adapter.startSession({
+        ...fixture.start,
+        sessionIncarnationId: replacementIncarnation,
+      });
+      yield* Deferred.succeed(release, undefined);
+      NodeAssert.ok(Exit.isFailure(yield* Fiber.join(first)));
+      const sessions = yield* adapter.listSessions();
+      NodeAssert.equal(sessions.length, 1);
+      NodeAssert.equal(sessions[0]?.sessionIncarnationId, replacementIncarnation);
+      yield* adapter.sendTurn({
+        threadId: fixture.start.threadId,
+        input: "replacement still works",
+      });
+    }).pipe(Effect.provide(fixture.layer));
+  }),
+);

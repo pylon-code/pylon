@@ -1,3 +1,8 @@
+import {
+  makeCodexAbsoluteRollback,
+  readCodexExactCursor,
+  type CodexExactCursor,
+} from "./CodexAbsoluteRollback.ts";
 /**
  * CodexAdapterLive - Scoped live implementation for the Codex provider adapter.
  *
@@ -23,6 +28,7 @@ import {
   type ToolActivitySource,
   type ProviderUserInputAnswers,
   RuntimeItemId,
+  type RuntimeSessionId,
   RuntimeRequestId,
   RuntimeTaskId,
   type RuntimeTaskUsage,
@@ -108,6 +114,9 @@ interface CodexAdapterSessionContext {
   readonly runtime: CodexSessionRuntimeShape;
   readonly eventFiber: Fiber.Fiber<void, never>;
   readonly admissionSemaphore: Semaphore.Semaphore;
+  readonly rollback: ReturnType<typeof makeCodexAbsoluteRollback>;
+  readonly sessionIncarnationId: RuntimeSessionId | undefined;
+  readonly ownedTurnIds: Set<TurnId>;
   readonly pendingAdmissions: Array<{
     readonly admissionRequestId: NonNullable<ProviderSendTurnInput["admissionRequestId"]>;
     readonly sessionIncarnationId: NonNullable<ProviderSendTurnInput["sessionIncarnationId"]>;
@@ -2247,10 +2256,17 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       : undefined);
   const managedNativeEventLogger =
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
-  const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
+  const runtimeEventQueue = yield* Queue.unbounded<{
+    readonly event: ProviderRuntimeEvent;
+    readonly rollback: ReturnType<typeof makeCodexAbsoluteRollback>;
+    readonly epoch: number;
+  }>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
 
-  const startSession: CodexAdapterShape["startSession"] = (input) =>
+  const startSessionInternal = (
+    input: Parameters<CodexAdapterShape["startSession"]>[0],
+    recovering?: CodexExactCursor,
+  ) =>
     Effect.scoped(
       Effect.gen(function* () {
         if (input.provider !== undefined && input.provider !== PROVIDER) {
@@ -2271,6 +2287,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+        const hasPrivateResumeProof =
+          typeof input.resumeCursor === "object" &&
+          input.resumeCursor !== null &&
+          "exactRollback" in input.resumeCursor;
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
@@ -2280,7 +2300,19 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(options?.environment ? { environment: options.environment } : {}),
           ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
           ...(isCodexResumeCursorSchema(input.resumeCursor)
-            ? { resumeCursor: input.resumeCursor }
+            ? { resumeCursor: { threadId: input.resumeCursor.threadId } }
+            : {}),
+          ...(recovering || hasPrivateResumeProof ? { strictResume: true } : {}),
+          ...(recovering
+            ? {
+                quarantined: true,
+                exactRecoverySnapshot: recovering.exactRollback.anchor.snapshot,
+                ...(recovering.exactRollback.anchor.compactionCheckpoint
+                  ? {
+                      exactRecoveryCheckpoint: recovering.exactRollback.anchor.compactionCheckpoint,
+                    }
+                  : {}),
+              }
             : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
@@ -2325,6 +2357,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           Effect.provideService(Scope.Scope, sessionScope),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
           Effect.provideService(Crypto.Crypto, crypto),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.mapError(
             (cause) =>
               new ProviderAdapterProcessError({
@@ -2337,6 +2370,26 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         );
 
         const pendingAdmissions: CodexAdapterSessionContext["pendingAdmissions"] = [];
+        let context: CodexAdapterSessionContext | undefined;
+        const rollback = makeCodexAbsoluteRollback({
+          threadId: input.threadId,
+          instanceId: boundInstanceId,
+          incarnationId: input.sessionIncarnationId,
+          cwd: runtimeInput.cwd,
+          runtime,
+          recovering: recovering !== undefined,
+          requireCurrent: Effect.suspend(() =>
+            context && !context.stopped && sessions.get(input.threadId) === context
+              ? Effect.void
+              : Effect.fail(
+                  new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "absoluteConversationRollback",
+                    issue: "The Codex session owner changed during exact recovery.",
+                  }),
+                ),
+          ),
+        });
 
         // Fork into the session scope, not the calling fiber. `forkChild` makes
         // this a child of `startSession`, and Effect interrupts a fiber's
@@ -2344,7 +2397,50 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         // runtime event the session emitted afterwards was dropped.
         const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
           Effect.gen(function* () {
-            yield* writeNativeEvent(event);
+            if (!rollback.outputAllowed()) return;
+            const epoch = rollback.outputEpoch();
+            if (event.method === "turn/started") rollback.invalidate();
+            if (event.method === "turn/completed" && event.turnId && context) {
+              const completedTurnId = event.turnId;
+              yield* context.admissionSemaphore.withPermit(
+                Effect.suspend(() =>
+                  context?.ownedTurnIds.has(completedTurnId)
+                    ? rollback.recordCompleted(completedTurnId).pipe(Effect.ignore)
+                    : Effect.void,
+                ),
+              );
+            }
+            const compactionPayload =
+              typeof event.payload === "object" && event.payload !== null
+                ? event.payload
+                : undefined;
+            const compactionItem =
+              compactionPayload && "item" in compactionPayload ? compactionPayload.item : undefined;
+            const isCompactionReceipt =
+              event.method === "thread/compacted" ||
+              (event.method === "item/completed" &&
+                compactionItem !== null &&
+                typeof compactionItem === "object" &&
+                "type" in compactionItem &&
+                compactionItem.type === "contextCompaction");
+            const nativeTurnId =
+              event.turnId ??
+              (compactionPayload &&
+              "turnId" in compactionPayload &&
+              typeof compactionPayload.turnId === "string"
+                ? compactionPayload.turnId
+                : undefined);
+            if (isCompactionReceipt && nativeTurnId) rollback.compactionReceipt(nativeTurnId);
+            if (context && (isCompactionReceipt || event.method === "turn/completed"))
+              yield* context.admissionSemaphore.withPermit(
+                rollback.finishCompaction().pipe(Effect.ignore),
+              );
+            if (!rollback.outputAllowed() || epoch !== rollback.outputEpoch()) return;
+            yield* writeNativeEvent(
+              event,
+              Effect.sync(() => rollback.outputAllowed() && epoch === rollback.outputEpoch()),
+            );
+            if (!rollback.outputAllowed() || epoch !== rollback.outputEpoch()) return;
             if (event.method === "turn/started" && event.turnId) {
               if (turnTokenUsage.activeTurnId !== event.turnId) {
                 turnTokenUsage.byTurnId.clear();
@@ -2479,7 +2575,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               });
               return;
             }
-            yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
+            yield* Queue.offerAll(
+              runtimeEventQueue,
+              runtimeEvents.map((event) => ({ event, rollback, epoch })),
+            );
           }),
         ).pipe(Effect.forkIn(sessionScope));
 
@@ -2502,8 +2601,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         );
 
-        sessions.set(input.threadId, {
+        context = {
           threadId: input.threadId,
+          rollback,
+          sessionIncarnationId: input.sessionIncarnationId,
+          ownedTurnIds: new Set(),
           scope: sessionScope,
           runtime,
           eventFiber,
@@ -2511,12 +2613,57 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           pendingAdmissions,
           turnTokenUsage,
           stopped: false,
-        });
+        };
+        sessions.set(input.threadId, context);
+        if (recovering) {
+          if (!isCodexResumeCursorSchema(started.resumeCursor))
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "recoverSession",
+              issue: "The verified Codex recovery owner has no native cursor.",
+            });
+          const selectedThreadId = started.resumeCursor.threadId;
+          yield* rollback
+            .recover({
+              ...recovering,
+              threadId: selectedThreadId,
+              exactRollback: { ...recovering.exactRollback, selectedThreadId },
+            })
+            .pipe(Effect.onError(() => stopSessionInternal(context!)));
+        } else
+          yield* rollback.initialize(readCodexExactCursor(input.resumeCursor)).pipe(Effect.ignore);
+        if (context.stopped || sessions.get(input.threadId) !== context)
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: "The Codex session owner changed before startup completed.",
+          });
         sessionScopeTransferred = true;
 
         return started;
       }),
     );
+
+  const startSession: CodexAdapterShape["startSession"] = (input) => startSessionInternal(input);
+  const recoverSession: NonNullable<CodexAdapterShape["recoverSession"]> = Effect.fn(
+    "CodexAdapter.recoverSession",
+  )(function* (input) {
+    const cursor = readCodexExactCursor(input.resumeCursor);
+    if (
+      !cursor ||
+      input.providerInstanceId !== boundInstanceId ||
+      cursor.exactRollback.anchor.providerInstanceId !== boundInstanceId ||
+      cursor.exactRollback.anchor.sessionIncarnationId !== input.sessionIncarnationId ||
+      cursor.exactRollback.anchor.pylonThreadId !== input.threadId ||
+      cursor.exactRollback.anchor.cwd !== input.cwd
+    )
+      return null;
+    const session = yield* startSessionInternal(
+      { ...input, provider: PROVIDER, resumeCursor: { threadId: cursor.threadId } },
+      cursor,
+    );
+    return { ...session, sessionIncarnationId: input.sessionIncarnationId };
+  });
 
   const resolveAttachment = Effect.fn("resolveAttachment")(function* (
     input: ProviderSendTurnInput,
@@ -2563,6 +2710,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     const session = yield* requireSession(input.threadId);
     return yield* session.admissionSemaphore.withPermit(
       Effect.gen(function* () {
+        yield* session.rollback.beforeMutation;
         const reasoningEffort =
           input.modelSelection?.instanceId === boundInstanceId
             ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
@@ -2606,6 +2754,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               }),
             ),
           );
+        if (result.turnId !== undefined) session.ownedTurnIds.add(result.turnId);
         if (admission !== undefined && session.pendingAdmissions.includes(admission)) {
           admission.turnId = result.turnId;
         }
@@ -2637,8 +2786,15 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
   const compactThread = Effect.fn("compactThread")(function* (threadId: ThreadId) {
     const session = yield* requireSession(threadId);
-    yield* session.runtime.compactThread.pipe(
-      Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/compact/start", cause)),
+    yield* session.admissionSemaphore.withPermit(
+      session.rollback.beforeCompaction.pipe(
+        Effect.andThen(session.runtime.compactThread),
+        Effect.mapError((cause) =>
+          "provider" in cause
+            ? cause
+            : mapCodexRuntimeError(threadId, "thread/compact/start", cause),
+        ),
+      ),
     );
   });
 
@@ -2669,20 +2825,21 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
     return requireSession(threadId).pipe(
       Effect.flatMap((session) =>
-        session.runtime.rollbackThread(numTurns).pipe(
-          Effect.tap(() =>
-            Effect.sync(() => {
-              session.turnTokenUsage.baseline = undefined;
-              session.turnTokenUsage.activeTurnId = undefined;
-              session.turnTokenUsage.byTurnId.clear();
-            }),
+        session.admissionSemaphore.withPermit(
+          session.rollback.beforeMutation.pipe(
+            Effect.andThen(session.runtime.rollbackThread(numTurns)),
+            Effect.tap(() =>
+              Effect.sync(() => {
+                session.turnTokenUsage.baseline = undefined;
+                session.turnTokenUsage.activeTurnId = undefined;
+                session.turnTokenUsage.byTurnId.clear();
+              }),
+            ),
           ),
         ),
       ),
       Effect.mapError((cause) =>
-        cause._tag === "ProviderAdapterSessionNotFoundError"
-          ? cause
-          : mapCodexRuntimeError(threadId, "thread/rollback", cause),
+        "provider" in cause ? cause : mapCodexRuntimeError(threadId, "thread/rollback", cause),
       ),
       Effect.map((snapshot) => ({
         threadId,
@@ -2726,11 +2883,14 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
-  const writeNativeEvent = Effect.fnUntraced(function* (event: ProviderEvent) {
+  const writeNativeEvent = Effect.fnUntraced(function* (
+    event: ProviderEvent,
+    commitGuard?: Effect.Effect<boolean>,
+  ) {
     if (!nativeEventLogger) {
       return;
     }
-    yield* nativeEventLogger.write(event, event.threadId);
+    yield* nativeEventLogger.write(event, event.threadId, commitGuard);
   });
 
   const stopSessionInternal = Effect.fn("stopSessionInternal")(function* (
@@ -2740,7 +2900,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       return;
     }
     session.stopped = true;
-    sessions.delete(session.threadId);
+    if (sessions.get(session.threadId) === session) sessions.delete(session.threadId);
     yield* session.runtime.close.pipe(Effect.ignore);
     yield* Effect.ignore(Scope.close(session.scope, Exit.void));
     yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
@@ -2758,9 +2918,48 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const listSessions: CodexAdapterShape["listSessions"] = () =>
     Effect.forEach(
       Array.from(sessions.values()).filter((session) => !session.stopped),
-      (session) => session.runtime.getSession,
+      (context) =>
+        context.runtime.getSession.pipe(
+          Effect.map((session) => ({
+            ...session,
+            ...(context.sessionIncarnationId
+              ? { sessionIncarnationId: context.sessionIncarnationId }
+              : {}),
+            ...(context.rollback.cursor() ? { resumeCursor: context.rollback.cursor() } : {}),
+          })),
+        ),
       { concurrency: 1 },
     );
+
+  const withExact = <A>(
+    threadId: ThreadId,
+    run: (
+      rollback: ReturnType<typeof makeCodexAbsoluteRollback>,
+    ) => Effect.Effect<A, ProviderAdapterError>,
+  ) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((context) => context.admissionSemaphore.withPermit(run(context.rollback))),
+    );
+  const absoluteConversationRollback: NonNullable<
+    CodexAdapterShape["absoluteConversationRollback"]
+  > = {
+    isAvailable: (threadId) =>
+      withExact(threadId, (rollback) => rollback.operations.isAvailable(threadId)).pipe(
+        Effect.orElseSucceed(() => false),
+      ),
+    captureAnchor: (input) =>
+      withExact(input.threadId, (rollback) => rollback.operations.captureAnchor(input)),
+    inspectAnchor: (threadId) =>
+      withExact(threadId, (rollback) => rollback.operations.inspectAnchor(threadId)),
+    applyAnchor: (threadId, anchor) =>
+      withExact(threadId, (rollback) => rollback.operations.applyAnchor(threadId, anchor)),
+    releaseAnchor: (threadId, anchor) =>
+      withExact(threadId, (rollback) => rollback.operations.releaseAnchor(threadId, anchor)),
+    prepareRecovery: (input) =>
+      withExact(input.threadId, (rollback) => rollback.operations.prepareRecovery!(input)),
+  };
+  const activateRecoveredSession = (threadId: ThreadId) =>
+    withExact(threadId, (rollback) => rollback.activate);
 
   const hasSession: CodexAdapterShape["hasSession"] = (threadId) =>
     Effect.succeed(Boolean(sessions.get(threadId) && !sessions.get(threadId)?.stopped));
@@ -2787,6 +2986,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       promptlessTurnContinuation: true,
     },
     startSession,
+    recoverSession,
+    activateRecoveredSession,
+    absoluteConversationRollback,
     sendTurn,
     compaction: { type: "native", start: compactThread },
     interruptTurn,
@@ -2800,7 +3002,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     hasSession,
     stopAll,
     get streamEvents() {
-      return Stream.fromQueue(runtimeEventQueue);
+      return Stream.fromQueue(runtimeEventQueue).pipe(
+        Stream.filter(
+          ({ rollback, epoch }) => rollback.outputAllowed() && rollback.outputEpoch() === epoch,
+        ),
+        Stream.map(({ event }) => event),
+      );
     },
   } satisfies CodexAdapterShape;
 });
