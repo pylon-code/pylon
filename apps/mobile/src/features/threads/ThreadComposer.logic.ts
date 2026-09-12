@@ -7,6 +7,11 @@ import {
 import type { ModelOption } from "../../lib/modelOptions";
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import { getProviderAdmissionUnavailableReason } from "@t3tools/client-runtime/providerAvailability";
+import {
+  getProviderModelAdmissionAvailability,
+  resolveProviderCatalogModelSelection,
+  shouldRefreshProviderModelCatalog,
+} from "../../lib/providerModelSelection";
 import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
 import type {
   ModelSelection,
@@ -44,14 +49,18 @@ export function resolveThreadComposerAuthority(input: {
       null)
     : selectedProvider;
   const providerAdmissionReason = transition.compatible
-    ? getProviderAdmissionUnavailableReason({
-        provider,
-        instanceId: String(instanceId),
-        providerSnapshotKnown: input.serverConfig !== null && input.serverConfig !== undefined,
-      })
+    ? shouldRefreshProviderModelCatalog(provider, input.modelSelection)
+      ? getProviderAdmissionUnavailableReason({ provider })
+      : getProviderModelAdmissionAvailability({
+          provider,
+          selection: input.modelSelection,
+          providerSnapshotKnown: input.serverConfig !== null && input.serverConfig !== undefined,
+        }).reason
     : transition.reason;
   return {
-    modelSelection: providerBindingMismatch ? null : input.modelSelection,
+    modelSelection: providerBindingMismatch
+      ? null
+      : resolveProviderCatalogModelSelection(provider, input.modelSelection),
     provider,
     providerAdmissionAvailable: providerAdmissionReason === null,
     providerAdmissionReason,
@@ -107,6 +116,8 @@ export function getThreadComposerModelChangeDisabledReason(input: {
     });
     if (!transition.compatible) return transition.reason;
   }
+  if (input.option.isUnavailable)
+    return input.option.unavailableReason ?? "This model is no longer available.";
   const isCurrent =
     input.option.selection.instanceId === input.currentModelSelection.instanceId &&
     input.option.selection.model === input.currentModelSelection.model;

@@ -1,5 +1,8 @@
 import { isTransportConnectionErrorMessage } from "@t3tools/client-runtime/errors";
-import { getProviderAdmissionAvailability } from "@t3tools/client-runtime/providerAvailability";
+import {
+  getProviderModelAdmissionAvailability,
+  resolveProviderCatalogModelSelection,
+} from "../lib/providerModelSelection";
 import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
 import {
   clampFileAttachmentUploadBytes,
@@ -214,9 +217,9 @@ export function resolveQueuedThreadAdmission(input: {
   const provider = providers.find(
     (candidate) => candidate.instanceId === modelSelection.instanceId,
   );
-  const providerAvailability = getProviderAdmissionAvailability({
+  const providerAvailability = getProviderModelAdmissionAvailability({
     provider,
-    instanceId: String(modelSelection.instanceId),
+    selection: modelSelection,
     providerSnapshotKnown: input.providers !== null && input.providers !== undefined,
   });
   if (providerAvailability.status === "unknown") {
@@ -237,7 +240,7 @@ export function resolveQueuedThreadAdmission(input: {
   return {
     action: "send",
     settings: {
-      modelSelection,
+      modelSelection: resolveProviderCatalogModelSelection(provider, modelSelection),
       runtimeMode: input.message.runtimeMode ?? input.thread.runtimeMode,
       interactionMode: input.message.interactionMode ?? input.thread.interactionMode,
       session: input.thread.session,
@@ -254,9 +257,9 @@ export function resolveQueuedCreationAdmission(input: {
   const provider = input.providers?.find(
     (candidate) => candidate.instanceId === modelSelection.instanceId,
   );
-  const availability = getProviderAdmissionAvailability({
+  const availability = getProviderModelAdmissionAvailability({
     provider,
-    instanceId: String(modelSelection.instanceId),
+    selection: modelSelection,
     providerSnapshotKnown: input.providers !== null && input.providers !== undefined,
   });
   if (availability.status === "unknown") return { action: "wait" };
@@ -295,7 +298,7 @@ export function preserveQueuedThreadDeliveryHold(
 /**
  * A held existing-thread send may be explicitly retargeted only to a selected
  * provider that is currently admissible and proves the thread binding's exact
- * continuation identity. The returned selection is never rewritten.
+ * continuation identity. Model aliases resolve only within the selected account.
  */
 export function resolveHeldSendSelectedProvider(input: {
   readonly boundInstanceId: ModelSelectionType["instanceId"] | undefined;
@@ -313,12 +316,12 @@ export function resolveHeldSendSelectedProvider(input: {
   const provider = input.providers?.find(
     (candidate) => candidate.instanceId === selection.instanceId,
   );
-  return getProviderAdmissionAvailability({
+  return getProviderModelAdmissionAvailability({
     provider,
-    instanceId: String(selection.instanceId),
+    selection,
     providerSnapshotKnown: input.providers !== null && input.providers !== undefined,
   }).status === "available"
-    ? selection
+    ? resolveProviderCatalogModelSelection(provider, selection)
     : null;
 }
 

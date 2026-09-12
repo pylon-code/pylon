@@ -7,6 +7,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type ServerConfig,
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -20,6 +21,7 @@ const harness = vi.hoisted(() => ({
   removeOutboxMessage: vi.fn(async (_message: QueuedThreadMessage) => undefined),
   prepareTurnAttachments: vi.fn<typeof import("../lib/attachmentUpload").prepareTurnAttachments>(),
   setPendingConnectionError: vi.fn(),
+  setServerConfigs: (_configs: ReadonlyMap<EnvironmentId, ServerConfig>) => {},
   draftFile: (() => {
     let document = "";
     let writeError: Error | null = null;
@@ -113,9 +115,12 @@ vi.mock("./shell", async () => {
 
 vi.mock("./server", async () => {
   const { Atom } = await import("effect/unstable/reactivity");
-  return {
-    environmentServerConfigsAtom: Atom.make(new Map()).pipe(Atom.keepAlive),
-  };
+  const { appAtomRegistry } = await import("./atom-registry");
+  const configs = Atom.make<ReadonlyMap<EnvironmentId, ServerConfig>>(new Map()).pipe(
+    Atom.keepAlive,
+  );
+  harness.setServerConfigs = (value) => appAtomRegistry.set(configs, value);
+  return { environmentServerConfigsAtom: configs, serverEnvironment: {} };
 });
 
 vi.mock("./threads", () => ({
@@ -174,6 +179,7 @@ import { recoverFailedThreadDraft } from "./recover-failed-thread-draft";
 import { editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 import {
   completeQueuedMessageDelivery,
+  currentModelAdmission,
   prepareQueuedMessageAttachments,
   recoverEditedCreationAfterDelivery,
   removeAcknowledgedExistingThreadMessage,
@@ -235,6 +241,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  harness.setServerConfigs(new Map());
   appAtomRegistry.set(harness.manager.queuedMessagesByThreadKeyAtom, {});
   appAtomRegistry.set(composerDrafts.composerDraftsAtom, {});
   appAtomRegistry.set(composerDrafts.composerCloudDraftsAtom, { accountId: null, signedOut: {} });
@@ -248,6 +255,108 @@ afterEach(() => {
 });
 
 describe("thread outbox attachment preparation", () => {
+  it.each(["antigravity-default", "original-model"])(
+    "rechecks the selected account after attachment awaits: %s",
+    async (model) => {
+      const selection = {
+        instanceId: ProviderInstanceId.make("antigravity_work"),
+        model,
+        options: [{ id: "thinking", value: "high" }],
+      };
+      const message = {
+        ...queuedMessage({
+          messageId: `catalog-${model}`,
+          text: "keep the queued content",
+          fileUri: "file:///documents/t3-composer-attachments/catalog.pdf",
+        }),
+        modelSelection: selection,
+      };
+      const config = {
+        providers: [
+          {
+            instanceId: selection.instanceId,
+            driver: "antigravity",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated" },
+            status: "ready",
+            models: [
+              {
+                slug: "original-model",
+                name: "Original",
+                isCustom: false,
+                capabilities: null,
+                isDefault: true,
+              },
+            ],
+          },
+        ],
+      } as unknown as ServerConfig;
+      harness.setServerConfigs(new Map([[message.environmentId, config]]));
+      expect(currentModelAdmission(message.environmentId, selection)).toMatchObject({
+        availability: { status: "available" },
+        selection: { ...selection, model: "original-model" },
+      });
+      const started = Promise.withResolvers<void>();
+      const barrier = Promise.withResolvers<PreparedTurnAttachments>();
+      harness.prepareTurnAttachments.mockImplementationOnce(async () => {
+        started.resolve();
+        return barrier.promise;
+      });
+      await harness.manager.enqueue(message);
+      const preparation = prepareQueuedMessageAttachments(message);
+      await started.promise;
+      harness.setServerConfigs(
+        new Map([
+          [
+            message.environmentId,
+            {
+              ...config,
+              providers: config.providers.map((provider) => ({
+                ...provider,
+                models: [
+                  {
+                    slug: "new-default",
+                    name: "New",
+                    isCustom: false,
+                    capabilities: null,
+                    isDefault: true,
+                  },
+                ],
+              })),
+            },
+          ],
+        ]),
+      );
+      barrier.resolve({
+        status: "ready",
+        attachments: [],
+        draftAttachments: message.attachments,
+        pendingAttachmentIds: [],
+        releaseUploads: async () => {},
+      });
+      expect((await preparation).status).toBe("ready");
+      const admission = currentModelAdmission(message.environmentId, selection);
+      expect(admission).toMatchObject(
+        model === "antigravity-default"
+          ? {
+              availability: { status: "available" },
+              selection: { ...selection, model: "new-default" },
+            }
+          : {
+              availability: {
+                status: "unavailable",
+                reason: expect.stringContaining("no longer available"),
+              },
+              selection,
+            },
+      );
+      expect(remainingMessages()[0]).toMatchObject({
+        text: message.text,
+        modelSelection: selection,
+      });
+    },
+  );
   it("abandons reused uploads when an editor saves changed text during verification", async () => {
     const message = withReusedFileUpload(
       queuedMessage({

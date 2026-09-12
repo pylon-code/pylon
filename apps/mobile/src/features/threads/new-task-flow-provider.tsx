@@ -500,7 +500,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   );
   const draftModelSelection =
     selectedProjectDraft.providerSelectionExplicit === true && storedDraftModelSelection !== null
-      ? storedDraftModelSelection
+      ? (selectableDraftModelSelection ?? storedDraftModelSelection)
       : selectableDraftModelSelection;
   const projectDefaultModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
@@ -532,6 +532,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     stickySelection: stickyModelSelection,
     modelOptions,
     unavailablePreferredProvider,
+    providers: selectedEnvironmentServerConfig?.providers,
   });
   const selectedModelKey = selectedModel
     ? `${selectedModel.instanceId}:${selectedModel.model}`

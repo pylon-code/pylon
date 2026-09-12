@@ -8,12 +8,20 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  type EnvironmentId,
+  type ModelSelection,
   type MessageId,
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  getProviderModelAdmissionAvailability,
+  resolveProviderCatalogModelSelection,
+  shouldRefreshProviderModelCatalog,
+} from "../lib/providerModelSelection";
+import { createQueuedModelCatalogRefresh } from "./queued-model-catalog-refresh";
 
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
@@ -59,7 +67,7 @@ import { environmentThreadShells, threadEnvironment } from "./threads";
 import { environmentProjects } from "./projects";
 import { environmentPresentations } from "./presentation";
 import { environmentShell } from "./shell";
-import { environmentServerConfigsAtom } from "./server";
+import { environmentServerConfigsAtom, serverEnvironment } from "./server";
 import {
   appendComposerDraftAttachments,
   composerDraftsAtom,
@@ -92,6 +100,21 @@ function beginDispatchingQueuedMessage(queuedMessageId: MessageId): void {
 function finishDispatchingQueuedMessage(queuedMessageId: MessageId): void {
   const current = appAtomRegistry.get(dispatchingQueuedMessageIdAtom);
   appAtomRegistry.set(dispatchingQueuedMessageIdAtom, current === queuedMessageId ? null : current);
+}
+
+export function currentModelAdmission(environmentId: EnvironmentId, selection: ModelSelection) {
+  const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId);
+  const provider = config?.providers.find(
+    (candidate) => candidate.instanceId === selection.instanceId,
+  );
+  return {
+    availability: getProviderModelAdmissionAvailability({
+      provider,
+      selection,
+      providerSnapshotKnown: config != null,
+    }),
+    selection: resolveProviderCatalogModelSelection(provider, selection),
+  };
 }
 
 function findThread(
@@ -543,6 +566,13 @@ async function preserveUploadedAttachmentsForEditor(
 
 export function useThreadOutboxDrain(): void {
   const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
+  const refreshQueuedCatalog = useMemo(
+    () => createQueuedModelCatalogRefresh(refreshProviders),
+    [refreshProviders],
+  );
   const dispatchingQueuedMessageId = useAtomValue(dispatchingQueuedMessageIdAtom);
   const editingQueuedMessageIds = useAtomValue(editingQueuedMessageIdsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
@@ -748,6 +778,26 @@ export function useThreadOutboxDrain(): void {
         return "complete";
       }
 
+      const admission = currentModelAdmission(
+        queuedMessage.environmentId,
+        queuedMessage.modelSelection ?? settings.modelSelection,
+      );
+      if (admission.availability.status === "unknown") return "retry";
+      if (admission.availability.status === "unavailable")
+        return persistRejectedAdmissionHold(
+          persistedMessage,
+          deliveryRevision,
+          admission.availability.reason,
+          {
+            kind: "provider-unavailable",
+            reason: admission.availability.reason,
+            queuedInstanceId: settings.modelSelection.instanceId,
+            ...(settings.session?.providerInstanceId
+              ? { boundInstanceId: settings.session.providerInstanceId }
+              : {}),
+          },
+        );
+
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: {
@@ -765,7 +815,7 @@ export function useThreadOutboxDrain(): void {
             }),
             attachments: prepared.attachments,
           },
-          modelSelection: settings.modelSelection,
+          modelSelection: admission.selection,
           runtimeMode: settings.runtimeMode,
           interactionMode: settings.interactionMode,
           sourceEpoch: queuedMessage.sourceEpoch,
@@ -846,6 +896,20 @@ export function useThreadOutboxDrain(): void {
         return "complete";
       }
 
+      const admission = currentModelAdmission(queuedMessage.environmentId, modelSelection);
+      if (admission.availability.status === "unknown") return "retry";
+      if (admission.availability.status === "unavailable")
+        return persistRejectedAdmissionHold(
+          persistedMessage,
+          deliveryRevision,
+          admission.availability.reason,
+          {
+            kind: "provider-unavailable",
+            reason: admission.availability.reason,
+            queuedInstanceId: modelSelection.instanceId,
+          },
+        );
+
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: buildProjectThreadStartTurnInput({
@@ -863,7 +927,7 @@ export function useThreadOutboxDrain(): void {
             uploadedAttachments: prepared.attachments,
           }),
           uploadedAttachments: prepared.attachments,
-          modelSelection,
+          modelSelection: admission.selection,
           runtimeMode: queuedMessage.runtimeMode ?? DEFAULT_RUNTIME_MODE,
           interactionMode: queuedMessage.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
           workspaceMode: creation.workspaceMode,
@@ -933,6 +997,7 @@ export function useThreadOutboxDrain(): void {
   }, [creationOutcomes, threads]);
 
   useEffect(() => {
+    refreshQueuedCatalog.retainQueuedMessages(Object.values(queuedMessagesByThreadKey).flat());
     if (dispatchingQueuedMessageId !== null) {
       return;
     }
@@ -1074,7 +1139,7 @@ export function useThreadOutboxDrain(): void {
       // Enqueues publish optimistically before their durable write settles.
       // Confirm the write landed (and the message wasn't rolled back) before
       // sending, so a failed write can never chase an already-delivered turn.
-      const delivery = confirmThreadOutboxMessageQueued(nextQueuedMessage).then((queued) => {
+      const delivery = confirmThreadOutboxMessageQueued(nextQueuedMessage).then(async (queued) => {
         if (!queued) {
           // Rolled back by a failed write; nothing to deliver or retry.
           return "complete" as const;
@@ -1126,6 +1191,25 @@ export function useThreadOutboxDrain(): void {
           providers: latestProviders,
           project: latestProject,
         });
+        const queuedSelection = latestQueuedMessage.modelSelection ?? latestThread?.modelSelection;
+        const catalogProvider = latestProviders?.find(
+          (provider) => provider.instanceId === queuedSelection?.instanceId,
+        );
+        if (
+          confirmedPlan.action === "hold" &&
+          confirmedPlan.hold.kind === "provider-unavailable" &&
+          queuedSelection &&
+          shouldRefreshProviderModelCatalog(catalogProvider, queuedSelection) &&
+          (await refreshQueuedCatalog.discover({
+            environmentId: latestQueuedMessage.environmentId,
+            messageId: latestQueuedMessage.messageId,
+            selection: queuedSelection,
+          }))
+        ) {
+          // Discovery is an async boundary. Reconfirm the durable message and read current
+          // connection, binding, source epoch and catalog on the next drain, never this snapshot.
+          return "retry" as const;
+        }
         const persistHold = (
           hold: NonNullable<QueuedThreadMessage["deliveryHold"]>,
           retargetCreation?: QueuedThreadCreation,
@@ -1226,6 +1310,7 @@ export function useThreadOutboxDrain(): void {
     scheduleQueuedMessageRetry,
     sendQueuedCreation,
     sendQueuedMessage,
+    refreshQueuedCatalog,
     serverConfigs,
     shellStatuses,
     threads,

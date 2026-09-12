@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { ProviderInstanceId, type ModelSelection, type ServerConfig } from "@t3tools/contracts";
+import {
+  ANTIGRAVITY_DEFAULT_MODEL,
+  ProviderInstanceId,
+  type ModelSelection,
+  type ServerConfig,
+} from "@t3tools/contracts";
 
 import {
   buildModelOptions,
@@ -15,7 +20,143 @@ import {
   resolveNewTaskUnavailableProvider,
   resolveSelectableModelSelection,
   type ModelOption,
+  modelSelectionDisplayName,
 } from "./modelOptions";
+
+describe("Antigravity account catalog selection", () => {
+  const config = {
+    providers: [
+      {
+        instanceId: "antigravity_work",
+        driver: "antigravity",
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        status: "ready",
+        models: [
+          {
+            slug: "work-model",
+            name: "Work Model",
+            isCustom: false,
+            capabilities: null,
+            isDefault: true,
+            isLegacy: true,
+          },
+        ],
+      },
+      {
+        instanceId: "antigravity_personal",
+        driver: "antigravity",
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        status: "ready",
+        models: [
+          {
+            slug: "personal-model",
+            name: "Personal Model",
+            isCustom: false,
+            capabilities: null,
+            isDefault: true,
+          },
+        ],
+      },
+    ],
+  } as unknown as ServerConfig;
+  const marker = {
+    instanceId: ProviderInstanceId.make("antigravity_work"),
+    model: ANTIGRAVITY_DEFAULT_MODEL,
+    options: [{ id: "thinking", value: "high" }],
+  };
+  const blank = {
+    draftSelection: null,
+    projectDefaultSelection: null,
+    stickySelection: null,
+    modelOptions: [],
+  };
+
+  it("resolves the marker to its own account and preserves concrete legacy project choices", () => {
+    const resolved = { ...marker, model: "work-model" };
+    expect(resolveSelectableModelSelection(config, marker)).toEqual(resolved);
+    expect(resolveDefaultableModelSelection(config, resolved)).toEqual(resolved);
+    expect(
+      buildModelOptions(config, marker).find((option) => option.providerKey === marker.instanceId)
+        ?.selection,
+    ).toEqual(resolved);
+    expect(
+      buildModelOptions(config, marker).some(
+        (option) => option.selection.model === ANTIGRAVITY_DEFAULT_MODEL,
+      ),
+    ).toBe(false);
+  });
+
+  it("preserves a vanished selected model as unavailable instead of taking another account default", () => {
+    const vanished = { ...marker, model: "removed-model" };
+    const selected = resolveDefaultableModelSelection(config, vanished);
+    expect(selected).toEqual(vanished);
+    const options = buildModelOptions(config, selected);
+    expect(options.find((option) => option.selection.model === vanished.model)).toMatchObject({
+      isUnavailable: true,
+      unavailableReason: expect.stringContaining("no longer available"),
+    });
+    expect(canSendToModelSelection(config, selected)).toBe(false);
+    expect(
+      resolveNewTaskModelSelection({
+        ...blank,
+        projectDefaultSelection: selected,
+        modelOptions: options,
+      }),
+    ).toEqual(vanished);
+  });
+
+  it("can discover a first-run account on send without inventing a marker picker row", () => {
+    const emptyConfig = {
+      ...config,
+      providers: config.providers.map((provider) => ({
+        ...provider,
+        auth: { status: "unknown" as const },
+        models: [],
+      })),
+    };
+    const firstSelection = resolveNewTaskModelSelection({
+      ...blank,
+      providers: emptyConfig.providers,
+    });
+    expect(firstSelection).toEqual({
+      instanceId: marker.instanceId,
+      model: ANTIGRAVITY_DEFAULT_MODEL,
+    });
+    expect(buildModelOptions(emptyConfig, firstSelection)).toEqual([]);
+    expect(canSendToModelSelection(emptyConfig, firstSelection)).toBe(true);
+    expect(modelSelectionDisplayName(marker)).toBe("Default model");
+    expect(resolveSelectableModelSelection(emptyConfig, marker)).toEqual(marker);
+    expect(
+      resolveNewTaskModelSelection({
+        ...blank,
+        draftSelection: marker,
+        providers: config.providers,
+      }),
+    ).toEqual(marker);
+  });
+
+  it("leaves concrete restart sends usable and prevents discovery through disabled accounts", () => {
+    const restarted = {
+      ...config,
+      providers: config.providers.map((provider) => ({
+        ...provider,
+        auth: { status: "unknown" as const },
+        models: [],
+      })),
+    };
+    expect(canSendToModelSelection(restarted, { ...marker, model: "saved-model" })).toBe(true);
+    const disabled = {
+      ...restarted,
+      providers: restarted.providers.map((provider) => ({ ...provider, enabled: false })),
+    };
+    expect(resolveNewTaskModelSelection({ ...blank, providers: disabled.providers })).toBe(null);
+    expect(canSendToModelSelection(disabled, marker)).toBe(false);
+  });
+});
 
 describe("mobile model options", () => {
   it("presents the default Prime Agent instance with its product name", () => {
