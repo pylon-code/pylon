@@ -838,6 +838,17 @@ const runRestartedTurn = ({ wsUrl, threadId, fixture, onRecoveredActivity }) =>
     ),
   );
 
+const containsProcessId = (text, pid) =>
+  new RegExp(`(?<![A-Za-z0-9])${pid}(?![A-Za-z0-9])`, "u").test(text);
+
+it("distinguishes a private PID from coincidental digits inside a public UUID", () => {
+  expect(containsProcessId('"eventId":"a120e8c3-95c1-44a6-9bc1-2c01e0799eee"', 514)).toBe(false);
+  expect(containsProcessId('"eventId":"a120e8c3-9514-44a6-9bc1-2c01e0799eee"', 514)).toBe(false);
+  expect(containsProcessId('"createdAt":"2026-09-12T02:36:59.514Z"', 514)).toBe(false);
+  expect(containsProcessId('"pid":514', 514)).toBe(true);
+  expect(containsProcessId('"message":"worker PID 514 exited"', 514)).toBe(true);
+});
+
 describe.skipIf(!enabled)(
   `Prime Agent downloaded-artifact Pylon restart adoption (${enabled ? "enabled" : skipReason})`,
   () => {
@@ -1366,12 +1377,12 @@ describe.skipIf(!enabled)(
             daemonSocket,
             serverA.access.credential,
             bearerToken,
-            String(serverA.child.pid),
-            String(serverB.child.pid),
-            String(workerPid),
           ];
           for (const privateValue of privateValues) {
             expect(publicSurface).not.toContain(privateValue);
+          }
+          for (const pid of [serverA.child.pid, serverB.child.pid, workerPid]) {
+            expect(containsProcessId(publicSurface, pid)).toBe(false);
           }
           const logSafeResult = [
             serverA.output(),
