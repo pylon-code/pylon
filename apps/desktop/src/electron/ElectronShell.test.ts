@@ -121,6 +121,25 @@ describe("ElectronShell", () => {
     }).pipe(Effect.provide(ElectronShell.layer)),
   );
 
+  it.effect("rejects encoded or malformed Zed SSH authorities", () =>
+    Effect.gen(function* () {
+      const electronShell = yield* ElectronShell.ElectronShell;
+      const results = yield* Effect.all(
+        [
+          "user%40example.com",
+          "user%3Asecret%40example.com",
+          "example.com%2Fother",
+          "example.com%5Cother",
+          "example.com%0A",
+          "example.com%20",
+          "example.com%",
+        ].map((host) => electronShell.openExternal(`zed://ssh/${host}/path`)),
+      );
+      assert.deepEqual(results, Array(7).fill(false));
+      assert.equal(openExternalMock.mock.calls.length, 0);
+    }).pipe(Effect.provide(ElectronShell.layer)),
+  );
+
   it.effect("does not open remote editor URLs with userinfo", () =>
     Effect.gen(function* () {
       openExternalMock.mockResolvedValue(undefined);
