@@ -3,12 +3,130 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
+const { createHash } = require("node:crypto");
 const { prepare, reconcile, read, loadDmg } = require("./desktop-macos-preview.cjs");
 
 const SHA = "a".repeat(40);
 const NAME = "Pylon-0.0.32-pr.42.10.1-arm64.dmg";
 const PREVIOUS = "Pylon-0.0.32-pr.42.9-arm64.dmg";
 const httpError = (status) => Object.assign(new Error(`HTTP ${status}`), { status });
+
+async function trustedLoaderFixture(t, job) {
+  const workflow = await fs.readFile(
+    path.join(__dirname, "../workflows/desktop-macos-preview-publish.yml"),
+    "utf8",
+  );
+  const section = workflow.split(`\n  ${job}:\n`)[1].split(/\n  \w+:\n/)[0];
+  const script = section.match(/          script: \|\n((?:            .*\n?)*)/)[1];
+  const run = new (Object.getPrototypeOf(async function () {}).constructor)(
+    "github",
+    "context",
+    "core",
+    "require",
+    "process",
+    script.replace(/^            /gm, ""),
+  );
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pylon-preview-loader-test-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const source = Buffer.from(
+    "module.exports = { prepare: async ({ core }) => core.info('prepare'), " +
+      "reconcile: async ({ core, prNumber }) => core.info(`reconcile:${prNumber}`) };\n",
+  );
+  const data = {
+    type: "file",
+    path: ".github/scripts/desktop-macos-preview.cjs",
+    encoding: "base64",
+    content:
+      source
+        .toString("base64")
+        .match(/.{1,60}/g)
+        .join("\n") + "\n",
+    size: source.length,
+    sha: createHash("sha1").update(`blob ${source.length}\0`).update(source).digest("hex"),
+  };
+  const requests = [];
+  const messages = [];
+  const env = { RUNNER_TEMP: directory, PREVIEW_HELPER_REF: SHA, PREVIEW_PR: "42" };
+  const github = {
+    rest: {
+      repos: {
+        getContent: async (request) => {
+          requests.push(request);
+          return { data };
+        },
+      },
+    },
+  };
+  return {
+    data,
+    env,
+    requests,
+    messages,
+    directory,
+    github,
+    run: () =>
+      run(
+        github,
+        { repo: { owner: "pylon-code", repo: "pylon" }, sha: "b".repeat(40) },
+        { info: (message) => messages.push(message) },
+        require,
+        { env },
+      ),
+  };
+}
+
+for (const job of ["prepare", "publish"]) {
+  test(`${job} loads only the verified helper at the trusted workflow commit`, async (t) => {
+    const f = await trustedLoaderFixture(t, job);
+    await f.run();
+    assert.deepEqual(f.requests, [
+      {
+        owner: "pylon-code",
+        repo: "pylon",
+        path: ".github/scripts/desktop-macos-preview.cjs",
+        ref: SHA,
+      },
+    ]);
+    assert.deepEqual(f.messages, [job === "prepare" ? "prepare" : "reconcile:42"]);
+    const [helperDirectory] = await fs.readdir(f.directory);
+    const filename = path.join(f.directory, helperDirectory, "desktop-macos-preview.cjs");
+    assert.equal((await fs.stat(filename)).mode & 0o777, 0o600);
+  });
+
+  for (const [name, mutate] of [
+    ["wrong path", (d) => (d.path = "another/helper.cjs")],
+    ["non-file", (d) => (d.type = "dir")],
+    ["wrong encoding", (d) => (d.encoding = "none")],
+    ["missing contents", (d) => delete d.content],
+    ["oversized content", (d) => (d.size = 1024 * 1024 + 1)],
+    ["size mismatch", (d) => d.size++],
+    ["invalid base64", (d) => (d.content += "!")],
+    ["changed contents", (d) => (d.content = Buffer.from("throw 'untrusted';").toString("base64"))],
+    ["wrong Git blob digest", (d) => (d.sha = "0".repeat(40))],
+  ]) {
+    test(`${job} rejects ${name} before writing or executing helper code`, async (t) => {
+      const f = await trustedLoaderFixture(t, job);
+      mutate(f.data);
+      await assert.rejects(f.run, /preview helper/);
+      assert.deepEqual(f.messages, []);
+      assert.deepEqual(await fs.readdir(f.directory), []);
+    });
+  }
+
+  test(`${job} rejects mutable refs and API errors without a fallback`, async (t) => {
+    const f = await trustedLoaderFixture(t, job);
+    f.env.PREVIEW_HELPER_REF = "pylon";
+    await assert.rejects(f.run, /immutable workflow commit/);
+    assert.deepEqual(f.requests, []);
+    f.env.PREVIEW_HELPER_REF = SHA;
+    f.github.rest.repos.getContent = async () => {
+      throw httpError(503);
+    };
+    await assert.rejects(f.run, /HTTP 503/);
+    assert.deepEqual(f.messages, []);
+    assert.deepEqual(await fs.readdir(f.directory), []);
+  });
+}
 
 function fixture() {
   const calls = [];
