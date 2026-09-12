@@ -43,9 +43,14 @@ models.
 ### Enable native mode with the Pylon Prime build
 
 Stock Prime Agent runs in ACP compatibility mode with these limits: one account, Full access only, no
-approvals, model change requires a new thread, and no Goal/Harness/queue/resources controls. To
-enable native mode before Pylon-managed builds are published, build and install the Pylon Prime fork in
-a private prefix:
+approvals, model change requires a new thread, and no Goal/Harness/queue/resources controls.
+
+To enable native mode, open **Settings → Providers → Prime Agent** and choose **Install stable** under
+**Pylon-managed Prime**. If a managed build is already selected, the button is **Update stable**.
+Wait for **Succeeded**, then check that the card shows **Backend: Native daemon** and **Pylon managed**.
+Pylon uses your existing Prime login and installs the build on the selected environment host.
+
+You can also build and install the Pylon Prime fork yourself in a private prefix:
 
 ```bash
 git clone https://github.com/pylon-code/prime-agent
@@ -83,7 +88,7 @@ fnm exec --using 22.23.2 npm install --no-audit --no-fund
 
 Then set **Binary path** to `~/.local/prime-agent-pylon/node_modules/.bin/prime-agent`.
 
-Pylon-managed installation will replace this manual process once builds are published.
+See [Pylon-managed installation](#optional-pylon-managed-installation) for updates, preview builds, and rollback.
 
 Pylon uses the existing Prime Agent login. Provider status reports **Authenticated** only when a
 healthy, current catalog contains at least one configured model provider. An empty catalog leaves
@@ -115,6 +120,7 @@ Launch arguments: empty
 An empty **Agent home path** uses Prime Agent's normal `~/.prime/agent` directory. Set it only
 when this provider instance should use a separate Prime Agent home. If the app cannot find a CLI
 installed outside the system path, set **Binary path** to the complete path of `prime-agent`.
+Press **Enter** after editing a path to save it before changing another setting.
 
 Pylon normally uses Prime Agent's native daemon API. With one enabled instance, a non-empty
 **Launch arguments** value selects ACP compatibility mode instead, because the daemon API cannot safely

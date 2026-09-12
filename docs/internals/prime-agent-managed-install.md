@@ -98,11 +98,11 @@ when stored selection mode is corrupt. Cleanup ignores unrecognized, linked, inc
 invalid-receipt directories and removes only an unreferenced build that passes full offline marker and
 receipt validation. External Prime installations are never cleanup targets.
 
-## Manual fork install (interim)
+## Optional manual fork install
 
-Until managed artifacts are published, users can build the Pylon Prime fork from the tested commit
-`68603ed89bb597cd715fd6a77bc1c39d7e110298` in a detached checkout and install its packed packages
-under a private prefix. The release command is
+Signed managed builds are available through Provider Settings. Users who prefer a manual installation
+can build the tested Prime 0.9.4 fork commit `514e40454e048707a8467940677170c2e15a8a39` in a detached
+checkout and install its packed packages under a private prefix. The release command is
 `scripts/build-pylon-prime-agent-release.mjs --pack`. It requires Node 22.23.2 and performs the pinned
 offline workspace builds before packing, so the source tree and committed generated model data must
 remain clean.
@@ -113,6 +113,7 @@ The private prefix's `package.json` depends on the packed `prime-agent` tarball 
 the CLI; without the overrides, npm can satisfy their version ranges from the public registry and pair
 the forked CLI with stock packages that do not expose the native SDK capabilities.
 
-[prime-agent#53](https://github.com/pylon-code/prime-agent/issues/53) tracks the publication blocker.
-Once that issue is resolved and signed builds are available, the managed installer replaces this
-manual path.
+The publication recovery work tracked by
+[prime-agent#53](https://github.com/pylon-code/prime-agent/issues/53) is complete. The optional manual
+path remains separate from receipt-owned managed installation and does not acquire managed restart
+recovery authority.
