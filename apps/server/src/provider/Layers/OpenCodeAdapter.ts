@@ -45,7 +45,13 @@ import {
 } from "../Errors.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
-import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
+import type { ProviderAbsoluteConversationRollback } from "../Services/ProviderAdapter.ts";
+import type { ProviderAdapterError } from "../Errors.ts";
+import {
+  decodeOpenCodeConversationAnchor,
+  openCodeTranscriptDigest,
+  type OpenCodeConversationAnchor,
+} from "../opencodeRollback.ts";
 import {
   buildOpenCodePermissionRules,
   OpenCodeRuntime,
@@ -53,6 +59,7 @@ import {
   openCodeQuestionId,
   openCodeRuntimeErrorDetail,
   parseOpenCodeModelSlug,
+  resolveOpenCodeExactRollbackUnavailableReason,
   runOpenCodeSdk,
   toOpenCodeFileParts,
   toOpenCodePermissionReply,
@@ -342,6 +349,7 @@ interface OpenCodeSessionContext {
   readonly sessionIncarnationId: ProviderSession["sessionIncarnationId"];
   readonly client: OpencodeClient;
   readonly server: OpenCodeServerConnection;
+  readonly exactRollbackUnavailableReason: string | undefined;
   readonly directory: string;
   openCodeSessionId: string;
   readonly relatedSessionIds: Set<string>;
@@ -365,6 +373,14 @@ interface OpenCodeSessionContext {
   awaitingBusyAfterInterruption: boolean;
   pendingIdleReconciliation: OpenCodeIdleReconciliation | undefined;
   pendingRequestRecovery: OpenCodePendingRequestRecovery | undefined;
+  rollbackEpoch: number;
+  rollbackQuarantined: boolean;
+  recoveryQuarantined: boolean;
+  rollbackSource: OpenCodeConversationAnchor | undefined;
+  rollbackTarget: OpenCodeConversationAnchor | undefined;
+  rootRollbackAnchor: OpenCodeConversationAnchor | undefined;
+  readonly privateRollbackSessionIds: Set<string>;
+  readonly completedRollbackAnchors: Map<TurnId, OpenCodeConversationAnchor>;
   promptGeneration: number;
   promptAdmission: OpenCodePromptAdmission | undefined;
   readonly promptSemaphore: Semaphore.Semaphore;
@@ -1081,10 +1097,13 @@ export function makeOpenCodeAdapter(
       sessionIncarnationId: ProviderSession["sessionIncarnationId"],
       event: ProviderRuntimeEvent,
     ) =>
-      Queue.offer(
-        runtimeEvents,
-        sessionIncarnationId === undefined ? event : { ...event, sessionIncarnationId },
-      ).pipe(Effect.asVoid);
+      sessions.get(event.threadId)?.rollbackQuarantined ||
+      sessions.get(event.threadId)?.recoveryQuarantined
+        ? Effect.void
+        : Queue.offer(
+            runtimeEvents,
+            sessionIncarnationId === undefined ? event : { ...event, sessionIncarnationId },
+          ).pipe(Effect.asVoid);
     // Synchronous publish for callers that must not yield between a state
     // check and the enqueue, e.g. reopening an approval only if its terminal
     // event has not landed yet. Stamps the incarnation exactly like `emit`.
@@ -1092,11 +1111,240 @@ export function makeOpenCodeAdapter(
       sessionIncarnationId: ProviderSession["sessionIncarnationId"],
       event: ProviderRuntimeEvent,
     ) => {
+      if (
+        sessions.get(event.threadId)?.rollbackQuarantined ||
+        sessions.get(event.threadId)?.recoveryQuarantined
+      )
+        return;
       Queue.offerUnsafe(
         runtimeEvents,
         sessionIncarnationId === undefined ? event : { ...event, sessionIncarnationId },
       );
     };
+    const rollbackError = (detail: string) =>
+      new ProviderAdapterValidationError({
+        provider: PROVIDER,
+        operation: "absoluteConversationRollback",
+        issue: detail,
+      });
+    const rollbackTimeout = Effect.timeoutOrElse({
+      duration: "30 seconds",
+      orElse: () =>
+        Effect.fail(rollbackError("OpenCode exact conversation verification timed out.")),
+    });
+    const requireRollbackCurrent = (
+      context: OpenCodeSessionContext,
+      generation = context.promptGeneration,
+    ) =>
+      Effect.suspend(() =>
+        context.exactRollbackUnavailableReason !== undefined
+          ? Effect.fail(rollbackError(context.exactRollbackUnavailableReason))
+          : sessions.get(context.session.threadId) === context &&
+              !Ref.getUnsafe(context.stopped) &&
+              context.promptGeneration === generation &&
+              context.sessionIncarnationId !== undefined
+            ? Effect.void
+            : Effect.fail(rollbackError("The exact OpenCode session ownership changed.")),
+      );
+    const requireNotQuarantined = (context: OpenCodeSessionContext) =>
+      context.rollbackQuarantined || context.recoveryQuarantined
+        ? Effect.fail(
+            rollbackError("The OpenCode conversation is fenced by exact rollback recovery."),
+          )
+        : Effect.void;
+    const isRollbackRelatedSession = Effect.fn("OpenCodeAdapter.isRollbackRelatedSession")(
+      function* (context: OpenCodeSessionContext, candidateId: string) {
+        const seen = new Set<string>();
+        let currentId = candidateId;
+        for (let depth = 0; depth < 32; depth += 1) {
+          if (
+            currentId === context.openCodeSessionId ||
+            context.relatedSessionIds.has(currentId) ||
+            context.privateRollbackSessionIds.has(currentId)
+          )
+            return true;
+          if (seen.has(currentId))
+            return yield* rollbackError("OpenCode native session ancestry is cyclic.");
+          seen.add(currentId);
+          const response = yield* runOpenCodeSdk("session.get", (signal) =>
+            context.client.session.get({ sessionID: currentId }, { signal }),
+          ).pipe(Effect.mapError(toRequestError));
+          if (!response.data || response.data.id !== currentId)
+            return yield* rollbackError("OpenCode native session ancestry could not be verified.");
+          const parent = response.data.parentID;
+          if (parent === undefined) return false;
+          if (typeof parent !== "string" || parent.length === 0)
+            return yield* rollbackError("OpenCode native session ancestry is malformed.");
+          currentId = parent;
+        }
+        return yield* rollbackError(
+          "OpenCode native session ancestry exceeds the exact verification bound.",
+        );
+      },
+      rollbackTimeout,
+    );
+    const readRollbackTranscript = Effect.fn("OpenCodeAdapter.readRollbackTranscript")(function* (
+      context: OpenCodeSessionContext,
+      sessionId: string,
+    ) {
+      const session = yield* runOpenCodeSdk("session.get", (signal) =>
+        context.client.session.get({ sessionID: sessionId }, { signal }),
+      ).pipe(Effect.mapError(toRequestError));
+      if (
+        !session.data ||
+        session.data.id !== sessionId ||
+        session.data.revert !== undefined ||
+        session.data.directory === undefined ||
+        !(yield* sameDirectory(session.data.directory, context.directory))
+      ) {
+        return yield* rollbackError(
+          "The native OpenCode conversation identity is unavailable or changed.",
+        );
+      }
+      const status = yield* runOpenCodeSdk("session.status", (signal) =>
+        context.client.session.status(undefined, { signal }),
+      ).pipe(Effect.mapError(toRequestError));
+      const statuses = decodeOpenCodeSessionStatusMap(status.data);
+      if (
+        Option.isNone(statuses) ||
+        (statuses.value[sessionId] !== undefined && statuses.value[sessionId]?.type !== "idle")
+      ) {
+        return yield* rollbackError("The native OpenCode conversation could not be proved idle.");
+      }
+      if (sessionId === context.openCodeSessionId) {
+        for (const [candidateId, candidate] of Object.entries(statuses.value)) {
+          if (
+            candidate.type !== "idle" &&
+            (candidateId === sessionId || (yield* isRollbackRelatedSession(context, candidateId)))
+          ) {
+            return yield* rollbackError(
+              "An OpenCode conversation or child session is still active.",
+            );
+          }
+        }
+      }
+      const permissions = yield* runOpenCodeSdk("permission.list", (signal) =>
+        context.client.permission.list(undefined, { signal }),
+      ).pipe(Effect.mapError(toRequestError));
+      const questions = yield* runOpenCodeSdk("question.list", (signal) =>
+        context.client.question.list(undefined, { signal }),
+      ).pipe(Effect.mapError(toRequestError));
+      if (!Array.isArray(permissions.data) || !Array.isArray(questions.data))
+        return yield* rollbackError("OpenCode pending input could not be verified.");
+      for (const request of [...permissions.data, ...questions.data]) {
+        if (
+          request === null ||
+          typeof request !== "object" ||
+          typeof request.sessionID !== "string" ||
+          request.sessionID.length === 0
+        )
+          return yield* rollbackError("OpenCode pending input ownership is malformed.");
+        if (
+          request.sessionID === sessionId ||
+          (sessionId === context.openCodeSessionId &&
+            (yield* isRollbackRelatedSession(context, request.sessionID)))
+        ) {
+          return yield* rollbackError("OpenCode still has a pending native input request.");
+        }
+      }
+      const response = yield* runOpenCodeSdk("session.messages", (signal) =>
+        context.client.session.messages({ sessionID: sessionId }, { signal }),
+      ).pipe(Effect.mapError(toRequestError));
+      const digest = openCodeTranscriptDigest(response.data, sessionId);
+      if (digest === undefined)
+        return yield* rollbackError("The native OpenCode conversation cannot be verified exactly.");
+      return { messages: response.data!, digest };
+    }, rollbackTimeout);
+    const checkpointSnapshotAnchor = (
+      anchor: OpenCodeConversationAnchor,
+    ): OpenCodeConversationAnchor => {
+      const { checkpointSnapshotSessionId, checkpointTranscriptDigest, ...identity } = anchor;
+      return {
+        ...identity,
+        snapshotSessionId: checkpointSnapshotSessionId ?? anchor.snapshotSessionId,
+        transcriptDigest: checkpointTranscriptDigest ?? anchor.transcriptDigest,
+      };
+    };
+    const writeExactCursor = (
+      context: OpenCodeSessionContext,
+      anchor: OpenCodeConversationAnchor,
+    ) => {
+      context.session = {
+        ...context.session,
+        resumeCursor: {
+          schemaVersion: OPENCODE_RESUME_VERSION,
+          sessionId: context.openCodeSessionId,
+          exactRollback: { ...anchor },
+        },
+      };
+      if (anchor.completedTurnId === null && context.rootRollbackAnchor === undefined)
+        context.rootRollbackAnchor = checkpointSnapshotAnchor(anchor);
+      else if (
+        anchor.completedTurnId !== undefined &&
+        anchor.completedTurnId !== null &&
+        !context.completedRollbackAnchors.has(TurnId.make(anchor.completedTurnId))
+      )
+        context.completedRollbackAnchors.set(
+          TurnId.make(anchor.completedTurnId),
+          checkpointSnapshotAnchor(anchor),
+        );
+    };
+    const forkRollbackSnapshot = Effect.fn("OpenCodeAdapter.forkRollbackSnapshot")(function* (
+      context: OpenCodeSessionContext,
+    ) {
+      const generation = context.promptGeneration;
+      yield* requireRollbackCurrent(context, generation);
+      const before = yield* readRollbackTranscript(context, context.openCodeSessionId);
+      yield* requireRollbackCurrent(context, generation);
+      const fork = yield* runOpenCodeSdk("session.fork", (signal) =>
+        context.client.session.fork(
+          {
+            sessionID: context.openCodeSessionId,
+            directory: context.directory,
+          },
+          { signal },
+        ),
+      ).pipe(Effect.mapError(toRequestError));
+      if (!fork.data || fork.data.id === context.openCodeSessionId)
+        return yield* rollbackError("OpenCode did not create a private conversation snapshot.");
+      context.privateRollbackSessionIds.add(fork.data.id);
+      context.relatedSessionIds.delete(fork.data.id);
+      const snapshot = yield* readRollbackTranscript(context, fork.data.id);
+      const after = yield* readRollbackTranscript(context, context.openCodeSessionId);
+      yield* requireRollbackCurrent(context, generation);
+      if (before.digest !== snapshot.digest || before.digest !== after.digest) {
+        return yield* rollbackError(
+          "OpenCode changed conversation contents while capturing its exact snapshot.",
+        );
+      }
+      const anchor: OpenCodeConversationAnchor = {
+        version: 1,
+        providerInstanceId: boundInstanceId,
+        sessionIncarnationId: context.sessionIncarnationId!,
+        threadId: context.session.threadId,
+        directory: context.directory,
+        snapshotSessionId: fork.data.id,
+        transcriptDigest: snapshot.digest,
+      };
+      return anchor;
+    }, rollbackTimeout);
+    const captureCompletedRollbackAnchor = Effect.fn(
+      "OpenCodeAdapter.captureCompletedRollbackAnchor",
+    )(function* (context: OpenCodeSessionContext, turnId: TurnId, generation: number) {
+      const ownsUncapturedBoundary = () =>
+        context.activeTurnId === turnId &&
+        context.promptGeneration === generation &&
+        context.cancellation?.turnId !== turnId &&
+        !context.completedRollbackAnchors.has(turnId);
+      if (context.sessionIncarnationId === undefined || !ownsUncapturedBoundary()) return;
+      yield* requireRollbackCurrent(context, generation);
+      const captured = yield* forkRollbackSnapshot(context).pipe(Effect.result);
+      yield* requireRollbackCurrent(context, generation);
+      if (captured._tag === "Success" && ownsUncapturedBoundary()) {
+        return { ...captured.success, completedTurnId: turnId };
+      }
+    });
+
     const writeNativeEvent = (
       threadId: ThreadId,
       event: {
@@ -1144,6 +1392,23 @@ export function makeOpenCodeAdapter(
         pendingIdleReconciliation.promptGeneration === promptGeneration
       ) {
         context.pendingIdleReconciliation = undefined;
+      }
+      const anchor = yield* captureCompletedRollbackAnchor(context, turnId, promptGeneration).pipe(
+        Effect.orElseSucceed(() => undefined),
+      );
+      if (
+        sessions.get(context.session.threadId) !== context ||
+        Ref.getUnsafe(context.stopped) ||
+        context.activeTurnId !== turnId ||
+        context.promptGeneration !== promptGeneration ||
+        context.cancellation?.turnId === turnId
+      )
+        return;
+      // Idle reconciliation and SSE completion can race through native fork awaits.
+      // Publish once, together with releasing the active turn, without an intervening await.
+      if (anchor !== undefined && !context.completedRollbackAnchors.has(turnId)) {
+        context.completedRollbackAnchors.set(turnId, anchor);
+        writeExactCursor(context, anchor);
       }
       const tokenUsage = takeOpenCodeTurnTokenUsage(context, true);
       context.activeTurnId = undefined;
@@ -1734,6 +1999,8 @@ export function makeOpenCodeAdapter(
       request: PermissionRequest,
       raw: unknown,
     ) {
+      const selectedSessionId = context.openCodeSessionId;
+      const rollbackEpoch = context.rollbackEpoch;
       const base = yield* buildEventBase({
         threadId: context.session.threadId,
         turnId: context.activeTurnId,
@@ -1743,6 +2010,11 @@ export function makeOpenCodeAdapter(
       const stopped = yield* Ref.get(context.stopped);
       if (
         stopped ||
+        context.rollbackQuarantined ||
+        context.recoveryQuarantined ||
+        context.rollbackEpoch !== rollbackEpoch ||
+        context.openCodeSessionId !== selectedSessionId ||
+        sessions.get(context.session.threadId) !== context ||
         context.emittedTerminalRequestIds.has(request.id) ||
         context.pendingPermissions.has(request.id)
       ) {
@@ -1788,6 +2060,9 @@ export function makeOpenCodeAdapter(
       request: PermissionRequest,
       raw: unknown,
     ) {
+      const selectedSessionId = context.openCodeSessionId;
+      const rollbackEpoch = context.rollbackEpoch;
+      if (context.rollbackQuarantined || context.recoveryQuarantined) return;
       const replied = yield* runOpenCodeSdk("permission.reply", (signal) =>
         context.client.permission.reply({ requestID: request.id, reply: "once" }, { signal }),
       ).pipe(
@@ -1795,6 +2070,14 @@ export function makeOpenCodeAdapter(
         Effect.as(true),
         Effect.orElseSucceed(() => false),
       );
+      if (
+        context.rollbackQuarantined ||
+        context.recoveryQuarantined ||
+        context.rollbackEpoch !== rollbackEpoch ||
+        context.openCodeSessionId !== selectedSessionId ||
+        sessions.get(context.session.threadId) !== context
+      )
+        return;
       if (!replied) {
         // Fall back to the dialog. The id stays resolved so a recovered copy
         // of this ask cannot reopen after the user answers;
@@ -1808,6 +2091,9 @@ export function makeOpenCodeAdapter(
       event: OpenCodeAskedRequestEvent,
       raw: unknown,
     ) {
+      const selectedSessionId = context.openCodeSessionId;
+      const rollbackEpoch = context.rollbackEpoch;
+      if (context.rollbackQuarantined || context.recoveryQuarantined) return;
       if (context.resolvedRequestIds.has(event.properties.id)) {
         return;
       }
@@ -1845,7 +2131,15 @@ export function makeOpenCodeAdapter(
         raw,
       });
       const stopped = yield* Ref.get(context.stopped);
-      if (stopped || context.resolvedRequestIds.has(request.id)) {
+      if (
+        stopped ||
+        context.rollbackQuarantined ||
+        context.recoveryQuarantined ||
+        context.rollbackEpoch !== rollbackEpoch ||
+        context.openCodeSessionId !== selectedSessionId ||
+        sessions.get(context.session.threadId) !== context ||
+        context.resolvedRequestIds.has(request.id)
+      ) {
         return;
       }
       context.pendingQuestions.set(request.id, request);
@@ -1990,6 +2284,8 @@ export function makeOpenCodeAdapter(
       event: OpenCodeRoutedRequestEvent,
       raw: unknown = event,
     ) {
+      const selectedSessionId = context.openCodeSessionId;
+      const rollbackEpoch = context.rollbackEpoch;
       const isAskedEvent = event.type === "permission.asked" || event.type === "question.asked";
       const requestId = isAskedEvent ? event.properties.id : event.properties.requestID;
       if (context.requestRelationRetries.has(requestId)) {
@@ -2012,7 +2308,14 @@ export function makeOpenCodeAdapter(
               onSuccess: (related) => ({ type: "known" as const, related }),
             }),
           );
-          if (context.requestRelationRetries.get(requestId) !== retry) {
+          if (
+            context.rollbackQuarantined ||
+            context.recoveryQuarantined ||
+            context.rollbackEpoch !== rollbackEpoch ||
+            context.openCodeSessionId !== selectedSessionId ||
+            sessions.get(context.session.threadId) !== context ||
+            context.requestRelationRetries.get(requestId) !== retry
+          ) {
             return;
           }
           if (relation.type === "known") {
@@ -2063,6 +2366,7 @@ export function makeOpenCodeAdapter(
     const schedulePendingRequestRecovery = Effect.fn("schedulePendingRequestRecovery")(function* (
       context: OpenCodeSessionContext,
     ) {
+      if (context.rollbackQuarantined || context.recoveryQuarantined) return;
       if (context.pendingRequestRecovery) {
         context.pendingRequestRecovery.rerun = true;
         return;
@@ -2216,6 +2520,14 @@ export function makeOpenCodeAdapter(
         }
         return;
       }
+      if (context.rollbackQuarantined || context.recoveryQuarantined) return;
+      const nativeSessionId = openCodeEventSessionId(event);
+      if (
+        nativeSessionId !== undefined &&
+        context.privateRollbackSessionIds.has(nativeSessionId) &&
+        nativeSessionId !== context.openCodeSessionId
+      )
+        return;
       const terminalRequestId =
         event.type === "permission.replied" ||
         event.type === "question.replied" ||
@@ -2834,280 +3146,388 @@ export function makeOpenCodeAdapter(
       );
     });
 
-    const startSession: OpenCodeAdapterShape["startSession"] = Effect.fn("startSession")(
-      function* (input) {
-        const binaryPath = openCodeSettings.binaryPath;
-        const serverUrl = openCodeSettings.serverUrl;
-        const serverPassword = openCodeSettings.serverPassword;
-        const directory = input.cwd ?? serverConfig.cwd;
-        const resumeSessionId = parseOpenCodeResume(input.resumeCursor)?.sessionId;
-        const existing = sessions.get(input.threadId);
-        if (existing) {
-          if (existing.session.status === "connecting" && !(yield* Ref.get(existing.stopped))) {
-            return (yield* awaitOpenCodeContextReady(existing)).session;
-          }
-          yield* stopOpenCodeContext(existing);
-          deleteContextIfCurrent(existing);
+    const startSession = Effect.fn("startSession")(function* (
+      input: Parameters<OpenCodeAdapterShape["startSession"]>[0],
+      recovering: boolean = false,
+    ) {
+      const rawExact =
+        typeof input.resumeCursor === "object" &&
+        input.resumeCursor !== null &&
+        "exactRollback" in input.resumeCursor
+          ? input.resumeCursor.exactRollback
+          : undefined;
+      const parsedExact = decodeOpenCodeConversationAnchor(rawExact);
+      const exact = Option.filter(
+        parsedExact,
+        (anchor) =>
+          anchor.providerInstanceId === boundInstanceId &&
+          anchor.sessionIncarnationId === input.sessionIncarnationId &&
+          anchor.threadId === input.threadId,
+      );
+      if (
+        recovering &&
+        (Option.isNone(exact) ||
+          exact.value.providerInstanceId !== boundInstanceId ||
+          exact.value.sessionIncarnationId !== input.sessionIncarnationId ||
+          exact.value.threadId !== input.threadId)
+      ) {
+        return yield* rollbackError("The persisted exact OpenCode session binding is invalid.");
+      }
+      const binaryPath = openCodeSettings.binaryPath;
+      const serverUrl = openCodeSettings.serverUrl;
+      const serverPassword = openCodeSettings.serverPassword;
+      const directory = input.cwd ?? serverConfig.cwd;
+      const resumeSessionId = parseOpenCodeResume(input.resumeCursor)?.sessionId;
+      if (Option.isSome(exact) && !(yield* sameDirectory(exact.value.directory, directory)))
+        return yield* rollbackError("The persisted exact OpenCode workspace changed.");
+      const existing = sessions.get(input.threadId);
+      if (existing) {
+        if (recovering || existing.rollbackQuarantined || existing.recoveryQuarantined)
+          return yield* rollbackError(
+            "An existing OpenCode owner cannot be replaced during exact recovery.",
+          );
+        if (existing.session.status === "connecting" && !(yield* Ref.get(existing.stopped))) {
+          return (yield* awaitOpenCodeContextReady(existing)).session;
         }
+        yield* stopOpenCodeContext(existing);
+        deleteContextIfCurrent(existing);
+      }
 
-        const started = yield* Effect.gen(function* () {
-          const sessionScope = yield* Scope.make();
-          const startedExit = yield* Effect.exit(
-            Effect.gen(function* () {
-              // The runtime binds the server's lifetime to the Scope.Scope
-              // we provide below — closing `sessionScope` kills the child
-              // process automatically. No manual `server.close()` needed.
-              const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-              const server = yield* openCodeRuntime.connectToOpenCodeServer({
-                binaryPath,
-                directory,
-                serverUrl,
-                ...(serverPassword ? { serverPassword } : {}),
-                environment: McpProviderSession.withAgentDeviceEnvironment(
-                  options?.environment ?? process.env,
-                  mcpSession,
-                ),
-              });
-              const client = openCodeRuntime.createOpenCodeSdkClient({
-                baseUrl: server.url,
-                directory,
-                ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
-              });
-              if (mcpSession && !server.external) {
-                yield* runOpenCodeSdk("mcp.add", () =>
-                  client.mcp.add({
-                    name: "t3-code",
-                    config: {
-                      type: "remote",
-                      url: mcpSession.endpoint,
-                      headers: {
-                        Authorization: mcpSession.authorizationHeader,
-                      },
-                      oauth: false,
-                      // OpenCode also applies this to connecting and listing tools.
-                      timeout: McpProviderSession.MCP_PROVIDER_TOOL_TIMEOUT_MS,
+      const started = yield* Effect.gen(function* () {
+        const sessionScope = yield* Scope.make();
+        const startedExit = yield* Effect.exit(
+          Effect.gen(function* () {
+            // The runtime binds the server's lifetime to the Scope.Scope
+            // we provide below — closing `sessionScope` kills the child
+            // process automatically. No manual `server.close()` needed.
+            const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+            const environment = {
+              ...McpProviderSession.withAgentDeviceEnvironment(
+                options?.environment ?? process.env,
+                mcpSession,
+              ),
+            };
+            const server = yield* openCodeRuntime.connectToOpenCodeServer({
+              binaryPath,
+              directory,
+              serverUrl,
+              ...(serverPassword ? { serverPassword } : {}),
+              environment,
+            });
+            const exactRollbackUnavailableReason = resolveOpenCodeExactRollbackUnavailableReason({
+              external: server.external,
+              environment,
+            });
+            if (
+              exactRollbackUnavailableReason !== undefined &&
+              (recovering || Option.isSome(exact))
+            )
+              return yield* rollbackError(exactRollbackUnavailableReason);
+            const client = openCodeRuntime.createOpenCodeSdkClient({
+              baseUrl: server.url,
+              directory,
+              ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
+            });
+            if (mcpSession && !server.external) {
+              yield* runOpenCodeSdk("mcp.add", () =>
+                client.mcp.add({
+                  name: "t3-code",
+                  config: {
+                    type: "remote",
+                    url: mcpSession.endpoint,
+                    headers: {
+                      Authorization: mcpSession.authorizationHeader,
                     },
-                  }),
-                );
-              }
-              // Resume: re-adopt the session named by the durable cursor —
-              // OpenCode scopes history by session id. The probe recovers only
-              // a confirmed not-found (start fresh); transport/auth/server
-              // errors propagate instead of masking as a new empty session.
-              const resolved = yield* Effect.gen(function* () {
-                const adopted = resumeSessionId
-                  ? yield* runOpenCodeSdk("session.get", () =>
-                      client.session.get({ sessionID: resumeSessionId }),
-                    ).pipe(
-                      Effect.map((response) => response.data),
-                      Effect.catchIf(
-                        (cause) => isOpenCodeNotFound(cause),
-                        () => Effect.void,
-                      ),
-                    )
+                    oauth: false,
+                    // OpenCode also applies this to connecting and listing tools.
+                    timeout: McpProviderSession.MCP_PROVIDER_TOOL_TIMEOUT_MS,
+                  },
+                }),
+              );
+            }
+            // Resume: re-adopt the session named by the durable cursor —
+            // OpenCode scopes history by session id. The probe recovers only
+            // a confirmed not-found (start fresh); transport/auth/server
+            // errors propagate instead of masking as a new empty session.
+            const resolved = yield* Effect.gen(function* () {
+              const adopted = resumeSessionId
+                ? yield* runOpenCodeSdk("session.get", () =>
+                    client.session.get({ sessionID: resumeSessionId }),
+                  ).pipe(
+                    Effect.map((response) => response.data),
+                    Effect.catchIf(
+                      (cause) => Option.isNone(exact) && !recovering && isOpenCodeNotFound(cause),
+                      () => Effect.void,
+                    ),
+                  )
+                : undefined;
+
+              // Reuse in place only when the session still matches the
+              // requested cwd; on a cwd change it is forked below instead.
+              const reusable =
+                adopted &&
+                (!adopted.directory || (yield* sameDirectory(adopted.directory, directory)))
+                  ? adopted
                   : undefined;
 
-                // Reuse in place only when the session still matches the
-                // requested cwd; on a cwd change it is forked below instead.
-                const reusable =
-                  adopted &&
-                  (!adopted.directory || (yield* sameDirectory(adopted.directory, directory)))
-                    ? adopted
-                    : undefined;
-
-                if (reusable) {
-                  // Resume skips `session.create`, so re-assert the ruleset —
-                  // a runtime-mode change would otherwise leave the session on
-                  // its original permissions.
-                  yield* runOpenCodeSdk("session.update", () =>
-                    client.session.update({
-                      sessionID: reusable.id,
-                      permission: buildOpenCodePermissionRules(input.runtimeMode),
-                    }),
-                  );
-                  return { openCodeSession: reusable, created: false };
-                }
-
-                // The session lives under a different cwd (e.g. the thread
-                // moved into a git worktree). Fork it into the requested
-                // directory instead of minting an empty one — the fork carries
-                // the full history, so the follow-up keeps its context (#3604).
-                if (adopted) {
-                  yield* Effect.logInfo(
-                    `OpenCode session '${adopted.id}' was created under a different working directory; forking into '${directory}' to preserve conversation history.`,
-                  );
-                  const forkedSession = yield* runOpenCodeSdk("session.fork", () =>
-                    client.session.fork({ sessionID: adopted.id, directory }),
-                  );
-                  const forked = forkedSession.data;
-                  if (!forked) {
-                    return yield* new OpenCodeRuntimeError({
-                      operation: "session.fork",
-                      detail: "OpenCode session.fork returned no session payload.",
-                    });
-                  }
-                  yield* runOpenCodeSdk("session.update", () =>
-                    client.session.update({
-                      sessionID: forked.id,
-                      permission: buildOpenCodePermissionRules(input.runtimeMode),
-                    }),
-                  );
-                  return { openCodeSession: forked, created: true };
-                }
-
-                if (resumeSessionId) {
-                  yield* Effect.logWarning(
-                    `OpenCode session '${resumeSessionId}' no longer exists; starting a fresh session.`,
-                  );
-                }
-                const createdSession = yield* runOpenCodeSdk("session.create", () =>
-                  client.session.create({
-                    ...(input.title ? { title: input.title } : {}),
+              if (
+                (Option.isSome(exact) || recovering) &&
+                (!reusable || reusable.revert !== undefined)
+              ) {
+                return yield* rollbackError(
+                  "The exact OpenCode session is missing, reverted, or in another workspace.",
+                );
+              }
+              if (reusable) {
+                // Resume skips `session.create`, so re-assert the ruleset —
+                // a runtime-mode change would otherwise leave the session on
+                // its original permissions.
+                yield* runOpenCodeSdk("session.update", () =>
+                  client.session.update({
+                    sessionID: reusable.id,
                     permission: buildOpenCodePermissionRules(input.runtimeMode),
                   }),
                 );
-                if (!createdSession.data) {
+                return { openCodeSession: reusable, created: false };
+              }
+
+              // The session lives under a different cwd (e.g. the thread
+              // moved into a git worktree). Fork it into the requested
+              // directory instead of minting an empty one — the fork carries
+              // the full history, so the follow-up keeps its context (#3604).
+              if (adopted) {
+                yield* Effect.logInfo(
+                  `OpenCode session '${adopted.id}' was created under a different working directory; forking into '${directory}' to preserve conversation history.`,
+                );
+                const forkedSession = yield* runOpenCodeSdk("session.fork", () =>
+                  client.session.fork({ sessionID: adopted.id, directory }),
+                );
+                const forked = forkedSession.data;
+                if (!forked) {
                   return yield* new OpenCodeRuntimeError({
-                    operation: "session.create",
-                    detail: "OpenCode session.create returned no session payload.",
+                    operation: "session.fork",
+                    detail: "OpenCode session.fork returned no session payload.",
                   });
                 }
-                return { openCodeSession: createdSession.data, created: true };
-              });
+                yield* runOpenCodeSdk("session.update", () =>
+                  client.session.update({
+                    sessionID: forked.id,
+                    permission: buildOpenCodePermissionRules(input.runtimeMode),
+                  }),
+                );
+                return { openCodeSession: forked, created: true };
+              }
 
-              return {
-                sessionScope,
-                server,
-                client,
-                openCodeSession: resolved.openCodeSession,
-                created: resolved.created,
-              };
-            }).pipe(Effect.provideService(Scope.Scope, sessionScope)),
-          );
-          if (Exit.isFailure(startedExit)) {
-            yield* Scope.close(sessionScope, Exit.void).pipe(Effect.ignore);
-            return yield* toProcessError(input.threadId, Cause.squash(startedExit.cause));
-          }
-          return startedExit.value;
-        });
-
-        const createdAt = yield* nowIso;
-        const session: ProviderSession = {
-          provider: PROVIDER,
-          providerInstanceId: boundInstanceId,
-          ...(input.sessionIncarnationId !== undefined
-            ? { sessionIncarnationId: input.sessionIncarnationId }
-            : {}),
-          status: "connecting",
-          runtimeMode: input.runtimeMode,
-          cwd: directory,
-          ...(input.modelSelection ? { model: input.modelSelection.model } : {}),
-          threadId: input.threadId,
-          // ProviderService persists this cursor and feeds it back into
-          // `startSession` after the in-memory session is lost (reaper /
-          // restart), so follow-ups continue the same conversation (#3604).
-          resumeCursor: {
-            schemaVersion: OPENCODE_RESUME_VERSION,
-            sessionId: started.openCodeSession.id,
-          },
-          createdAt,
-          updatedAt: createdAt,
-        };
-
-        const context: OpenCodeSessionContext = {
-          session,
-          sessionIncarnationId: input.sessionIncarnationId,
-          client: started.client,
-          server: started.server,
-          directory,
-          openCodeSessionId: started.openCodeSession.id,
-          relatedSessionIds: new Set([started.openCodeSession.id]),
-          resolvedRequestIds: new Set(),
-          autoRepliedRequestIds: new Set(),
-          emittedTerminalRequestIds: new Set(),
-          requestRelationRetries: new Map(),
-          pendingPermissions: new Map(),
-          pendingQuestions: new Map(),
-          textPartsByMessageId: new Map(),
-          messageRoleById: new Map(),
-          turnTokenUsage: undefined,
-          activeTurnId: undefined,
-          activeAgent: undefined,
-          activeVariant: undefined,
-          lastPlanFingerprint: undefined,
-          cancellation: undefined,
-          interruptedTurnId: undefined,
-          reconcileIdleStatus: false,
-          awaitingBusyAfterInterruption: false,
-          pendingIdleReconciliation: undefined,
-          pendingRequestRecovery: undefined,
-          promptGeneration: 0,
-          promptAdmission: undefined,
-          promptSemaphore: Semaphore.makeUnsafe(1),
-          firstConnection: Deferred.makeUnsafe<void, ProviderAdapterRequestError>(),
-          stopped: yield* Ref.make(false),
-          sessionScope: started.sessionScope,
-        };
-        const raceWinner = sessions.get(input.threadId);
-        if (raceWinner) {
-          // Another start published first. A newly created remote session
-          // belongs to this loser; a resumed session is shared upstream state.
-          yield* closeStartingOpenCodeContext(context, started.created);
-          return (yield* awaitOpenCodeContextReady(raceWinner)).session;
-        }
-        sessions.set(input.threadId, context);
-        const cleanupStartingContext = closeStartingOpenCodeContext(context, started.created).pipe(
-          Effect.ensuring(Effect.sync(() => deleteContextIfCurrent(context))),
-        );
-        const connectionExit = yield* Effect.gen(function* () {
-          yield* startEventPump(context);
-          yield* Deferred.await(context.firstConnection).pipe(
-            Effect.timeout("10 seconds"),
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapterRequestError({
-                  provider: PROVIDER,
-                  method: "event.subscribe",
-                  detail: "OpenCode event stream did not connect within 10 seconds.",
-                  cause,
+              if (resumeSessionId) {
+                yield* Effect.logWarning(
+                  `OpenCode session '${resumeSessionId}' no longer exists; starting a fresh session.`,
+                );
+              }
+              const createdSession = yield* runOpenCodeSdk("session.create", () =>
+                client.session.create({
+                  ...(input.title ? { title: input.title } : {}),
+                  permission: buildOpenCodePermissionRules(input.runtimeMode),
                 }),
-            ),
-          );
-        }).pipe(
-          Effect.onInterrupt(() => cleanupStartingContext),
-          Effect.exit,
+              );
+              if (!createdSession.data) {
+                return yield* new OpenCodeRuntimeError({
+                  operation: "session.create",
+                  detail: "OpenCode session.create returned no session payload.",
+                });
+              }
+              return { openCodeSession: createdSession.data, created: true };
+            });
+
+            return {
+              sessionScope,
+              server,
+              exactRollbackUnavailableReason,
+              client,
+              openCodeSession: resolved.openCodeSession,
+              created: resolved.created,
+            };
+          }).pipe(Effect.provideService(Scope.Scope, sessionScope)),
         );
-        if (Exit.isFailure(connectionExit)) {
+        if (Exit.isFailure(startedExit)) {
+          yield* Scope.close(sessionScope, Exit.void).pipe(Effect.ignore);
+          return yield* toProcessError(input.threadId, Cause.squash(startedExit.cause));
+        }
+        return startedExit.value;
+      });
+
+      const createdAt = yield* nowIso;
+      const session: ProviderSession = {
+        provider: PROVIDER,
+        providerInstanceId: boundInstanceId,
+        ...(input.sessionIncarnationId !== undefined
+          ? { sessionIncarnationId: input.sessionIncarnationId }
+          : {}),
+        status: "connecting",
+        runtimeMode: input.runtimeMode,
+        cwd: directory,
+        ...(input.modelSelection ? { model: input.modelSelection.model } : {}),
+        threadId: input.threadId,
+        // ProviderService persists this cursor and feeds it back into
+        // `startSession` after the in-memory session is lost (reaper /
+        // restart), so follow-ups continue the same conversation (#3604).
+        resumeCursor: {
+          schemaVersion: OPENCODE_RESUME_VERSION,
+          sessionId: started.openCodeSession.id,
+        },
+        createdAt,
+        updatedAt: createdAt,
+      };
+
+      const context: OpenCodeSessionContext = {
+        session,
+        sessionIncarnationId: input.sessionIncarnationId,
+        client: started.client,
+        server: started.server,
+        exactRollbackUnavailableReason: started.exactRollbackUnavailableReason,
+        directory,
+        openCodeSessionId: started.openCodeSession.id,
+        relatedSessionIds: new Set([started.openCodeSession.id]),
+        resolvedRequestIds: new Set(),
+        autoRepliedRequestIds: new Set(),
+        emittedTerminalRequestIds: new Set(),
+        requestRelationRetries: new Map(),
+        pendingPermissions: new Map(),
+        pendingQuestions: new Map(),
+        textPartsByMessageId: new Map(),
+        messageRoleById: new Map(),
+        turnTokenUsage: undefined,
+        activeTurnId: undefined,
+        activeAgent: undefined,
+        activeVariant: undefined,
+        lastPlanFingerprint: undefined,
+        cancellation: undefined,
+        interruptedTurnId: undefined,
+        reconcileIdleStatus: false,
+        awaitingBusyAfterInterruption: false,
+        pendingIdleReconciliation: undefined,
+        pendingRequestRecovery: undefined,
+        rollbackEpoch: 0,
+        rollbackQuarantined: false,
+        recoveryQuarantined: recovering || Option.isSome(exact),
+        rollbackSource: undefined,
+        rollbackTarget: undefined,
+        rootRollbackAnchor: undefined,
+        privateRollbackSessionIds: new Set(),
+        completedRollbackAnchors: new Map(),
+        promptGeneration: 0,
+        promptAdmission: undefined,
+        promptSemaphore: Semaphore.makeUnsafe(1),
+        firstConnection: Deferred.makeUnsafe<void, ProviderAdapterRequestError>(),
+        stopped: yield* Ref.make(false),
+        sessionScope: started.sessionScope,
+      };
+      const raceWinner = sessions.get(input.threadId);
+      if (raceWinner) {
+        // Another start published first. A newly created remote session
+        // belongs to this loser; a resumed session is shared upstream state.
+        yield* closeStartingOpenCodeContext(context, started.created);
+        return (yield* awaitOpenCodeContextReady(raceWinner)).session;
+      }
+      sessions.set(input.threadId, context);
+      const cleanupStartingContext = closeStartingOpenCodeContext(context, started.created).pipe(
+        Effect.ensuring(Effect.sync(() => deleteContextIfCurrent(context))),
+      );
+      const connectionExit = yield* Effect.gen(function* () {
+        yield* startEventPump(context);
+        yield* Deferred.await(context.firstConnection).pipe(
+          Effect.timeout("10 seconds"),
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "event.subscribe",
+                detail: "OpenCode event stream did not connect within 10 seconds.",
+                cause,
+              }),
+          ),
+        );
+      }).pipe(
+        Effect.onInterrupt(() => cleanupStartingContext),
+        Effect.exit,
+      );
+      if (Exit.isFailure(connectionExit)) {
+        yield* cleanupStartingContext;
+        return yield* Effect.failCause(connectionExit.cause);
+      }
+      yield* awaitOpenCodeContextReady(context);
+      if (Option.isSome(exact)) {
+        const proof = yield* readRollbackTranscript(context, context.openCodeSessionId).pipe(
+          Effect.onError(() => cleanupStartingContext),
+        );
+        yield* requireRollbackCurrent(context).pipe(Effect.onError(() => cleanupStartingContext));
+        if (proof.digest !== exact.value.transcriptDigest) {
           yield* cleanupStartingContext;
-          return yield* Effect.failCause(connectionExit.cause);
+          return yield* rollbackError(
+            "The recovered OpenCode conversation no longer matches its exact durable selection.",
+          );
         }
-        yield* awaitOpenCodeContextReady(context);
-        if (!started.created) {
-          yield* schedulePendingRequestRecovery(context);
+        writeExactCursor(context, exact.value);
+        if (exact.value.completedTurnId === null)
+          context.rootRollbackAnchor = checkpointSnapshotAnchor(exact.value);
+        else if (exact.value.completedTurnId !== undefined)
+          context.completedRollbackAnchors.set(
+            TurnId.make(exact.value.completedTurnId),
+            checkpointSnapshotAnchor(exact.value),
+          );
+      } else if (
+        input.sessionIncarnationId !== undefined &&
+        context.exactRollbackUnavailableReason === undefined
+      ) {
+        const root = yield* readRollbackTranscript(context, context.openCodeSessionId).pipe(
+          Effect.result,
+        );
+        if (root._tag === "Success" && root.success.messages.length === 0) {
+          const captured = yield* forkRollbackSnapshot(context).pipe(Effect.result);
+          if (captured._tag === "Success") {
+            context.rootRollbackAnchor = {
+              ...captured.success,
+              completedTurnId: null,
+              checkpointRevision: 0,
+            };
+            writeExactCursor(context, context.rootRollbackAnchor);
+          }
         }
+      }
+      const sessionStartedBase = yield* buildEventBase({ threadId: input.threadId });
+      const threadStartedBase = yield* buildEventBase({ threadId: input.threadId });
+      yield* awaitOpenCodeContextReady(context);
+      if (Ref.getUnsafe(context.stopped))
+        return yield* rollbackError("The OpenCode startup owner was stopped.");
+      if (!recovering) context.recoveryQuarantined = false;
+      if (!started.created && !recovering) {
+        yield* schedulePendingRequestRecovery(context);
+      }
 
-        yield* emit(input.sessionIncarnationId, {
-          ...(yield* buildEventBase({ threadId: input.threadId })),
-          type: "session.started",
-          payload: {
-            message: "OpenCode session started",
-          },
-        });
-        yield* emit(input.sessionIncarnationId, {
-          ...(yield* buildEventBase({ threadId: input.threadId })),
-          type: "thread.started",
-          payload: {
-            providerThreadId: started.openCodeSession.id,
-          },
-        });
+      yield* emit(input.sessionIncarnationId, {
+        ...sessionStartedBase,
+        type: "session.started",
+        payload: {
+          message: "OpenCode session started",
+        },
+      });
+      yield* awaitOpenCodeContextReady(context);
+      if (Ref.getUnsafe(context.stopped))
+        return yield* rollbackError("The OpenCode startup owner was stopped.");
+      yield* emit(input.sessionIncarnationId, {
+        ...threadStartedBase,
+        type: "thread.started",
+        payload: {
+          providerThreadId: started.openCodeSession.id,
+        },
+      });
 
-        return context.session;
-      },
-    );
+      return context.session;
+    });
 
     const sendTurn: OpenCodeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
       const context = yield* ensureSessionContext(sessions, input.threadId);
       yield* awaitOpenCodeContextReady(context);
+      yield* requireNotQuarantined(context);
       const modelSelection =
         input.modelSelection ??
         (context.session.model
@@ -3150,6 +3570,7 @@ export function makeOpenCodeAdapter(
 
       return yield* context.promptSemaphore.withPermit(
         Effect.gen(function* () {
+          yield* requireNotQuarantined(context);
           const freshTurnId = TurnId.make(`opencode-turn-${yield* randomUUIDv4}`);
           const messageId = yield* makeOpenCodeMessageId();
           const pendingCancellation = context.cancellation;
@@ -3199,6 +3620,13 @@ export function makeOpenCodeAdapter(
             acceptance: Deferred.makeUnsafe<void>(),
             submissionSettled: Deferred.makeUnsafe<void>(),
             recoveryRaw: undefined,
+          };
+          context.session = {
+            ...context.session,
+            resumeCursor: {
+              schemaVersion: OPENCODE_RESUME_VERSION,
+              sessionId: context.openCodeSessionId,
+            },
           };
           context.promptGeneration = promptGeneration;
           context.promptAdmission = promptAdmission;
@@ -3482,6 +3910,7 @@ export function makeOpenCodeAdapter(
     ) {
       const context = yield* ensureSessionContext(sessions, threadId);
       yield* awaitOpenCodeContextReady(context);
+      yield* requireNotQuarantined(context);
       const modelSelection =
         requestedModelSelection ??
         (context.session.model
@@ -3507,6 +3936,7 @@ export function makeOpenCodeAdapter(
           if (sessions.get(threadId) !== context || (yield* Ref.get(context.stopped))) {
             return yield* Effect.interrupt;
           }
+          yield* requireNotQuarantined(context);
           if (context.activeTurnId !== undefined) {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,
@@ -3514,6 +3944,19 @@ export function makeOpenCodeAdapter(
               issue: "OpenCode cannot compact while a turn is running.",
             });
           }
+          const cursor = context.session.resumeCursor;
+          const priorProof =
+            typeof cursor === "object" && cursor !== null && "exactRollback" in cursor
+              ? decodeOpenCodeConversationAnchor(cursor.exactRollback)
+              : Option.none();
+          const generation = context.promptGeneration;
+          context.session = {
+            ...context.session,
+            resumeCursor: {
+              schemaVersion: OPENCODE_RESUME_VERSION,
+              sessionId: context.openCodeSessionId,
+            },
+          };
           yield* runOpenCodeSdk("session.summarize", (signal) =>
             context.client.session.summarize(
               {
@@ -3539,12 +3982,28 @@ export function makeOpenCodeAdapter(
             }),
             Effect.asVoid,
           );
+          if (Option.isSome(priorProof)) {
+            const captured = yield* forkRollbackSnapshot(context).pipe(Effect.result);
+            yield* requireRollbackCurrent(context, generation);
+            if (captured._tag === "Success") {
+              writeExactCursor(context, {
+                ...priorProof.value,
+                ...captured.success,
+                checkpointSnapshotSessionId:
+                  priorProof.value.checkpointSnapshotSessionId ??
+                  priorProof.value.snapshotSessionId,
+                checkpointTranscriptDigest:
+                  priorProof.value.checkpointTranscriptDigest ?? priorProof.value.transcriptDigest,
+              });
+            }
+          }
         }),
       );
     });
     const interruptTurn: OpenCodeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
       function* (threadId, turnId) {
         const context = yield* ensureSessionContext(sessions, threadId);
+        yield* requireNotQuarantined(context);
         const activeTurnId = context.activeTurnId;
         if (turnId !== undefined && activeTurnId !== turnId) {
           return;
@@ -3685,6 +4144,7 @@ export function makeOpenCodeAdapter(
       "respondToRequest",
     )(function* (threadId, requestId, decision) {
       const context = yield* ensureSessionContext(sessions, threadId);
+      yield* requireNotQuarantined(context);
       const request = context.pendingPermissions.get(requestId);
       if (!request) {
         if (context.emittedTerminalRequestIds.has(requestId)) return;
@@ -3737,6 +4197,7 @@ export function makeOpenCodeAdapter(
       "respondToUserInput",
     )(function* (threadId, requestId, answers) {
       const context = yield* ensureSessionContext(sessions, threadId);
+      yield* requireNotQuarantined(context);
       const request = context.pendingQuestions.get(requestId);
       if (!request) {
         if (context.emittedTerminalRequestIds.has(requestId)) return;
@@ -3857,6 +4318,7 @@ export function makeOpenCodeAdapter(
     const rollbackThread: OpenCodeAdapterShape["rollbackThread"] = Effect.fn("rollbackThread")(
       function* (threadId, numTurns) {
         const context = yield* ensureSessionContext(sessions, threadId);
+        yield* requireNotQuarantined(context);
         const assertCurrent = Effect.gen(function* () {
           if (sessions.get(threadId) !== context || (yield* Ref.get(context.stopped))) {
             return yield* new ProviderAdapterValidationError({
@@ -3982,6 +4444,339 @@ export function makeOpenCodeAdapter(
       },
     );
 
+    const boundRollbackAnchor = (context: OpenCodeSessionContext, raw: Schema.Json) => {
+      const decoded = decodeOpenCodeConversationAnchor(raw);
+      return Option.isSome(decoded) &&
+        decoded.value.providerInstanceId === boundInstanceId &&
+        decoded.value.sessionIncarnationId === context.sessionIncarnationId &&
+        decoded.value.threadId === context.session.threadId &&
+        decoded.value.directory === context.directory
+        ? Effect.succeed(decoded.value)
+        : Effect.fail(rollbackError("The private OpenCode anchor is stale or invalid."));
+    };
+    const rollbackReceipt = (anchor: OpenCodeConversationAnchor) => ({
+      anchor: { ...anchor },
+      digest: anchor.transcriptDigest,
+    });
+    const idleRollbackContext = Effect.fn("OpenCodeAdapter.idleRollbackContext")(function* (
+      threadId: ThreadId,
+    ) {
+      const context = yield* ensureSessionContext(sessions, threadId);
+      yield* requireRollbackCurrent(context);
+      if (
+        !["ready", "idle"].includes(context.session.status) ||
+        context.activeTurnId !== undefined ||
+        context.promptAdmission !== undefined ||
+        context.cancellation !== undefined ||
+        context.pendingPermissions.size !== 0 ||
+        context.pendingQuestions.size !== 0
+      ) {
+        return yield* rollbackError(
+          "Exact OpenCode rollback requires an idle conversation without pending input.",
+        );
+      }
+      return context;
+    });
+    const absoluteConversationRollback: ProviderAbsoluteConversationRollback<ProviderAdapterError> =
+      {
+        isAvailable: (threadId) =>
+          ensureSessionContext(sessions, threadId).pipe(
+            Effect.flatMap((context) => requireRollbackCurrent(context)),
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          ),
+        captureAnchor: Effect.fn("OpenCodeAdapter.captureAnchor")(function* ({
+          threadId,
+          binding,
+        }) {
+          const context = yield* ensureSessionContext(sessions, threadId);
+          yield* requireRollbackCurrent(context);
+          if (binding.kind === "checkpoint") {
+            if (
+              binding.sourceRevision !== binding.checkpointTurnCount ||
+              (binding.checkpointTurnCount === 0) !== (binding.turnId === null)
+            ) {
+              return yield* rollbackError("The exact OpenCode checkpoint binding is invalid.");
+            }
+            const anchor =
+              binding.turnId === null
+                ? context.rootRollbackAnchor
+                : context.completedRollbackAnchors.get(binding.turnId);
+            if (anchor === undefined)
+              return yield* rollbackError(
+                "The exact completed OpenCode turn snapshot is unavailable.",
+              );
+            const transcript = yield* readRollbackTranscript(context, anchor.snapshotSessionId);
+            yield* requireRollbackCurrent(context);
+            if (transcript.digest !== anchor.transcriptDigest)
+              return yield* rollbackError("The private OpenCode checkpoint snapshot changed.");
+            if (
+              anchor.checkpointRevision !== undefined &&
+              anchor.checkpointRevision !== binding.checkpointTurnCount
+            )
+              return yield* rollbackError("The immutable OpenCode checkpoint revision changed.");
+            const boundAnchor = { ...anchor, checkpointRevision: binding.checkpointTurnCount };
+            if (binding.turnId === null) context.rootRollbackAnchor = boundAnchor;
+            else context.completedRollbackAnchors.set(binding.turnId, boundAnchor);
+            const cursor = context.session.resumeCursor;
+            const currentAnchor =
+              typeof cursor === "object" && cursor !== null && "exactRollback" in cursor
+                ? decodeOpenCodeConversationAnchor(cursor.exactRollback)
+                : Option.none();
+            if (
+              Option.isSome(currentAnchor) &&
+              currentAnchor.value.completedTurnId === boundAnchor.completedTurnId &&
+              currentAnchor.value.transcriptDigest === boundAnchor.transcriptDigest
+            )
+              writeExactCursor(context, boundAnchor);
+            return rollbackReceipt(boundAnchor);
+          }
+          return yield* context.promptSemaphore.withPermit(
+            Effect.gen(function* () {
+              yield* idleRollbackContext(threadId);
+              yield* requireRollbackCurrent(context);
+              const cursor = context.session.resumeCursor;
+              const currentProof =
+                typeof cursor === "object" && cursor !== null && "exactRollback" in cursor
+                  ? decodeOpenCodeConversationAnchor(cursor.exactRollback)
+                  : Option.none();
+              const known =
+                Option.isSome(currentProof) && currentProof.value.completedTurnId === binding.turnId
+                  ? currentProof.value
+                  : binding.turnId === null
+                    ? context.rootRollbackAnchor
+                    : context.completedRollbackAnchors.get(binding.turnId);
+              if (
+                !known ||
+                known.checkpointRevision !== binding.sourceRevision ||
+                (binding.sourceRevision === 0) !== (binding.turnId === null)
+              )
+                return yield* rollbackError(
+                  "The exact projected OpenCode source boundary is unavailable.",
+                );
+              const current = yield* readRollbackTranscript(context, context.openCodeSessionId);
+              yield* requireRollbackCurrent(context);
+              if (current.digest !== known.transcriptDigest)
+                return yield* rollbackError(
+                  "OpenCode contains conversation changes outside the projected source boundary.",
+                );
+              yield* idleRollbackContext(threadId);
+              context.rollbackEpoch += 1;
+              context.rollbackQuarantined = true;
+              const snapshot = yield* forkRollbackSnapshot(context).pipe(
+                Effect.onError(() =>
+                  Effect.sync(() => {
+                    if (sessions.get(threadId) === context) context.rollbackQuarantined = false;
+                  }),
+                ),
+              );
+              if (snapshot.transcriptDigest !== known.transcriptDigest) {
+                context.rollbackQuarantined = false;
+                return yield* rollbackError(
+                  "OpenCode changed outside the projected source boundary during snapshot capture.",
+                );
+              }
+              const anchor = {
+                ...snapshot,
+                completedTurnId: binding.turnId,
+                checkpointRevision: binding.sourceRevision,
+                checkpointSnapshotSessionId:
+                  known.checkpointSnapshotSessionId ?? known.snapshotSessionId,
+                checkpointTranscriptDigest:
+                  known.checkpointTranscriptDigest ?? known.transcriptDigest,
+              };
+              context.rollbackSource = anchor;
+              context.rollbackTarget = undefined;
+              writeExactCursor(context, anchor);
+              return rollbackReceipt(anchor);
+            }),
+          );
+        }),
+        inspectAnchor: Effect.fn("OpenCodeAdapter.inspectAnchor")(function* (threadId) {
+          const context = yield* idleRollbackContext(threadId);
+          return yield* context.promptSemaphore.withPermit(
+            Effect.gen(function* () {
+              yield* idleRollbackContext(context.session.threadId);
+              const generation = context.promptGeneration;
+              const transcript = yield* readRollbackTranscript(context, context.openCodeSessionId);
+              yield* requireRollbackCurrent(context, generation);
+              if (
+                context.rollbackQuarantined &&
+                transcript.digest !== context.rollbackSource?.transcriptDigest &&
+                transcript.digest !== context.rollbackTarget?.transcriptDigest
+              ) {
+                return yield* rollbackError(
+                  "OpenCode is outside the exact rollback source and target.",
+                );
+              }
+              return rollbackReceipt({
+                version: 1,
+                providerInstanceId: boundInstanceId,
+                sessionIncarnationId: context.sessionIncarnationId!,
+                threadId,
+                directory: context.directory,
+                snapshotSessionId: context.openCodeSessionId,
+                transcriptDigest: transcript.digest,
+              });
+            }),
+          );
+        }),
+        applyAnchor: Effect.fn("OpenCodeAdapter.applyAnchor")(function* (threadId, raw) {
+          const context = yield* idleRollbackContext(threadId);
+          return yield* context.promptSemaphore.withPermit(
+            Effect.gen(function* () {
+              yield* requireRollbackCurrent(context);
+              const anchor = yield* boundRollbackAnchor(context, raw);
+              if (!context.rollbackQuarantined || !context.rollbackSource)
+                return yield* rollbackError("The exact OpenCode source snapshot is unavailable.");
+              const sourceDigest = context.rollbackSource.transcriptDigest;
+              if (anchor.transcriptDigest !== sourceDigest) context.rollbackTarget = anchor;
+              const current = yield* readRollbackTranscript(context, context.openCodeSessionId);
+              yield* requireRollbackCurrent(context);
+              if (
+                current.digest !== sourceDigest &&
+                current.digest !== context.rollbackTarget?.transcriptDigest
+              ) {
+                return yield* rollbackError(
+                  "OpenCode changed outside the exact rollback source and target.",
+                );
+              }
+              const snapshot = yield* readRollbackTranscript(context, anchor.snapshotSessionId);
+              if (snapshot.digest !== anchor.transcriptDigest)
+                return yield* rollbackError("The private OpenCode rollback snapshot changed.");
+              if (current.digest === anchor.transcriptDigest) {
+                writeExactCursor(context, anchor);
+                return;
+              }
+              const fork = yield* runOpenCodeSdk("session.fork", (signal) =>
+                context.client.session.fork(
+                  {
+                    sessionID: anchor.snapshotSessionId,
+                    directory: context.directory,
+                  },
+                  { signal },
+                ),
+              ).pipe(Effect.mapError(toRequestError), rollbackTimeout);
+              if (
+                !fork.data ||
+                fork.data.id === anchor.snapshotSessionId ||
+                fork.data.id === context.openCodeSessionId
+              )
+                return yield* rollbackError(
+                  "OpenCode did not create a separate exact rollback selection.",
+                );
+              const selected = yield* readRollbackTranscript(context, fork.data.id);
+              if (selected.digest !== anchor.transcriptDigest)
+                return yield* rollbackError(
+                  "OpenCode did not preserve the exact rollback snapshot contents.",
+                );
+              yield* runOpenCodeSdk("session.update", (signal) =>
+                context.client.session.update(
+                  {
+                    sessionID: fork.data.id,
+                    permission: buildOpenCodePermissionRules(context.session.runtimeMode),
+                  },
+                  { signal },
+                ),
+              ).pipe(Effect.mapError(toRequestError), rollbackTimeout);
+              const unchanged = yield* readRollbackTranscript(context, context.openCodeSessionId);
+              yield* requireRollbackCurrent(context);
+              if (unchanged.digest !== current.digest)
+                return yield* rollbackError(
+                  "The selected OpenCode source changed during rollback.",
+                );
+              context.openCodeSessionId = fork.data.id;
+              context.relatedSessionIds.clear();
+              context.relatedSessionIds.add(fork.data.id);
+              context.messageRoleById.clear();
+              context.textPartsByMessageId.clear();
+              context.turnTokenUsage = undefined;
+              context.lastPlanFingerprint = undefined;
+              writeExactCursor(context, anchor);
+            }),
+          );
+        }),
+        prepareRecovery: Effect.fn("OpenCodeAdapter.prepareRecovery")(function* (input) {
+          const context = yield* idleRollbackContext(input.threadId);
+          return yield* context.promptSemaphore.withPermit(
+            Effect.gen(function* () {
+              yield* idleRollbackContext(context.session.threadId);
+              context.rollbackEpoch += 1;
+              context.rollbackQuarantined = true;
+              const source = yield* boundRollbackAnchor(context, input.sourceAnchor);
+              const target = yield* boundRollbackAnchor(context, input.desiredAnchor);
+              const expected = yield* boundRollbackAnchor(context, input.expectedAnchor);
+              if (
+                expected.transcriptDigest !== source.transcriptDigest &&
+                expected.transcriptDigest !== target.transcriptDigest
+              ) {
+                return yield* rollbackError("The recovered OpenCode rollback boundary is invalid.");
+              }
+              context.rollbackSource = source;
+              context.rollbackTarget = target;
+              const current = yield* readRollbackTranscript(context, context.openCodeSessionId);
+              yield* requireRollbackCurrent(context);
+              if (
+                current.digest !== source.transcriptDigest &&
+                current.digest !== target.transcriptDigest
+              ) {
+                return yield* rollbackError(
+                  "The recovered OpenCode conversation is outside the exact rollback boundary.",
+                );
+              }
+            }),
+          );
+        }),
+        releaseAnchor: Effect.fn("OpenCodeAdapter.releaseAnchor")(function* (threadId, raw) {
+          const context = yield* idleRollbackContext(threadId);
+          return yield* context.promptSemaphore.withPermit(
+            Effect.gen(function* () {
+              yield* idleRollbackContext(context.session.threadId);
+              const anchor = yield* boundRollbackAnchor(context, raw);
+              const transcript = yield* readRollbackTranscript(context, context.openCodeSessionId);
+              yield* requireRollbackCurrent(context);
+              if (transcript.digest !== anchor.transcriptDigest)
+                return yield* rollbackError(
+                  "OpenCode did not prove the final rollback conversation.",
+                );
+              writeExactCursor(context, anchor);
+              context.rollbackQuarantined = false;
+              context.rollbackSource = undefined;
+              context.rollbackTarget = undefined;
+            }),
+          );
+        }),
+      };
+    const recoverSession: NonNullable<OpenCodeAdapterShape["recoverSession"]> = Effect.fn(
+      "OpenCodeAdapter.recoverSession",
+    )(function* (input) {
+      const cursor = input.resumeCursor;
+      if (typeof cursor !== "object" || cursor === null || !("exactRollback" in cursor))
+        return null;
+      if (
+        input.providerInstanceId !== boundInstanceId ||
+        parseOpenCodeResume(cursor) === undefined
+      ) {
+        return yield* rollbackError("The exact OpenCode restart binding is invalid.");
+      }
+      return yield* startSession(
+        {
+          threadId: input.threadId,
+          sessionIncarnationId: input.sessionIncarnationId,
+          runtimeMode: input.runtimeMode,
+          cwd: input.cwd,
+          resumeCursor: cursor,
+          ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+        },
+        true,
+      );
+    });
+    const activateRecoveredSession: NonNullable<OpenCodeAdapterShape["activateRecoveredSession"]> =
+      Effect.fn("OpenCodeAdapter.activateRecoveredSession")(function* (threadId) {
+        const context = yield* idleRollbackContext(threadId);
+        context.recoveryQuarantined = false;
+      });
+
     const stopAll: OpenCodeAdapterShape["stopAll"] = () =>
       Effect.gen(function* () {
         const contexts = [...sessions.values()];
@@ -4001,9 +4796,12 @@ export function makeOpenCodeAdapter(
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
-        conversationRollback: BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES.openCode,
+        conversationRollback: "absolute",
       },
       startSession,
+      absoluteConversationRollback,
+      recoverSession,
+      activateRecoveredSession,
       sendTurn,
       compaction: { type: "native", start: compactThread },
       interruptTurn,

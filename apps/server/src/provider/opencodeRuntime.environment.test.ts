@@ -20,6 +20,7 @@ import {
   OpenCodeRuntimeError,
   OpenCodeRuntimeLive,
   resolveOpenCodeConfigContent,
+  resolveOpenCodeExactRollbackUnavailableReason,
   resolveOpenCodeServerPassword,
   verifyOpenCodeServerVersion,
 } from "./opencodeRuntime.ts";
@@ -41,6 +42,75 @@ describe("resolveOpenCodeConfigContent", () => {
       }),
     ).toBe('{"source":"process"}');
     expect(resolveOpenCodeConfigContent(undefined, {})).toBe("{}");
+  });
+});
+
+describe("resolveOpenCodeExactRollbackUnavailableReason", () => {
+  it("allows ordinary managed plan mode without experimental flags", () => {
+    expect(resolveOpenCodeExactRollbackUnavailableReason({ external: false }, {})).toBeUndefined();
+  });
+
+  it.each(["true", "yes", "on", "1", "y"])(
+    "rejects native plan files enabled by either flag with %s",
+    (enabled) => {
+      for (const flag of ["OPENCODE_EXPERIMENTAL", "OPENCODE_EXPERIMENTAL_PLAN_MODE"]) {
+        expect(
+          resolveOpenCodeExactRollbackUnavailableReason({ external: false }, { [flag]: enabled }),
+        ).toContain("experimental native plan files");
+      }
+    },
+  );
+
+  it.each(["false", "no", "off", "0", "n"])(
+    "respects the explicit plan-mode override %s over broad experimental mode",
+    (disabled) => {
+      expect(
+        resolveOpenCodeExactRollbackUnavailableReason(
+          {
+            external: false,
+            environment: {
+              OPENCODE_EXPERIMENTAL: "true",
+              OPENCODE_EXPERIMENTAL_PLAN_MODE: disabled,
+            },
+          },
+          {},
+        ),
+      ).toBeUndefined();
+    },
+  );
+
+  it("uses the caller's complete replacement environment instead of inherited flags", () => {
+    expect(
+      resolveOpenCodeExactRollbackUnavailableReason(
+        { external: false, environment: {} },
+        { OPENCODE_EXPERIMENTAL_PLAN_MODE: "true" },
+      ),
+    ).toBeUndefined();
+    expect(
+      resolveOpenCodeExactRollbackUnavailableReason(
+        { external: false, environment: { OPENCODE_EXPERIMENTAL_PLAN_MODE: "true" } },
+        { OPENCODE_EXPERIMENTAL_PLAN_MODE: "false" },
+      ),
+    ).toContain("experimental native plan files");
+  });
+
+  it("does not infer remote runtime flags from the local environment", () => {
+    expect(
+      resolveOpenCodeExactRollbackUnavailableReason(
+        { external: true, environment: { OPENCODE_EXPERIMENTAL_PLAN_MODE: "false" } },
+        {},
+      ),
+    ).toContain("externally managed server");
+  });
+
+  it.each([
+    { OPENCODE_EXPERIMENTAL: "TRUE" },
+    { OPENCODE_EXPERIMENTAL_PLAN_MODE: "" },
+    { OPENCODE_EXPERIMENTAL: "invalid", OPENCODE_EXPERIMENTAL_PLAN_MODE: "false" },
+  ])("fails closed on malformed native boolean flags %j", (environment) => {
+    expect(
+      resolveOpenCodeExactRollbackUnavailableReason({ external: false, environment }, {}),
+    ).toContain("cannot verify");
   });
 });
 

@@ -56,6 +56,7 @@ import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -2022,6 +2023,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       });
       routing.codex.messageSessionAgent.mockClear();
       routing.codex.compactSession.mockClear();
+      routing.codex.compactThread.mockClear();
 
       const messageFailure = yield* Effect.flip(
         provider.messageSessionAgent({
@@ -2031,6 +2033,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         }),
       );
       const compactionFailure = yield* Effect.flip(provider.compactSession({ threadId }));
+      const nativeCompactionFailure = yield* Effect.flip(provider.compactThread(threadId));
 
       assert.instanceOf(messageFailure, ProviderValidationError);
       assert.include(messageFailure.issue, "fenced by an active rollback operation");
@@ -2038,6 +2041,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.include(compactionFailure.issue, "fenced by an active rollback operation");
       assert.equal(routing.codex.messageSessionAgent.mock.calls.length, 0);
       assert.equal(routing.codex.compactSession.mock.calls.length, 0);
+      assert.instanceOf(nativeCompactionFailure, ProviderValidationError);
+      assert.include(nativeCompactionFailure.issue, "fenced by an active rollback operation");
+      assert.equal(routing.codex.compactThread.mock.calls.length, 0);
     }),
   );
 
@@ -2492,6 +2498,56 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, session.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("persists exact native idle proof before publishing turn completion", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-exact-native-completed");
+      const previous = routing.codex.adapter.capabilities;
+      Object.assign(routing.codex.adapter, {
+        capabilities: { ...previous, conversationRollback: "absolute" },
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => Object.assign(routing.codex.adapter, { capabilities: previous })),
+      );
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const cursor = { nativeSession: "private-native-session", idleProof: "completed-digest" };
+      routing.codex.updateSession(threadId, (session) => ({ ...session, resumeCursor: cursor }));
+      const completed = yield* provider.streamEvents.pipe(
+        Stream.filter((event) => event.eventId === "evt-exact-native-completed"),
+        Stream.take(1),
+        Stream.runForEach(() =>
+          directory
+            .getBinding(threadId)
+            .pipe(
+              Effect.tap((binding) =>
+                Effect.sync(() =>
+                  assert.deepEqual(Option.getOrThrow(binding).resumeCursor, cursor),
+                ),
+              ),
+            ),
+        ),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      routing.codex.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-exact-native-completed"),
+        provider: CODEX_DRIVER,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        turnId: asTurnId("turn-exact-native-completed"),
+        payload: { state: "completed" },
+      });
+      yield* Fiber.join(completed);
     }),
   );
 
@@ -7136,6 +7192,258 @@ describe("agent browser access", () => {
       }).pipe(Effect.provide(providerLayer));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect("does not overwrite a new turn with a delayed checkpoint cursor", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-checkpoint-cursor-race");
+      const codex = makeFakeCodexAdapter();
+      const adapter: ProviderAdapterShape<ProviderAdapterError> = {
+        ...codex.adapter,
+        capabilities: { ...codex.adapter.capabilities, conversationRollback: "absolute" },
+        absoluteConversationRollback: {
+          isAvailable: () => Effect.succeed(true),
+          captureAnchor: () => Effect.succeed({ anchor: {}, digest: "checkpoint" }),
+          inspectAnchor: () => Effect.succeed({ anchor: {}, digest: "checkpoint" }),
+          applyAnchor: () => Effect.void,
+          releaseAnchor: () => Effect.void,
+        },
+      };
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+          resumeCursor: { idleProof: "old-checkpoint" },
+        });
+        const writeEntered = yield* Deferred.make<void>();
+        const releaseWrite = yield* Deferred.make<void>();
+        const originalUpsert = directory.upsert;
+        const write = vi
+          .spyOn(directory, "upsert")
+          .mockImplementationOnce((binding, options) =>
+            Deferred.succeed(writeEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseWrite)),
+              Effect.andThen(originalUpsert(binding, options)),
+            ),
+          );
+        yield* Effect.addFinalizer(() => Effect.sync(() => write.mockRestore()));
+        const capture = yield* provider.captureConversationAnchor!({
+          threadId,
+          binding: {
+            kind: "checkpoint",
+            checkpointTurnCount: 1,
+            sourceRevision: 1,
+            checkpointRef: CheckpointRef.make("checkpoint-old"),
+            checkpointOid: "1".repeat(40),
+            turnId: TurnId.make("turn-old"),
+          },
+        }).pipe(Effect.forkChild);
+        yield* Deferred.await(writeEntered);
+        const runningCursor = { nativeThreadId: "same-native-history" };
+        codex.updateSession(threadId, (session) => ({
+          ...session,
+          resumeCursor: runningCursor,
+          status: "running",
+          activeTurnId: TurnId.make("turn-new"),
+        }));
+        yield* directory.upsert({
+          threadId,
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          resumeCursor: runningCursor,
+          runtimePayload: { activeTurnId: "turn-new" },
+        });
+        yield* Deferred.succeed(releaseWrite, undefined);
+        assert.isTrue(Exit.isFailure(yield* Fiber.await(capture)));
+        const persisted = Option.getOrThrow(yield* directory.getBinding(threadId));
+        assert.deepEqual(persisted.resumeCursor, runningCursor);
+        assert.equal(
+          (persisted.runtimePayload as { activeTurnId?: string }).activeTurnId,
+          "turn-new",
+        );
+      }).pipe(Effect.provide(makeAgentBrowserProviderLayer(false, { ...codex, adapter }, {})));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  for (const outcome of ["completed", "failed"] as const) {
+    it.effect(`persists native compaction recovery state when ${outcome}`, () =>
+      Effect.gen(function* () {
+        const threadId = asThreadId(`thread-compaction-proof-${outcome}`);
+        const codex = makeFakeCodexAdapter();
+        const adapter: ProviderAdapterShape<ProviderAdapterError> = {
+          ...codex.adapter,
+          capabilities: { ...codex.adapter.capabilities, conversationRollback: "absolute" },
+        };
+        yield* Effect.gen(function* () {
+          const provider = yield* ProviderService.ProviderService;
+          const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+          yield* provider.startSession(threadId, {
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            threadId,
+            runtimeMode: "full-access",
+            resumeCursor: { idleProof: "before-compaction" },
+          });
+          const cursor =
+            outcome === "completed"
+              ? { nativeThreadId: "compacted", idleProof: "after-compaction" }
+              : { nativeThreadId: "compacted" };
+          const compactError = new ProviderAdapterRequestError({
+            provider: CODEX_DRIVER,
+            method: "thread/compact",
+            detail: "Native compaction failed.",
+          });
+          codex.compactThread.mockImplementationOnce(() =>
+            Effect.gen(function* () {
+              codex.updateSession(threadId, (session) => ({ ...session, resumeCursor: cursor }));
+              if (outcome === "failed") return yield* compactError;
+              codex.emit({
+                type: "thread.state.changed",
+                eventId: asEventId("evt-proof-compacted"),
+                provider: CODEX_DRIVER,
+                createdAt: "2026-01-01T00:00:00.000Z",
+                threadId,
+                payload: { state: "compacted" },
+              });
+            }),
+          );
+          const atPublication =
+            outcome === "completed"
+              ? yield* provider.streamEvents.pipe(
+                  Stream.filter((event) => event.eventId === "evt-proof-compacted"),
+                  Stream.mapEffect(() => directory.getBinding(threadId)),
+                  Stream.runHead,
+                  Effect.forkChild({ startImmediately: true }),
+                )
+              : undefined;
+          const result = yield* provider.compactThread(threadId).pipe(Effect.result);
+          if (outcome === "failed") {
+            assert.isTrue(Result.isFailure(result));
+            if (Result.isFailure(result)) assert.equal(result.failure, compactError);
+          } else {
+            assert.isTrue(Result.isSuccess(result));
+          }
+          assert.deepEqual(
+            Option.getOrThrow(yield* directory.getBinding(threadId)).resumeCursor,
+            cursor,
+          );
+          if (atPublication) {
+            const binding = Option.getOrThrow(Option.getOrThrow(yield* Fiber.join(atPublication)));
+            assert.deepEqual(binding.resumeCursor, cursor);
+          }
+        }).pipe(Effect.provide(makeAgentBrowserProviderLayer(false, { ...codex, adapter }, {})));
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+  }
+
+  for (const scenario of [
+    "persist",
+    "retry-write",
+    "inspect-retry",
+    "replaced",
+    "missing-cursor",
+    "null-cursor",
+  ] as const) {
+    it.effect(`persists exact fork selection before acknowledging apply: ${scenario}`, () =>
+      Effect.gen(function* () {
+        const threadId = asThreadId(`thread-exact-fork-${scenario}`);
+        const codex = makeFakeCodexAdapter();
+        const sourceCursor = { opaque: "private-source-fork" };
+        const targetCursor = { opaque: "private-target-fork" };
+        let applications = 0;
+        const adapter: ProviderAdapterShape<ProviderAdapterError> = {
+          ...codex.adapter,
+          capabilities: { ...codex.adapter.capabilities, conversationRollback: "absolute" },
+          absoluteConversationRollback: {
+            isAvailable: () => Effect.succeed(true),
+            captureAnchor: () => Effect.succeed({ anchor: {}, digest: "unused" }),
+            inspectAnchor: () => Effect.succeed({ anchor: {}, digest: "unused" }),
+            applyAnchor: () =>
+              Effect.sync(() => {
+                applications += 1;
+                codex.updateSession(threadId, (session) => ({
+                  ...session,
+                  resumeCursor:
+                    scenario === "missing-cursor"
+                      ? undefined
+                      : scenario === "null-cursor"
+                        ? null
+                        : targetCursor,
+                  ...(scenario === "replaced"
+                    ? { sessionIncarnationId: RuntimeSessionId.make("replacement-incarnation") }
+                    : {}),
+                }));
+              }),
+            releaseAnchor: () => Effect.void,
+          },
+        };
+        const providerLayer = makeAgentBrowserProviderLayer(false, { ...codex, adapter }, {});
+        yield* Effect.gen(function* () {
+          const provider = yield* ProviderService.ProviderService;
+          const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+          const started = yield* provider.startSession(threadId, {
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            threadId,
+            runtimeMode: "full-access",
+            resumeCursor: sourceCursor,
+          });
+          if (scenario === "retry-write" || scenario === "inspect-retry") {
+            const write = vi.spyOn(directory, "upsert").mockImplementationOnce(() =>
+              Effect.fail(
+                new ProviderValidationError({
+                  operation: "test.persist-exact-selection",
+                  issue: "Simulated failed directory write.",
+                }),
+              ),
+            );
+            yield* Effect.addFinalizer(() => Effect.sync(() => write.mockRestore()));
+            const failed = yield* provider.applyConversationAnchor!({
+              threadId,
+              anchor: { privateFork: "target" },
+            }).pipe(Effect.exit);
+            assert.isTrue(Exit.isFailure(failed));
+            assert.deepEqual(
+              Option.getOrThrow(yield* directory.getBinding(threadId)).resumeCursor,
+              sourceCursor,
+            );
+          }
+          const applied = yield* (
+            scenario === "inspect-retry"
+              ? provider.inspectConversationAnchor!(threadId)
+              : provider.applyConversationAnchor!({
+                  threadId,
+                  anchor: { privateFork: "target" },
+                })
+          ).pipe(Effect.exit);
+          const persisted = Option.getOrThrow(yield* directory.getBinding(threadId));
+          if (
+            scenario === "replaced" ||
+            scenario === "missing-cursor" ||
+            scenario === "null-cursor"
+          ) {
+            assert.isTrue(Exit.isFailure(applied));
+            assert.deepEqual(persisted.resumeCursor, sourceCursor);
+            const inspected = yield* provider.inspectConversationAnchor!(threadId).pipe(
+              Effect.exit,
+            );
+            assert.isTrue(Exit.isFailure(inspected));
+          } else {
+            assert.isTrue(Exit.isSuccess(applied));
+            assert.deepEqual(persisted.resumeCursor, targetCursor);
+            assert.equal(
+              (persisted.runtimePayload as { sessionIncarnationId?: string }).sessionIncarnationId,
+              started.sessionIncarnationId,
+            );
+          }
+          assert.equal(applications, scenario === "retry-write" ? 2 : 1);
+        }).pipe(Effect.provide(providerLayer));
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+  }
 
   it.effect("restores MCP and the directory binding before exposing recovered activity", () =>
     Effect.gen(function* () {
