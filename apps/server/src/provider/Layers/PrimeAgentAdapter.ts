@@ -447,11 +447,17 @@ export function makePrimeAgentAdapter(
         | { readonly state: "cancelled" },
       recordCompletedTurn = false,
     ) =>
-      Effect.uninterruptible(
-        withThreadLock(
-          ctx.threadId,
-          settleActiveTurnLocked(ctx, turnId, outcome, recordCompletedTurn),
-        ),
+      Effect.suspend(() =>
+        // Stop owns settlement while closing the session scope under this lock.
+        // A session-owned worker must not wait for that lock from its finalizer.
+        ctx.stopRequested || ctx.stopped
+          ? Effect.succeed(false)
+          : withThreadLock(
+              ctx.threadId,
+              settleActiveTurnLocked(ctx, turnId, outcome, recordCompletedTurn).pipe(
+                Effect.uninterruptible,
+              ),
+            ),
       );
 
     /** Must be called while holding the thread lock. */
@@ -964,6 +970,7 @@ export function makePrimeAgentAdapter(
             }),
           );
           const { ctx, activeTurn, turnId, prompt } = prepared;
+          const dispatched = yield* Deferred.make<void>();
 
           const promptEffect = Effect.gen(function* () {
             yield* offerRuntimeEvent(ctx.sessionIncarnationId, {
@@ -981,7 +988,7 @@ export function makePrimeAgentAdapter(
               payload: { model: ctx.session.model ?? "default" },
             });
             const promptExit = yield* Effect.raceFirst(
-              ctx.acp.prompt({ prompt }),
+              ctx.acp.prompt({ prompt }, { dispatched }),
               Deferred.await(activeTurn.cancellation).pipe(
                 Effect.as({ stopReason: "cancelled" as const }),
               ),
@@ -1047,7 +1054,7 @@ export function makePrimeAgentAdapter(
             return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
           });
 
-          return yield* restore(promptEffect).pipe(
+          const worker = yield* restore(promptEffect).pipe(
             Effect.catch((error) =>
               Effect.gen(function* () {
                 yield* settleActiveTurn(ctx, turnId, {
@@ -1080,7 +1087,22 @@ export function makePrimeAgentAdapter(
                 ),
               ),
             ),
+            Effect.forkIn(ctx.scope),
           );
+          // Admission releases the reactor's per-thread lane. The session owns
+          // the response through terminal quiescence, including Stop handling.
+          return yield* restore(
+            Effect.raceFirst(
+              Deferred.await(dispatched).pipe(
+                Effect.as({
+                  threadId: input.threadId,
+                  turnId,
+                  resumeCursor: ctx.session.resumeCursor,
+                }),
+              ),
+              Fiber.await(worker).pipe(Effect.flatMap((exit) => exit)),
+            ),
+          ).pipe(Effect.onInterrupt(() => Fiber.interrupt(worker)));
         }),
       );
 
