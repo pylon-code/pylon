@@ -10,8 +10,13 @@ import { useCallback, useEffect, useMemo } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "./atom-registry";
+import { serverEnvironment } from "./server";
 import { useEnvironmentQuery } from "./query";
-import { presentThreadPr, type ThreadPrPresentation } from "./thread-pr-presentation";
+import {
+  resolveThreadPrSource,
+  presentThreadPr,
+  type ThreadPrPresentation,
+} from "./thread-pr-presentation";
 import { vcsEnvironment } from "./vcs";
 
 const linkedPullRequestDetailAtom = createLinkedPullRequestSummaryAtomFamily(connectionAtomRuntime);
@@ -36,18 +41,32 @@ export {
 } from "./thread-pr-presentation";
 
 /**
- * Live PR status for a thread's branch. Subscriptions are deduplicated per
- * (environmentId, cwd) by the atom family, so many rows on the same worktree
- * or project root share one stream — and virtualization means only visible
- * rows subscribe at all.
+ * Linked PRs use server snapshots. Branch fallback and legacy references share
+ * a live summary request across visible rows in the same environment.
  */
 export function useThreadPr(
   thread: EnvironmentThreadShell,
-  projectCwd: string | null,
+  projectCwd: string | null = null,
 ): ThreadPrPresentation | null {
+  const supportsLinks = useAtomValue(
+    serverEnvironment.configValueAtom(thread.environmentId),
+    (config) => config?.environment.capabilities.threadPullRequests === true,
+  );
+  const { linkedPresentation, pullRequestRef } = useMemo(
+    () =>
+      resolveThreadPrSource(
+        {
+          pullRequests: thread.pullRequests,
+          linkedPullRequest: thread.linkedPullRequest,
+          branchPullRequest: thread.branchPullRequest,
+        },
+        { threadPullRequests: supportsLinks },
+      ),
+    [thread.pullRequests, thread.linkedPullRequest, thread.branchPullRequest, supportsLinks],
+  );
   const cwd = thread.worktreePath ?? projectCwd;
-  const reference = thread.linkedPullRequest ?? thread.branchPullRequest ?? null;
-  const legacyDiscovery = thread.branchPullRequest === undefined;
+  const reference = pullRequestRef;
+  const legacyDiscovery = !supportsLinks && thread.branchPullRequest === undefined;
   const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
   const snapshotIdentity = JSON.stringify(
     reference ?? (legacyDiscovery ? { branch: thread.branch, cwd } : null),
@@ -127,5 +146,5 @@ export function useThreadPr(
     });
   }, [live, snapshotIdentity, threadKey]);
 
-  return live === undefined ? snapshot : live;
+  return linkedPresentation ?? (live === undefined ? snapshot : live);
 }

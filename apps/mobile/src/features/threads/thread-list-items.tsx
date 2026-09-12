@@ -48,7 +48,7 @@ export const THREAD_LIST_COMPACT_INSET = HOME_HORIZONTAL_INSET;
 const SIDEBAR_ROW_RADIUS = 12;
 
 function pullRequestTintColor(
-  pr: Pick<ThreadPrPresentation, "state" | "isDraft">,
+  pr: Pick<ThreadPrPresentation, "state" | "isDraft" | "others" | "kind">,
   colorScheme: "light" | "dark",
 ) {
   const dark = colorScheme === "dark";
@@ -61,6 +61,11 @@ function pullRequestTintColor(
     case "merged":
       return dark ? "#a78bfa" : "#7c3aed";
     case "closed":
+      if (pr.kind === "stack" || pr.others > 0) {
+        return dark ? "#fb7185" : "#e11d48";
+      }
+      return dark ? "#a1a1aa" : "#71717a";
+    case null:
       return dark ? "#a1a1aa" : "#71717a";
   }
 }
@@ -637,15 +642,30 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
           </>
         ) : null}
         {pr !== null ? (
-          <View className="flex-row items-center gap-0.5">
-            <PullRequestIcon
-              size={compact ? 13 : 11}
-              color={
-                visuallySelected
-                  ? String(effectiveSelectedForeground)
-                  : pullRequestTintColor(pr, colorScheme)
-              }
-            />
+          <View
+            className="flex-row items-center gap-0.5"
+            accessibilityLabel={pr.accessibilityLabel}
+          >
+            {pr.kind === "stack" ? (
+              <SymbolView
+                name="square.3.layers.3d"
+                size={compact ? 13 : 11}
+                tintColor={
+                  visuallySelected
+                    ? String(effectiveSelectedForeground)
+                    : pullRequestTintColor(pr, colorScheme)
+                }
+              />
+            ) : (
+              <PullRequestIcon
+                size={compact ? 13 : 11}
+                color={
+                  visuallySelected
+                    ? String(effectiveSelectedForeground)
+                    : pullRequestTintColor(pr, colorScheme)
+                }
+              />
+            )}
             <Text
               className={`${compact ? "text-sm" : "text-xs"} font-t3-medium ${
                 visuallySelected

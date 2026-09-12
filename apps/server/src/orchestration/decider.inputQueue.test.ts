@@ -27,6 +27,7 @@ function readModel(running: boolean): OrchestrationReadModel {
       {
         id: threadId,
         projectId: ProjectId.make("project-1"),
+        pullRequests: [],
         title: "Queue thread",
         modelSelection: { instanceId: ProviderInstanceId.make("prime-work"), model: "prime/model" },
         runtimeMode: "full-access",
