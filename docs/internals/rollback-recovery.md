@@ -41,10 +41,12 @@ A target is published as available only after checkpoint capture proves all of t
 
 1. the checkpoint is immutable and ready;
 2. the provider adapter advertises the absolute rollback gate;
-3. the live session is the managed native Prime session for the projected incarnation;
+3. the live session is the managed native Prime or exact-capable OpenCode session for the projected incarnation;
 4. a matching exact provider anchor was stored for that checkpoint.
 
 Admission repeats the proof, checks the exact source revision, requires an idle thread and empty provider queues, and acquires the canonical workspace lease. Published availability is never admission authority.
+
+OpenCode snapshots native history into private immutable forks and verifies full message contents and relationships before selecting a fresh fork. These snapshots preserve old checkpoint targets across compaction; current source proofs remain separate. Forks cost storage proportional to the retained histories. Legacy histories without a proved checkpoint boundary remain usable, but cannot gain rewind eligibility from a guessed turn count. A private idle recovery cursor restores only the same account, workspace and incarnation; ordinary Stop/resume keeps the selected native history and establishes new eligibility separately.
 
 ## Multi-client behavior
 

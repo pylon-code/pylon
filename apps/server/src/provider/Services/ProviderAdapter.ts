@@ -70,7 +70,7 @@ export const BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES = {
   claude: "relative",
   cursor: "unsupported",
   grok: "unsupported",
-  openCode: "relative",
+  openCode: "absolute",
   prime: "unsupported",
   primeDaemon: "unsupported",
 } as const satisfies Record<string, ProviderConversationRollbackMode>;
