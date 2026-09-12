@@ -1637,6 +1637,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const reconciliationStarted = yield* Deferred.make<void>();
           const releaseReconciliation = yield* Deferred.make<void>();
           const reconciliationReads = yield* Ref.make(0);
+          let reconciliationClockOffsetMs = 0;
           const instance = {
             instanceId: claudeInstanceId,
             driverKind: claudeDriver,
@@ -1647,7 +1648,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             reconcileUsage: () =>
               Effect.gen(function* () {
                 yield* Ref.update(reconciliationReads, (n) => n + 1);
-                const checkedAt = DateTime.formatIso(yield* DateTime.now);
+                const checkedAt = DateTime.formatIso(
+                  DateTime.makeUnsafe(
+                    (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) +
+                      reconciliationClockOffsetMs,
+                  ),
+                );
                 yield* Deferred.succeed(reconciliationStarted, undefined);
                 yield* Deferred.await(releaseReconciliation);
                 return {
@@ -1842,6 +1848,28 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               },
             });
             assert.deepStrictEqual(percents(yield* Fiber.join(newer)), [1, 2, 3, 4]);
+
+            const publishFailedProbe = Effect.gen(function* () {
+              const failedAt = DateTime.formatIso(yield* DateTime.now);
+              const failed = yield* (yield* registry.subscribeChanges).pipe(
+                Stream.filter((items) => items[0]?.checkedAt === failedAt),
+                Stream.runHead,
+                Effect.map(Option.getOrThrow),
+                Effect.forkChild,
+              );
+              const { usageLimits: _usageLimits, ...withoutUsage } = initialProvider;
+              yield* PubSub.publish(changes, { ...withoutUsage, checkedAt: failedAt });
+              return yield* Fiber.join(failed);
+            });
+            // Once the driver exhausts its bounded retention, a failed probe
+            // must not resurrect this layer's older authoritative scope set.
+            yield* TestClock.adjust("31 minutes");
+            assert.strictEqual((yield* publishFailedProbe)[0]?.usageLimits, undefined);
+            // A future timestamp is not freshness evidence either.
+            reconciliationClockOffsetMs = 60_000;
+            yield* registry.refreshProviderCapacity(claudeInstanceId);
+            yield* TestClock.adjust("1 minute");
+            assert.strictEqual((yield* publishFailedProbe)[0]?.usageLimits, undefined);
           }).pipe(Effect.provide(runtimeServices));
         }),
       );

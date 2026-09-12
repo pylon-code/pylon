@@ -550,9 +550,22 @@ export const ProviderRegistryLive = Layer.effect(
       // OAuth supplies the complete, named scope set. Keep it separate from
       // sparse pushes: their duration matcher intentionally targets only the
       // account-wide weekly window. A later periodic reading supersedes it.
+      const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
       const reconciled = (yield* Ref.get(reconciledUsageRef)).get(provider.instanceId);
+      const reconciledIsFresh =
+        reconciled !== undefined &&
+        isRetainedUsageFresh({ checkedAt: reconciled.usageLimits.checkedAt, nowMs });
+      if (reconciled && !reconciledIsFresh) {
+        yield* Ref.update(reconciledUsageRef, (entries) => {
+          if (entries.get(provider.instanceId) !== reconciled) return entries;
+          const next = new Map(entries);
+          next.delete(provider.instanceId);
+          return next;
+        });
+      }
       if (
         reconciled &&
+        reconciledIsFresh &&
         provider.auth.status === "authenticated" &&
         provider.auth.email?.trim() === reconciled.accountIdentity &&
         (provider.usageLimits === undefined ||
@@ -562,7 +575,6 @@ export const ProviderRegistryLive = Layer.effect(
       }
       const pushed = (yield* Ref.get(pushedUsageRef)).get(provider.instanceId);
       if (!pushed) return provider;
-      const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
       const usageLimits = applyPushedUsageWindows(provider.usageLimits, pushed.windows, {
         nowMs,
         maxAgeMs: Duration.toMillis(USAGE_RETENTION_MAX_AGE),
@@ -856,6 +868,9 @@ export const ProviderRegistryLive = Layer.effect(
                   if (!(yield* isCurrent)) return;
                   const result = yield* reconcileUsage({ isCurrent });
                   if (!result || !(yield* isCurrent)) return;
+                  const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+                  if (!isRetainedUsageFresh({ checkedAt: result.usageLimits.checkedAt, nowMs }))
+                    return;
                   const provider = (yield* Ref.get(providersRef)).find(
                     (item) => item.instanceId === instanceId,
                   );
