@@ -41,6 +41,9 @@ On mobile, open a thread's menu and choose **Arrange threads**, then drag handle
 **Pinned** and **Active**, or onto the **Settled** divider. **Move up** and **Move down** are also in
 the thread menu.
 
+On web and desktop, pinning or unpinning a thread keeps the sidebar at your current
+scroll position instead of following the thread to its new place in the list.
+
 The server saves the order, so it survives a refresh and appears on your other devices. New threads
 appear above the active threads you arranged, and thread activity does not change the order.
 Settling clears a thread's position, while pinning and snoozing keep it until you move the thread
