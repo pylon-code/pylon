@@ -374,7 +374,7 @@ const PRIME_RELEASE_RECIPE = Object.freeze({
   npmVersion: "11.10.1",
   minimumNodeVersion: "22.8.0",
 });
-export const PRIME_RELEASE_RECIPES = Object.freeze([
+const PRIME_RELEASE_RECIPES = Object.freeze([
   PRIME_RELEASE_RECIPE,
   Object.freeze({ ...PRIME_RELEASE_RECIPE, recipeRevision: 2 }),
 ]);
@@ -759,7 +759,7 @@ export function assertPrimeAttestationBinding(
   }
 }
 
-function verifyPrimeSigstoreBundle(
+export function verifyPrimeSigstoreBundle(
   bundleJson: unknown,
   trustedRoot: TrustedRoot,
   expected: ExpectedPrimeAttestation,
