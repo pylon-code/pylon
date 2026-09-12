@@ -30,7 +30,7 @@ export const LEGACY_URL_HANDLER_DESKTOP_ENTRY_NAME = "pylon-code-url-handler.des
 
 const { logInfo, logWarning } = makeComponentLogger("desktop-linux-url-handler");
 
-export class DesktopLinuxUrlHandlerRegistrationError extends Schema.TaggedErrorClass<DesktopLinuxUrlHandlerRegistrationError>()(
+export class DesktopLinuxUrlHandlerRegistrationError extends Schema.TaggedError<DesktopLinuxUrlHandlerRegistrationError>()(
   "DesktopLinuxUrlHandlerRegistrationError",
   {
     step: Schema.Literals([
@@ -130,6 +130,7 @@ export class DesktopLinuxUrlHandler extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopLinuxUrlHandler") {}
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const assets = yield* DesktopAssets.DesktopAssets;

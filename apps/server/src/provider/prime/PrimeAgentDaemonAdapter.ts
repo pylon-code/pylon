@@ -6399,18 +6399,15 @@ export function makePrimeAgentDaemonAdapter(
           const nativeResult = reserved.context.runtime
             .askSideQuestion(nativeId, safeQuestion)
             .pipe(
-              Effect.map(
-                (result): ProviderAskSessionSideQuestionResult =>
-                  result.disposition === "answered"
-                    ? { requestId, disposition: "answered", answer: result.answer }
-                    : { requestId, disposition: result.disposition },
+              Effect.map((result): ProviderAskSessionSideQuestionResult =>
+                result.disposition === "answered"
+                  ? { requestId, disposition: "answered", answer: result.answer }
+                  : { requestId, disposition: result.disposition },
               ),
-              Effect.orElseSucceed(
-                (): ProviderAskSessionSideQuestionResult => ({
-                  requestId,
-                  disposition: "outcome-unknown",
-                }),
-              ),
+              Effect.orElseSucceed((): ProviderAskSessionSideQuestionResult => ({
+                requestId,
+                disposition: "outcome-unknown",
+              })),
             );
           const sessionEndedResult = Deferred.await(sessionEnded).pipe(
             Effect.as<ProviderAskSessionSideQuestionResult>({

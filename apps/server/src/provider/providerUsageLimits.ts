@@ -14,11 +14,7 @@ import type { ServerProviderUsageLimits, ServerProviderUsageWindow } from "@t3to
 import type * as CodexSchema from "effect-codex-app-server/schema";
 import * as DateTime from "effect/DateTime";
 import { codexRateLimitsToLimits, codexRateLimitsToWindows } from "./Layers/codexUsageLimits.ts";
-export {
-  clampPercent,
-  makeUsageLimits,
-  makeUnavailableUsageLimits,
-} from "./usageLimitsSnapshot.ts";
+export { makeUnavailableUsageLimits } from "./usageLimitsSnapshot.ts";
 
 const DAY_MINS = 24 * 60;
 const WEEK_MINS = 7 * DAY_MINS;
@@ -28,10 +24,10 @@ const WEEK_MINS = 7 * DAY_MINS;
  * which name their windows differently, match the same way everywhere: the
  * composer strip, the popover, and the push merge below.
  */
-export const isSessionUsageWindow = (window: ServerProviderUsageWindow): boolean =>
+const isSessionUsageWindow = (window: ServerProviderUsageWindow): boolean =>
   window.windowDurationMins !== undefined && window.windowDurationMins < DAY_MINS;
 
-export const isWeeklyUsageWindow = (window: ServerProviderUsageWindow): boolean =>
+const isWeeklyUsageWindow = (window: ServerProviderUsageWindow): boolean =>
   window.windowDurationMins !== undefined && window.windowDurationMins >= WEEK_MINS;
 
 /**
@@ -146,7 +142,7 @@ function parseMs(value: string): number | undefined {
  * folded in only once a minute — enough to keep the reading's age honest
  * without a snapshot per tool call.
  */
-export const SAME_VALUE_PUSH_INTERVAL_MS = 60_000;
+const SAME_VALUE_PUSH_INTERVAL_MS = 60_000;
 
 function isSameReading(
   current: ServerProviderUsageWindow,

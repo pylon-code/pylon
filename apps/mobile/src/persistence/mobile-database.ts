@@ -61,7 +61,7 @@ const MobileDatabaseOperation = Schema.Literals([
   "save-preferences",
 ]);
 
-export class MobileDatabaseError extends Schema.TaggedErrorClass<MobileDatabaseError>()(
+export class MobileDatabaseError extends Schema.TaggedError<MobileDatabaseError>()(
   "MobileDatabaseError",
   {
     operation: MobileDatabaseOperation,
@@ -385,14 +385,13 @@ const makeAvailable = Effect.gen(function* () {
     }).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(ClientCacheSummaryRows)),
       Effect.mapError(databaseError("inspect-caches")),
-      Effect.map(
-        (rows): ReadonlyArray<ClientCacheSummaryRow> =>
-          rows.map((row) => ({
-            environmentId: row.environmentId as EnvironmentId,
-            kind: row.kind,
-            recordCount: row.recordCount,
-            payloadBytes: row.payloadBytes,
-          })),
+      Effect.map((rows): ReadonlyArray<ClientCacheSummaryRow> =>
+        rows.map((row) => ({
+          environmentId: row.environmentId as EnvironmentId,
+          kind: row.kind,
+          recordCount: row.recordCount,
+          payloadBytes: row.payloadBytes,
+        })),
       ),
     ),
     loadPreferencesJson: Effect.tryPromise({

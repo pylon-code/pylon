@@ -189,6 +189,7 @@ export const makeTextGenerationFromRegistry = (
   });
 };
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const instanceRegistry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;

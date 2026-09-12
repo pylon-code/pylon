@@ -25,7 +25,7 @@ const decodeClientSettingsDocument = Schema.decodeEffect(
 );
 const encodeClientSettingsDocument = Schema.encodeEffect(fromLenientJson(Schema.Unknown));
 
-export class DesktopClientSettingsReadError extends Schema.TaggedErrorClass<DesktopClientSettingsReadError>()(
+export class DesktopClientSettingsReadError extends Schema.TaggedError<DesktopClientSettingsReadError>()(
   "DesktopClientSettingsReadError",
   {
     operation: Schema.Literal("read-file"),
@@ -46,7 +46,7 @@ const DesktopClientSettingsWriteOperation = Schema.Literals([
   "replace-settings-file",
 ]);
 
-export class DesktopClientSettingsWriteError extends Schema.TaggedErrorClass<DesktopClientSettingsWriteError>()(
+export class DesktopClientSettingsWriteError extends Schema.TaggedError<DesktopClientSettingsWriteError>()(
   "DesktopClientSettingsWriteError",
   {
     operation: DesktopClientSettingsWriteOperation,

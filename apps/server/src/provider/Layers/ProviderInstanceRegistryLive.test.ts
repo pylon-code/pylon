@@ -71,9 +71,10 @@ import { ProviderDriverError, ProviderUnsupportedError } from "../Errors.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
-import { makeProviderAdapterRegistry } from "./ProviderAdapterRegistry.ts";
+import { ProviderAdapterRegistryLive } from "./ProviderAdapterRegistry.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
+import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { makeTextGenerationFromRegistry } from "../../textGeneration/TextGeneration.ts";
 
@@ -658,7 +659,8 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       expect(codex).toBeDefined();
       expect((yield* codex!.snapshot.getSnapshot).enabled).toBe(false);
 
-      const adapterRegistry = yield* makeProviderAdapterRegistry().pipe(
+      const adapterRegistry = yield* ProviderAdapterRegistry.pipe(
+        Effect.provide(ProviderAdapterRegistryLive),
         Effect.provideService(ProviderInstanceRegistry, registry),
       );
       const interactiveStart = yield* adapterRegistry.getByInstance(primeId).pipe(Effect.result);

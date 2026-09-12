@@ -62,7 +62,7 @@ const managerErrorReason = Schema.Literals([
   "shutdown-failed",
 ]);
 
-export class PrimeAgentDaemonManagerError extends Schema.TaggedErrorClass<PrimeAgentDaemonManagerError>()(
+export class PrimeAgentDaemonManagerError extends Schema.TaggedError<PrimeAgentDaemonManagerError>()(
   "PrimeAgentDaemonManagerError",
   {
     reason: managerErrorReason,

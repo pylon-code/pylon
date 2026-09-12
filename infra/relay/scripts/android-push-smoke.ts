@@ -24,13 +24,13 @@ const decodeDevice = Schema.decodeUnknownEffect(Schema.fromJsonString(Device));
 const Phase = Schema.Literals(["running", "approval", "input", "completed", "failed", "end"]);
 const decodePhase = Schema.decodeUnknownEffect(Phase);
 
-class SmokeUsageError extends Schema.TaggedErrorClass<SmokeUsageError>()("SmokeUsageError", {}) {
+class SmokeUsageError extends Schema.TaggedError<SmokeUsageError>()("SmokeUsageError", {}) {
   override get message() {
     return "Usage: node scripts/android-push-smoke.ts <service-account.json> <device.json> <running|approval|input|completed|failed|end>";
   }
 }
 
-class SmokeCredentialReadError extends Schema.TaggedErrorClass<SmokeCredentialReadError>()(
+class SmokeCredentialReadError extends Schema.TaggedError<SmokeCredentialReadError>()(
   "SmokeCredentialReadError",
   { cause: Schema.Defect() },
 ) {
@@ -39,7 +39,7 @@ class SmokeCredentialReadError extends Schema.TaggedErrorClass<SmokeCredentialRe
   }
 }
 
-class SmokeDeviceReadError extends Schema.TaggedErrorClass<SmokeDeviceReadError>()(
+class SmokeDeviceReadError extends Schema.TaggedError<SmokeDeviceReadError>()(
   "SmokeDeviceReadError",
   { cause: Schema.Defect() },
 ) {
@@ -48,7 +48,7 @@ class SmokeDeviceReadError extends Schema.TaggedErrorClass<SmokeDeviceReadError>
   }
 }
 
-class SmokeUnregisteredDeviceError extends Schema.TaggedErrorClass<SmokeUnregisteredDeviceError>()(
+class SmokeUnregisteredDeviceError extends Schema.TaggedError<SmokeUnregisteredDeviceError>()(
   "SmokeUnregisteredDeviceError",
   {},
 ) {

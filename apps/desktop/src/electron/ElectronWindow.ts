@@ -72,7 +72,7 @@ const ElectronWindowOperation = Schema.Literals([
   "destroy-window",
 ]);
 
-export class ElectronWindowCreateError extends Schema.TaggedErrorClass<ElectronWindowCreateError>()(
+export class ElectronWindowCreateError extends Schema.TaggedError<ElectronWindowCreateError>()(
   "ElectronWindowCreateError",
   {
     options: ElectronWindowCreateOptions,
@@ -89,7 +89,7 @@ export class ElectronWindowCreateError extends Schema.TaggedErrorClass<ElectronW
   }
 }
 
-export class ElectronWindowOperationError extends Schema.TaggedErrorClass<ElectronWindowOperationError>()(
+export class ElectronWindowOperationError extends Schema.TaggedError<ElectronWindowOperationError>()(
   "ElectronWindowOperationError",
   {
     operation: ElectronWindowOperation,
@@ -127,6 +127,7 @@ export class ElectronWindow extends Context.Service<
   }
 >()("@t3tools/desktop/electron/ElectronWindow") {}
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const platform = yield* HostProcessPlatform;
   // The focus worker loads a native accessibility module. Start it on the first

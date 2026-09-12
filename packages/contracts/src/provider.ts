@@ -131,7 +131,7 @@ export const ProviderReloadSessionResourcesInput = Schema.Struct({
 });
 export type ProviderReloadSessionResourcesInput = typeof ProviderReloadSessionResourcesInput.Type;
 
-export class ProviderSessionResourcesReloadError extends Schema.TaggedErrorClass<ProviderSessionResourcesReloadError>()(
+export class ProviderSessionResourcesReloadError extends Schema.TaggedError<ProviderSessionResourcesReloadError>()(
   "ProviderSessionResourcesReloadError",
   {
     reason: Schema.Literals(["session-not-ready", "unsupported", "busy", "reload-failed"]),
@@ -223,12 +223,12 @@ const ProviderSessionSideQuestionErrorReason = Schema.Literals([
   "request-failed",
 ]);
 
-export class ProviderAskSessionSideQuestionError extends Schema.TaggedErrorClass<ProviderAskSessionSideQuestionError>()(
+export class ProviderAskSessionSideQuestionError extends Schema.TaggedError<ProviderAskSessionSideQuestionError>()(
   "ProviderAskSessionSideQuestionError",
   { reason: ProviderSessionSideQuestionErrorReason },
 ) {}
 
-export class ProviderCancelSessionSideQuestionError extends Schema.TaggedErrorClass<ProviderCancelSessionSideQuestionError>()(
+export class ProviderCancelSessionSideQuestionError extends Schema.TaggedError<ProviderCancelSessionSideQuestionError>()(
   "ProviderCancelSessionSideQuestionError",
   { reason: ProviderSessionSideQuestionErrorReason },
 ) {}
@@ -264,7 +264,7 @@ export const ProviderMessageSessionAgentResult = Schema.Struct({
 });
 export type ProviderMessageSessionAgentResult = typeof ProviderMessageSessionAgentResult.Type;
 
-export class ProviderMessageSessionAgentError extends Schema.TaggedErrorClass<ProviderMessageSessionAgentError>()(
+export class ProviderMessageSessionAgentError extends Schema.TaggedError<ProviderMessageSessionAgentError>()(
   "ProviderMessageSessionAgentError",
   {
     reason: Schema.Literals([
@@ -279,7 +279,7 @@ export class ProviderMessageSessionAgentError extends Schema.TaggedErrorClass<Pr
   },
 ) {}
 
-export class ProviderCancelSessionAgentError extends Schema.TaggedErrorClass<ProviderCancelSessionAgentError>()(
+export class ProviderCancelSessionAgentError extends Schema.TaggedError<ProviderCancelSessionAgentError>()(
   "ProviderCancelSessionAgentError",
   {
     reason: Schema.Literals([
@@ -412,7 +412,7 @@ export const ProviderSessionAgentActivitySnapshot = Schema.Struct({
 }).check(providerSessionAgentActivitySnapshotBounds);
 export type ProviderSessionAgentActivitySnapshot = typeof ProviderSessionAgentActivitySnapshot.Type;
 
-export class ProviderWatchSessionAgentActivityError extends Schema.TaggedErrorClass<ProviderWatchSessionAgentActivityError>()(
+export class ProviderWatchSessionAgentActivityError extends Schema.TaggedError<ProviderWatchSessionAgentActivityError>()(
   "ProviderWatchSessionAgentActivityError",
   {
     reason: Schema.Literals([
@@ -434,7 +434,7 @@ export const ProviderSetSessionAgentDepthInput = Schema.Struct({
 });
 export type ProviderSetSessionAgentDepthInput = typeof ProviderSetSessionAgentDepthInput.Type;
 
-export class ProviderSessionAgentDepthError extends Schema.TaggedErrorClass<ProviderSessionAgentDepthError>()(
+export class ProviderSessionAgentDepthError extends Schema.TaggedError<ProviderSessionAgentDepthError>()(
   "ProviderSessionAgentDepthError",
   {
     reason: Schema.Literals([
@@ -481,7 +481,7 @@ export const ProviderSetSessionInputQueueModeInput = Schema.Struct({
 export type ProviderSetSessionInputQueueModeInput =
   typeof ProviderSetSessionInputQueueModeInput.Type;
 
-export class ProviderSessionInputQueueError extends Schema.TaggedErrorClass<ProviderSessionInputQueueError>()(
+export class ProviderSessionInputQueueError extends Schema.TaggedError<ProviderSessionInputQueueError>()(
   "ProviderSessionInputQueueError",
   {
     reason: Schema.Literals([
@@ -510,7 +510,7 @@ export const ProviderSetSessionAutoCompactionInput = Schema.Struct({
 export type ProviderSetSessionAutoCompactionInput =
   typeof ProviderSetSessionAutoCompactionInput.Type;
 
-export class ProviderSessionCompactionError extends Schema.TaggedErrorClass<ProviderSessionCompactionError>()(
+export class ProviderSessionCompactionError extends Schema.TaggedError<ProviderSessionCompactionError>()(
   "ProviderSessionCompactionError",
   {
     reason: Schema.Literals(["session-not-ready", "unsupported", "busy", "request-failed"]),
@@ -527,7 +527,7 @@ export const ProviderRefineSessionHarnessResult = Schema.Struct({
 });
 export type ProviderRefineSessionHarnessResult = typeof ProviderRefineSessionHarnessResult.Type;
 
-export class ProviderRefineSessionHarnessError extends Schema.TaggedErrorClass<ProviderRefineSessionHarnessError>()(
+export class ProviderRefineSessionHarnessError extends Schema.TaggedError<ProviderRefineSessionHarnessError>()(
   "ProviderRefineSessionHarnessError",
   {
     reason: Schema.Literals(["session-not-ready", "unsupported", "busy", "request-failed"]),
@@ -556,7 +556,7 @@ export const ProviderRespondToInteractionInput = Schema.Struct({
 });
 export type ProviderRespondToInteractionInput = typeof ProviderRespondToInteractionInput.Type;
 
-export class ProviderRespondToInteractionError extends Schema.TaggedErrorClass<ProviderRespondToInteractionError>()(
+export class ProviderRespondToInteractionError extends Schema.TaggedError<ProviderRespondToInteractionError>()(
   "ProviderRespondToInteractionError",
   {
     reason: Schema.Literals(["session-not-ready", "unsupported", "stale", "request-failed"]),
@@ -573,7 +573,7 @@ export const ProviderUploadFeedbackResult = Schema.Struct({
 });
 export type ProviderUploadFeedbackResult = typeof ProviderUploadFeedbackResult.Type;
 
-export class ProviderUploadFeedbackError extends Schema.TaggedErrorClass<ProviderUploadFeedbackError>()(
+export class ProviderUploadFeedbackError extends Schema.TaggedError<ProviderUploadFeedbackError>()(
   "ProviderUploadFeedbackError",
   {
     threadId: ThreadId,

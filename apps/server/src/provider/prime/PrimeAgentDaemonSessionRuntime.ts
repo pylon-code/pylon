@@ -890,7 +890,7 @@ const runtimeErrorReason = Schema.Literals([
   "disposed",
 ]);
 
-export class PrimeAgentDaemonSessionRuntimeError extends Schema.TaggedErrorClass<PrimeAgentDaemonSessionRuntimeError>()(
+export class PrimeAgentDaemonSessionRuntimeError extends Schema.TaggedError<PrimeAgentDaemonSessionRuntimeError>()(
   "PrimeAgentDaemonSessionRuntimeError",
   {
     operation: runtimeErrorOperation,

@@ -89,23 +89,21 @@ export function claudeConfigDirKeychainService(
  * `CLAUDE_CONFIG_DIR` to" and returns the home directory for an unset
  * `homePath`. Credentials for that case live in `~/.claude`, not `~`.
  */
-export const resolveClaudeCredentialConfigDir = Effect.fn("resolveClaudeCredentialConfigDir")(
-  function* (
-    config: Pick<ClaudeSettings, "homePath">,
-  ): Effect.fn.Return<
-    { readonly configDir: string; readonly defaultConfigDir: string },
-    never,
-    Path.Path
-  > {
-    const path = yield* Path.Path;
-    const defaultConfigDir = path.resolve(path.join(NodeOS.homedir(), ".claude"));
-    const homePath = config.homePath.trim();
-    return {
-      configDir: homePath.length > 0 ? resolveProviderHomePath(homePath) : defaultConfigDir,
-      defaultConfigDir,
-    };
-  },
-);
+const resolveClaudeCredentialConfigDir = Effect.fn("resolveClaudeCredentialConfigDir")(function* (
+  config: Pick<ClaudeSettings, "homePath">,
+): Effect.fn.Return<
+  { readonly configDir: string; readonly defaultConfigDir: string },
+  never,
+  Path.Path
+> {
+  const path = yield* Path.Path;
+  const defaultConfigDir = path.resolve(path.join(NodeOS.homedir(), ".claude"));
+  const homePath = config.homePath.trim();
+  return {
+    configDir: homePath.length > 0 ? resolveProviderHomePath(homePath) : defaultConfigDir,
+    defaultConfigDir,
+  };
+});
 
 function accessTokenFromCredentialsJson(raw: string): string | undefined {
   let decoded: unknown;
@@ -174,7 +172,7 @@ const readFileAccessToken = Effect.fn("readFileAccessToken")(function* (
  * the config dir. The keychain read is tried first and falls through to the
  * file so a macOS install that predates keychain storage still works.
  */
-export const readClaudeAccessToken = Effect.fn("readClaudeAccessToken")(function* (
+const readClaudeAccessToken = Effect.fn("readClaudeAccessToken")(function* (
   config: Pick<ClaudeSettings, "homePath">,
 ): Effect.fn.Return<
   string | undefined,

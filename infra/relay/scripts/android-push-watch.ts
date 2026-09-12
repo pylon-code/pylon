@@ -44,7 +44,7 @@ const Connection = Schema.Struct({
 });
 const readFile = (path: string) => Effect.tryPromise(() => NodeFSP.readFile(path, "utf8"));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-class WatchUnregisteredDeviceError extends Schema.TaggedErrorClass<WatchUnregisteredDeviceError>()(
+class WatchUnregisteredDeviceError extends Schema.TaggedError<WatchUnregisteredDeviceError>()(
   "WatchUnregisteredDeviceError",
   {},
 ) {
@@ -53,7 +53,7 @@ class WatchUnregisteredDeviceError extends Schema.TaggedErrorClass<WatchUnregist
   }
 }
 
-class WatchStoppedError extends Schema.TaggedErrorClass<WatchStoppedError>()("WatchStoppedError", {
+class WatchStoppedError extends Schema.TaggedError<WatchStoppedError>()("WatchStoppedError", {
   cause: Schema.Defect(),
 }) {
   override get message() {

@@ -113,6 +113,18 @@ After a successful deploy, the wrapper updates the repository-root `.env` file w
 URL. That makes subsequent source builds point at the relay that was just deployed without copying
 the URL manually.
 
+### Migration table upgrade
+
+Alchemy beta.76 records applied migrations in its own table format. The first deploy on beta.76
+against a relay database rebuilds `relay_migrations` in place, from three columns to `id serial`,
+`hash`, `created_at`, `name` and `applied_at`. Every applied row is kept, so no migration runs
+again.
+
+The rewrite is one way. Rolling the relay back to Alchemy beta.70 still deploys until a new relay
+migration is added. After that, a beta.70 deploy fails cleanly: it either cannot record the new row
+(`null value in column "hash"`) or re-runs an applied migration and stops on "already exists".
+Recover by deploying beta.76 or later again; do not edit `relay_migrations` by hand.
+
 ### Deployment CI
 
 The relay is versioned separately from client releases. `.github/workflows/deploy-relay.yml` deploys

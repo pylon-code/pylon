@@ -25,7 +25,7 @@
  */
 export type ProviderLoginMethod = "subscription" | "console" | "sso";
 
-export const PROVIDER_LOGIN_METHODS: ReadonlyArray<ProviderLoginMethod> = [
+const PROVIDER_LOGIN_METHODS: ReadonlyArray<ProviderLoginMethod> = [
   "subscription",
   "console",
   "sso",

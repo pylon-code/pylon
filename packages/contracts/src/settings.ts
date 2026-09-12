@@ -1266,7 +1266,7 @@ export const ServerSettingsOperation = Schema.Literals([
 ]);
 export type ServerSettingsOperation = typeof ServerSettingsOperation.Type;
 
-export class ServerSettingsError extends Schema.TaggedErrorClass<ServerSettingsError>()(
+export class ServerSettingsError extends Schema.TaggedError<ServerSettingsError>()(
   "ServerSettingsError",
   {
     settingsPath: Schema.String,
@@ -1468,7 +1468,7 @@ export const ServerProviderInstancesMutationReceipt = Schema.Struct({
 export type ServerProviderInstancesMutationReceipt =
   typeof ServerProviderInstancesMutationReceipt.Type;
 
-export class ServerProviderInstancesMutationConflictError extends Schema.TaggedErrorClass<ServerProviderInstancesMutationConflictError>()(
+export class ServerProviderInstancesMutationConflictError extends Schema.TaggedError<ServerProviderInstancesMutationConflictError>()(
   "ServerProviderInstancesMutationConflictError",
   {
     mutationId: ServerProviderInstancesMutationId,
@@ -1481,7 +1481,7 @@ export class ServerProviderInstancesMutationConflictError extends Schema.TaggedE
   }
 }
 
-export class ServerSettingsUpdateConflictError extends Schema.TaggedErrorClass<ServerSettingsUpdateConflictError>()(
+export class ServerSettingsUpdateConflictError extends Schema.TaggedError<ServerSettingsUpdateConflictError>()(
   "ServerSettingsUpdateConflictError",
   {
     reason: Schema.Literal("provider-instances-upgrade-required"),

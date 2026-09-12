@@ -82,7 +82,7 @@ const DEFAULT_TERMINAL_ROWS = 24;
 const TERMINAL_ACCESSORY_HEIGHT = 52;
 const SHOWCASE_ENABLED = process.env.EXPO_PUBLIC_SHOWCASE === "1";
 
-class TerminalClipboardReadError extends Schema.TaggedErrorClass<TerminalClipboardReadError>()(
+class TerminalClipboardReadError extends Schema.TaggedError<TerminalClipboardReadError>()(
   "TerminalClipboardReadError",
   { terminalId: Schema.String, cause: Schema.Defect() },
 ) {
@@ -993,16 +993,14 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
           },
         ],
       },
-      ...terminalMenuSessions.map(
-        (session): MenuAction => ({
-          id: `terminal-session:${session.terminalId}`,
-          title: session.displayLabel,
-          subtitle: [getTerminalStatusLabel({ status: session.status }), basename(session.cwd)]
-            .filter(Boolean)
-            .join(" · "),
-          state: session.terminalId === terminalId ? ("on" as const) : undefined,
-        }),
-      ),
+      ...terminalMenuSessions.map((session): MenuAction => ({
+        id: `terminal-session:${session.terminalId}`,
+        title: session.displayLabel,
+        subtitle: [getTerminalStatusLabel({ status: session.status }), basename(session.cwd)]
+          .filter(Boolean)
+          .join(" · "),
+        state: session.terminalId === terminalId ? ("on" as const) : undefined,
+      })),
       {
         id: "terminal-new",
         title: "Open new terminal",

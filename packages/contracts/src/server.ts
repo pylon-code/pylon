@@ -277,7 +277,7 @@ export const ServerPrimeManagedCommandInput = Schema.Struct({
 });
 export type ServerPrimeManagedCommandInput = typeof ServerPrimeManagedCommandInput.Type;
 
-export class ServerPrimeManagedMaintenanceError extends Schema.TaggedErrorClass<ServerPrimeManagedMaintenanceError>()(
+export class ServerPrimeManagedMaintenanceError extends Schema.TaggedError<ServerPrimeManagedMaintenanceError>()(
   "ServerPrimeManagedMaintenanceError",
   {
     instanceId: ProviderInstanceId,
@@ -1110,7 +1110,7 @@ export const ServerProviderLoginResult = Schema.Struct({
 });
 export type ServerProviderLoginResult = typeof ServerProviderLoginResult.Type;
 
-export class ServerProviderLoginError extends Schema.TaggedErrorClass<ServerProviderLoginError>()(
+export class ServerProviderLoginError extends Schema.TaggedError<ServerProviderLoginError>()(
   "ServerProviderLoginError",
   {
     reason: TrimmedNonEmptyString,
@@ -1122,7 +1122,7 @@ export class ServerProviderLoginError extends Schema.TaggedErrorClass<ServerProv
   }
 }
 
-export class ServerProviderMutationBusyError extends Schema.TaggedErrorClass<ServerProviderMutationBusyError>()(
+export class ServerProviderMutationBusyError extends Schema.TaggedError<ServerProviderMutationBusyError>()(
   "ServerProviderMutationBusyError",
   {
     reason: Schema.Literals(["rollback-active", "rollback-state-unavailable"]),
@@ -1139,7 +1139,7 @@ export class ServerProviderMutationBusyError extends Schema.TaggedErrorClass<Ser
   }
 }
 
-export class ServerProviderUpdateError extends Schema.TaggedErrorClass<ServerProviderUpdateError>()(
+export class ServerProviderUpdateError extends Schema.TaggedError<ServerProviderUpdateError>()(
   "ServerProviderUpdateError",
   {
     provider: ProviderDriverKind,
@@ -1195,7 +1195,7 @@ export const ServerSelfUpdateProgressEvent = Schema.Union([
 ]);
 export type ServerSelfUpdateProgressEvent = typeof ServerSelfUpdateProgressEvent.Type;
 
-export class ServerSelfUpdateError extends Schema.TaggedErrorClass<ServerSelfUpdateError>()(
+export class ServerSelfUpdateError extends Schema.TaggedError<ServerSelfUpdateError>()(
   "ServerSelfUpdateError",
   {
     reason: TrimmedNonEmptyString,

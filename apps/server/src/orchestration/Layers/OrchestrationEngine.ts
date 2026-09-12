@@ -523,10 +523,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           sequence: committedCommand.lastSequence,
           eventCount: committedCommand.committedEvents.length,
         };
-      }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`), (processCommand) =>
-        envelope.command.type === "thread.checkpoint.revert" && Option.isSome(rollbackRepository)
-          ? rollbackRepository.value.withMutationFence(processCommand)
-          : processCommand,
+      }).pipe(
+        Effect.withSpan(`orchestration.command.${envelope.command.type}`),
+        (processCommand) =>
+          envelope.command.type === "thread.checkpoint.revert" && Option.isSome(rollbackRepository)
+            ? rollbackRepository.value.withMutationFence(processCommand)
+            : processCommand,
       ),
     ).pipe(
       Effect.flatMap((exit) =>

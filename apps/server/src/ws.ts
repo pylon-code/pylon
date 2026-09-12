@@ -359,7 +359,7 @@ function sourceEpochMismatchFromError(
   return record.cause === undefined ? null : sourceEpochMismatchFromError(record.cause);
 }
 
-export function providerSettingsMutationInstanceIds(
+function providerSettingsMutationInstanceIds(
   current: ContractServerSettings,
   patch: ServerSettingsPatch,
 ): ReadonlyArray<ProviderInstanceId> {

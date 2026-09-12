@@ -22,6 +22,9 @@ npx t3@latest
 This starts the server and opens the local web app. Run `npx t3@latest --help` for command-line
 options.
 
+If the web or desktop app shows "Pylon could not load", check your connection and select
+**Reload** to try again.
+
 ## Desktop app
 
 Download Pylon from the [download page](https://pylon-code.com/download), choosing **Stable** or

@@ -58,7 +58,7 @@ function trimmedString(value: unknown): string | undefined {
  * The adapter forwards the whole SDK message, so the interesting fields sit
  * under `rate_limit_info`.
  */
-export function rateLimitFromClaudeEvent(
+function rateLimitFromClaudeEvent(
   payload: unknown,
   observedAt: string,
 ): ServerProviderRateLimit | undefined {
@@ -142,7 +142,7 @@ function claudeWindowShape(
   }
 }
 
-export function usageWindowsFromClaudeEvent(payload: unknown): PushedUsageWindows | undefined {
+function usageWindowsFromClaudeEvent(payload: unknown): PushedUsageWindows | undefined {
   const message = asRecord(payload);
   const info = asRecord(message?.["rate_limit_info"]);
   if (!info) return undefined;
@@ -173,7 +173,7 @@ export function usageWindowsFromClaudeEvent(payload: unknown): PushedUsageWindow
  * the same window shape as `account/rateLimits/read`, one level down under
  * its own `rateLimits` key.
  */
-export function usageWindowsFromCodexEvent(payload: unknown): PushedUsageWindows | undefined {
+function usageWindowsFromCodexEvent(payload: unknown): PushedUsageWindows | undefined {
   const notification = asRecord(payload);
   const snapshot = asRecord(notification?.["rateLimits"]);
   if (!snapshot) return undefined;

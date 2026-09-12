@@ -213,18 +213,17 @@ function makeFakeCodexAdapter(
       Effect.void,
   );
 
-  const compactThread = vi.fn(
-    (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
-      Effect.sync(() =>
-        emit({
-          type: "thread.state.changed",
-          eventId: asEventId("evt-native-compact"),
-          provider,
-          createdAt: "2026-01-01T00:00:00.000Z",
-          threadId,
-          payload: { state: "compacted" },
-        }),
-      ),
+  const compactThread = vi.fn((threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
+    Effect.sync(() =>
+      emit({
+        type: "thread.state.changed",
+        eventId: asEventId("evt-native-compact"),
+        provider,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        payload: { state: "compacted" },
+      }),
+    ),
   );
   const respondToRequest = vi.fn(
     (
@@ -386,20 +385,18 @@ function makeFakeCodexAdapter(
       }),
   );
 
-  const stopSession = vi.fn(
-    (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
-      Effect.sync(() => {
-        sessions.delete(threadId);
-      }),
+  const stopSession = vi.fn((threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
+    Effect.sync(() => {
+      sessions.delete(threadId);
+    }),
   );
 
-  const listSessions = vi.fn(
-    (): Effect.Effect<ReadonlyArray<ProviderSession>> =>
-      Effect.sync(() => Array.from(sessions.values())),
+  const listSessions = vi.fn((): Effect.Effect<ReadonlyArray<ProviderSession>> =>
+    Effect.sync(() => Array.from(sessions.values())),
   );
 
-  const hasSession = vi.fn(
-    (threadId: ThreadId): Effect.Effect<boolean> => Effect.succeed(sessions.has(threadId)),
+  const hasSession = vi.fn((threadId: ThreadId): Effect.Effect<boolean> =>
+    Effect.succeed(sessions.has(threadId)),
   );
 
   const readThread = vi.fn(
@@ -433,11 +430,10 @@ function makeFakeCodexAdapter(
       Effect.succeed({ feedbackId: `feedback-${input.threadId}` }),
   );
 
-  const stopAll = vi.fn(
-    (): Effect.Effect<void, ProviderAdapterError> =>
-      Effect.sync(() => {
-        sessions.clear();
-      }),
+  const stopAll = vi.fn((): Effect.Effect<void, ProviderAdapterError> =>
+    Effect.sync(() => {
+      sessions.clear();
+    }),
   );
 
   const followUp = vi.fn(

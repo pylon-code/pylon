@@ -978,7 +978,7 @@ function mapPromptLifecycleSnapshot(
   };
 }
 
-export function decodePrimeAgentPromptLifecycleSnapshot(
+function decodePrimeAgentPromptLifecycleSnapshot(
   input: unknown,
 ): PrimeDaemonPromptLifecycleSnapshot | undefined {
   const decoded = decodePromptLifecycleSnapshotRaw(input);
@@ -1359,7 +1359,7 @@ function safeToolResultText(text: string): string {
 type PrimeDaemonAssistantMessage = Extract<PrimeDaemonMessage, { readonly role: "assistant" }>;
 type PrimeDaemonToolResultMessage = Extract<PrimeDaemonMessage, { readonly role: "toolResult" }>;
 
-export function projectPrimeAgentManagedPlanUpdate(input: {
+function projectPrimeAgentManagedPlanUpdate(input: {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly details: unknown;
@@ -1828,7 +1828,7 @@ function reconnectReplayContinuity(
   return "complete";
 }
 
-export function mapPrimeAgentDaemonConnectionEvent(
+function mapPrimeAgentDaemonConnectionEvent(
   event: PrimeAgentDaemonConnectionEvent,
 ): PrimeDaemonEvent {
   switch (event.type) {

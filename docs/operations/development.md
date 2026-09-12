@@ -56,6 +56,10 @@ Leave `VITE_HTTP_URL` and `VITE_WS_URL` unset. Vite proxies `/api`, `/ws`, `/oau
 connections.
 
 Shared runs enable bundled dev to avoid a network round trip for each import level.
+The web entry dynamically imports the app so React refresh starts before shared UI chunks;
+keep app imports out of that entry, since static imports can fail on reload after lazy-route
+chunking. Bundled dev rebuilds CSS from Tailwind’s watched files and disables its Vite-only
+hot-update hook because Rolldown does not supply Vite’s server or module graph.
 `T3CODE_BUNDLED_DEV=0` opts out when debugging bundler differences.
 
 ## Checks

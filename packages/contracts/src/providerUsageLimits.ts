@@ -127,7 +127,7 @@ export const ProviderConsumeResetCreditInput = Schema.Union([
 ]);
 export type ProviderConsumeResetCreditInput = typeof ProviderConsumeResetCreditInput.Type;
 
-export class UsageLimitSourceError extends Schema.TaggedErrorClass<UsageLimitSourceError>()(
+export class UsageLimitSourceError extends Schema.TaggedError<UsageLimitSourceError>()(
   "UsageLimitSourceError",
   { detail: Schema.String },
 ) {
@@ -136,7 +136,7 @@ export class UsageLimitSourceError extends Schema.TaggedErrorClass<UsageLimitSou
   }
 }
 
-export class ProviderConsumeResetCreditError extends Schema.TaggedErrorClass<ProviderConsumeResetCreditError>()(
+export class ProviderConsumeResetCreditError extends Schema.TaggedError<ProviderConsumeResetCreditError>()(
   "ProviderConsumeResetCreditError",
   { instanceId: ProviderInstanceId, detail: Schema.String },
 ) {

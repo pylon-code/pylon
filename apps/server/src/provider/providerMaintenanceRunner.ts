@@ -211,6 +211,7 @@ function makeUpdateState(input: {
   };
 }
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
   const providerRegistry = yield* ProviderRegistry;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -282,12 +283,10 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
             concurrency: "unbounded",
           },
         ).pipe(
-          Effect.map(
-            (verifiedProviders): VerifiedProviderRefresh => ({
-              providers,
-              verifiedProviders,
-            }),
-          ),
+          Effect.map((verifiedProviders): VerifiedProviderRefresh => ({
+            providers,
+            verifiedProviders,
+          })),
           Effect.catchCause((cause) =>
             Effect.logWarning("Provider post-update version verification failed", {
               provider,

@@ -29,7 +29,7 @@ const bridgeErrorReason = Schema.Literals([
   "incompatible-exports",
 ]);
 
-export class PrimeAgentDaemonBridgeError extends Schema.TaggedErrorClass<PrimeAgentDaemonBridgeError>()(
+export class PrimeAgentDaemonBridgeError extends Schema.TaggedError<PrimeAgentDaemonBridgeError>()(
   "PrimeAgentDaemonBridgeError",
   {
     binaryPath: Schema.String,

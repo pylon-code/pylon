@@ -111,7 +111,7 @@ export function isBrowserAllowedPort(port: number): boolean {
   return !FETCH_BAD_PORTS.has(port);
 }
 
-export class DevRunnerConfigurationError extends Schema.TaggedErrorClass<DevRunnerConfigurationError>()(
+export class DevRunnerConfigurationError extends Schema.TaggedError<DevRunnerConfigurationError>()(
   "DevRunnerConfigurationError",
   {
     configKeys: Schema.Array(Schema.String),
@@ -123,7 +123,7 @@ export class DevRunnerConfigurationError extends Schema.TaggedErrorClass<DevRunn
   }
 }
 
-export class DevRunnerInvalidPortOffsetError extends Schema.TaggedErrorClass<DevRunnerInvalidPortOffsetError>()(
+export class DevRunnerInvalidPortOffsetError extends Schema.TaggedError<DevRunnerInvalidPortOffsetError>()(
   "DevRunnerInvalidPortOffsetError",
   {
     configKey: Schema.Literal("T3CODE_PORT_OFFSET"),
@@ -136,7 +136,7 @@ export class DevRunnerInvalidPortOffsetError extends Schema.TaggedErrorClass<Dev
   }
 }
 
-export class DevRunnerPortExhaustedError extends Schema.TaggedErrorClass<DevRunnerPortExhaustedError>()(
+export class DevRunnerPortExhaustedError extends Schema.TaggedError<DevRunnerPortExhaustedError>()(
   "DevRunnerPortExhaustedError",
   {
     startOffset: Schema.Number,
@@ -152,7 +152,7 @@ export class DevRunnerPortExhaustedError extends Schema.TaggedErrorClass<DevRunn
   }
 }
 
-export class DevRunnerProcessError extends Schema.TaggedErrorClass<DevRunnerProcessError>()(
+export class DevRunnerProcessError extends Schema.TaggedError<DevRunnerProcessError>()(
   "DevRunnerProcessError",
   {
     operation: Schema.Literals(["spawn", "wait-for-exit"]),
@@ -168,7 +168,7 @@ export class DevRunnerProcessError extends Schema.TaggedErrorClass<DevRunnerProc
   }
 }
 
-export class DevRunnerProcessExitError extends Schema.TaggedErrorClass<DevRunnerProcessExitError>()(
+export class DevRunnerProcessExitError extends Schema.TaggedError<DevRunnerProcessExitError>()(
   "DevRunnerProcessExitError",
   {
     mode: Schema.Literals(["dev", "dev:server", "dev:web", "dev:desktop"]),
@@ -183,7 +183,7 @@ export class DevRunnerProcessExitError extends Schema.TaggedErrorClass<DevRunner
   }
 }
 
-export class DevRunnerHostNotProxiableError extends Schema.TaggedErrorClass<DevRunnerHostNotProxiableError>()(
+export class DevRunnerHostNotProxiableError extends Schema.TaggedError<DevRunnerHostNotProxiableError>()(
   "DevRunnerHostNotProxiableError",
   {
     mode: Schema.Literals(["dev", "dev:web"]),
@@ -208,11 +208,6 @@ export const isDevRunnerError = Schema.is(DevRunnerError);
 
 const optionalStringConfig = (name: string): Config.Config<string | undefined> =>
   Config.string(name).pipe(
-    Config.option,
-    Config.map((value) => Option.getOrUndefined(value)),
-  );
-const optionalBooleanConfig = (name: string): Config.Config<boolean | undefined> =>
-  Config.boolean(name).pipe(
     Config.option,
     Config.map((value) => Option.getOrUndefined(value)),
   );
@@ -859,7 +854,12 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
   });
 }
 
-const devRunnerCli = Command.make("dev-runner", {
+/**
+ * Dev runner CLI parameters. Omitted boolean toggles resolve to `false` and are
+ * forwarded as `"0"`; ambient values are never read, so a parent dev app cannot
+ * turn on cwd auto-bootstrap or WebSocket logging in a child runner.
+ */
+export const devRunnerCliParams = {
   mode: Argument.choice("mode", DEV_RUNNER_MODES).pipe(
     Argument.withDescription("Development mode to run."),
   ),
@@ -872,17 +872,20 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   browser: Flag.boolean("browser").pipe(
     Flag.withDescription("Open a browser automatically (disabled by default for web dev)."),
+    Flag.withDefault(false),
   ),
   autoBootstrapProjectFromCwd: Flag.boolean("auto-bootstrap-project-from-cwd").pipe(
     Flag.withDescription(
-      "Auto-bootstrap toggle (equivalent to T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD).",
+      "Auto-bootstrap toggle (forwards to T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD; off by default).",
     ),
-    Flag.withFallbackConfig(optionalBooleanConfig("T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD")),
+    Flag.withDefault(false),
   ),
   logWebSocketEvents: Flag.boolean("log-websocket-events").pipe(
-    Flag.withDescription("WebSocket event logging toggle (equivalent to T3CODE_LOG_WS_EVENTS)."),
+    Flag.withDescription(
+      "WebSocket event logging toggle (forwards to T3CODE_LOG_WS_EVENTS; off by default).",
+    ),
     Flag.withAlias("log-ws-events"),
-    Flag.withFallbackConfig(optionalBooleanConfig("T3CODE_LOG_WS_EVENTS")),
+    Flag.withDefault(false),
   ),
   host: Flag.string("host").pipe(
     Flag.withDescription("Server host/interface override (forwards to T3CODE_HOST)."),
@@ -915,7 +918,9 @@ const devRunnerCli = Command.make("dev-runner", {
     Argument.withDescription("Additional Vite+ run args (pass after `--`)."),
     Argument.variadic(),
   ),
-}).pipe(
+};
+
+const devRunnerCli = Command.make("dev-runner", devRunnerCliParams).pipe(
   Command.withDescription("Run monorepo development modes with deterministic port/env wiring."),
   Command.withHandler((input) => runDevRunnerWithInput(input)),
 );

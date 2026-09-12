@@ -54,7 +54,7 @@ import {
   issueHeadlessServeAccessInfo,
 } from "./startupAccess.ts";
 
-export class ServerRuntimeStartupError extends Schema.TaggedErrorClass<ServerRuntimeStartupError>()(
+export class ServerRuntimeStartupError extends Schema.TaggedError<ServerRuntimeStartupError>()(
   "ServerRuntimeStartupError",
   {
     mode: ServerConfig.RuntimeMode,
@@ -150,7 +150,7 @@ export const makeCommandGate = Effect.gen(function* () {
   } satisfies CommandGate;
 });
 
-export const recordStartupHeartbeat = Effect.gen(function* () {
+const recordStartupHeartbeat = Effect.gen(function* () {
   const analytics = yield* AnalyticsService.AnalyticsService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
 
@@ -343,7 +343,7 @@ const ORPHANED_PROVIDER_SESSION_ERROR =
 const SERVER_UPDATE_CONTINUATION_KEY = "continueAfterServerUpdate";
 const SERVER_UPDATE_CONTINUATION_PROMPT = "Continue where you left off.";
 
-class ProviderSessionContinuationError extends Schema.TaggedErrorClass<ProviderSessionContinuationError>()(
+class ProviderSessionContinuationError extends Schema.TaggedError<ProviderSessionContinuationError>()(
   "ProviderSessionContinuationError",
   {
     threadId: ThreadId,
@@ -354,7 +354,7 @@ class ProviderSessionContinuationError extends Schema.TaggedErrorClass<ProviderS
   }
 }
 
-export class ServerUpdateThreadContinuationError extends Schema.TaggedErrorClass<ServerUpdateThreadContinuationError>()(
+export class ServerUpdateThreadContinuationError extends Schema.TaggedError<ServerUpdateThreadContinuationError>()(
   "ServerUpdateThreadContinuationError",
   {
     cause: Schema.Defect(),
@@ -471,7 +471,7 @@ const clearContinuationMarkers = (
     { concurrency: "unbounded", discard: true },
   );
 
-export const clearProviderSessionContinuationMarkers = (threadIds: ReadonlyArray<ThreadId>) =>
+const clearProviderSessionContinuationMarkers = (threadIds: ReadonlyArray<ThreadId>) =>
   Effect.gen(function* () {
     const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
     yield* clearContinuationMarkers(directory, threadIds);
@@ -894,6 +894,7 @@ export const autoPullProjects = Effect.fn("autoPullProjects")(function* (
   );
 });
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = (options?: StartupOptions) =>
   Effect.gen(function* () {
     const serverConfig = yield* ServerConfig.ServerConfig;

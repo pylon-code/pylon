@@ -128,18 +128,16 @@ export function planProjectOverrideWrites<
     return input.enabled === undefined ? [{ kind: "project", member, autoPull: false }] : [];
   });
   const environmentIds = [...new Set(supported.map((member) => member.environmentId))];
-  const settingsWrites = environmentIds.map(
-    (environmentId): ProjectOverrideWrite<Member> => ({
-      kind: "settings",
-      environmentId,
-      patch: {
-        [input.key]: Object.fromEntries(
-          supported
-            .filter((member) => member.environmentId === environmentId)
-            .map((member) => [member.id, input.enabled ?? null]),
-        ),
-      },
-    }),
-  );
+  const settingsWrites = environmentIds.map((environmentId): ProjectOverrideWrite<Member> => ({
+    kind: "settings",
+    environmentId,
+    patch: {
+      [input.key]: Object.fromEntries(
+        supported
+          .filter((member) => member.environmentId === environmentId)
+          .map((member) => [member.id, input.enabled ?? null]),
+      ),
+    },
+  }));
   return [...projectWrites, ...settingsWrites];
 }

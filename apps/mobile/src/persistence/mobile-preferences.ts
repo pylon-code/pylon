@@ -47,7 +47,7 @@ export interface Preferences {
   readonly threadListSnoozedShelfExpanded?: boolean;
 }
 
-export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePreferencesLoadError>()(
+export class MobilePreferencesLoadError extends Schema.TaggedError<MobilePreferencesLoadError>()(
   "MobilePreferencesLoadError",
   { cause: Schema.Defect() },
 ) {
@@ -56,7 +56,7 @@ export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePr
   }
 }
 
-export class MobilePreferencesSaveError extends Schema.TaggedErrorClass<MobilePreferencesSaveError>()(
+export class MobilePreferencesSaveError extends Schema.TaggedError<MobilePreferencesSaveError>()(
   "MobilePreferencesSaveError",
   { cause: Schema.Defect() },
 ) {
