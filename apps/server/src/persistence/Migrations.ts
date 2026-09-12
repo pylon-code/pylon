@@ -82,7 +82,6 @@ import Migration0060 from "./Migrations/060_ProjectionThreadCompactionQueue.ts";
  * returns migrations sorted by ID.
  */
 const migrationEntries = [
-  [60, "ProjectionThreadCompactionQueue", Migration0060],
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
   [3, "CheckpointDiffBlobs", Migration0003],
@@ -173,6 +172,7 @@ const migrationEntries = [
   // connections and its lineage runs through 57.
   [58, "ProjectionProjectsAutoPull", Migration0058],
   [59, "ProjectionThreadPullRequests", Migration0059],
+  [60, "ProjectionThreadCompactionQueue", Migration0060],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
