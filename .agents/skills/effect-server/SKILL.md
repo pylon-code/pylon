@@ -1,6 +1,6 @@
 ---
 name: effect-server
-description: Implement and review Pylon server changes with the repository's Effect and event-sourced architecture. Use when changing `apps/server`, Effect services or layers, orchestration commands and events, deciders, projectors, reactors, receipts, provider adapters, server-side contracts, persistence, or focused backend tests.
+description: Implement or review Pylon Effect services and event-sourced server behavior.
 ---
 
 # Effect Server Work
@@ -9,7 +9,7 @@ Keep orchestration pure, put provider-specific complexity at adapter boundaries,
 
 ## Load the local conventions first
 
-Before writing Effect code, read `.repos/effect-smol/LLMS.md` completely. It documents the repository's vendored Effect APIs and takes precedence over recalled upstream patterns.
+For the Effect APIs being changed, consult the relevant sections of `.repos/effect-smol/LLMS.md`. It documents the repository's vendored Effect APIs and takes precedence over recalled upstream patterns.
 
 For orchestration work, also read the relevant sections of `docs/internals/glossary.md` and inspect the neighboring implementation and tests. Never edit or import from `.repos/`; it is a read-only reference.
 

@@ -1,6 +1,6 @@
 ---
 name: pylon-branding
-description: Maintain Pylon's visual identity across source vectors, generated app icons and favicons, in-product marks, wordmarks, and product-name copy. Use when changing Pylon logos, icons, branding, colors, typography, or visible naming; when validating branding across web, desktop, mobile, and marketing; or when an upstream merge may have restored T3 assets or copy.
+description: Change or audit Pylon brand assets, product naming, and generated app icons.
 ---
 
 # Pylon Branding
@@ -9,7 +9,7 @@ Keep brand changes source-driven and consistent across every affected surface. S
 
 ## Establish the scope
 
-- Read `AGENTS.md`, especially **Compatibility names** and **Hit every surface**.
+- Read `.agents/references/product-identity.md` for exact compatibility and product identifiers.
 - Treat `.t3`, `T3CODE_HOME`, `t3.json`, `npx t3`, `@t3tools/*`, `com.t3tools.*`, URL schemes, and legacy source filenames as compatibility identifiers. Do not rename them during visual-brand work unless the developer explicitly requests a coordinated migration.
 - Keep typography, color, naming, and logo changes as separate decisions when the request limits scope. Do not change fonts merely because a logo or wordmark changes.
 - Inspect the current diff before editing. Preserve unrelated upstream or user changes.
