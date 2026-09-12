@@ -1232,6 +1232,7 @@ describe("ProviderCommandReactor", () => {
       const started = yield* Deferred.make<void>();
       const releaseStart = yield* Deferred.make<void>();
       const lateSessionStopped = yield* Deferred.make<void>();
+      let releasedLateStart = false;
       const threadId = ThreadId.make("thread-1");
       const harness = yield* Effect.promise(() =>
         createHarness({
@@ -1241,7 +1242,9 @@ describe("ProviderCommandReactor", () => {
               Effect.as(session),
             ),
           stopSessionEffect: () =>
-            Deferred.succeed(lateSessionStopped, undefined).pipe(Effect.asVoid),
+            releasedLateStart
+              ? Deferred.succeed(lateSessionStopped, undefined).pipe(Effect.asVoid)
+              : Effect.void,
           beforeReactorStart: Effect.gen(function* () {
             const engine = yield* OrchestrationEngineService;
             yield* engine.dispatch({
@@ -1289,12 +1292,20 @@ describe("ProviderCommandReactor", () => {
         createdAt: "2026-01-01T00:00:02.000Z",
       });
       yield* Effect.promise(() => harness.drain());
+      releasedLateStart = true;
       yield* Deferred.succeed(releaseStart, undefined);
       yield* Deferred.await(lateSessionStopped);
       yield* Effect.promise(() => harness.drain());
       expect((yield* Effect.promise(() => harness.readModel())).threads[0]?.session).toMatchObject({
         status: "stopped",
       });
+      expect(harness.stopSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedSessionIncarnationId: "session-1",
+          expectedAdmissionRequestId: "slow-compact",
+          invalidateStartReservation: false,
+        }),
+      );
       expect(harness.compactThread).not.toHaveBeenCalled();
       expect(harness.sendTurn).not.toHaveBeenCalled();
     }),
