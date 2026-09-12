@@ -6870,7 +6870,7 @@ describe("agent browser access", () => {
               runtimeMode: "full-access",
             });
           }).pipe(Effect.provide(layer));
-          assert.deepEqual(issued, expected.length > 0 ? [[...expected]] : []);
+          assert.deepEqual(issued, [[...expected, "pull-requests"].sort()]);
         }
       }).pipe(Effect.provide(NodeServices.layer)),
   );
