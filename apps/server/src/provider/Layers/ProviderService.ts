@@ -4131,6 +4131,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const selected = sessions.find((session) => session.threadId === threadId);
       if (
         selected === undefined ||
+        selected.resumeCursor === undefined ||
+        selected.resumeCursor === null ||
         selected.sessionIncarnationId !== incarnation.id ||
         selected.provider !== adapter.provider ||
         currentSessionIncarnations.get(threadId) !== incarnation
@@ -4176,15 +4178,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         routed.adapter,
         "ProviderService.captureConversationAnchor",
       );
-      if (input.binding.kind === "source") {
-        yield* persistExactConversationSelection(
-          input.threadId,
-          routed.adapter,
-          routed.instanceId,
-          incarnation,
-          "ProviderService.captureConversationAnchor",
-        );
-      }
+      yield* persistExactConversationSelection(
+        input.threadId,
+        routed.adapter,
+        routed.instanceId,
+        incarnation,
+        "ProviderService.captureConversationAnchor",
+      );
       return anchor;
     });
 

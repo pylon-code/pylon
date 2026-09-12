@@ -7187,7 +7187,14 @@ describe("agent browser access", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  for (const scenario of ["persist", "retry-write", "inspect-retry", "replaced"] as const) {
+  for (const scenario of [
+    "persist",
+    "retry-write",
+    "inspect-retry",
+    "replaced",
+    "missing-cursor",
+    "null-cursor",
+  ] as const) {
     it.effect(`persists exact fork selection before acknowledging apply: ${scenario}`, () =>
       Effect.gen(function* () {
         const threadId = asThreadId(`thread-exact-fork-${scenario}`);
@@ -7207,7 +7214,12 @@ describe("agent browser access", () => {
                 applications += 1;
                 codex.updateSession(threadId, (session) => ({
                   ...session,
-                  resumeCursor: targetCursor,
+                  resumeCursor:
+                    scenario === "missing-cursor"
+                      ? undefined
+                      : scenario === "null-cursor"
+                        ? null
+                        : targetCursor,
                   ...(scenario === "replaced"
                     ? { sessionIncarnationId: RuntimeSessionId.make("replacement-incarnation") }
                     : {}),
@@ -7256,9 +7268,17 @@ describe("agent browser access", () => {
                 })
           ).pipe(Effect.exit);
           const persisted = Option.getOrThrow(yield* directory.getBinding(threadId));
-          if (scenario === "replaced") {
+          if (
+            scenario === "replaced" ||
+            scenario === "missing-cursor" ||
+            scenario === "null-cursor"
+          ) {
             assert.isTrue(Exit.isFailure(applied));
             assert.deepEqual(persisted.resumeCursor, sourceCursor);
+            const inspected = yield* provider.inspectConversationAnchor!(threadId).pipe(
+              Effect.exit,
+            );
+            assert.isTrue(Exit.isFailure(inspected));
           } else {
             assert.isTrue(Exit.isSuccess(applied));
             assert.deepEqual(persisted.resumeCursor, targetCursor);
