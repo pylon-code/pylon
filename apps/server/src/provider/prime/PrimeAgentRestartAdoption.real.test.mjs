@@ -20,7 +20,10 @@ import * as Stream from "effect/Stream";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import { describe, expect, it } from "vite-plus/test";
 
-import { makePrimeArtifactGraduationHarness } from "./PrimeAgentArtifactGraduation.test-fixture.ts";
+import {
+  makePrimeArtifactGraduationHarness,
+  primeGraduationEnvironment,
+} from "./PrimeAgentArtifactGraduation.test-fixture.ts";
 
 const artifactDirectory = NodeProcess.env.PYLON_PRIME_ARTIFACT_DIR?.trim();
 const previewTag = NodeProcess.env.PYLON_PRIME_PREVIEW_TAG?.trim();
@@ -298,36 +301,11 @@ const startFixtureBackend = async () => {
   };
 };
 
-const sanitizeServerEnvironment = (home) => {
-  const environment = { ...NodeProcess.env };
-  for (const name of Object.keys(environment)) {
-    if (
-      name.startsWith("PRIME_AGENT_INTERNAL_") ||
-      name.startsWith("RLM_") ||
-      name === "PRIME_AGENT_CODING_AGENT_DIR" ||
-      name === "PI_CODING_AGENT_DIR" ||
-      name === "PYLON_PRIME_ARTIFACT_DIR" ||
-      name === "PYLON_PRIME_PREVIEW_TAG" ||
-      name === "PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN" ||
-      name === "FORCE_COLOR" ||
-      name === "VITEST" ||
-      name.startsWith("VITEST_") ||
-      name === "JEST_WORKER_ID" ||
-      name === "NODE_CHANNEL_FD" ||
-      name === "NODE_UNIQUE_ID"
-    ) {
-      delete environment[name];
-    }
-  }
-  return {
-    ...environment,
-    HOME: home,
-    SHELL: "/bin/sh",
-    NO_COLOR: "1",
-    T3CODE_LOG_LEVEL: "Debug",
-    T3CODE_TRACE_TIMING_ENABLED: "false",
-  };
-};
+const sanitizeServerEnvironment = (home) => ({
+  ...primeGraduationEnvironment(home, NodeProcess.env),
+  T3CODE_LOG_LEVEL: "Debug",
+  T3CODE_TRACE_TIMING_ENABLED: "false",
+});
 
 const createPrimeFacade = async (stateDir) => {
   const harness = await makePrimeArtifactGraduationHarness({
@@ -351,6 +329,7 @@ const createPrimeFacade = async (stateDir) => {
   const installed = status.availableBuilds.find((build) => build.buildId === receipt.buildId);
   if (installed === undefined) throw new Error("verified Prime graduation build was not installed");
   return {
+    version: harness.artifacts[0].publication.packageVersion,
     facadeRoot: installed.packageRoot,
     executable: installed.binaryPath,
     sdkEntry: NodePath.join(installed.packageRoot, "dist", "index.js"),
@@ -761,11 +740,16 @@ const listSessionJsonlFiles = async (stateDir) => {
     for (const entry of await NodeFSP.readdir(directory, { withFileTypes: true })) {
       const path = NodePath.join(directory, entry.name);
       if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile() && entry.name.endsWith(".jsonl")) found.push(path);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        // Session artifacts also contain JSONL ledgers; only a session header
+        // identifies a transcript whose identity must survive restart.
+        const firstLine = (await NodeFSP.readFile(path, "utf8")).split("\n")[0];
+        if (firstLine && JSON.parse(firstLine).type === "session") found.push(path);
+      }
     }
   };
   await visit(root);
-  return found;
+  return found.sort();
 };
 
 const runRestartedTurn = ({ wsUrl, threadId, fixture, onRecoveredActivity }) =>
@@ -884,6 +868,14 @@ describe.skipIf(!enabled)(
             NodeFSP.mkdir(agentHome, { recursive: true, mode: 0o700 }),
             NodeFSP.mkdir(projectDir, { recursive: true, mode: 0o700 }),
           ]);
+          // The server hydrates PATH from a login shell. Keep the selected Node runtime
+          // ahead of machine-wide version-manager shims when HOME is disposable.
+          const nodeDirectory = NodePath.dirname(NodeProcess.execPath).replaceAll("'", "'\"'\"'");
+          await NodeFSP.writeFile(
+            NodePath.join(home, ".profile"),
+            `export PATH='${nodeDirectory}':"$PATH"\n`,
+            { mode: 0o600 },
+          );
           await runCaptured(
             "git",
             ["init", "--initial-branch=main", projectDir],
@@ -948,6 +940,17 @@ describe.skipIf(!enabled)(
             "server A command readiness",
           );
 
+          const refreshed = await runRpc(
+            wsA,
+            (client) =>
+              client[WS_METHODS.serverRefreshProviders]({ instanceId: providerInstanceId }),
+            "native provider readiness",
+          );
+
+          expect(
+            refreshed.providers.find((provider) => provider.instanceId === providerInstanceId)
+              ?.version,
+          ).toBe(primeFacade.version);
           const projectId = `project-${NodeCrypto.randomUUID()}`;
           const threadId = `thread-${NodeCrypto.randomUUID()}`;
           const createdAt = new Date().toISOString();
@@ -1053,6 +1056,10 @@ describe.skipIf(!enabled)(
           });
           const sessionFilesBefore = await listSessionJsonlFiles(stateDir);
           expect(sessionFilesBefore).toHaveLength(1);
+          const sessionHeader = JSON.parse(
+            (await NodeFSP.readFile(sessionFilesBefore[0], "utf8")).split("\n")[0],
+          );
+          expect(sessionHeader).toMatchObject({ type: "session", id: ledgerA.native_session_id });
           expect(await NodeFSP.lstat(daemonSocket)).toMatchObject({});
           await waitForDurableActiveRuntime(
             databasePath,

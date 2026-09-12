@@ -7601,6 +7601,183 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect("reclaims streaming transport reconnect MCP only after authoritative quiescence", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let idle = false;
+        let replacements = 0;
+        let releaseBarrier!: () => void;
+        let barrierStarted!: () => void;
+        const started = new Promise<void>((resolve) => {
+          barrierStarted = resolve;
+        });
+        const barrier = new Promise<void>((resolve) => {
+          releaseBarrier = () => {
+            idle = true;
+            resolve();
+          };
+        });
+        const managed = {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        };
+        const test = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(5),
+            children: [],
+            promptLifecycles: { records: [], expired: [] },
+          },
+          waitForHeadlessCompletionImpl: () => {
+            barrierStarted();
+            return barrier;
+          },
+          replaceMcpImpl: () => {
+            replacements += 1;
+            return replacements === 1 || idle
+              ? Promise.resolve(undefined)
+              : Promise.reject(
+                  new Error("Cannot replace ACP MCP servers while the agent is running"),
+                );
+          },
+        });
+        const runtime = yield* test.make(
+          undefined,
+          [managed.path],
+          undefined,
+          undefined,
+          {
+            ownerId: "pylon:streaming-reconnect",
+            server: {
+              name: "t3-code",
+              type: "http",
+              url: "http://127.0.0.1:4321/mcp/streaming-reconnect",
+              headers: { Authorization: "Bearer scoped-secret" },
+            },
+          },
+          managed,
+        );
+        expect((yield* collectEvents(runtime, 1))[0]?._tag).toBe("SessionResynced");
+        const token = "streaming-reconnect:1";
+        yield* runtime.prompt({ text: "continue one owned turn", rlmQuiescenceToken: token });
+        const recovering = yield* collectEvents(runtime, 2).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(6),
+              state: { ...snapshot(6).state, isStreaming: true },
+              children: [],
+              promptLifecycles: { records: [], expired: [] },
+            },
+          }),
+        );
+        expect((yield* Fiber.join(recovering)).map((event) => event._tag)).toEqual([
+          "ConnectionStatus",
+          "SessionResynced",
+        ]);
+        expect(replacements).toBe(1);
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Effect.promise(() => test.emit({ type: "connection_status", status: "connected" }));
+        expect((yield* collectEvents(runtime, 1))[0]).toMatchObject({
+          _tag: "ConnectionStatus",
+          status: "connected",
+        });
+        expect(yield* runtime.followUp({ text: "wait for MCP ownership" })).toBe("recovering");
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "followUp"),
+        ).toHaveLength(0);
+        const waiting = yield* runtime
+          .waitForRlmQuiescence(token, activeSignal())
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => started);
+        expect(replacements).toBe(1);
+        releaseBarrier();
+        yield* Fiber.join(waiting);
+        expect(replacements).toBe(2);
+        expect((yield* collectEvents(runtime, 1))[0]).toMatchObject({
+          _tag: "RlmQuiesced",
+          token,
+          connectionGeneration: 1,
+        });
+      }),
+    ),
+  );
+
+  it.effect.each(["native identity", "active identity", "quiescence support"] as const)(
+    "rejects streaming transport recovery with missing %s proof",
+    (missing) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let replacements = 0;
+          const test = fixture({
+            correlatedPromptLifecycleCapability: true,
+            omitRlmQuiescence: missing === "quiescence support",
+            rawSnapshot: {
+              ...snapshot(5),
+              children: [],
+              promptLifecycles: { records: [], expired: [] },
+            },
+            replaceMcpImpl: () => {
+              replacements += 1;
+              return replacements === 1
+                ? Promise.resolve(undefined)
+                : Promise.reject(
+                    new Error("Cannot replace ACP MCP servers while the agent is running"),
+                  );
+            },
+          });
+          const runtime = yield* test.make(undefined, undefined, undefined, undefined, {
+            ownerId: "pylon:unproved-streaming-reconnect",
+            server: {
+              name: "t3-code",
+              type: "http",
+              url: "http://127.0.0.1:4321/mcp/unproved-streaming-reconnect",
+              headers: { Authorization: "Bearer scoped-secret" },
+            },
+          });
+          expect((yield* collectEvents(runtime, 1))[0]?._tag).toBe("SessionResynced");
+          const events = yield* collectEvents(runtime, 2).pipe(
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Effect.promise(() =>
+            test.emit({ type: "connection_status", status: "reconnecting" }),
+          );
+          yield* Effect.promise(() =>
+            test.emit({
+              type: "session_resynced",
+              snapshot: {
+                ...snapshot(6),
+                state: {
+                  ...snapshot(6).state,
+                  isStreaming: true,
+                  ...(missing === "native identity"
+                    ? { sessionId: "different-native-session" }
+                    : {}),
+                  ...(missing === "active identity"
+                    ? { activeSessionId: "different-active-session" }
+                    : {}),
+                },
+                children: [],
+                promptLifecycles: { records: [], expired: [] },
+              },
+            }),
+          );
+          expect((yield* Fiber.join(events)).map((event) => event._tag)).toEqual([
+            "ConnectionStatus",
+            "SessionClosed",
+          ]);
+          expect(runtime.correlatedPromptLifecycleAdmissionBlocked).toBe(true);
+          expect(runtime.resolveReconnectSnapshot(1, true)).toBe(false);
+        }),
+      ),
+  );
+
   it.effect("reclaims scoped MCP ownership after same-worker quiescence", () =>
     Effect.scoped(
       Effect.gen(function* () {
