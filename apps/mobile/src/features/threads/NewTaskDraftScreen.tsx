@@ -91,7 +91,15 @@ import {
   waitForComposerDraftsLoaded,
 } from "../../state/use-composer-drafts";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
-import { resolveSelectableModelSelection } from "../../lib/modelOptions";
+import {
+  canSendToModelSelection,
+  modelSelectionDisplayName,
+  resolveSelectableModelSelection,
+} from "../../lib/modelOptions";
+import {
+  getProviderModelAdmissionAvailability,
+  shouldRefreshProviderModelCatalog,
+} from "../../lib/providerModelSelection";
 import { deriveThreadTitleFromPrompt } from "../../lib/projectThreadStartTurn";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
@@ -183,11 +191,19 @@ export function NewTaskDraftScreen(props: {
     connectedEnvironments.find(
       (environment) => environment.environmentId === selectedProject.environmentId,
     )?.connectionState === "connected";
-  const providerAdmissionReason = getProviderAdmissionUnavailableReason({
-    provider: flow.selectedProviderStatus,
-    instanceId: flow.selectedModel ? String(flow.selectedModel.instanceId) : undefined,
-    providerSnapshotKnown: selectedEnvironmentServerConfig != null,
-  });
+  const providerAdmissionReason =
+    flow.selectedModel &&
+    !shouldRefreshProviderModelCatalog(flow.selectedProviderStatus, flow.selectedModel)
+      ? getProviderModelAdmissionAvailability({
+          provider: flow.selectedProviderStatus,
+          selection: flow.selectedModel,
+          providerSnapshotKnown: selectedEnvironmentServerConfig != null,
+        }).reason
+      : getProviderAdmissionUnavailableReason({
+          provider: flow.selectedProviderStatus,
+          instanceId: flow.selectedModel ? String(flow.selectedModel.instanceId) : undefined,
+          providerSnapshotKnown: selectedEnvironmentServerConfig != null,
+        });
   const providerUnavailable =
     providerAdmissionReason === null
       ? null
@@ -993,6 +1009,7 @@ export function NewTaskDraftScreen(props: {
     if (
       attachmentBlockReason !== null ||
       !modelSelection ||
+      !canSendToModelSelection(selectedEnvironmentServerConfig, modelSelection) ||
       initialMessageText.length === 0 ||
       flow.submitting ||
       (workspaceMode === "worktree" && !selectedBranchName)
@@ -1440,11 +1457,19 @@ export function NewTaskDraftScreen(props: {
                         emphasized
                         iconNode={
                           <ProviderIcon
-                            provider={flow.selectedModelOption?.providerDriver}
+                            provider={
+                              flow.selectedModelOption?.providerDriver ??
+                              flow.selectedProviderStatus?.driver
+                            }
                             size={16}
                           />
                         }
-                        label={flow.selectedModelOption?.label ?? "Choose model"}
+                        label={
+                          flow.selectedModelOption?.label ??
+                          (flow.selectedModel
+                            ? modelSelectionDisplayName(flow.selectedModel)
+                            : "Choose model")
+                        }
                         maxWidth="100%"
                         onPress={settingsSheetPresentation.open}
                       />

@@ -11,6 +11,12 @@ import type {
   ServerProvider,
 } from "@t3tools/contracts";
 import {
+  getProviderModelAdmissionAvailability,
+  resolveProviderCatalogModelSelection,
+  shouldRefreshProviderModelCatalog,
+} from "./providerModelSelection";
+import {
+  ANTIGRAVITY_DEFAULT_MODEL,
   getServerProviderSupportedRuntimeModes,
   resolveServerProviderRuntimeMode,
 } from "@t3tools/contracts";
@@ -30,6 +36,8 @@ export type ModelOption = {
   readonly requiresNewThreadForModelChange?: boolean;
   readonly isDefault: boolean;
   readonly isLegacy: boolean;
+  readonly isUnavailable?: boolean;
+  readonly unavailableReason?: string;
   readonly capabilities: ModelCapabilities | null;
   readonly selection: ModelSelection;
 };
@@ -77,8 +85,8 @@ function normalizeSelectionOptions(
 /**
  * A stored model selection is only usable when its provider instance is
  * currently enabled, installed, authenticated, and available on the server.
- * Returns the selection unchanged when usable, otherwise `null`. Callers can
- * either fall through or hold an unavailable choice for explicit remediation.
+ * Antigravity choices retain their account and resolve against its catalog;
+ * unavailable concrete choices remain visible for explicit remediation.
  * A missing config (environment offline) cannot be
  * validated, so stored selections pass through untouched.
  */
@@ -92,6 +100,12 @@ export function resolveSelectableModelSelection(
   const provider = config.providers.find(
     (candidate) => candidate.instanceId === selection.instanceId,
   );
+  if (
+    (provider?.driver ?? config.settings?.providerInstances[selection.instanceId]?.driver) ===
+    "antigravity"
+  ) {
+    return resolveProviderCatalogModelSelection(provider, selection);
+  }
   return getProviderAdmissionAvailability({
     provider,
     instanceId: String(selection.instanceId),
@@ -118,7 +132,7 @@ export function resolveDefaultableModelSelection(
   }
   const provider = config.providers.find((candidate) => candidate.instanceId === usable.instanceId);
   const model = provider?.models.find((candidate) => candidate.slug === usable.model);
-  return model?.isLegacy === true ? null : usable;
+  return provider?.driver !== "antigravity" && model?.isLegacy === true ? null : usable;
 }
 
 export function getModelSelectionProvider(
@@ -143,10 +157,12 @@ export function canSendToModelSelection(
   selection: ModelSelection | null | undefined,
 ): boolean {
   if (!selection) return false;
+  const provider = getModelSelectionProvider(config, selection);
   return (
-    getProviderAdmissionAvailability({
-      provider: getModelSelectionProvider(config, selection),
-      instanceId: String(selection.instanceId),
+    shouldRefreshProviderModelCatalog(provider, selection) ||
+    getProviderModelAdmissionAvailability({
+      provider,
+      selection,
       providerSnapshotKnown: config !== null && config !== undefined,
     }).status !== "unavailable"
   );
@@ -222,6 +238,7 @@ export function resolveNewTaskModelSelection(input: {
   readonly stickySelection: ModelSelection | null;
   readonly modelOptions: ReadonlyArray<ModelOption>;
   readonly unavailablePreferredProvider?: ServerProvider | null;
+  readonly providers?: ReadonlyArray<ServerProvider>;
 }): ModelSelection | null {
   if (
     input.unavailablePreferredProvider &&
@@ -237,10 +254,30 @@ export function resolveNewTaskModelSelection(input: {
     input.draftSelection ??
     input.projectDefaultSelection ??
     input.stickySelection ??
-    input.modelOptions.find((option) => option.isDefault)?.selection ??
-    input.modelOptions[0]?.selection ??
-    null
+    input.modelOptions.find((option) => option.isDefault && !option.isUnavailable)?.selection ??
+    input.modelOptions.find((option) => !option.isUnavailable)?.selection ??
+    initialAntigravitySelection(input.providers)
   );
+}
+
+function initialAntigravitySelection(
+  providers: ReadonlyArray<ServerProvider> | undefined,
+): ModelSelection | null {
+  const provider = providers?.find(
+    (candidate) =>
+      candidate.driver === "antigravity" &&
+      getProviderAdmissionAvailability({ provider: candidate }).status === "available",
+  );
+  return provider
+    ? resolveProviderCatalogModelSelection(provider, {
+        instanceId: provider.instanceId,
+        model: ANTIGRAVITY_DEFAULT_MODEL,
+      })
+    : null;
+}
+
+export function modelSelectionDisplayName(selection: ModelSelection): string {
+  return selection.model === ANTIGRAVITY_DEFAULT_MODEL ? "Default model" : selection.model;
 }
 
 export function buildModelOptions(
@@ -287,17 +324,27 @@ export function buildModelOptions(
   }
 
   if (fallbackModelSelection) {
+    fallbackModelSelection = resolveProviderCatalogModelSelection(
+      getModelSelectionProvider(config, fallbackModelSelection),
+      fallbackModelSelection,
+    );
+    if (
+      getModelSelectionProvider(config, fallbackModelSelection)?.driver === "antigravity" &&
+      fallbackModelSelection.model === ANTIGRAVITY_DEFAULT_MODEL
+    )
+      return [...options.values()];
     const key = `${fallbackModelSelection.instanceId}:${fallbackModelSelection.model}`;
     const existing = options.get(key);
     if (existing) {
       options.set(key, {
         ...existing,
-        selection: normalizeSelectionOptions(fallbackModelSelection, existing.capabilities),
+        selection:
+          existing.providerDriver === "antigravity"
+            ? fallbackModelSelection
+            : normalizeSelectionOptions(fallbackModelSelection, existing.capabilities),
       });
     } else {
-      const provider = config?.providers.find(
-        (candidate) => candidate.instanceId === fallbackModelSelection.instanceId,
-      );
+      const provider = getModelSelectionProvider(config, fallbackModelSelection) ?? undefined;
       if (
         provider !== undefined &&
         getProviderAdmissionAvailability({
@@ -309,6 +356,11 @@ export function buildModelOptions(
         const providerLabel = provider
           ? providerDisplayLabel(provider)
           : fallbackModelSelection.instanceId;
+        const availability = getProviderModelAdmissionAvailability({
+          provider,
+          selection: fallbackModelSelection,
+          providerSnapshotKnown: true,
+        });
         options.set(key, {
           key,
           label: fallbackModelSelection.model,
@@ -321,6 +373,9 @@ export function buildModelOptions(
           isDefault: false,
           isLegacy: false,
           capabilities: null,
+          ...(availability.status === "unavailable"
+            ? { isUnavailable: true, unavailableReason: availability.reason }
+            : {}),
           selection: fallbackModelSelection,
         });
       }

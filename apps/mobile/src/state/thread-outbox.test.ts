@@ -61,6 +61,7 @@ import {
   resolveThreadOutboxDispatchStep,
   resolveThreadOutboxFailureAction,
   resolveQueuedThreadAdmission,
+  resolveQueuedCreationAdmission,
   retryQueuedThreadMessage,
   resolveQueuedThreadSettings,
   shouldRetryThreadOutboxDelivery,
@@ -117,6 +118,99 @@ function provider(input: {
 }
 
 describe("thread outbox", () => {
+  it("resolves a queued account marker after catalog discovery without changing its context or options", () => {
+    const account = provider({ instanceId: "antigravity_work", driver: "antigravity" });
+    const selected = {
+      instanceId: account.instanceId,
+      model: "antigravity-default",
+      options: [{ id: "thinking", value: "high" }],
+    };
+    const message = {
+      ...queuedMessage({ messageId: "catalog-message", createdAt: "2026-09-12T10:00:00.000Z" }),
+      modelSelection: selected,
+      context: { version: 1 as const, records: [] },
+    };
+    const thread = {
+      modelSelection: selected,
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+      session: { providerInstanceId: account.instanceId },
+    };
+    expect(resolveQueuedThreadAdmission({ message, thread, providers: [account] })).toMatchObject({
+      action: "hold",
+      hold: { kind: "provider-unavailable", queuedInstanceId: account.instanceId },
+    });
+    expect(resolveQueuedCreationAdmission({ message, providers: [account] }).action).toBe("hold");
+    const discovered = {
+      ...account,
+      models: [
+        {
+          slug: "work-model",
+          name: "Work Model",
+          isCustom: false,
+          capabilities: null,
+          isDefault: true,
+        },
+      ],
+    };
+    expect(
+      resolveQueuedThreadAdmission({ message, thread, providers: [discovered] }),
+    ).toMatchObject({
+      action: "send",
+      settings: { modelSelection: { ...selected, model: "work-model" } },
+    });
+    expect(resolveQueuedCreationAdmission({ message, providers: [discovered] })).toEqual({
+      action: "send",
+    });
+    expect(message.modelSelection).toBe(selected);
+    expect(message.context).toEqual({ version: 1, records: [] });
+    expect(
+      resolveQueuedThreadAdmission({
+        message,
+        thread,
+        providers: [{ ...discovered, instanceId: ProviderInstanceId.make("antigravity_personal") }],
+      }).action,
+    ).toBe("hold");
+  });
+
+  it("retains restart sends but holds catalog removal on the next live admission read", () => {
+    const account = provider({ instanceId: "antigravity_work", driver: "antigravity" });
+    const selected = { instanceId: account.instanceId, model: "saved-model" };
+    const message = {
+      ...queuedMessage({ messageId: "restart-message", createdAt: "2026-09-12T10:00:00.000Z" }),
+      modelSelection: selected,
+    };
+    const thread = {
+      modelSelection: selected,
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+    };
+    const restarted = { ...account, auth: { status: "unknown" as const } };
+    expect(resolveQueuedThreadAdmission({ message, thread, providers: [restarted] }).action).toBe(
+      "send",
+    );
+    expect(resolveQueuedCreationAdmission({ message, providers: [restarted] }).action).toBe("send");
+    const removed = {
+      ...account,
+      models: [{ slug: "replacement", name: "Replacement", isCustom: false, capabilities: null }],
+    };
+    const admission = resolveQueuedThreadAdmission({ message, thread, providers: [removed] });
+    expect(admission).toMatchObject({
+      action: "hold",
+      hold: {
+        kind: "provider-unavailable",
+        reason: expect.stringContaining("no longer available"),
+      },
+    });
+    expect(resolveQueuedCreationAdmission({ message, providers: [removed] }).action).toBe("hold");
+    if (admission.action !== "hold") throw new Error("expected catalog hold");
+    expect(
+      decodeQueuedThreadMessage(
+        encodeQueuedThreadMessage({ ...message, deliveryHold: admission.hold }),
+      ),
+    ).toMatchObject({ modelSelection: selected, deliveryHold: admission.hold });
+  });
+
   it("retains structured context through a persisted offline queue round trip", () => {
     const message: QueuedThreadMessage = {
       ...queuedMessage({ messageId: "context-message", createdAt: "2026-09-06T12:00:00.000Z" }),

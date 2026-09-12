@@ -32,6 +32,41 @@ function provider(instanceId: string, continuationGroupKey: string): ServerProvi
 }
 
 describe("resolveExistingThreadComposerSettings", () => {
+  it("resolves a bound account default and preserves its options without borrowing another catalog", () => {
+    const account = {
+      ...provider("antigravity_work", "antigravity:work"),
+      driver: ProviderDriverKind.make("antigravity"),
+      models: [
+        {
+          slug: "work-model",
+          name: "Work Model",
+          isCustom: false,
+          capabilities: null,
+          isDefault: true,
+        },
+      ],
+    };
+    const modelSelection = {
+      ...selection("antigravity_work", "antigravity-default"),
+      options: [{ id: "thinking", value: "high" }],
+    };
+    const input = {
+      thread: { ...primeThread, modelSelection },
+      sessionProviderInstanceId: account.instanceId,
+      providers: [account],
+      draft: {},
+    };
+    expect(resolveExistingThreadComposerSettings(input)).toMatchObject({
+      modelSelection: { ...modelSelection, model: "work-model" },
+      rejectedDraftProviderSelection: false,
+    });
+    expect(
+      resolveExistingThreadComposerSettings({
+        ...input,
+        providers: [{ ...account, instanceId: ProviderInstanceId.make("antigravity_personal") }],
+      }),
+    ).toMatchObject({ modelSelection });
+  });
   it("rejects a device-local Codex draft on a Prime-bound session", () => {
     expect(
       resolveExistingThreadComposerSettings({

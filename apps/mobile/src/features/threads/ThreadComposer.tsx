@@ -138,6 +138,7 @@ import {
   buildModelOptions,
   type ModelOption,
   groupByProvider,
+  modelSelectionDisplayName,
   resolveModelSelectionRuntimeMode,
   showModelSelectionInteractionModeToggle,
 } from "../../lib/modelOptions";
@@ -1954,9 +1955,17 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                         accessibilityLabel="Model and reasoning settings"
                         emphasized
                         iconNode={
-                          <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
+                          <ProviderIcon
+                            provider={
+                              currentModelOption?.providerDriver ?? selectedProviderStatus?.driver
+                            }
+                            size={16}
+                          />
                         }
-                        label={currentModelOption?.label ?? currentModelSelection.model}
+                        label={
+                          currentModelOption?.label ??
+                          modelSelectionDisplayName(currentModelSelection)
+                        }
                         maxWidth="100%"
                         disabled={props.sessionInputBlocked}
                         accessibilityHint={

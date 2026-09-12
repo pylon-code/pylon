@@ -1,4 +1,5 @@
 import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
+import { resolveProviderCatalogModelSelection } from "../lib/providerModelSelection";
 import type {
   ModelSelection,
   ProviderInteractionMode,
@@ -63,7 +64,13 @@ export function resolveExistingThreadComposerSettings(input: {
           : null;
 
   return {
-    modelSelection,
+    modelSelection:
+      modelSelection === null
+        ? null
+        : resolveProviderCatalogModelSelection(
+            input.providers?.find((provider) => provider.instanceId === modelSelection.instanceId),
+            modelSelection,
+          ),
     runtimeMode:
       input.draft?.runtimeMode !== undefined ? input.draft.runtimeMode : input.thread.runtimeMode,
     interactionMode:

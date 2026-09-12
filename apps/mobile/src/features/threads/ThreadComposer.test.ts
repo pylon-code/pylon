@@ -47,6 +47,47 @@ function provider(input: {
 }
 
 describe("ThreadComposer provider authority", () => {
+  it("resolves Antigravity within its account and permits only bounded discovery for an empty catalog", () => {
+    const account = provider({ instanceId: "antigravity_work", driver: "antigravity" });
+    const modelSelection = { instanceId: account.instanceId, model: "antigravity-default" };
+    expect(
+      resolveThreadComposerAuthority({ serverConfig: { providers: [account] }, modelSelection }),
+    ).toMatchObject({ modelSelection, providerAdmissionAvailable: true });
+    const discovered = {
+      ...account,
+      models: [
+        {
+          slug: "work-model",
+          name: "Work Model",
+          isCustom: false,
+          capabilities: null,
+          isDefault: true,
+        },
+      ],
+    };
+    expect(
+      resolveThreadComposerAuthority({ serverConfig: { providers: [discovered] }, modelSelection }),
+    ).toMatchObject({
+      modelSelection: { ...modelSelection, model: "work-model" },
+      providerAdmissionAvailable: true,
+    });
+    expect(
+      resolveThreadComposerAuthority({
+        serverConfig: { providers: [discovered] },
+        modelSelection: { ...modelSelection, model: "removed" },
+      }),
+    ).toMatchObject({
+      providerAdmissionAvailable: false,
+      providerAdmissionReason: expect.stringContaining("no longer available"),
+    });
+    expect(threadComposerShowsStopAction("running")).toBe(true);
+    expect(
+      resolveThreadComposerAuthority({
+        serverConfig: { providers: [{ ...account, auth: { status: "unauthenticated" } }] },
+        modelSelection,
+      }).providerAdmissionAvailable,
+    ).toBe(false);
+  });
   it("shows and blocks the unavailable Prime binding instead of a local Codex overlay", () => {
     const prime = provider({
       instanceId: "primeAgent",

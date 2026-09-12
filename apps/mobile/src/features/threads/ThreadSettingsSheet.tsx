@@ -489,7 +489,7 @@ function ThreadSettingsSessionProvider(
 
   const pressModel = useCallback(
     (option: ModelOption) => {
-      if (props.getModelDisabledReason?.(option)) return;
+      if (option.isUnavailable || props.getModelDisabledReason?.(option)) return;
       void Haptics.selectionAsync();
       setPendingModel((current) =>
         pendingModelAfterPress({
@@ -615,7 +615,12 @@ function ThreadSettingsModelListRow(props: {
       onPress={onPress}
       option={props.option}
       selected={session.isDisplayed(props.option)}
-      disabledReason={session.getModelDisabledReason?.(props.option)}
+      disabledReason={
+        session.getModelDisabledReason?.(props.option) ??
+        (props.option.isUnavailable
+          ? (props.option.unavailableReason ?? "This model is unavailable.")
+          : undefined)
+      }
     />
   );
 }
