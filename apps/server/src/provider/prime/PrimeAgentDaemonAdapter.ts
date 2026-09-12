@@ -2682,9 +2682,41 @@ export function makePrimeAgentDaemonAdapter(
                       lifecycle.deliveryCrossed &&
                       (primeAgentPromptLifecycleIsSame(currentLifecycle, lifecycle) ||
                         primeAgentPromptLifecycleCanAdvance(currentLifecycle, lifecycle));
+                    // A native tool can publish its durable result in a snapshot before
+                    // message_end. Admit only results for this prompt's observed calls.
+                    const recoveredToolIds = new Set<string>();
+                    const snapshotRecoversCurrentToolResults =
+                      activeTurn !== undefined &&
+                      event.connectionGeneration !== undefined &&
+                      event.correlatedProofEpoch !== undefined &&
+                      activeTurn.queuedInputCount === 0 &&
+                      currentLifecycle?.kind === "model_prompt" &&
+                      currentLifecycle.phase === "delivered" &&
+                      currentLifecycle.deliveryCrossed &&
+                      lifecycle?.deliveryCrossed === true &&
+                      (primeAgentPromptLifecycleIsSame(currentLifecycle, lifecycle) ||
+                        primeAgentPromptLifecycleCanAdvance(currentLifecycle, lifecycle)) &&
+                      missingMessages.length > 0 &&
+                      missingMessages.every((message) => {
+                        if (
+                          message.role !== "toolResult" ||
+                          activeTurn.durableToolCallNames.get(message.toolCallId) !==
+                            message.toolName ||
+                          recoveredToolIds.has(message.toolCallId) ||
+                          context.nativeTranscript.some(
+                            (observed) =>
+                              observed.role === "toolResult" &&
+                              observed.toolCallId === message.toolCallId,
+                          )
+                        )
+                          return false;
+                        recoveredToolIds.add(message.toolCallId);
+                        return true;
+                      });
                     const snapshotIsExactOrCurrentTerminal =
                       missingMessages.length === 0 ||
                       snapshotRecoversSubmittedUser ||
+                      snapshotRecoversCurrentToolResults ||
                       (missingMessages.length === 1 &&
                         missingMessages[0]?.role === "assistant" &&
                         context.nativeTranscript.at(-1)?.role === "user");
