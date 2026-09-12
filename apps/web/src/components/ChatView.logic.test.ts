@@ -1,6 +1,7 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
+  CommandId,
   EnvironmentId,
   MessageId,
   ProjectId,
@@ -1954,6 +1955,30 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         threadError: null,
       }),
     ).toBe(false);
+  });
+
+  it("acknowledges compaction reservations while the provider is starting", () => {
+    const localDispatch = createLocalDispatchSnapshot(
+      makeThread({ latestTurn: completedTurn, session: readySession }),
+    );
+    const messageId = MessageId.make("message-compact");
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch,
+        phase: "connecting",
+        latestTurn: completedTurn,
+        latestUserMessageId: messageId,
+        session: {
+          ...readySession,
+          status: "starting",
+          pendingTurnMessageId: messageId,
+          compactionQueue: { requestId: CommandId.make("compact"), phase: "running", queued: [] },
+        },
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(true);
   });
 
   it("keeps a follow-up active while its provider session is starting", () => {

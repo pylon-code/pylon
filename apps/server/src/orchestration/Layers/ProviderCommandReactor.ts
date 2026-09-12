@@ -79,6 +79,7 @@ type ProviderIntentEvent = Extract<
     type:
       | "thread.meta-updated"
       | "thread.runtime-mode-set"
+      | "thread.session-set"
       | "thread.turn-start-requested"
       | "thread.input-queue-follow-up-requested"
       | "thread.turn-interrupt-requested"
@@ -642,63 +643,64 @@ const make = Effect.gen(function* () {
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
-  const setThreadSession = (input: {
-    readonly threadId: ThreadId;
-    readonly session: OrchestrationSession;
-    readonly createdAt: string;
-  }) =>
-    serverCommandId("provider-session-set").pipe(
-      Effect.flatMap((commandId) =>
-        orchestrationEngine.dispatch({
-          type: "thread.session.set",
-          commandId,
-          threadId: input.threadId,
-          session: input.session,
-          createdAt: input.createdAt,
-        }),
-      ),
-      Effect.asVoid,
-    );
-
-  const restoreCompaction = Effect.fnUntraced(function* (threadId: ThreadId, fromRunning = false) {
-    if (stoppingThreadIds.has(threadId)) {
-      compactingThreadIds.delete(threadId);
-      return;
-    }
-    const thread = yield* resolveThreadShell(threadId);
-    if (!thread?.session) return;
-    if (
-      thread.session.status !== "starting" &&
-      thread.session.status !== "ready" &&
-      (!fromRunning || thread.session.status !== "running")
-    )
-      return;
-    const completedAt = DateTime.formatIso(yield* DateTime.now);
-    if (stoppingThreadIds.has(threadId)) {
-      compactingThreadIds.delete(threadId);
-      return;
-    }
-    yield* setThreadSession({
+  const completeCompaction = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    requestId: CommandId,
+    success: boolean,
+    detail?: string,
+    expectedSession?: ProviderSession,
+    reconcileInFlight = false,
+  ) {
+    yield* orchestrationEngine.dispatch({
+      type: "thread.compaction.complete",
+      commandId: yield* serverCommandId("compaction-complete"),
       threadId,
-      session: {
-        ...thread.session,
-        status: "ready",
-        activeTurnId: null,
-        // Pylon's decider reserves a turn admission for every `thread.turn.start`,
-        // including the `/compact` one, but compaction never becomes a provider
-        // turn that could accept it. Retire it here or the spread above carries
-        // it forward and the decider rejects every later turn on this thread.
-        pendingTurnRequestId: undefined,
-        pendingTurnMessageId: undefined,
-        pendingTurnRequestedAt: undefined,
-        pendingTurnDeadlineAt: undefined,
-        pendingTurnSessionId: undefined,
-        activeTurnRequestId: undefined,
-        lastError: null,
-        updatedAt: completedAt,
-      },
-      createdAt: completedAt,
+      requestId,
+      success,
+      ...(detail ? { detail } : {}),
+      reconcileInFlight,
+      ...(expectedSession
+        ? {
+            expectedSessionIncarnationId: expectedSession.sessionIncarnationId ?? null,
+            expectedProviderInstanceId: expectedSession.providerInstanceId ?? null,
+          }
+        : {}),
+      createdAt: DateTime.formatIso(yield* DateTime.now),
     });
+  });
+
+  const markCompactionQueueSent = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    requestId: CommandId,
+    sentRequestId: CommandId,
+  ) {
+    yield* orchestrationEngine.dispatch({
+      type: "thread.compaction.queue.sent",
+      commandId: yield* serverCommandId("compaction-queue-sent"),
+      threadId,
+      requestId,
+      sentRequestId,
+      createdAt: DateTime.formatIso(yield* DateTime.now),
+    });
+  });
+
+  const drainCompactionQueue = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const session = (yield* resolveThreadShell(threadId))?.session;
+    const queue = session?.compactionQueue;
+    if (!queue || queue.phase !== "draining" || queue.inFlightRequestId !== undefined) return;
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.compaction.queue.resume",
+        commandId: yield* serverCommandId("compaction-queue-resume"),
+        threadId,
+        requestId: queue.requestId,
+        createdAt: DateTime.formatIso(yield* DateTime.now),
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          completeCompaction(threadId, queue.requestId, false, formatFailureDetail(cause)),
+        ),
+      );
   });
 
   /**
@@ -1680,6 +1682,13 @@ const make = Effect.gen(function* () {
 
     if ((yield* Clock.currentTimeMillis) >= admissionDeadlineMs) {
       yield* failAdmission(PROVIDER_TURN_ADMISSION_TIMEOUT_DETAIL);
+      if (isCompactCommandMessage(message))
+        yield* completeCompaction(
+          event.payload.threadId,
+          requestId,
+          false,
+          PROVIDER_TURN_ADMISSION_TIMEOUT_DETAIL,
+        );
       return;
     }
 
@@ -1688,12 +1697,24 @@ const make = Effect.gen(function* () {
     // compaction or sends the adapter's own slash command.
     if (isCompactCommandMessage(message)) {
       if (!hasOtherUserMessages) {
-        return yield* appendTurnStartFailure(
+        yield* appendTurnStartFailure(
           "Context compaction failed",
           "Context compaction requires an existing conversation.",
         );
+        yield* completeCompaction(
+          event.payload.threadId,
+          requestId,
+          false,
+          "Context compaction requires an existing conversation.",
+        );
+        return;
       }
       const latestSession = (yield* resolveThreadShell(event.payload.threadId))?.session;
+      if (
+        latestSession?.compactionQueue?.requestId !== requestId ||
+        latestSession.pendingTurnRequestId !== requestId
+      )
+        return;
       // Pylon admits the turn before the reactor observes its intent event, so
       // this thread already reads as "starting" for the compaction's own
       // request. Upstream's status check would reject every compaction here;
@@ -1708,8 +1729,15 @@ const make = Effect.gen(function* () {
           "Context compaction failed",
           "Context compaction is unavailable while a provider turn is running.",
         );
+        yield* completeCompaction(
+          event.payload.threadId,
+          requestId,
+          false,
+          "Context compaction is unavailable while a provider turn is running.",
+        );
         return;
       }
+      let compactedSession: ProviderSession | undefined;
       const handleCompactionFailure = (cause: Cause.Cause<unknown>) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.void;
         const detail = formatFailureDetail(cause);
@@ -1717,7 +1745,13 @@ const make = Effect.gen(function* () {
           Effect.ensuring(
             // A no-op unless the session actually reached a restorable state,
             // so this covers both a failed ensure and a failed compaction.
-            restoreCompaction(event.payload.threadId).pipe(
+            completeCompaction(
+              event.payload.threadId,
+              requestId,
+              false,
+              detail,
+              compactedSession,
+            ).pipe(
               Effect.catchCause((restoreCause) =>
                 Effect.logWarning("failed to restore provider session after compaction failure", {
                   threadId: event.payload.threadId,
@@ -1731,18 +1765,44 @@ const make = Effect.gen(function* () {
       };
       compactingThreadIds.add(event.payload.threadId);
       yield* Effect.gen(function* () {
-        // Deliberately no pending turn admission: `restoreCompaction` spreads
-        // the existing session forward, so an admission recorded here would
-        // survive it and the decider would reject every later turn on the
-        // thread. `compactingThreadIds` is what serialises compaction instead.
-        yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt, {
-          ...(event.payload.modelSelection !== undefined
-            ? { modelSelection: event.payload.modelSelection }
-            : {}),
-          runtimeMode: event.payload.runtimeMode,
-          interactionMode: event.payload.interactionMode,
-          pendingTurnStart: true,
-        });
+        // Compaction retains its original reservation until the exact completion
+        // command retires it; provider lifecycle snapshots cannot erase the FIFO.
+        const compactionSession = yield* ensureSessionForThread(
+          event.payload.threadId,
+          event.payload.createdAt,
+          {
+            ...(event.payload.modelSelection !== undefined
+              ? { modelSelection: event.payload.modelSelection }
+              : {}),
+            runtimeMode: event.payload.runtimeMode,
+            interactionMode: event.payload.interactionMode,
+            pendingTurnStart: true,
+            pendingTurnRequestId: requestId,
+            pendingTurnMessageId: event.payload.messageId,
+            pendingTurnRequestedAt: admissionRequestedAt,
+            pendingTurnDeadlineAt: admissionDeadlineAt,
+            expectedProviderInstanceId:
+              event.payload.admissionIntent !== undefined
+                ? event.payload.admissionIntent.expectedProviderInstanceId
+                : (thread.session?.providerInstanceId ?? null),
+            expectedSessionIncarnationId:
+              event.payload.admissionIntent !== undefined
+                ? event.payload.admissionIntent.expectedSessionIncarnationId
+                : (thread.session?.sessionIncarnationId ?? null),
+          },
+        );
+        if (!compactionSession) return yield* Effect.interrupt;
+        compactedSession = compactionSession;
+        const current = (yield* resolveThreadShell(event.payload.threadId))?.session;
+        if (
+          current?.compactionQueue?.requestId !== requestId ||
+          current.sessionIncarnationId !== compactionSession.sessionIncarnationId
+        )
+          return yield* new ProviderAdapterRequestError({
+            provider: compactionSession.provider,
+            method: "thread.compact",
+            detail: "The provider session changed before compaction could start.",
+          });
         if (event.payload.modelSelection !== undefined) {
           threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
         }
@@ -1751,8 +1811,14 @@ const make = Effect.gen(function* () {
           event.payload.modelSelection,
           event.payload.messageId,
         );
+        return compactionSession;
       }).pipe(
-        Effect.andThen(restoreCompaction(event.payload.threadId, true)),
+        Effect.tap(() =>
+          Effect.sync(() => void compactingThreadIds.delete(event.payload.threadId)),
+        ),
+        Effect.flatMap((session) =>
+          completeCompaction(event.payload.threadId, requestId, true, undefined, session),
+        ),
         Effect.catchCause((cause) =>
           handleCompactionFailure(cause).pipe(
             Effect.catchCause((recoveryCause) =>
@@ -1883,6 +1949,21 @@ const make = Effect.gen(function* () {
     admissionFibers.set(requestId, admissionFiber);
     admissionFiberThreads.set(requestId, event.payload.threadId);
     yield* Fiber.await(admissionFiber).pipe(
+      Effect.tap(() =>
+        thread.session?.compactionQueue?.inFlightRequestId === requestId
+          ? markCompactionQueueSent(
+              event.payload.threadId,
+              thread.session.compactionQueue.requestId,
+              requestId,
+            ).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("failed to settle compaction queue admission", {
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            )
+          : Effect.void,
+      ),
       Effect.ensuring(
         Effect.sync(() => {
           if (admissionFibers.get(requestId) === admissionFiber) {
@@ -2352,6 +2433,9 @@ const make = Effect.gen(function* () {
       eventType: event.type,
     });
     switch (event.type) {
+      case "thread.session-set":
+        yield* drainCompactionQueue(event.payload.threadId);
+        return;
       case "thread.meta-updated":
         yield* threadTitleRegenerationWorker.enqueue(event);
         return;
@@ -2566,6 +2650,30 @@ const make = Effect.gen(function* () {
 
   const processDomainEventSafely = (event: ProviderIntentEvent) =>
     processDomainEvent(event).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          if (
+            event.type !== "thread.turn-start-requested" ||
+            !event.commandId ||
+            admissionFibers.has(event.commandId)
+          )
+            return;
+          const queue = (yield* resolveThreadShell(event.payload.threadId))?.session
+            ?.compactionQueue;
+          if (queue?.inFlightRequestId === event.commandId)
+            yield* markCompactionQueueSent(
+              event.payload.threadId,
+              queue.requestId,
+              event.commandId,
+            );
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("failed to settle unstarted compaction queue entry", {
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      ),
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) {
           return Effect.interrupt;
@@ -2580,6 +2688,13 @@ const make = Effect.gen(function* () {
   const worker = yield* makeDrainableWorker(processDomainEventSafely);
 
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
+    const interruptedCompactions = (yield* projectionSnapshotQuery
+      .getCommandReadModel()
+      .pipe(Effect.orDie)).threads.flatMap((thread) =>
+      thread.session?.compactionQueue
+        ? [{ threadId: thread.id, requestId: thread.session.compactionQueue.requestId }]
+        : [],
+    );
     const interruptedTitleRegenerations = yield* findInterruptedThreadTitleRegenerations().pipe(
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) {
@@ -2595,6 +2710,7 @@ const make = Effect.gen(function* () {
       if (
         (event.type === "thread.meta-updated" && event.payload.regenerateTitle === true) ||
         event.type === "thread.runtime-mode-set" ||
+        event.type === "thread.session-set" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.input-queue-follow-up-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
@@ -2629,7 +2745,20 @@ const make = Effect.gen(function* () {
         );
       }),
     );
-    const reconcileStopsThenAdmissions = reconcilePendingSessionStops().pipe(
+    const reconcileStopsThenAdmissions = Effect.forEach(
+      interruptedCompactions,
+      ({ threadId, requestId }) =>
+        completeCompaction(
+          threadId,
+          requestId,
+          false,
+          "The server restarted before context compaction and its queue completed. Delivery of the in-flight message may have started; check the transcript before resending.",
+          undefined,
+          true,
+        ),
+      { discard: true },
+    ).pipe(
+      Effect.andThen(reconcilePendingSessionStops()),
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
         return Effect.logWarning(

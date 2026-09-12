@@ -1,4 +1,5 @@
 import {
+  OrchestrationCompactionQueue,
   AgentSessionImportSource,
   ApprovalRequestId,
   ChatAttachment,
@@ -148,6 +149,7 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
 );
 const ProjectionThreadSessionDbRowSchema = Schema.Struct({
   ...ProjectionThreadSession.fields,
+  compactionQueue: Schema.NullOr(Schema.fromJsonString(OrchestrationCompactionQueue)),
   restored: Schema.Number,
   pendingTurnRequestAmbiguous: Schema.Number,
 });
@@ -404,6 +406,7 @@ function mapSessionRow(
 ): OrchestrationSession {
   return {
     threadId: row.threadId,
+    ...(row.compactionQueue ? { compactionQueue: row.compactionQueue } : {}),
     status: row.status,
     providerName: row.providerName,
     ...(row.providerInstanceId !== null ? { providerInstanceId: row.providerInstanceId } : {}),
@@ -962,6 +965,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           started_at AS "startedAt",
           session_incarnation_id AS "sessionIncarnationId",
           harness_refinement_status AS "harnessRefinementStatus",
+          compaction_queue_json AS "compactionQueue",
           pending_turn_request_id AS "pendingTurnRequestId",
           pending_turn_request_ambiguous AS "pendingTurnRequestAmbiguous",
           pending_turn_message_id AS "pendingTurnMessageId",
@@ -1000,6 +1004,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.started_at AS "startedAt",
           sessions.session_incarnation_id AS "sessionIncarnationId",
           sessions.harness_refinement_status AS "harnessRefinementStatus",
+          sessions.compaction_queue_json AS "compactionQueue",
           sessions.pending_turn_request_id AS "pendingTurnRequestId",
           sessions.pending_turn_request_ambiguous AS "pendingTurnRequestAmbiguous",
           sessions.pending_turn_message_id AS "pendingTurnMessageId",
@@ -1042,6 +1047,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.started_at AS "startedAt",
           sessions.session_incarnation_id AS "sessionIncarnationId",
           sessions.harness_refinement_status AS "harnessRefinementStatus",
+          sessions.compaction_queue_json AS "compactionQueue",
           sessions.pending_turn_request_id AS "pendingTurnRequestId",
           sessions.pending_turn_request_ambiguous AS "pendingTurnRequestAmbiguous",
           sessions.pending_turn_message_id AS "pendingTurnMessageId",
@@ -1503,6 +1509,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.started_at AS "startedAt",
           sessions.session_incarnation_id AS "sessionIncarnationId",
           sessions.harness_refinement_status AS "harnessRefinementStatus",
+          sessions.compaction_queue_json AS "compactionQueue",
           sessions.pending_turn_request_id AS "pendingTurnRequestId",
           sessions.pending_turn_request_ambiguous AS "pendingTurnRequestAmbiguous",
           sessions.pending_turn_message_id AS "pendingTurnMessageId",
@@ -1862,6 +1869,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           started_at AS "startedAt",
           session_incarnation_id AS "sessionIncarnationId",
           harness_refinement_status AS "harnessRefinementStatus",
+          compaction_queue_json AS "compactionQueue",
           pending_turn_request_id AS "pendingTurnRequestId",
           pending_turn_request_ambiguous AS "pendingTurnRequestAmbiguous",
           pending_turn_message_id AS "pendingTurnMessageId",
@@ -2576,6 +2584,7 @@ pending_approval_requests AS (
                 sessionsByThread.set(row.threadId, {
                   threadId: row.threadId,
                   status: row.status,
+                  ...(row.compactionQueue ? { compactionQueue: row.compactionQueue } : {}),
                   providerName: row.providerName,
                   ...(row.providerInstanceId !== null
                     ? { providerInstanceId: row.providerInstanceId }
