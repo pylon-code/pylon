@@ -3,7 +3,9 @@ import { expect, it } from "@effect/vitest";
 import {
   AntigravitySettings,
   ApprovalRequestId,
+  CommandId,
   ProviderInstanceId,
+  RuntimeSessionId,
   ThreadId,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
@@ -436,6 +438,45 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       expect(h.adapter.capabilities.conversationRollback).toBe("unsupported");
       const rollback = yield* h.adapter.rollbackThread(threadId, 1).pipe(Effect.exit);
       expect(Exit.isFailure(rollback)).toBe(true);
+    }),
+  );
+
+  it.effect("correlates every runtime event with the admitted session and request", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const sessionIncarnationId = RuntimeSessionId.make("antigravity-incarnation");
+      const admissionRequestId = CommandId.make("antigravity-admission");
+      const session = yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        sessionIncarnationId,
+      });
+      expect(session.sessionIncarnationId).toBe(sessionIncarnationId);
+
+      const sending = yield* h.adapter
+        .sendTurn({
+          threadId,
+          input: "Prove event correlation",
+          admissionRequestId,
+          sessionIncarnationId,
+        })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* Fiber.join(sending);
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+      yield* h.adapter.stopSession(threadId);
+      yield* h.waitForEvent((event) => event.type === "session.exited");
+
+      expect(h.seen.length).toBeGreaterThan(0);
+      expect(h.seen.every((event) => event.sessionIncarnationId === sessionIncarnationId)).toBe(
+        true,
+      );
+      expect(h.seen.find((event) => event.type === "turn.started")).toMatchObject({
+        admissionRequestId,
+        sessionIncarnationId,
+      });
     }),
   );
 

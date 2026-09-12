@@ -4,6 +4,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   RuntimeRequestId,
+  RuntimeSessionId,
   RuntimeTaskId,
   TurnId,
   type AntigravitySettings,
@@ -192,6 +193,7 @@ interface TurnIntent {
 
 interface SessionContext {
   readonly threadId: ThreadId;
+  readonly sessionIncarnationId: RuntimeSessionId;
   readonly cwd: string;
   readonly nativeSessionId: string;
   readonly scope: Scope.Closeable;
@@ -332,7 +334,13 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
     eventId: Effect.map(randomId, EventId.make),
     createdAt: nowIso,
   });
-  const emit = (event: ProviderRuntimeEvent) => PubSub.publish(events, event).pipe(Effect.asVoid);
+  const emit = (context: SessionContext, event: ProviderRuntimeEvent) =>
+    PubSub.publish(events, {
+      ...event,
+      // The immutable context owns late events even after routing moves to a
+      // replacement session. Never infer the incarnation from the session map.
+      sessionIncarnationId: context.sessionIncarnationId,
+    }).pipe(Effect.asVoid);
 
   const withThreadLock = <A, E, R>(threadId: ThreadId, task: Effect.Effect<A, E, R>) =>
     SynchronizedRef.modifyEffect(locks, (current) => {
@@ -372,7 +380,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       Effect.gen(function* () {
         for (const [id, command] of context.commands) {
           if (!command.promoted) continue;
-          yield* emit({
+          yield* emit(context, {
             type: "task.completed",
             ...(yield* stamp),
             provider: PROVIDER,
@@ -399,7 +407,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       Effect.gen(function* () {
         for (const [id, subagent] of context.subagents) {
           if (subagent === "finished" || subagent === "mcp") continue;
-          yield* emit({
+          yield* emit(context, {
             type: "task.updated",
             ...(yield* stamp),
             provider: PROVIDER,
@@ -443,7 +451,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             context.disconnected ? "Antigravity process stopped." : undefined,
           );
           context.subagents.clear();
-          yield* emit({
+          yield* emit(context, {
             type: "session.exited",
             ...(yield* stamp),
             provider: PROVIDER,
@@ -478,7 +486,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       }>();
       context.questions.set(requestId, { request, response });
       return yield* Effect.gen(function* () {
-        yield* emit({
+        yield* emit(context, {
           type: "user-input.requested",
           ...(yield* stamp),
           provider: PROVIDER,
@@ -489,7 +497,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           raw: { source: "acp.jsonrpc", method: "session/request_permission", payload: rawPayload },
         });
         const answer = yield* Deferred.await(response);
-        yield* emit({
+        yield* emit(context, {
           type: "user-input.resolved",
           ...(yield* stamp),
           provider: PROVIDER,
@@ -520,6 +528,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
     };
     return yield* Effect.gen(function* () {
       yield* emit(
+        context,
         makeAcpRequestOpenedEvent({
           stamp: yield* stamp,
           provider: PROVIDER,
@@ -537,6 +546,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       );
       const answer = yield* Deferred.await(response);
       yield* emit(
+        context,
         makeAcpRequestResolvedEvent({
           stamp: yield* stamp,
           provider: PROVIDER,
@@ -577,6 +587,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       case "AssistantItemStarted":
       case "AssistantItemCompleted":
         yield* emit(
+          context,
           makeAcpAssistantItemEvent({
             stamp: yield* stamp,
             provider: PROVIDER,
@@ -590,6 +601,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       case "ThoughtDelta":
       case "ContentDelta":
         yield* emit(
+          context,
           makeAcpContentDeltaEvent({
             stamp: yield* stamp,
             provider: PROVIDER,
@@ -604,6 +616,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         return;
       case "PlanUpdated":
         yield* emit(
+          context,
           makeAcpPlanUpdatedEvent({
             stamp: yield* stamp,
             provider: PROVIDER,
@@ -639,7 +652,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
               }
               if (toolCall.status === "failed") {
                 const summary = antigravitySubagentOutput(toolCall);
-                yield* emit({
+                yield* emit(context, {
                   type: "task.completed",
                   ...(yield* stamp),
                   provider: PROVIDER,
@@ -653,7 +666,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                 });
                 context.subagents.set(toolCall.toolCallId, "finished");
               } else if (context.activeTurnId === undefined && toolCall.status === "completed") {
-                yield* emit({
+                yield* emit(context, {
                   type: "task.updated",
                   ...(yield* stamp),
                   provider: PROVIDER,
@@ -674,7 +687,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                 const description =
                   antigravitySubagentOutput(toolCall) ?? subagent?.description ?? linkage.title;
                 if (subagent?.status !== status || subagent?.description !== description) {
-                  yield* emit({
+                  yield* emit(context, {
                     type: "task.progress",
                     ...(yield* stamp),
                     provider: PROVIDER,
@@ -689,6 +702,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             }
             const existing = context.commands.get(toolCall.toolCallId);
             yield* emit(
+              context,
               makeAcpToolCallEvent({
                 stamp: yield* stamp,
                 provider: PROVIDER,
@@ -707,7 +721,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             } else if (toolCall.status === "completed" || toolCall.status === "failed") {
               context.commands.delete(toolCall.toolCallId);
               if (existing?.promoted) {
-                yield* emit({
+                yield* emit(context, {
                   type: "task.completed",
                   ...(yield* stamp),
                   provider: PROVIDER,
@@ -851,6 +865,8 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
               yield* runtime.setMode(antigravityPermissionMode(input.runtimeMode));
               yield* options.onSessionStarted?.(started, cwd) ?? Effect.void;
               const createdAt = yield* nowIso;
+              const sessionIncarnationId =
+                input.sessionIncarnationId ?? RuntimeSessionId.make(yield* randomId);
               const session: ProviderSession = {
                 provider: PROVIDER,
                 providerInstanceId: options.instanceId,
@@ -860,11 +876,13 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                 runtimeMode: input.runtimeMode,
                 ...(model ? { model } : {}),
                 resumeCursor: { schemaVersion: 1, sessionId: started.sessionId },
+                sessionIncarnationId,
                 createdAt,
                 updatedAt: createdAt,
               };
               context = {
                 threadId: input.threadId,
+                sessionIncarnationId,
                 cwd,
                 nativeSessionId: started.sessionId,
                 scope: sessionScope,
@@ -895,21 +913,21 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                 ),
                 Effect.forkIn(sessionScope),
               );
-              yield* emit({
+              yield* emit(running, {
                 type: "session.started",
                 ...(yield* stamp),
                 provider: PROVIDER,
                 threadId: input.threadId,
                 payload: { resume: started.initializeResult },
               });
-              yield* emit({
+              yield* emit(running, {
                 type: "session.state.changed",
                 ...(yield* stamp),
                 provider: PROVIDER,
                 threadId: input.threadId,
                 payload: { state: "ready", reason: "Antigravity ACP session ready" },
               });
-              yield* emit({
+              yield* emit(running, {
                 type: "thread.started",
                 ...(yield* stamp),
                 provider: PROVIDER,
@@ -953,7 +971,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       Effect.gen(function* () {
         for (const [id, command] of context.commands) {
           if (command.promoted) continue;
-          yield* emit({
+          yield* emit(context, {
             type: "task.started",
             ...(yield* stamp),
             provider: PROVIDER,
@@ -1017,7 +1035,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             ? { lastError: payload.errorMessage }
             : { lastError: undefined }),
         };
-        yield* emit({
+        yield* emit(context, {
           type: "turn.completed",
           ...(yield* stamp),
           provider: PROVIDER,
@@ -1050,12 +1068,15 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           intent = turn;
           context.activeTurnId = turnId;
           if (!steering) {
-            yield* emit({
+            yield* emit(context, {
               type: "turn.started",
               ...(yield* stamp),
               provider: PROVIDER,
               threadId: input.threadId,
               turnId,
+              ...(input.admissionRequestId === undefined
+                ? {}
+                : { admissionRequestId: input.admissionRequestId }),
               payload: model ? { model } : {},
             });
           }
