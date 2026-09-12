@@ -9,6 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   assertPrimeAttestationBinding,
   canonicalPrimeDistributionJson,
+  inspectPrimeAgentDistribution,
+  primeDistributionStateDirectory,
+  PRIME_RECEIPT_FILE,
   PRIME_DISTRIBUTION_REF,
   PRIME_DISTRIBUTION_REPOSITORY,
   PRIME_DISTRIBUTION_REPOSITORY_URL,
@@ -21,6 +24,7 @@ import {
 } from "./PrimeAgentDistributionVerifier.ts";
 import {
   PRIME_MANAGED_TOOL_DIRECTORY,
+  inspectPrimeAgentSelectedDistribution,
   PrimeAgentManagedToolStore,
   resolvePrimeManagedBuildReceiptTarget,
   type PrimeManagedBinding,
@@ -619,6 +623,65 @@ describe("Pylon-managed Prime tool store", () => {
         "utf8",
       ),
     ).toContain("safe fixture");
+  });
+
+  it("proves a selected managed build from its build-owned receipt for offline recovery", async () => {
+    const harness = await makeHarness({ installMode: "production" });
+    const installed = await harness.store.command({
+      commandId: "recovery-receipt",
+      instanceId: "primeAgent",
+      action: "install",
+    });
+    expect(installed.status).toBe("succeeded");
+    const packageRoot = NodePath.resolve(harness.binding.binaryPath, "../../prime-agent");
+    const input = {
+      stateDir: harness.stateDir,
+      instanceId: "primeAgent",
+      packageRoot,
+      platform: "linux" as const,
+      checkedAt: "1970-01-01T00:00:00.000Z",
+      enableUpdateChecks: false,
+    };
+    const dependencies = {
+      loadLatestVerifiedPublication: vi.fn(async () => {
+        throw new Error("Offline recovery must not contact the publication feed.");
+      }),
+    };
+    expect(await inspectPrimeAgentDistribution(input, dependencies)).toMatchObject({
+      classification: "pylon-unmanaged",
+    });
+    expect(await inspectPrimeAgentSelectedDistribution(input, dependencies)).toMatchObject({
+      classification: "pylon-managed",
+      buildId: installed.buildId,
+    });
+    expect(dependencies.loadLatestVerifiedPublication).not.toHaveBeenCalled();
+
+    const copiedPackage = NodePath.join(harness.stateDir, "manual", "node_modules", "prime-agent");
+    await NodeFSP.cp(packageRoot, copiedPackage, { recursive: true });
+    expect(
+      await inspectPrimeAgentSelectedDistribution(
+        { ...input, packageRoot: await NodeFSP.realpath(copiedPackage) },
+        dependencies,
+      ),
+    ).toMatchObject({ classification: "pylon-unmanaged" });
+
+    const receiptTarget = await resolvePrimeManagedBuildReceiptTarget(input);
+    expect(receiptTarget).toBeDefined();
+    await NodeFSP.writeFile(
+      NodePath.join(
+        primeDistributionStateDirectory(receiptTarget!.stateDir, receiptTarget!.instanceId),
+        PRIME_RECEIPT_FILE,
+      ),
+      "{}\n",
+    );
+    expect(await inspectPrimeAgentSelectedDistribution(input, dependencies)).toMatchObject({
+      classification: "invalid-receipt",
+    });
+    await NodeFSP.rm(receiptTarget!.stateDir, { recursive: true });
+    expect(await inspectPrimeAgentSelectedDistribution(input, dependencies)).toMatchObject({
+      classification: "pylon-unmanaged",
+    });
+    expect(dependencies.loadLatestVerifiedPublication).not.toHaveBeenCalled();
   });
 
   it("publishes durable progress while an earlier metadata status probe remains blocked", async () => {

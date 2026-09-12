@@ -63,6 +63,11 @@ Distinct package roots and quiescent switching prevent a daemon from one build f
 imported SDK module cache from another. Runtime capability still comes only from frozen SDK metadata
 and exact post-attach negotiation. Managed distribution identity does not enable a native mode.
 
+Provider status and restart-recovery eligibility resolve the selected package to the same build-owned
+receipt under this environment's managed store. Recovery checks it offline before enabling recoverable
+sessions. A manual copy, a missing receipt, or an invalid receipt cannot acquire managed recovery
+authority merely by claiming Pylon package metadata.
+
 ## Commands and clients
 
 `serverGetPrimeManagedMaintenance` is read-scoped. `serverRunPrimeManagedMaintenance` is
