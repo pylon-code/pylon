@@ -2,14 +2,15 @@ name: Desktop macOS Preview
 
 on:
   pull_request:
+    branches: [pylon]
     types: [labeled, synchronize, reopened]
 
 permissions:
   contents: read
-  pull-requests: write
 
 concurrency:
-  group: desktop-macos-preview-${{ github.event.pull_request.number }}
+  # An unrelated label must not cancel the active build.
+  group: desktop-macos-preview-${{ github.event.pull_request.number }}-${{ github.event.action == 'labeled' && github.event.label.name != 'preview:mac' && github.run_id || 'build' }}
   cancel-in-progress: true
 
 jobs:
@@ -26,6 +27,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
           sparse-checkout: |
             /*
             !/.repos/
@@ -63,14 +65,13 @@ jobs:
           set -euo pipefail
 
           base_version="$(node -p "require('./apps/desktop/package.json').version")"
-          preview_version="${base_version}-pr.${PR_NUMBER}.${GITHUB_RUN_NUMBER}"
+          preview_version="${base_version}-pr.${PR_NUMBER}.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
           node scripts/update-release-package-versions.ts "$preview_version"
           cp .env.example .env
 
           echo "version=$preview_version" >> "$GITHUB_OUTPUT"
 
-      - id: build
-        name: Build unsigned macOS DMG
+      - name: Build unsigned macOS DMG
         shell: bash
         env:
           T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: ${{ steps.resource_monitor_cache.outputs.cache-hit == 'true' }}
@@ -91,75 +92,13 @@ jobs:
             printf 'Expected one DMG, found %s.\n' "${#dmg_files[@]}" >&2
             exit 1
           fi
-          printf 'dmg_name=%s\n' "$(basename "${dmg_files[0]}")" >> "$GITHUB_OUTPUT"
 
-      - id: upload
-        name: Upload macOS DMG
+      - name: Upload macOS DMG
         uses: actions/upload-artifact@v7
         with:
+          name: pylon-macos-preview-${{ github.event.pull_request.number }}-${{ github.run_number }}-${{ github.run_attempt }}
           path: release/*.dmg
           if-no-files-found: error
-          archive: false
+          compression-level: 0
           overwrite: true
           retention-days: 7
-
-      - name: Comment download link
-        uses: actions/github-script@v8
-        env:
-          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
-          DMG_NAME: ${{ steps.build.outputs.dmg_name }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PREVIEW_VERSION: ${{ steps.version.outputs.version }}
-        with:
-          script: |
-            const { data: pullRequest } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
-            });
-            if (pullRequest.head.sha !== process.env.HEAD_SHA) {
-              core.info("Skipping the outdated macOS preview comment.");
-              return;
-            }
-
-            const marker = "<!-- desktop-macos-preview -->";
-            const body = [
-              marker,
-              "### macOS preview",
-              "",
-              `[Download Apple Silicon DMG](${process.env.ARTIFACT_URL})`,
-              "",
-              `Version: ${process.env.PREVIEW_VERSION}`,
-              `Commit: ${process.env.HEAD_SHA.slice(0, 7)}`,
-              "",
-              "Unsigned build. Clear quarantine before opening:",
-              "```sh",
-              `xattr -d com.apple.quarantine ~/Downloads/${process.env.DMG_NAME}`,
-              "```",
-              "",
-              "The download requires GitHub access and expires after 7 days.",
-            ].join("\n");
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              per_page: 100,
-            });
-            const existing = comments.find((comment) => comment.body?.includes(marker));
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body,
-              });
-            }
