@@ -9,6 +9,7 @@ import {
   isComposerDraftEmpty,
   mergeComposerDraftContent,
   replaceComposerDraftAttachments,
+  setComposerDraftContext,
   setComposerDraftText,
   updateComposerDraftSettings,
 } from "./use-composer-drafts";
@@ -23,6 +24,7 @@ export function hydratePendingTaskEditorDraft(message: QueuedThreadMessage): voi
   const draftKey = pendingTaskDraftKey(message.messageId);
   if (!isComposerDraftEmpty(getComposerDraftSnapshot(draftKey))) return;
   setComposerDraftText(draftKey, message.text);
+  setComposerDraftContext(draftKey, message.context);
   replaceComposerDraftAttachments(draftKey, message.attachments);
   updateComposerDraftSettings(draftKey, {
     modelSelection: message.modelSelection,
@@ -42,7 +44,11 @@ export function hydratePendingTaskEditorDraft(message: QueuedThreadMessage): voi
 async function moveSetupEdits(message: QueuedThreadMessage, targetKey: string): Promise<void> {
   const sourceKey = scopedThreadKey(message.environmentId, message.threadId);
   const source = getComposerDraftSnapshot(sourceKey);
-  await mergeComposerDraftContent(targetKey, { text: source.text, attachments: [] });
+  await mergeComposerDraftContent(targetKey, {
+    text: source.text,
+    context: source.context,
+    attachments: [],
+  });
   const existingIds = new Set(
     getComposerDraftSnapshot(targetKey).attachments.map((attachment) => attachment.id),
   );

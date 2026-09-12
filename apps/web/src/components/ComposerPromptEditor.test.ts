@@ -1,3 +1,7 @@
+import { COMPOSER_CONTEXT_CLIPBOARD_MIME } from "@t3tools/contracts";
+import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
+import { elementContextToPreviewAnnotation } from "../lib/elementContext";
+import { previewAnnotationContextRecord } from "../lib/composerContextRecords";
 import { EnvironmentId, MessageId, ThreadId, type AssistantCitation } from "@t3tools/contracts";
 import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -13,7 +17,10 @@ import {
   PASTE_COMMAND,
 } from "lexical";
 
-import { registerComposerInlineTokenPaste } from "./composerInlineTokenPaste";
+import {
+  importPastedComposerText,
+  registerComposerInlineTokenPaste,
+} from "./composerInlineTokenPaste";
 import {
   $consumeComposerCitationCommentRequest,
   $createComposerCitationNode,
@@ -52,6 +59,7 @@ function createCitationEditor(text = "") {
   registerComposerInlineTokenPaste(editor, {
     createMentionNode: (path) => $createTextNode(`<mention:${path}>`),
     createCitationNode: $createComposerCitationNode,
+    createContextReferenceNode: (reference) => $createTextNode(`<context:${reference.contextId}>`),
     getExpandedAbsoluteOffsetForPoint: (_node, offset) => offset,
   });
   return editor;
@@ -77,11 +85,11 @@ function pasteText(editor: ReturnType<typeof createEditor>, text: string) {
 class TestClipboardEvent extends Event {
   readonly clipboardData: DataTransfer;
 
-  constructor(text: string) {
+  constructor(text: string, extra: Record<string, string> = {}) {
     super("paste", { cancelable: true });
     this.clipboardData = {
       files: [],
-      getData: (type: string) => (type === "text/plain" ? text : ""),
+      getData: (type: string) => (type === "text/plain" ? text : (extra[type] ?? "")),
     } as unknown as DataTransfer;
   }
 }
@@ -113,6 +121,8 @@ describe("registerComposerInlineTokenPaste", () => {
     registerComposerInlineTokenPaste(editor, {
       createMentionNode: (path) => $createTextNode(`<mention:${path}>`),
       createCitationNode: $createComposerCitationNode,
+      createContextReferenceNode: (reference) =>
+        $createTextNode(`<context:${reference.contextId}>`),
       getExpandedAbsoluteOffsetForPoint: () => 0,
     });
     editor.registerCommand(PASTE_COMMAND, plainTextFallback, COMMAND_PRIORITY_EDITOR);
@@ -159,6 +169,8 @@ describe("registerComposerInlineTokenPaste", () => {
     registerComposerInlineTokenPaste(editor, {
       createMentionNode: (path) => $createTextNode(`<mention:${path}>`),
       createCitationNode: $createComposerCitationNode,
+      createContextReferenceNode: (reference) =>
+        $createTextNode(`<context:${reference.contextId}>`),
       getExpandedAbsoluteOffsetForPoint: () => 0,
     });
     editor.registerCommand(PASTE_COMMAND, plainTextFallback, COMMAND_PRIORITY_EDITOR);
@@ -194,6 +206,8 @@ describe("registerComposerInlineTokenPaste", () => {
     registerComposerInlineTokenPaste(editor, {
       createMentionNode: (path) => $createTextNode(`<mention:${path}>`),
       createCitationNode: $createComposerCitationNode,
+      createContextReferenceNode: (reference) =>
+        $createTextNode(`<context:${reference.contextId}>`),
       getExpandedAbsoluteOffsetForPoint: () => 0,
     });
     editor.registerCommand(PASTE_COMMAND, plainTextFallback, COMMAND_PRIORITY_EDITOR);
@@ -484,6 +498,230 @@ describe("registerComposerInlineTokenPaste", () => {
   );
 });
 
+describe("context reference paste", () => {
+  it.each(["focused", "blurred"])("imports structured paste when %s", (focus) => {
+    vi.stubGlobal("ClipboardEvent", TestClipboardEvent);
+    const editor = createEditor({ nodes: [ComposerCitationNode] });
+    editor.update(
+      () => {
+        const paragraph = $createParagraphNode();
+        $getRoot().append(paragraph);
+        paragraph.selectEnd();
+      },
+      { discrete: true },
+    );
+    const imported: string[] = [];
+    const importFragment = (
+      fragment: import("@t3tools/contracts").ComposerContextClipboardFragment,
+    ) => {
+      imported.push(...fragment.records.map((record) => record.contextId));
+      return new Map([
+        ["img-old", "img-new"],
+        ["ctx-t", "ctx-t"],
+      ]);
+    };
+    registerComposerInlineTokenPaste(editor, {
+      createMentionNode: (path) => $createTextNode(`<mention:${path}>`),
+      createCitationNode: $createComposerCitationNode,
+      createContextReferenceNode: (reference) =>
+        $createTextNode(`<context:${reference.contextId}>`),
+      getExpandedAbsoluteOffsetForPoint: () => 0,
+      importContextFragment: importFragment,
+    });
+    const event = new TestClipboardEvent(
+      "![shot](t3-context://v1/image/img-old) and [T](t3-context://v1/terminal/ctx-t)",
+      {
+        "web application/x-t3-context-fragment+json": JSON.stringify({
+          version: 1,
+          source: { environmentId: "env-1" },
+          records: [
+            {
+              version: 1,
+              contextId: "img-old",
+              kind: "image",
+              label: "shot",
+              attachmentId: "a",
+              name: "shot.png",
+              mimeType: "image/png",
+              sizeBytes: 1,
+            },
+            {
+              version: 1,
+              contextId: "ctx-t",
+              kind: "terminal",
+              label: "T",
+              terminalId: "t",
+              terminalLabel: "T",
+              lineStart: 1,
+              lineEnd: 1,
+              text: "x",
+            },
+            {
+              version: 1,
+              contextId: "img-unrelated",
+              kind: "image",
+              label: "other",
+              attachmentId: "b",
+              name: "other.png",
+              mimeType: "image/png",
+              sizeBytes: 1,
+            },
+          ],
+        }),
+      },
+    );
+    if (focus === "blurred") {
+      expect(importPastedComposerText(event.clipboardData, importFragment)).toBe(
+        "![shot](t3-context://v1/image/img-new) and [T](t3-context://v1/terminal/ctx-t)",
+      );
+      expect(imported).toEqual(["img-old", "ctx-t"]);
+      return;
+    }
+    editor.update(
+      () => {
+        editor.dispatchCommand(PASTE_COMMAND, event as ClipboardEvent);
+      },
+      { discrete: true },
+    );
+    expect(imported).toEqual(["img-old", "ctx-t"]);
+    expect(editor.getEditorState().read(() => $getRoot().getTextContent())).toBe(
+      "<context:img-new> and <context:ctx-t>",
+    );
+  });
+
+  it("converts a copied legacy element into a sendable annotation and rewrites its link", () => {
+    const copied = upgradeLegacyContextMessage(
+      [
+        "Fix this",
+        "",
+        "<element_context>",
+        "- <button>:",
+        "  url: https://example.com",
+        "  selector: #save",
+        "  html:",
+        "    <button>Save</button>",
+        "  styles:",
+        "    color: red;",
+        "</element_context>",
+      ].join("\n"),
+    );
+    const event = new TestClipboardEvent(copied.text, {
+      "web application/x-t3-context-fragment+json": JSON.stringify({
+        version: 1,
+        source: { environmentId: "env-1" },
+        records: copied.records,
+      }),
+    });
+    const annotations: ReturnType<typeof previewAnnotationContextRecord>[] = [];
+    const text = importPastedComposerText(event.clipboardData, (fragment) => {
+      const record = fragment.records[0]!;
+      if (record.kind !== "element" || "payload" in record) throw new Error("Expected element");
+      const annotation = previewAnnotationContextRecord(
+        elementContextToPreviewAnnotation(record, "imported", "2026-01-01T00:00:00Z"),
+      );
+      annotations.push(annotation);
+      return new Map([[record.contextId, annotation.contextId]]);
+    });
+    expect(text).toContain("t3-context://v1/preview-annotation/preview-annotation_imported");
+    expect(annotations[0]?.elements?.[0]).toMatchObject({
+      selector: "#save",
+      htmlPreview: "<button>Save</button>",
+      styles: "color: red;",
+    });
+  });
+
+  it("imports an annotation's dependent screenshot when only its chip is pasted", () => {
+    vi.stubGlobal("ClipboardEvent", TestClipboardEvent);
+    const editor = createEditor({ nodes: [ComposerCitationNode] });
+    editor.update(
+      () => {
+        const paragraph = $createParagraphNode();
+        $getRoot().append(paragraph);
+        paragraph.selectEnd();
+      },
+      { discrete: true },
+    );
+    const imported: string[] = [];
+    registerComposerInlineTokenPaste(editor, {
+      createMentionNode: (path) => $createTextNode(`<mention:${path}>`),
+      createCitationNode: $createComposerCitationNode,
+      createContextReferenceNode: (reference) =>
+        $createTextNode(`<context:${reference.contextId}>`),
+      getExpandedAbsoluteOffsetForPoint: () => 0,
+      importContextFragment: (fragment) => {
+        imported.push(...fragment.records.map((record) => record.contextId));
+        return new Map(fragment.records.map((record) => [record.contextId, record.contextId]));
+      },
+    });
+    const annotationId = "preview-annotation_ann-1";
+    const screenshotId = "image_ann-1";
+    const event = new TestClipboardEvent(
+      `[Fix button](t3-context://v1/preview-annotation/${annotationId})`,
+      {
+        "web application/x-t3-context-fragment+json": JSON.stringify({
+          version: 1,
+          source: { environmentId: "env-1" },
+          records: [
+            {
+              version: 1,
+              contextId: annotationId,
+              kind: "preview-annotation",
+              label: "Fix button",
+              annotationId: "ann-1",
+              pageUrl: "https://example.com",
+              pageTitle: "Example",
+              comment: "Fix button",
+              targetSummary: "1 selected element",
+              styleChanges: [],
+              screenshotContextId: screenshotId,
+            },
+            {
+              version: 1,
+              contextId: screenshotId,
+              kind: "image",
+              label: "annotation.png",
+              attachmentId: "attachment-1",
+              name: "annotation.png",
+              mimeType: "image/png",
+              sizeBytes: 10,
+            },
+            {
+              version: 1,
+              contextId: "image_unrelated",
+              kind: "image",
+              label: "unrelated.png",
+              attachmentId: "attachment-2",
+              name: "unrelated.png",
+              mimeType: "image/png",
+              sizeBytes: 10,
+            },
+          ],
+        }),
+      },
+    );
+    editor.update(
+      () => {
+        editor.dispatchCommand(PASTE_COMMAND, event as ClipboardEvent);
+      },
+      { discrete: true },
+    );
+
+    expect(imported).toEqual([annotationId, screenshotId]);
+    expect(editor.getEditorState().read(() => $getRoot().getTextContent())).toBe(
+      `<context:${annotationId}>`,
+    );
+  });
+
+  it("turns pasted context links into reference nodes", () => {
+    vi.stubGlobal("ClipboardEvent", TestClipboardEvent);
+    const editor = createCitationEditor("see ");
+    pasteText(editor, "[Terminal 1 line 4](t3-context://v1/terminal/ctx-1) now");
+    expect(editor.getEditorState().read(() => $getRoot().getTextContent())).toBe(
+      "see <context:ctx-1> now",
+    );
+  });
+});
+
 describe("citation comment opening", () => {
   const sourceAnchor: AssistantCitationSourceAnchor = {
     source: { nodeType: 1 } as HTMLElement,
@@ -614,5 +852,119 @@ describe("citation comment opening", () => {
       expect($getRoot().getTextContent()).toBe(citationSource);
       expect($consumeComposerCitationCommentRequest(requestRef)).toBeNull();
     });
+  });
+});
+
+describe("native composer syntax in structured paste", () => {
+  it("retains mention paths and skill names through paste-to-focus", () => {
+    const records = [
+      { version: 1, kind: "mention", contextId: "mention", label: "File", path: "src/app.ts" },
+      { version: 1, kind: "skill", contextId: "skill", label: "Skill", name: "review" },
+    ];
+    const event = new TestClipboardEvent(
+      "Read [File](t3-context://v1/mention/mention) with [Skill](t3-context://v1/skill/skill)",
+      {
+        [COMPOSER_CONTEXT_CLIPBOARD_MIME]: JSON.stringify({
+          version: 1,
+          source: { environmentId: "source" },
+          records,
+        }),
+      },
+    );
+    expect(importPastedComposerText(event.clipboardData, () => new Map())).toBe(
+      "Read [app.ts](src/app.ts) with $review",
+    );
+  });
+  it("claims a skill-only structured paste instead of falling through to its unresolved original link", () => {
+    vi.stubGlobal("ClipboardEvent", TestClipboardEvent);
+    const editor = createEditor();
+    editor.update(
+      () => {
+        const paragraph = $createParagraphNode();
+        $getRoot().append(paragraph);
+        paragraph.selectEnd();
+      },
+      { discrete: true },
+    );
+    registerComposerInlineTokenPaste(editor, {
+      createMentionNode: (path) => $createTextNode(path),
+      createCitationNode: $createComposerCitationNode,
+      createContextReferenceNode: (reference) => $createTextNode(reference.contextId),
+      getExpandedAbsoluteOffsetForPoint: (_node, offset) => offset,
+      importContextFragment: () => new Map(),
+    });
+    const event = new TestClipboardEvent("[Skill](t3-context://v1/skill/skill)", {
+      [COMPOSER_CONTEXT_CLIPBOARD_MIME]: JSON.stringify({
+        version: 1,
+        source: { environmentId: "source" },
+        records: [
+          { version: 1, kind: "skill", contextId: "skill", label: "Skill", name: "review" },
+        ],
+      }),
+    });
+    editor.update(
+      () => {
+        editor.dispatchCommand(PASTE_COMMAND, event as ClipboardEvent);
+      },
+      { discrete: true },
+    );
+    expect(editor.getEditorState().read(() => $getRoot().getTextContent())).toBe("$review");
+    expect(event.defaultPrevented).toBe(true);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("unavailable pasted context identity", () => {
+  it.each(["missing", "malformed", "unknown", "not-imported"])(
+    "keeps %s records from binding existing destination context",
+    (mode) => {
+      const contextId = "terminal_existing";
+      const record =
+        mode === "missing"
+          ? []
+          : mode === "malformed"
+            ? [{ version: 1, kind: "terminal", contextId, label: "Missing terminal payload" }]
+            : mode === "unknown"
+              ? [{ version: 1, kind: "future", contextId, label: "Future", payload: {} }]
+              : [
+                  {
+                    version: 1,
+                    kind: "terminal",
+                    contextId,
+                    label: "Terminal",
+                    terminalId: "t",
+                    terminalLabel: "T",
+                    lineStart: 1,
+                    lineEnd: 1,
+                    text: "pasted",
+                  },
+                ];
+      const kind = mode === "unknown" ? "future" : "terminal";
+      const text = `[Unavailable](t3-context://v1/${kind}/${contextId})`;
+      const event = new TestClipboardEvent(`${text} ${text}`, {
+        [COMPOSER_CONTEXT_CLIPBOARD_MIME]: JSON.stringify({
+          version: 1,
+          source: { environmentId: "source" },
+          records: record,
+        }),
+      });
+      const result = importPastedComposerText(event.clipboardData, () => new Map());
+      expect(result).not.toContain(contextId);
+      const refs = Array.from(
+        result.matchAll(/t3-context:\/\/v1\/[^/]+\/([^)]*)/g),
+        (match) => match[1],
+      );
+      expect(refs).toHaveLength(2);
+      expect(refs[0]).toMatch(/^unavailable-/);
+      expect(refs[0]).toBe(refs[1]);
+      const destinationRecords = new Map([[contextId, "unrelated private context"]]);
+      expect(refs.map((id) => destinationRecords.get(id!))).toEqual([undefined, undefined]);
+    },
+  );
+  it("does not bind unaccompanied plain-text references to the destination", () => {
+    const event = new TestClipboardEvent("[File](t3-context://v1/file/file_existing)");
+    expect(importPastedComposerText(event.clipboardData, () => new Map())).not.toContain(
+      "file_existing",
+    );
   });
 });

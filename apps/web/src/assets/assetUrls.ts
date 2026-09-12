@@ -11,7 +11,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useMemo } from "react";
 
 import { assetEnvironment } from "~/state/assets";
-import { usePreparedConnection } from "~/state/session";
+import { readPreparedConnection, usePreparedConnection } from "~/state/session";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 
 export { resolveAssetUrl, type AssetUrlState } from "@t3tools/client-runtime/state/assets";
@@ -35,16 +35,40 @@ export function useAssetUrlState(
 export function useAssetUrlRefresh(
   environmentId: EnvironmentId | null,
   resource: AssetResource | null,
-): () => Promise<void> {
+): (signal?: AbortSignal) => Promise<string | null> {
+  const connection = usePreparedConnection(environmentId);
+  const prepared = connection._tag === "Some" ? connection.value : null;
   const refresh = useAtomQueryRunner(assetEnvironment.createUrl, {
     reportFailure: false,
     refresh: true,
   });
-  return useCallback(async () => {
-    if (environmentId === null || resource === null) return;
-    const result = await refresh({ environmentId, input: { resource } });
-    if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-  }, [environmentId, resource, refresh]);
+  return useCallback(
+    async (signal?: AbortSignal) => {
+      if (environmentId === null || resource === null || prepared === null) return null;
+      const timeout = AbortSignal.timeout(60_000);
+      const operationSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+      // A capability belongs to the connection that authorized it. A reconnect may change
+      // both credentials and origin while the query waits, so authorize again on that connection.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        operationSignal.throwIfAborted();
+        const before = readPreparedConnection(environmentId);
+        if (!before) return null;
+        const result = await refresh(
+          { environmentId, input: { resource } },
+          { signal: operationSignal },
+        );
+        operationSignal.throwIfAborted();
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+        const current = readPreparedConnection(environmentId);
+        if (!current) return null;
+        if (current !== before) continue;
+        return resolveAssetUrl(current.httpBaseUrl, result.value.relativeUrl);
+      }
+      throw new Error("The environment reconnected. Please try again.");
+      // A new prepared identity restarts mounted preview effects, including credential-only changes.
+    },
+    [environmentId, resource, refresh, prepared],
+  );
 }
 
 export function useAssetUrls(

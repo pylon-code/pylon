@@ -16,6 +16,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import {
   ApprovalRequestId,
   CommandId,
+  ComposerContextId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EnvironmentId,
   EventId,
@@ -184,6 +185,30 @@ describe("ProviderCommandReactor", () => {
     expect(providerFollowUpInputFromMessage({ text: "", attachments: [attachment] })).toEqual({
       attachments: [attachment],
     });
+  });
+
+  it("projects native follow-up context while retaining attachment identity", () => {
+    const context = {
+      version: 1 as const,
+      records: [
+        {
+          version: 1 as const,
+          contextId: ComposerContextId.make("follow-up-skill"),
+          kind: "skill" as const,
+          label: "$review",
+          name: "review",
+        },
+      ],
+    };
+    const result = providerFollowUpInputFromMessage({
+      text: "Use [$review](t3-context://v1/skill/follow-up-skill)",
+      context,
+      attachments: [],
+    });
+    expect(result.input).toContain("[Skill: $review; ref=follow-up-skill]");
+    expect(result.input).toContain("name: review");
+    expect(result.input).not.toContain("t3-context://");
+    expect(result.attachments).toEqual([]);
   });
 
   async function createHarness(input?: {
@@ -949,6 +974,51 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
 
+  effectIt.effect("projects inline context before sending the provider turn", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-with-context"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-with-context"),
+          role: "user",
+          text: "Inspect [build](t3-context://v1/terminal/terminal-1)",
+          attachments: [],
+          context: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                kind: "terminal",
+                contextId: ComposerContextId.make("terminal-1"),
+                label: "build",
+                terminalId: "terminal-1",
+                terminalLabel: "Build",
+                lineStart: 7,
+                lineEnd: 7,
+                text: "compiled successfully",
+              },
+            ],
+          },
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        input: expect.stringContaining("[Terminal: build; ref=terminal-1]"),
+      });
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        input: expect.stringContaining('<context kind="terminal" id="terminal-1">'),
+      });
+    }),
+  );
+
   effectIt.effect("retains a turn dispatched immediately after start until activation", () =>
     Effect.gen(function* () {
       const activation = yield* Deferred.make<void>();
@@ -1133,6 +1203,19 @@ describe("ProviderCommandReactor", () => {
       );
       const threadId = ThreadId.make("thread-1");
       const now = "2026-01-01T00:00:00.000Z";
+      const queuedContext = {
+        version: 1 as const,
+        records: [
+          {
+            version: 1 as const,
+            contextId: ComposerContextId.make("queued-skill"),
+            kind: "skill" as const,
+            label: "$review",
+            name: "review",
+          },
+        ],
+      };
+      const queuedText = "queued after [$review](t3-context://v1/skill/queued-skill)";
       const dispatchTurn = (
         id: string,
         text: string,
@@ -1148,6 +1231,7 @@ describe("ProviderCommandReactor", () => {
             role: "user",
             text,
             attachments: [],
+            ...(id === "during-compact-recovery" ? { context: queuedContext } : {}),
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode,
@@ -1180,11 +1264,7 @@ describe("ProviderCommandReactor", () => {
       yield* dispatchTurn("blocked-compact", "/compact", "2026-01-01T00:00:01.000Z");
       yield* Deferred.await(readyDispatchStarted);
 
-      yield* dispatchTurn(
-        "during-compact-recovery",
-        "queued after compact",
-        "2026-01-01T00:00:02.000Z",
-      );
+      yield* dispatchTurn("during-compact-recovery", queuedText, "2026-01-01T00:00:02.000Z");
       yield* dispatchTurn(
         "during-compact-second",
         "second queued message",
@@ -1196,9 +1276,15 @@ describe("ProviderCommandReactor", () => {
       );
       expect(queuedThread?.session?.pendingTurnRequestId).toBe("cmd-blocked-compact");
       expect(queuedThread?.session?.compactionQueue?.queued.map((entry) => entry.text)).toEqual([
-        "queued after compact",
+        queuedText,
         "second queued message",
       ]);
+      expect(queuedThread?.session?.compactionQueue?.queued[0]?.context).toEqual(queuedContext);
+      expect(
+        queuedThread?.messages.find(
+          (message) => message.id === "user-message-during-compact-recovery",
+        )?.context,
+      ).toEqual(queuedContext);
       expect(harness.sendTurn).toHaveBeenCalledTimes(1);
       expect(yield* Effect.promise(() => harness.readPendingTurnStarts())).toEqual([
         { threadId: "thread-1" },
@@ -1210,7 +1296,9 @@ describe("ProviderCommandReactor", () => {
       expect(harness.sendTurn).toHaveBeenCalledTimes(3);
       expect(harness.sendTurn).toHaveBeenNthCalledWith(
         2,
-        expect.objectContaining({ input: "queued after compact" }),
+        expect.objectContaining({
+          input: expect.stringContaining("[Skill: $review; ref=queued-skill]"),
+        }),
       );
       expect(harness.sendTurn).toHaveBeenLastCalledWith(
         expect.objectContaining({ input: "second queued message" }),
@@ -1219,6 +1307,12 @@ describe("ProviderCommandReactor", () => {
         (entry) => entry.id === threadId,
       );
       expect(resumed?.runtimeMode).toBe("full-access");
+      expect(
+        resumed?.messages.find((message) => message.id === "user-message-during-compact-recovery")
+          ?.context,
+      ).toEqual(queuedContext);
+      expect(harness.sendTurn.mock.calls[1]?.[0].input).toContain("name: review");
+      expect(harness.sendTurn.mock.calls[1]?.[0].input).not.toContain("t3-context://");
       expect(
         resumed?.messages.filter(
           (message) => message.id === "user-message-during-compact-recovery",
@@ -1696,7 +1790,10 @@ describe("ProviderCommandReactor", () => {
 
   effectIt.effect("cancels first-turn admission when Stop lands before provider start runs", () =>
     Effect.gen(function* () {
-      const harness = yield* Effect.promise(() => createHarness());
+      const activation = yield* Deferred.make<void>();
+      const harness = yield* Effect.promise(() =>
+        createHarness({ serverActivation: Deferred.await(activation) }),
+      );
       const now = "2026-01-01T00:00:00.000Z";
       yield* harness.engine.dispatch({
         type: "thread.turn.start",
@@ -1718,6 +1815,9 @@ describe("ProviderCommandReactor", () => {
         threadId: ThreadId.make("thread-1"),
         createdAt: now,
       });
+      // Commit both commands before activating the reactor, so this test proves
+      // the advertised before-start ordering without racing the admission fiber.
+      yield* Deferred.succeed(activation, undefined);
       yield* Effect.promise(() => harness.drain());
 
       const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(

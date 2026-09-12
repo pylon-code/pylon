@@ -652,7 +652,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       if (!selectedProjectDraftKey) {
         return 0;
       }
-      return appendComposerDraftAttachments(selectedProjectDraftKey, nextAttachments);
+      return appendComposerDraftAttachments(selectedProjectDraftKey, nextAttachments, {
+        appendReference: true,
+      });
     },
     [selectedProjectDraftKey],
   );
@@ -1012,6 +1014,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         commandId: CommandId.make(metadata.commandId),
         text,
         attachments: draft.attachments,
+        context: draft.context,
         modelSelection: draftModelSelection,
         runtimeMode: resolveModelSelectionRuntimeMode(
           selectedEnvironmentServerConfig,

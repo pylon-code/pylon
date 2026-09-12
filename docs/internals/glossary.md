@@ -62,3 +62,14 @@ Terms whose meaning matters across Pylon. Architecture and lifecycle constraints
 | Pull request link    | A persisted thread association identified by host, repository, and number. Links can cross projects within an environment and carry a server-maintained snapshot.                        |
 | Pull request sync    | The reactor that refreshes each distinct linked review once per cadence and discovers native stack layers. Explicit refreshes and failed stack reads trigger another read.               |
 | Current pull request | The link used by single-review controls and older clients. Open work takes precedence; a completed single chain points at its top layer. Unrelated terminal links use the latest update. |
+
+## Composer context
+
+| Term                 | Meaning                                                                                                          |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Context record       | Typed payload keyed by `contextId` in `message.context.records`; attachment bytes remain in server-owned assets. |
+| Context reference    | One inline occurrence, `[label](t3-context://v1/<kind>/<contextId>)`. Multiple references may share one record.  |
+| Attachment binding   | A record's link to its attachment. Normalization can change the attachment ID while preserving context identity. |
+| Attachment inventory | The ordered image records shown as thumbnails, including images with no inline reference.                        |
+
+See [composer context references](composer-context-references.md) for persistence and compatibility boundaries.

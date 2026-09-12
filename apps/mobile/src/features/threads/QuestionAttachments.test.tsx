@@ -7,6 +7,9 @@ const fixture = vi.hoisted(() => ({
   onPaste: undefined as ((payload: { type: "images"; uris: Array<string> }) => void) | undefined,
 }));
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() }, View: "div" }));
+vi.mock("@react-navigation/native", () => ({
+  useNavigation: () => ({ navigate: vi.fn() }),
+}));
 vi.mock("expo-paste-input", () => ({
   TextInputWrapper: (props: { onPaste: typeof fixture.onPaste; children: ReactNode }) => {
     fixture.onPaste = props.onPaste;
@@ -21,6 +24,8 @@ vi.mock("../../components/ComposerAttachmentButton", () => ({
 vi.mock("../../components/ComposerAttachmentStrip", () => ({
   ComposerAttachmentStrip: () => null,
 }));
+vi.mock("../../components/FilePreviewModal", () => ({ FilePreviewModal: () => null }));
+vi.mock("../../components/VideoPreviewModal", () => ({ VideoPreviewModal: () => null }));
 vi.mock("../../lib/composerImages", () => ({
   convertPastedImagesToAttachments: vi.fn(async () => []),
   pickComposerFiles: vi.fn(),

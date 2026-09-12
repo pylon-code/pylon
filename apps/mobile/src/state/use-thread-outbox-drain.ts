@@ -24,6 +24,7 @@ import {
   forgetAcknowledgedThreadMessage,
 } from "./acknowledged-thread-messages";
 import { appAtomRegistry } from "./atom-registry";
+import { serializeComposerMessageForEnvironment } from "./serialize-composer-message";
 import { restoredNewTaskDraftKey } from "./new-task-draft-key";
 import { useServerConfigs, useThreadShells } from "./entities";
 import {
@@ -292,7 +293,11 @@ export async function recoverEditedCreationAfterDelivery(
     // from deleting the attachment files. allowOverflow mirrors the
     // send-failure restore; the send path refuses over-cap drafts, so the
     // state stays recoverable.
-    await mergeComposerDraftContent(draftKey, { text: kept.text, attachments: [] });
+    await mergeComposerDraftContent(draftKey, {
+      text: kept.text,
+      context: kept.context,
+      attachments: [],
+    });
     if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[kept.messageId]) {
       return true;
     }
@@ -384,6 +389,7 @@ export async function restoreRejectedQueuedMessage(
       stampRecoveryDraftProject(queuedMessage, draftKey);
       await mergeComposerDraftContent(draftKey, {
         text: queuedMessage.text,
+        context: queuedMessage.context,
         attachments: queuedMessage.attachments,
       });
     } finally {
@@ -750,7 +756,13 @@ export function useThreadOutboxDrain(): void {
           message: {
             messageId: queuedMessage.messageId,
             role: "user",
-            text: queuedMessage.text,
+            ...serializeComposerMessageForEnvironment({
+              environmentId: queuedMessage.environmentId,
+              text: queuedMessage.text,
+              context: queuedMessage.context,
+              draftAttachments: queuedMessage.attachments,
+              uploadedAttachments: prepared.attachments,
+            }),
             attachments: prepared.attachments,
           },
           modelSelection: settings.modelSelection,
@@ -843,7 +855,13 @@ export function useThreadOutboxDrain(): void {
           commandId: queuedMessage.commandId,
           messageId: queuedMessage.messageId,
           createdAt: queuedMessage.createdAt,
-          text: queuedMessage.text.trim(),
+          ...serializeComposerMessageForEnvironment({
+            environmentId: queuedMessage.environmentId,
+            text: queuedMessage.text.trim(),
+            context: queuedMessage.context,
+            draftAttachments: queuedMessage.attachments,
+            uploadedAttachments: prepared.attachments,
+          }),
           uploadedAttachments: prepared.attachments,
           modelSelection,
           runtimeMode: queuedMessage.runtimeMode ?? DEFAULT_RUNTIME_MODE,

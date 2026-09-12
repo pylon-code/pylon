@@ -1550,6 +1550,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               role: "user",
               text: command.message.text,
               attachments: command.message.attachments,
+              ...(command.message.context !== undefined
+                ? { context: command.message.context }
+                : {}),
               turnId: null,
               streaming: false,
               createdAt: command.createdAt,
@@ -1567,6 +1570,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   messageId: command.message.messageId,
                   text: command.message.text,
                   attachments: command.message.attachments,
+                  ...(command.message.context !== undefined
+                    ? { context: command.message.context }
+                    : {}),
                   modelSelection: effectiveModelSelection,
                   runtimeMode: command.runtimeMode,
                   interactionMode: command.interactionMode,
@@ -1610,6 +1616,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           role: "user",
           text: command.message.text,
           attachments: command.message.attachments,
+          ...(command.message.context !== undefined ? { context: command.message.context } : {}),
           turnId: null,
           streaming: false,
           createdAt: command.createdAt,
@@ -1854,6 +1861,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             role: "user",
             text: queued.text,
             attachments: queued.attachments,
+            ...(queued.context !== undefined ? { context: queued.context } : {}),
           },
           modelSelection: queued.modelSelection,
           runtimeMode: queued.runtimeMode,
@@ -2038,6 +2046,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           role: "user",
           text: command.message.text,
           attachments: command.message.attachments,
+          ...(command.message.context !== undefined ? { context: command.message.context } : {}),
           turnId: activeTurn.turnId,
           streaming: false,
           createdAt: command.createdAt,
