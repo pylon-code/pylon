@@ -2080,6 +2080,193 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  for (const variant of [
+    "known",
+    "multiple",
+    "unknown id",
+    "wrong name",
+    "ambiguous name",
+    "duplicate",
+    "already observed",
+    "unattributed call",
+    "unattributed through snapshot",
+    "changed prefix",
+    "missing proof",
+    "missing lifecycle",
+    "undelivered",
+    "unavailable replay",
+    "extra assistant",
+  ] as const) {
+    it.effect(
+      `reconciles only current correlated tool results from a complete snapshot: ${variant}`,
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const captures = makeCaptures();
+            captures.correlatedPromptLifecycleAvailable = true;
+            captures.correlatedRecoveryProofEpoch = 0;
+            captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+            const resolutions =
+              yield* Queue.unbounded<FakeCaptures["reconnectResolutions"][number]>();
+            captures.reconnectSnapshotResolutionObserved = (resolution) => {
+              Queue.offerUnsafe(resolutions, resolution);
+            };
+            const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+              instanceId,
+              runtimeFactory: fakeRuntimeFactory(captures),
+            });
+            const subscription = yield* subscribe(adapter);
+            yield* adapter.startSession({
+              threadId,
+              cwd: process.cwd(),
+              runtimeMode: "full-access",
+            });
+            const turnFiber = yield* adapter
+              .sendTurn({ threadId, input: "Read the fixture" })
+              .pipe(Effect.forkChild);
+            const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+            const delivered = lifecycleSnapshot(correlationId, "delivered", 2);
+            yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: delivered });
+            const prompt = {
+              role: "user",
+              timestamp: 0,
+              text: "Read the fixture",
+              imageMimeTypes: [],
+              imageDigests: [],
+            } satisfies PrimeDaemonMessage;
+            const call = {
+              ...assistantMessage("", "toolUse"),
+              toolCalls: [
+                { id: "tool-1", name: "mcp_list_tools_t3-code" },
+                ...(variant === "multiple" ? [{ id: "tool-2", name: "read" }] : []),
+                ...(variant === "ambiguous name" ? [{ id: "tool-1", name: "different" }] : []),
+              ],
+            };
+            const result = {
+              role: "toolResult",
+              timestamp: 2,
+              toolCallId: "tool-1",
+              toolName: "mcp_list_tools_t3-code",
+              text: "fixture tools",
+              imageMimeTypes: [],
+              isError: false,
+            } satisfies PrimeDaemonMessage;
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              message: prompt,
+              attribution: { scope: "prompt", correlationId },
+            });
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              message: call,
+              attribution: variant.startsWith("unattributed")
+                ? { scope: "session" }
+                : { scope: "prompt", correlationId },
+            });
+            if (variant === "unattributed through snapshot") {
+              yield* offer(captures, {
+                ...initialSnapshot(),
+                state: { ...initialSnapshot().state, isStreaming: true, messageCount: 2 },
+                messages: [prompt, call],
+                replayContinuity: "complete",
+                connectionGeneration: 0,
+                correlatedProofEpoch: 0,
+                promptLifecycles: { records: [delivered], expired: [] },
+              });
+              expect((yield* Queue.take(resolutions)).reconciled).toBe(true);
+            }
+            if (variant === "already observed")
+              yield* offer(captures, {
+                _tag: "MessageCompleted",
+                message: result,
+                attribution: { scope: "prompt", correlationId },
+              });
+            const missing =
+              variant === "unknown id"
+                ? { ...result, toolCallId: "other" }
+                : variant === "wrong name"
+                  ? { ...result, toolName: "other" }
+                  : variant === "already observed"
+                    ? { ...result, timestamp: 3 }
+                    : result;
+            const messages = [
+              prompt,
+              variant === "changed prefix" ? { ...call, text: "changed" } : call,
+              ...(variant === "already observed" ? [result] : []),
+              missing,
+              ...(variant === "duplicate" ? [{ ...result, timestamp: 3 }] : []),
+              ...(variant === "multiple"
+                ? [{ ...result, timestamp: 3, toolCallId: "tool-2", toolName: "read" }]
+                : []),
+              ...(variant === "extra assistant" ? [assistantMessage("unobserved response")] : []),
+            ];
+            yield* offer(captures, {
+              ...initialSnapshot(),
+              state: {
+                ...initialSnapshot().state,
+                isStreaming: true,
+                messageCount: messages.length,
+              },
+              messages,
+              replayContinuity: variant === "unavailable replay" ? "unavailable" : "complete",
+              connectionGeneration: 0,
+              ...(variant === "missing proof" ? {} : { correlatedProofEpoch: 0 }),
+              promptLifecycles: {
+                records:
+                  variant === "missing lifecycle"
+                    ? []
+                    : [
+                        variant === "undelivered"
+                          ? { ...delivered, deliveryCrossed: false }
+                          : delivered,
+                      ],
+                expired: [],
+              },
+            });
+            const resolution = yield* Queue.take(resolutions);
+            const accepted = variant === "known" || variant === "multiple";
+            expect(resolution.reconciled).toBe(accepted);
+            if (accepted) {
+              expect(turnFiber.pollUnsafe()).toBeUndefined();
+              const final = { ...assistantMessage("Fixture read completed."), timestamp: 4 };
+              yield* offer(captures, {
+                _tag: "MessageCompleted",
+                message: final,
+                attribution: { scope: "prompt", correlationId },
+              });
+              yield* offer(captures, {
+                _tag: "PromptLifecycleUpdated",
+                lifecycle: lifecycleSnapshot(correlationId, "completed", 3, { usage }),
+              });
+            }
+            const settled = yield* Fiber.join(turnFiber);
+            const events = subscription.events.filter((event) => event.turnId === settled.turnId);
+            expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+            expect(events.findLast((event) => event.type === "turn.completed")).toMatchObject({
+              payload: { state: accepted ? "completed" : "failed" },
+            });
+            if (accepted) {
+              expect(events.filter((event) => event.type === "runtime.error")).toEqual([]);
+              expect(
+                events.filter(
+                  (event) =>
+                    event.type === "item.completed" &&
+                    event.payload.itemType === "dynamic_tool_call",
+                ),
+              ).toHaveLength(variant === "multiple" ? 2 : 1);
+              expect(
+                events.filter(
+                  (event) =>
+                    event.type === "content.delta" &&
+                    event.payload.delta === "Fixture read completed.",
+                ),
+              ).toHaveLength(1);
+            }
+          }),
+        ).pipe(Effect.provide(testLayer)),
+    );
+  }
+
   for (const { withImage, hidden } of [
     { withImage: false, hidden: "none" },
     { withImage: true, hidden: "none" },

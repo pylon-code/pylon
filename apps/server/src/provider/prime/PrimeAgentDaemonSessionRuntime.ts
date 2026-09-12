@@ -67,6 +67,7 @@ import {
   primeAgentPromptLifecycleIsSame,
   primeAgentPromptLifecycleIsSuccessor,
   type PrimeDaemonEvent,
+  type PrimeDaemonMessage,
   type PrimeDaemonPromptLifecycleCancellationResult,
   type PrimeDaemonPromptLifecycleSnapshot,
   type PrimeDaemonPromptLifecycleStateSnapshot,
@@ -1676,6 +1677,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let rlmEventContinuityValid = true;
     let rlmTurnUsageBaseline: PrimeDaemonUsage | undefined;
     let observedCompletedMessageCount = 0;
+    let recoveredToolResults:
+      | {
+          readonly generation: number;
+          readonly proofEpoch: number;
+          readonly fingerprints: ReadonlySet<string>;
+        }
+      | undefined;
+    const transcriptFingerprint = (message: PrimeDaemonMessage) =>
+      NodeCrypto.createHash("sha256").update(JSON.stringify(message), "utf8").digest("hex");
     let nativeRunObservedActive = false;
     let nativeInputRunActive = false;
     let nativeInputCompactionActive = false;
@@ -1937,6 +1947,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     };
 
     const beginReconnectResolution = () => {
+      recoveredToolResults = undefined;
       if (reconnectResolution !== undefined && !reconnectResolution.settled) {
         reconnectResolution.settled = true;
         reconnectResolution.resolve(false);
@@ -3348,6 +3359,17 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           correlatedPromptLifecycle: correlatedPromptLifecycleAvailable,
         }),
       );
+      // A published native snapshot can precede a later message_end for the
+      // same tool result. Do not advance either runtime or adapter progress twice.
+      if (
+        decoded._tag === "MessageCompleted" &&
+        decoded.message.role === "toolResult" &&
+        activeWorkerRecovery === undefined &&
+        recoveredToolResults?.generation === connectionGeneration &&
+        recoveredToolResults.proofEpoch === correlatedProofEpoch &&
+        recoveredToolResults.fingerprints.has(transcriptFingerprint(decoded.message))
+      )
+        return Effect.void;
       if (
         correlatedPromptLifecycleAvailable &&
         decoded._tag === "SessionResynced" &&
@@ -3602,6 +3624,18 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 inputActivityRevisionAtOffer,
                 false,
               );
+              recoveredToolResults =
+                correlatedPromptLifecycleAvailable && !event.replacementSnapshot
+                  ? {
+                      generation: eventConnectionGeneration,
+                      proofEpoch: correlatedProofEpoch,
+                      fingerprints: new Set(
+                        event.messages
+                          .filter((message) => message.role === "toolResult")
+                          .map(transcriptFingerprint),
+                      ),
+                    }
+                  : undefined;
             }
             if (snapshotResolution !== undefined && reconnectResolution === snapshotResolution) {
               snapshotResolution.snapshotPublished = true;
