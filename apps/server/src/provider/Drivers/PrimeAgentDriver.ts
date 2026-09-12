@@ -42,13 +42,12 @@ import { makePrimeAgentDaemonAdapter } from "../prime/PrimeAgentDaemonAdapter.ts
 import { negotiatePrimeAgentBackend } from "../prime/PrimeAgentBackendSelection.ts";
 import { locatePrimeAgentPublicPackage } from "../prime/PrimeAgentDaemonBridge.ts";
 import {
-  inspectPrimeAgentDistribution,
   makeLatestPrimePublicationLoader,
   makePrimeDistributionNetworkDependencies,
 } from "../prime/PrimeAgentDistributionVerifier.ts";
 import { makePrimeAgentDaemonManager } from "../prime/PrimeAgentDaemonManager.ts";
 import { fencePrimeAgentAdapter } from "../prime/PrimeAgentGenerationFence.ts";
-import { resolvePrimeManagedBuildReceiptTarget } from "../prime/PrimeAgentManagedToolStore.ts";
+import { inspectPrimeAgentSelectedDistribution } from "../prime/PrimeAgentManagedToolStore.ts";
 import {
   PrimeAgentOwnershipReceiptStore,
   primeAgentOwnershipHomeLockDigest,
@@ -492,23 +491,19 @@ export const PrimeAgentDriver: ProviderDriver<
             }),
           );
           const publicPackage = yield* locatePrimeAgentPublicPackage(executablePath);
-          return yield* Effect.promise(async () => {
-            const managedReceipt = await resolvePrimeManagedBuildReceiptTarget({
-              stateDir: serverConfig.stateDir,
-              packageRoot: publicPackage.packageRoot,
-            });
-            return await inspectPrimeAgentDistribution(
+          return yield* Effect.promise(() =>
+            inspectPrimeAgentSelectedDistribution(
               {
-                stateDir: managedReceipt?.stateDir ?? serverConfig.stateDir,
-                instanceId: managedReceipt?.instanceId ?? instanceId,
+                stateDir: serverConfig.stateDir,
+                instanceId,
                 packageRoot: publicPackage.packageRoot,
                 platform: hostPlatform,
                 checkedAt: snapshot.checkedAt,
                 ...(enableUpdateChecks === undefined ? {} : { enableUpdateChecks }),
               },
               { loadLatestVerifiedPublication },
-            );
-          });
+            ),
+          );
         }).pipe(
           Effect.catchCause(() =>
             Effect.succeed({
@@ -539,7 +534,7 @@ export const PrimeAgentDriver: ProviderDriver<
           );
           const publicPackage = yield* locatePrimeAgentPublicPackage(executablePath);
           const distribution = yield* Effect.promise(() =>
-            inspectPrimeAgentDistribution(
+            inspectPrimeAgentSelectedDistribution(
               {
                 stateDir: serverConfig.stateDir,
                 instanceId,
@@ -753,6 +748,7 @@ export const PrimeAgentDriver: ProviderDriver<
       );
       const checkProvider = checkPrimeAgentProviderStatus(effectiveConfig, processEnv, {
         readBackends,
+        ...(backend.runtime === "daemon" ? { modelDiscoveryDaemon: backend.manager } : {}),
       }).pipe(
         Effect.map(stampSnapshot),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

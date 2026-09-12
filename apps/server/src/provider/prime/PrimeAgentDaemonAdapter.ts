@@ -2271,7 +2271,7 @@ export function makePrimeAgentDaemonAdapter(
           return;
         }
         const result = yield* context.runtime
-          .cancelPromptLifecycle(turn.correlationId)
+          .cancelPromptLifecycle(turn.correlationId, { interruptDelivered: true })
           .pipe(
             Effect.mapError((error) =>
               runtimeOperationError(context.threadId, "session/cancel-prompt", error),
@@ -2682,9 +2682,49 @@ export function makePrimeAgentDaemonAdapter(
                       lifecycle.deliveryCrossed &&
                       (primeAgentPromptLifecycleIsSame(currentLifecycle, lifecycle) ||
                         primeAgentPromptLifecycleCanAdvance(currentLifecycle, lifecycle));
+                    // A native tool can publish its durable result in a snapshot before
+                    // message_end. Admit only results for this prompt's observed calls.
+                    const recoveredToolIds = new Set<string>();
+                    const snapshotRecoversCurrentToolResults =
+                      activeTurn !== undefined &&
+                      event.connectionGeneration !== undefined &&
+                      event.correlatedProofEpoch !== undefined &&
+                      activeTurn.queuedInputCount === 0 &&
+                      currentLifecycle?.kind === "model_prompt" &&
+                      currentLifecycle.phase === "delivered" &&
+                      currentLifecycle.deliveryCrossed &&
+                      lifecycle?.deliveryCrossed === true &&
+                      (primeAgentPromptLifecycleIsSame(currentLifecycle, lifecycle) ||
+                        primeAgentPromptLifecycleCanAdvance(currentLifecycle, lifecycle)) &&
+                      missingMessages.length > 0 &&
+                      missingMessages.every((message) => {
+                        if (
+                          message.role !== "toolResult" ||
+                          activeTurn.durableToolCallNames.get(message.toolCallId) !==
+                            message.toolName ||
+                          !activeTurn.completedRunMessages.some(
+                            (observed) =>
+                              observed.role === "assistant" &&
+                              observed.toolCalls.some(
+                                (call) =>
+                                  call.id === message.toolCallId && call.name === message.toolName,
+                              ),
+                          ) ||
+                          recoveredToolIds.has(message.toolCallId) ||
+                          context.nativeTranscript.some(
+                            (observed) =>
+                              observed.role === "toolResult" &&
+                              observed.toolCallId === message.toolCallId,
+                          )
+                        )
+                          return false;
+                        recoveredToolIds.add(message.toolCallId);
+                        return true;
+                      });
                     const snapshotIsExactOrCurrentTerminal =
                       missingMessages.length === 0 ||
                       snapshotRecoversSubmittedUser ||
+                      snapshotRecoversCurrentToolResults ||
                       (missingMessages.length === 1 &&
                         missingMessages[0]?.role === "assistant" &&
                         context.nativeTranscript.at(-1)?.role === "user");
@@ -3298,14 +3338,20 @@ export function makePrimeAgentDaemonAdapter(
               const turn = activeTurnForNativeEvent(context, event);
               if (turn === undefined) return false;
               if (context.runtime.correlatedPromptLifecycleAvailable) {
-                const observed = new Set(
-                  turn.completedRunMessages.map(primeDaemonMessageFingerprint),
-                );
-                for (const message of event.messages) {
+                // Adoption may observe only the suffix before agent_end replays
+                // the full run. Insert older messages before their next observed
+                // neighbor so a tool call cannot displace the final answer.
+                let insertionIndex = turn.completedRunMessages.length;
+                for (const message of event.messages.toReversed()) {
                   const fingerprint = primeDaemonMessageFingerprint(message);
-                  if (observed.has(fingerprint)) continue;
-                  observed.add(fingerprint);
-                  turn.completedRunMessages.push(message);
+                  const observedIndex = turn.completedRunMessages.findIndex(
+                    (observed) => primeDaemonMessageFingerprint(observed) === fingerprint,
+                  );
+                  if (observedIndex >= 0) {
+                    insertionIndex = observedIndex;
+                  } else {
+                    turn.completedRunMessages.splice(insertionIndex, 0, message);
+                  }
                 }
                 return false;
               }

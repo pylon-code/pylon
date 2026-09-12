@@ -30,7 +30,10 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
-import { makePrimeArtifactGraduationHarness } from "./PrimeAgentArtifactGraduation.test-fixture.ts";
+import {
+  makePrimeArtifactGraduationHarness,
+  primeGraduationEnvironment,
+} from "./PrimeAgentArtifactGraduation.test-fixture.ts";
 import { ServerConfig } from "../../config.ts";
 import { clearMcpProviderSession, setMcpProviderSession } from "../../mcp/McpProviderSession.ts";
 import { makePrimeAgentDaemonAdapter } from "./PrimeAgentDaemonAdapter.ts";
@@ -90,6 +93,9 @@ interface ProofInstance {
   readonly completionWaiters: Map<TurnId, Deferred.Deferred<void>>;
   readonly drain: Fiber.Fiber<void, never>;
   readonly reconnectObserved: Deferred.Deferred<void>;
+  readonly armReconnect: () => void;
+  readonly initialSession: NonNullable<ReturnType<typeof activeSessionFromList>>;
+  readonly inspectSession: () => Promise<ReturnType<typeof activeSessionFromList>>;
   readonly reconnectToolObserved: Deferred.Deferred<void>;
   readonly clientIds: string[];
   readonly supervisorGenerations: string[];
@@ -168,11 +174,7 @@ function proofEnvironment(
   credentialSentinel: string,
 ): Readonly<Record<string, string>> {
   return sanitizePrimeAgentDaemonEnvironment({
-    ...Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    ),
+    ...primeGraduationEnvironment(home, process.env),
     PRIME_AGENT_HOME: home,
     PRIME_AGENT_CODING_AGENT_DIR: home,
     PYLON_PRIME_MODEL_SENTINEL: modelSentinel,
@@ -183,7 +185,7 @@ function proofEnvironment(
 interface FauxMultiBackend {
   readonly port: number;
   readonly reconnectAdmission: Promise<void>;
-  finishReconnect(): void;
+  finishReconnect(): boolean;
   close(): Promise<void>;
 }
 
@@ -284,11 +286,12 @@ function startFauxMultiBackend(): Promise<FauxMultiBackend> {
         reconnectAdmission,
         finishReconnect() {
           if (!reconnectResponse || !reconnectToken) {
-            throw new Error("Faux Prime reconnect request was not admitted.");
+            return false;
           }
           finish(reconnectResponse, reconnectToken);
           reconnectResponse = undefined;
           reconnectToken = undefined;
+          return true;
         },
         close: () =>
           new Promise<void>((closed, closeRejected) => {
@@ -310,6 +313,8 @@ function activeSessionFromList(value: unknown):
   | {
       readonly activeSessionId: string;
       readonly sessionDirectory: string;
+      readonly nativeSessionId: string;
+      readonly sessionFile: string;
     }
   | undefined {
   if (typeof value !== "object" || value === null) return undefined;
@@ -320,9 +325,19 @@ function activeSessionFromList(value: unknown):
   const active = sessions.flatMap((session) => {
     const activeSessionId = safeResponseField(session, "activeSessionId");
     const sessionFile = safeResponseField(session, "sessionFile");
-    return activeSessionId === undefined || sessionFile === undefined
+    const nativeSessionId = safeResponseField(session, "sessionId");
+    return activeSessionId === undefined ||
+      sessionFile === undefined ||
+      nativeSessionId === undefined
       ? []
-      : [{ activeSessionId, sessionDirectory: NodePath.dirname(sessionFile) }];
+      : [
+          {
+            activeSessionId,
+            nativeSessionId,
+            sessionFile,
+            sessionDirectory: NodePath.dirname(sessionFile),
+          },
+        ];
   });
   return active.length === 1 ? active[0] : undefined;
 }
@@ -568,6 +583,7 @@ it.live.skipIf(!configuredGraduationArtifact || !runMultipleInstanceProof)(
           const sessionDirectories: string[] = [];
           let disconnectTransport: (() => void) | undefined;
           let latestClient: PrimeAgentDaemonClient | undefined;
+          let reconnectArmed = false;
 
           const built = yield* Effect.gen(function* () {
             lifecycle.phase = `instance-${index}-manager`;
@@ -630,14 +646,17 @@ it.live.skipIf(!configuredGraduationArtifact || !runMultipleInstanceProof)(
                   ...runtime,
                   events: runtime.events.pipe(
                     Stream.tap((event) =>
-                      event._tag === "SessionResynced" && event.initialSnapshot !== true
-                        ? Effect.sync(() => {
-                            lifecycle.reconnects += 1;
-                          }).pipe(
-                            Effect.andThen(Deferred.succeed(reconnectObserved, undefined)),
-                            Effect.ignore,
-                          )
-                        : Effect.void,
+                      Effect.gen(function* () {
+                        if (
+                          reconnectArmed &&
+                          event._tag === "SessionResynced" &&
+                          event.initialSnapshot !== true
+                        ) {
+                          lifecycle.reconnects += 1;
+                          reconnectArmed = false;
+                          yield* Deferred.succeed(reconnectObserved, undefined);
+                        }
+                      }),
                     ),
                   ),
                 })),
@@ -726,6 +745,14 @@ it.live.skipIf(!configuredGraduationArtifact || !runMultipleInstanceProof)(
             completionWaiters,
             drain,
             reconnectObserved,
+            armReconnect: () => {
+              reconnectArmed = true;
+            },
+            initialSession: session,
+            inspectSession: async () =>
+              activeSessionFromList(
+                await inspectionClient.request({ type: "list", includeClientOwned: true }),
+              ),
             reconnectToolObserved,
             clientIds,
             supervisorGenerations,
@@ -900,21 +927,37 @@ it.live.skipIf(!configuredGraduationArtifact || !runMultipleInstanceProof)(
         if (disconnect === undefined) {
           return yield* Effect.die(new Error("Native proof reconnect control was unavailable."));
         }
-        const reconnectTurn = yield* reconnecting.adapter.sendTurn({
-          threadId: reconnecting.threadId,
-          input: "Reply with exactly PYLON_NATIVE_AFTER_RECONNECT_OK and nothing else.",
-          attachments: [],
-        });
-        yield* Effect.promise(() => fauxBackend.reconnectAdmission).pipe(
-          Effect.timeout(Duration.seconds(60)),
+        const reconnectFiber = yield* reconnecting.adapter
+          .sendTurn({
+            threadId: reconnecting.threadId,
+            input: "Reply with exactly PYLON_NATIVE_AFTER_RECONNECT_OK and nothing else.",
+            attachments: [],
+          })
+          .pipe(Effect.forkScoped);
+        const reconnectTurn = yield* Effect.gen(function* () {
+          yield* Effect.promise(() => fauxBackend.reconnectAdmission).pipe(
+            Effect.timeout(Duration.seconds(60)),
+          );
+          reportSafePhase("reconnect-admitted");
+          reconnecting.armReconnect();
+          disconnect();
+          yield* Deferred.await(reconnecting.reconnectObserved).pipe(
+            Effect.timeout(Duration.seconds(30)),
+          );
+          expect(NodeFS.existsSync(reconnecting.manager.socket)).toBe(true);
+          expect(fauxBackend.finishReconnect()).toBe(true);
+          return yield* Fiber.join(reconnectFiber);
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              fauxBackend.finishReconnect();
+            }),
+          ),
         );
-        disconnect();
-        yield* Deferred.await(reconnecting.reconnectObserved).pipe(
-          Effect.timeout(Duration.seconds(30)),
-        );
-        expect(NodeFS.existsSync(reconnecting.manager.socket)).toBe(true);
-        fauxBackend.finishReconnect();
         yield* waitForTurn(reconnecting, reconnectTurn.turnId);
+        expect(yield* Effect.promise(reconnecting.inspectSession)).toEqual(
+          reconnecting.initialSession,
+        );
         expect(removed.map((instance) => instance.openCount.value)).toEqual(removedOpenCounts);
 
         reportSafePhase("final-teardown");

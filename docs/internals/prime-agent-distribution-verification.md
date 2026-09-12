@@ -13,7 +13,7 @@ publication head `f4d9ef03b529faf2e07031c8b7cd703363316ae5` (tree
 `b9a14b389aa64f54527008fb4d6119a7c57c2b58`):
 
 - `pylon-prime-agent-release-v1.json` binds the four deterministic package assets, full source commit
-  and tree, recipe revision 1, Node 22.23.2, npm 11.10.1, lockfile digest, and root package identity.
+  and tree, recipe revisions 1 and 2, Node 22.23.2, npm 11.10.1, lockfile digest, and root package identity.
 - `pylon-preview-channel-v1.json` binds the build manifest, preview workflow policy revision, workflow
   run, sequence epoch 1, and monotonic run-number sequence.
 - `pylon-stable-channel-v1.json` binds an exact preview, stable sequence/history link, protected policy
@@ -22,6 +22,19 @@ publication head `f4d9ef03b529faf2e07031c8b7cd703363316ae5` (tree
 Unknown recipes, policy revisions, fields, assets, or tag shapes fail closed. The policy registry pins
 both publication workflow byte digests. A publication workflow change therefore needs a new reviewed
 policy revision rather than a permissive parser change.
+
+Recipe 1 writes its release manifest as two-space JSON with a final newline, preserving object field
+order. Channel manifests and private receipts use sorted canonical JSON. Verification hashes the
+original release bytes; it never reserializes a manifest before checking its signed digest. Manifest
+downloads remain limited to 64 KiB; frozen workflow downloads have a separate 256 KiB limit because
+the reviewed publication workflows are larger than the manifests.
+
+The immutable registry retains revisions 1 and 2 and supports revision 3, which uses the pinned
+GitHub REST client to upload release assets. Each revision pins its own
+exact preview and stable workflow bytes. A stable receipt's build policy must equal its verified
+preview's policy; its promotion policy is checked independently against the promotion commit and tree.
+This permits a preview built under an earlier supported policy to be promoted under revision 3
+without changing its original build provenance. Network verification and real-artifact graduation resolve the same frozen policies.
 
 The server uses `@sigstore/bundle`, `@sigstore/core`, `@sigstore/tuf`, and `@sigstore/verify` directly.
 It requires a current Sigstore bundle with an inclusion proof, one verified Rekor timestamp, one
@@ -34,6 +47,10 @@ SLSA bindings:
 - source commit, full signed source tree in the manifests, and the exact six preview subjects;
 - one stable-manifest subject for stable promotion.
 
+The GitHub-specific Fulcio extensions `1.3.6.1.4.1.57264.1.1` through `.6` contain raw UTF-8 strings,
+as specified by [Fulcio](https://github.com/sigstore/fulcio/blob/main/docs/oid-info.md#extension-values).
+They are checked after signature, certificate-chain, and transparency verification.
+
 The fetch and trusted-root functions are injected. Production keeps Sigstore TUF cache data below the
 Pylon runtime state directory rather than writing to an unrelated user cache. Verified channel,
 publication, attestation, and installer-bundle results use one process-wide repository/channel TTL
@@ -42,8 +59,9 @@ bound retry traffic; explicit maintenance refreshes still reuse a just-fresh sta
 multi-subject preview attestation is fetched and verified once for its exact subject set rather than
 once per subject. Candidate and request counts remain bounded.
 
-Focused tests use deterministic manifests and a cryptographic-verifier seam, then exercise certificate
-and SLSA binding separately. Bridge CI can supply the first immutable artifact set through the
+Focused tests retain deterministic manifests and a cryptographic-verifier seam, and also verify the
+published `pylon-build-g83fe3dfe3f10-r1` manifests and real Fulcio/Rekor bundle against captured Sigstore
+trust material without network requests or cryptographic stubs. Bridge CI supplies an immutable artifact set through the
 fail-closed real-fixture gate. The gate has no skip or metadata-only success mode.
 
 ## Protected real-artifact graduation
@@ -59,7 +77,7 @@ server-owned Sigstore verifier and publication policy as the network loader. It 
 bytes only after every release, subject, source, workflow, recipe, and digest binding succeeds.
 
 The workflow then passes those bytes through the production managed tool store. Stock is not a dispatch
-input. Pylon source freezes the reviewed Prime Agent 0.8.1 repository, release, asset identity, exact URL,
+input. Pylon source freezes the reviewed Prime Agent 0.9.4 repository, release, asset identity, exact URL,
 size, SHA-256, and SHA-512. The downloader checks live metadata only against that identity and treats the
 independently pinned byte digests as the trust root before installing with lifecycle scripts disabled.
 Real opt-in tests consume the artifact directory rather than a source checkout or caller-supplied
@@ -126,7 +144,7 @@ marker; it never compares the values. Settings also shows the distribution label
 that shared view and invoke environment-owned managed maintenance RPCs. Mobile shows read-only host
 maintenance status and host-control instructions for each Prime instance under its environment.
 
-Stock Prime Agent 0.8.1 remains ready and manually maintained. Linux and macOS use private receipts;
+Stock Prime Agent 0.9.4 remains ready and manually maintained. Linux and macOS use private receipts;
 WSL2 follows Linux. Native Windows and `.cmd` receipt admission are explicitly unavailable until Prime
 supports native Windows distributions.
 
@@ -136,3 +154,9 @@ The verifier itself fetches only bounded public manifests, attestation bundles, 
 optional exact root artifact. It has no extraction, selection, cleanup, or removal authority. The
 managed tool store consumes its verified publication bundle through that narrow seam. Neither module
 generalizes Prime feed semantics to Codex, Claude, Cursor, Grok, OpenCode, or Comet.
+
+## Self-contained recipe 2
+
+Recipe 2 includes the locked production dependency tree in the signed root archive, including nested dependencies, installed peers and every optional platform package. Managed installation remains offline: it extracts verified files and creates the contained launcher without npm, lifecycle scripts or dependency downloads. Historical recipe 1 receipts and publication policies 1–3 remain verifiable; policy 4 binds the new recipe's protected build workflow.
+
+For SDK declaration filenames longer than the basic tar name field, the archive parser accepts one bounded per-file PAX record containing only path, size and mtime. It requires an immediate regular file, exact numeric agreement, and the same package-root, path, collision and size validation as ordinary entries. Global, repeated, nested, orphaned, link-bearing and unknown metadata fail closed. It never creates links from archive entries.

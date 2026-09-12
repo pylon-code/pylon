@@ -38,6 +38,7 @@ const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
 const WORKFLOW_BUILD_TYPE = "https://actions.github.io/buildtypes/workflow/v1";
 const IN_TOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json";
 const MAX_MANIFEST_BYTES = 64 * 1024;
+const MAX_WORKFLOW_BYTES = 256 * 1024;
 const MAX_PACKAGE_MANIFEST_BYTES = 256 * 1024;
 const MAX_RECEIPT_BYTES = 64 * 1024;
 const MAX_ATTESTATION_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -373,17 +374,52 @@ export const PRIME_RELEASE_RECIPE = Object.freeze({
   npmVersion: "11.10.1",
   minimumNodeVersion: "22.8.0",
 });
+export const PRIME_RELEASE_RECIPES = Object.freeze([
+  PRIME_RELEASE_RECIPE,
+  Object.freeze({ ...PRIME_RELEASE_RECIPE, recipeRevision: 2 }),
+]);
 export const PRIME_PUBLICATION_SCHEMA_SOURCE = Object.freeze({
   commit: "f4d9ef03b529faf2e07031c8b7cd703363316ae5",
   tree: "b9a14b389aa64f54527008fb4d6119a7c57c2b58",
 });
-export const PRIME_PUBLICATION_POLICY = Object.freeze({
-  publicationPolicyRevision: 1,
-  previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
-  previewWorkflowSha256: "e790a5da7063bd40fbd886e84945c3200291194fdbd5b002079349e45356a41d",
-  stableWorkflowPath: PRIME_STABLE_WORKFLOW,
-  stableWorkflowSha256: "dfcecdf6b58f143f9b7a543eadd124c190350ae29ac9eadccb907f1398b0958a",
-});
+export const PRIME_PUBLICATION_POLICIES = Object.freeze([
+  Object.freeze({
+    publicationPolicyRevision: 1,
+    previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
+    previewWorkflowSha256: "e790a5da7063bd40fbd886e84945c3200291194fdbd5b002079349e45356a41d",
+    stableWorkflowPath: PRIME_STABLE_WORKFLOW,
+    stableWorkflowSha256: "dfcecdf6b58f143f9b7a543eadd124c190350ae29ac9eadccb907f1398b0958a",
+  }),
+  Object.freeze({
+    publicationPolicyRevision: 2,
+    previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
+    previewWorkflowSha256: "9f4e3f38fb0bdb9c11662310c5369fb792765a3090e0f74b0ec0b34127b43ed8",
+    stableWorkflowPath: PRIME_STABLE_WORKFLOW,
+    stableWorkflowSha256: "0f04d1f55f54312d933087d88de6883e8408bb0cd9f060d3b5851d710698b1af",
+  }),
+  Object.freeze({
+    publicationPolicyRevision: 3,
+    previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
+    previewWorkflowSha256: "16f68e46801eccca5e7e99736f346b5ffd96ce7188792d4ac8fbc4580408a736",
+    stableWorkflowPath: PRIME_STABLE_WORKFLOW,
+    stableWorkflowSha256: "96e4f3ccd889a17a391f00b4398d132a4234b5bc337045fedd3605f4eb74c331",
+  }),
+  Object.freeze({
+    publicationPolicyRevision: 4,
+    previewWorkflowPath: PRIME_PREVIEW_WORKFLOW,
+    previewWorkflowSha256: "8ad08abd8004b7205b04dc3cd9f7cc0e720649c9c6814431622f5b4dfb6e4c32",
+    stableWorkflowPath: PRIME_STABLE_WORKFLOW,
+    stableWorkflowSha256: "52c72e078b08c0a2774ab3dc512283c46ab31c4a87738d87007f55f955662703",
+  }),
+]);
+
+function publicationPolicyFor(revision: number) {
+  const policy = PRIME_PUBLICATION_POLICIES.find(
+    (candidate) => candidate.publicationPolicyRevision === revision,
+  );
+  if (!policy) throw new Error("Unsupported Pylon publication policy revision.");
+  return policy;
+}
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -419,6 +455,7 @@ function parseCanonicalJson<T>(
   name: string,
   maxBytes: number,
   decode: (input: unknown) => T,
+  keyOrder: "sorted" | "preserved" = "sorted",
 ): T {
   if (bytes.byteLength < 1 || bytes.byteLength > maxBytes) {
     throw new Error(`${name} exceeds its bounded size.`);
@@ -430,7 +467,11 @@ function parseCanonicalJson<T>(
     throw new Error(`${name} is not JSON.`, { cause });
   }
   const decoded = decode(parsed);
-  if (canonicalPrimeDistributionJson(decoded) !== bytes.toString("utf8")) {
+  const serialized =
+    keyOrder === "preserved"
+      ? `${JSON.stringify(parsed, null, 2)}\n`
+      : canonicalPrimeDistributionJson(decoded);
+  if (serialized !== bytes.toString("utf8")) {
     throw new Error(`${name} is not canonical publication JSON.`);
   }
   return decoded;
@@ -442,12 +483,17 @@ function parseReleaseManifest(bytes: Buffer): ReleaseManifest {
     "Pylon Prime release manifest",
     MAX_MANIFEST_BYTES,
     decodeReleaseManifest,
+    // Release recipes preserve field order; the original bytes remain signed subjects.
+    "preserved",
+  );
+  const recipe = PRIME_RELEASE_RECIPES.find(
+    (entry) => entry.recipeRevision === manifest.build.recipeRevision,
   );
   if (
-    manifest.build.recipeRevision !== PRIME_RELEASE_RECIPE.recipeRevision ||
-    manifest.build.node !== PRIME_RELEASE_RECIPE.nodeVersion ||
-    manifest.build.npm !== PRIME_RELEASE_RECIPE.npmVersion ||
-    manifest.package.minimumNode !== PRIME_RELEASE_RECIPE.minimumNodeVersion ||
+    !recipe ||
+    manifest.build.node !== recipe.nodeVersion ||
+    manifest.build.npm !== recipe.npmVersion ||
+    manifest.package.minimumNode !== recipe.minimumNodeVersion ||
     manifest.build.id !==
       `pylon-build-g${manifest.source.commit.slice(0, 12)}-r${manifest.build.recipeRevision}` ||
     manifest.build.assetBaseUrl !==
@@ -499,8 +545,8 @@ function parsePreviewManifest(
     MAX_MANIFEST_BYTES,
     decodePreviewManifest,
   );
+  publicationPolicyFor(manifest.publicationPolicyRevision);
   if (
-    manifest.publicationPolicyRevision !== PRIME_PUBLICATION_POLICY.publicationPolicyRevision ||
     manifest.build.tag !== release.build.id ||
     manifest.build.id !== release.build.id ||
     manifest.build.recipeRevision !== release.build.recipeRevision ||
@@ -529,6 +575,8 @@ function parseStableManifest(bytes: Buffer): StableManifest {
     MAX_MANIFEST_BYTES,
     decodeStableManifest,
   );
+  publicationPolicyFor(manifest.build.publicationPolicyRevision);
+  publicationPolicyFor(manifest.promotion.publicationPolicyRevision);
   const stableMatch = /^pylon-stable-([0-9]{6})-g([0-9a-f]{12})-r([1-9][0-9]*)$/.exec(manifest.tag);
   if (
     !stableMatch ||
@@ -542,11 +590,7 @@ function parseStableManifest(bytes: Buffer): StableManifest {
         Number(/^pylon-stable-([0-9]{6})-/.exec(manifest.history.previous.tag)?.[1]) !==
           manifest.sequence - 1) ||
     manifest.build.previewTag !== manifest.build.id ||
-    manifest.build.recipeRevision !== PRIME_RELEASE_RECIPE.recipeRevision ||
-    manifest.build.publicationPolicyRevision !==
-      PRIME_PUBLICATION_POLICY.publicationPolicyRevision ||
-    manifest.promotion.publicationPolicyRevision !==
-      PRIME_PUBLICATION_POLICY.publicationPolicyRevision
+    !PRIME_RELEASE_RECIPES.some((entry) => entry.recipeRevision === manifest.build.recipeRevision)
   ) {
     throw new Error("Stable manifest is not an exact closed Pylon build receipt.");
   }
@@ -592,9 +636,8 @@ function exactRegex(value: string): string {
 }
 
 function certificateExtension(cert: X509Certificate, oid: string): string | undefined {
-  const extension = cert.extension(oid);
-  const value = extension?.valueObj.subs[0]?.value;
-  return value?.toString("utf8");
+  // Fulcio's GitHub-specific .1 through .6 extensions contain raw UTF-8, not DER strings.
+  return cert.extension(oid)?.value.toString("utf8");
 }
 
 function certificateFromBundle(bundle: ReturnType<typeof bundleFromJSON>): X509Certificate {
@@ -842,6 +885,7 @@ export async function verifyPrimePublicationFixture(
       stable.build.previewTag !== preview.build.tag ||
       stable.build.id !== preview.build.id ||
       stable.build.recipeRevision !== preview.build.recipeRevision ||
+      stable.build.publicationPolicyRevision !== preview.publicationPolicyRevision ||
       canonicalPrimeDistributionJson(stable.build.source) !==
         canonicalPrimeDistributionJson(preview.build.source) ||
       canonicalPrimeDistributionJson(stable.build.assets) !==
@@ -1695,9 +1739,7 @@ async function verifyRemoteSourcePolicy(
   expected: PrimeSourcePolicyExpectation,
   dependencies: PrimeDistributionNetworkDependencies,
 ): Promise<void> {
-  if (expected.publicationPolicyRevision !== PRIME_PUBLICATION_POLICY.publicationPolicyRevision) {
-    throw new Error("Unsupported Pylon publication policy revision.");
-  }
+  const policy = publicationPolicyFor(expected.publicationPolicyRevision);
   const commit = decodeGitHubCommit(
     await dependencies.fetchJson(
       `https://api.github.com/repos/${PRIME_DISTRIBUTION_REPOSITORY}/git/commits/${expected.commit}`,
@@ -1709,12 +1751,12 @@ async function verifyRemoteSourcePolicy(
   }
   const workflowBytes = await dependencies.fetchBytes(
     `https://raw.githubusercontent.com/${PRIME_DISTRIBUTION_REPOSITORY}/${expected.commit}/${expected.workflow}`,
-    MAX_MANIFEST_BYTES,
+    MAX_WORKFLOW_BYTES,
   );
   const expectedDigest =
     expected.workflow === PRIME_PREVIEW_WORKFLOW
-      ? PRIME_PUBLICATION_POLICY.previewWorkflowSha256
-      : PRIME_PUBLICATION_POLICY.stableWorkflowSha256;
+      ? policy.previewWorkflowSha256
+      : policy.stableWorkflowSha256;
   if (sha256(workflowBytes) !== expectedDigest) {
     throw new Error("Signer workflow bytes do not match the frozen publication policy revision.");
   }
@@ -2270,7 +2312,7 @@ export async function verifyPrimePublicationArtifactDirectory(input: {
   const workflowBytes = await readPrimeGraduationFixtureFile(
     root,
     PRIME_GRADUATION_PREVIEW_WORKFLOW,
-    MAX_MANIFEST_BYTES,
+    MAX_WORKFLOW_BYTES,
   );
   const trustedRoot = await getTrustedRoot({
     ...(input.tufCachePath ? { cachePath: input.tufCachePath } : {}),
@@ -2281,12 +2323,12 @@ export async function verifyPrimePublicationArtifactDirectory(input: {
     verifyBundle: async (bundle, expected) =>
       verifyPrimeSigstoreBundle(bundle, trustedRoot, expected),
     verifySourcePolicy: async (expected) => {
+      const policy = publicationPolicyFor(expected.publicationPolicyRevision);
       if (
         expected.workflow !== PRIME_PREVIEW_WORKFLOW ||
-        expected.publicationPolicyRevision !== PRIME_PUBLICATION_POLICY.publicationPolicyRevision ||
         expected.commit !== commit.sha ||
         expected.tree !== commit.tree.sha ||
-        sha256(workflowBytes) !== PRIME_PUBLICATION_POLICY.previewWorkflowSha256
+        sha256(workflowBytes) !== policy.previewWorkflowSha256
       ) {
         throw new Error(
           "Prime graduation source head, tree, workflow, or policy revision is not exact.",

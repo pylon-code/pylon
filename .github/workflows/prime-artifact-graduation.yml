@@ -50,7 +50,6 @@ jobs:
             else
               echo "PYLON_PRIME_SECOND_ARTIFACT_DIR="
             fi
-            echo "PYLON_PRIME_STOCK_TARBALL=$RUNNER_TEMP/prime-stock/prime-agent-0.8.1.tgz"
             echo "PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN=$RUNNER_TEMP/prime-stock-install/node_modules/.bin/prime-agent"
             echo "PYLON_PRIME_GRADUATION_RESULT=$RUNNER_TEMP/prime-graduation-results/cases.json"
             echo "PYLON_REAL_PRIME_AGENT_MULTI_PROOF=1"
@@ -58,13 +57,23 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Checkout exact Pylon revision
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          REPOSITORY_URL: https://github.com/pylon-code/pylon.git
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "pylon-code/pylon"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test ! -e .git
+          export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
+          export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false
+          unset GIT_CONFIG_PARAMETERS
+          git init --quiet
+          git remote add origin "$REPOSITORY_URL"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c protocol.version=2 fetch --quiet --no-tags --no-recurse-submodules --depth=1 origin "$SOURCE_SHA"
+          git checkout --quiet --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15 # v1
@@ -83,6 +92,10 @@ jobs:
             --artifact-directory "$RUNNER_TEMP/prime-preview"
           node apps/server/scripts/prime-artifact-graduation.ts download-stock \
             --stock-directory "$RUNNER_TEMP/prime-stock"
+          node --input-type=module -e '
+            import { PRIME_STOCK_ARTIFACT } from "./apps/server/src/provider/prime/PrimeAgentStockArtifact.ts";
+            console.log(`PYLON_PRIME_STOCK_TARBALL=${process.env.RUNNER_TEMP}/prime-stock/${PRIME_STOCK_ARTIFACT.assetName}`);
+          ' >> "$GITHUB_ENV"
 
       - name: Download optional exact second preview
         if: inputs.second_preview_tag != ''
@@ -165,7 +178,40 @@ jobs:
             fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `# Prime artifact graduation\n\n**Result:** passed\n\n**Run URL (required for stable approval):** ${process.env.RUN_URL}\n\n## Verified preview roots\n${preview}\n\n**Tests:** ${result.tests.passed} passed, ${result.tests.skipped} skipped\n`);
           '
 
+      - name: Preserve bounded test diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const directory = process.env.RUNNER_TEMP + "/prime-graduation-results";
+            const path = directory + "/vitest.json";
+            const files = ["PrimeAgentArtifactGraduation.integration.test.ts", "PrimeAgentDaemonBridge.test.ts", "PrimeAgentDriver.test.ts", "PrimeAgentRestartAdoption.real.test.mjs", "PrimeAgentMultipleInstances.integration.test.ts"];
+            let summary = { status: "unavailable" };
+            try {
+              if (fs.statSync(path).size > 8 * 1024 * 1024) throw new Error("Report exceeds its bound.");
+              const report = JSON.parse(fs.readFileSync(path, "utf8"));
+              const counts = [report.numTotalTests, report.numPassedTests, report.numFailedTests, report.numPendingTests];
+              if (!counts.every((count) => Number.isSafeInteger(count) && count >= 0 && count <= 10000)) throw new Error("Invalid counts.");
+              if (!Array.isArray(report.testResults) || report.testResults.length > files.length) throw new Error("Invalid file set.");
+              const results = report.testResults.map((result) => {
+                const file = files.find((name) => result.name.endsWith("/" + name)) ?? "unrecognized";
+                if (!Array.isArray(result.assertionResults) || result.assertionResults.length > 10000) throw new Error("Invalid assertion set.");
+                const failures = result.assertionResults.flatMap((assertion, index) => assertion.status === "failed" ? [{
+                  index,
+                  category: Array.isArray(assertion.failureMessages) && assertion.failureMessages.some((message) => typeof message === "string" && /timed out|timeout|safety ceiling/i.test(message)) ? "timeout" : "failure",
+                }] : []);
+                return { file, failed: result.status === "failed", failures };
+              });
+              summary = { status: "available", total: counts[0], passed: counts[1], failed: counts[2], skipped: counts[3], results };
+            } catch {}
+            fs.mkdirSync(directory, { recursive: true });
+            fs.writeFileSync(directory + "/test-summary.json", JSON.stringify(summary, null, 2) + "\n", { mode: 0o600 });
+            console.log(JSON.stringify(summary));
+          '
+
       - name: Upload bounded graduation evidence
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: prime-artifact-graduation-${{ inputs.preview_tag }}
@@ -174,6 +220,7 @@ jobs:
             ${{ runner.temp }}/prime-graduation-results/second-verification.json
             ${{ runner.temp }}/prime-graduation-results/cases.json
             ${{ runner.temp }}/prime-graduation-results/graduation-summary.json
+            ${{ runner.temp }}/prime-graduation-results/test-summary.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 9

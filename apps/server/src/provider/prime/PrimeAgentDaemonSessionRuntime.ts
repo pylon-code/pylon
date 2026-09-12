@@ -67,6 +67,7 @@ import {
   primeAgentPromptLifecycleIsSame,
   primeAgentPromptLifecycleIsSuccessor,
   type PrimeDaemonEvent,
+  type PrimeDaemonMessage,
   type PrimeDaemonPromptLifecycleCancellationResult,
   type PrimeDaemonPromptLifecycleSnapshot,
   type PrimeDaemonPromptLifecycleStateSnapshot,
@@ -472,6 +473,12 @@ const createSessionAlreadyActiveFailureSchema = Schema.Struct({
     activeSessionId: Schema.optional(Schema.String),
   }),
 });
+const abortAndClearQueueSuccessSchema = Schema.Struct({
+  type: Schema.Literal("response"),
+  command: Schema.Literal("abort_and_clear_queue"),
+  success: Schema.Literal(true),
+  data: Schema.Unknown,
+});
 const resumeQueueSuccessSchema = Schema.Struct({
   type: Schema.Literal("response"),
   command: Schema.Literal("resume_queue"),
@@ -648,6 +655,7 @@ const decodeCreateFailure = Schema.decodeUnknownOption(createFailureSchema);
 const decodeCreateSessionAlreadyActiveFailure = Schema.decodeUnknownOption(
   createSessionAlreadyActiveFailureSchema,
 );
+const decodeAbortAndClearQueueSuccess = Schema.decodeUnknownOption(abortAndClearQueueSuccessSchema);
 const decodeResumeQueueSuccess = Schema.decodeUnknownOption(resumeQueueSuccessSchema);
 const decodeResumeQueueEmpty = Schema.decodeUnknownOption(resumeQueueEmptySchema);
 const decodeSessionListSuccess = Schema.decodeUnknownOption(sessionListSuccessSchema);
@@ -1183,6 +1191,7 @@ export interface PrimeAgentDaemonSessionRuntime {
   ) => Effect.Effect<PrimeDaemonPromptLifecycleSnapshot, PrimeAgentDaemonSessionRuntimeError>;
   readonly cancelPromptLifecycle: (
     correlationId: string,
+    options?: { readonly interruptDelivered: true },
   ) => Effect.Effect<
     PrimeDaemonPromptLifecycleCancellationResult,
     PrimeAgentDaemonSessionRuntimeError
@@ -1676,6 +1685,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let rlmEventContinuityValid = true;
     let rlmTurnUsageBaseline: PrimeDaemonUsage | undefined;
     let observedCompletedMessageCount = 0;
+    let recoveredToolResults:
+      | {
+          readonly generation: number;
+          readonly proofEpoch: number;
+          readonly fingerprints: ReadonlySet<string>;
+        }
+      | undefined;
+    const transcriptFingerprint = (message: PrimeDaemonMessage) =>
+      NodeCrypto.createHash("sha256").update(JSON.stringify(message), "utf8").digest("hex");
     let nativeRunObservedActive = false;
     let nativeInputRunActive = false;
     let nativeInputCompactionActive = false;
@@ -1937,6 +1955,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     };
 
     const beginReconnectResolution = () => {
+      recoveredToolResults = undefined;
       if (reconnectResolution !== undefined && !reconnectResolution.settled) {
         reconnectResolution.settled = true;
         reconnectResolution.resolve(false);
@@ -2363,7 +2382,9 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }
     }
     let ownedSessionContractProofCurrent = true;
-    const requireCurrentOwnedSessionContract = (operation: "prompt" | "steer" | "follow-up") =>
+    const requireCurrentOwnedSessionContract = (
+      operation: "prompt" | "steer" | "follow-up" | "abort",
+    ) =>
       Effect.suspend(() => {
         const proof = currentOwnedSessionContractProof(connection!, client);
         ownedSessionContractProofCurrent = ownedSessionContractProofCurrent && proof !== undefined;
@@ -3348,6 +3369,17 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           correlatedPromptLifecycle: correlatedPromptLifecycleAvailable,
         }),
       );
+      // A published native snapshot can precede a later message_end for the
+      // same tool result. Do not advance either runtime or adapter progress twice.
+      if (
+        decoded._tag === "MessageCompleted" &&
+        decoded.message.role === "toolResult" &&
+        activeWorkerRecovery === undefined &&
+        recoveredToolResults?.generation === connectionGeneration &&
+        recoveredToolResults.proofEpoch === correlatedProofEpoch &&
+        recoveredToolResults.fingerprints.has(transcriptFingerprint(decoded.message))
+      )
+        return Effect.void;
       if (
         correlatedPromptLifecycleAvailable &&
         decoded._tag === "SessionResynced" &&
@@ -3602,6 +3634,18 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 inputActivityRevisionAtOffer,
                 false,
               );
+              recoveredToolResults =
+                correlatedPromptLifecycleAvailable && !event.replacementSnapshot
+                  ? {
+                      generation: eventConnectionGeneration,
+                      proofEpoch: correlatedProofEpoch,
+                      fingerprints: new Set(
+                        event.messages
+                          .filter((message) => message.role === "toolResult")
+                          .map(transcriptFingerprint),
+                      ),
+                    }
+                  : undefined;
             }
             if (snapshotResolution !== undefined && reconnectResolution === snapshotResolution) {
               snapshotResolution.snapshotPublished = true;
@@ -3871,11 +3915,21 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         if (rawType === "session_resynced" && mcpRecoveryPending && !mcpRecoveryFailed) {
           const recoveringWorkerSnapshot = activeWorkerRecovery?.explicitSnapshotRaw === raw;
-          if (recoveringWorkerSnapshot && rlmQuiescenceAvailable) {
-            // Prime ties MCP ownership to the exact daemon client and rejects replacement
-            // while an agent is streaming. Reconcile this same-worker snapshot now, but do
-            // not make the session usable until the authoritative barrier reaches idle and
-            // the new client reclaims scoped MCP ownership.
+          const resynced = decodePrimeAgentDaemonEvent(raw, {
+            correlatedPromptLifecycle: correlatedPromptLifecycleAvailable,
+          });
+          const streamingTransportReconnect =
+            activeWorkerRecovery === undefined &&
+            correlatedProofIngressEpoch !== undefined &&
+            hasCurrentOwnedSessionContractProof(connection!, client) &&
+            resynced._tag === "SessionResynced" &&
+            resynced.state.sessionId === sessionId &&
+            resynced.state.activeSessionId === activeSessionId &&
+            resynced.state.isStreaming;
+          if ((recoveringWorkerSnapshot || streamingTransportReconnect) && rlmQuiescenceAvailable) {
+            // Reattach releases the old client's MCP ownership, but Prime rejects replacement
+            // while the same agent is streaming. Reconcile its proved snapshot now; keep input
+            // blocked until authoritative quiescence and the new client's MCP reclamation.
             beginQuiescenceMcpRecovery();
             mcpRecoveryPending = false;
           } else {
@@ -7326,7 +7380,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     });
 
     const cancelPromptLifecycle = Effect.fn("PrimeAgentDaemonSessionRuntime.cancelPromptLifecycle")(
-      function* (correlationId: string) {
+      function* (correlationId: string, options?: { readonly interruptDelivered: true }) {
         yield* ensureOpen("abort");
         yield* requireCorrelatedPromptLifecycleAdmission("abort");
         const proofEpoch = yield* requireCurrentCorrelatedPromptLifecycleProof("abort");
@@ -7374,6 +7428,53 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 commitPromptLifecycleStateMerge(observation.plan);
               });
             }
+          }
+        }
+        if (
+          options?.interruptDelivered === true &&
+          result.status === "too_late" &&
+          result.lifecycle.phase === "delivered" &&
+          promptLifecycles.get(correlationId)?.phase === "delivered"
+        ) {
+          const targetConnection = connection!;
+          const targetActiveSessionId = activeSessionId;
+          yield* requireCurrentOwnedSessionContract("abort");
+          yield* requireUnchangedCorrelatedPromptLifecycleProof("abort", proofEpoch);
+          yield* requireCorrelatedPromptLifecycleAdmission("abort");
+          if (connection !== targetConnection || activeSessionId !== targetActiveSessionId) {
+            return yield* runtimeError(
+              "abort",
+              "request-failed",
+              "Prime Agent changed its owned attachment before interruption.",
+            );
+          }
+          if (promptLifecycles.get(correlationId)?.phase !== "delivered") return result;
+          // Stop is a session operation after delivery. Never replay it against
+          // a reattached/replaced session; the terminal lifecycle settles the turn.
+          needsResumeAfterAbort = true;
+          const response = yield* Effect.tryPromise({
+            try: () =>
+              client.request(
+                { type: "abort_and_clear_queue", activeSessionId: targetActiveSessionId },
+                COMMAND_TIMEOUT_MS,
+                { recoverable: false, recoverAcrossReconnect: false },
+              ),
+            catch: () =>
+              runtimeError(
+                "abort",
+                "request-failed",
+                "Could not interrupt the owned Prime Agent session.",
+              ),
+          });
+          yield* requireUnchangedCorrelatedPromptLifecycleProof("abort", proofEpoch);
+          yield* requireCurrentOwnedSessionContract("abort");
+          const decoded = decodeAbortAndClearQueueSuccess(response);
+          if (Option.isNone(decoded) || Option.isNone(decodeInputQueueCounts(decoded.value.data))) {
+            return yield* runtimeError(
+              "abort",
+              "invalid-response",
+              "Prime Agent returned an invalid owned interruption response.",
+            );
           }
         }
         return result;

@@ -333,6 +333,7 @@ function fixture(options?: {
     },
   ) => Promise<unknown>;
   readonly cancelPromptLifecycleImpl?: (correlationId: string) => Promise<unknown>;
+  readonly interruptOwnedSessionImpl?: () => Promise<unknown>;
   readonly getPromptLifecyclesImpl?: () => Promise<unknown>;
   readonly resumeQueueResponses?: ReadonlyArray<unknown>;
   readonly listedActiveSessionId?: string;
@@ -399,8 +400,31 @@ function fixture(options?: {
     waitForHello(): Promise<unknown> {
       return Promise.resolve({});
     }
-    request(command: Readonly<Record<string, unknown>>): Promise<unknown> {
+    request(
+      command: Readonly<Record<string, unknown>>,
+      timeoutMs?: number,
+      requestOptions?: {
+        readonly recoverable?: boolean;
+        readonly recoverAcrossReconnect?: boolean;
+      },
+    ): Promise<unknown> {
       captures.commands.push(command);
+      if (command.type === "abort_and_clear_queue") {
+        captures.connectionCalls.push({
+          method: "interruptOwnedSession",
+          args: [command, timeoutMs, requestOptions],
+        });
+        queuedInputSuspended = true;
+        return (
+          options?.interruptOwnedSessionImpl?.() ??
+          Promise.resolve({
+            type: "response",
+            command: "abort_and_clear_queue",
+            success: true,
+            data: { steering: [], followUp: [] },
+          })
+        );
+      }
       if (command.type === "complete_owned_session") {
         return Promise.resolve({
           type: "response",
@@ -1451,6 +1475,108 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect("suppresses only exact tool completions already published in a correlated resync", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const test = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: { ...snapshot(), promptLifecycles: { records: [], expired: [] } },
+        });
+        const runtime = yield* test.make();
+        const received = yield* collectEvents(runtime, 7).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const result = {
+          role: "toolResult",
+          toolCallId: "tool-recovered",
+          toolName: "read",
+          content: [{ type: "text", text: "recovered result" }],
+          isError: false,
+          timestamp: 2,
+        };
+        test.setCorrelatedPromptLifecycleProof(false);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        test.setCorrelatedPromptLifecycleProof(true);
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(9),
+              state: { ...snapshot(9).state, messageCount: 1 },
+              messages: [result],
+              promptLifecycles: { records: [], expired: [] },
+              replay: {
+                status: "complete",
+                toSequence: 9,
+                toCursor: { generation: "daemon-1", sequence: 9 },
+              },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Effect.promise(() => test.emit({ type: "connection_status", status: "connected" }));
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            attribution: { scope: "session" },
+            meta: { cursor: { generation: "daemon-1", sequence: 10 } },
+            event: { type: "message_end", promptCorrelationId: null, message: result },
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            attribution: { scope: "session" },
+            meta: { cursor: { generation: "daemon-1", sequence: 11 } },
+            event: {
+              type: "message_end",
+              promptCorrelationId: null,
+              message: {
+                ...result,
+                timestamp: 2,
+                content: [{ type: "text", text: "different result" }],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            attribution: { scope: "session" },
+            event: {
+              type: "message_end",
+              promptCorrelationId: null,
+              message: { ...result, timestamp: 3 },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            attribution: { scope: "session" },
+            event: {
+              type: "message_end",
+              promptCorrelationId: null,
+              message: terminalAssistantMessage(),
+            },
+          }),
+        );
+        const events = yield* Fiber.join(received);
+        const completed = events.filter((event) => event._tag === "MessageCompleted");
+        expect(completed).toHaveLength(3);
+        expect(completed[0]).toMatchObject({
+          message: { role: "toolResult", text: "different result", timestamp: 2 },
+        });
+        expect(completed[1]).toMatchObject({
+          message: { role: "toolResult", text: "recovered result", timestamp: 3 },
+        });
+        expect(completed[2]).toMatchObject({ message: { role: "assistant" } });
+      }),
+    ),
+  );
+
   it.effect("blocks correlated commands until the reconnect snapshot is adapter-settled", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1842,6 +1968,137 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
       }),
     ),
   );
+
+  for (const variant of [
+    "delivered",
+    "default-cancel",
+    "completed",
+    "cancelled",
+    "unknown",
+    "wrong-owner",
+    "owned-proof-lost",
+    "correlated-proof-lost",
+    "abort-response-invalid",
+    "abort-proof-lost",
+  ] as const) {
+    it.effect(`interrupts only the proved delivered owned session: ${variant}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const correlationId = "5cfb76d6-9765-4fd0-883b-d60fbed2f7b8";
+          const phase =
+            variant === "completed"
+              ? "completed"
+              : variant === "cancelled"
+                ? "cancelled"
+                : "delivered";
+          const lifecycle = promptLifecycle(correlationId, phase, 2);
+          let ownedProofCurrent = true;
+          let retireCorrelatedProof = () => {};
+          const test = fixture({
+            correlatedPromptLifecycleCapability: true,
+            rawSnapshot: { ...snapshot(), promptLifecycles: { records: [lifecycle], expired: [] } },
+            ownedSessionContractProofImpl: () =>
+              ownedProofCurrent
+                ? {
+                    feature: "caller_owned_session_environment_cleanup_v1",
+                    status: "attached",
+                    daemon: {
+                      protocolName: "prime-agent.daemon",
+                      protocolVersion: 7,
+                      schemaRevision: 30,
+                      appVersion: "0.7.1",
+                      supervisorGeneration: "supervisor-1",
+                      transportGeneration: 0,
+                    },
+                  }
+                : undefined,
+            cancelPromptLifecycleImpl: () => {
+              if (variant === "owned-proof-lost") ownedProofCurrent = false;
+              if (variant === "correlated-proof-lost") retireCorrelatedProof();
+              return Promise.resolve(
+                variant === "unknown"
+                  ? {
+                      status: "unknown",
+                      ownershipCrossed: "unknown",
+                      deliveryCrossed: "unknown",
+                    }
+                  : {
+                      status: variant === "cancelled" ? "cancelled" : "too_late",
+                      ownershipCrossed: true,
+                      deliveryCrossed: lifecycle.deliveryCrossed,
+                      lifecycle:
+                        variant === "wrong-owner"
+                          ? { ...lifecycle, correlationId: "another-owner" }
+                          : lifecycle,
+                    },
+              );
+            },
+            interruptOwnedSessionImpl: () => {
+              if (variant === "abort-proof-lost") retireCorrelatedProof();
+              return Promise.resolve(
+                variant === "abort-response-invalid"
+                  ? {
+                      type: "response",
+                      command: "abort_and_clear_queue",
+                      success: false,
+                    }
+                  : {
+                      type: "response",
+                      command: "abort_and_clear_queue",
+                      success: true,
+                      data: { steering: [], followUp: [] },
+                    },
+              );
+            },
+          });
+          retireCorrelatedProof = () => test.setCorrelatedPromptLifecycleProof(false);
+          const runtime = yield* test.make();
+          yield* Stream.runDrain(runtime.events).pipe(Effect.forkChild({ startImmediately: true }));
+          const interrupted = runtime.cancelPromptLifecycle(
+            correlationId,
+            variant === "default-cancel" ? undefined : { interruptDelivered: true },
+          );
+          const expectedError = [
+            "wrong-owner",
+            "owned-proof-lost",
+            "correlated-proof-lost",
+            "abort-response-invalid",
+            "abort-proof-lost",
+          ].includes(variant);
+          if (expectedError) {
+            expect(yield* Effect.flip(interrupted)).toMatchObject({ operation: "abort" });
+          } else {
+            expect(yield* interrupted).toMatchObject({
+              status:
+                variant === "cancelled"
+                  ? "cancelled"
+                  : variant === "unknown"
+                    ? "unknown"
+                    : "too_late",
+            });
+          }
+          const calls = test.captures.connectionCalls.filter(
+            (call) => call.method === "interruptOwnedSession",
+          );
+          expect(calls).toHaveLength(
+            ["delivered", "abort-response-invalid", "abort-proof-lost"].includes(variant) ? 1 : 0,
+          );
+          if (calls.length > 0) {
+            expect(calls[0]!.args).toEqual([
+              { type: "abort_and_clear_queue", activeSessionId: "active-secret-1" },
+              expect.any(Number),
+              { recoverable: false, recoverAcrossReconnect: false },
+            ]);
+          }
+          expect(
+            test.captures.connectionCalls.filter(
+              (call) => call.method === "abortAndClearQueue" || call.method === "abort",
+            ),
+          ).toEqual([]);
+        }),
+      ),
+    );
+  }
 
   it.effect("rejects an awaited correlated cancellation when its proof fence changes", () =>
     Effect.scoped(
@@ -7599,6 +7856,183 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         ).toHaveLength(3);
       }),
     ),
+  );
+
+  it.effect("reclaims streaming transport reconnect MCP only after authoritative quiescence", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let idle = false;
+        let replacements = 0;
+        let releaseBarrier!: () => void;
+        let barrierStarted!: () => void;
+        const started = new Promise<void>((resolve) => {
+          barrierStarted = resolve;
+        });
+        const barrier = new Promise<void>((resolve) => {
+          releaseBarrier = () => {
+            idle = true;
+            resolve();
+          };
+        });
+        const managed = {
+          path: "/state/pylon/permission.mjs",
+          markerCommand: "pylon-permission-gate-v1",
+        };
+        const test = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(5),
+            children: [],
+            promptLifecycles: { records: [], expired: [] },
+          },
+          waitForHeadlessCompletionImpl: () => {
+            barrierStarted();
+            return barrier;
+          },
+          replaceMcpImpl: () => {
+            replacements += 1;
+            return replacements === 1 || idle
+              ? Promise.resolve(undefined)
+              : Promise.reject(
+                  new Error("Cannot replace ACP MCP servers while the agent is running"),
+                );
+          },
+        });
+        const runtime = yield* test.make(
+          undefined,
+          [managed.path],
+          undefined,
+          undefined,
+          {
+            ownerId: "pylon:streaming-reconnect",
+            server: {
+              name: "t3-code",
+              type: "http",
+              url: "http://127.0.0.1:4321/mcp/streaming-reconnect",
+              headers: { Authorization: "Bearer scoped-secret" },
+            },
+          },
+          managed,
+        );
+        expect((yield* collectEvents(runtime, 1))[0]?._tag).toBe("SessionResynced");
+        const token = "streaming-reconnect:1";
+        yield* runtime.prompt({ text: "continue one owned turn", rlmQuiescenceToken: token });
+        const recovering = yield* collectEvents(runtime, 2).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(6),
+              state: { ...snapshot(6).state, isStreaming: true },
+              children: [],
+              promptLifecycles: { records: [], expired: [] },
+            },
+          }),
+        );
+        expect((yield* Fiber.join(recovering)).map((event) => event._tag)).toEqual([
+          "ConnectionStatus",
+          "SessionResynced",
+        ]);
+        expect(replacements).toBe(1);
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Effect.promise(() => test.emit({ type: "connection_status", status: "connected" }));
+        expect((yield* collectEvents(runtime, 1))[0]).toMatchObject({
+          _tag: "ConnectionStatus",
+          status: "connected",
+        });
+        expect(yield* runtime.followUp({ text: "wait for MCP ownership" })).toBe("recovering");
+        expect(
+          test.captures.connectionCalls.filter((call) => call.method === "followUp"),
+        ).toHaveLength(0);
+        const waiting = yield* runtime
+          .waitForRlmQuiescence(token, activeSignal())
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => started);
+        expect(replacements).toBe(1);
+        releaseBarrier();
+        yield* Fiber.join(waiting);
+        expect(replacements).toBe(2);
+        expect((yield* collectEvents(runtime, 1))[0]).toMatchObject({
+          _tag: "RlmQuiesced",
+          token,
+          connectionGeneration: 1,
+        });
+      }),
+    ),
+  );
+
+  it.effect.each(["native identity", "active identity", "quiescence support"] as const)(
+    "rejects streaming transport recovery with missing %s proof",
+    (missing) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let replacements = 0;
+          const test = fixture({
+            correlatedPromptLifecycleCapability: true,
+            omitRlmQuiescence: missing === "quiescence support",
+            rawSnapshot: {
+              ...snapshot(5),
+              children: [],
+              promptLifecycles: { records: [], expired: [] },
+            },
+            replaceMcpImpl: () => {
+              replacements += 1;
+              return replacements === 1
+                ? Promise.resolve(undefined)
+                : Promise.reject(
+                    new Error("Cannot replace ACP MCP servers while the agent is running"),
+                  );
+            },
+          });
+          const runtime = yield* test.make(undefined, undefined, undefined, undefined, {
+            ownerId: "pylon:unproved-streaming-reconnect",
+            server: {
+              name: "t3-code",
+              type: "http",
+              url: "http://127.0.0.1:4321/mcp/unproved-streaming-reconnect",
+              headers: { Authorization: "Bearer scoped-secret" },
+            },
+          });
+          expect((yield* collectEvents(runtime, 1))[0]?._tag).toBe("SessionResynced");
+          const events = yield* collectEvents(runtime, 2).pipe(
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Effect.promise(() =>
+            test.emit({ type: "connection_status", status: "reconnecting" }),
+          );
+          yield* Effect.promise(() =>
+            test.emit({
+              type: "session_resynced",
+              snapshot: {
+                ...snapshot(6),
+                state: {
+                  ...snapshot(6).state,
+                  isStreaming: true,
+                  ...(missing === "native identity"
+                    ? { sessionId: "different-native-session" }
+                    : {}),
+                  ...(missing === "active identity"
+                    ? { activeSessionId: "different-active-session" }
+                    : {}),
+                },
+                children: [],
+                promptLifecycles: { records: [], expired: [] },
+              },
+            }),
+          );
+          expect((yield* Fiber.join(events)).map((event) => event._tag)).toEqual([
+            "ConnectionStatus",
+            "SessionClosed",
+          ]);
+          expect(runtime.correlatedPromptLifecycleAdmissionBlocked).toBe(true);
+          expect(runtime.resolveReconnectSnapshot(1, true)).toBe(false);
+        }),
+      ),
   );
 
   it.effect("reclaims scoped MCP ownership after same-worker quiescence", () =>

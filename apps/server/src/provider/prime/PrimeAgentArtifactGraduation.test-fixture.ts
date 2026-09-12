@@ -17,6 +17,28 @@ import {
 
 const INSTANCE_ID = "prime-artifact-graduation";
 
+/** Host prerequisites only; model credentials and provider runtime flags must be explicit fixtures. */
+export function primeGraduationEnvironment(home: string, source: NodeJS.ProcessEnv) {
+  const environment: Record<string, string> = {};
+  for (const name of [
+    "PATH",
+    "Path",
+    "SystemRoot",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+  ]) {
+    if (source[name] !== undefined) environment[name] = source[name];
+  }
+  return { ...environment, HOME: home, SHELL: "/bin/sh", NO_COLOR: "1" };
+}
+
 export interface PrimeArtifactGraduationHarness {
   readonly artifacts: ReadonlyArray<PrimeGraduationVerifiedArtifact>;
   readonly store: PrimeAgentManagedToolStore;

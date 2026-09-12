@@ -82,6 +82,12 @@ remain distinct without exposing or persisting Prime's identifier. Missing token
 behavior. Invalid terminal correlation fails closed. Older ACP releases that publish no completion
 metadata retain prompt-response settlement.
 
+Native provider status prepares the instance-owned daemon before its offline RPC catalog probe and
+passes that daemon's exact private socket to the CLI. Prime 0.9.4 routes RPC through a supervisor;
+leaving its socket implicit would consult the OS-user-wide service, whose home and lifetime may belong
+to another client. Failed preparation preserves the discovery warning without falling back to that
+shared service. Attached-session catalog enrichment remains read-only.
+
 Prime Agent provider execution is supported on macOS, Linux, and WSL2, which reports itself as Linux.
 A native `win32` Pylon server fails closed at `PrimeAgentDriver.create`, before daemon or ACP selection,
 status and catalog probes, capacity reads, background writing, or install/update resolution. It exposes
@@ -196,6 +202,16 @@ or an advanced transcript boundary excludes this case. The submission signature 
 memory and is absent from adopted restart turns. Unknown replay, changed transcript content, missing ownership
 proof, and additional unattributed output remain rejected.
 
+A complete snapshot may also supply durable tool results before their message-completion events.
+Pylon accepts only a delta consisting entirely of unique results whose IDs and names match the current
+correlated prompt's already observed tool calls. Current connection/proof epoch, delivered lifecycle
+continuity, no queued input, and exact observed transcript overlap remain required. Already recorded
+results, unrelated calls, changed names, duplicate IDs, and mixed assistant deltas fail closed.
+Call ownership comes from attributed live prompt events, never from an unchanged snapshot prefix.
+The runtime suppresses a later exact tool-result completion already published in that attachment's
+bounded correlated snapshot, keeping transcript progress from counting it twice. The snapshot cache
+is cleared for a new recovery and does not cover provisional worker snapshots or changed results.
+
 Prime 0.9.4 can insert one hidden `harness_digest` before the first submitted user message. Pylon retains
 its timestamp and SHA-256 content/details identity in the native transcript, preserving the native absolute
 message count without publishing harness content. The first-user case permits that single prefix either
@@ -255,8 +271,21 @@ adapter-settled resolution and passes through the same bounded proof route. Any 
 snapshot fails the strict session once instead of leaving hidden recovery pending. Pylon still validates
 request identity, sequence, provenance, lifecycle successors, and replacement state before advancing its
 cursor or projections. Other malformed capable frames become one private protocol violation marker and fail
-the correlated turn without exposing their correlation or native payload. Scoped cancellation can stop work only before delivery; after
-delivery it remains attached until an authoritative terminal lifecycle arrives. Stock Prime daemons and
+the correlated turn without exposing their correlation or native payload. Scoped lifecycle cancellation removes
+work before delivery. Explicit Stop on a proved delivered lifecycle also sends one owned-session
+`abort_and_clear_queue` command under the adapter mutation lock, with transport recovery and replay disabled.
+Current ownership and correlated proof must remain valid; terminal, unknown, expired, or mismatched
+lifecycles cannot authorize this abort. Pylon remains attached until the authoritative terminal lifecycle
+arrives, and resumes input before the next prompt. This is an owned-session operation: the native abort
+command does not carry a correlation or native-generation compare-and-swap fence. Pylon's admission and
+replacement exclusion, current attachment proof, and non-replayable transport bound its use.
+
+After adoption, a subscriber may observe the final assistant before a run-completion event supplies older
+tool messages. Pylon inserts each missing message before its next already-observed neighbor, preserving
+transcript order and one copy of each message. Completion therefore checks the actual final assistant;
+subsequent tool-only output still produces the missing-final notice.
+
+Stock Prime daemons and
 feature-absent fork builds remain supported through the conservative observed-activity path. That fallback
 returns typed `busy` before Pylon creates a turn when background activity is visible; it cannot eliminate the
 narrow race where unobserved native work starts between the activity check and ordinary prompt admission.
@@ -346,7 +375,7 @@ are never used to synthesize assistant prose.
 | `setAutoRetryEnabled`, `abortRetry`                                                                                                                        | Deferred                                                              | Retry lifecycle is observed safely, but enabled state has no authoritative readback and the setter writes shared provider settings. Stop already cancels the owning turn. A distinct retry control needs truthful session state and receipts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `reload`, `getCommands`                                                                                                                                    | Integrated                                                            | Full-access sessions can reload while idle and show bounded safe command metadata. Before and after reload, Pylon verifies its generated source plus the managed extension path, marker, and exact plan-tool definition. Supervised sessions fail closed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `acquireSessionInputPause`                                                                                                                                 | Intentionally redundant                                               | Every Pylon prompt and resource reload is serialized by the per-thread adapter lock, and reload is admitted only while the owned session is idle. Pylon's scoped MCP server is attached before the first snapshot and released only after turn ownership ends, so it is never replaced during live input. Holding a native lease would add reconnect failure modes without fencing additional work. Revisit if Pylon supports live MCP configuration changes.                                                                                                                                                                                                                                                                                    |
-| `supportsAcpMcpServers`, `replaceAcpMcpServers`, `releaseAcpMcpServers`                                                                                    | Integrated with scoped Pylon ownership                                | `McpProviderSession` is the single per-thread source of truth. Before the first daemon snapshot, Pylon replaces one `t3-code` HTTP server under the stable owner `pylon:<providerSessionId>` and fails closed if Prime cannot own it. After a daemon reconnect, Pylon reclaims that ownership before publishing the resynced session; if it cannot, the session closes instead of continuing without browser tools. Session teardown releases only that owner and server name before disposing the connection. ACP fallback sends the same scoped server in `session/new`. Browser-disabled sessions send nothing, and Prime-owned MCP settings and catalogs remain private.                                                                     |
+| `supportsAcpMcpServers`, `replaceAcpMcpServers`, `releaseAcpMcpServers`                                                                                    | Integrated with scoped Pylon ownership                                | `McpProviderSession` is the single per-thread source of truth. Before the first daemon snapshot, Pylon replaces one `t3-code` HTTP server under the stable owner `pylon:<providerSessionId>` and fails closed if Prime cannot own it. After reconnect, Pylon reclaims ownership before admitting input. Verified streaming sessions wait for authoritative quiescence; failed reclamation closes the session. Session teardown releases only that owner and server name before disposing the connection. ACP fallback sends the same scoped server in `session/new`. Browser-disabled sessions send nothing, and Prime-owned MCP settings and catalogs remain private.                                                                           |
 | `getResourceSnapshot`                                                                                                                                      | Partially integrated by safe outcome                                  | Commands and safe skill/prompt metadata are decoded internally. Native paths, diagnostics, extensions, themes, packages, and MCP configuration are not sent to clients.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `respondToExtensionUiRequest`                                                                                                                              | Partially integrated by safe outcome                                  | Select, confirm, and input dialogs plus bounded notifications, status, and widgets are correlated without exposing native request envelopes. Submitted free-form input uses a transient provider RPC and is redacted from durable activities. Editor replacement is cancelled because its prefill may contain sensitive model or tool material that cannot safely enter Pylon's synchronized event stream.                                                                                                                                                                                                                                                                                                                                       |
 | `getRlmChildSnapshots`, `getRlmMaxDepthStatus`, `setRlmMaxDepth`, `cancelRlmChild`, `sendAgentMessage`                                                     | Integrated                                                            | On 0.8.1 the authoritative roster atomically replaces Pylon's private cache after strict bounded decoding; older versions retain the event-derived roster. Canonical Pylon task IDs resolve through that private live roster. Messaging is ephemeral.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |

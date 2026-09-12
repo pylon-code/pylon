@@ -1,6 +1,6 @@
 ---
 name: ios-simulator-browser
-description: Stream an explicit iOS Simulator through pinned serve-sim into the Pylon in-app browser or another agent browser. Use on Apple Silicon macOS when the user should watch simulator verification live or when browser-visible simulator evidence is needed.
+description: Stream an iOS Simulator to a browser when live simulator viewing is requested.
 ---
 
 # iOS Simulator Browser

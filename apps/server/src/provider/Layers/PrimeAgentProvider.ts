@@ -20,6 +20,7 @@ import { HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { makePrimeAgentEnvironment } from "../acp/PrimeAgentAcpSupport.ts";
+import type { PrimeAgentDaemonManager } from "../prime/PrimeAgentDaemonManager.ts";
 import { makePrimeAgentFeatureCapabilities } from "../prime/PrimeAgentFeatureCapabilities.ts";
 import { makePrimeAgentModelCapabilities } from "../prime/PrimeAgentModelOptions.ts";
 import {
@@ -284,10 +285,20 @@ const runPrimeAgentVersionCommand = (
 const discoverPrimeAgentModels = (
   settings: PrimeAgentSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  daemon?: Pick<PrimeAgentDaemonManager, "socket" | "prepare">,
 ) =>
   Effect.gen(function* () {
     const command = settings.binaryPath || "prime-agent";
-    const args = ["--mode", "rpc", "--no-session", "--offline", "--cwd", process.cwd()] as const;
+    if (daemon !== undefined) yield* daemon.prepare();
+    const args = [
+      "--mode",
+      "rpc",
+      "--no-session",
+      "--offline",
+      "--cwd",
+      process.cwd(),
+      ...(daemon === undefined ? [] : ["--daemon-socket", daemon.socket]),
+    ];
     const resolvedEnvironment = makePrimeAgentEnvironment(settings, environment);
     const spawnCommand = yield* resolveSpawnCommand(command, args, {
       env: resolvedEnvironment,
@@ -371,6 +382,8 @@ export const checkPrimeAgentProviderStatus = Effect.fn("checkPrimeAgentProviderS
   environment: NodeJS.ProcessEnv = process.env,
   options?: {
     readonly discoverModels?: boolean;
+    /** Native catalog probes share the instance-owned supervisor and its lifecycle. */
+    readonly modelDiscoveryDaemon?: Pick<PrimeAgentDaemonManager, "socket" | "prepare">;
     /**
      * What Prime is signed in to per backend, supplied by the driver with its
      * filesystem and HTTP services already provided. Absent in tests and
@@ -472,10 +485,11 @@ ${versionOutput.stderr}`);
   let discoveredModels: ReadonlyArray<ServerProviderModel> | undefined;
   let discoveryMessage: string | undefined;
   if (options?.discoverModels !== false) {
-    const discoveryResult = yield* discoverPrimeAgentModels(settings, environment).pipe(
-      Effect.timeoutOption(MODEL_DISCOVERY_TIMEOUT_MS),
-      Effect.result,
-    );
+    const discoveryResult = yield* discoverPrimeAgentModels(
+      settings,
+      environment,
+      options?.modelDiscoveryDaemon,
+    ).pipe(Effect.timeoutOption(MODEL_DISCOVERY_TIMEOUT_MS), Effect.result);
 
     if (Result.isFailure(discoveryResult)) {
       yield* Effect.logWarning("Prime Agent RPC model discovery failed.");
