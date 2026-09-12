@@ -13798,6 +13798,73 @@ describe("Prime Agent live activity privacy boundary", () => {
     ),
   );
 
+  for (const cleanupFails of [false, true]) {
+    it.effect(
+      `cleans failed creation only with exact owned proof (cleanup fails: ${cleanupFails})`,
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const root = yield* Effect.acquireRelease(
+              Effect.promise(() =>
+                NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "prime-failed-create-")),
+              ),
+              (directory) =>
+                Effect.promise(() => NodeFSP.rm(directory, { recursive: true, force: true })),
+            );
+            const ownershipStore = new PrimeAgentOwnershipReceiptStore(root, {
+              inspectProcessIdentity: async (pid) => `test:${pid}`,
+            });
+            const side = fixture({
+              ownershipStore,
+              recoveryMode: "create",
+              rawSnapshot: {
+                ...snapshot(),
+                lastEventCursor: { generation: "events-1", sequence: 4 },
+              },
+              ...(cleanupFails
+                ? {
+                    disposeImpl: async () => {
+                      throw new Error("transport lost");
+                    },
+                  }
+                : {}),
+            });
+            const error = yield* side
+              .make(undefined, undefined, undefined, undefined, undefined, undefined, {
+                kind: "create",
+                requestId: "failed-create-request",
+                correlationId: "failed-create-correlation",
+                mcpOwnerId: "pylon:none:failed-create",
+                threadId: "failed-create-thread",
+                sessionIncarnationId: "failed-create-incarnation",
+                admissionRequestId: "failed-create-admission",
+                onAuthorityReady: async () => {
+                  throw new Error("authority commit failed");
+                },
+                onNativeCleanupProven: async () => {
+                  expect((await ownershipStore.scan()).receipts).toHaveLength(0);
+                  side.captures.order.push("recovery-cleanup-durable");
+                },
+              })
+              .pipe(Effect.flip);
+            expect(error).toMatchObject({
+              operation: "create-session",
+              reason: "request-failed",
+              detail: "Recoverable Prime Agent authority could not be durably recorded.",
+            });
+            expect(side.captures.order.filter((entry) => entry === "dispose-owned")).toHaveLength(
+              1,
+            );
+            const scan = yield* Effect.promise(() => ownershipStore.scan());
+            expect(scan.corrupt).toBe(false);
+            expect(scan.receipts).toHaveLength(cleanupFails ? 1 : 0);
+            expect(side.captures.order.includes("release-daemon")).toBe(!cleanupFails);
+            expect(side.captures.order.includes("recovery-cleanup-durable")).toBe(!cleanupFails);
+          }),
+        ),
+    );
+  }
+
   it.effect("commits adoption before replay and defers MCP replacement to the next prompt", () =>
     Effect.scoped(
       Effect.gen(function* () {

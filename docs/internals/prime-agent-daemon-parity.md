@@ -336,6 +336,17 @@ existing Pylon incarnation fence, and only then releases exact retained replay a
 performs this adoption pass before generic orphan reconciliation. A terminal reached while Pylon was down
 therefore settles the original turn and checkpoint once without another prompt or `turn.started`.
 
+Accepted SDK session and lifecycle events preserve their original event cursor. Pylon commits that cursor
+with the transcript count and fingerprints it actually consumed, so an idle restart compares against the
+completed transcript rather than an earlier turn baseline. A later connection snapshot cannot substitute
+for an individual event's cursor.
+
+A failed managed start returns its original error and cannot fall back to an ordinary native session.
+Any retained recovery row also excludes ordinary admission. Failed initialization uses the same exact
+owned cleanup proof as normal teardown: only a matched settled result clears its native receipt and
+retires its prepared authority. Admitted authority additionally requires terminal projection and checkpoint
+quiescence before deletion. Uncertain or mismatched cleanup retains authority for diagnosis.
+
 Graceful process shutdown detaches an eligible owned worker and leaves its compatible supervisor alive;
 explicit Stop and normal terminal cleanup still require Prime's authoritative owned-session cleanup proof.
 The private row is deleted only after that proof, terminal projection delivery, and checkpoint quiescence.

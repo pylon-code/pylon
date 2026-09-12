@@ -10306,6 +10306,108 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("blocks ordinary startup while any exact recovery authority remains", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: fakeRuntimeFactory(captures),
+          recoveryLedger: {
+            // Ordinary startup must reject the row before interpreting its authority.
+            get: () => Effect.succeed(Option.some({ threadId })),
+          } as unknown as PrimeAgentRecoveryLedgerShape,
+        });
+        const error = yield* adapter
+          .startSession({
+            threadId,
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+          })
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterProcessError",
+          detail: "Prime Agent still retains exact recovery authority for this thread.",
+        });
+        expect(captures.runtimeInputs).toHaveLength(0);
+        expect(captures.prompts).toHaveLength(0);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  for (const cleanupProven of [false, true]) {
+    it.effect(
+      `preserves a failed managed start and retires authority only after cleanup (proven: ${cleanupProven})`,
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            class ExactDaemonConnection {
+              getState() {}
+              navigateTree() {}
+            }
+            const exactManager = {
+              bridge: { DaemonAgentConnection: ExactDaemonConnection },
+              recoveryEnabled: true,
+              platform: "darwin",
+              architecture: "arm64",
+            } as unknown as PrimeAgentDaemonManager;
+            const captures = makeCaptures();
+            const delegate = fakeRuntimeFactory(captures);
+            const failure = new PrimeAgentDaemonSessionRuntimeError({
+              operation: "create-session",
+              reason: "request-failed",
+              detail: "Recoverable Prime Agent authority could not be durably recorded.",
+            });
+            let managedAttempts = 0;
+            let discarded = false;
+            const recoveryLedger = {
+              get: () => Effect.succeed(Option.none()),
+              discardPrepared: (input: { threadId: string; ownerToken: string }) =>
+                Effect.sync(() => {
+                  expect(input.threadId).toBe(threadId);
+                  expect(input.ownerToken).not.toHaveLength(0);
+                  return (discarded = true);
+                }),
+            } as unknown as PrimeAgentRecoveryLedgerShape;
+            const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), exactManager, {
+              instanceId,
+              recoveryManagedBuildId: "managed-prime-test-build",
+              recoveryLedger,
+              runtimeFactory: (input) =>
+                input.recovery === undefined
+                  ? delegate(input)
+                  : Effect.gen(function* () {
+                      managedAttempts++;
+                      if (cleanupProven)
+                        yield* Effect.promise(() => input.recovery!.onNativeCleanupProven!());
+                      return yield* failure;
+                    }),
+            });
+            const sessionIncarnationId = RuntimeSessionId.make("failed-managed-incarnation");
+            yield* adapter.startSession({
+              threadId,
+              cwd: process.cwd(),
+              runtimeMode: "full-access",
+              sessionIncarnationId,
+            });
+            const result = yield* adapter.prepareTurnRecovery!({
+              threadId,
+              input: "must not lose managed recovery",
+              sessionIncarnationId,
+              admissionRequestId: CommandId.make("failed-managed-admission"),
+            }).pipe(Effect.result);
+            expect(result._tag).toBe("Failure");
+            if (result._tag === "Failure") expect(result.failure).toMatchObject({ cause: failure });
+            expect(managedAttempts).toBe(1);
+            expect(captures.runtimeInputs).toHaveLength(1);
+            expect(captures.prompts).toHaveLength(0);
+            expect(discarded).toBe(cleanupProven);
+            expect(yield* adapter.listSessions()).toHaveLength(0);
+          }),
+        ).pipe(Effect.provide(testLayer)),
+    );
+  }
+
   it.effect("retains a settled recoverable Prime session for exact rollback", () =>
     Effect.scoped(
       Effect.gen(function* () {
