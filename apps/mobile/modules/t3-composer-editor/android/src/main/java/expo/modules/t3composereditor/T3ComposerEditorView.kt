@@ -387,6 +387,8 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
     )
   }
 
+  // Fail fast before reading token or span ranges from unavailable native layout/text.
+  @Suppress("ReturnCount")
   private fun contextTokenAt(x: Float, y: Float): ComposerToken? {
     val layout = editor.layout ?: return null
     val content = editor.text ?: return null
@@ -498,11 +500,21 @@ private data class ComposerChipTheme(
 private class ComposerChipSpan(
   private val chip: T3ContextChip
 ) : ReplacementSpan() {
-  fun containsPoint(layout: Layout, start: Int, end: Int, paint: Paint, x: Float, y: Float): Boolean {
+  // Explicit native geometry inputs and early guards keep the hit-test bounds auditable.
+  @Suppress("LongParameterList", "ReturnCount")
+  fun containsPoint(
+    layout: Layout,
+    start: Int,
+    end: Int,
+    paint: Paint,
+    x: Float,
+    y: Float
+  ): Boolean {
     val line = layout.getLineForOffset(start)
     if (layout.getLineForOffset(end - 1) != line) return false
     val metrics = paint.fontMetrics
-    val chipTop = layout.getLineBaseline(line) + (metrics.ascent + metrics.descent - chip.height) / 2
+    val chipTop =
+      layout.getLineBaseline(line) + (metrics.ascent + metrics.descent - chip.height) / 2
     if (y < chipTop || y >= chipTop + chip.height) return false
     val left = layout.getLineLeft(line)
     val right = layout.getLineRight(line)
