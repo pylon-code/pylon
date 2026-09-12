@@ -205,6 +205,7 @@ const {
 
 vi.mock("electron", () => ({
   BrowserWindow: browserWindowConstructor,
+  // eslint-disable-next-line @typescript-eslint/no-extraneous-class -- Electron constructs this native boundary.
   ClipboardItem: class {
     constructor(data: Record<string, unknown>) {
       clipboardItemConstructor(data);
