@@ -311,6 +311,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["logs traces processes resource history failures spans cpu memory"],
   },
   {
+    id: "open-source-licenses",
+    title: "Open source licenses",
+    to: "/settings/general",
+  },
+  {
     id: "legacy-token-streaming",
     title: "Stream token by token (legacy)",
     to: "/settings/general",

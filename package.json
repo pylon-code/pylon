@@ -19,6 +19,7 @@
     "icons:export": "node scripts/export-pylon-brand-icons.mjs",
     "icons:check": "node scripts/export-pylon-brand-icons.mjs --check",
     "icons:export:t3": "node scripts/export-brand-icons.ts",
+    "licenses:sync": "node scripts/sync-third-party-license-notices.ts",
     "build": "vp run --filter './apps/*' --filter './packages/*' --filter './oxlint-plugin-t3code' --filter './scripts' build",
     "build:marketing": "vp run --filter @t3tools/marketing build",
     "build:desktop": "vp run --filter @t3tools/desktop --filter t3 build",
