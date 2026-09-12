@@ -90,7 +90,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
       [
         "#!/bin/sh",
         ...(loginRequired
-          ? [`printf '%s\\n' ${shellQuote(ANTIGRAVITY_AUTH_STDOUT_PREFIX + authorizationUrl)}`]
+          ? [`printf '%s\\n' ${shellQuote(ANTIGRAVITY_AUTH_STDOUT_PREFIX + authorizationUrl)} >&2`]
           : []),
         `exec ${shellQuote(nodePath)} ${shellQuote(mockAgentPath)} "$@"`,
         "",

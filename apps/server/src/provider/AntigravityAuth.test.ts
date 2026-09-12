@@ -251,6 +251,38 @@ it.layer(NodeServices.layer)("AntigravityAuth", (it) => {
       }),
   );
 
+  it.effect("explains startup RPC timeouts without exposing provider payloads", () =>
+    Effect.gen(function* () {
+      for (const [method, message] of [
+        ["initialize", "Antigravity did not respond while starting sign-in. Start sign-in again."],
+        [
+          "authenticate",
+          "Antigravity timed out waiting for authentication to finish. Start sign-in again.",
+        ],
+        [
+          "session/new",
+          "Antigravity authenticated, but timed out loading account access and models.",
+        ],
+      ]) {
+        const harness = yield* makeHarness({ interactive: false });
+        yield* harness.auth.controller.start(owner);
+        yield* Deferred.fail(
+          harness.authenticated,
+          new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method,
+            detail: `${method} timed out waiting for RPC response`,
+            cause: callbackUrl,
+          }),
+        );
+        const failed = yield* phase(harness.auth, "failed");
+        assert.equal(failed.message, message);
+        assert.isNull(failed.authorizationUrl);
+        yield* Deferred.await(harness.closed);
+      }
+    }),
+  );
+
   it.effect("does not call callback HTTP success a successful Google sign-in", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();

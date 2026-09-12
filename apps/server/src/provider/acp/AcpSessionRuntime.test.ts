@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
+import * as AcpErrors from "effect-acp/errors";
 import * as NodeURL from "node:url";
 
 import { make, type AcpSessionRequestLogEvent } from "./AcpSessionRuntime.ts";
@@ -148,5 +149,44 @@ it.effect("does not apply the startup RPC timeout to long prompt calls", () =>
     yield* TestClock.adjust("5 minutes");
     assert.isUndefined(promptFiber.pollUnsafe());
     yield* Fiber.interrupt(promptFiber);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "delivers child stderr while ACP requests are pending without parsing it as protocol",
+  () =>
+    Effect.gen(function* () {
+      const received = yield* Deferred.make<string>();
+      const runtime = yield* make({
+        spawn: {
+          command: process.execPath,
+          args: ["-e", 'process.stderr.write("provider sign-in URL\\n"); process.stdin.resume()'],
+        },
+        cwd: process.cwd(),
+        clientInfo: { name: "stderr-test", version: "0.0.0" },
+        onStderr: (text) => Deferred.succeed(received, text).pipe(Effect.asVoid),
+      });
+      yield* runtime.initialize().pipe(Effect.forkScoped);
+      assert.strictEqual(yield* Deferred.await(received), "provider sign-in URL\n");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("fails pending ACP requests when the provider rejects stderr sign-in", () =>
+  Effect.gen(function* () {
+    const failure = new AcpErrors.AcpTransportError({
+      detail: "Sign in to Antigravity in Settings before you continue.",
+      cause: undefined,
+    });
+    const runtime = yield* make({
+      spawn: {
+        command: process.execPath,
+        args: ["-e", 'process.stderr.write("login required\\n"); process.stdin.resume()'],
+      },
+      cwd: process.cwd(),
+      clientInfo: { name: "stderr-test", version: "0.0.0" },
+      onStderr: () => Effect.fail(failure),
+    });
+    const error = yield* runtime.initialize().pipe(Effect.flip);
+    assert.strictEqual(error, failure);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

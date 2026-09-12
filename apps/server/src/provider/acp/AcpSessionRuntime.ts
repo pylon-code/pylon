@@ -445,7 +445,23 @@ export const make = (
 
     const acpContext = yield* Layer.build(
       EffectAcpClient.layerChildProcess(child, {
-        ...(options.transformStdout ? { transformStdout: options.transformStdout } : {}),
+        // Consume stderr alongside protocol output so provider login callbacks run
+        // and their typed failures terminate pending requests. Stderr never enters
+        // protocol parsing or logging, and closing it must not end stdout.
+        transformStdout: (stdout) => {
+          const protocolOutput = options.transformStdout?.(stdout) ?? stdout;
+          return options.onStderr
+            ? Stream.merge(
+                protocolOutput,
+                child.stderr.pipe(
+                  Stream.decodeText(),
+                  Stream.mapEffect(options.onStderr),
+                  Stream.drain,
+                ),
+                { haltStrategy: "left" },
+              )
+            : protocolOutput;
+        },
         ...(options.transformSessionUpdate
           ? { transformSessionUpdate: options.transformSessionUpdate }
           : {}),
