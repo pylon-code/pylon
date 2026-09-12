@@ -59,6 +59,7 @@ import {
   openCodeQuestionId,
   openCodeRuntimeErrorDetail,
   parseOpenCodeModelSlug,
+  resolveOpenCodeExactRollbackUnavailableReason,
   runOpenCodeSdk,
   toOpenCodeFileParts,
   toOpenCodePermissionReply,
@@ -348,6 +349,7 @@ interface OpenCodeSessionContext {
   readonly sessionIncarnationId: ProviderSession["sessionIncarnationId"];
   readonly client: OpencodeClient;
   readonly server: OpenCodeServerConnection;
+  readonly exactRollbackUnavailableReason: string | undefined;
   readonly directory: string;
   openCodeSessionId: string;
   readonly relatedSessionIds: Set<string>;
@@ -1135,12 +1137,14 @@ export function makeOpenCodeAdapter(
       generation = context.promptGeneration,
     ) =>
       Effect.suspend(() =>
-        sessions.get(context.session.threadId) === context &&
-        !Ref.getUnsafe(context.stopped) &&
-        context.promptGeneration === generation &&
-        context.sessionIncarnationId !== undefined
-          ? Effect.void
-          : Effect.fail(rollbackError("The exact OpenCode session ownership changed.")),
+        context.exactRollbackUnavailableReason !== undefined
+          ? Effect.fail(rollbackError(context.exactRollbackUnavailableReason))
+          : sessions.get(context.session.threadId) === context &&
+              !Ref.getUnsafe(context.stopped) &&
+              context.promptGeneration === generation &&
+              context.sessionIncarnationId !== undefined
+            ? Effect.void
+            : Effect.fail(rollbackError("The exact OpenCode session ownership changed.")),
       );
     const requireNotQuarantined = (context: OpenCodeSessionContext) =>
       context.rollbackQuarantined || context.recoveryQuarantined
@@ -3197,16 +3201,28 @@ export function makeOpenCodeAdapter(
             // we provide below — closing `sessionScope` kills the child
             // process automatically. No manual `server.close()` needed.
             const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+            const environment = {
+              ...McpProviderSession.withAgentDeviceEnvironment(
+                options?.environment ?? process.env,
+                mcpSession,
+              ),
+            };
             const server = yield* openCodeRuntime.connectToOpenCodeServer({
               binaryPath,
               directory,
               serverUrl,
               ...(serverPassword ? { serverPassword } : {}),
-              environment: McpProviderSession.withAgentDeviceEnvironment(
-                options?.environment ?? process.env,
-                mcpSession,
-              ),
+              environment,
             });
+            const exactRollbackUnavailableReason = resolveOpenCodeExactRollbackUnavailableReason({
+              external: server.external,
+              environment,
+            });
+            if (
+              exactRollbackUnavailableReason !== undefined &&
+              (recovering || Option.isSome(exact))
+            )
+              return yield* rollbackError(exactRollbackUnavailableReason);
             const client = openCodeRuntime.createOpenCodeSdkClient({
               baseUrl: server.url,
               directory,
@@ -3325,6 +3341,7 @@ export function makeOpenCodeAdapter(
             return {
               sessionScope,
               server,
+              exactRollbackUnavailableReason,
               client,
               openCodeSession: resolved.openCodeSession,
               created: resolved.created,
@@ -3366,6 +3383,7 @@ export function makeOpenCodeAdapter(
         sessionIncarnationId: input.sessionIncarnationId,
         client: started.client,
         server: started.server,
+        exactRollbackUnavailableReason: started.exactRollbackUnavailableReason,
         directory,
         openCodeSessionId: started.openCodeSession.id,
         relatedSessionIds: new Set([started.openCodeSession.id]),
@@ -3456,7 +3474,10 @@ export function makeOpenCodeAdapter(
             TurnId.make(exact.value.completedTurnId),
             checkpointSnapshotAnchor(exact.value),
           );
-      } else if (input.sessionIncarnationId !== undefined) {
+      } else if (
+        input.sessionIncarnationId !== undefined &&
+        context.exactRollbackUnavailableReason === undefined
+      ) {
         const root = yield* readRollbackTranscript(context, context.openCodeSessionId).pipe(
           Effect.result,
         );

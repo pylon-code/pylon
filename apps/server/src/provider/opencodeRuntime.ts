@@ -13,6 +13,7 @@ import {
   type QuestionRequest,
 } from "@opencode-ai/sdk/v2";
 import * as Cause from "effect/Cause";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
@@ -56,6 +57,34 @@ export function resolveOpenCodeConfigContent(
     inheritedEnvironment.OPENCODE_CONFIG_CONTENT ??
     OPENCODE_EMPTY_CONFIG_CONTENT
   );
+}
+
+const decodeOpenCodeBoolean = Schema.decodeUnknownOption(Config.Boolean);
+
+export function resolveOpenCodeExactRollbackUnavailableReason(
+  input: {
+    readonly external: boolean;
+    readonly environment?: Readonly<Record<string, string | undefined>>;
+  },
+  inheritedEnvironment: Readonly<Record<string, string | undefined>> = process.env,
+): string | undefined {
+  if (input.external) {
+    // Native health/config/capabilities APIs do not expose the process plan-mode flag.
+    return "Exact OpenCode rewind cannot verify plan-file behavior on an externally managed server.";
+  }
+  const environment = input.environment ?? inheritedEnvironment;
+  const experimental = decodeOpenCodeBoolean(environment.OPENCODE_EXPERIMENTAL ?? "false");
+  const planMode = decodeOpenCodeBoolean(
+    environment.OPENCODE_EXPERIMENTAL_PLAN_MODE ?? environment.OPENCODE_EXPERIMENTAL ?? "false",
+  );
+  if (Option.isNone(experimental) || Option.isNone(planMode)) {
+    return "Exact OpenCode rewind cannot verify the experimental plan-mode configuration.";
+  }
+  // Native forks regenerate the slug/creation time used to locate external plan files.
+  // Ordinary plan mode keeps its context in message parts and does not have this gap.
+  return planMode.value
+    ? "Exact OpenCode rewind is unavailable while experimental native plan files are enabled."
+    : undefined;
 }
 
 export function resolveOpenCodeServerPassword(

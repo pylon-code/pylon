@@ -77,6 +77,7 @@ const runtimeMock = {
     sessionCreateUrls: [] as string[],
     sessionCreateInputs: [] as Array<Record<string, unknown>>,
     createdSessionIds: [] as string[],
+    serverExternal: undefined as boolean | undefined,
     authHeaders: [] as Array<string | null>,
     abortCalls: [] as string[],
     abortSignals: [] as AbortSignal[],
@@ -147,6 +148,7 @@ const runtimeMock = {
     this.state.sessionCreateUrls.length = 0;
     this.state.sessionCreateInputs.length = 0;
     this.state.createdSessionIds.length = 0;
+    this.state.serverExternal = undefined;
     this.state.authHeaders.length = 0;
     this.state.abortCalls.length = 0;
     this.state.abortSignals.length = 0;
@@ -244,7 +246,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         version: "1.15.13",
         ...(serverPassword ? { serverPassword } : {}),
         exitCode: null,
-        external: Boolean(serverUrl),
+        external: runtimeMock.state.serverExternal ?? Boolean(serverUrl),
       };
     }),
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
@@ -630,26 +632,33 @@ const openCodeAdapterTestSettings = Schema.decodeSync(OpenCodeSettings)({
   serverPassword: "secret-password",
 });
 
-const OpenCodeAdapterTestLayer = Layer.effect(
-  OpenCodeAdapter,
-  makeOpenCodeAdapter(openCodeAdapterTestSettings),
-).pipe(
-  Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
-  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
-  Layer.provideMerge(
-    ServerSettingsService.layerTest({
-      providers: {
-        opencode: {
-          binaryPath: "fake-opencode",
-          serverUrl: "http://127.0.0.1:9999",
-          serverPassword: "secret-password",
+const makeOpenCodeAdapterTestLayer = (
+  environment: NodeJS.ProcessEnv = {
+    OPENCODE_EXPERIMENTAL: "false",
+    OPENCODE_EXPERIMENTAL_PLAN_MODE: "false",
+  },
+) =>
+  Layer.effect(
+    OpenCodeAdapter,
+    makeOpenCodeAdapter(openCodeAdapterTestSettings, { environment }),
+  ).pipe(
+    Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(
+      ServerSettingsService.layerTest({
+        providers: {
+          opencode: {
+            binaryPath: "fake-opencode",
+            serverUrl: "http://127.0.0.1:9999",
+            serverPassword: "secret-password",
+          },
         },
-      },
-    }),
-  ),
-  Layer.provideMerge(providerSessionDirectoryTestLayer),
-  Layer.provideMerge(NodeServices.layer),
-);
+      }),
+    ),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+const OpenCodeAdapterTestLayer = makeOpenCodeAdapterTestLayer();
 
 beforeEach(() => {
   runtimeMock.reset();
@@ -7816,8 +7825,14 @@ const exactSourceBinding = (count: number, turnId: TurnId | null) => ({
   checkpointRef: CheckpointRef.make(`refs/t3/checkpoints/exact/${count}`),
   checkpointOid: `oid-${count}`,
 });
-const startExactOpenCodeSession = (adapter: OpenCodeAdapterShape, threadId: ThreadId) =>
+const startExactOpenCodeSession = (
+  adapter: OpenCodeAdapterShape,
+  threadId: ThreadId,
+  external = false,
+) =>
   Effect.gen(function* () {
+    // The synthetic native server is owned by this test and its environment is known.
+    runtimeMock.state.serverExternal = external;
     runtimeMock.state.createdSessionIds.push("ses_exact");
     runtimeMock.state.sessionDirectoryById.set("ses_exact", process.cwd());
     return yield* adapter.startSession({
@@ -7898,6 +7913,100 @@ const completeExactOpenCodeTurn = (
   });
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCode exact rollback", (it) => {
+  it.effect("rejects unknown external plan behavior while preserving ordinary plan turns", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("exact-external-plan-unknown");
+      const push = makeOpenCodeEventQueue();
+      yield* startExactOpenCodeSession(adapter, threadId, true);
+      const exact = adapter.absoluteConversationRollback!;
+      NodeAssert.equal(yield* exact.isAvailable(threadId), false);
+      const rejected = yield* exact
+        .captureAnchor({
+          threadId,
+          binding: exactSourceBinding(0, null),
+        })
+        .pipe(Effect.flip);
+      NodeAssert.match(rejected.message, /externally managed server/);
+      const completed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Plan normally",
+        interactionMode: "plan",
+      });
+      push({
+        type: "session.status",
+        properties: { sessionID: "ses_exact", status: { type: "idle" } },
+      });
+      NodeAssert.equal(Option.getOrUndefined(yield* Fiber.join(completed))?.turnId, turn.turnId);
+      NodeAssert.equal((runtimeMock.state.promptCalls[0] as { agent: string }).agent, "plan");
+      NodeAssert.equal(runtimeMock.state.forkCalls.length, 0);
+      NodeAssert.deepEqual((yield* adapter.listSessions())[0]!.resumeCursor, {
+        schemaVersion: 1,
+        sessionId: "ses_exact",
+      });
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect(
+    "rejects recovery on an unknown server before native access and preserves normal resume",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("exact-external-recovery");
+        const push = makeOpenCodeEventQueue();
+        yield* startExactOpenCodeSession(adapter, threadId);
+        yield* completeExactOpenCodeTurn(adapter, push, threadId, "Preserve this native history");
+        const selected = (yield* adapter.listSessions()).find(
+          (session) => session.threadId === threadId,
+        )!;
+        const history = structuredClone(runtimeMock.state.messages);
+        NodeAssert.ok(
+          selected.resumeCursor &&
+            typeof selected.resumeCursor === "object" &&
+            "exactRollback" in selected.resumeCursor,
+        );
+        yield* adapter.stopSession(threadId);
+        runtimeMock.state.serverExternal = true;
+        const gets = runtimeMock.state.sessionGetIds.length;
+        const updates = runtimeMock.state.sessionUpdateCalls.length;
+        const creates = runtimeMock.state.sessionCreateInputs.length;
+        const failure = yield* adapter.recoverSession!({
+          providerInstanceId: ProviderInstanceId.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+          cwd: process.cwd(),
+          sessionIncarnationId: selected.sessionIncarnationId!,
+          resumeCursor: selected.resumeCursor,
+        }).pipe(Effect.flip);
+        NodeAssert.match(failure.message, /externally managed server/);
+        NodeAssert.equal(runtimeMock.state.sessionGetIds.length, gets);
+        NodeAssert.equal(runtimeMock.state.sessionUpdateCalls.length, updates);
+        NodeAssert.equal(runtimeMock.state.sessionCreateInputs.length, creates);
+        NodeAssert.equal(
+          (yield* adapter.listSessions()).some((session) => session.threadId === threadId),
+          false,
+        );
+        const resumed = yield* adapter.startSession({
+          threadId,
+          runtimeMode: "approval-required",
+          cwd: process.cwd(),
+          sessionIncarnationId: RuntimeSessionId.make("ordinary-unknown-server-resume"),
+          resumeCursor: selected.resumeCursor,
+        });
+        NodeAssert.deepEqual(resumed.resumeCursor, { schemaVersion: 1, sessionId: "ses_exact" });
+        NodeAssert.deepEqual(runtimeMock.state.messages, history);
+        NodeAssert.equal(runtimeMock.state.sessionCreateInputs.length, creates);
+        NodeAssert.equal(yield* adapter.absoluteConversationRollback!.isAvailable(threadId), false);
+        yield* adapter.stopSession(threadId);
+      }),
+  );
+
   it.effect(
     "keeps the first completed boundary when a duplicate completion fork returns late",
     () =>
@@ -7978,6 +8087,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCode exact rollback", (it) => {
         NodeAssert.deepEqual(yield* exact.captureAnchor({ threadId, binding }), original);
         NodeAssert.equal(forks, 2);
         yield* Fiber.interrupt(observer);
+        yield* adapter.stopSession(threadId);
       }),
   );
 
@@ -8534,6 +8644,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCode exact rollback", (it) => {
           }),
         );
         runtimeMock.state.createdSessionIds.push("ses_exact");
+        runtimeMock.state.serverExternal = false;
         runtimeMock.state.sessionDirectoryById.set("ses_exact", process.cwd());
         yield* adapter.startSession({
           threadId,
@@ -8623,3 +8734,43 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCode exact rollback", (it) => {
       }),
   );
 });
+
+const experimentalPlanEnvironment = { OPENCODE_EXPERIMENTAL_PLAN_MODE: "true" };
+it.layer(makeOpenCodeAdapterTestLayer(experimentalPlanEnvironment))(
+  "OpenCode native plan eligibility",
+  (it) => {
+    it.effect(
+      "retains the actual startup plan-file configuration and leaves ordinary history usable",
+      () =>
+        Effect.gen(function* () {
+          const adapter = yield* OpenCodeAdapter;
+          const threadId = asThreadId("exact-native-plan-files");
+          yield* startExactOpenCodeSession(adapter, threadId);
+          experimentalPlanEnvironment.OPENCODE_EXPERIMENTAL_PLAN_MODE = "false";
+          const exact = adapter.absoluteConversationRollback!;
+          NodeAssert.equal(yield* exact.isAvailable(threadId), false);
+          const failure = yield* exact.inspectAnchor(threadId).pipe(Effect.flip);
+          NodeAssert.match(failure.message, /experimental native plan files/);
+          NodeAssert.equal(runtimeMock.state.forkCalls.length, 0);
+          const selected = (yield* adapter.listSessions())[0]!;
+          yield* adapter.stopSession(threadId);
+          yield* adapter.startSession({
+            threadId,
+            runtimeMode: "full-access",
+            cwd: process.cwd(),
+            sessionIncarnationId: RuntimeSessionId.make("native-plan-disabled-resume"),
+            resumeCursor: selected.resumeCursor,
+          });
+          NodeAssert.equal(yield* exact.isAvailable(threadId), true);
+          NodeAssert.equal(runtimeMock.state.sessionCreateInputs.length, 1);
+          NodeAssert.equal(runtimeMock.state.forkCalls.length, 1);
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              experimentalPlanEnvironment.OPENCODE_EXPERIMENTAL_PLAN_MODE = "true";
+            }),
+          ),
+        ),
+    );
+  },
+);

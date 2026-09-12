@@ -48,6 +48,8 @@ Admission repeats the proof, checks the exact source revision, requires an idle 
 
 OpenCode snapshots native history into private immutable forks and verifies full message contents and relationships before selecting a fresh fork. These snapshots preserve old checkpoint targets across compaction; current source proofs remain separate. Forks cost storage proportional to the retained histories. Legacy histories without a proved checkpoint boundary remain usable, but cannot gain rewind eligibility from a guessed turn count. A private idle recovery cursor restores only the same account, workspace and incarnation; ordinary Stop/resume keeps the selected native history and establishes new eligibility separately.
 
+OpenCode's optional experimental plan mode stores a plan file under a name derived from the native session's creation time and slug. Native forks regenerate that identity without copying the file, so exact rewind is unavailable when `OPENCODE_EXPERIMENTAL_PLAN_MODE` is enabled, including through `OPENCODE_EXPERIMENTAL` unless the plan-mode flag explicitly disables it. Externally managed OpenCode servers also remain ineligible because their API does not expose that runtime flag. Ordinary plan mode, conversation history and resume remain usable; Pylon neither changes these flags nor copies plan files during rewind.
+
 ## Multi-client behavior
 
 The engine serializes admission. Requests for the same source, target and file choice join the active operation. A different target or file choice is rejected. Status is projected and streamed, so refresh, reconnect, remote clients, and multiple devices converge on the same fence and result.
