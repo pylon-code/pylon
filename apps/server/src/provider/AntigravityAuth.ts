@@ -33,6 +33,7 @@ import type { ProviderAuthController } from "./Services/ProviderAuthService.ts";
 const AUTH_TIMEOUT_MS = 300_000;
 const FORWARDING_FAILED_MESSAGE = "Could not deliver the sign-in response. Start sign-in again.";
 const isSetupError = Schema.is(ProviderSetupError);
+const isTransportError = Schema.is(AcpErrors.AcpTransportError);
 const isAcpRequestError = Schema.is(AcpErrors.AcpRequestError);
 
 interface AuthSnapshot {
@@ -106,6 +107,20 @@ function safeAuthFailure(cause: Cause.Cause<unknown>, usesBrowser: boolean): str
   if (Option.isSome(error)) {
     if (isSetupError(error.value)) {
       return error.value.detail;
+    }
+    if (
+      isTransportError(error.value) &&
+      error.value.operation === "call-rpc" &&
+      error.value.detail === `${error.value.method} timed out waiting for RPC response`
+    ) {
+      switch (error.value.method) {
+        case "initialize":
+          return "Antigravity did not respond while starting sign-in. Start sign-in again.";
+        case "authenticate":
+          return "Antigravity timed out waiting for authentication to finish. Start sign-in again.";
+        case "session/new":
+          return "Antigravity authenticated, but timed out loading account access and models.";
+      }
     }
     if (isAcpRequestError(error.value)) {
       if (error.value.errorMessage.includes("SUBSCRIPTION_REQUIRED")) {
