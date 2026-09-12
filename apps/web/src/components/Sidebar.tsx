@@ -50,13 +50,16 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   ClockIcon,
+  EyeIcon,
   FolderIcon,
   GitBranchIcon,
   GitForkIcon,
+  MessageCircleQuestionIcon,
   PinIcon,
   PinOffIcon,
   PlusIcon,
   SettingsIcon,
+  ShieldQuestionIcon,
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
@@ -1172,19 +1175,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       : status === "approval"
         ? {
             label: "Approval",
-            icon: null,
+            icon: "approval" as const,
             className: "text-amber-700 dark:text-amber-300",
           }
         : status === "input"
           ? {
               label: "Input",
-              icon: null,
+              icon: "input" as const,
               className: "text-indigo-600 dark:text-indigo-300",
             }
           : status === "failed"
             ? {
                 label: "Failed",
-                icon: null,
+                icon: "failed" as const,
                 className: "text-red-700 dark:text-red-300",
               }
             : isWoke
@@ -1461,10 +1464,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           : shouldRecede
             ? "text-sidebar-muted-foreground/75 hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
             : "bg-transparent text-sidebar-foreground hover:bg-sidebar-row-hover",
-    isInFlight &&
-      !props.isActive &&
-      !isSelected &&
-      "opacity-70 transition-opacity hover:opacity-100",
     isFileDragOver && "ring-1 ring-inset ring-primary/70",
     // The hover tint must not clobber an active/selected row's own surface.
     isFileDragOver && !props.isActive && !isSelected && "bg-sidebar-row-hover",
@@ -1545,7 +1544,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               "truncate",
               shouldRecede
                 ? "text-secondary-label"
-                : isUnread || isWoke
+                : isUnread || isWoke || status === "input"
                   ? "text-foreground"
                   : status === "failed"
                     ? "text-foreground/95"
@@ -1555,7 +1554,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               "truncate group-focus-within/sidebar-row:text-foreground group-hover/sidebar-row:text-foreground",
               shouldRecede
                 ? "text-secondary-label/70"
-                : props.isActive || isWoke
+                : props.isActive || isWoke || status === "input"
                   ? "text-foreground"
                   : isUnread
                     ? "text-muted-foreground"
@@ -1921,6 +1920,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                             <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
                           ) : topStatus.icon === "delegating" ? (
                             <GitForkIcon aria-hidden className="size-4 shrink-0" />
+                          ) : topStatus.icon === "input" ? (
+                            <MessageCircleQuestionIcon aria-hidden className="size-4 shrink-0" />
+                          ) : topStatus.icon === "approval" ? (
+                            <ShieldQuestionIcon aria-hidden className="size-4 shrink-0" />
+                          ) : topStatus.icon === "failed" ? (
+                            <CircleAlertIcon aria-hidden className="size-4 shrink-0" />
+                          ) : topStatus.icon === "monitoring" ? (
+                            <EyeIcon aria-hidden className="size-4 shrink-0" />
                           ) : topStatus.icon === "done" ? (
                             <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
                           ) : null}
