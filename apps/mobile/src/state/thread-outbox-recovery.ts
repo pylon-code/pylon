@@ -16,6 +16,7 @@ export function pendingSendComposerSnapshot(
   return {
     text: message.text,
     attachments: message.attachments,
+    ...(message.context === undefined ? {} : { context: message.context }),
     ...(message.modelSelection === undefined ? {} : { modelSelection: message.modelSelection }),
     ...(message.runtimeMode === undefined ? {} : { runtimeMode: message.runtimeMode }),
     ...(message.interactionMode === undefined ? {} : { interactionMode: message.interactionMode }),

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   CommandId,
+  ComposerContextId,
   EnvironmentId,
   MessageId,
   ProviderInstanceId,
@@ -17,6 +18,18 @@ function heldMessage(): QueuedThreadMessage {
     messageId: MessageId.make("message-held"),
     commandId: CommandId.make("command-held"),
     text: "exact held text",
+    context: {
+      version: 1,
+      records: [
+        {
+          version: 1,
+          kind: "skill",
+          contextId: ComposerContextId.make("held-skill"),
+          label: "Skill",
+          name: "held-skill",
+        },
+      ],
+    },
     attachments: [
       {
         id: "held-image",
@@ -52,6 +65,7 @@ describe("pending send composer recovery", () => {
       expect(snapshot).toEqual({
         text: message.text,
         attachments: message.attachments,
+        context: message.context,
         modelSelection: message.modelSelection,
         runtimeMode: message.runtimeMode,
         interactionMode: message.interactionMode,

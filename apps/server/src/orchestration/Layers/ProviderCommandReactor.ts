@@ -12,8 +12,10 @@ import {
   ThreadId,
   type ProviderSession,
   type TurnId,
+  type OrchestrationMessageContext,
 } from "@t3tools/contracts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
+import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -98,10 +100,15 @@ function toNonEmptyProviderInput(value: string | undefined): string | undefined 
 
 export function providerFollowUpInputFromMessage(message: {
   readonly text: string;
+  readonly context?: OrchestrationMessageContext | undefined;
   readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
 }): { readonly input?: string; readonly attachments?: ReadonlyArray<ChatAttachment> } {
+  const input = projectComposerContextForProvider({
+    text: message.text,
+    records: message.context?.records ?? [],
+  });
   return {
-    ...(message.text.trim().length === 0 ? {} : { input: message.text }),
+    ...(input.trim().length === 0 ? {} : { input }),
     ...(message.attachments === undefined ? {} : { attachments: message.attachments }),
   };
 }
@@ -1931,7 +1938,10 @@ const make = Effect.gen(function* () {
         threadId: event.payload.threadId,
         // Citations stay intact on the wire; ProviderService expands them for
         // the provider. Only title and branch generation get plain text.
-        messageText: message.text,
+        messageText: projectComposerContextForProvider({
+          text: message.text,
+          records: message.context?.records ?? [],
+        }),
         ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
         ...(event.payload.modelSelection !== undefined
           ? { modelSelection: event.payload.modelSelection }

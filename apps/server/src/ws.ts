@@ -84,7 +84,7 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
-import { isDriveOrPosixAbsolutePath } from "@t3tools/shared/path";
+import { isDriveOrPosixAbsolutePath, isWindowsAbsolutePath } from "@t3tools/shared/path";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
@@ -2776,6 +2776,41 @@ const makeWsRpcLayer = (
                   isDriveOrPosixAbsolutePath(input.resource.path))
               ) {
                 return yield* issueAssetUrl({ resource: input.resource });
+              }
+              if (input.resource._tag === "draft-workspace-file") {
+                // Local absolute paths can belong to a draft without a thread. Network and
+                // device paths still require a workspace this host owns, before filesystem
+                // resolution, just as media-file requires a local thread for those paths.
+                const requiresWorkspaceContext =
+                  !(
+                    path.isAbsolute(input.resource.cwd) &&
+                    isDriveOrPosixAbsolutePath(input.resource.cwd)
+                  ) ||
+                  ((path.isAbsolute(input.resource.path) ||
+                    isWindowsAbsolutePath(input.resource.path)) &&
+                    !isDriveOrPosixAbsolutePath(input.resource.path));
+                if (requiresWorkspaceContext) {
+                  const project = yield* projectionSnapshotQuery
+                    .getActiveProjectByWorkspaceRoot(input.resource.cwd)
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new AssetWorkspaceContextResolutionError({
+                            resource: input.resource,
+                            cause,
+                          }),
+                      ),
+                    );
+                  if (Option.isNone(project)) {
+                    return yield* new AssetWorkspaceContextNotFoundError({
+                      resource: input.resource,
+                    });
+                  }
+                }
+                return yield* issueAssetUrl({
+                  resource: input.resource,
+                  workspaceRoot: input.resource.cwd,
+                });
               }
               if (input.resource._tag === "project-favicon") {
                 const project = yield* projectionSnapshotQuery

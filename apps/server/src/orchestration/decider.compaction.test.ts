@@ -1,5 +1,7 @@
 import {
   CommandId,
+  ComposerContextId,
+  OrchestrationSession,
   MessageId,
   ProjectId,
   ProviderInstanceId,
@@ -11,8 +13,13 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { projectEvent } from "./projector.ts";
+
+const persistedSessionCodec = Schema.fromJsonString(OrchestrationSession);
+const decodePersistedSession = Schema.decodeUnknownEffect(persistedSessionCodec);
+const encodePersistedSession = Schema.encodeEffect(persistedSessionCodec);
 
 const NOW = "2026-09-12T00:00:00.000Z";
 const threadId = ThreadId.make("compaction");
@@ -138,6 +145,50 @@ it.layer(NodeServices.layer)("compaction admission FIFO", (it) => {
         })).readModel;
         // Send settlement alone cannot bypass the exact pending admission.
         expect((yield* run(state, resume("still-pending"))).events).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "retains context through durable queue decoding, resume and uncertain restart cancellation",
+    () =>
+      Effect.gen(function* () {
+        const context = {
+          version: 1 as const,
+          records: [
+            {
+              version: 1 as const,
+              contextId: ComposerContextId.make("queued-context"),
+              kind: "mention" as const,
+              label: "source.ts",
+              path: "src/source.ts",
+            },
+          ],
+        };
+        const command = turn("context", "[source.ts](t3-context://v1/mention/queued-context)");
+        let state = (yield* run(yield* init(), {
+          ...command,
+          message: { ...command.message, context },
+        })).readModel;
+        const serialized = yield* encodePersistedSession(state.threads[0]!.session!);
+        const persistedSession = yield* decodePersistedSession(serialized);
+        expect(persistedSession.compactionQueue?.queued[0]?.context).toEqual(context);
+        state = {
+          ...state,
+          threads: state.threads.map((thread) => ({ ...thread, session: persistedSession })),
+        };
+        state = (yield* run(state, complete(true))).readModel;
+        state = (yield* run(state, resume("context-resume"))).readModel;
+        expect(
+          state.threads[0]?.messages.find((message) => message.id === command.message.messageId)
+            ?.context,
+        ).toEqual(context);
+        const canceled = yield* run(state, { ...complete(false), reconcileInFlight: true });
+        expect(canceled.readModel.threads[0]?.session?.compactionQueue).toBeUndefined();
+        expect(
+          canceled.readModel.threads[0]?.messages.find(
+            (message) => message.id === command.message.messageId,
+          )?.context,
+        ).toEqual(context);
       }),
   );
 

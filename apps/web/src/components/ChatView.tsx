@@ -1,3 +1,4 @@
+import { prepareRevertedMessageContext } from "../lib/composerRewindContext";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { resolveLoadBalancingStatus } from "@t3tools/client-runtime/load-balancing";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -176,7 +177,6 @@ import {
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
-  isBrowserPreviewAttachment,
   isImageAttachment,
   type SessionPhase,
   type Thread,
@@ -332,18 +332,24 @@ import {
   DraftId,
 } from "../composerDraftStore";
 import {
-  appendTerminalContextsToPrompt,
   formatTerminalContextLabel,
   type TerminalContextDraft,
   type TerminalContextSelection,
 } from "../lib/terminalContext";
 import {
-  appendElementContextsToPrompt,
-  type ElementContextDraft,
-  formatElementContextLabel,
-} from "../lib/elementContext";
-import { appendPreviewAnnotationPrompt } from "../lib/previewAnnotation";
-import { appendReviewCommentsToPrompt, type ReviewCommentContext } from "../reviewCommentContext";
+  ensureInlineContextReferences,
+  removeInlineContextReference,
+  stripInlineContextReferences,
+} from "../lib/composerContextReferences";
+import { serializeLegacyContextMessage } from "@t3tools/shared/composerContextLegacySend";
+import {
+  buildMessageContext,
+  previewAnnotationContextLabel,
+  previewAnnotationContextReference,
+  reviewCommentContextLabel,
+  terminalContextReference,
+} from "../lib/composerContextRecords";
+import { type ReviewCommentContext } from "../reviewCommentContext";
 import { environmentCatalog } from "../connection/catalog";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/terminalSessions";
@@ -488,6 +494,7 @@ import {
   rememberCheckoutIsRepo,
   resolveBackgroundDraftWorkspaceOptions,
   resolveDraftHeroState,
+  restorePlanFollowUpComposer,
   isPaintOnlyThreadTimeline,
   peekHeldThreadTimeline,
   peekRememberedThreadTimeline,
@@ -559,10 +566,7 @@ import {
   foldSessionInteractionActivities,
   reconcileSessionInteractionSubmission,
 } from "../sessionInteraction";
-import {
-  ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
-  recallableComposerPrompt,
-} from "./chat/composerPromptHistory";
+import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "./chat/composerPromptHistory";
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
@@ -1701,9 +1705,6 @@ export default function ChatView(props: ChatViewProps) {
   const setComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.setTerminalContexts,
   );
-  const setComposerDraftElementContexts = useComposerDraftStore(
-    (store) => store.setElementContexts,
-  );
   const setComposerDraftPreviewAnnotations = useComposerDraftStore(
     (store) => store.setPreviewAnnotations,
   );
@@ -1732,7 +1733,6 @@ export default function ChatView(props: ChatViewProps) {
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
   const composerFilesRef = useRef<ComposerFileAttachment[]>([]);
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>([]);
-  const composerElementContextsRef = useRef<ElementContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [restingComposerControlsHost, setRestingComposerControlsHost] =
@@ -3277,7 +3277,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const openFileAttachment = useCallback(
     (attachment: ChatFileAttachment) => {
-      if (isBrowserPreviewAttachment(attachment) && activeThreadRef) {
+      if (videoMimeType(attachment) === null && activeThreadRef) {
         useRightPanelStore.getState().openAttachment(activeThreadRef, attachment);
       } else if (videoMimeType(attachment) !== null) {
         setExpandedImage({
@@ -6980,7 +6980,12 @@ export default function ChatView(props: ChatViewProps) {
       if (composerRef.current?.isModelPickerOpen()) return;
       const text = pasteTextToFocusComposer(event);
       if (text === null) return;
-      if (composerRef.current?.insertTextAtEnd(text)) {
+      if (
+        composerRef.current?.insertTextAtEnd(
+          text,
+          event.clipboardData ? { clipboardData: event.clipboardData } : undefined,
+        )
+      ) {
         event.preventDefault();
         event.stopPropagation();
       }
@@ -7048,6 +7053,15 @@ export default function ChatView(props: ChatViewProps) {
             "Make room for this message's attachments in the composer before rewinding.",
           );
         }
+        const restoredAttachmentIds = new Map(
+          (message.attachments ?? []).map((attachment) => [attachment.id, randomUUID()]),
+        );
+        const restoredContext = prepareRevertedMessageContext({
+          message,
+          threadId: activeThread.id,
+          attachmentIds: restoredAttachmentIds,
+          newId: randomUUID,
+        });
         await waitForRevertedMessage(
           routeThreadRef,
           messageId,
@@ -7066,7 +7080,7 @@ export default function ChatView(props: ChatViewProps) {
           },
         );
         const currentPrompt = store.getComposerDraft(composerDraftTarget)?.prompt ?? "";
-        const restoredPrompt = recallableComposerPrompt(message.text);
+        const restoredPrompt = restoredContext.prompt;
         const nextPrompt =
           restoredPrompt.length === 0
             ? currentPrompt
@@ -7078,7 +7092,7 @@ export default function ChatView(props: ChatViewProps) {
         const restoredFiles: ComposerFileAttachment[] = [];
         files.forEach((file, index) => {
           const attachment = {
-            id: randomUUID(),
+            id: restoredAttachmentIds.get(message.attachments![index]!.id)!,
             name: file.name,
             mimeType: file.type,
             sizeBytes: file.size,
@@ -7092,6 +7106,20 @@ export default function ChatView(props: ChatViewProps) {
         });
         store.addImages(composerDraftTarget, images, { allowDuplicates: true });
         store.addFiles(composerDraftTarget, restoredFiles, { allowDuplicates: true });
+        store.addTerminalContexts(composerDraftTarget, restoredContext.terminalContexts, {
+          appendReference: false,
+          insertAtCaret: false,
+        });
+        for (const comment of restoredContext.reviewComments)
+          store.addReviewComment(composerDraftTarget, comment, {
+            appendReference: false,
+            insertAtCaret: false,
+          });
+        for (const annotation of restoredContext.previewAnnotations)
+          store.addPreviewAnnotation(composerDraftTarget, annotation, {
+            appendReference: false,
+            insertAtCaret: false,
+          });
         if (currentRouteThreadKeyRef.current === routeThreadKey) {
           promptRef.current = nextPrompt;
           composerRef.current?.resetCursorState({ prompt: nextPrompt, cursor: nextPrompt.length });
@@ -7303,7 +7331,6 @@ export default function ChatView(props: ChatViewProps) {
       images: sendContextImages,
       files: composerFiles,
       terminalContexts: composerTerminalContexts,
-      elementContexts: composerElementContexts,
       previewAnnotations: sendContextPreviewAnnotations,
       reviewComments: composerReviewComments,
       selectedProvider: ctxSelectedProvider,
@@ -7344,7 +7371,13 @@ export default function ChatView(props: ChatViewProps) {
             },
           ]
         : sendContextPreviewAnnotations;
-    const promptForSend = promptRef.current;
+    // A direct "send annotation" writes the draft and sends in the same tick; the reference
+    // must be in the text now, not after the next render.
+    const promptForSend = directAnnotation
+      ? ensureInlineContextReferences(promptRef.current, [
+          previewAnnotationContextReference(directAnnotation.annotation),
+        ])
+      : promptRef.current;
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
@@ -7354,10 +7387,7 @@ export default function ChatView(props: ChatViewProps) {
       prompt: promptForSend,
       imageCount: composerImages.length + composerFiles.length,
       terminalContexts: composerTerminalContexts,
-      elementContextCount:
-        composerElementContexts.length +
-        composerPreviewAnnotations.length +
-        composerReviewComments.length,
+      elementContextCount: composerPreviewAnnotations.length + composerReviewComments.length,
     });
     if (
       !directAnnotation &&
@@ -7367,7 +7397,6 @@ export default function ChatView(props: ChatViewProps) {
         composerImages.length +
           composerFiles.length +
           composerTerminalContexts.length +
-          composerElementContexts.length +
           composerPreviewAnnotations.length +
           composerReviewComments.length,
       )
@@ -7391,7 +7420,6 @@ export default function ChatView(props: ChatViewProps) {
       composerImages.length === 0 &&
       composerFiles.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
-      composerElementContexts.length === 0 &&
       composerPreviewAnnotations.length === 0 &&
       composerReviewComments.length === 0
         ? parseCodexFeedbackCommand(trimmed)
@@ -7453,7 +7481,7 @@ export default function ChatView(props: ChatViewProps) {
       composerFiles.length === 0
     ) {
       const followUp = resolvePlanFollowUpSubmission({
-        draftText: trimmed,
+        draftText: promptForSend,
         planMarkdown: activeProposedPlan.planMarkdown,
       });
       const outgoingFollowUpText = formatOutgoingPrompt({
@@ -7466,13 +7494,66 @@ export default function ChatView(props: ChatViewProps) {
       if (composerRef.current?.validateProviderInput(outgoingFollowUpText) === false) {
         return;
       }
+      const followUpSnapshot = {
+        prompt: promptRef.current,
+        terminalContexts: [...sendableComposerTerminalContexts],
+        reviewComments: [...composerReviewComments],
+        previewAnnotations: [...composerPreviewAnnotations],
+      };
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
-      await onSubmitPlanFollowUp({
+      const followUpSent = await onSubmitPlanFollowUp({
         text: followUp.text,
+        context: buildMessageContext(followUpSnapshot),
         interactionMode: followUp.interactionMode,
       });
+      if (!followUpSent) {
+        const currentDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+        const mergeContexts = <T extends { readonly id: string }>(
+          failed: ReadonlyArray<T>,
+          current: ReadonlyArray<T>,
+        ) =>
+          mergeFailedComposerSend({
+            failedText: "",
+            currentText: "",
+            failedAttachments: failed,
+            currentAttachments: current,
+          }).attachments;
+        const restoredSnapshot = {
+          prompt: mergeFailedComposerSend({
+            failedText: followUpSnapshot.prompt,
+            currentText: currentDraft?.prompt ?? "",
+            failedAttachments: [],
+            currentAttachments: [],
+          }).text,
+          terminalContexts: mergeContexts(
+            followUpSnapshot.terminalContexts,
+            currentDraft?.terminalContexts ?? [],
+          ),
+          reviewComments: mergeContexts(
+            followUpSnapshot.reviewComments,
+            currentDraft?.reviewComments ?? [],
+          ),
+          previewAnnotations: mergeContexts(
+            followUpSnapshot.previewAnnotations,
+            currentDraft?.previewAnnotations ?? [],
+          ),
+        };
+        promptRef.current = restoredSnapshot.prompt;
+        composerTerminalContextsRef.current = [...restoredSnapshot.terminalContexts];
+        restorePlanFollowUpComposer({
+          snapshot: restoredSnapshot,
+          writePrompt: (prompt) => setComposerDraftPrompt(composerDraftTarget, prompt),
+          writeTerminalContexts: (contexts) =>
+            setComposerDraftTerminalContexts(composerDraftTarget, [...contexts]),
+          writeReviewComments: (comments) =>
+            setComposerDraftReviewComments(composerDraftTarget, [...comments]),
+          writePreviewAnnotations: (annotations) =>
+            setComposerDraftPreviewAnnotations(composerDraftTarget, [...annotations]),
+          resetCursor: (options) => composerRef.current?.resetCursorState(options),
+        });
+      }
       return;
     }
     const standaloneSlashCommand =
@@ -7480,7 +7561,6 @@ export default function ChatView(props: ChatViewProps) {
       composerImages.length === 0 &&
       composerFiles.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
-      composerElementContexts.length === 0 &&
       composerPreviewAnnotations.length === 0 &&
       composerReviewComments.length === 0
         ? parseStandaloneComposerSlashCommand(trimmed)
@@ -7538,20 +7618,32 @@ export default function ChatView(props: ChatViewProps) {
     const composerFilesSnapshot = [...composerFiles];
     const composerAttachmentsSnapshot = [...composerImagesSnapshot, ...composerFilesSnapshot];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
-    const composerElementContextsSnapshot = [...composerElementContexts];
     const composerPreviewAnnotationsSnapshot = [...composerPreviewAnnotations];
     const composerReviewCommentsSnapshot: ReviewCommentContext[] = [...composerReviewComments];
-    const messageTextWithContexts = appendElementContextsToPrompt(
-      appendTerminalContextsToPrompt(promptForSend, composerTerminalContextsSnapshot),
-      composerElementContextsSnapshot,
-    );
-    const messageTextWithPreviewAnnotations = composerPreviewAnnotationsSnapshot.reduce(
-      (text, annotation) => appendPreviewAnnotationPrompt(text, annotation),
-      messageTextWithContexts,
-    );
-    const messageTextForSend = appendReviewCommentsToPrompt(
-      messageTextWithPreviewAnnotations,
-      composerReviewCommentsSnapshot,
+    // Expired terminal excerpts are not sent; their chips leave the text with them.
+    const messageTextForSend = composerTerminalContexts
+      .filter((context) => !composerTerminalContextsSnapshot.includes(context))
+      .reduce(
+        (text, context) =>
+          removeInlineContextReference(text, terminalContextReference(context).contextId).prompt,
+        promptForSend,
+      )
+      .trim();
+    // Records bind attachments by the id each side knows: the local id for the optimistic
+    // row, the upload id (or local id on the data-URL path) on the wire; the server
+    // rebinds them to the persisted id.
+    const buildOutgoingMessageContext = (attachmentIds: ReadonlyArray<string>) =>
+      buildMessageContext({
+        terminalContexts: composerTerminalContextsSnapshot,
+        reviewComments: composerReviewCommentsSnapshot,
+        previewAnnotations: composerPreviewAnnotationsSnapshot,
+        attachments: composerAttachmentsSnapshot.map((attachment, index) => ({
+          attachment,
+          attachmentId: attachmentIds[index] ?? attachment.id,
+        })),
+      });
+    const outgoingMessageContext = buildOutgoingMessageContext(
+      composerAttachmentsSnapshot.map((attachment) => attachment.id),
     );
     const outgoingMessageText = formatOutgoingPrompt({
       provider: ctxSelectedProvider,
@@ -7668,6 +7760,7 @@ export default function ChatView(props: ChatViewProps) {
         }
         return {
           type: "image" as const,
+          id: attachment.id,
           name: attachment.name,
           mimeType: attachment.mimeType,
           sizeBytes: attachment.sizeBytes,
@@ -7722,6 +7815,7 @@ export default function ChatView(props: ChatViewProps) {
         role: "user",
         text: outgoingMessageText,
         ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
+        ...(outgoingMessageContext !== undefined ? { context: outgoingMessageContext } : {}),
         turnId: delivery === "follow-up" ? (activeThread.latestTurn?.turnId ?? null) : null,
         createdAt: messageCreatedAt,
         updatedAt: messageCreatedAt,
@@ -7753,7 +7847,7 @@ export default function ChatView(props: ChatViewProps) {
         firstComposerImageName = firstComposerImage.name;
       }
     }
-    let titleSeed = assistantCitationsToPlainText(trimmed);
+    let titleSeed = assistantCitationsToPlainText(stripInlineContextReferences(trimmed)).trim();
     if (!titleSeed) {
       if (firstComposerImageName) {
         titleSeed = `Image: ${firstComposerImageName}`;
@@ -7761,8 +7855,10 @@ export default function ChatView(props: ChatViewProps) {
         titleSeed = `File: ${composerFilesSnapshot[0].name}`;
       } else if (composerTerminalContextsSnapshot.length > 0) {
         titleSeed = formatTerminalContextLabel(composerTerminalContextsSnapshot[0]!);
-      } else if (composerElementContextsSnapshot.length > 0) {
-        titleSeed = formatElementContextLabel(composerElementContextsSnapshot[0]!);
+      } else if (composerReviewCommentsSnapshot.length > 0) {
+        titleSeed = `Review: ${reviewCommentContextLabel(composerReviewCommentsSnapshot[0]!)}`;
+      } else if (composerPreviewAnnotationsSnapshot.length > 0) {
+        titleSeed = previewAnnotationContextLabel(composerPreviewAnnotationsSnapshot[0]!);
       } else {
         titleSeed = "New thread";
       }
@@ -7852,6 +7948,28 @@ export default function ChatView(props: ChatViewProps) {
       if (backgroundThreadRef) {
         beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
       }
+      const context = buildOutgoingMessageContext(
+        turnAttachmentsResult.value.map((attachment, index) =>
+          "id" in attachment && attachment.id !== undefined
+            ? attachment.id
+            : composerAttachmentsSnapshot[index]!.id,
+        ),
+      );
+      // Uploads may span a reconnect; choose the wire representation from the current server.
+      const supportsInlineMessageContext =
+        appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
+          .capabilities.inlineMessageContext === true;
+      const outgoingContextFields =
+        context === undefined
+          ? {}
+          : supportsInlineMessageContext
+            ? { context }
+            : {
+                text: serializeLegacyContextMessage({
+                  text: outgoingMessageText,
+                  records: context.records,
+                }),
+              };
       const startResult =
         delivery === "follow-up"
           ? await followUpThreadInputQueue({
@@ -7863,6 +7981,7 @@ export default function ChatView(props: ChatViewProps) {
                   role: "user",
                   text: outgoingMessageText,
                   attachments: turnAttachmentsResult.value,
+                  ...outgoingContextFields,
                 },
                 createdAt: messageCreatedAt,
               },
@@ -7876,6 +7995,7 @@ export default function ChatView(props: ChatViewProps) {
                   role: "user",
                   text: outgoingMessageText,
                   attachments: turnAttachmentsResult.value,
+                  ...outgoingContextFields,
                 },
                 modelSelection: ctxSelectedModelSelection,
                 titleSeed: title,
@@ -7962,7 +8082,7 @@ export default function ChatView(props: ChatViewProps) {
         useComposerDraftStore.getState().getComposerDraft(composerDraftTarget) ?? null;
       const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
       const mergedPromptAndImages = mergeFailedComposerSend({
-        failedText: promptForSend,
+        failedText: messageTextForSend,
         currentText: promptRef.current,
         failedAttachments: retryComposerImages,
         currentAttachments: composerImagesRef.current,
@@ -7978,12 +8098,6 @@ export default function ChatView(props: ChatViewProps) {
         currentText: "",
         failedAttachments: composerTerminalContextsSnapshot,
         currentAttachments: composerTerminalContextsRef.current,
-      }).attachments;
-      const mergedElementContexts = mergeFailedComposerSend({
-        failedText: "",
-        currentText: "",
-        failedAttachments: composerElementContextsSnapshot,
-        currentAttachments: composerElementContextsRef.current,
       }).attachments;
       const mergedPreviewAnnotations = mergeFailedComposerSend({
         failedText: "",
@@ -8002,13 +8116,11 @@ export default function ChatView(props: ChatViewProps) {
       composerImagesRef.current = mergedPromptAndImages.attachments;
       composerFilesRef.current = mergedFiles;
       composerTerminalContextsRef.current = mergedTerminalContexts;
-      composerElementContextsRef.current = mergedElementContexts;
       clearComposerDraftContent(composerDraftTarget);
       setComposerDraftPrompt(composerDraftTarget, mergedPrompt);
       addComposerDraftImages(composerDraftTarget, mergedPromptAndImages.attachments);
       addComposerDraftFiles(composerDraftTarget, mergedFiles);
       setComposerDraftTerminalContexts(composerDraftTarget, mergedTerminalContexts);
-      setComposerDraftElementContexts(composerDraftTarget, mergedElementContexts);
       setComposerDraftPreviewAnnotations(composerDraftTarget, mergedPreviewAnnotations);
       setComposerDraftReviewComments(composerDraftTarget, mergedReviewComments);
       composerRef.current?.resetCursorState({
@@ -8704,11 +8816,15 @@ export default function ChatView(props: ChatViewProps) {
   const onSubmitPlanFollowUp = useCallback(
     async ({
       text,
+      context,
       interactionMode: nextInteractionMode,
     }: {
       text: string;
+      context?: ReturnType<typeof buildMessageContext>;
       interactionMode: "default" | "plan";
-    }) => {
+      // Whether the message actually went out. A `false` return tells the caller to put the
+      // composer back, because it cleared it before awaiting this.
+    }): Promise<boolean> => {
       if (
         !activeThread ||
         !isServerThread ||
@@ -8716,17 +8832,17 @@ export default function ChatView(props: ChatViewProps) {
         isConnecting ||
         sendInFlightRef.current
       ) {
-        return;
+        return false;
       }
 
       const trimmed = text.trim();
       if (!trimmed) {
-        return;
+        return false;
       }
 
       const sendCtx = composerRef.current?.getSendContext();
       if (!sendCtx?.providerAvailable || sendCtx.selectedModelSelection === null) {
-        return;
+        return false;
       }
       const {
         selectedProvider: ctxSelectedProvider,
@@ -8759,6 +8875,7 @@ export default function ChatView(props: ChatViewProps) {
           id: messageIdForSend,
           role: "user",
           text: outgoingMessageText,
+          ...(context ? { context } : {}),
           turnId: null,
           createdAt: messageCreatedAt,
           updatedAt: messageCreatedAt,
@@ -8790,7 +8907,15 @@ export default function ChatView(props: ChatViewProps) {
             message: {
               messageId: messageIdForSend,
               role: "user",
-              text: outgoingMessageText,
+              ...(appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
+                .capabilities.inlineMessageContext === true
+                ? { text: outgoingMessageText, ...(context ? { context } : {}) }
+                : {
+                    text: serializeLegacyContextMessage({
+                      text: outgoingMessageText,
+                      records: context?.records ?? [],
+                    }),
+                  }),
               attachments: [],
             },
             modelSelection: ctxSelectedModelSelection,
@@ -8815,7 +8940,7 @@ export default function ChatView(props: ChatViewProps) {
       if (failure === null) {
         acknowledgeActiveThreadWoke();
         sendInFlightRef.current = false;
-        return;
+        return true;
       }
 
       setOptimisticUserMessages((existing) =>
@@ -8830,6 +8955,7 @@ export default function ChatView(props: ChatViewProps) {
       }
       sendInFlightRef.current = false;
       resetLocalDispatch();
+      return false;
     },
     [
       activeThread,
@@ -10127,6 +10253,12 @@ export default function ChatView(props: ChatViewProps) {
                             keybindings={keybindings}
                             terminalOpen={Boolean(terminalUiState.terminalOpen)}
                             gitCwd={gitCwd}
+                            pullRequestProjectId={
+                              supportsPullRequests ? (activeProject?.id ?? null) : null
+                            }
+                            pullRequestRepository={
+                              supportsPullRequests ? activeProjectRepository : null
+                            }
                             restingControlsHost={restingComposerControlsHost}
                             restingControlsHaveLeadingContext={
                               isGitRepo || showComposerEnvironmentIndicator
@@ -10141,7 +10273,6 @@ export default function ChatView(props: ChatViewProps) {
                             composerImagesRef={composerImagesRef}
                             composerFilesRef={composerFilesRef}
                             composerTerminalContextsRef={composerTerminalContextsRef}
-                            composerElementContextsRef={composerElementContextsRef}
                             onPageScrollKeyDown={onComposerPageScrollKeyDown}
                             onPageScrollKeyUp={onComposerPageScrollKeyUp}
                             onPageScrollRelease={onComposerPageScrollRelease}

@@ -82,6 +82,10 @@ Select the quote in a draft or sent message to return to its source, including i
 If the source is unavailable or has changed, the saved quote remains readable and Pylon shows a
 warning.
 
+The quote chip shows your comment when it has one. Use its pencil button to change the comment,
+or delete the chip beside the caret to remove the citation. Copying, reloading, and stashing a
+prompt keep the comment with its quote.
+
 Mobile displays saved quotes and comments, but does not create citations or navigate to their
 sources.
 
@@ -99,7 +103,7 @@ On web and desktop, choose **Edit from here** beneath a sent message to rewind
 the conversation to before that message. Choose **Revert and keep changes** to
 leave files as they are, or **Revert files too** to also restore the worktree, Git
 index, staged and unstaged changes, and untracked files. The selected prompt and
-its attachments return to the composer for editing and resending. Any unsent
+its attachments and inline context return to the composer for editing and resending. Any unsent
 draft stays above the restored prompt. Mobile offers the same file choice in its
 existing rollback action; restoring the prompt to the composer is available on
 web and desktop.
@@ -157,6 +161,37 @@ skill mentions, work on any line.
 Send `/compact` in an existing conversation to reduce context usage when the provider supports it.
 Web and desktop also offer compaction from the context meter.
 
+## Context in your message
+
+Attached context appears as a chip at the caret: a terminal excerpt, review comment, preview
+annotation, file, or image. Write around a chip, move it with cut and paste, or delete it like a
+character. Select a chip to inspect its captured content. File references open the current file;
+attached files open the copy included with the message.
+
+On web and desktop, type `#` to find pull requests in the project's repository. Digits filter the
+recent list and resolve a complete number directly; a word searches by text. Choose a result to
+attach its title, branches, and status. The chip's status reflects the moment it was attached.
+
+Images remain in the thumbnail shelf when you delete their chips. Removing a thumbnail asks for
+confirmation if the image is still referenced, then removes both. Files live only in chips:
+deleting the last reference removes that file from the message.
+
+Copying text with chips into another draft preserves their context. Images and files are fetched
+again from their source environment. If that environment is unreachable or the attachment is
+gone, Pylon keeps an unresolved chip for you to remove or replace. Copying into another app gives
+readable Markdown. Older messages remain readable, and stashing a prompt keeps its context.
+
+## Attached files
+
+Select a file chip in a draft or sent message to preview it. Code and JSON have syntax highlighting;
+Markdown, HTML, CSV, and TSV offer rendered and raw views. Audio has playback controls. Large text
+files show a limited preview; save the file to read it in full.
+
+On web and desktop, attached files open beside the conversation with the workspace file viewer's
+copy, save, and view controls. On mobile, the file screen offers copy, save or share, and the
+native file viewer. Pictures, videos, and PDFs retain their viewers. Other document formats open
+in a compatible installed viewer; otherwise save or share the file to open it elsewhere.
+
 ## Images and videos in messages
 
 Select an image or video attachment or link to preview it inside Pylon. Workspace media opens in
@@ -199,8 +234,8 @@ On web and desktop, HTML and PDF files open as rendered pages. Switch an HTML fi
 read its markup; a link to a specific line opens source automatically. HTML previews cannot access
 your Pylon session.
 
-On mobile, select a PDF attachment or link to open it. iOS uses the native viewer; Android opens the
-system chooser.
+On mobile, select a PDF attachment or link to open it. iOS uses the native viewer; Android opens a
+compatible installed file viewer.
 
 ## Collapse the composer while reading
 

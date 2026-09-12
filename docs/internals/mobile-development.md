@@ -28,3 +28,9 @@ Every Pylon variant keeps the fingerprint runtime-version policy and its Pylon U
 dependency patch can change the native fingerprint even when its implementation changes only
 JavaScript, so build a compatible binary before publishing an over-the-air update for a changed
 fingerprint.
+
+Modules exposed through `file:` dependencies (such as `t3-markdown-text`) under
+`apps/mobile/modules/` are copied by pnpm into
+its virtual store, and Metro bundles that copy. After editing a module's TypeScript, run `vp i`
+to refresh it before checking a dev client. Gradle and CocoaPods compile the worktree source
+directly, so native and JavaScript changes can otherwise appear to disagree.
