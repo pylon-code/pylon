@@ -4226,7 +4226,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     const thread = yield* projectionQuery.value
       .getThreadShellById(threadId)
       .pipe(Effect.orElseSucceed(() => Option.none<{ projectId: ProjectId }>()));
-    if (Option.isNone(thread)) return settings.continueThreadsAfterServerUpdate;
+    // With project overrides present, a missing or failed lookup cannot establish
+    // that continuation was allowed for this session.
+    if (Option.isNone(thread)) return false;
     return resolveProjectSettings(settings, thread.value.projectId).settings
       .continueThreadsAfterServerUpdate;
   });
