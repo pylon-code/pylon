@@ -1,10 +1,13 @@
 import {
   CheckpointRef,
+  CommandId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   RuntimeSessionId,
   ThreadId,
   TurnId,
+  type OrchestrationCompactionQueue,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -37,9 +40,13 @@ type HarnessOptions = {
   readonly activeLease?: boolean;
   readonly missingAbsoluteMethod?: boolean;
   readonly checkpoints?: ReadonlyArray<number>;
+  readonly compactionQueue?: typeof OrchestrationCompactionQueue.Type;
 };
 
-const makeReadModel = (checkpoints: ReadonlyArray<number>): OrchestrationReadModel =>
+const makeReadModel = (
+  checkpoints: ReadonlyArray<number>,
+  compactionQueue?: typeof OrchestrationCompactionQueue.Type,
+): OrchestrationReadModel =>
   ({
     snapshotSequence: 10,
     projects: [
@@ -104,6 +111,7 @@ const makeReadModel = (checkpoints: ReadonlyArray<number>): OrchestrationReadMod
         session: {
           threadId,
           status: "idle",
+          ...(compactionQueue === undefined ? {} : { compactionQueue }),
           providerName: "fake",
           providerInstanceId,
           activeTurnId: null,
@@ -201,7 +209,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
     Effect.provideService(RollbackWorkspace, workspace as never),
     Effect.provide(NodeServices.layer),
   );
-  return { admission, readModel: makeReadModel(checkpoints) };
+  return { admission, readModel: makeReadModel(checkpoints, options.compactionQueue) };
 };
 
 const prepare = Effect.fn(function* (
@@ -257,6 +265,41 @@ it.effect("requires the full absolute adapter contract and an empty provider que
     assert.equal(queued._tag, "Failure");
   }),
 );
+
+for (const keepFiles of [false, true]) {
+  it.effect(
+    `rejects compaction ownership even with no queued prompts (keepFiles=${keepFiles})`,
+    () =>
+      Effect.gen(function* () {
+        for (const queue of [
+          { phase: "running" },
+          { phase: "draining" },
+          {
+            phase: "draining",
+            inFlightRequestId: CommandId.make("in-flight"),
+            inFlightMessageId: MessageId.make("in-flight-message"),
+          },
+        ] as const) {
+          const result = yield* prepare(
+            {
+              compactionQueue: {
+                requestId: CommandId.make("compact"),
+                queued: [],
+                ...queue,
+              },
+            },
+            1,
+            2,
+            keepFiles,
+          ).pipe(Effect.result);
+          assert.equal(result._tag, "Failure");
+          if (result._tag === "Failure") assert.include(result.failure.detail, "exactly idle");
+        }
+        // Once the reactor removes compaction ownership, idle admission works again.
+        assert.isTrue(Option.isSome(yield* prepare({}, 1, 2, keepFiles)));
+      }),
+  );
+}
 
 it.effect("rejects stale clients, partial checkpoint history, and mismatched workspaces", () =>
   Effect.gen(function* () {

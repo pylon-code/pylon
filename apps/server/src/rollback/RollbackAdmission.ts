@@ -96,6 +96,7 @@ export const make = Effect.gen(function* () {
         thread.session.pendingTurnRequestId !== undefined ||
         thread.session.activeTurnRequestId !== undefined ||
         thread.session.failedTurnRequestId !== undefined ||
+        thread.session.compactionQueue !== undefined ||
         thread.latestTurn?.state === "running" ||
         hasOpenInput(thread)
       ) {

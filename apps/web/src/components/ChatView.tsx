@@ -3520,6 +3520,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThread.session.activeTurnId === null &&
     activeThread.session.pendingTurnRequestId === undefined &&
     activeThread.session.activeTurnRequestId === undefined &&
+    activeThread.session.compactionQueue === undefined &&
     activeThread.latestTurn?.state !== "running" &&
     !rollbackActive &&
     phase !== "running" &&

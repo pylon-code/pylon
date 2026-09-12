@@ -758,6 +758,7 @@ function ThreadRouteContent(
     selectedThreadDetail.session.activeTurnId === null &&
     selectedThreadDetail.session.pendingTurnRequestId === undefined &&
     selectedThreadDetail.session.activeTurnRequestId === undefined &&
+    selectedThreadDetail.session.compactionQueue === undefined &&
     selectedThreadDetail.latestTurn?.state !== "running" &&
     !rollbackActive &&
     composer.selectedThreadQueueCount === 0 &&
