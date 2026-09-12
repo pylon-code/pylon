@@ -207,6 +207,10 @@ Pylon accepts only a delta consisting entirely of unique results whose IDs and n
 correlated prompt's already observed tool calls. Current connection/proof epoch, delivered lifecycle
 continuity, no queued input, and exact observed transcript overlap remain required. Already recorded
 results, unrelated calls, changed names, duplicate IDs, and mixed assistant deltas fail closed.
+Call ownership comes from attributed live prompt events, never from an unchanged snapshot prefix.
+The runtime suppresses a later exact tool-result completion already published in that attachment's
+bounded correlated snapshot, keeping transcript progress from counting it twice. The snapshot cache
+is cleared for a new recovery and does not cover provisional worker snapshots or changed results.
 
 Prime 0.9.4 can insert one hidden `harness_digest` before the first submitted user message. Pylon retains
 its timestamp and SHA-256 content/details identity in the native transcript, preserving the native absolute

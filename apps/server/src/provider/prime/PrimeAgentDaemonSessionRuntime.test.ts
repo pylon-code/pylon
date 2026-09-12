@@ -1451,6 +1451,108 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect("suppresses only exact tool completions already published in a correlated resync", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const test = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: { ...snapshot(), promptLifecycles: { records: [], expired: [] } },
+        });
+        const runtime = yield* test.make();
+        const received = yield* collectEvents(runtime, 7).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const result = {
+          role: "toolResult",
+          toolCallId: "tool-recovered",
+          toolName: "read",
+          content: [{ type: "text", text: "recovered result" }],
+          isError: false,
+          timestamp: 2,
+        };
+        test.setCorrelatedPromptLifecycleProof(false);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        test.setCorrelatedPromptLifecycleProof(true);
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(9),
+              state: { ...snapshot(9).state, messageCount: 1 },
+              messages: [result],
+              promptLifecycles: { records: [], expired: [] },
+              replay: {
+                status: "complete",
+                toSequence: 9,
+                toCursor: { generation: "daemon-1", sequence: 9 },
+              },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Effect.promise(() => test.emit({ type: "connection_status", status: "connected" }));
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            attribution: { scope: "session" },
+            meta: { cursor: { generation: "daemon-1", sequence: 10 } },
+            event: { type: "message_end", promptCorrelationId: null, message: result },
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            attribution: { scope: "session" },
+            meta: { cursor: { generation: "daemon-1", sequence: 11 } },
+            event: {
+              type: "message_end",
+              promptCorrelationId: null,
+              message: {
+                ...result,
+                timestamp: 2,
+                content: [{ type: "text", text: "different result" }],
+              },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            attribution: { scope: "session" },
+            event: {
+              type: "message_end",
+              promptCorrelationId: null,
+              message: { ...result, timestamp: 3 },
+            },
+          }),
+        );
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_event",
+            attribution: { scope: "session" },
+            event: {
+              type: "message_end",
+              promptCorrelationId: null,
+              message: terminalAssistantMessage(),
+            },
+          }),
+        );
+        const events = yield* Fiber.join(received);
+        const completed = events.filter((event) => event._tag === "MessageCompleted");
+        expect(completed).toHaveLength(3);
+        expect(completed[0]).toMatchObject({
+          message: { role: "toolResult", text: "different result", timestamp: 2 },
+        });
+        expect(completed[1]).toMatchObject({
+          message: { role: "toolResult", text: "recovered result", timestamp: 3 },
+        });
+        expect(completed[2]).toMatchObject({ message: { role: "assistant" } });
+      }),
+    ),
+  );
+
   it.effect("blocks correlated commands until the reconnect snapshot is adapter-settled", () =>
     Effect.scoped(
       Effect.gen(function* () {

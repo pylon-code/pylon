@@ -2088,6 +2088,7 @@ describe("PrimeAgentDaemonAdapter", () => {
     "duplicate",
     "already observed",
     "unattributed call",
+    "unattributed through snapshot",
     "changed prefix",
     "missing proof",
     "missing lifecycle",
@@ -2156,11 +2157,22 @@ describe("PrimeAgentDaemonAdapter", () => {
             yield* offer(captures, {
               _tag: "MessageCompleted",
               message: call,
-              attribution:
-                variant === "unattributed call"
-                  ? { scope: "session" }
-                  : { scope: "prompt", correlationId },
+              attribution: variant.startsWith("unattributed")
+                ? { scope: "session" }
+                : { scope: "prompt", correlationId },
             });
+            if (variant === "unattributed through snapshot") {
+              yield* offer(captures, {
+                ...initialSnapshot(),
+                state: { ...initialSnapshot().state, isStreaming: true, messageCount: 2 },
+                messages: [prompt, call],
+                replayContinuity: "complete",
+                connectionGeneration: 0,
+                correlatedProofEpoch: 0,
+                promptLifecycles: { records: [delivered], expired: [] },
+              });
+              expect((yield* Queue.take(resolutions)).reconciled).toBe(true);
+            }
             if (variant === "already observed")
               yield* offer(captures, {
                 _tag: "MessageCompleted",
