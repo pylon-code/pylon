@@ -1,0 +1,85 @@
+name: Publish Desktop macOS Preview
+
+on:
+  workflow_run:
+    workflows: [Desktop macOS Preview]
+    types: [completed]
+  pull_request_target:
+    branches: [pylon]
+    types: [closed, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    if: >-
+      github.repository == 'pylon-code/pylon' &&
+      ((github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+       (github.event_name == 'pull_request_target' &&
+        (github.event.action == 'closed' || github.event.label.name == 'preview:mac')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.prepare.outputs.pr }}
+      mode: ${{ steps.prepare.outputs.mode }}
+      artifact_id: ${{ steps.prepare.outputs.artifact_id }}
+    steps:
+      # Both triggers execute trusted pylon code. Never substitute the PR head,
+      # restore build caches, install PR dependencies, or execute artifact contents.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - id: prepare
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { prepare } = require('./.github/scripts/desktop-macos-preview.cjs');
+            await prepare({ github, context, core });
+
+  publish:
+    needs: prepare
+    if: needs.prepare.outputs.mode != 'skip'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: write
+    # Publication and cleanup for one PR share a lock. Never cancel an upload or
+    # delete halfway through; every queued invocation reconciles current PR state.
+    concurrency:
+      group: desktop-macos-preview-publication-${{ needs.prepare.outputs.pr }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Download this build's artifact outside the trusted checkout
+        if: needs.prepare.outputs.mode == 'publish'
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/pylon-macos-preview
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Reconcile public preview and PR comment
+        uses: actions/github-script@v8
+        env:
+          PREVIEW_DIRECTORY: ${{ runner.temp }}/pylon-macos-preview
+          PREVIEW_PR: ${{ needs.prepare.outputs.pr }}
+        with:
+          script: |
+            const { reconcile } = require('./.github/scripts/desktop-macos-preview.cjs');
+            await reconcile({ github, context, core,
+              prNumber: Number(process.env.PREVIEW_PR),
+              directory: process.env.PREVIEW_DIRECTORY });
