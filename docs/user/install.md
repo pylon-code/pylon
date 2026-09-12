@@ -1,111 +1,50 @@
 # Install Pylon
 
-Pylon is a web and desktop GUI for running coding agents on your machine.
+Pylon runs coding agents on your computer and lets you control them from its desktop, web, or mobile
+app. Set up the machine where the agents will work first.
 
 ## Requirements
 
-Node.js `^22.16 || ^23.11 || >=24.10` on the machine that runs the Pylon server.
+Command-line use, SSH hosts, and WSL backends need Node.js 22.16+ (22.x), 23.11+ (23.x), or 24.10
+and later. The native desktop app includes its server runtime. On a Mac, the desktop app needs macOS
+13 Ventura or later; an app already installed on macOS 12 keeps its current version but no longer
+receives updates.
 
-At least one provider CLI, installed and authenticated. See [Providers](#providers) below.
+You need an installed, authenticated provider before starting a thread. You can launch Pylon and
+configure providers afterwards.
 
-The desktop app needs macOS 13 Ventura or later on a Mac. A desktop app already installed on macOS
-12 Monterey keeps working on the version it has, but it no longer receives desktop updates.
-
-## Run Without Installing
+## Run without installing
 
 ```bash
 npx t3@latest
 ```
 
-This starts the Pylon server on your machine and opens the local web app. Use
-`npx t3@latest --help` for the full CLI reference.
+This starts the server and opens the local web app. Run `npx t3@latest --help` for command-line
+options.
 
-## Open a project in the desktop app
+## Desktop app
 
-When the Pylon desktop app is running on the same machine, open the current directory with:
+Download Pylon from the [download page](https://pylon-code.com/download), choosing **Stable** or
+**Nightly**. Stable and Nightly are separate apps with their own projects, threads, and settings;
+see [Updating Pylon](./updating.md#choose-a-desktop-track). Builds are not yet signed or notarized,
+so macOS and Windows warn on first launch.
 
-```bash
-npx t3 app
-```
-
-Pass a path to open another directory:
-
-```bash
-npx t3 app ../my-project
-```
-
-The command adds the directory as a project when needed, focuses the desktop app, and opens a new
-thread. It does not launch the desktop app, open a browser, or start a Pylon server. A background
-server does not count as the desktop app. The command also rejects SSH sessions because a remote
-shell cannot focus a local desktop window. The CLI package and the running desktop app must both
-include `t3 app` support.
-
-## Desktop App
-
-### Pylon fork
-
-Pylon's desktop build installs beside T3 Code rather than replacing it. The apps use different
-bundle IDs, URL handlers, Electron profiles, runtime databases, and updater metadata. On macOS the
-local Pylon build installs as `Pylon (Alpha).app`; its default runtime data lives under
-`~/.pylon-code`, while T3 Code continues using its own `.t3` and Electron data.
-
-From the Pylon repository, build the local macOS installer with:
-
-```bash
-PYLON_DESKTOP_LOCAL_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" \
-  vp run dist:desktop:dmg
-```
-
-Use an identity listed by `security find-identity -v -p codesigning`. You can omit the environment
-variable for an ad-hoc-signed build, though newer macOS provenance policy may reject that build
-after it is copied from the DMG.
-
-Open the generated `Pylon-*.dmg` in `release/`, copy `Pylon (Alpha).app` into Applications, and use
-the normal macOS right-click **Open** flow if the first unnotarized local launch is blocked.
-
-### Upstream Pylon
-
-Download the latest release from
-[GitHub Releases](https://github.com/pingdotgg/t3code/releases), or install from a package
-registry.
-
-Windows:
-
-```bash
-winget install T3Tools.T3Code
-```
-
-macOS:
-
-```bash
-brew install --cask t3-code
-```
-
-Arch Linux:
-
-```bash
-yay -S t3code-bin
-```
+Pylon installs beside T3 Code rather than replacing it. The apps use different bundle IDs, URL
+handlers, and data: Pylon keeps its runtime data under `~/.pylon-code`, while T3 Code keeps its own
+`.t3` data.
 
 ### Windows Subsystem for Linux
 
-When the desktop app runs a WSL backend, it installs the matching server runtime into
-`~/.pylon-code/wsl-runtime` inside the selected distro. The first launch after installing or
-updating Pylon may take a little longer while that release's runtime is extracted. Later launches
-reuse the Linux-local copy so startup does not depend on reading application files through
-`/mnt/c`. After a successful launch, Pylon keeps the current runtime and one previous runtime for
-rollback and removes older caches automatically. If a cached runtime stops working, Pylon launches
-from the application files under `/mnt/c` instead and reinstalls the runtime on the next launch.
+Choose a WSL distro in **Settings → Connections** to run agents and projects there. Install Node.js
+and provider CLIs inside that distro. Pylon installs its matching server runtime into
+`~/.pylon-code/wsl-runtime` there automatically; the first launch after an app update can take
+longer.
 
-The WSL backend keeps its projects and history inside the distro rather than on the Windows side,
-so it has its own state separate from the one the Windows app uses. That state now lives in
-`~/.pylon-code/userdata` inside the distro, alongside the `wsl-runtime` directory described above.
-If you ran a WSL backend before this change, your projects and history are still in `~/.t3/userdata`;
-Pylon neither moves nor opens them, so the backend starts empty and tells you where the older state
-is.
-
-To carry that work forward, stop the WSL backend and move the `userdata` directory across. Your
-settings and saved credentials live inside it and come along:
+The WSL backend keeps its projects and history in `~/.pylon-code/userdata` inside the distro,
+separate from the Windows app's state. If you used a WSL backend before Pylon moved its state, your
+projects and history are still in `~/.t3/userdata`. Pylon neither moves nor opens them, so the
+backend starts empty and tells you where the older state is. To carry that work forward, stop the
+WSL backend and move the directory, which includes your settings and saved credentials:
 
 ```bash
 wsl -d <distro> -- sh -c '
@@ -115,67 +54,68 @@ wsl -d <distro> -- sh -c '
 '
 ```
 
-`~/.pylon-code` itself usually exists already, because that is where the server runtime is
-installed. What matters is that `~/.pylon-code/userdata` does not: the command refuses to run when
-it does, so it can never merge two sets of projects. Start the backend afterwards and your projects
-are back.
+The command refuses to run when `~/.pylon-code/userdata` already exists, so it never merges two sets
+of projects. Start the backend afterwards. Anything left in `~/.t3` is yours to delete; to start
+fresh instead, do nothing.
 
-Anything left in `~/.t3` is yours to delete once you are happy. If you would rather start fresh,
-do nothing: the backend creates an empty `~/.pylon-code/userdata` on its next launch and leaves
-`~/.t3` untouched.
+### Open a project from a terminal
+
+With the desktop app already running on the same machine:
+
+```bash
+npx t3 app
+```
+
+This opens a new thread for the current directory, adding the project if needed. Pass a path, such
+as `npx t3 app ../my-project`, to open another directory. It requires the desktop app, so a
+standalone server or an SSH session is not enough. If the command cannot reach the app, start or
+update the desktop app and try again.
+
+## Mobile app
+
+Pylon Mobile connects to a server on another machine. It is not yet distributed through app stores.
+Follow [remote access](./remote-access.md) to link it through Pylon Connect or a pairing URL.
 
 ## Providers
 
-Pylon drives provider CLIs; it does not ship them. Install the CLI for each provider you want
-to use, then authenticate it.
+Open **Settings → Providers** in the web or desktop app, select the environment, and enable the
+provider you want. Installation, login, and configuration belong to that environment's machine,
+even when you connect from a phone or another computer.
 
-| Provider   | CLI                                                   | Default binary | Log in with           |
-| ---------- | ----------------------------------------------------- | -------------- | --------------------- |
-| Codex      | [Codex CLI](https://developers.openai.com/codex/cli)  | `codex`        | `codex login`         |
-| Claude     | [Claude Code](https://claude.com/product/claude-code) | `claude`       | `claude auth login`   |
-| Cursor     | [Cursor CLI](https://cursor.com/cli)                  | `cursor-agent` | `agent login`         |
-| Grok Build | [Grok Build CLI](https://x.ai/cli)                    | `grok`         | `grok login`          |
-| OpenCode   | [OpenCode](https://opencode.ai)                       | `opencode`     | `opencode auth login` |
+| Provider    | Install and authenticate                                                                                  |
+| ----------- | --------------------------------------------------------------------------------------------------------- |
+| Codex       | Install [Codex CLI](https://developers.openai.com/codex/cli), then run `codex login`.                     |
+| Claude      | Install [Claude Code](https://claude.com/product/claude-code), then run `claude auth login`.              |
+| Cursor      | Install [Cursor CLI](https://cursor.com/cli), then run `agent login`.                                     |
+| Grok Build  | Install [Grok Build CLI](https://x.ai/cli), then run `grok login`.                                        |
+| OpenCode    | Install [OpenCode](https://opencode.ai), then run `opencode auth login`.                                  |
+| Antigravity | Install and sign in with Google from Pylon's provider settings.                                           |
+| Prime Agent | Install Prime Agent, then sign in with `/login`. See the [Prime Agent guide](./providers-prime-agent.md). |
 
-Codex and Claude are on by default. Cursor, Grok Build, and OpenCode are off by default; turn
-them on in **Settings** → the provider's card when you want to use them.
+Provider CLIs must be on the server's `PATH`. If Pylon cannot find one, set its **Binary path** in
+provider settings, especially when using a version manager. Cursor's executable is `cursor-agent`,
+although its login command is `agent login`. Antigravity can use its managed runtime without a
+`PATH` entry.
 
-Cursor is the one to watch: install Cursor CLI, which provides the `cursor-agent` binary that
-Pylon looks for, but authenticate with `agent login`, not `cursor-agent login`.
+When a provider CLI is behind its latest release, its provider card shows the available version.
+**Update now** appears only when Pylon can tell which installer owns the CLI (its own update
+command, Homebrew, or a global npm, pnpm, bun, or Vite+ install) and runs that installer. Otherwise
+update the CLI the same way you installed it. Homebrew installs compare against the version
+Homebrew offers, which can trail the npm release by a few hours.
 
-When a provider CLI is behind its latest release, its provider card shows the
-available version. **Update now** appears only when Pylon can tell which
-installer owns the CLI (its own update command, Homebrew, or a global npm, pnpm,
-bun, or Vite+ install) and runs that installer. Otherwise update the CLI the same
-way you installed it. Homebrew installs compare against the version Homebrew
-offers, which can trail the npm release by a few hours.
+Add another provider instance for a separate account or configuration. Each instance can have its
+own environment variables, such as API keys or a custom base URL. Mark secret values as sensitive;
+after saving, Pylon does not display their original values. Saving with a masked value keeps the
+stored secret; enter a new value to replace it or clear the field to remove it.
 
-Grok models that support adjustable reasoning show a **Reasoning** control beside the model picker.
-The available levels and default come from the installed Grok Build CLI, so they can vary by model
-and CLI version.
+For provider-specific setup and accounts, see [Codex](./providers-codex.md),
+[Claude](./providers-claude.md), [OpenCode](./providers-opencode.md),
+[Antigravity](./providers-antigravity.md), and [Prime Agent](./providers-prime-agent.md).
 
-Run the login command on the machine running the Pylon server, not on the device you browse
-from.
+## Next steps
 
-### Binary Discovery
-
-Each provider CLI must be on the server's `PATH`, or have an explicit binary path set in
-**Settings** → the provider instance → **Binary path**. Use the explicit path when a version
-manager or a non-standard install location keeps the CLI off the `PATH` of the shell that
-started Pylon.
-
-### When Auth Is Needed
-
-Provider auth is required before you start a session with that provider, not before you start
-Pylon. You can install Pylon, open it, and add providers afterwards. A provider that is not
-authenticated shows its status in **Settings** and fails at session start with the login command
-to run.
-
-For multi-account setups, see [Codex](./providers-codex.md) and [Claude](./providers-claude.md).
-
-## Next Steps
-
-- [Permission modes](./permission-modes.md): how much Pylon asks before acting
-- [Remote access](./remote-access.md): connect from a phone, tablet, or another desktop
-- [Keeping Pylon in sync](./updating.md): client and server version skew
-- [Running in the background](./background-service.md): Linux background service
+- [Working with threads](./thread-sidebar.md): start tasks and organize parallel work.
+- [Permission modes](./permission-modes.md): choose when agents ask before acting.
+- [Remote access](./remote-access.md): connect from another device.
+- [Running in the background](./background-service.md): keep a Linux or macOS host available.
+- [Updating Pylon](./updating.md): update the app and connected servers.

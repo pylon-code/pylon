@@ -31,16 +31,18 @@ vp run dev:client
 Metro preserves its transform cache between normal starts. Run `vp run dev:client:reset`
 once after changing the Uniwind dependency patch, or when stale transforms require a reset.
 
-Connection-runtime edits replace the active Effect layer through a stable atom runtime.
-Replaced registries and managed runtimes dispose their resources. Unchanged generated styles
-skip global invalidation; actual stylesheet changes still refresh. See the
-[mobile development lifecycle](../../docs/internals/mobile-development.md) for ownership details.
+Component edits use Fast Refresh. See the [mobile development lifecycle](../../docs/internals/mobile-development.md)
+before changing runtime ownership or refresh behavior.
 
 Build and run the local iOS dev client:
 
 ```bash
 vp run ios:dev
 ```
+
+After changing a native dependency patch, rerun CocoaPods before rebuilding an existing iOS
+project. pnpm gives each patch hash a new package path; Pods can otherwise keep compiling the
+previous directory.
 
 If your Xcode account only has a Personal Team, use a bundle identifier you control and opt into the
 reduced-capability local build. Personal Team builds omit the widget and share extensions, push

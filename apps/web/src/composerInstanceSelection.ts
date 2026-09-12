@@ -85,6 +85,16 @@ export interface ComposerInstanceSelection {
    * thread is unlocked or its instance has no group.
    */
   readonly lockedContinuationGroupKey: string | null;
+  /**
+   * The instance whose provider settings the composer should open because the
+   * turn cannot start there: the resolved entry when it is disabled and no
+   * enabled, available continuation peer can take the thread, or, when no entry
+   * resolved, the instance the thread asked for (its locked instance first).
+   * Undefined while the resolved entry is enabled, when a continuation peer can
+   * be picked instead, when explicit unavailability blocks it (enabling it cannot
+   * help; pick another provider), or when nothing was requested.
+   */
+  readonly unavailableInstanceId: ProviderInstanceId | undefined;
 }
 
 export function resolveComposerInstanceSelection(
@@ -123,6 +133,15 @@ export function resolveComposerInstanceSelection(
   const lockedContinuationGroupKey = lockedInstanceId
     ? (entries.find((entry) => entry.instanceId === lockedInstanceId)?.continuationGroupKey ?? null)
     : null;
+  const requestedInstanceId = [
+    input.draftActiveProvider,
+    sessionInstanceId,
+    input.threadInstanceId,
+    input.projectInstanceId,
+  ].find(
+    (candidate): candidate is ProviderInstanceId =>
+      candidate != null && candidate !== NO_PROVIDER_MODEL_SELECTION.instanceId,
+  );
 
   const candidates: ReadonlyArray<{
     readonly instanceId: ProviderInstanceId | null | undefined;
@@ -140,6 +159,20 @@ export function resolveComposerInstanceSelection(
         { instanceId: input.projectInstanceId, pinned: false },
       ];
 
+  // A disabled binding needs settings only when the picker has nothing to
+  // offer: an enabled, available continuation peer is the deliberate remedy.
+  const hasEnabledContinuationPeer = (entry: ProviderInstanceEntry) =>
+    entries.some(
+      (peer) =>
+        peer.instanceId !== entry.instanceId &&
+        peer.enabled &&
+        peer.isAvailable &&
+        resolveProviderContinuationTransition({
+          providers,
+          currentInstanceId: entry.instanceId,
+          targetInstanceId: peer.instanceId,
+        }).compatible,
+    );
   const finish = (
     instanceId: ProviderInstanceId,
     entry: ProviderInstanceEntry | undefined,
@@ -152,6 +185,12 @@ export function resolveComposerInstanceSelection(
     blockedByUnavailablePreference,
     draftConflictsWithSessionBinding,
     lockedContinuationGroupKey,
+    unavailableInstanceId:
+      entry === undefined
+        ? (lockedInstanceId ?? requestedInstanceId)
+        : entry.enabled || blockedByUnavailablePreference || hasEnabledContinuationPeer(entry)
+          ? undefined
+          : entry.instanceId,
   });
 
   for (const candidate of candidates) {
@@ -208,6 +247,30 @@ export function resolveComposerInstanceSelection(
     resolveSelectableProviderInstanceEntry(requestedDriverEntries, undefined, nowMs) ??
     resolveSelectableProviderInstanceEntry(compatibleEntries, undefined, nowMs);
   return finish(fallback?.instanceId ?? NO_PROVIDER_MODEL_SELECTION.instanceId, fallback);
+}
+
+/**
+ * The composer's provider settings action. It replaces the model picker when
+ * no provider resolved (once the catalog is known) or when the resolved
+ * instance is disabled, and names the instance whose settings to open.
+ */
+export function resolveComposerProviderSettingsAction(input: {
+  readonly selection: ComposerInstanceSelection;
+  readonly catalogKnown: boolean;
+  readonly lockedProvider: ProviderDriverKind | null;
+  /** First instance with integrated setup, offered when an unlocked thread resolves nothing. */
+  readonly fallbackSetupInstanceId: ProviderInstanceId | undefined;
+}): { readonly visible: boolean; readonly instanceId: ProviderInstanceId | undefined } {
+  if (input.selection.entry !== undefined) {
+    const instanceId = input.selection.unavailableInstanceId;
+    return { visible: instanceId !== undefined, instanceId };
+  }
+  return {
+    visible: input.catalogKnown,
+    instanceId:
+      input.selection.unavailableInstanceId ??
+      (input.lockedProvider === null ? input.fallbackSetupInstanceId : undefined),
+  };
 }
 
 /** Whether the resolved routing target may be admitted as a provider turn. */

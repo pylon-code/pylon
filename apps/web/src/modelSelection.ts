@@ -1,4 +1,5 @@
 import {
+  ANTIGRAVITY_DEFAULT_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
@@ -54,6 +55,7 @@ function readInstanceCustomModels(
   instanceId: ProviderInstanceId,
   driverKind: ProviderDriverKind,
 ): ReadonlyArray<CustomModelDefinition> {
+  if (driverKind === "antigravity") return [];
   const instance = settings.providerInstances?.[instanceId];
   const config = instance?.config;
   if (config !== null && typeof config === "object") {
@@ -86,20 +88,21 @@ export interface AppModelOption {
   isUnavailable?: boolean;
 }
 
-function appendUnavailableOpenCodeSelection(
+function appendUnavailableDynamicModelSelection(
   options: AppModelOption[],
   rawModels: ReadonlyArray<ServerProvider["models"][number]>,
   provider: ProviderDriverKind,
   selectedModel: string | null | undefined,
   hiddenModels: ReadonlyArray<string>,
 ): AppModelOption[] {
-  if (provider !== "opencode") return options;
+  if (provider !== "opencode" && provider !== "antigravity") return options;
   const slug = normalizeCustomModelSlug(selectedModel);
   if (!slug) return options;
+  if (provider === "antigravity" && slug === ANTIGRAVITY_DEFAULT_MODEL) return options;
 
   // A model that exists in the raw catalog can be absent from `options`
   // because the user hid it. Keep that preference authoritative.
-  if (rawModels.some((model) => model.slug === slug)) return options;
+  if (resolveSelectableModel(provider, slug, rawModels) !== null) return options;
   if (hiddenModels.includes(slug)) return options;
   if (options.some((option) => option.slug === slug)) return options;
 
@@ -209,7 +212,7 @@ function getAppModelOptions(
   }
 
   const preferences = readInstanceModelPreferences(settings, defaultInstanceId);
-  return appendUnavailableOpenCodeSelection(
+  return appendUnavailableDynamicModelSelection(
     applyInstanceModelPreferences(options, preferences),
     rawModels,
     provider,
@@ -257,7 +260,7 @@ export function getAppModelOptionsForInstance(
   }
 
   const preferences = readInstanceModelPreferences(settings, entry.instanceId);
-  return appendUnavailableOpenCodeSelection(
+  return appendUnavailableDynamicModelSelection(
     applyInstanceModelPreferences(options, preferences),
     entry.models,
     entry.driverKind,
@@ -300,19 +303,31 @@ export function resolveAppModelSelectionForInstance(
   if (resolvedSelection) {
     return resolvedSelection;
   }
-  if (resolutionOptions?.preserveUnavailableSelection && entry.driverKind === "opencode") {
+  if (
+    resolutionOptions?.preserveUnavailableSelection &&
+    (entry.driverKind === "opencode" || entry.driverKind === "antigravity")
+  ) {
     const unavailableSelection = normalizeCustomModelSlug(selectedModel);
     const hiddenModels = readInstanceModelPreferences(settings, entry.instanceId).hiddenModels;
-    if (unavailableSelection && !hiddenModels.includes(unavailableSelection)) {
+    if (
+      unavailableSelection &&
+      !hiddenModels.includes(unavailableSelection) &&
+      resolveSelectableModel(entry.driverKind, selectedModel, entry.models) === null &&
+      (entry.driverKind !== "antigravity" || unavailableSelection !== ANTIGRAVITY_DEFAULT_MODEL)
+    ) {
       return unavailableSelection;
     }
   }
+  // Hiding models is a picker preference, not unavailability: when every
+  // listed model is hidden, stay on this instance's own default rather than
+  // letting a driver-level fallback pick another instance's model. Antigravity
+  // has no model outside its account catalog, so it resolves to nothing.
   return (
     options.find((option) => option.isDefault)?.slug ??
     options[0]?.slug ??
-    entry.models.find((model) => model.isDefault)?.slug ??
-    entry.models[0]?.slug ??
-    null
+    (entry.driverKind === "antigravity"
+      ? null
+      : (entry.models.find((model) => model.isDefault)?.slug ?? entry.models[0]?.slug ?? null))
   );
 }
 

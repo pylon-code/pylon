@@ -275,6 +275,7 @@ import {
   buildThreadHandoffSeed,
   getThreadContinuationLinks,
   getThreadHandoffOffer,
+  resolveThreadHandoffTargetModel,
   summarizeHandoffDiff,
 } from "./chat/ThreadHandoff.logic";
 import { ThreadContinuationBanner } from "./chat/ThreadContinuationBanner";
@@ -4369,6 +4370,15 @@ export default function ChatView(props: ChatViewProps) {
   const toggleInteractionMode = useCallback(() => {
     handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
   }, [handleInteractionModeChange, interactionMode]);
+  const openProviderSetup = useCallback(
+    (instanceId: ProviderInstanceId) => {
+      void navigate({
+        to: "/settings/providers",
+        search: { environmentId, instanceId },
+      });
+    },
+    [environmentId, navigate],
+  );
   const createBrowserSurface = useCallback(
     (profileId?: string) => {
       if (!activeThreadRef) return;
@@ -8758,13 +8768,21 @@ export default function ChatView(props: ChatViewProps) {
     // The accounts run the same provider CLI, so the model slug normally
     // carries over untouched; resolving it against the target keeps a
     // per-account model list from producing a selection it cannot honor.
-    const targetModel = resolveAppModelSelectionForInstance(
-      offer.targetInstanceId,
+    const targetModel = resolveThreadHandoffTargetModel({
+      targetInstanceId: offer.targetInstanceId,
       settings,
-      providerStatuses,
-      sendCtx.selectedModel,
-    );
-    if (targetModel === null) return;
+      providers: providerStatuses,
+      selectedModel: sendCtx.selectedModel,
+    });
+    if (targetModel === null) {
+      toastManager.add({
+        type: "error",
+        title: `Can't continue on ${offer.targetAccountName}`,
+        description:
+          "That account reports no models. Refresh it in Settings → Providers, then try again.",
+      });
+      return;
+    }
     const nextThreadModelSelection = createModelSelection(offer.targetInstanceId, targetModel);
     const targetProviderModels =
       providerStatuses.find((provider) => provider.instanceId === offer.targetInstanceId)?.models ??
@@ -9417,6 +9435,7 @@ export default function ChatView(props: ChatViewProps) {
               <ProviderStatusBanner
                 status={visibleProviderStatus}
                 onDismiss={() => setDismissedProviderStatusBannerKey(providerStatusBannerKey)}
+                onOpenProviderSetup={openProviderSetup}
               />
               <RollbackStatusBanner
                 status={activeThread.rollbackStatus}
@@ -9706,6 +9725,7 @@ export default function ChatView(props: ChatViewProps) {
                               onChangeActivePendingUserInputCustomAnswer
                             }
                             onProviderModelSelect={onProviderModelSelect}
+                            onOpenProviderSetup={openProviderSetup}
                             getModelDisabledReason={getModelDisabledReason}
                             toggleInteractionMode={toggleInteractionMode}
                             handleRuntimeModeChange={handleRuntimeModeChange}

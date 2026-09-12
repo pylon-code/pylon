@@ -1,342 +1,133 @@
 # Claude
 
-This guide is for people who want to use more than one Claude setup in Pylon. For Codex, see
-[Codex](./providers-codex.md). For first-time setup, see [Install Pylon](./install.md).
+Pylon uses Claude Code's login and configuration. Start with the default provider for one account;
+[provider setup](./install.md#providers) covers installation and shared provider settings.
 
-Common reasons:
-
-- use separate work and personal Claude accounts
-- try a different Claude Code configuration without disturbing your main setup
-- run Claude through a router such as Claude Code Router
-- use external providers exposed through a Claude-compatible workflow
-
-## I Only Use One Claude Account
-
-Use the default provider.
-
-Log in with Claude Code normally:
-
-```bash
-claude auth login
-```
-
-In Pylon Settings, your Claude provider can stay like this:
-
-```text
-Display name: Claude
-Binary path: claude
-CLAUDE_CONFIG_DIR path: empty
-```
-
-An empty `CLAUDE_CONFIG_DIR path` means Pylon uses Claude Code's normal config directory.
-
-When you set this field, Pylon points Claude Code at that directory with the
-`CLAUDE_CONFIG_DIR` environment variable. It does not change `HOME`, so your system keychain and
-the rest of your environment stay as they are.
-
-Claude Code’s verbose mode can stay enabled when you use Claude for text generation, including
+Claude Code's verbose mode can stay enabled when you use Claude for text generation, including
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
 Pylon uses the Claude configuration on the connected server.
 
-## Reduce Context Usage
+## Separate accounts or configurations
 
-In Settings, open your Claude provider and set **Auto-compact after** to a token count between
-`100000` and `1000000`. For example, `300000` compacts the conversation into a summary once it
-reaches about 300,000 tokens, without changing the model's context window. Leave the field
-empty to keep Claude Code's default behavior.
+Use a separate Claude config directory for each account. This also works for named presets that
+need different Claude settings or a router connection.
 
-On web and desktop, when you return to an older Claude thread with a large context, Pylon
-offers to compact the conversation before you continue. You can also select **Compact now**
-from the context meter. On every client, you can enter `/compact` in the message composer, and
-Claude can show its own resume prompt when you continue an old session.
-
-## Claude's Task List
-
-Claude Code hides its task-tracking tools on its newest models, so Claude works
-through multi-step jobs without publishing a checklist. Pylon turns them back on,
-which is what fills the **Tasks** badge above the composer and the current-step
-label on the working row. This is on by default.
-
-To leave Claude Code's own default in place, open your Claude provider in Settings
-and turn **Task list** off. Off frees the context those tool definitions and their
-reminders take up; on trades that context for being able to watch which step Claude
-is on. Codex, Cursor, and OpenCode publish their plans without any setting.
-
-The task list shows on web and desktop. Mobile does not render it yet.
-
-## Usage limits
-
-If your Claude subscription runs out of usage mid-turn, the thread shows which
-limit was reached and the remaining wait when Claude provides a reset time.
-Claude Code holds the turn until that window reopens, so it can keep showing as
-working. Wait for the reset, or stop the turn and continue later. The warning's
-timestamp shows when the displayed wait started.
-
-## When A Turn Stops With An Authentication Or Usage Error
-
-When Claude cannot authenticate, the failed turn includes sign-in guidance. Sign in on the
-machine running that environment, using the same Claude config directory as the provider.
-If the provider shows **Sign in** in **Settings → Providers**, you can use that flow. For terminal
-login, follow the working-directory and `CLAUDE_CONFIG_DIR` values in the error before running
-`claude auth login`. Start a new thread after signing in; an existing Claude process may still
-hold the old credentials. API-key setups need their configured credentials checked instead.
-
-If Claude ends the turn while a usage window is still blocked, Pylon names the usage limit.
-Send the message again after that limit resets. A recovered usage window no longer determines
-an unrelated later error, and specific tool errors or overload messages keep their own explanation.
-
-## Where Claude Skills Are Loaded
-
-Pylon looks for Claude skills in the Claude config directory's `skills` folder and
-`<workspace>/.claude/skills`, the two places Claude Code loads them from.
-
-If the same skill name exists in more than one folder, the one in the Claude config directory
-wins, the same way Claude Code resolves it.
-
-A skill set to `off` in Claude Code's `skillOverrides` is left out of both composer menus. A skill
-marked `disable-model-invocation` still appears, because you start it yourself when you pick it.
-Claude Code runs one skill per message; when a message names several, the last one runs directly and
-Claude starts the others through its Skill tool, which refuses skills marked
-`disable-model-invocation`.
-
-## I Want Work And Personal Claude Accounts
-
-Use a different Claude config directory for each account.
-
-Example:
-
-```text
-default config dir           work account
-~/.claude_personal_home      personal account
-```
-
-### Set Up The First Account
-
-Log in normally:
+Keep your existing account in the default directory. On the environment's machine, create the second
+login:
 
 ```bash
-claude auth login
+mkdir -p ~/.claude_personal
+CLAUDE_CONFIG_DIR=~/.claude_personal claude auth login
 ```
 
-In Pylon Settings:
+Add another Claude instance in **Settings → Providers**:
+
+| Instance        | Binary path | CLAUDE_CONFIG_DIR path |
+| --------------- | ----------- | ---------------------- |
+| Claude Work     | `claude`    | Leave empty            |
+| Claude Personal | `claude`    | `~/.claude_personal`   |
 
-```text
-Display name: Claude Work
-Binary path: claude
-CLAUDE_CONFIG_DIR path: empty
-```
-
-### Set Up The Second Account
-
-Log in with a separate config directory:
-
-```bash
-mkdir -p ~/.claude_personal_home
-CLAUDE_CONFIG_DIR=~/.claude_personal_home claude auth login
-```
-
-Use `CLAUDE_CONFIG_DIR`, not `HOME`. Setting `HOME` writes the login to
-`~/.claude_personal_home/.claude`, which is not where Pylon looks.
-
-Then add another Claude provider in Pylon:
-
-```text
-Display name: Claude Personal
-Binary path: claude
-CLAUDE_CONFIG_DIR path: ~/.claude_personal_home
-```
-
-Use the email shown in Settings to confirm each provider is using the intended account. Emails are
-blurred by default; click the blurred email to reveal it.
-
-## What Happens When One Account Runs Out?
-
-Pylon drains one account before it moves to the next, rather than spreading work across both. Claude
-never shares a prompt cache between organizations, so every account switch pays for a fresh start —
-switching should be rare and sticky.
-
-When Claude refuses a turn because a subscription window is spent, Pylon records that account as out
-of capacity until the window resets. From then on, **new threads open on the next account** that
-still has room.
-
-### Choose Which Account Drains First
-
-Accounts are used in the order they are listed in Settings → Providers. Use the up and down arrows on
-an account to change that order — the top account is used until it runs out, then the next one.
-
-The arrows appear only when you have more than one account for the same provider, and reordering
-affects new threads only.
-
-A pill appears at the bottom of the sidebar while an account is out of capacity. It names the
-account that picked up the work and roughly when the spent one comes back, and it disappears on its
-own once the window resets. Click it to open provider settings.
-
-If every configured account is out of capacity, Pylon still sends to one rather than blocking the
-composer, so you see Claude's own message instead of a silent refusal.
-
-Threads that are already running do not move. See the next section.
-
-## Can I Switch Claude Accounts In An Existing Thread?
-
-Usually, no.
-
-Pylon only offers Claude providers that use the same config directory for an existing thread. A
-different config directory is treated as a different Claude environment.
-
-This is different from the recommended Codex setup. Claude Code keeps account and local state across
-multiple files under its config directory, so Pylon keeps separate config directories isolated
-instead of trying to share part of the state.
-
-### Continuing The Work On Another Account
-
-When the account a thread is running on is out of capacity and another account has room, a small
-**Out of capacity** tab appears above the composer. Click it to see what continuing elsewhere would
-cost before anything is spent.
-
-Pylon never switches on its own. Waiting for the window to reset is free, and only you know whether
-the work is worth paying to move now.
-
-Continuing starts a **new** thread on the other account, because a Claude session cannot cross
-accounts. The new thread opens with a single message carrying the original request, the conversation
-so far, and a summary of the files changed. The panel tells you in advance roughly how many tokens
-that costs. It is billed fresh — no cache carries between accounts.
-
-Long threads carry their most recent turns rather than the whole conversation, and the panel says so
-before you commit. Most threads are small enough to cross whole.
-
-The original thread stays open. Both threads show a line linking to the other, so the seam is visible
-rather than looking like work restarted for no reason.
-
-## I Want To Use OpenRouter
-
-Use this when you want Claude Code to talk to OpenRouter directly, without running a local router.
-This is the simplest external-provider setup.
-
-OpenRouter provides a Claude Code integration through Claude's Anthropic-compatible environment
-variables.
-
-### Configure A Claude OpenRouter Provider
-
-Add or edit a Claude provider in Pylon Settings:
-
-```text
-Display name: Claude OpenRouter
-Binary path: claude
-CLAUDE_CONFIG_DIR path: ~/.claude_openrouter_home
-```
-
-In that provider's Environment variables section, add:
-
-```text
-ANTHROPIC_BASE_URL   https://openrouter.ai/api
-ANTHROPIC_AUTH_TOKEN sk-or-...                Sensitive
-ANTHROPIC_API_KEY                              Empty value
-```
-
-Mark `ANTHROPIC_AUTH_TOKEN` as sensitive. Pylon stores the value as a server secret and does not
-send it back to the app after saving.
-
-If you want this setup isolated from your normal Claude account, create that home first:
-
-```bash
-mkdir -p ~/.claude_openrouter_home
-```
-
-If you previously used the same Claude home with a normal Anthropic login, run `/logout` in a Claude
-Code session for that home before using OpenRouter. Otherwise Claude Code may keep using cached
-Anthropic credentials instead of the OpenRouter token.
-
-### Pick OpenRouter Models
-
-OpenRouter can route Claude Code's default model roles to OpenRouter model IDs.
-
-Example:
-
-```text
-ANTHROPIC_DEFAULT_OPUS_MODEL    anthropic/claude-opus-4.6
-ANTHROPIC_DEFAULT_SONNET_MODEL  anthropic/claude-sonnet-4.6
-ANTHROPIC_DEFAULT_HAIKU_MODEL   anthropic/claude-haiku-4.5
-CLAUDE_CODE_SUBAGENT_MODEL      anthropic/claude-sonnet-4.6
-```
-
-Add those to the same provider's Environment variables section if you want stable model choices.
-
-### Verify OpenRouter Is Being Used
-
-Open a Claude session and run:
-
-```text
-/status
-```
-
-You should see the Anthropic base URL set to:
-
-```text
-https://openrouter.ai/api
-```
-
-You can also check the OpenRouter activity dashboard for requests from your API key.
-
-### Common OpenRouter Mistakes
-
-- Use `https://openrouter.ai/api`, not `https://openrouter.ai/api/v1`, for Claude Code.
-- Set `ANTHROPIC_AUTH_TOKEN` to your OpenRouter API key.
-- Set `ANTHROPIC_API_KEY` to an empty string so Claude Code does not try to use an Anthropic login.
-- Put these variables on the Claude provider instance, not in global shell startup files.
-
-OpenRouter's setup can change over time. Use its upstream Claude Code guide for the current details:
-<https://openrouter.ai/docs/guides/guides/claude-code-integration>.
-
-## I Want To Use Claude Code Router
-
-Claude Code Router is useful when you want a local routing layer with more control than a direct
-OpenRouter setup.
-
-Pylon does not need a special Claude Code Router provider. Treat the router as a Claude
-environment: give a Claude provider its own `CLAUDE_CONFIG_DIR path`, and put whatever variables
-the router tells you to export into that provider's Environment variables section. Mark tokens
-and API keys as sensitive.
-
-```text
-Display name: Claude Router
-Binary path: claude
-CLAUDE_CONFIG_DIR path: ~/.claude_router_home
-```
-
-Follow the upstream project's README for the router's own install, startup, and configuration
-steps: <https://github.com/musistudio/claude-code-router>.
-
-## I Want Different Claude Settings, Not A Different Account
-
-Create another Claude provider with the same account if you want a named preset.
-
-Examples:
-
-- "Claude Default"
-- "Claude Router"
-- "Claude Experimental"
-
-If the preset needs different Claude files, give it a different `CLAUDE_CONFIG_DIR path`. If it needs
-different API keys, base URLs, or router settings, use Environment variables.
-
-Do not put environment variable assignments in `Launch arguments`.
-
-## Adding A Second Account Without A Terminal
-
-Pylon can sign a Claude account in for you.
-
-1. **Settings → Providers → Add provider**, pick Claude, name it (for example "Personal"),
-   and give it its own **CLAUDE_CONFIG_DIR path** such as `~/.claude_personal_home`. The path
-   is what keeps the two accounts apart — two providers sharing one directory are one account.
-2. The new provider will show as not signed in, with a **Sign in** button.
-3. Choose how that account signs in — Claude subscription, Anthropic Console for API billing,
-   or single sign-on. These are not interchangeable, and picking the wrong one fails only after
-   you have already signed in to a browser.
-4. Pylon opens the Claude sign-in page and waits. Complete it, then paste the code back into
-   Pylon.
-
-The card then shows the account's own email and usage.
-
-If your browser is already signed in to your other account, watch the email on the login page —
-signing in twice as the same account is the usual mistake, and it leaves two providers that
-share one subscription's limits.
+An empty config-directory setting uses Claude Code's normal configuration. The custom setting changes
+`CLAUDE_CONFIG_DIR`, leaving `HOME` and the system keychain location intact. Use the same variable
+for the login command. Setting `HOME` instead can put credentials where this provider will not find
+them.
+
+You can also sign an account in without a terminal. Add a Claude provider with its own
+**CLAUDE_CONFIG_DIR path**, then choose **Sign in** on its card and pick how the account signs in:
+Claude subscription, Anthropic Console, or single sign-on. These are not interchangeable. Complete
+the Claude sign-in page and paste the code back into Pylon. Watch the email on the login page: signing
+in twice as the same account leaves two providers sharing one subscription's limits.
+
+Check the email reported in provider settings after signing in; click the blurred email to reveal
+it. Existing threads can switch only between Claude instances with the same config directory.
+Separate account directories stay isolated, including their local conversation state. Claude does not
+have Codex's shared-home and shadow-home arrangement.
+
+For presets that differ only in API keys or endpoints, use the instance's **Environment variables**.
+Variable assignments do not belong in **Launch arguments**.
+
+## When one account runs out
+
+Pylon uses one account until it runs out rather than spreading work across accounts, because Claude
+never shares a prompt cache between organizations and every switch starts fresh. When Claude refuses a
+turn because a subscription window is spent, Pylon marks that account out of capacity until the window
+resets, and new threads open on the next account with room. Threads that are already running do not
+move.
+
+Accounts drain in the order listed in **Settings → Providers**. With more than one account for a
+provider, use the up and down arrows on an account to change that order for new threads. A pill at
+the bottom of the sidebar names the account that picked up the work and roughly when the spent one
+returns. If every account is out of capacity, Pylon still sends to one so you see Claude's own
+message.
+
+When the account a thread runs on is out of capacity and another has room, an **Out of capacity** tab
+appears above the composer. It shows roughly what continuing elsewhere would cost before anything is
+spent. Pylon never switches on its own. Continuing starts a new thread on the other account with the
+original request, the conversation so far, and a summary of changed files; long threads carry their
+most recent turns. The original thread stays open, and both threads link to each other.
+
+## Usage limits and sign-in errors
+
+If your Claude subscription runs out of usage mid-turn, the thread shows which limit was reached and
+the remaining wait when Claude provides a reset time. Claude Code holds the turn until that window
+reopens, so it can keep showing as working. Wait for the reset, or stop the turn and continue later.
+If Claude ends the turn instead, Pylon names the limit; send the message again after it resets.
+
+When Claude cannot authenticate, the failed turn includes sign-in guidance. Sign in on the machine
+running that environment with the same config directory as the provider, using **Sign in** in
+**Settings → Providers** or the working directory and `CLAUDE_CONFIG_DIR` values shown in the error.
+Start a new thread afterwards; an existing Claude process may still hold the old credentials.
+
+## Compact long conversations
+
+Set **Auto-compact after** in the Claude provider settings to an integer between `100000` and
+`1000000`. For example, `300000` asks Claude to summarize at about 300,000 tokens. This changes when
+compaction happens, not the model's context window. Leave it empty for Claude Code's default.
+
+You can also send `/compact` in an existing conversation. Web and desktop offer compaction from the
+context meter and may suggest it when you return to a large older thread. See
+[commands and skills](./composer.md#commands-and-skills) for using composer commands.
+
+## Task list
+
+Claude Code hides its task-tracking tools on its newest models. Pylon turns them back on by default,
+which fills the **Tasks** badge above the composer and the current-step label while Claude works. To
+keep Claude Code's own default and save the context those tools use, turn **Task list** off in the
+Claude provider settings. The task list shows on web and desktop.
+
+## Skills
+
+Claude skills come from the config directory's `skills` folder and the project's `.claude/skills`
+folder. If both define the same name, the config-directory copy wins. Skills disabled in Claude's
+settings do not appear in the composer.
+
+Use `$` in the composer to select a skill. Skills marked `disable-model-invocation` can still be
+started by you. Invoke those one per message: Claude directly runs only the last named skill and may
+try to start earlier ones through its Skill tool, which refuses skills reserved for manual invocation.
+
+## OpenRouter
+
+Create a Claude instance with its own config directory, such as `~/.claude_openrouter`, and keep
+**Binary path** set to `claude`. In that instance's **Environment variables**, use:
+
+| Variable               | Value                                     |
+| ---------------------- | ----------------------------------------- |
+| `ANTHROPIC_BASE_URL`   | `https://openrouter.ai/api`               |
+| `ANTHROPIC_AUTH_TOKEN` | Your OpenRouter API key, marked Sensitive |
+| `ANTHROPIC_API_KEY`    | An explicitly empty value                 |
+
+Use `https://openrouter.ai/api`, not `/api/v1`. If that Claude config directory has a cached Anthropic
+login, run `/logout` in a Claude Code session using that directory before starting the router setup.
+Cached login credentials can conflict with the router token.
+
+Verify requests with `/status` in a Claude session or in OpenRouter's activity dashboard. For
+model-role overrides and current compatibility requirements, use the
+[OpenRouter Claude Code guide](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration).
+
+## Other routers
+
+A local router uses an ordinary Claude provider instance. Give it a separate config directory and
+put the router's endpoint and credential variables in that instance's **Environment variables**. The
+router must run where the environment can reach it. Follow the
+[Claude Code Router instructions](https://github.com/musistudio/claude-code-router) for its
+installation and routing configuration.

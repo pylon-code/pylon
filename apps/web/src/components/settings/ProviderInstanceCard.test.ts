@@ -11,6 +11,7 @@ import {
 import { DEFAULT_TIMESTAMP_FORMAT } from "@t3tools/contracts/settings";
 
 import { deriveProviderModelsForDisplay, ProviderInstanceCard } from "./ProviderInstanceCard";
+import { getDriverOption } from "./providerDriverMeta";
 
 /**
  * The inner markup of every `tag` element carrying `inert=""`. These tests
@@ -129,6 +130,54 @@ describe("deriveProviderModelsForDisplay", () => {
       capabilities: customCapabilities,
     });
   });
+
+  it.each([
+    ["antigravity", false],
+    ["codex", true],
+  ] as const)(
+    "offers custom models only where the driver can send them (%s)",
+    (driverName, offersCustomModels) => {
+      const instanceId = ProviderInstanceId.make(`${driverName}_work`);
+      const driver = ProviderDriverKind.make(driverName);
+      const liveProvider: ServerProvider = {
+        instanceId,
+        driver,
+        enabled: true,
+        installed: true,
+        version: "1.0.0",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-08-27T12:00:00.000Z",
+        models: [
+          { slug: "catalog-model", name: "Catalog model", isCustom: false, capabilities: null },
+        ],
+        slashCommands: [],
+        skills: [],
+      };
+
+      const markup = renderToStaticMarkup(
+        createElement(ProviderInstanceCard, {
+          instanceId,
+          instance: { driver, config: { customModels: ["saved-custom-model"] } },
+          driverOption: getDriverOption(driver),
+          liveProvider,
+          mode: "editor",
+          timestampFormat: DEFAULT_TIMESTAMP_FORMAT,
+          onUpdate: () => undefined,
+          hiddenModels: [],
+          favoriteModels: [],
+          modelOrder: [],
+          onHiddenModelsChange: () => undefined,
+          onFavoriteModelsChange: () => undefined,
+          onModelOrderChange: () => undefined,
+        }),
+      );
+
+      expect(markup).toContain("Catalog model");
+      expect(markup.includes("Add custom model")).toBe(offersCustomModels);
+      expect(markup.includes("saved-custom-model")).toBe(offersCustomModels);
+    },
+  );
 
   it("shows a redacted provider email in the editor header status line", () => {
     const instanceId = ProviderInstanceId.make("codex");

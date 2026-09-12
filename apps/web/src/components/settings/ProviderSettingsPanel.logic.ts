@@ -54,6 +54,43 @@ export function resolveSelectedProviderEnvironmentId(
   return environments[0]?.environmentId ?? null;
 }
 
+/**
+ * Where Settings → Providers lands for a provider-setup link. A requested device
+ * that is not listed yet holds the page on loading until the device list is
+ * ready; only a loaded list can prove the device is gone.
+ */
+export function resolveProviderSettingsTargetEnvironment(input: {
+  readonly environments: ReadonlyArray<ProviderEnvironmentOptionLike>;
+  readonly isReady: boolean;
+  readonly selectedEnvironmentId: EnvironmentId | null;
+  readonly primaryEnvironmentId: EnvironmentId | null;
+  readonly targetEnvironmentId: EnvironmentId | undefined;
+}): {
+  readonly effectiveEnvironmentId: EnvironmentId | null;
+  readonly targetEnvironmentState: "listed" | "loading" | "missing";
+} {
+  const targetAbsent =
+    input.targetEnvironmentId !== undefined &&
+    input.selectedEnvironmentId === input.targetEnvironmentId &&
+    !input.environments.some(
+      (environment) => environment.environmentId === input.targetEnvironmentId,
+    );
+  if (targetAbsent) {
+    return {
+      effectiveEnvironmentId: input.targetEnvironmentId ?? null,
+      targetEnvironmentState: input.isReady ? "missing" : "loading",
+    };
+  }
+  return {
+    effectiveEnvironmentId: resolveSelectedProviderEnvironmentId(
+      input.environments,
+      input.selectedEnvironmentId,
+      input.primaryEnvironmentId,
+    ),
+    targetEnvironmentState: "listed",
+  };
+}
+
 export type ProviderEnvironmentAccess =
   | { readonly kind: "editable" }
   /** `reason` distinguishes waiting on the device from waiting on permissions. */
