@@ -16,7 +16,14 @@ export function safeCuaArchivePath(name: string): boolean {
     !name.includes("\\") &&
     !name.includes(":") &&
     ![...name].some((character) => character.charCodeAt(0) < 32) &&
-    !name.split("/").some((p) => p === ".." || p === ".")
+    !name
+      .split("/")
+      .some(
+        (part) =>
+          part.length === 0 ||
+          /[. ]$/u.test(part) ||
+          /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(part),
+      )
   );
 }
 
@@ -30,7 +37,8 @@ export async function extractCuaArchive(
   let bytes = 0;
   const names = new Set<string>();
   const admit = (name: string, size: number) => {
-    const normalized = name.replace(/\/$/u, "");
+    // Reject aliases on case-insensitive macOS/Windows filesystems as well.
+    const normalized = name.replace(/\/$/u, "").toLowerCase();
     bytes += size;
     if (
       !safeCuaArchivePath(normalized) ||

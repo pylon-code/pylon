@@ -6,12 +6,25 @@ import * as NodeOS from "node:os";
 import * as Tar from "tar";
 import { extractCuaArchive, safeCuaArchivePath } from "./cuaArchive.ts";
 
-it.each(["../escape", "/absolute", "a/../escape", "a/./b", "C:/driver", "a\\b", "a\u0000b", ""])(
-  "refuses unsafe archive path %s",
-  (path) => {
-    expect(safeCuaArchivePath(path)).toBe(false);
-  },
-);
+it.each([
+  "../escape",
+  ".. /escape",
+  "dir./file",
+  "dir /file",
+  "dir//file",
+  "CON",
+  "nul.txt",
+  "driver/COM1.exe",
+  "/absolute",
+  "a/../escape",
+  "a/./b",
+  "C:/driver",
+  "a\\b",
+  "a\u0000b",
+  "",
+])("refuses unsafe archive path %s", (path) => {
+  expect(safeCuaArchivePath(path)).toBe(false);
+});
 it("accepts ordinary nested bundle paths", () => {
   expect(safeCuaArchivePath("driver/CuaDriver.app/Contents/MacOS/cua-driver")).toBe(true);
 });
