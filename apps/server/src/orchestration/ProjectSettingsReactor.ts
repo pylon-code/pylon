@@ -19,7 +19,7 @@ export class ProjectSettingsReactor extends Context.Service<
 >()("t3/orchestration/ProjectSettingsReactor") {}
 
 /** Old clients write the project aggregate; the settings service replays its durable journal. */
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const settings = yield* ServerSettingsService;
   const worker = yield* makeDrainableWorker((_event: OrchestrationEvent) =>

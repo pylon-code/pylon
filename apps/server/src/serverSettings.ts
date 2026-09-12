@@ -681,6 +681,9 @@ const decodeProjectScriptsJson = Schema.decodeUnknownOption(
 const decodeModelSelectionJson = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.NullOr(ModelSelection)),
 );
+const decodeLegacyProjectEditJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ProjectMetaUpdatedPayload),
+);
 
 interface LegacyProjectSettingsRow {
   readonly projectId: string;
@@ -878,9 +881,7 @@ const make = Effect.gen(function* () {
             ...folded.projectSettingsOverrides,
           };
           for (const event of events) {
-            const payload = yield* Schema.decodeUnknownEffect(
-              Schema.fromJsonString(ProjectMetaUpdatedPayload),
-            )(event.payload);
+            const payload = yield* decodeLegacyProjectEditJson(event.payload);
             const entry = { ...entries[payload.projectId] };
             // In the old aggregate, null/empty/false mean inherit. Explicit false
             // and empty-list overrides remain representable in the legacy maps.
