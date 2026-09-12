@@ -6676,7 +6676,10 @@ describe("agent browser access", () => {
     options: NonNullable<Parameters<typeof makeProviderServiceLive>[0]>,
     project?: {
       readonly threadId: ThreadId;
-      readonly override?: boolean | undefined;
+      readonly override?:
+        | boolean
+        | { readonly browser?: boolean; readonly device?: boolean }
+        | undefined;
       /** False leaves the projection query to the surrounding runtime composition. */
       readonly provideProjection?: boolean;
     },
@@ -6706,7 +6709,19 @@ describe("agent browser access", () => {
           projectSettingsOverrides:
             projectOverride === undefined
               ? {}
-              : { [projectId]: { enableAgentBrowserAccess: projectOverride } },
+              : {
+                  [projectId]:
+                    typeof projectOverride === "boolean"
+                      ? { enableAgentBrowserAccess: projectOverride }
+                      : {
+                          ...(projectOverride.browser !== undefined
+                            ? { enableAgentBrowserAccess: projectOverride.browser }
+                            : {}),
+                          ...(projectOverride.device !== undefined
+                            ? { enableAgentDeviceAccess: projectOverride.device }
+                            : {}),
+                        },
+                },
         }),
       ),
       Layer.provide(serverConfigTestLayer),
@@ -6805,6 +6820,48 @@ describe("agent browser access", () => {
         assert.deepEqual(issued, [[...expected]]);
       }
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "resolves project device overrides and withholds only overridden unresolved capabilities",
+    () =>
+      Effect.gen(function* () {
+        for (const [browser, device, override, provideProjection, expected] of [
+          [false, false, { device: true }, true, ["device"]],
+          [true, true, { device: false }, true, ["preview"]],
+          [true, true, { device: false }, false, ["preview"]],
+          [false, false, { device: true }, false, []],
+        ] as const) {
+          const threadId = asThreadId(
+            `thread-project-device-${browser}-${device}-${provideProjection}`,
+          );
+          const issued: string[][] = [];
+          const codex = makeFakeCodexAdapter();
+          const layer = makeAgentBrowserProviderLayer(
+            browser,
+            codex,
+            {
+              issueMcpCredential: (request) =>
+                Effect.sync(() => {
+                  issued.push([...request.capabilities].sort());
+                  return undefined;
+                }),
+            },
+            { threadId, override, provideProjection },
+            device,
+          );
+          yield* Effect.gen(function* () {
+            const provider = yield* ProviderService.ProviderService;
+            yield* provider.startSession(threadId, {
+              provider: CODEX_DRIVER,
+              providerInstanceId: codexInstanceId,
+              threadId,
+              runtimeMode: "full-access",
+            });
+          }).pipe(Effect.provide(layer));
+          assert.deepEqual(issued, expected.length > 0 ? [[...expected]] : []);
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("does not publish retired MCP ownership after device CLI preparation yields", () =>

@@ -573,7 +573,10 @@ function DeviceIntegrationSettings() {
   const aggregate = scope.environmentIds.length !== 1 && connectedEnvironments.length > 1;
 
   return (
-    <SettingsSection id="devices" title={aggregate && selected ? `Devices · ${selected.label}` : "Devices"}>
+    <SettingsSection
+      id="devices"
+      title={aggregate && selected ? `Devices · ${selected.label}` : "Devices"}
+    >
       <DeviceIntegrationControls
         key={selected?.environmentId ?? "none"}
         environmentId={environmentId}

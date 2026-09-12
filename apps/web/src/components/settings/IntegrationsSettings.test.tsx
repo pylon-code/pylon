@@ -13,8 +13,9 @@ import { act, StrictMode, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-const { listBrowserImportSources } = vi.hoisted(() => ({
+const { listBrowserImportSources, selectedDeviceEnvironment } = vi.hoisted(() => ({
   listBrowserImportSources: vi.fn().mockResolvedValue([]),
+  selectedDeviceEnvironment: { id: null as string | null, aggregate: false },
 }));
 
 vi.mock("../preview/previewBridge", () => ({
@@ -43,9 +44,19 @@ vi.mock("./settingsLayout", async (importOriginal) => ({
 vi.mock("./ProjectDefaultsSettings", () => ({ ProjectDefaultsSettings: () => null }));
 vi.mock("./SettingsScopeContext", () => ({
   useSettingsScope: () => ({
-    scope: { kind: "all", environmentIds: [] },
-    environment: null,
-    connectedEnvironments: [],
+    scope: {
+      kind: "all",
+      environmentIds: selectedDeviceEnvironment.aggregate ? ["remote", "other"] : [],
+    },
+    environment: selectedDeviceEnvironment.id
+      ? {
+          environmentId: selectedDeviceEnvironment.id,
+          label: "Selected remote",
+          connection: { phase: "connected" },
+          serverConfig: { settings: DEFAULT_UNIFIED_SETTINGS },
+        }
+      : null,
+    connectedEnvironments: selectedDeviceEnvironment.aggregate ? [{}, {}] : [],
     targets: [],
   }),
   useOptionalSettingsScope: () => null,
@@ -59,6 +70,8 @@ let renderer: ReactTestRenderer | undefined;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   listBrowserImportSources.mockClear();
+  selectedDeviceEnvironment.id = null;
+  selectedDeviceEnvironment.aggregate = false;
 });
 
 afterEach(async () => {
@@ -99,6 +112,21 @@ describe("Integrations browser discovery", () => {
       .map((node) => node.props.id)
       .filter(Boolean);
     expect(sections.indexOf("devices")).toBeGreaterThan(sections.indexOf("browser"));
+  });
+
+  it("names the header's representative device environment without a second selector", async () => {
+    selectedDeviceEnvironment.id = "selected-remote";
+    selectedDeviceEnvironment.aggregate = true;
+    await openSettings();
+    const section = renderer!.root.findAll(
+      (node) => node.type === "section" && node.props.id === "devices",
+    )[0]!;
+    expect(
+      section.findAll((node) => node.type === "h2").map((node) => node.children.join("")),
+    ).toContain("Devices · Selected remote");
+    expect(
+      section.findAll((node) => node.props["aria-label"] === "Device environment"),
+    ).toHaveLength(0);
   });
 });
 
