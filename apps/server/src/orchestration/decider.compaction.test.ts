@@ -161,6 +161,33 @@ it.layer(NodeServices.layer)("compaction admission FIFO", (it) => {
     }),
   );
 
+  it.effect("accounts for an in-flight head when Stop cancels its pending admission", () =>
+    Effect.gen(function* () {
+      let state = yield* init();
+      state = (yield* run(state, turn("one"))).readModel;
+      state = (yield* run(state, turn("two"))).readModel;
+      state = (yield* run(state, complete(true))).readModel;
+      state = (yield* run(state, resume("resume-one"))).readModel;
+      const stopped = yield* run(state, {
+        type: "thread.session.stop",
+        commandId: CommandId.make("stop-pending"),
+        threadId,
+        createdAt: NOW,
+      });
+      const receipts = stopped.events.filter((event) => event.type === "thread.activity-appended");
+      expect(receipts).toHaveLength(2);
+      expect(receipts[0]?.payload.activity).toMatchObject({
+        summary: "Queued message delivery was interrupted",
+        payload: { requestId: "message-one" },
+      });
+      expect(receipts[1]?.payload.activity).toMatchObject({
+        summary: "Queued message was not sent",
+        payload: { requestId: "message-two" },
+      });
+      expect(stopped.readModel.threads[0]?.session?.compactionQueue).toBeUndefined();
+    }),
+  );
+
   it.effect(
     "does not let an old provider snapshot erase the queue or completion drain a replacement incarnation",
     () =>
@@ -207,7 +234,11 @@ it.layer(NodeServices.layer)("compaction admission FIFO", (it) => {
             .filter((event) => event.type === "thread.activity-appended")
             .map((event) => event.payload.activity.payload),
         ).toEqual([
-          { requestId: "message-one", detail: "Server restarted; delivery may have started." },
+          {
+            requestId: "message-one",
+            detail:
+              "Server restarted; delivery may have started. Delivery may already have started; check the conversation before resending.",
+          },
           { requestId: "message-two", detail: "Server restarted; delivery may have started." },
         ]);
         expect(canceled.readModel.threads[0]?.session?.compactionQueue).toBeUndefined();

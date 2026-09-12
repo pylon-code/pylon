@@ -1737,6 +1737,7 @@ const make = Effect.gen(function* () {
         );
         return;
       }
+      let compactedSession: ProviderSession | undefined;
       const handleCompactionFailure = (cause: Cause.Cause<unknown>) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.void;
         const detail = formatFailureDetail(cause);
@@ -1744,7 +1745,13 @@ const make = Effect.gen(function* () {
           Effect.ensuring(
             // A no-op unless the session actually reached a restorable state,
             // so this covers both a failed ensure and a failed compaction.
-            completeCompaction(event.payload.threadId, requestId, false, detail).pipe(
+            completeCompaction(
+              event.payload.threadId,
+              requestId,
+              false,
+              detail,
+              compactedSession,
+            ).pipe(
               Effect.catchCause((restoreCause) =>
                 Effect.logWarning("failed to restore provider session after compaction failure", {
                   threadId: event.payload.threadId,
@@ -1770,15 +1777,32 @@ const make = Effect.gen(function* () {
             runtimeMode: event.payload.runtimeMode,
             interactionMode: event.payload.interactionMode,
             pendingTurnStart: true,
+            pendingTurnRequestId: requestId,
+            pendingTurnMessageId: event.payload.messageId,
+            pendingTurnRequestedAt: admissionRequestedAt,
+            pendingTurnDeadlineAt: admissionDeadlineAt,
+            expectedProviderInstanceId:
+              event.payload.admissionIntent !== undefined
+                ? event.payload.admissionIntent.expectedProviderInstanceId
+                : (thread.session?.providerInstanceId ?? null),
+            expectedSessionIncarnationId:
+              event.payload.admissionIntent !== undefined
+                ? event.payload.admissionIntent.expectedSessionIncarnationId
+                : (thread.session?.sessionIncarnationId ?? null),
           },
         );
         if (!compactionSession) return yield* Effect.interrupt;
+        compactedSession = compactionSession;
         const current = (yield* resolveThreadShell(event.payload.threadId))?.session;
         if (
           current?.compactionQueue?.requestId !== requestId ||
           current.sessionIncarnationId !== compactionSession.sessionIncarnationId
         )
-          return yield* Effect.interrupt;
+          return yield* new ProviderAdapterRequestError({
+            provider: compactionSession.provider,
+            method: "thread.compact",
+            detail: "The provider session changed before compaction could start.",
+          });
         if (event.payload.modelSelection !== undefined) {
           threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
         }

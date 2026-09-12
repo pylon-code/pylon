@@ -1161,6 +1161,9 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-session-ready-before-blocked-compact"),
         threadId,
         session: {
+          sessionIncarnationId: (yield* Effect.promise(() => harness.readModel())).threads.find(
+            (entry) => entry.id === threadId,
+          )?.session?.sessionIncarnationId,
           threadId,
           status: "ready",
           providerName: "codex",
@@ -1221,6 +1224,79 @@ describe("ProviderCommandReactor", () => {
           (message) => message.id === "user-message-during-compact-recovery",
         ),
       ).toHaveLength(1);
+    }),
+  );
+
+  effectIt.effect("keeps Stop authoritative when compaction session startup finishes late", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const releaseStart = yield* Deferred.make<void>();
+      const lateSessionStopped = yield* Deferred.make<void>();
+      const threadId = ThreadId.make("thread-1");
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          startSessionEffect: (session) =>
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseStart)),
+              Effect.as(session),
+            ),
+          stopSessionEffect: () =>
+            Deferred.succeed(lateSessionStopped, undefined).pipe(Effect.asVoid),
+          beforeReactorStart: Effect.gen(function* () {
+            const engine = yield* OrchestrationEngineService;
+            yield* engine.dispatch({
+              type: "thread.turn.start",
+              commandId: CommandId.make("seed-context"),
+              threadId,
+              message: {
+                messageId: MessageId.make("seed-context"),
+                role: "user",
+                text: "existing conversation",
+                attachments: [],
+              },
+              runtimeMode: "approval-required",
+              interactionMode: "default",
+              createdAt: "2026-01-01T00:00:00.000Z",
+            });
+            yield* engine.dispatch({
+              type: "thread.session.stop",
+              commandId: CommandId.make("stop-seed"),
+              threadId,
+              createdAt: "2026-01-01T00:00:00.000Z",
+            });
+          }),
+        }),
+      );
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("slow-compact"),
+        threadId,
+        message: {
+          messageId: MessageId.make("slow-compact"),
+          role: "user",
+          text: "/compact",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      yield* Deferred.await(started);
+      yield* harness.engine.dispatch({
+        type: "thread.session.stop",
+        commandId: CommandId.make("stop-slow-compact"),
+        threadId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+      yield* Effect.promise(() => harness.drain());
+      yield* Deferred.succeed(releaseStart, undefined);
+      yield* Deferred.await(lateSessionStopped);
+      yield* Effect.promise(() => harness.drain());
+      expect((yield* Effect.promise(() => harness.readModel())).threads[0]?.session).toMatchObject({
+        status: "stopped",
+      });
+      expect(harness.compactThread).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
     }),
   );
 
@@ -1337,6 +1413,9 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-session-ready-before-compact"),
         threadId,
         session: {
+          sessionIncarnationId: (yield* Effect.promise(() => harness.readModel())).threads.find(
+            (entry) => entry.id === threadId,
+          )?.session?.sessionIncarnationId,
           threadId,
           status: "ready",
           providerName: "codex",

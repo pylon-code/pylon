@@ -277,11 +277,20 @@ const canceledCompactionMessages = Effect.fnUntraced(function* (
             activity: {
               id: base.eventId,
               kind: "provider.turn.start.failed",
-              summary: "Queued message was not sent",
+              summary:
+                queued.messageId === uncertainMessageId
+                  ? "Queued message delivery was interrupted"
+                  : "Queued message was not sent",
               tone: "error" as const,
               turnId: null,
               createdAt: command.createdAt,
-              payload: { requestId: queued.messageId, detail },
+              payload: {
+                requestId: queued.messageId,
+                detail:
+                  queued.messageId === uncertainMessageId
+                    ? `${detail} Delivery may already have started; check the conversation before resending.`
+                    : detail,
+              },
             },
           },
         };
@@ -2112,6 +2121,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           command,
           thread.session,
           "Context compaction was interrupted. Send this message again to continue.",
+          true,
         )),
         yield* compactionSessionEvent(command, {
           ...thread.session,
@@ -2467,6 +2477,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           command,
           targetSession,
           "The session was stopped during context compaction. Send this message again to continue.",
+          true,
         )),
         stopRequestedEvent,
         stoppedEvent,
