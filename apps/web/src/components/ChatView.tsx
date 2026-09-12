@@ -9519,6 +9519,8 @@ export default function ChatView(props: ChatViewProps) {
                       agentPanelModel,
                       onOpenAgents: addAgentsSurface,
                       onUseArtifactTemplate: useArtifactTemplate,
+                      reportedTurnCosts,
+                      localMessageIds: localTimelineMessageIds,
                     }
                   : {})}
                 isWorking={!paintOnlyDisplayedTimeline && isWorking}
@@ -9540,14 +9542,14 @@ export default function ChatView(props: ChatViewProps) {
                 routeThreadKey={displayedTimelineKey}
                 displayThreadKey={displayedTimelineKey}
                 onOpenTurnDiff={paintOnlyDisplayedTimeline ? noopHeldTurnDiff : onOpenTurnDiff}
-                supportsConversationRollback={
-                  !paintOnlyDisplayedTimeline && rollbackTargetIdle
+                supportsConversationRollback={!paintOnlyDisplayedTimeline && rollbackTargetIdle}
+                onRevertUserMessage={
+                  paintOnlyDisplayedTimeline ? noopHeldRevert : onRevertUserMessage
                 }
-                localMessageIds={paintOnlyDisplayedTimeline ? undefined : localTimelineMessageIds}
-                onRevertUserMessage={paintOnlyDisplayedTimeline ? noopHeldRevert : onRevertUserMessage}
                 workingStepLabel={paintOnlyDisplayedTimeline ? null : workingStepLabel}
-                activeTurnInProgress={!paintOnlyDisplayedTimeline && (isWorking || !latestTurnSettled)}
-                reportedTurnCosts={paintOnlyDisplayedTimeline ? undefined : reportedTurnCosts}
+                activeTurnInProgress={
+                  !paintOnlyDisplayedTimeline && (isWorking || !latestTurnSettled)
+                }
                 isRevertingCheckpoint={!paintOnlyDisplayedTimeline && isRevertingCheckpoint}
                 onImageExpand={onExpandTimelineImage}
                 onFileOpen={paintOnlyDisplayedTimeline ? noopHeldAttachment : openFileAttachment}

@@ -13,28 +13,31 @@ vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
     ...actual,
-    useState: vi.fn((initial: unknown) => [
-      typeof initial === "function"
-        ? "metric" in initial()
+    useState: vi.fn((initial: unknown) => {
+      const value = typeof initial === "function" ? initial() : initial;
+      return [
+        typeof value === "object" && value !== null && "metric" in value
           ? { metric: testState.metric, windowDays: 1 }
-          : {
-              days: 1,
-              window: {
-                sinceDay: "2026-08-10",
-                untilDay: "2026-08-11",
-                timeZone: "UTC",
-                resolution: "hour",
-                sinceTime: "2026-08-10T12:37:00.000Z",
-                untilTime: "2026-08-11T12:37:00.000Z",
-              },
-            }
-        : initial === "cost"
-          ? testState.metric
-          : initial === "model"
-            ? testState.breakdown
-            : initial,
-      vi.fn(),
-    ]),
+          : typeof value === "object" && value !== null && "window" in value
+            ? {
+                days: 1,
+                window: {
+                  sinceDay: "2026-08-10",
+                  untilDay: "2026-08-11",
+                  timeZone: "UTC",
+                  resolution: "hour",
+                  sinceTime: "2026-08-10T12:37:00.000Z",
+                  untilTime: "2026-08-11T12:37:00.000Z",
+                },
+              }
+            : value === "cost"
+              ? testState.metric
+              : value === "model"
+                ? testState.breakdown
+                : value,
+        vi.fn(),
+      ];
+    }),
   };
 });
 

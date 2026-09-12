@@ -1864,22 +1864,22 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       />
                     ) : null}
                     <View className="min-w-0 shrink">
-                    <ComposerInlineControl
-                      accessibilityLabel="Model and reasoning settings"
-                      emphasized
-                      iconNode={
-                        <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
-                      }
-                      label={currentModelOption?.label ?? currentModelSelection.model}
-                      maxWidth="100%"
-                      disabled={props.sessionInputBlocked}
-                      accessibilityHint={
-                        props.sessionInputBlocked
-                          ? "Provider changes are blocked while this thread has a pending safety operation"
-                          : undefined
-                      }
-                      onPress={openSettings}
-                    />
+                      <ComposerInlineControl
+                        accessibilityLabel="Model and reasoning settings"
+                        emphasized
+                        iconNode={
+                          <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
+                        }
+                        label={currentModelOption?.label ?? currentModelSelection.model}
+                        maxWidth="100%"
+                        disabled={props.sessionInputBlocked}
+                        accessibilityHint={
+                          props.sessionInputBlocked
+                            ? "Provider changes are blocked while this thread has a pending safety operation"
+                            : undefined
+                        }
+                        onPress={openSettings}
+                      />
                     </View>
                     {sessionHarnessRefinementActions.length > 0 ? (
                       <ControlPillMenu

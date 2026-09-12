@@ -28,7 +28,7 @@ function questionFingerprint(
 ): string | undefined {
   const texts = questions.map((question) => (typeof question === "string" ? question.trim() : ""));
   return texts.length > 0 && texts.every(Boolean)
-    ? JSON.stringify([turnId, texts.toSorted()])
+    ? JSON.stringify([turnId, texts.sort()])
     : undefined;
 }
 

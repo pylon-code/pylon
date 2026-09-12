@@ -37,7 +37,6 @@ const thread: OrchestrationThread = {
   settledOverride: null,
   settledAt: null,
   deletedAt: null,
-  pullRequests: [],
   messages: Array.from({ length: 100 }, (_, index) => ({
     id: MessageId.make(`message-${index}`),
     role: "assistant",

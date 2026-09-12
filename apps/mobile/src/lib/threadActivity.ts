@@ -2235,7 +2235,8 @@ export function buildThreadFeed(
     options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
   const reportedTurnCosts = deriveReportedTurnCosts(thread.activities);
   const activityEntries = getThreadFeedActivityEntries(thread.activities).filter(
-    (entry) => oldestLoadedMessageCreatedAt === null || entry.createdAt >= oldestLoadedMessageCreatedAt,
+    (entry) =>
+      oldestLoadedMessageCreatedAt === null || entry.createdAt >= oldestLoadedMessageCreatedAt,
   );
   const foldedAnswerMessageIds = new Set(
     activityEntries.flatMap((entry) =>
@@ -2246,24 +2247,26 @@ export function buildThreadFeed(
   );
   const entries = Arr.sortWith(
     [
-      ...messages.filter((message) => message.role !== "user" || !foldedAnswerMessageIds.has(message.id)).map((message) => {
-        const reportedCostLabel =
-          message.role === "assistant" && message.turnId !== null
-            ? (formatReportedTurnCost(reportedTurnCosts.get(message.turnId) ?? -1) ?? undefined)
-            : undefined;
-        let entry = messageEntriesCache.get(message);
-        if (!entry || entry.reportedCostLabel !== reportedCostLabel) {
-          entry = {
-            type: "message",
-            id: message.id,
-            createdAt: message.createdAt,
-            message,
-            reportedCostLabel,
-          };
-          messageEntriesCache.set(message, entry);
-        }
-        return entry;
-      }),
+      ...messages
+        .filter((message) => message.role !== "user" || !foldedAnswerMessageIds.has(message.id))
+        .map((message) => {
+          const reportedCostLabel =
+            message.role === "assistant" && message.turnId !== null
+              ? (formatReportedTurnCost(reportedTurnCosts.get(message.turnId) ?? -1) ?? undefined)
+              : undefined;
+          let entry = messageEntriesCache.get(message);
+          if (!entry || entry.reportedCostLabel !== reportedCostLabel) {
+            entry = {
+              type: "message",
+              id: message.id,
+              createdAt: message.createdAt,
+              message,
+              reportedCostLabel,
+            };
+            messageEntriesCache.set(message, entry);
+          }
+          return entry;
+        }),
       ...activityEntries,
     ],
     (s) => new Date(s.createdAt),
