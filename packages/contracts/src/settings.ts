@@ -1157,6 +1157,14 @@ export const ServerSettings = Schema.Struct({
   defaultRuntimeMode: RuntimeMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE)),
   ),
+  /** Optional Cua desktop control on this environment server. Disabled by default. */
+  enableAgentComputerAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  allowAgentComputerForeground: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  computerUseBinaryPath: Schema.String.pipe(
+    Schema.withDecodingDefault(Effect.succeed("cua-driver")),
+  ),
   /**
    * Whether agents may drive simulators and emulators. Gates the `device_*`
    * MCP tools and the preconfigured `agent-device` CLI the same way
@@ -1494,6 +1502,9 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Record(ProjectId, Schema.NullOr(Schema.Boolean)),
   ),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  enableAgentComputerAccess: Schema.optionalKey(Schema.Boolean),
+  allowAgentComputerForeground: Schema.optionalKey(Schema.Boolean),
+  computerUseBinaryPath: Schema.optionalKey(Schema.String),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),

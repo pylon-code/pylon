@@ -1,5 +1,7 @@
 import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Option from "effect/Option";
+import { CuaService } from "../computer/CuaService.ts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -97,6 +99,7 @@ const getHttpMcpEndpointHost = (hostname: string): string => {
 const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   options: McpSessionRegistryOptions = {},
 ) {
+  const cua = yield* Effect.serviceOption(CuaService);
   const crypto = yield* Crypto.Crypto;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const environmentId = yield* environment.getEnvironmentId;
@@ -122,6 +125,17 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     );
     return next.size === records.size ? records : next;
   };
+
+  const retireRemoved = (
+    before: ReadonlyMap<string, CredentialRecord>,
+    after: ReadonlyMap<string, CredentialRecord>,
+  ) =>
+    Effect.forEach(
+      [...before].filter(([key]) => !after.has(key)),
+      ([, record]) =>
+        Option.isSome(cua) ? cua.value.closeSession(record.scope.providerSessionId) : Effect.void,
+      { concurrency: "unbounded", discard: true },
+    );
 
   const prepareCredential = Effect.fn("McpSessionRegistry.prepareCredential")(function* (
     request: McpCredentialRequest,
@@ -159,15 +173,18 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const issue: McpSessionRegistryShape["issue"] = Effect.fn("McpSessionRegistry.issue")(
     function* (request) {
       const prepared = yield* prepareCredential(request);
-      yield* SynchronizedRef.update(state, ({ records }) => {
-        const next = new Map(pruneDead(records, prepared.issuedAt));
-        next.set(prepared.tokenHash, {
-          tokenHash: prepared.tokenHash,
-          scope: prepared.scope,
-          lastAliveAt: prepared.issuedAt,
-        });
-        return { records: next };
-      });
+      yield* SynchronizedRef.updateEffect(state, ({ records }) =>
+        Effect.gen(function* () {
+          const next = new Map(pruneDead(records, prepared.issuedAt));
+          next.set(prepared.tokenHash, {
+            tokenHash: prepared.tokenHash,
+            scope: prepared.scope,
+            lastAliveAt: prepared.issuedAt,
+          });
+          yield* retireRemoved(records, next);
+          return { records: next };
+        }),
+      );
       return prepared.credential;
     },
   );
@@ -191,6 +208,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           scope: prepared.scope,
           lastAliveAt: prepared.issuedAt,
         });
+        yield* retireRemoved(records, next);
         return [prepared.credential, { records: next }] as const;
       }),
     );
@@ -201,37 +219,47 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       if (rawToken.length === 0) return undefined;
       const tokenHash = yield* hashToken(rawToken);
       const timestamp = yield* currentTimeMillis;
-      return yield* SynchronizedRef.modify(state, ({ records }) => {
-        const current = pruneDead(records, timestamp);
-        const record = current.get(tokenHash);
-        if (!record) return [undefined, { records: current }] as const;
-        const next = new Map(current);
-        next.set(tokenHash, { ...record, lastAliveAt: timestamp });
-        return [record.scope, { records: next }] as const;
-      });
+      return yield* SynchronizedRef.modifyEffect(state, ({ records }) =>
+        Effect.gen(function* () {
+          const current = pruneDead(records, timestamp);
+          yield* retireRemoved(records, current);
+          const record = current.get(tokenHash);
+          if (!record) return [undefined, { records: current }] as const;
+          const next = new Map(current);
+          next.set(tokenHash, { ...record, lastAliveAt: timestamp });
+          return [record.scope, { records: next }] as const;
+        }),
+      );
     },
   );
 
   const touch: McpSessionRegistryShape["touch"] = Effect.fn("McpSessionRegistry.touch")(
     function* (threadId) {
       const timestamp = yield* currentTimeMillis;
-      yield* SynchronizedRef.update(state, ({ records }) => {
-        const current = pruneDead(records, timestamp);
-        const next = new Map(current);
-        for (const [tokenHash, record] of current) {
-          if (record.scope.threadId === threadId) {
-            next.set(tokenHash, { ...record, lastAliveAt: timestamp });
+      yield* SynchronizedRef.updateEffect(state, ({ records }) =>
+        Effect.gen(function* () {
+          const current = pruneDead(records, timestamp);
+          yield* retireRemoved(records, current);
+          const next = new Map(current);
+          for (const [tokenHash, record] of current) {
+            if (record.scope.threadId === threadId) {
+              next.set(tokenHash, { ...record, lastAliveAt: timestamp });
+            }
           }
-        }
-        return { records: next };
-      });
+          return { records: next };
+        }),
+      );
     },
   );
 
   const revokeWhere = (predicate: (record: CredentialRecord) => boolean) =>
-    SynchronizedRef.update(state, ({ records }) => ({
-      records: new Map(Array.from(records).filter(([, record]) => !predicate(record))),
-    }));
+    SynchronizedRef.updateEffect(state, ({ records }) =>
+      Effect.gen(function* () {
+        const next = new Map(Array.from(records).filter(([, record]) => !predicate(record)));
+        yield* retireRemoved(records, next);
+        return { records: next };
+      }),
+    );
 
   return McpSessionRegistry.of({
     issue,
@@ -241,12 +269,16 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     revokeProviderSession: Effect.fn("McpSessionRegistry.revokeProviderSession")(
       function* (providerSessionId) {
         yield* revokeWhere((record) => record.scope.providerSessionId === providerSessionId);
+        if (Option.isSome(cua)) yield* cua.value.closeSession(providerSessionId);
       },
     ),
     revokeThread: Effect.fn("McpSessionRegistry.revokeThread")(function* (threadId) {
       yield* revokeWhere((record) => record.scope.threadId === threadId);
+      if (Option.isSome(cua)) yield* cua.value.closeThread(threadId);
     }),
-    revokeAll: SynchronizedRef.set(state, { records: new Map() }),
+    revokeAll: revokeWhere(() => true).pipe(
+      Effect.andThen(Option.isSome(cua) ? cua.value.closeAll : Effect.void),
+    ),
   });
 });
 

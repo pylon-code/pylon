@@ -1,3 +1,4 @@
+import { ComputerIntegrationSettings } from "./ComputerIntegrationSettings";
 import { DeviceHostsSettings } from "./DeviceHostsSettings";
 /**
  * Integrations settings - preferences for surfaces Pylon embeds rather than
@@ -1318,6 +1319,7 @@ export function IntegrationsSettingsPanel() {
         )}
       </SettingsSection>
       <DeviceIntegrationSettings />
+      <ComputerIntegrationSettings />
     </SettingsPageContainer>
   );
 }

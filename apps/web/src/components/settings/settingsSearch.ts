@@ -462,6 +462,27 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow disable enable open drive preview tools sessions project override"],
   },
   {
+    id: "agent-computer-access",
+    title: "Agent computer access",
+    to: "/settings/integrations",
+    targetId: "computer",
+    searchTerms: ["cua desktop automation accessibility screen recording all agents providers"],
+  },
+  {
+    id: "computer-foreground",
+    title: "Allow foreground control",
+    to: "/settings/integrations",
+    targetId: "computer",
+    searchTerms: ["foreground background desktop pointer"],
+  },
+  {
+    id: "computer-use-binary",
+    title: "Cua Driver executable",
+    to: "/settings/integrations",
+    targetId: "computer",
+    searchTerms: ["computer path install driver desktop"],
+  },
+  {
     id: "device-hosts",
     title: "Device hosts",
     to: "/settings/integrations",
