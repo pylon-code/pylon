@@ -270,3 +270,18 @@ for (const failure of ["transport", "catalog"] as const) {
     ),
   );
 }
+
+it.effect("does not read settings or start a driver during server layer construction", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const changes = yield* PubSub.unbounded<typeof DEFAULT_SERVER_SETTINGS>();
+      const settings = Layer.mock(ServerSettingsService)({
+        getSettings: Effect.die("settings database is not initialized yet"),
+        subscribeChanges: PubSub.subscribe(changes).pipe(Effect.map(Stream.fromSubscription)),
+      });
+      yield* makeCuaService(async () => {
+        throw new Error("must not start Cua");
+      }).pipe(Effect.provide(settings));
+    }),
+  ),
+);

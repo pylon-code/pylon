@@ -1,3 +1,4 @@
+import type { ServerSettings } from "@t3tools/contracts";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import * as Context from "effect/Context";
@@ -119,10 +120,12 @@ export const makeCuaService = (connect: typeof connectCua = connectCua) =>
     }).pipe(Effect.andThen(closeWhere(() => true)));
     yield* Effect.addFinalizer(() => closeAll);
     const changes = yield* settings.subscribeChanges;
-    let previous = yield* settings.getSettings.pipe(Effect.orDie);
+    // Optional computer access must not read settings/DB state during server construction.
+    let previous: ServerSettings | undefined;
     yield* changes.pipe(
       Stream.runForEach((next) => {
         const changed =
+          previous === undefined ||
           next.enableAgentComputerAccess !== previous.enableAgentComputerAccess ||
           next.allowAgentComputerForeground !== previous.allowAgentComputerForeground ||
           next.computerUseBinaryPath !== previous.computerUseBinaryPath;
@@ -154,6 +157,7 @@ export const makeCuaService = (connect: typeof connectCua = connectCua) =>
               () => new CuaError({ message: "Could not read computer access settings." }),
             ),
           );
+          previous ??= current;
           if (!current.enableAgentComputerAccess) {
             yield* closeAll;
             return yield* new CuaError({
