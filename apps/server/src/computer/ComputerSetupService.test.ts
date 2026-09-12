@@ -105,8 +105,7 @@ const fixture = Effect.gen(function* () {
 });
 const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
-    Effect.provide(ComputerRuntimeGate.layer),
-    Effect.provide(NodeServices.layer),
+    Effect.provide(Layer.mergeAll(ComputerRuntimeGate.layer, NodeServices.layer)),
     Effect.scoped,
   );
 it.effect(
