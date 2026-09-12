@@ -88,6 +88,58 @@ describe("ElectronShell", () => {
     }).pipe(Effect.provide(ElectronShell.layer)),
   );
 
+  it.effect("opens Zed's ssh deep link", () =>
+    Effect.gen(function* () {
+      openExternalMock.mockResolvedValue(undefined);
+
+      const electronShell = yield* ElectronShell.ElectronShell;
+      const results = yield* Effect.all([
+        electronShell.openExternal("zed://ssh/example.com/home/user/project"),
+        electronShell.openExternal("zed://ssh/example.com/"),
+      ]);
+
+      assert.deepEqual(results, [true, true]);
+      assert.deepEqual(openExternalMock.mock.calls, [
+        ["zed://ssh/example.com/home/user/project"],
+        ["zed://ssh/example.com/"],
+      ]);
+    }).pipe(Effect.provide(ElectronShell.layer)),
+  );
+
+  it.effect("does not open editor URLs that mix up link shapes", () =>
+    Effect.gen(function* () {
+      openExternalMock.mockResolvedValue(undefined);
+
+      const electronShell = yield* ElectronShell.ElectronShell;
+      const results = yield* Effect.all([
+        electronShell.openExternal("zed://extension/attacker"),
+        electronShell.openExternal("vscode://ssh/example.com/home/user/project"),
+      ]);
+
+      assert.deepEqual(results, [false, false]);
+      assert.equal(openExternalMock.mock.calls.length, 0);
+    }).pipe(Effect.provide(ElectronShell.layer)),
+  );
+
+  it.effect("rejects encoded or malformed Zed SSH authorities", () =>
+    Effect.gen(function* () {
+      const electronShell = yield* ElectronShell.ElectronShell;
+      const results = yield* Effect.all(
+        [
+          "user%40example.com",
+          "user%3Asecret%40example.com",
+          "example.com%2Fother",
+          "example.com%5Cother",
+          "example.com%0A",
+          "example.com%20",
+          "example.com%",
+        ].map((host) => electronShell.openExternal(`zed://ssh/${host}/path`)),
+      );
+      assert.deepEqual(results, Array(7).fill(false));
+      assert.equal(openExternalMock.mock.calls.length, 0);
+    }).pipe(Effect.provide(ElectronShell.layer)),
+  );
+
   it.effect("does not open remote editor URLs with userinfo", () =>
     Effect.gen(function* () {
       openExternalMock.mockResolvedValue(undefined);
@@ -100,9 +152,10 @@ describe("ElectronShell", () => {
         electronShell.openExternal(
           "vscode://:secret@vscode-remote/ssh-remote+example.com/home/user/project",
         ),
+        electronShell.openExternal("zed://ssh/user@example.com/home/user/project"),
       ]);
 
-      assert.deepEqual(results, [false, false]);
+      assert.deepEqual(results, [false, false, false]);
       assert.equal(openExternalMock.mock.calls.length, 0);
     }).pipe(Effect.provide(ElectronShell.layer)),
   );

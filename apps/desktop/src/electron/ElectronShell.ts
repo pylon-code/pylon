@@ -24,8 +24,9 @@ const SYSTEM_SETTINGS_URLS: Record<SystemSettingsPane, string> = {
     "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
 };
 
-// Remote open-in-editor deep links (`vscode://vscode-remote/ssh-remote+…`)
-// must reach the OS handler; every other non-web scheme stays blocked.
+// Remote open-in-editor deep links (`vscode://vscode-remote/ssh-remote+…`,
+// `zed://ssh/<host>/<path>`) must reach the OS handler; every other non-web
+// scheme stays blocked.
 const SAFE_WEB_PROTOCOLS = new Set(["http:", "https:"]);
 const REMOTE_EDITOR_PROTOCOLS = new Set(
   REMOTE_CAPABLE_EDITOR_IDS.flatMap((id) => {
@@ -34,13 +35,29 @@ const REMOTE_EDITOR_PROTOCOLS = new Set(
   }),
 );
 
+// Zed's host sits in the first path segment, so it needs its own userinfo ban.
+const isZedSshPathname = (pathname: string) => {
+  const match = /^\/([^/]+)\//.exec(pathname);
+  const encodedHost = match?.[1];
+  if (!encodedHost) return false;
+  try {
+    const host = decodeURIComponent(encodedHost);
+    // eslint-disable-next-line no-control-regex -- Control characters are invalid in SSH authorities.
+    return host.length > 0 && !/[@:/\\\s\u0000-\u001f\u007f]/.test(host);
+  } catch {
+    return false;
+  }
+};
+
 const isRemoteEditorUrl = (url: URL) =>
   REMOTE_EDITOR_PROTOCOLS.has(url.protocol) &&
   url.username.length === 0 &&
   url.password.length === 0 &&
-  url.host === "vscode-remote" &&
-  url.pathname.startsWith("/ssh-remote+") &&
-  url.pathname.length > "/ssh-remote+".length;
+  (url.protocol === "zed:"
+    ? url.host === "ssh" && isZedSshPathname(url.pathname)
+    : url.host === "vscode-remote" &&
+      url.pathname.startsWith("/ssh-remote+") &&
+      url.pathname.length > "/ssh-remote+".length);
 
 export function parseSafeExternalUrl(rawUrl: unknown): Option.Option<string> {
   if (typeof rawUrl !== "string") {
