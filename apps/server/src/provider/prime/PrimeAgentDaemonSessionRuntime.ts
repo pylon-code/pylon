@@ -948,6 +948,7 @@ export interface PrimeAgentDaemonSessionRuntimeInput {
         readonly admissionRequestId?: string;
         readonly correlationId: string;
         readonly mcpOwnerId: string;
+        readonly onNativeCleanupProven?: () => Promise<void>;
         readonly onAuthorityReady: (authority: {
           readonly recoveryHandle: string;
           readonly supervisorGeneration: string;
@@ -976,6 +977,7 @@ export interface PrimeAgentDaemonSessionRuntimeInput {
         readonly mcpOwnerId: string;
         readonly recoveryConfig: Readonly<Record<string, unknown>>;
         readonly launchEnvironment: Readonly<Record<string, string>>;
+        readonly onNativeCleanupProven?: () => Promise<void>;
         readonly onAdoptionAttemptStarted: () => Promise<void>;
         readonly onAdoptionCommitted: (authority: {
           readonly recoveryHandle: string;
@@ -1186,6 +1188,7 @@ export interface PrimeAgentDaemonSessionRuntime {
   ) => boolean;
   /** True only when the daemon explicitly negotiated correlated prompt lifecycle support. */
   readonly correlatedPromptLifecycleAvailable: boolean;
+  /** Accepted lifecycle observations are queued in events; the response must not settle a turn. */
   readonly submitCorrelatedPrompt: (
     input: PrimeAgentDaemonCorrelatedPromptInput,
   ) => Effect.Effect<PrimeDaemonPromptLifecycleSnapshot, PrimeAgentDaemonSessionRuntimeError>;
@@ -2381,6 +2384,122 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         );
       }
     }
+    const runtimeContext = yield* Effect.context<never>();
+    const runPromise = Effect.runPromiseWith(runtimeContext);
+    // Failed initialization and normal teardown share the same exact cleanup proof.
+    const nativeDispose = Effect.tryPromise({
+      try: async () => {
+        const cleanup = connection?.disposeOwnedSession;
+        if (!Predicate.isFunction(cleanup)) {
+          return {
+            feature: PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE,
+            status: "unsupported",
+          } satisfies PrimeAgentOwnedSessionDisposeResult;
+        }
+        const proof = currentOwnedSessionContractProof(connection!, client);
+        if (proof !== undefined) {
+          if (ownershipStore !== undefined && ownershipReceipt !== undefined) {
+            await ownershipStore.refreshAttachProof(ownershipReceipt, proof);
+          }
+        }
+        const result = await cleanup.call(connection, { timeoutMs: COMMAND_TIMEOUT_MS });
+        if (
+          !Predicate.isObject(result) ||
+          result.feature !== PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE ||
+          !Predicate.isString(result.status) ||
+          ![
+            "completed",
+            "already_completed",
+            "replacement_settled",
+            "owner_mismatch",
+            "uncertain",
+            "transport_failure",
+            "unsupported",
+          ].includes(result.status)
+        ) {
+          throw new Error("authoritative cleanup returned an invalid outcome");
+        }
+        return result as unknown as PrimeAgentOwnedSessionDisposeResult;
+      },
+      catch: () =>
+        runtimeError(
+          "dispose",
+          "request-failed",
+          "Prime Agent could not return an authoritative native cleanup outcome.",
+        ),
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: COMMAND_TIMEOUT_MS,
+        orElse: () =>
+          runtimeError(
+            "dispose",
+            "request-timed-out",
+            "Timed out while disposing the daemon session.",
+          ),
+      }),
+      Effect.tap((result) =>
+        Effect.gen(function* () {
+          const settled =
+            result.status === "completed" ||
+            result.status === "already_completed" ||
+            result.status === "replacement_settled";
+          if (!settled) {
+            if (ownershipReceipt !== undefined) ownershipStore?.markUnsafe(ownershipReceipt);
+            return;
+          }
+          if (ownershipStore !== undefined && ownershipReceipt !== undefined) {
+            const cleared = yield* Effect.tryPromise(() =>
+              ownershipStore.clearAfterCleanup(ownershipReceipt!, {
+                activeSessionId,
+                nativeSessionId: sessionId,
+                result,
+              }),
+            ).pipe(Effect.orElseSucceed(() => false));
+            if (!cleared) {
+              ownershipStore.markUnsafe(ownershipReceipt);
+              return yield* runtimeError(
+                "dispose",
+                "invalid-response",
+                "Authoritative cleanup did not match the exact native ownership receipt.",
+              );
+            }
+          }
+          if (input.recovery?.onNativeCleanupProven !== undefined) {
+            yield* Effect.tryPromise({
+              try: input.recovery.onNativeCleanupProven,
+              catch: () =>
+                runtimeError(
+                  "dispose",
+                  "request-failed",
+                  "Prime Agent cleanup could not be recorded in its recovery authority.",
+                ),
+            });
+          }
+          releaseManagerRecoveryRetention?.();
+          releaseManagerRecoveryRetention = undefined;
+        }),
+      ),
+    );
+    let initializationFinished = false;
+    let failedInitializationCleanup: Promise<void> | undefined;
+    const closeFailedInitialization = () => {
+      failedInitializationCleanup ??= (async () => {
+        unsubscribe?.();
+        if (input.recovery?.kind === "adopt") {
+          // Failed adoption retains its durable route for the next owner.
+          await connection?.dispose().catch(() => undefined);
+        } else {
+          if (ownershipReceipt !== undefined) ownershipStore?.markUnsafe(ownershipReceipt);
+          await runPromise(nativeDispose).catch(() => undefined);
+        }
+        await runPromise(closeClient);
+      })();
+      return failedInitializationCleanup;
+    };
+    yield* Effect.addFinalizer(() =>
+      initializationFinished ? Effect.void : Effect.promise(closeFailedInitialization),
+    );
+
     let ownedSessionContractProofCurrent = true;
     const requireCurrentOwnedSessionContract = (
       operation: "prompt" | "steer" | "follow-up" | "abort",
@@ -2775,8 +2894,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     const closeAttachedSession = releaseMcpServer.pipe(
       Effect.andThen(
         Effect.promise(async () => {
-          await connection?.dispose().catch(() => undefined);
-          client.close();
+          await closeFailedInitialization();
         }),
       ),
     );
@@ -2956,8 +3074,6 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
 
     const eventQueue = yield* Queue.bounded<QueuedRuntimeEvent>(PRIME_AGENT_EVENT_BUFFER_CAPACITY);
     runtimeEventWeightCapacityAvailable = yield* Queue.sliding<void>(1);
-    const runtimeContext = yield* Effect.context<never>();
-    const runPromise = Effect.runPromiseWith(runtimeContext);
     let initializing = true;
     let initializationOverflow = false;
     let initializationCorrelatedProofInvalidated = false;
@@ -4894,7 +5010,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     // The initial snapshot reserves one queue slot. Admission is cumulative for
     // the whole initialization phase: draining a batch never reopens capacity.
     // This keeps overlapping fire-and-forget daemon callbacks bounded too.
-    unsubscribe = connection.subscribe((event) => {
+    const unsubscribeConnection = connection.subscribe((event) => {
       if (initializing) {
         if (
           correlatedPromptLifecycleAvailable &&
@@ -4923,6 +5039,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       if (runtimeEventIngressFailed) return;
       return routeSubscribedRawEvent(event);
     });
+    unsubscribe = () => {
+      unsubscribeConnection();
+      unsubscribe = undefined;
+    };
 
     const rawSnapshot = yield* Effect.tryPromise({
       try: () => connection!.getInitialSnapshot(),
@@ -4936,8 +5056,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       Effect.onError(() =>
         Effect.promise(async () => {
           unsubscribe?.();
-          await connection?.dispose().catch(() => undefined);
-          client.close();
+          await closeFailedInitialization();
         }),
       ),
     );
@@ -4957,8 +5076,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     }
     if (initializationOverflow) {
       unsubscribe();
-      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
-      client.close();
+      yield* Effect.promise(closeFailedInitialization);
       return yield* runtimeError(
         "initial-snapshot",
         "request-failed",
@@ -4967,8 +5085,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     }
     if (correlatedPromptLifecycleAvailable && !hasCurrentCorrelatedPromptLifecycleProof()) {
       unsubscribe();
-      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
-      client.close();
+      yield* Effect.promise(closeFailedInitialization);
       return yield* runtimeError(
         "initial-snapshot",
         "invalid-response",
@@ -4987,8 +5104,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       (correlatedPromptLifecycleAvailable && initialEvent.state.activeSessionId !== activeSessionId)
     ) {
       unsubscribe();
-      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
-      client.close();
+      yield* Effect.promise(closeFailedInitialization);
       return yield* runtimeError(
         "initial-snapshot",
         "invalid-response",
@@ -4999,8 +5115,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       const lifecyclePlan = planPromptLifecycleStateMerge(initialEvent.promptLifecycles!);
       if (lifecyclePlan === undefined) {
         unsubscribe();
-        yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
-        client.close();
+        yield* Effect.promise(closeFailedInitialization);
         return yield* runtimeError(
           "initial-snapshot",
           "invalid-response",
@@ -5043,8 +5158,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         ))
     ) {
       unsubscribe();
-      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
-      client.close();
+      yield* Effect.promise(closeFailedInitialization);
       return yield* runtimeError(
         "verify-extension",
         "invalid-response",
@@ -8303,9 +8417,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       const creationRecovery = input.recovery;
       if (recoveryCursor === undefined || creationRecovery?.kind !== "create") {
         unsubscribe();
-        yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
-        client.close();
-        releaseManagerRecoveryRetention?.();
+        yield* Effect.promise(closeFailedInitialization);
         return yield* runtimeError(
           "initial-snapshot",
           "invalid-response",
@@ -8334,11 +8446,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }).pipe(
         Effect.onError(() =>
           Effect.promise(async () => {
-            await connection
-              ?.disposeOwnedSession?.({ timeoutMs: COMMAND_TIMEOUT_MS })
-              .catch(() => undefined);
-            client.close();
-            releaseManagerRecoveryRetention?.();
+            await closeFailedInitialization();
           }),
         ),
       );
@@ -8377,8 +8485,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }).pipe(
         Effect.onError(() =>
           Effect.promise(async () => {
-            await connection?.dispose().catch(() => undefined);
-            client.close();
+            await closeFailedInitialization();
           }),
         ),
       );
@@ -8400,8 +8507,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       (initializationCorrelatedProofInvalidated || !hasCurrentCorrelatedPromptLifecycleProof())
     ) {
       unsubscribe();
-      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
-      client.close();
+      yield* Effect.promise(closeFailedInitialization);
       yield* Queue.shutdown(eventQueue);
       yield* Queue.shutdown(runtimeEventWeightCapacityAvailable);
       return yield* runtimeError(
@@ -8422,9 +8528,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       Effect.asVoid,
       Effect.catch(() =>
         Effect.gen(function* () {
-          unsubscribe();
-          yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
-          client.close();
+          unsubscribe?.();
+          yield* Effect.promise(closeFailedInitialization);
           return yield* runtimeError(
             "initial-snapshot",
             "request-failed",
@@ -8441,8 +8546,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     }
     if (initializationOverflow) {
       unsubscribe();
-      yield* Effect.promise(() => connection!.dispose().catch(() => undefined));
-      client.close();
+      yield* Effect.promise(closeFailedInitialization);
       yield* Queue.shutdown(eventQueue);
       yield* Queue.shutdown(runtimeEventWeightCapacityAvailable);
       return yield* runtimeError(
@@ -8506,88 +8610,6 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         ownershipStore.markUnsafe(ownershipReceipt);
       }
 
-      const nativeDispose = Effect.tryPromise({
-        try: async () => {
-          const cleanup = connection?.disposeOwnedSession;
-          if (!Predicate.isFunction(cleanup)) {
-            return {
-              feature: PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE,
-              status: "unsupported",
-            } satisfies PrimeAgentOwnedSessionDisposeResult;
-          }
-          const proof = currentOwnedSessionContractProof(connection!, client);
-          if (proof !== undefined) {
-            if (ownershipStore !== undefined && ownershipReceipt !== undefined) {
-              await ownershipStore.refreshAttachProof(ownershipReceipt, proof);
-            }
-          }
-          const result = await cleanup.call(connection, { timeoutMs: COMMAND_TIMEOUT_MS });
-          if (
-            !Predicate.isObject(result) ||
-            result.feature !== PRIME_AGENT_CALLER_OWNED_SESSION_ENVIRONMENT_CLEANUP_FEATURE ||
-            !Predicate.isString(result.status) ||
-            ![
-              "completed",
-              "already_completed",
-              "replacement_settled",
-              "owner_mismatch",
-              "uncertain",
-              "transport_failure",
-              "unsupported",
-            ].includes(result.status)
-          ) {
-            throw new Error("authoritative cleanup returned an invalid outcome");
-          }
-          return result as unknown as PrimeAgentOwnedSessionDisposeResult;
-        },
-        catch: () =>
-          runtimeError(
-            "dispose",
-            "request-failed",
-            "Prime Agent could not return an authoritative native cleanup outcome.",
-          ),
-      }).pipe(
-        Effect.timeoutOrElse({
-          duration: COMMAND_TIMEOUT_MS,
-          orElse: () =>
-            runtimeError(
-              "dispose",
-              "request-timed-out",
-              "Timed out while disposing the daemon session.",
-            ),
-        }),
-        Effect.tap((result) =>
-          Effect.gen(function* () {
-            const settled =
-              result.status === "completed" ||
-              result.status === "already_completed" ||
-              result.status === "replacement_settled";
-            if (!settled) {
-              if (ownershipReceipt !== undefined) ownershipStore?.markUnsafe(ownershipReceipt);
-              return;
-            }
-            if (ownershipStore !== undefined && ownershipReceipt !== undefined) {
-              const cleared = yield* Effect.tryPromise(() =>
-                ownershipStore.clearAfterCleanup(ownershipReceipt!, {
-                  activeSessionId,
-                  nativeSessionId: sessionId,
-                  result,
-                }),
-              ).pipe(Effect.orElseSucceed(() => false));
-              if (!cleared) {
-                ownershipStore.markUnsafe(ownershipReceipt);
-                return yield* runtimeError(
-                  "dispose",
-                  "invalid-response",
-                  "Authoritative cleanup did not match the exact native ownership receipt.",
-                );
-              }
-            }
-            releaseManagerRecoveryRetention?.();
-            releaseManagerRecoveryRetention = undefined;
-          }),
-        ),
-      );
       const nativeSideQuestions = [...activePrivateSideQuestions.entries()] as const;
       const disposeOwnerBody = (
         nativeSideQuestions: ReadonlyArray<readonly [string, ActivePrivateSideQuestion]>,
@@ -8648,6 +8670,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     yield* Effect.addFinalizer(() =>
       detached ? Effect.void : disposeOwnedSession.pipe(Effect.ignore),
     );
+    initializationFinished = true;
 
     return {
       resumeCursor: PRIME_AGENT_DAEMON_RESUME_CURSOR,

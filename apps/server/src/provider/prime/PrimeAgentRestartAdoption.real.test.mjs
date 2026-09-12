@@ -752,7 +752,74 @@ const listSessionJsonlFiles = async (stateDir) => {
   return found.sort();
 };
 
-const runRestartedTurn = ({ wsUrl, threadId, fixture, onRecoveredActivity }) =>
+const runIdleFollowup = ({ wsUrl, threadId, completedTurnId }) =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const client = yield* makeWsRpcClient;
+        const synchronized = yield* Deferred.make();
+        const checkpoint = yield* Deferred.make();
+        const stopped = yield* Deferred.make();
+        const items = [];
+        let stopRequested = false;
+        yield* client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+          threadId,
+          afterSequence: 0,
+          requestCompletionMarker: true,
+        }).pipe(
+          Stream.runForEach((item) =>
+            Effect.gen(function* () {
+              items.push(item);
+              if (item.kind === "synchronized") yield* Deferred.succeed(synchronized, undefined);
+              if (item.kind !== "event") return;
+              if (
+                item.event.type === "thread.turn-diff-completed" &&
+                item.event.payload.turnId !== completedTurnId
+              ) {
+                yield* Deferred.succeed(checkpoint, item.event);
+              }
+              if (
+                stopRequested &&
+                item.event.type === "thread.session-set" &&
+                item.event.payload.session.status === "stopped"
+              ) {
+                yield* Deferred.succeed(stopped, item.event);
+              }
+            }),
+          ),
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(synchronized);
+        yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+          type: "thread.turn.start",
+          commandId: `cmd-${NodeCrypto.randomUUID()}`,
+          threadId,
+          message: {
+            messageId: `message-${NodeCrypto.randomUUID()}`,
+            role: "user",
+            text: "second prompt proves exact native transcript continuity",
+            attachments: [],
+          },
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: new Date().toISOString(),
+        });
+        const secondCheckpointEvent = yield* Deferred.await(checkpoint);
+        stopRequested = true;
+        yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+          type: "thread.session.stop",
+          commandId: `stop-${NodeCrypto.randomUUID()}`,
+          threadId,
+          createdAt: new Date().toISOString(),
+        });
+        const stoppedEvent = yield* Deferred.await(stopped);
+        return { items, secondCheckpointEvent, stoppedEvent };
+      }).pipe(Effect.provide(wsRpcProtocolLayer(wsUrl))),
+    ),
+  );
+
+const runRestartedTurn = ({ wsUrl, threadId, fixture, onRecoveredActivity, onIdleCheckpoint }) =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -807,6 +874,17 @@ const runRestartedTurn = ({ wsUrl, threadId, fixture, onRecoveredActivity }) =>
         yield* Effect.tryPromise(() => onRecoveredActivity(firstAssistantMessageEvent));
         const firstCheckpointEvent = yield* Deferred.await(firstCheckpoint);
 
+        if (onIdleCheckpoint !== undefined) {
+          const following = yield* Effect.tryPromise(async () =>
+            runIdleFollowup({
+              wsUrl: await onIdleCheckpoint(),
+              threadId,
+              completedTurnId: firstCheckpointEvent.payload.turnId,
+            }),
+          );
+          return { ...following, items: [...items, ...following.items], firstCheckpointEvent };
+        }
+
         const secondCommandId = `cmd-${NodeCrypto.randomUUID()}`;
         yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
           type: "thread.turn.start",
@@ -852,9 +930,9 @@ it("distinguishes a private PID from coincidental digits inside a public UUID", 
 describe.skipIf(!enabled)(
   `Prime Agent downloaded-artifact Pylon restart adoption (${enabled ? "enabled" : skipReason})`,
   () => {
-    it(
-      "adopts one live owned worker across the real server boundary and cleans it authoritatively",
-      async () => {
+    it.each([false, true])(
+      "adopts one live owned worker across the real server boundary and cleans it authoritatively (idle restart: %s)",
+      async (restartIdle) => {
         const repoRoot = NodePath.resolve(import.meta.dirname, "../../../../..");
         const temp = await NodeFSP.realpath(
           await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pylon-repeated-server-adoption-")),
@@ -873,6 +951,7 @@ describe.skipIf(!enabled)(
         let primeSdkEntry;
         let workerPid;
         let secondWorkerPid;
+        let testFailure;
         try {
           await Promise.all([
             NodeFSP.mkdir(home, { recursive: true, mode: 0o700 }),
@@ -1255,6 +1334,49 @@ describe.skipIf(!enabled)(
               wsUrl: wsB,
               threadId,
               fixture,
+              ...(restartIdle
+                ? {
+                    onIdleCheckpoint: async () => {
+                      const idleAuthority = readLedger(databasePath, threadId);
+                      expect(idleAuthority).toMatchObject({ state: "active", turn_id: null });
+                      await stopCaptured(serverB, "SIGTERM");
+                      crashedServers.push(serverB);
+                      serverB = await spawnPylonServer({
+                        repoRoot,
+                        baseDir,
+                        projectDir,
+                        home,
+                        port: await reserveEphemeralPort(),
+                        label: "server G idle restart",
+                      });
+                      await runRpc(
+                        await issueWebSocketUrl(serverB.baseUrl, bearerToken),
+                        (client) => client[WS_METHODS.serverProbe]({}),
+                        "idle restart command readiness",
+                      );
+                      const adopted = readLedger(databasePath, threadId);
+                      expect(adopted).toMatchObject({
+                        state: "active",
+                        turn_id: null,
+                        active_session_id: idleAuthority.active_session_id,
+                        native_session_id: idleAuthority.native_session_id,
+                        session_incarnation_id: idleAuthority.session_incarnation_id,
+                      });
+                      expect(adopted.owner_token).not.toBe(idleAuthority.owner_token);
+                      expect(await readOwnershipReceipt(stateDir)).toMatchObject({
+                        state: "acquired",
+                        activeSessionId: idleAuthority.active_session_id,
+                        nativeSessionId: idleAuthority.native_session_id,
+                        recovery: {
+                          recoveryHandle: adopted.recovery_handle,
+                          ownershipGeneration: adopted.ownership_generation,
+                        },
+                      });
+                      expect(fixture.records).toHaveLength(1);
+                      return issueWebSocketUrl(serverB.baseUrl, bearerToken);
+                    },
+                  }
+                : {}),
               onRecoveredActivity: async () => {
                 ledgerB = readLedger(databasePath, threadId);
                 expect(ledgerB).toMatchObject({
@@ -1419,6 +1541,9 @@ describe.skipIf(!enabled)(
           await stopCaptured(serverB, "SIGTERM");
           serverB = undefined;
           await expect(NodeFSP.access(daemonSocket)).rejects.toMatchObject({ code: "ENOENT" });
+        } catch (error) {
+          testFailure = error;
+          throw error;
         } finally {
           await stopCaptured(serverB, "SIGTERM").catch(() => undefined);
           await stopCaptured(serverA, "SIGKILL").catch(() => undefined);
@@ -1426,7 +1551,15 @@ describe.skipIf(!enabled)(
             await fixture.close().catch(() => undefined);
           }
           if (primeSdkEntry !== undefined && daemonSocket !== undefined) {
-            await shutdownCapturedDaemon(primeSdkEntry, daemonSocket);
+            await shutdownCapturedDaemon(primeSdkEntry, daemonSocket).catch((cleanupError) => {
+              if (testFailure !== undefined) {
+                throw new AggregateError(
+                  [testFailure, cleanupError],
+                  "Restart acceptance and owned cleanup failed",
+                );
+              }
+              throw cleanupError;
+            });
           }
           for (const [pid, label] of [
             [workerPid, "adopted Prime worker test cleanup"],

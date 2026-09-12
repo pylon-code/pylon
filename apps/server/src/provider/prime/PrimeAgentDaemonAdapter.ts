@@ -4139,6 +4139,18 @@ export function makePrimeAgentDaemonAdapter(
             };
           }
 
+          if (
+            recoveryStart === undefined &&
+            recoveryLedger !== undefined &&
+            Option.isSome(yield* recoveryLedger.get(input.threadId))
+          ) {
+            return yield* new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: input.threadId,
+              detail: "Prime Agent still retains exact recovery authority for this thread.",
+            });
+          }
+
           const cwd = path.resolve(input.cwd.trim());
           const selectedModel =
             input.modelSelection?.instanceId === boundInstanceId
@@ -4295,6 +4307,27 @@ export function makePrimeAgentDaemonAdapter(
               issue: "The MCP route does not belong to this provider instance.",
             });
           }
+          const onNativeCleanupProven =
+            recoveryStart === undefined
+              ? undefined
+              : () =>
+                  runPromise(
+                    Effect.gen(function* () {
+                      const exactOwner = {
+                        threadId: input.threadId,
+                        ownerToken: recoveryStart.ownerToken,
+                      };
+                      if (yield* recoveryLedger!.discardPrepared(exactOwner)) return;
+                      if (
+                        yield* recoveryLedger!.markNativeCleanup({
+                          ...exactOwner,
+                          updatedAt: yield* nowIso,
+                        })
+                      ) {
+                        yield* recoveryLedger!.deleteIfSettled(input.threadId);
+                      }
+                    }),
+                  );
           const runtime = yield* runtimeFactory({
             manager,
             ...(primeRuntimeContext === undefined ? {} : { runtimeContext: primeRuntimeContext }),
@@ -4355,6 +4388,7 @@ export function makePrimeAgentDaemonAdapter(
                       admissionRequestId: recoveryStart.admissionRequestId,
                       correlationId: recoveryStart.correlationId,
                       mcpOwnerId: recoveryStart.mcpOwnerId,
+                      ...(onNativeCleanupProven === undefined ? {} : { onNativeCleanupProven }),
                       onAuthorityReady: (authority) =>
                         runPromise(
                           Effect.gen(function* () {
@@ -4426,6 +4460,7 @@ export function makePrimeAgentDaemonAdapter(
                       cursor: recoveryStart.authority.cursor,
                       previousMcpOwnerId: recoveryStart.authority.mcpOwnerId,
                       mcpOwnerId: recoveryStart.mcpOwnerId,
+                      ...(onNativeCleanupProven === undefined ? {} : { onNativeCleanupProven }),
                       recoveryConfig: recoveryStart.authority.recoveryConfig,
                       launchEnvironment:
                         primeRuntimeContext?.launchEnv ?? recoveryStart.authority.launchEnvironment,
@@ -5194,12 +5229,9 @@ export function makePrimeAgentDaemonAdapter(
       if (Result.isSuccess(recoveryResult)) return;
 
       pendingRecoveryStarts.delete(input.threadId);
-      yield* recoveryLedger!.discardPrepared({
-        threadId: input.threadId,
-        ownerToken: plan.ownerToken,
-      });
-      const fallback = yield* Effect.result(startSession(plan.restartInput));
-      if (Result.isFailure(fallback)) return yield* fallback.failure;
+      // A failed start can already own native execution. Its durable authority
+      // must survive until exact cleanup is proved; ordinary restart loses it.
+      return yield* recoveryResult.failure;
     });
 
     const recoverSession = Effect.fn("PrimeAgentDaemonAdapter.recoverSession")(function* (input: {
@@ -5941,7 +5973,8 @@ export function makePrimeAgentDaemonAdapter(
           const runPrompt = Effect.gen(function* () {
             const turnModel = requestedModel || context.session.model || "default";
             if (turn.correlationId !== undefined) {
-              const lifecycle = yield* context.runtime
+              // Lifecycle and transcript events settle through the same ordered stream.
+              yield* context.runtime
                 .submitCorrelatedPrompt({
                   text,
                   correlationId: turn.correlationId,
@@ -5954,10 +5987,6 @@ export function makePrimeAgentDaemonAdapter(
                     runtimeOperationError(input.threadId, "session/prompt", error),
                   ),
                 );
-              yield* withThreadLock(
-                context.threadId,
-                applyCorrelatedPromptLifecycleLocked(context, lifecycle),
-              );
             } else {
               yield* context.runtime
                 .prompt({
