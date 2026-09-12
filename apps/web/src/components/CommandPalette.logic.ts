@@ -1,4 +1,5 @@
 import {
+  type EnvironmentId,
   type FilesystemBrowseEntry,
   type KeybindingCommand,
   THREAD_JUMP_KEYBINDING_COMMANDS,
@@ -144,6 +145,22 @@ export type CommandPaletteMode = "root" | "root-browse" | "submenu" | "submenu-b
 // as the real project title: the automatic project icon is derived from it, and
 // every other surface uses the real title, so overriding it desyncs the icon.
 export type CommandPaletteProject = Project & { readonly displayName: string };
+
+export function buildCommandPaletteProjectMetadata(input: {
+  readonly projects: ReadonlyArray<Pick<Project, "environmentId" | "title" | "workspaceRoot">>;
+  readonly locationByEnvironmentId: ReadonlyMap<EnvironmentId, { readonly label: string }>;
+}) {
+  const searchTerms: string[] = [];
+  const environmentLabels = new Set<string>();
+
+  for (const project of input.projects) {
+    const label = input.locationByEnvironmentId.get(project.environmentId)?.label ?? "Remote";
+    searchTerms.push(project.title, project.workspaceRoot, label);
+    environmentLabels.add(label);
+  }
+
+  return { searchTerms, environmentLabels: [...environmentLabels] };
+}
 
 export function buildProjectActionItems(input: {
   projects: ReadonlyArray<CommandPaletteProject>;

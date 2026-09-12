@@ -21,6 +21,37 @@ function activity(payload: Record<string, unknown>): OrchestrationThreadActivity
  * assertions are the tripwire.
  */
 describe("projectActivityPayload", () => {
+  it.each(["mcp_tool_call", "dynamic_tool_call"])(
+    "keeps question matching text through %s payload slimming without duplicating choices",
+    (itemType) => {
+      const projected = projectActivityPayload(
+        activity({
+          itemType,
+          title: "mcp__pylon__request_user_input_async",
+          data: {
+            input: {
+              questions: [
+                {
+                  id: "target",
+                  question: "Where should this run?",
+                  options: [{ label: "Local", value: "local" }],
+                },
+              ],
+            },
+          },
+        }),
+      );
+      expect(projected.payload).toMatchObject({
+        data: {
+          toolName: "mcp__pylon__request_user_input_async",
+          input: { questions: [{ question: "Where should this run?" }] },
+        },
+      });
+      expect(JSON.stringify(projected.payload)).not.toContain('"options"');
+      expect(projectActivityPayload(projected)).toEqual(projected);
+    },
+  );
+
   it("preserves tool attribution (agentId/parentToolUseId) through data slimming", () => {
     const projected = projectActivityPayload(
       activity({
