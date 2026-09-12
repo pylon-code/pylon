@@ -468,7 +468,10 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const draftStartFromOrigin = selectedProjectDraft.workspaceSelection?.startFromOrigin;
   const startFromOrigin =
     draftStartFromOrigin ?? projectSettings.settings.newWorktreesStartFromOrigin;
-  const draftRuntimeMode = selectedProjectDraft.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+  const defaultRuntimeMode = editingPendingTask
+    ? (editingPendingTask.runtimeMode ?? DEFAULT_RUNTIME_MODE)
+    : projectSettings.settings.defaultRuntimeMode;
+  const draftRuntimeMode = selectedProjectDraft.runtimeMode ?? defaultRuntimeMode;
   const draftInteractionMode =
     selectedProjectDraft.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
 
@@ -1010,7 +1013,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         runtimeMode: resolveModelSelectionRuntimeMode(
           selectedEnvironmentServerConfig,
           draftModelSelection,
-          draft.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+          draft.runtimeMode ?? defaultRuntimeMode,
         ),
         ...(preservedDeliveryHold === undefined ? {} : { deliveryHold: preservedDeliveryHold }),
         interactionMode:
@@ -1052,6 +1055,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       };
     },
     [
+      defaultRuntimeMode,
       editingPendingProject,
       editingPendingTask,
       selectedEnvironmentServerConfig,
