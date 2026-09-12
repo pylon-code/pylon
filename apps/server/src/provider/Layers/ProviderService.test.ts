@@ -748,6 +748,7 @@ const makeThreadProjectProjectionLayer = (
     getCounts: () => Effect.die("unused"),
     getEventReplayStats: () => Effect.die("unused"),
     getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
+    getProjectShells: () => Effect.die("unused"),
     getProjectShellById: () => Effect.die("unused"),
     getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
     getImportedAgentSessionSources: () => Effect.die("unused"),
