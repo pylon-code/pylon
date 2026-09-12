@@ -23,7 +23,7 @@ type CodexHistoryClient = {
   readonly forkOptions?: Readonly<Record<string, Schema.Json>>;
 };
 
-export const CODEX_ROLLOUT_MAX_BYTES = 16 * 1024 * 1024;
+const CODEX_ROLLOUT_MAX_BYTES = 16 * 1024 * 1024;
 const MAX_ROLLOUT_RECORDS = 100_000;
 const MAX_ROLLOUT_LINE_BYTES = 1024 * 1024;
 const RESERVED_FORK_OPTIONS = new Set([
