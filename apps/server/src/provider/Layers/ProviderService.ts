@@ -1438,9 +1438,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       readonly lastRuntimeEvent?: string;
       readonly lastRuntimeEventAt?: string;
       readonly runtimeFence?: import("../ProviderDriver.ts").ProviderRuntimeFence | undefined;
+      readonly commitGuard?: Effect.Effect<boolean>;
     },
   ) =>
     Effect.gen(function* () {
+      const commitGuard = Effect.gen(function* () {
+        if (extra?.runtimeFence !== undefined && !(yield* extra.runtimeFence.isCurrent))
+          return false;
+        return extra?.commitGuard === undefined || (yield* extra.commitGuard);
+      });
+      if (!(yield* commitGuard)) {
+        return yield* toValidationError(
+          "ProviderService.upsertSessionBinding",
+          "The provider session was replaced before its history could be persisted.",
+        );
+      }
       if (extra?.runtimeFence !== undefined && !(yield* extra.runtimeFence.isCurrent)) {
         return yield* toValidationError(
           "ProviderService.upsertSessionBinding",
@@ -1467,9 +1479,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
           runtimePayload: toRuntimePayloadFromSession(session, extra),
         },
-        extra?.runtimeFence === undefined
-          ? undefined
-          : { commitGuard: extra.runtimeFence.isCurrent },
+        { commitGuard },
       );
     });
 
@@ -1647,6 +1657,33 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         canonicalEvent.type === "turn.aborted"
       ) {
         yield* recordTurnCompletedAnalytics(source, canonicalEvent);
+        if (source.provider === "claudeAgent") {
+          // Persist background turns' native boundaries before publishing the
+          // completion that lets checkpoint capture observe the new history.
+          yield* Effect.gen(function* () {
+            const session = (yield* source.adapter.listSessions()).find(
+              (entry) =>
+                entry.threadId === canonicalEvent.threadId &&
+                entry.sessionIncarnationId === currentIncarnation.id,
+            );
+            if (session?.resumeCursor === undefined) return;
+            yield* upsertSessionBinding(
+              { ...session, providerInstanceId: source.instanceId },
+              canonicalEvent.threadId,
+              {
+                runtimeFence: source.adapter.runtimeFence,
+                commitGuard: Effect.sync(
+                  () =>
+                    currentSessionIncarnations.get(canonicalEvent.threadId) === currentIncarnation,
+                ),
+              },
+            );
+          }).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("failed to persist Claude turn resume state", { cause }),
+            ),
+          );
+        }
       } else if (canonicalEvent.type === "session.exited") {
         yield* clearTurnAnalyticsSession(source.instanceId, canonicalEvent.threadId);
       }
@@ -3684,6 +3721,31 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             : {}),
         });
         if (routed.isActive) {
+          const session = (yield* routed.adapter.listSessions()).find(
+            (session) => session.threadId === routed.threadId,
+          );
+          if (session) {
+            yield* upsertSessionBinding(
+              { ...session, providerInstanceId: routed.instanceId },
+              input.threadId,
+              {
+                runtimeFence: routed.adapter.runtimeFence,
+                commitGuard: Effect.sync(
+                  () =>
+                    currentSessionIncarnations.get(input.threadId)?.id ===
+                    session.sessionIncarnationId,
+                ),
+              },
+            ).pipe(
+              // Persist the latest recoverable cursor without allowing a stale
+              // incarnation or a persistence failure to defeat an explicit Stop.
+              Effect.catch((cause) =>
+                Effect.logWarning("failed to persist provider resume state before stopping", {
+                  cause,
+                }),
+              ),
+            );
+          }
           yield* routed.adapter
             .stopSession(routed.threadId)
             .pipe(Effect.ensuring(clearMcpSession(input.threadId, routed.adapter.runtimeFence)));
@@ -4148,6 +4210,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.rollback_turns": input.numTurns,
       });
       yield* routed.adapter.rollbackThread(routed.threadId, input.numTurns);
+      const session = (yield* routed.adapter.listSessions()).find(
+        (session) => session.threadId === routed.threadId,
+      );
+      if (session) {
+        yield* upsertSessionBinding(
+          { ...session, providerInstanceId: routed.instanceId },
+          input.threadId,
+          {
+            runtimeFence: routed.adapter.runtimeFence,
+            commitGuard: Effect.sync(
+              () =>
+                currentSessionIncarnations.get(input.threadId)?.id === session.sessionIncarnationId,
+            ),
+          },
+        );
+      }
       yield* recordAdapterAnalytics(
         routed.adapter,
         analytics.record("provider.conversation.rolled_back", {

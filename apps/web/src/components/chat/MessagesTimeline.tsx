@@ -1604,13 +1604,13 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
               Boolean(ctx.revertDisabledReason)
             }
             onClick={() => ctx.onRevertUserMessage(messageId)}
-            aria-label={ctx.revertDisabledReason ?? "Revert to this message"}
+            aria-label={ctx.revertDisabledReason ?? "Edit from here"}
           />
         }
       >
         <Undo2Icon className="size-3" />
       </TooltipTrigger>
-      <TooltipPopup side="top">{ctx.revertDisabledReason ?? "Revert to this message"}</TooltipPopup>
+      <TooltipPopup side="top">{ctx.revertDisabledReason ?? "Edit from here"}</TooltipPopup>
     </Tooltip>
   );
 }

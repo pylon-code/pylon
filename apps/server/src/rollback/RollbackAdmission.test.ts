@@ -208,12 +208,13 @@ const prepare = Effect.fn(function* (
   options: HarnessOptions,
   targetRevision: number,
   expectedSourceRevision: number | "omit" = 2,
+  keepFiles = false,
 ) {
   const harness = makeHarness(options);
   const admission = yield* harness.admission;
   return yield* admission.prepare({
     command: {
-      type: "thread.checkpoint.revert",
+      type: keepFiles ? "thread.conversation.revert" : "thread.checkpoint.revert",
       commandId: "command-admission" as never,
       threadId,
       turnCount: targetRevision,
@@ -274,4 +275,37 @@ it.effect("rejects a second thread or client when the canonical workspace lease 
     const result = yield* prepare({ activeLease: true }, 1).pipe(Effect.result);
     assert.equal(result._tag, "Failure");
   }),
+);
+
+it.effect(
+  "admits keep-files rewinds with the same immutable target, source revision, and lease",
+  () =>
+    Effect.gen(function* () {
+      const admitted = yield* prepare({}, 1, 2, true);
+      assert.isTrue(Option.isSome(admitted));
+      if (Option.isNone(admitted)) return;
+      assert.isFalse(admitted.value.restoreFiles);
+      assert.equal(admitted.value.sourceRevision, 2);
+      assert.equal(admitted.value.targetCheckpointOid, "1".repeat(40));
+      assert.equal(admitted.value.workspaceKey, "exact-key");
+      const full = yield* prepare({}, 1);
+      assert.isTrue(Option.isSome(full));
+      if (Option.isSome(full)) assert.isTrue(full.value.restoreFiles);
+      for (const options of [
+        { queueCount: 1 },
+        { workspaceMismatch: true },
+        { checkpoints: [2] },
+        { missingAbsoluteMethod: true },
+        { activeLease: true },
+      ]) {
+        const result = yield* prepare(options, 1, 2, true).pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure")
+          assert.equal(result.failure.commandType, "thread.conversation.revert");
+      }
+      assert.equal((yield* prepare({}, 1, "omit", true).pipe(Effect.result))._tag, "Failure");
+      assert.equal((yield* prepare({}, 1, 1, true).pipe(Effect.result))._tag, "Failure");
+      assert.isTrue(Option.isNone(yield* prepare({ mode: "relative" }, 1, 2, true)));
+      assert.isTrue(Option.isNone(yield* prepare({ mode: "unsupported" }, 1, 2, true)));
+    }),
 );

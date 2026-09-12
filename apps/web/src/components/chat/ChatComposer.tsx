@@ -1287,6 +1287,7 @@ export interface ChatComposerHandle {
   restoreAfterTimelineReachedEnd: () => void;
   collapseForTimelineScrollKey: (key: string) => void;
   addDroppedFiles: (files: File[]) => void;
+  hasPendingAttachments: () => boolean;
   insertTextAtEnd: (text: string, options?: { ensureLeadingBoundary?: boolean }) => boolean;
   citeAssistantText: (
     citation: AssistantCitation,
@@ -1372,6 +1373,7 @@ export interface ChatComposerProps {
   phase: SessionPhase;
   isConnecting: boolean;
   isSendBusy: boolean;
+  isRevertingCheckpoint?: boolean;
   sendDisabledReason: string | null;
   isPreparingWorktree: boolean;
   externalDrawerAttached: boolean;
@@ -1556,6 +1558,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     phase,
     isConnecting,
     isSendBusy,
+    isRevertingCheckpoint = false,
     sendDisabledReason: externalSendDisabledReason,
     isPreparingWorktree,
     environmentUnavailable,
@@ -2816,6 +2819,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
    * the next draft.
    */
   const pendingImageCompressionsRef = useRef<Map<string, number>>(new Map());
+  const isRevertingCheckpointRef = useRef(isRevertingCheckpoint);
+  isRevertingCheckpointRef.current = isRevertingCheckpoint;
 
   // ------------------------------------------------------------------
   // Derived: composer send state
@@ -4122,7 +4127,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       // A thread switch during the verify await would mix the new thread's
       // prompt with this invocation's captured target. Nothing was taken yet,
       // so abort and leave the entry restorable where the user now is.
-      if (composerTargetKey(composerDraftTarget) !== composerDraftTargetKeyRef.current) {
+      if (
+        isRevertingCheckpointRef.current ||
+        composerTargetKey(composerDraftTarget) !== composerDraftTargetKeyRef.current
+      ) {
         return;
       }
 
@@ -5276,7 +5284,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       // even when the composer is in a state that can't stash.
       event.preventDefault();
       event.stopPropagation();
-      if (isCommandPaletteOpen()) {
+      if (isCommandPaletteOpen() || isRevertingCheckpoint) {
         return;
       }
       if (pendingUserInputs.length > 0 && !isComposerApprovalState) {
@@ -5298,6 +5306,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     pendingUserInputs.length,
     projectSelectionRequired,
     stashCurrentPrompt,
+    isRevertingCheckpoint,
     terminalOpen,
   ]);
 
@@ -5305,7 +5314,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Callbacks: attachments
   // ------------------------------------------------------------------
   const addComposerAttachments = async (files: File[]) => {
-    if (!activeThreadId || files.length === 0) return;
+    if (!activeThreadId || files.length === 0 || isRevertingCheckpointRef.current) return;
     if (
       pendingUserInputs.length > 0 &&
       (!supportsQuestionAttachments ||
@@ -5727,6 +5736,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         void addComposerAttachments(files);
         focusComposer();
       },
+      hasPendingAttachments: () =>
+        (pendingImageCompressionsRef.current.get(attachmentTargetKey) ?? 0) > 0,
       insertTextAtEnd: insertComposerTextAtEnd,
       citeAssistantText: (citation, sourceAnchor) =>
         insertComposerText(

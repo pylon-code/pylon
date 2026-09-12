@@ -9,6 +9,8 @@
 import {
   type CanUseTool,
   query,
+  getSessionMessages,
+  forkSession,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
   type PermissionResult,
@@ -79,6 +81,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -110,9 +113,26 @@ import {
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
+import { spawnAndCollect } from "../providerSnapshot.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
+const encodeHistoryArgs = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeHistoryFork = Schema.decodeSync(
+  Schema.fromJsonString(Schema.Struct({ sessionId: Schema.String })),
+);
+const decodeSessionMessages = Schema.decodeSync(
+  Schema.fromJsonString(
+    Schema.Array(
+      Schema.Struct({
+        type: Schema.Literals(["user", "assistant", "system"]),
+        uuid: Schema.String,
+        parent_tool_use_id: Schema.NullOr(Schema.String),
+        message: Schema.Unknown,
+      }),
+    ),
+  ),
+);
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
@@ -141,6 +161,7 @@ interface ClaudeResumeState {
   readonly resume?: string;
   readonly resumeSessionAt?: string;
   readonly turnCount?: number;
+  readonly turnStartMessageIds?: ReadonlyArray<string | null>;
 }
 
 interface ClaudeTurnState {
@@ -294,6 +315,8 @@ interface ClaudeSessionContext {
   session: ProviderSession;
   /** Immutable identity captured before the context can be removed or replaced. */
   readonly sessionIncarnationId: ProviderSession["sessionIncarnationId"];
+  startInput: Parameters<ClaudeAdapterShape["startSession"]>[0];
+  readonly turnStartMessageIds: Array<string | null>;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
   readonly query: ClaudeQueryRuntime;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
@@ -364,6 +387,8 @@ export interface ClaudeAdapterLiveOptions {
     readonly prompt: AsyncIterable<SDKUserMessage>;
     readonly options: ClaudeQueryOptions;
   }) => ClaudeQueryRuntime;
+  readonly getSessionMessages?: typeof getSessionMessages;
+  readonly forkSession?: typeof forkSession;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly modelCatalog?: Effect.Effect<ClaudeModelCatalog>;
@@ -879,6 +904,7 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
     sessionId?: unknown;
     resumeSessionAt?: unknown;
     turnCount?: unknown;
+    turnStartMessageIds?: unknown;
   };
 
   const threadIdCandidate = typeof cursor.threadId === "string" ? cursor.threadId : undefined;
@@ -896,11 +922,17 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
   const resumeSessionAt =
     typeof cursor.resumeSessionAt === "string" ? cursor.resumeSessionAt : undefined;
   const turnCountValue = typeof cursor.turnCount === "number" ? cursor.turnCount : undefined;
+  const turnStartMessageIds =
+    Array.isArray(cursor.turnStartMessageIds) &&
+    cursor.turnStartMessageIds.every((id: unknown) => id === null || typeof id === "string")
+      ? (cursor.turnStartMessageIds as Array<string | null>)
+      : undefined;
 
   return {
     ...(threadId ? { threadId } : {}),
     ...(resume ? { resume } : {}),
     ...(resumeSessionAt ? { resumeSessionAt } : {}),
+    ...(turnStartMessageIds ? { turnStartMessageIds } : {}),
     ...(turnCountValue !== undefined && Number.isInteger(turnCountValue) && turnCountValue >= 0
       ? { turnCount: turnCountValue }
       : {}),
@@ -1960,6 +1992,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;
   const crypto = yield* Crypto.Crypto;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, options?.environment).pipe(
     Effect.provideService(Path.Path, path),
   );
@@ -1989,6 +2022,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }) as ClaudeQueryRuntime);
 
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
+  // Starts and explicit stops invalidate pending history/restart work, including
+  // the interval where an old query is closed but its replacement is not ready.
+  const sessionLifecycleTokens = new Map<ThreadId, object>();
+  const staleSessionOperation = () =>
+    new ProviderAdapterValidationError({
+      provider: PROVIDER,
+      operation: "session lifecycle",
+      issue: "The Claude session was stopped or replaced before its history could be restored.",
+    });
+  const requireLifecycleToken = (threadId: ThreadId, token: object) =>
+    Effect.suspend(() =>
+      sessionLifecycleTokens.get(threadId) === token
+        ? Effect.void
+        : Effect.fail(staleSessionOperation()),
+    );
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -2082,7 +2130,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       threadId,
       ...(context.resumeSessionId ? { resume: context.resumeSessionId } : {}),
       ...(context.lastAssistantUuid ? { resumeSessionAt: context.lastAssistantUuid } : {}),
-      turnCount: context.turns.length,
+      turnCount: context.turnStartMessageIds.length,
+      turnStartMessageIds: [...context.turnStartMessageIds],
     };
 
     context.session = {
@@ -3238,6 +3287,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (!context.turnState) {
       const turnId = TurnId.make(yield* randomUUIDv4);
       const startedAt = yield* nowIso;
+      context.turnStartMessageIds.push(message.uuid);
       context.turnState = {
         turnId,
         startedAt,
@@ -3260,6 +3310,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         activeTurnId: turnId,
         updatedAt: startedAt,
       };
+      yield* updateResumeCursor(context);
       const turnStartedStamp = yield* makeEventStamp();
       yield* offerRuntimeEvent(context.sessionIncarnationId, {
         type: "turn.started",
@@ -4288,681 +4339,708 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     return Effect.succeed(context);
   };
 
-  const startSession: ClaudeAdapterShape["startSession"] = Effect.fn("startSession")(
-    function* (input) {
-      const modelCatalog = yield* modelCatalogEffect;
-      if (input.provider !== undefined && input.provider !== PROVIDER) {
-        return yield* new ProviderAdapterValidationError({
-          provider: PROVIDER,
-          operation: "startSession",
-          issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
-        });
-      }
+  const startSessionInternal = Effect.fn("startSessionInternal")(function* (
+    input: Parameters<ClaudeAdapterShape["startSession"]>[0],
+    token: object,
+    expectedContext?: ClaudeSessionContext,
+  ) {
+    const modelCatalog = yield* modelCatalogEffect;
+    yield* requireLifecycleToken(input.threadId, token);
+    if (
+      expectedContext &&
+      (sessions.get(input.threadId) !== expectedContext || expectedContext.stopped)
+    ) {
+      return yield* staleSessionOperation();
+    }
+    if (input.provider !== undefined && input.provider !== PROVIDER) {
+      return yield* new ProviderAdapterValidationError({
+        provider: PROVIDER,
+        operation: "startSession",
+        issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
+      });
+    }
 
-      const existingContext = sessions.get(input.threadId);
-      if (existingContext) {
-        yield* Effect.logWarning("claude.session.replacing", {
-          threadId: input.threadId,
-          existingSessionStatus: existingContext.session.status,
-          reason: "startSession called with existing active session",
-        });
-        yield* stopSessionInternal(existingContext, {
-          emitExitEvent: false,
-        }).pipe(
-          // Replacement cleanup is best-effort: never block the new session on
-          // either typed failures or unexpected defects from tearing down the old one.
-          Effect.catchCause((cause) =>
-            Effect.logWarning("claude.session.replace.stop-failed", {
-              threadId: input.threadId,
-              cause,
-            }),
-          ),
-        );
-      }
-
-      const startedAt = yield* nowIso;
-      const resumeState = readClaudeResumeState(input.resumeCursor);
-      const threadId = input.threadId;
-      const existingResumeSessionId = resumeState?.resume;
-      const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
-      const sessionId = existingResumeSessionId ?? newSessionId;
-
-      const runtimeContext = yield* Effect.context<never>();
-      const runFork = Effect.runForkWith(runtimeContext);
-      const runPromise = Effect.runPromiseWith(runtimeContext);
-
-      const promptQueue = yield* Queue.unbounded<PromptQueueItem>();
-      const prompt = Stream.fromQueue(promptQueue).pipe(
-        Stream.filter((item) => item.type === "message"),
-        Stream.map((item) => item.message),
-        Stream.catchCause((cause) =>
-          Cause.hasInterruptsOnly(cause) ? Stream.empty : Stream.failCause(cause),
+    const existingContext = sessions.get(input.threadId);
+    if (existingContext) {
+      yield* Effect.logWarning("claude.session.replacing", {
+        threadId: input.threadId,
+        existingSessionStatus: existingContext.session.status,
+        reason: "startSession called with existing active session",
+      });
+      yield* stopSessionInternal(existingContext, {
+        emitExitEvent: false,
+      }).pipe(
+        // Replacement cleanup is best-effort: never block the new session on
+        // either typed failures or unexpected defects from tearing down the old one.
+        Effect.catchCause((cause) =>
+          Effect.logWarning("claude.session.replace.stop-failed", {
+            threadId: input.threadId,
+            cause,
+          }),
         ),
-        Stream.toAsyncIterable,
+      );
+    }
+
+    const startedAt = yield* nowIso;
+    const resumeState = readClaudeResumeState(input.resumeCursor);
+    const threadId = input.threadId;
+    const existingResumeSessionId = resumeState?.resume;
+    const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
+    const sessionId = existingResumeSessionId ?? newSessionId;
+
+    const runtimeContext = yield* Effect.context<never>();
+    const runFork = Effect.runForkWith(runtimeContext);
+    const runPromise = Effect.runPromiseWith(runtimeContext);
+
+    const promptQueue = yield* Queue.unbounded<PromptQueueItem>();
+    const prompt = Stream.fromQueue(promptQueue).pipe(
+      Stream.filter((item) => item.type === "message"),
+      Stream.map((item) => item.message),
+      Stream.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause) ? Stream.empty : Stream.failCause(cause),
+      ),
+      Stream.toAsyncIterable,
+    );
+
+    const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
+    const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
+    const inFlightTools = new Map<number, ToolInFlight>();
+    const claudeTasks = new Map<string, ClaudeTaskState>();
+    const taskAgents = new Map<string, ClaudeTaskAgentState>();
+    const pendingTaskModels = new Map<string, string>();
+    const workflowMemberFingerprints = new Map<string, string>();
+    const liveTaskIds = new Set<string>();
+
+    const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
+
+    /**
+     * Handle AskUserQuestion tool calls by emitting a `user-input.requested`
+     * runtime event and waiting for the user to respond via `respondToUserInput`.
+     */
+    const handleAskUserQuestion = Effect.fn("handleAskUserQuestion")(function* (
+      context: ClaudeSessionContext,
+      toolInput: Record<string, unknown>,
+      callbackOptions: {
+        readonly signal: AbortSignal;
+        readonly toolUseID?: string;
+      },
+    ) {
+      const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
+
+      // Parse questions from the SDK's AskUserQuestion input.
+      // `id` MUST equal the full question text — Claude SDK >= 2.1.121 looks
+      // up answers by question text in `mapToolResultToToolResultBlockParam`,
+      // so the key the UI uses to keep its draft answer must match the SDK's
+      // expected lookup key. See https://github.com/pingdotgg/t3code/issues/2388
+      const rawQuestions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
+      const questions: Array<UserInputQuestion> = rawQuestions.map(
+        (q: Record<string, unknown>, idx: number) => ({
+          id: typeof q.question === "string" && q.question.length > 0 ? q.question : `q-${idx}`,
+          header: typeof q.header === "string" ? q.header : `Question ${idx + 1}`,
+          question: typeof q.question === "string" ? q.question : "",
+          options: Array.isArray(q.options)
+            ? q.options.map((opt: Record<string, unknown>) => ({
+                label: typeof opt.label === "string" ? opt.label : "",
+                description: typeof opt.description === "string" ? opt.description : "",
+              }))
+            : [],
+          multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : false,
+        }),
       );
 
-      const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
-      const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
-      const inFlightTools = new Map<number, ToolInFlight>();
-      const claudeTasks = new Map<string, ClaudeTaskState>();
-      const taskAgents = new Map<string, ClaudeTaskAgentState>();
-      const pendingTaskModels = new Map<string, string>();
-      const workflowMemberFingerprints = new Map<string, string>();
-      const liveTaskIds = new Set<string>();
-
-      const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
-
-      /**
-       * Handle AskUserQuestion tool calls by emitting a `user-input.requested`
-       * runtime event and waiting for the user to respond via `respondToUserInput`.
-       */
-      const handleAskUserQuestion = Effect.fn("handleAskUserQuestion")(function* (
-        context: ClaudeSessionContext,
-        toolInput: Record<string, unknown>,
-        callbackOptions: {
-          readonly signal: AbortSignal;
-          readonly toolUseID?: string;
-        },
-      ) {
-        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
-
-        // Parse questions from the SDK's AskUserQuestion input.
-        // `id` MUST equal the full question text — Claude SDK >= 2.1.121 looks
-        // up answers by question text in `mapToolResultToToolResultBlockParam`,
-        // so the key the UI uses to keep its draft answer must match the SDK's
-        // expected lookup key. See https://github.com/pingdotgg/t3code/issues/2388
-        const rawQuestions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
-        const questions: Array<UserInputQuestion> = rawQuestions.map(
-          (q: Record<string, unknown>, idx: number) => ({
-            id: typeof q.question === "string" && q.question.length > 0 ? q.question : `q-${idx}`,
-            header: typeof q.header === "string" ? q.header : `Question ${idx + 1}`,
-            question: typeof q.question === "string" ? q.question : "",
-            options: Array.isArray(q.options)
-              ? q.options.map((opt: Record<string, unknown>) => ({
-                  label: typeof opt.label === "string" ? opt.label : "",
-                  description: typeof opt.description === "string" ? opt.description : "",
-                }))
-              : [],
-            multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : false,
-          }),
-        );
-
-        const answersDeferred = yield* Deferred.make<ProviderUserInputAnswers>();
-        let aborted = false;
-        const settleAsAborted = Effect.suspend(() => {
-          if (!pendingUserInputs.has(requestId)) {
-            return Effect.void;
-          }
-          aborted = true;
-          pendingUserInputs.delete(requestId);
-          return Deferred.succeed(answersDeferred, {} as ProviderUserInputAnswers).pipe(
-            Effect.ignore,
-          );
-        });
-        const pendingInput: PendingUserInput = {
-          questions,
-          answers: answersDeferred,
-          cancel: settleAsAborted,
-        };
-
-        // Emit user-input.requested so the UI can present the questions.
-        const requestedStamp = yield* makeEventStamp();
-        yield* offerRuntimeEvent(input.sessionIncarnationId, {
-          type: "user-input.requested",
-          eventId: requestedStamp.eventId,
-          provider: PROVIDER,
-          createdAt: requestedStamp.createdAt,
-          threadId: context.session.threadId,
-          ...(context.turnState
-            ? {
-                turnId: asCanonicalTurnId(context.turnState.turnId),
-              }
-            : {}),
-          requestId: asRuntimeRequestId(requestId),
-          payload: { questions },
-          providerRefs: nativeProviderRefs(context, {
-            providerItemId: callbackOptions.toolUseID,
-          }),
-          raw: {
-            source: "claude.sdk.permission",
-            method: "canUseTool/AskUserQuestion",
-            payload: {
-              toolName: "AskUserQuestion",
-              input: toolInput,
-            },
-          },
-        });
-
-        pendingUserInputs.set(requestId, pendingInput);
-
-        // Handle abort (e.g. turn interrupted while waiting for user input).
-        const onAbort = () => {
-          runFork(settleAsAborted);
-        };
-        callbackOptions.signal.addEventListener("abort", onAbort, {
-          once: true,
-        });
-        // The signal may have aborted during the awaited event emissions
-        // above, before the listener existed; settle now so the dialog
-        // cannot hang with a lingering pending question.
-        if (callbackOptions.signal.aborted) {
-          yield* settleAsAborted;
+      const answersDeferred = yield* Deferred.make<ProviderUserInputAnswers>();
+      let aborted = false;
+      const settleAsAborted = Effect.suspend(() => {
+        if (!pendingUserInputs.has(requestId)) {
+          return Effect.void;
         }
-
-        // Block until the user provides answers.
-        const answers = yield* Deferred.await(answersDeferred);
+        aborted = true;
         pendingUserInputs.delete(requestId);
-
-        // Emit user-input.resolved so the UI knows the interaction completed.
-        const resolvedStamp = yield* makeEventStamp();
-        yield* offerRuntimeEvent(input.sessionIncarnationId, {
-          type: "user-input.resolved",
-          eventId: resolvedStamp.eventId,
-          provider: PROVIDER,
-          createdAt: resolvedStamp.createdAt,
-          threadId: context.session.threadId,
-          ...(context.turnState
-            ? {
-                turnId: asCanonicalTurnId(context.turnState.turnId),
-              }
-            : {}),
-          requestId: asRuntimeRequestId(requestId),
-          payload: { answers },
-          providerRefs: nativeProviderRefs(context, {
-            providerItemId: callbackOptions.toolUseID,
-          }),
-          raw: {
-            source: "claude.sdk.permission",
-            method: "canUseTool/AskUserQuestion/resolved",
-            payload: { answers },
-          },
-        });
-
-        if (aborted) {
-          return {
-            behavior: "deny",
-            message: "User cancelled tool execution.",
-          } satisfies PermissionResult;
-        }
-
-        // Return the answers to the SDK in the expected format:
-        // { questions: [...], answers: { questionText: selectedLabel } }
-        return {
-          behavior: "allow",
-          updatedInput: {
-            questions: toolInput.questions,
-            answers,
-          },
-        } satisfies PermissionResult;
-      });
-
-      const handleResumeDialog = Effect.fn("handleResumeDialog")(function* (
-        request: Parameters<NonNullable<ClaudeQueryOptions["onUserDialog"]>>[0],
-        callbackOptions: Parameters<NonNullable<ClaudeQueryOptions["onUserDialog"]>>[1],
-      ) {
-        if (request.dialogKind !== "resume_return") {
-          return { behavior: "cancelled" as const };
-        }
-
-        const context = yield* Ref.get(contextRef);
-        if (!context) {
-          return { behavior: "cancelled" as const };
-        }
-
-        // The question copy lives in @t3tools/shared/claudeCompaction because
-        // the web client recognizes this exact text (and the "never" answer)
-        // to mirror a permanent dismissal.
-        const question = formatClaudeResumeCompactionQuestion({
-          ageMinutes: finiteNonNegativeInteger(request.payload.sessionAgeMinutes) ?? 0,
-          estimatedTokens: finiteNonNegativeInteger(request.payload.estimatedTokens) ?? 0,
-        });
-        const result = yield* handleAskUserQuestion(
-          context,
-          {
-            questions: [
-              {
-                header: "Resume session",
-                question,
-                options: [
-                  {
-                    label: "Compact and continue",
-                    description: "Resume with a summary and use fewer tokens.",
-                  },
-                  {
-                    label: "Keep full history",
-                    description: "Resume without changing the conversation.",
-                  },
-                  {
-                    label: CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
-                    description: "Keep full history and skip future resume prompts.",
-                  },
-                ],
-                multiSelect: false,
-              },
-            ],
-          },
-          {
-            signal: callbackOptions.signal,
-            ...(request.toolUseID ? { toolUseID: request.toolUseID } : {}),
-          },
+        return Deferred.succeed(answersDeferred, {} as ProviderUserInputAnswers).pipe(
+          Effect.ignore,
         );
+      });
+      const pendingInput: PendingUserInput = {
+        questions,
+        answers: answersDeferred,
+        cancel: settleAsAborted,
+      };
 
-        if (result.behavior !== "allow") {
-          return { behavior: "cancelled" as const };
-        }
-
-        const answers = result.updatedInput.answers;
-        const selection =
-          answers && typeof answers === "object" && !Array.isArray(answers)
-            ? (answers as Record<string, unknown>)[question]
-            : undefined;
-        const action =
-          selection === "Compact and continue"
-            ? "compact"
-            : selection === CLAUDE_RESUME_COMPACTION_NEVER_ANSWER
-              ? "never"
-              : "continue";
-
-        return { behavior: "completed" as const, result: action };
+      // Emit user-input.requested so the UI can present the questions.
+      const requestedStamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent(input.sessionIncarnationId, {
+        type: "user-input.requested",
+        eventId: requestedStamp.eventId,
+        provider: PROVIDER,
+        createdAt: requestedStamp.createdAt,
+        threadId: context.session.threadId,
+        ...(context.turnState
+          ? {
+              turnId: asCanonicalTurnId(context.turnState.turnId),
+            }
+          : {}),
+        requestId: asRuntimeRequestId(requestId),
+        payload: { questions },
+        providerRefs: nativeProviderRefs(context, {
+          providerItemId: callbackOptions.toolUseID,
+        }),
+        raw: {
+          source: "claude.sdk.permission",
+          method: "canUseTool/AskUserQuestion",
+          payload: {
+            toolName: "AskUserQuestion",
+            input: toolInput,
+          },
+        },
       });
 
-      const canUseToolEffect = Effect.fn("canUseTool")(function* (
-        toolName: Parameters<CanUseTool>[0],
-        toolInput: Parameters<CanUseTool>[1],
-        callbackOptions: Parameters<CanUseTool>[2],
-      ) {
-        const context = yield* Ref.get(contextRef);
-        if (!context) {
-          return {
-            behavior: "deny",
-            message: "Claude session context is unavailable.",
-          } satisfies PermissionResult;
-        }
+      pendingUserInputs.set(requestId, pendingInput);
 
-        // Handle AskUserQuestion: surface clarifying questions to the
-        // user via the user-input runtime event channel, regardless of
-        // runtime mode (plan mode relies on this heavily).
-        if (toolName === "AskUserQuestion") {
-          return yield* handleAskUserQuestion(context, toolInput, callbackOptions);
-        }
+      // Handle abort (e.g. turn interrupted while waiting for user input).
+      const onAbort = () => {
+        runFork(settleAsAborted);
+      };
+      callbackOptions.signal.addEventListener("abort", onAbort, {
+        once: true,
+      });
+      // The signal may have aborted during the awaited event emissions
+      // above, before the listener existed; settle now so the dialog
+      // cannot hang with a lingering pending question.
+      if (callbackOptions.signal.aborted) {
+        yield* settleAsAborted;
+      }
 
-        if (toolName === "ExitPlanMode") {
-          const planMarkdown = extractExitPlanModePlan(toolInput);
-          if (planMarkdown) {
-            yield* emitProposedPlanCompleted(context, {
-              planMarkdown,
-              toolUseId: callbackOptions.toolUseID,
-              rawSource: "claude.sdk.permission",
-              rawMethod: "canUseTool/ExitPlanMode",
-              rawPayload: {
-                toolName,
-                input: toolInput,
-              },
-            });
-          }
+      // Block until the user provides answers.
+      const answers = yield* Deferred.await(answersDeferred);
+      pendingUserInputs.delete(requestId);
 
-          return {
-            behavior: "deny",
-            message:
-              "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.",
-          } satisfies PermissionResult;
-        }
+      // Emit user-input.resolved so the UI knows the interaction completed.
+      const resolvedStamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent(input.sessionIncarnationId, {
+        type: "user-input.resolved",
+        eventId: resolvedStamp.eventId,
+        provider: PROVIDER,
+        createdAt: resolvedStamp.createdAt,
+        threadId: context.session.threadId,
+        ...(context.turnState
+          ? {
+              turnId: asCanonicalTurnId(context.turnState.turnId),
+            }
+          : {}),
+        requestId: asRuntimeRequestId(requestId),
+        payload: { answers },
+        providerRefs: nativeProviderRefs(context, {
+          providerItemId: callbackOptions.toolUseID,
+        }),
+        raw: {
+          source: "claude.sdk.permission",
+          method: "canUseTool/AskUserQuestion/resolved",
+          payload: { answers },
+        },
+      });
 
-        const runtimeMode = input.runtimeMode ?? "full-access";
-        if (runtimeMode === "full-access") {
-          return {
-            behavior: "allow",
-            updatedInput: toolInput,
-          } satisfies PermissionResult;
-        }
+      if (aborted) {
+        return {
+          behavior: "deny",
+          message: "User cancelled tool execution.",
+        } satisfies PermissionResult;
+      }
 
-        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
-        const requestType = classifyRequestType(toolName);
-        const detail = summarizeToolRequest(toolName, toolInput);
-        const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
-        const pendingApproval: PendingApproval = {
-          requestType,
-          detail,
-          decision: decisionDeferred,
-          ...(callbackOptions.suggestions ? { suggestions: callbackOptions.suggestions } : {}),
-        };
+      // Return the answers to the SDK in the expected format:
+      // { questions: [...], answers: { questionText: selectedLabel } }
+      return {
+        behavior: "allow",
+        updatedInput: {
+          questions: toolInput.questions,
+          answers,
+        },
+      } satisfies PermissionResult;
+    });
 
-        const requestedStamp = yield* makeEventStamp();
-        yield* offerRuntimeEvent(input.sessionIncarnationId, {
-          type: "request.opened",
-          eventId: requestedStamp.eventId,
-          provider: PROVIDER,
-          createdAt: requestedStamp.createdAt,
-          threadId: context.session.threadId,
-          ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
-          requestId: asRuntimeRequestId(requestId),
-          payload: {
-            requestType,
-            detail,
-            args: {
+    const handleResumeDialog = Effect.fn("handleResumeDialog")(function* (
+      request: Parameters<NonNullable<ClaudeQueryOptions["onUserDialog"]>>[0],
+      callbackOptions: Parameters<NonNullable<ClaudeQueryOptions["onUserDialog"]>>[1],
+    ) {
+      if (request.dialogKind !== "resume_return") {
+        return { behavior: "cancelled" as const };
+      }
+
+      const context = yield* Ref.get(contextRef);
+      if (!context) {
+        return { behavior: "cancelled" as const };
+      }
+
+      // The question copy lives in @t3tools/shared/claudeCompaction because
+      // the web client recognizes this exact text (and the "never" answer)
+      // to mirror a permanent dismissal.
+      const question = formatClaudeResumeCompactionQuestion({
+        ageMinutes: finiteNonNegativeInteger(request.payload.sessionAgeMinutes) ?? 0,
+        estimatedTokens: finiteNonNegativeInteger(request.payload.estimatedTokens) ?? 0,
+      });
+      const result = yield* handleAskUserQuestion(
+        context,
+        {
+          questions: [
+            {
+              header: "Resume session",
+              question,
+              options: [
+                {
+                  label: "Compact and continue",
+                  description: "Resume with a summary and use fewer tokens.",
+                },
+                {
+                  label: "Keep full history",
+                  description: "Resume without changing the conversation.",
+                },
+                {
+                  label: CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
+                  description: "Keep full history and skip future resume prompts.",
+                },
+              ],
+              multiSelect: false,
+            },
+          ],
+        },
+        {
+          signal: callbackOptions.signal,
+          ...(request.toolUseID ? { toolUseID: request.toolUseID } : {}),
+        },
+      );
+
+      if (result.behavior !== "allow") {
+        return { behavior: "cancelled" as const };
+      }
+
+      const answers = result.updatedInput.answers;
+      const selection =
+        answers && typeof answers === "object" && !Array.isArray(answers)
+          ? (answers as Record<string, unknown>)[question]
+          : undefined;
+      const action =
+        selection === "Compact and continue"
+          ? "compact"
+          : selection === CLAUDE_RESUME_COMPACTION_NEVER_ANSWER
+            ? "never"
+            : "continue";
+
+      return { behavior: "completed" as const, result: action };
+    });
+
+    const canUseToolEffect = Effect.fn("canUseTool")(function* (
+      toolName: Parameters<CanUseTool>[0],
+      toolInput: Parameters<CanUseTool>[1],
+      callbackOptions: Parameters<CanUseTool>[2],
+    ) {
+      const context = yield* Ref.get(contextRef);
+      if (!context) {
+        return {
+          behavior: "deny",
+          message: "Claude session context is unavailable.",
+        } satisfies PermissionResult;
+      }
+
+      // Handle AskUserQuestion: surface clarifying questions to the
+      // user via the user-input runtime event channel, regardless of
+      // runtime mode (plan mode relies on this heavily).
+      if (toolName === "AskUserQuestion") {
+        return yield* handleAskUserQuestion(context, toolInput, callbackOptions);
+      }
+
+      if (toolName === "ExitPlanMode") {
+        const planMarkdown = extractExitPlanModePlan(toolInput);
+        if (planMarkdown) {
+          yield* emitProposedPlanCompleted(context, {
+            planMarkdown,
+            toolUseId: callbackOptions.toolUseID,
+            rawSource: "claude.sdk.permission",
+            rawMethod: "canUseTool/ExitPlanMode",
+            rawPayload: {
               toolName,
               input: toolInput,
-              ...(callbackOptions.toolUseID ? { toolUseId: callbackOptions.toolUseID } : {}),
             },
-          },
-          providerRefs: nativeProviderRefs(context, {
-            providerItemId: callbackOptions.toolUseID,
-          }),
-          raw: {
-            source: "claude.sdk.permission",
-            method: "canUseTool/request",
-            payload: {
-              toolName,
-              input: toolInput,
-            },
-          },
-        });
-
-        pendingApprovals.set(requestId, pendingApproval);
-
-        const onAbort = () => {
-          if (!pendingApprovals.has(requestId)) {
-            return;
-          }
-          pendingApprovals.delete(requestId);
-          runFork(Deferred.succeed(decisionDeferred, "cancel"));
-        };
-
-        callbackOptions.signal.addEventListener("abort", onAbort, {
-          once: true,
-        });
-        // Same late-listener race as handleAskUserQuestion: the signal may
-        // have aborted while the request event emissions were awaited.
-        if (callbackOptions.signal.aborted) {
-          onAbort();
-        }
-
-        const decision = yield* Deferred.await(decisionDeferred);
-        pendingApprovals.delete(requestId);
-
-        const resolvedStamp = yield* makeEventStamp();
-        yield* offerRuntimeEvent(input.sessionIncarnationId, {
-          type: "request.resolved",
-          eventId: resolvedStamp.eventId,
-          provider: PROVIDER,
-          createdAt: resolvedStamp.createdAt,
-          threadId: context.session.threadId,
-          ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
-          requestId: asRuntimeRequestId(requestId),
-          payload: {
-            requestType,
-            decision,
-          },
-          providerRefs: nativeProviderRefs(context, {
-            providerItemId: callbackOptions.toolUseID,
-          }),
-          raw: {
-            source: "claude.sdk.permission",
-            method: "canUseTool/decision",
-            payload: {
-              decision,
-            },
-          },
-        });
-
-        if (
-          decision === "accept" ||
-          decision === "acceptForSession" ||
-          decision === "acceptAlways"
-        ) {
-          return {
-            behavior: "allow",
-            updatedInput: toolInput,
-            ...(decision === "acceptForSession" || decision === "acceptAlways"
-              ? {
-                  updatedPermissions: toSessionPermissionUpdates(
-                    toolName,
-                    pendingApproval.suggestions,
-                  ),
-                }
-              : {}),
-          } satisfies PermissionResult;
+          });
         }
 
         return {
           behavior: "deny",
           message:
-            decision === "cancel"
-              ? "User cancelled tool execution."
-              : "User declined tool execution.",
+            "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.",
         } satisfies PermissionResult;
+      }
+
+      const runtimeMode = input.runtimeMode ?? "full-access";
+      if (runtimeMode === "full-access") {
+        return {
+          behavior: "allow",
+          updatedInput: toolInput,
+        } satisfies PermissionResult;
+      }
+
+      const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
+      const requestType = classifyRequestType(toolName);
+      const detail = summarizeToolRequest(toolName, toolInput);
+      const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
+      const pendingApproval: PendingApproval = {
+        requestType,
+        detail,
+        decision: decisionDeferred,
+        ...(callbackOptions.suggestions ? { suggestions: callbackOptions.suggestions } : {}),
+      };
+
+      const requestedStamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent(input.sessionIncarnationId, {
+        type: "request.opened",
+        eventId: requestedStamp.eventId,
+        provider: PROVIDER,
+        createdAt: requestedStamp.createdAt,
+        threadId: context.session.threadId,
+        ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+        requestId: asRuntimeRequestId(requestId),
+        payload: {
+          requestType,
+          detail,
+          args: {
+            toolName,
+            input: toolInput,
+            ...(callbackOptions.toolUseID ? { toolUseId: callbackOptions.toolUseID } : {}),
+          },
+        },
+        providerRefs: nativeProviderRefs(context, {
+          providerItemId: callbackOptions.toolUseID,
+        }),
+        raw: {
+          source: "claude.sdk.permission",
+          method: "canUseTool/request",
+          payload: {
+            toolName,
+            input: toolInput,
+          },
+        },
       });
 
-      const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
-        runPromise(canUseToolEffect(toolName, toolInput, callbackOptions));
-      const onUserDialog: NonNullable<ClaudeQueryOptions["onUserDialog"]> = (
-        request,
-        callbackOptions,
-      ) => runPromise(handleResumeDialog(request, callbackOptions));
+      pendingApprovals.set(requestId, pendingApproval);
 
-      const claudeBinaryPath = claudeSdkExecutablePath;
-      const {
-        "permission-mode": launchArgPermissionMode,
-        "dangerously-skip-permissions": launchArgSkipPermissions,
-        ...extraArgs
-      } = parseCliArgs(claudeSettings.launchArgs).flags;
-      const selectedModel =
-        input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
-      const modelSelection = selectedModel
-        ? {
-            ...selectedModel,
-            model: resolveClaudeModelSlug(modelCatalog, selectedModel.model),
-          }
-        : undefined;
-      const caps = getClaudeCatalogModelCapabilities(modelCatalog, modelSelection?.model);
-      const descriptors = getProviderOptionDescriptors({ caps });
-      const apiModelId = modelSelection
-        ? resolveClaudeCatalogApiModelId(modelCatalog, modelSelection)
-        : undefined;
-      const initialContextWindow = selectedClaudeContextWindow(modelCatalog, modelSelection);
-      const rawEffort = getModelSelectionStringOptionValue(modelSelection, "effort");
-      const effort =
-        resolveClaudeCatalogEffort(modelCatalog, modelSelection?.model, rawEffort) ?? null;
-      const fastModeSupported = descriptors.some(
-        (descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode",
-      );
-      const thinkingSupported = descriptors.some(
-        (descriptor) => descriptor.type === "boolean" && descriptor.id === "thinking",
-      );
-      const fastMode =
-        getModelSelectionBooleanOptionValue(modelSelection, "fastMode") === true &&
-        fastModeSupported;
-      const thinking = thinkingSupported
-        ? getModelSelectionBooleanOptionValue(modelSelection, "thinking")
-        : undefined;
-      const ultracode = isClaudeCatalogUltracodeEffort(effort);
-      const effectiveEffort = getEffectiveClaudeAgentEffort(
-        modelCatalog,
-        effort,
-        modelSelection?.model,
-      );
-      const runtimeModeToPermission: Record<string, PermissionMode> = {
-        "auto-accept-edits": "acceptEdits",
-        auto: "auto",
-        "full-access": "bypassPermissions",
+      const onAbort = () => {
+        if (!pendingApprovals.has(requestId)) {
+          return;
+        }
+        pendingApprovals.delete(requestId);
+        runFork(Deferred.succeed(decisionDeferred, "cancel"));
       };
-      // A permission launch arg is folded into the mode T3 sends rather than
-      // passed through: the CLI resolves both inputs together, so argv order
-      // never let the user's flag win.
-      const permissionMode =
-        (launchArgPermissionMode as PermissionMode | null | undefined) ??
-        (launchArgSkipPermissions === null || launchArgSkipPermissions === "true"
-          ? "bypassPermissions"
-          : runtimeModeToPermission[input.runtimeMode]);
-      const settings = {
-        ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
-        ...(fastMode ? { fastMode: true } : {}),
-        ...(ultracode ? { ultracode: true } : {}),
-        ...(claudeSettings.autoCompactWindow
-          ? { autoCompactWindow: Number(claudeSettings.autoCompactWindow) }
-          : {}),
-      };
-      const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-      // The attachments dir grant lets the agent Read/copy pasted images at
-      // the paths ProviderService injects into the turn text, without an
-      // approval prompt. It is a leaf directory holding only attachment
-      // files; siblings like secrets/ and state.sqlite stay ungranted.
-      const additionalDirectories = [
-        ...(input.cwd ? [input.cwd] : []),
-        serverConfig.attachmentsDir,
-      ];
-      // Claude Code hides TodoWrite and the Task tools by default on its newest
-      // models, and Pylon's plan UI is fed by exactly those tools. Opt back in
-      // unless the user turned the setting off; "off" leaves Claude Code's own
-      // default in place rather than forcing a state the CLI cannot express.
-      const sessionEnvironment = claudeSettings.taskTools
-        ? { ...claudeEnvironment, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }
-        : claudeEnvironment;
-      const queryOptions: ClaudeQueryOptions = {
-        ...(input.cwd ? { cwd: input.cwd } : {}),
-        ...(apiModelId ? { model: apiModelId } : {}),
-        pathToClaudeCodeExecutable: claudeBinaryPath,
-        systemPrompt: {
-          type: "preset",
-          preset: "claude_code",
-          // Model and effort can change after this session-level prompt is set.
-          append: buildRuntimeInstructions({ harness: "Claude Code" }),
+
+      callbackOptions.signal.addEventListener("abort", onAbort, {
+        once: true,
+      });
+      // Same late-listener race as handleAskUserQuestion: the signal may
+      // have aborted while the request event emissions were awaited.
+      if (callbackOptions.signal.aborted) {
+        onAbort();
+      }
+
+      const decision = yield* Deferred.await(decisionDeferred);
+      pendingApprovals.delete(requestId);
+
+      const resolvedStamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent(input.sessionIncarnationId, {
+        type: "request.resolved",
+        eventId: resolvedStamp.eventId,
+        provider: PROVIDER,
+        createdAt: resolvedStamp.createdAt,
+        threadId: context.session.threadId,
+        ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+        requestId: asRuntimeRequestId(requestId),
+        payload: {
+          requestType,
+          decision,
         },
-        settingSources: [...CLAUDE_SETTING_SOURCES],
-        // `ultracode` is a Claude Code setting, not an API effort level. It is
-        // normalized to `xhigh` above and paired with `settings.ultracode`.
-        ...(effectiveEffort
-          ? {
-              effort: effectiveEffort as unknown as NonNullable<ClaudeQueryOptions["effort"]>,
-            }
-          : {}),
-        ...(permissionMode ? { permissionMode } : {}),
-        ...(permissionMode === "bypassPermissions"
-          ? { allowDangerouslySkipPermissions: true }
-          : {}),
-        ...(Object.keys(settings).length > 0 ? { settings } : {}),
-        ...(existingResumeSessionId ? { resume: existingResumeSessionId } : {}),
-        ...(newSessionId ? { sessionId: newSessionId } : {}),
-        includePartialMessages: true,
-        canUseTool,
-        onUserDialog,
-        supportedDialogKinds: ["resume_return"],
-        env: McpProviderSession.withAgentDeviceEnvironment(sessionEnvironment, mcpSession),
-        additionalDirectories,
-        ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
-        ...(mcpSession
-          ? {
-              mcpServers: {
-                "t3-code": {
-                  type: "http",
-                  url: mcpSession.endpoint,
-                  headers: {
-                    Authorization: mcpSession.authorizationHeader,
-                  },
+        providerRefs: nativeProviderRefs(context, {
+          providerItemId: callbackOptions.toolUseID,
+        }),
+        raw: {
+          source: "claude.sdk.permission",
+          method: "canUseTool/decision",
+          payload: {
+            decision,
+          },
+        },
+      });
+
+      if (decision === "accept" || decision === "acceptForSession" || decision === "acceptAlways") {
+        return {
+          behavior: "allow",
+          updatedInput: toolInput,
+          ...(decision === "acceptForSession" || decision === "acceptAlways"
+            ? {
+                updatedPermissions: toSessionPermissionUpdates(
+                  toolName,
+                  pendingApproval.suggestions,
+                ),
+              }
+            : {}),
+        } satisfies PermissionResult;
+      }
+
+      return {
+        behavior: "deny",
+        message:
+          decision === "cancel"
+            ? "User cancelled tool execution."
+            : "User declined tool execution.",
+      } satisfies PermissionResult;
+    });
+
+    const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
+      runPromise(canUseToolEffect(toolName, toolInput, callbackOptions));
+    const onUserDialog: NonNullable<ClaudeQueryOptions["onUserDialog"]> = (
+      request,
+      callbackOptions,
+    ) => runPromise(handleResumeDialog(request, callbackOptions));
+
+    const claudeBinaryPath = claudeSdkExecutablePath;
+    const {
+      "permission-mode": launchArgPermissionMode,
+      "dangerously-skip-permissions": launchArgSkipPermissions,
+      ...extraArgs
+    } = parseCliArgs(claudeSettings.launchArgs).flags;
+    const selectedModel =
+      input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
+    const modelSelection = selectedModel
+      ? {
+          ...selectedModel,
+          model: resolveClaudeModelSlug(modelCatalog, selectedModel.model),
+        }
+      : undefined;
+    const caps = getClaudeCatalogModelCapabilities(modelCatalog, modelSelection?.model);
+    const descriptors = getProviderOptionDescriptors({ caps });
+    const apiModelId = modelSelection
+      ? resolveClaudeCatalogApiModelId(modelCatalog, modelSelection)
+      : undefined;
+    const initialContextWindow = selectedClaudeContextWindow(modelCatalog, modelSelection);
+    const rawEffort = getModelSelectionStringOptionValue(modelSelection, "effort");
+    const effort =
+      resolveClaudeCatalogEffort(modelCatalog, modelSelection?.model, rawEffort) ?? null;
+    const fastModeSupported = descriptors.some(
+      (descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode",
+    );
+    const thinkingSupported = descriptors.some(
+      (descriptor) => descriptor.type === "boolean" && descriptor.id === "thinking",
+    );
+    const fastMode =
+      getModelSelectionBooleanOptionValue(modelSelection, "fastMode") === true && fastModeSupported;
+    const thinking = thinkingSupported
+      ? getModelSelectionBooleanOptionValue(modelSelection, "thinking")
+      : undefined;
+    const ultracode = isClaudeCatalogUltracodeEffort(effort);
+    const effectiveEffort = getEffectiveClaudeAgentEffort(
+      modelCatalog,
+      effort,
+      modelSelection?.model,
+    );
+    const runtimeModeToPermission: Record<string, PermissionMode> = {
+      "auto-accept-edits": "acceptEdits",
+      auto: "auto",
+      "full-access": "bypassPermissions",
+    };
+    // A permission launch arg is folded into the mode T3 sends rather than
+    // passed through: the CLI resolves both inputs together, so argv order
+    // never let the user's flag win.
+    const permissionMode =
+      (launchArgPermissionMode as PermissionMode | null | undefined) ??
+      (launchArgSkipPermissions === null || launchArgSkipPermissions === "true"
+        ? "bypassPermissions"
+        : runtimeModeToPermission[input.runtimeMode]);
+    const settings = {
+      ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
+      ...(fastMode ? { fastMode: true } : {}),
+      ...(ultracode ? { ultracode: true } : {}),
+      ...(claudeSettings.autoCompactWindow
+        ? { autoCompactWindow: Number(claudeSettings.autoCompactWindow) }
+        : {}),
+    };
+    const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+    // The attachments dir grant lets the agent Read/copy pasted images at
+    // the paths ProviderService injects into the turn text, without an
+    // approval prompt. It is a leaf directory holding only attachment
+    // files; siblings like secrets/ and state.sqlite stay ungranted.
+    const additionalDirectories = [...(input.cwd ? [input.cwd] : []), serverConfig.attachmentsDir];
+    // Claude Code hides TodoWrite and the Task tools by default on its newest
+    // models, and Pylon's plan UI is fed by exactly those tools. Opt back in
+    // unless the user turned the setting off; "off" leaves Claude Code's own
+    // default in place rather than forcing a state the CLI cannot express.
+    const sessionEnvironment = claudeSettings.taskTools
+      ? { ...claudeEnvironment, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }
+      : claudeEnvironment;
+    const queryOptions: ClaudeQueryOptions = {
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+      ...(apiModelId ? { model: apiModelId } : {}),
+      pathToClaudeCodeExecutable: claudeBinaryPath,
+      systemPrompt: {
+        type: "preset",
+        preset: "claude_code",
+        // Model and effort can change after this session-level prompt is set.
+        append: buildRuntimeInstructions({ harness: "Claude Code" }),
+      },
+      settingSources: [...CLAUDE_SETTING_SOURCES],
+      // `ultracode` is a Claude Code setting, not an API effort level. It is
+      // normalized to `xhigh` above and paired with `settings.ultracode`.
+      ...(effectiveEffort
+        ? {
+            effort: effectiveEffort as unknown as NonNullable<ClaudeQueryOptions["effort"]>,
+          }
+        : {}),
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
+      ...(Object.keys(settings).length > 0 ? { settings } : {}),
+      ...(existingResumeSessionId ? { resume: existingResumeSessionId } : {}),
+      ...(newSessionId ? { sessionId: newSessionId } : {}),
+      includePartialMessages: true,
+      canUseTool,
+      onUserDialog,
+      supportedDialogKinds: ["resume_return"],
+      env: McpProviderSession.withAgentDeviceEnvironment(sessionEnvironment, mcpSession),
+      additionalDirectories,
+      ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
+      ...(mcpSession
+        ? {
+            mcpServers: {
+              "t3-code": {
+                type: "http",
+                url: mcpSession.endpoint,
+                headers: {
+                  Authorization: mcpSession.authorizationHeader,
                 },
               },
-            }
-          : {}),
-      };
+            },
+          }
+        : {}),
+    };
 
-      yield* Effect.annotateCurrentSpan({
-        "provider.kind": PROVIDER,
-        "provider.thread_id": threadId,
-        "provider.runtime_mode": input.runtimeMode,
-        "claude.resume.source":
-          existingResumeSessionId !== undefined ? "resume-session" : "generated-session",
-        "claude.resume.thread_id": resumeState?.threadId ?? "",
-        "claude.resume.session_id": existingResumeSessionId ?? "",
-        "claude.resume.session_at": resumeState?.resumeSessionAt ?? "",
-        "claude.resume.turn_count": resumeState?.turnCount ?? -1,
-        "claude.query.cwd": input.cwd ?? "",
-        "claude.query.model": apiModelId ?? "",
-        "claude.query.effort": effectiveEffort ?? "",
-        "claude.query.permission_mode": permissionMode ?? "",
-        "claude.query.allow_dangerously_skip_permissions": permissionMode === "bypassPermissions",
-        "claude.query.resume": existingResumeSessionId ?? "",
-        "claude.query.session_id": newSessionId ?? "",
-        "claude.query.include_partial_messages": true,
-        "claude.query.additional_directories": additionalDirectories,
-        "claude.query.setting_sources": [...CLAUDE_SETTING_SOURCES],
-        "claude.query.task_tools": claudeSettings.taskTools,
-        "claude.query.settings_json": encodeJsonStringForDiagnostics(settings) ?? "",
-        "claude.query.extra_args_json": encodeJsonStringForDiagnostics(extraArgs) ?? "",
-        "claude.query.path_to_executable": claudeBinaryPath,
-      });
+    yield* Effect.annotateCurrentSpan({
+      "provider.kind": PROVIDER,
+      "provider.thread_id": threadId,
+      "provider.runtime_mode": input.runtimeMode,
+      "claude.resume.source":
+        existingResumeSessionId !== undefined ? "resume-session" : "generated-session",
+      "claude.resume.thread_id": resumeState?.threadId ?? "",
+      "claude.resume.session_id": existingResumeSessionId ?? "",
+      "claude.resume.session_at": resumeState?.resumeSessionAt ?? "",
+      "claude.resume.turn_count": resumeState?.turnCount ?? -1,
+      "claude.query.cwd": input.cwd ?? "",
+      "claude.query.model": apiModelId ?? "",
+      "claude.query.effort": effectiveEffort ?? "",
+      "claude.query.permission_mode": permissionMode ?? "",
+      "claude.query.allow_dangerously_skip_permissions": permissionMode === "bypassPermissions",
+      "claude.query.resume": existingResumeSessionId ?? "",
+      "claude.query.session_id": newSessionId ?? "",
+      "claude.query.include_partial_messages": true,
+      "claude.query.additional_directories": additionalDirectories,
+      "claude.query.setting_sources": [...CLAUDE_SETTING_SOURCES],
+      "claude.query.task_tools": claudeSettings.taskTools,
+      "claude.query.settings_json": encodeJsonStringForDiagnostics(settings) ?? "",
+      "claude.query.extra_args_json": encodeJsonStringForDiagnostics(extraArgs) ?? "",
+      "claude.query.path_to_executable": claudeBinaryPath,
+    });
 
-      const queryRuntime = yield* Effect.try({
-        try: () =>
-          createQuery({
-            prompt,
-            options: queryOptions,
-          }),
-        catch: (cause) =>
-          new ProviderAdapterProcessError({
-            provider: PROVIDER,
-            threadId,
-            detail: "Failed to start Claude runtime session.",
-            cause,
-          }),
-      });
+    yield* requireLifecycleToken(threadId, token);
+    const queryRuntime = yield* Effect.try({
+      try: () =>
+        createQuery({
+          prompt,
+          options: queryOptions,
+        }),
+      catch: (cause) =>
+        new ProviderAdapterProcessError({
+          provider: PROVIDER,
+          threadId,
+          detail: "Failed to start Claude runtime session.",
+          cause,
+        }),
+    });
 
-      const session: ProviderSession = {
-        threadId,
-        provider: PROVIDER,
-        providerInstanceId: boundInstanceId,
-        ...(input.sessionIncarnationId !== undefined
-          ? { sessionIncarnationId: input.sessionIncarnationId }
-          : {}),
-        status: "ready",
-        runtimeMode: input.runtimeMode,
-        ...(input.cwd ? { cwd: input.cwd } : {}),
-        ...(modelSelection?.model ? { model: modelSelection.model } : {}),
+    const session: ProviderSession = {
+      threadId,
+      provider: PROVIDER,
+      providerInstanceId: boundInstanceId,
+      ...(input.sessionIncarnationId !== undefined
+        ? { sessionIncarnationId: input.sessionIncarnationId }
+        : {}),
+      status: "ready",
+      runtimeMode: input.runtimeMode,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+      ...(modelSelection?.model ? { model: modelSelection.model } : {}),
+      ...(threadId ? { threadId } : {}),
+      resumeCursor: {
         ...(threadId ? { threadId } : {}),
-        resumeCursor: {
-          ...(threadId ? { threadId } : {}),
-          ...(sessionId ? { resume: sessionId } : {}),
-          ...(resumeState?.resumeSessionAt ? { resumeSessionAt: resumeState.resumeSessionAt } : {}),
-          turnCount: resumeState?.turnCount ?? 0,
-        },
-        createdAt: startedAt,
-        updatedAt: startedAt,
-      };
+        ...(sessionId ? { resume: sessionId } : {}),
+        ...(resumeState?.resumeSessionAt ? { resumeSessionAt: resumeState.resumeSessionAt } : {}),
+        turnCount: resumeState?.turnCount ?? 0,
+        ...(resumeState?.turnStartMessageIds
+          ? { turnStartMessageIds: resumeState.turnStartMessageIds }
+          : {}),
+      },
+      createdAt: startedAt,
+      updatedAt: startedAt,
+    };
 
-      const context: ClaudeSessionContext = {
-        session,
-        sessionIncarnationId: input.sessionIncarnationId,
-        promptQueue,
-        query: queryRuntime,
-        streamFiber: undefined,
-        startedAt,
-        basePermissionMode: permissionMode,
-        currentApiModelId: apiModelId,
-        currentEffort: effectiveEffort ?? undefined,
-        resumeSessionId: sessionId,
-        pendingApprovals,
-        pendingUserInputs,
-        turns: [],
-        inFlightTools,
-        claudeTasks,
-        taskAgents,
-        pendingTaskModels,
-        workflowMemberFingerprints,
-        liveTaskIds,
-        turnState: undefined,
-        autoCompactSettings: undefined,
-        autoCompactSettingsQueried: false,
-        lastKnownContextWindow: initialContextWindow,
-        lastKnownTokenUsage: undefined,
-        lastKnownTotalProcessedTokens: undefined,
-        lastAssistantUuid: resumeState?.resumeSessionAt,
-        lastThreadStartedId: undefined,
-        announcedUsageLimits: undefined,
-        stopped: false,
-      };
-      yield* Ref.set(contextRef, context);
+    const context: ClaudeSessionContext = {
+      session,
+      sessionIncarnationId: input.sessionIncarnationId,
+      startInput: input,
+      turnStartMessageIds: resumeState?.turnStartMessageIds
+        ? [...resumeState.turnStartMessageIds]
+        : Array.from({ length: resumeState?.turnCount ?? 0 }, () => null),
+      promptQueue,
+      query: queryRuntime,
+      streamFiber: undefined,
+      startedAt,
+      basePermissionMode: permissionMode,
+      currentApiModelId: apiModelId,
+      currentEffort: effectiveEffort ?? undefined,
+      resumeSessionId: sessionId,
+      pendingApprovals,
+      pendingUserInputs,
+      turns: [],
+      inFlightTools,
+      claudeTasks,
+      taskAgents,
+      pendingTaskModels,
+      workflowMemberFingerprints,
+      liveTaskIds,
+      turnState: undefined,
+      autoCompactSettings: undefined,
+      autoCompactSettingsQueried: false,
+      lastKnownContextWindow: initialContextWindow,
+      lastKnownTokenUsage: undefined,
+      lastKnownTotalProcessedTokens: undefined,
+      lastAssistantUuid: resumeState?.resumeSessionAt,
+      lastThreadStartedId: undefined,
+      announcedUsageLimits: undefined,
+      stopped: false,
+    };
+    yield* Ref.set(contextRef, context);
+    // Publish only while this start still owns the lifecycle. Check and publish
+    // together so a superseding start cannot be overwritten after query creation.
+    const installed = yield* Effect.sync(() => {
+      if (sessionLifecycleTokens.get(threadId) !== token) return false;
       sessions.set(threadId, context);
+      return true;
+    });
+    if (!installed) {
+      yield* stopSessionInternal(context, { emitExitEvent: false });
+      return yield* staleSessionOperation();
+    }
 
+    const requireInstalledContext = Effect.suspend(() =>
+      sessions.get(threadId) === context && !context.stopped
+        ? requireLifecycleToken(threadId, token)
+        : Effect.fail(staleSessionOperation()),
+    );
+    // Stamps may await entropy. Keep ownership through event publication and
+    // stream startup, and release this query if its caller is interrupted.
+    return yield* Effect.gen(function* () {
       const sessionStartedStamp = yield* makeEventStamp();
+      yield* requireInstalledContext;
       yield* offerRuntimeEvent(input.sessionIncarnationId, {
         type: "session.started",
         eventId: sessionStartedStamp.eventId,
@@ -4974,6 +5052,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
 
       const configuredStamp = yield* makeEventStamp();
+      yield* requireInstalledContext;
       yield* offerRuntimeEvent(input.sessionIncarnationId, {
         type: "session.configured",
         eventId: configuredStamp.eventId,
@@ -4993,6 +5072,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
 
       const readyStamp = yield* makeEventStamp();
+      yield* requireInstalledContext;
       yield* offerRuntimeEvent(input.sessionIncarnationId, {
         type: "session.state.changed",
         eventId: readyStamp.eventId,
@@ -5005,6 +5085,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         providerRefs: {},
       });
 
+      yield* requireInstalledContext;
       let streamFiber: Fiber.Fiber<void, never>;
       streamFiber = runFork(
         Effect.exit(runSdkStream(context)).pipe(
@@ -5030,11 +5111,27 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }
       });
 
-      return {
-        ...session,
-      };
-    },
-  );
+      yield* requireInstalledContext;
+      return context;
+    }).pipe(
+      Effect.onError(() =>
+        stopSessionInternal(context, { emitExitEvent: false }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("claude.session.start.cleanup-failed", { threadId, cause }),
+          ),
+        ),
+      ),
+    );
+  });
+
+  const startSession: ClaudeAdapterShape["startSession"] = (input) =>
+    Effect.suspend(() => {
+      const token = {};
+      sessionLifecycleTokens.set(input.threadId, token);
+      return startSessionInternal(input, token).pipe(
+        Effect.map((context) => ({ ...context.session })),
+      );
+    });
 
   const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
@@ -5046,6 +5143,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const modelSelection = selectedModel
       ? { ...selectedModel, model: resolveClaudeModelSlug(modelCatalog, selectedModel.model) }
       : undefined;
+    if (modelSelection) {
+      context.startInput = { ...context.startInput, modelSelection };
+    }
 
     // A sendTurn while a real turn is running is a steer: the message is
     // queued into the live SDK agent loop and the work continues as the same
@@ -5171,9 +5271,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       ),
     });
 
+    if (steeringTurnState === null) context.turnStartMessageIds.push(turnId);
+    yield* updateResumeCursor(context);
     yield* Queue.offer(context.promptQueue, {
       type: "message",
-      message,
+      message:
+        steeringTurnState === null
+          ? { ...message, uuid: turnId as NonNullable<SDKUserMessage["uuid"]> }
+          : message,
     }).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)));
 
     return {
@@ -5187,6 +5292,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (threadId, _turnId) {
+      sessionLifecycleTokens.delete(threadId);
       const context = yield* requireSession(threadId);
       // interrupt() can acknowledge while resumed background tasks keep the
       // CLI alive. Stop is a hard session boundary for Claude, so close the
@@ -5205,10 +5311,219 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const rollbackThread: ClaudeAdapterShape["rollbackThread"] = Effect.fn("rollbackThread")(
     function* (threadId, numTurns) {
       const context = yield* requireSession(threadId);
-      const nextLength = Math.max(0, context.turns.length - numTurns);
-      context.turns.splice(nextLength);
-      yield* updateResumeCursor(context);
-      return yield* snapshotThread(context);
+      const token = sessionLifecycleTokens.get(threadId);
+      if (!token) return yield* staleSessionOperation();
+      const requireCurrent = Effect.suspend(() =>
+        sessions.get(threadId) === context && !context.stopped
+          ? requireLifecycleToken(threadId, token)
+          : Effect.fail(staleSessionOperation()),
+      );
+      const restart = (resumeCursor: ProviderSession["resumeCursor"]) =>
+        Effect.gen(function* () {
+          yield* requireCurrent;
+          // Keep the existing context registered through catalog/config awaits;
+          // the internal start stops it only while the same token still owns it.
+          return yield* startSessionInternal(
+            {
+              ...context.startInput,
+              runtimeMode: context.session.runtimeMode,
+              resumeCursor,
+            },
+            token,
+            context,
+          );
+        });
+      if (!Number.isInteger(numTurns) || numTurns < 1) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "rollbackThread",
+          issue: "numTurns must be an integer >= 1.",
+        });
+      }
+      if (
+        context.turnStartMessageIds.length > 0 &&
+        context.turnStartMessageIds.every((id) => id !== null) &&
+        numTurns >= context.turnStartMessageIds.length
+      ) {
+        return yield* snapshotThread(yield* restart(undefined));
+      }
+      const sessionId = context.resumeSessionId;
+      if (!sessionId) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "thread/rollback",
+          detail: "Claude session id is unavailable.",
+        });
+      }
+      const historyWorkerPath = yield* path
+        .fromFileUrl(
+          new URL(
+            import.meta.url.endsWith(".ts")
+              ? "../../claudeHistoryWorker.ts"
+              : "./claudeHistoryWorker.mjs",
+            import.meta.url,
+          ),
+        )
+        .pipe(Effect.mapError((cause) => toRequestError(threadId, "thread/rollback", cause)));
+      const runScopedHistoryCommand = (
+        method: "getSessionMessages" | "forkSession",
+        args: object,
+        historySessionId = sessionId,
+      ) =>
+        spawnAndCollect(
+          process.execPath,
+          ChildProcess.make(
+            process.execPath,
+            [historyWorkerPath, method, historySessionId, encodeHistoryArgs(args)],
+            { env: { ...claudeEnvironment, ELECTRON_RUN_AS_NODE: "1" } },
+          ),
+        ).pipe(
+          Effect.timeout("30 seconds"),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.mapError((cause) => toRequestError(threadId, "thread/rollback", cause)),
+          Effect.flatMap((result) =>
+            result.code === 0
+              ? Effect.succeed(result.stdout)
+              : Effect.fail(
+                  toRequestError(
+                    threadId,
+                    "thread/rollback",
+                    new Error(result.stderr || "Claude history command failed."),
+                  ),
+                ),
+          ),
+        );
+      const readHistory = (historySessionId: string) => {
+        const readOptions = {
+          ...(context.session.cwd ? { dir: context.session.cwd } : {}),
+          includeSystemMessages: true,
+        };
+        const read = options?.getSessionMessages ?? getSessionMessages;
+        // Keep process ownership inside the calling Effect scope so interruption
+        // terminates the worker instead of leaving an independent runtime alive.
+        return options?.getSessionMessages ||
+          claudeEnvironment.CLAUDE_CONFIG_DIR === process.env.CLAUDE_CONFIG_DIR
+          ? Effect.tryPromise({
+              try: () => read(historySessionId, readOptions),
+              catch: (cause) => toRequestError(threadId, "thread/rollback", cause),
+            })
+          : runScopedHistoryCommand("getSessionMessages", readOptions, historySessionId).pipe(
+              Effect.flatMap((source) =>
+                Effect.try({
+                  try: () => decodeSessionMessages(source),
+                  catch: (cause) => toRequestError(threadId, "thread/rollback", cause),
+                }),
+              ),
+            );
+      };
+      const messages = yield* readHistory(sessionId);
+      yield* requireCurrent;
+      // Tool results are user-role messages too. Only human prompts begin a turn.
+      const turnStarts = messages.flatMap((message, index) => {
+        if (message.type !== "user" || message.parent_tool_use_id !== null) return [];
+        const body = message.message;
+        if (typeof body !== "object" || body === null || !("content" in body)) return [];
+        const content = body.content;
+        return typeof content === "string" ||
+          (Array.isArray(content) &&
+            content.some(
+              (part: unknown) =>
+                typeof part === "object" &&
+                part !== null &&
+                "type" in part &&
+                part.type !== "tool_result",
+            ))
+          ? [index]
+          : [];
+      });
+      if (messages.length === 0) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "thread/rollback",
+          detail: "Claude session history is unavailable.",
+        });
+      }
+      const boundaries = [...context.turnStartMessageIds];
+      // Older cursors did not record native boundaries. Infer them only when
+      // their T3 turn count agrees; steers must never be treated as extra turns.
+      if (
+        boundaries.every((id): boolean => id === null) &&
+        boundaries.length === turnStarts.length
+      ) {
+        boundaries.splice(
+          0,
+          boundaries.length,
+          ...turnStarts.map((index) => messages[index]!.uuid),
+        );
+      }
+      const retainedCount = Math.max(0, boundaries.length - numTurns);
+      const firstRemovedId = boundaries[retainedCount];
+      const firstRemoved = messages.findIndex((message) => message.uuid === firstRemovedId);
+      if (
+        boundaries.length === 0 ||
+        boundaries.some((id) => id === null) ||
+        (retainedCount > 0 && firstRemoved < 1)
+      ) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "thread/rollback",
+          detail:
+            "The exact Claude turn boundary is unavailable, possibly after compaction or recovery of older history. Start a new thread instead.",
+        });
+      }
+      const rollbackAt = retainedCount > 0 ? messages[firstRemoved - 1]?.uuid : undefined;
+      const retainedTurns = context.turns.slice(0, Math.max(0, context.turns.length - numTurns));
+      const forkOptions = {
+        ...(context.session.cwd ? { dir: context.session.cwd } : {}),
+        ...(rollbackAt ? { upToMessageId: rollbackAt } : {}),
+      };
+      const fork = rollbackAt
+        ? yield* options?.forkSession ||
+          claudeEnvironment.CLAUDE_CONFIG_DIR === process.env.CLAUDE_CONFIG_DIR
+            ? Effect.tryPromise({
+                try: () => (options?.forkSession ?? forkSession)(sessionId, forkOptions),
+                catch: (cause) => toRequestError(threadId, "thread/rollback", cause),
+              })
+            : runScopedHistoryCommand("forkSession", forkOptions).pipe(
+                Effect.flatMap((source) =>
+                  Effect.try({
+                    try: () => decodeHistoryFork(source),
+                    catch: (cause) => toRequestError(threadId, "thread/rollback", cause),
+                  }),
+                ),
+              )
+        : undefined;
+      yield* requireCurrent;
+      const retainedBoundaries = boundaries.slice(0, retainedCount);
+      if (fork) {
+        const forkMessages = yield* readHistory(fork.sessionId);
+        if (forkMessages.length !== firstRemoved) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "thread/rollback",
+            detail: "Claude fork history did not preserve the retained turn boundaries.",
+          });
+        }
+        // Native forks replace every UUID while preserving transcript order.
+        for (let index = 0; index < retainedBoundaries.length; index++) {
+          const messageIndex = messages.findIndex(
+            (message) => message.uuid === retainedBoundaries[index],
+          );
+          retainedBoundaries[index] = forkMessages[messageIndex]?.uuid ?? null;
+        }
+      }
+      const restarted = yield* restart(
+        fork
+          ? {
+              resume: fork.sessionId,
+              turnCount: retainedCount,
+              turnStartMessageIds: retainedBoundaries,
+            }
+          : undefined,
+      );
+      yield* requireLifecycleToken(threadId, token);
+      restarted.turns.push(...retainedTurns);
+      return yield* snapshotThread(restarted);
     },
   );
 
@@ -5248,6 +5563,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const stopSession: ClaudeAdapterShape["stopSession"] = Effect.fn("stopSession")(
     function* (threadId) {
+      sessionLifecycleTokens.delete(threadId);
       const context = yield* requireSession(threadId);
       yield* stopSessionInternal(context, {
         emitExitEvent: true,
@@ -5268,6 +5584,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     contexts: ReadonlyArray<ClaudeSessionContext>,
     emitExitEvent: boolean,
   ) {
+    sessionLifecycleTokens.clear();
     const results = yield* Effect.forEach(contexts, (context) =>
       stopSessionInternal(context, { emitExitEvent }).pipe(Effect.result),
     );

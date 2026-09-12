@@ -343,7 +343,7 @@ interface OpenCodeSessionContext {
   readonly client: OpencodeClient;
   readonly server: OpenCodeServerConnection;
   readonly directory: string;
-  readonly openCodeSessionId: string;
+  openCodeSessionId: string;
   readonly relatedSessionIds: Set<string>;
   readonly resolvedRequestIds: Set<string>;
   readonly autoRepliedRequestIds: Set<string>;
@@ -3857,21 +3857,128 @@ export function makeOpenCodeAdapter(
     const rollbackThread: OpenCodeAdapterShape["rollbackThread"] = Effect.fn("rollbackThread")(
       function* (threadId, numTurns) {
         const context = yield* ensureSessionContext(sessions, threadId);
-        const snapshot = yield* readThread(threadId);
-        const targetIndex = Math.max(0, snapshot.turns.length - numTurns);
-        const target = snapshot.turns[targetIndex];
-        if (target) {
-          yield* runOpenCodeSdk("session.revert", () =>
-            context.client.session.revert({
-              sessionID: context.openCodeSessionId,
-              messageID: target.id,
-            }),
-          ).pipe(Effect.mapError(toRequestError));
-          // Native revert can move the boundary to the preceding user message.
-          return yield* readThread(threadId);
-        }
+        const assertCurrent = Effect.gen(function* () {
+          if (sessions.get(threadId) !== context || (yield* Ref.get(context.stopped))) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "rollbackThread",
+              issue: "The OpenCode session was replaced or stopped during rewind.",
+            });
+          }
+        });
+        return yield* context.promptSemaphore.withPermit(
+          Effect.gen(function* () {
+            yield* assertCurrent;
+            const snapshot = yield* readThread(threadId);
+            yield* assertCurrent;
+            const targetIndex = Math.max(0, snapshot.turns.length - numTurns);
+            const target = snapshot.turns[targetIndex];
+            if (target) {
+              const messages = yield* runOpenCodeSdk("session.messages", (signal) =>
+                context.client.session.messages(
+                  { sessionID: context.openCodeSessionId },
+                  { signal },
+                ),
+              ).pipe(Effect.mapError(toRequestError));
+              yield* assertCurrent;
+              const entries = messages.data ?? [];
+              const targetMessageIndex = entries.findIndex((entry) => entry.info.id === target.id);
+              if (targetMessageIndex < 0) {
+                return yield* toRequestError(
+                  new OpenCodeRuntimeError({
+                    operation: "session.fork",
+                    detail: "The OpenCode rewind boundary is no longer available.",
+                  }),
+                );
+              }
+              const firstRemovedMessage =
+                entries
+                  .slice(0, targetMessageIndex + 1)
+                  .findLast((entry) => entry.info.role === "user") ?? entries[targetMessageIndex]!;
+              // Native revert also rewrites workspace files. Fork only the retained
+              // conversation so Pylon alone decides whether filesystem changes survive.
+              const fork = yield* runOpenCodeSdk("session.fork", (signal) =>
+                context.client.session.fork(
+                  {
+                    sessionID: context.openCodeSessionId,
+                    messageID: firstRemovedMessage.info.id,
+                    directory: context.directory,
+                  },
+                  { signal },
+                ),
+              ).pipe(Effect.mapError(toRequestError));
+              if (!fork.data) {
+                return yield* toRequestError(
+                  new OpenCodeRuntimeError({
+                    operation: "session.fork",
+                    detail: "OpenCode session.fork returned no session payload.",
+                  }),
+                );
+              }
+              const forkedSessionId = fork.data.id;
+              const forkMessages = yield* runOpenCodeSdk("session.messages", (signal) =>
+                context.client.session.messages({ sessionID: forkedSessionId }, { signal }),
+              ).pipe(Effect.mapError(toRequestError));
+              if (forkMessages.data?.length !== entries.indexOf(firstRemovedMessage)) {
+                return yield* toRequestError(
+                  new OpenCodeRuntimeError({
+                    operation: "session.fork",
+                    detail: "OpenCode did not preserve the requested rewind boundary.",
+                  }),
+                );
+              }
+              yield* runOpenCodeSdk("session.update", (signal) =>
+                context.client.session.update(
+                  {
+                    sessionID: forkedSessionId,
+                    permission: buildOpenCodePermissionRules(context.session.runtimeMode),
+                  },
+                  { signal },
+                ),
+              ).pipe(Effect.mapError(toRequestError));
+              yield* assertCurrent;
+              yield* clearPendingOpenCodeRequests(context, { type: "session.fork" });
+              const updatedAt = yield* nowIso;
+              const eventBase = yield* buildEventBase({ threadId });
+              yield* assertCurrent;
+              context.openCodeSessionId = forkedSessionId;
+              context.relatedSessionIds.clear();
+              context.relatedSessionIds.add(forkedSessionId);
+              context.messageRoleById.clear();
+              context.textPartsByMessageId.clear();
+              context.turnTokenUsage = undefined;
+              context.activeTurnId = undefined;
+              context.interruptedTurnId = undefined;
+              context.reconcileIdleStatus = false;
+              context.awaitingBusyAfterInterruption = false;
+              context.pendingIdleReconciliation = undefined;
+              context.session = {
+                ...context.session,
+                resumeCursor: {
+                  schemaVersion: OPENCODE_RESUME_VERSION,
+                  sessionId: forkedSessionId,
+                },
+                updatedAt,
+              };
+              yield* emit(context.sessionIncarnationId, {
+                ...eventBase,
+                type: "thread.started",
+                payload: { providerThreadId: forkedSessionId },
+              });
+              return {
+                threadId,
+                turns: forkMessages.data
+                  .filter((entry) => entry.info.role === "assistant")
+                  .map((entry) => ({
+                    id: TurnId.make(entry.info.id),
+                    items: [entry.info, ...entry.parts],
+                  })),
+              };
+            }
 
-        return snapshot;
+            return snapshot;
+          }),
+        );
       },
     );
 

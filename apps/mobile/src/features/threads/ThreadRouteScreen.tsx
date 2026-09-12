@@ -20,7 +20,6 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
-  buildRollbackConfirmation,
   deriveRollbackTargets,
   isRollbackActive,
   type RollbackTarget,
@@ -768,33 +767,36 @@ function ThreadRouteContent(
   const onRevertMessage = useCallback(
     (target: RollbackTarget) => {
       if (!selectedThread || !rollbackTargetIdle) return;
-      Alert.alert("Confirm exact rollback", buildRollbackConfirmation(target.label), [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Revert",
-          style: "destructive",
-          onPress: () => {
-            setRollbackCommandPending(true);
-            void revertThreadCheckpoint({
-              environmentId: selectedThread.environmentId,
-              input: {
-                threadId: selectedThread.id,
-                turnCount: target.targetTurnCount,
-                expectedSourceRevision: target.expectedSourceRevision,
-              },
-            }).then((result) => {
-              setRollbackCommandPending(false);
-              if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-                const failure = squashAtomCommandFailure(result);
-                Alert.alert(
-                  "Rollback unavailable",
-                  failure instanceof Error ? failure.message : "Pylon rejected this rollback.",
-                );
-              }
-            });
+      const revert = (restoreFiles: boolean) => {
+        setRollbackCommandPending(true);
+        void revertThreadCheckpoint({
+          environmentId: selectedThread.environmentId,
+          input: {
+            threadId: selectedThread.id,
+            turnCount: target.targetTurnCount,
+            expectedSourceRevision: target.expectedSourceRevision,
+            restoreFiles,
           },
-        },
-      ]);
+        }).then((result) => {
+          setRollbackCommandPending(false);
+          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+            const failure = squashAtomCommandFailure(result);
+            Alert.alert(
+              "Rollback unavailable",
+              failure instanceof Error ? failure.message : "Pylon rejected this rollback.",
+            );
+          }
+        });
+      };
+      Alert.alert(
+        "Confirm exact rollback",
+        `Rewind the provider conversation and Pylon history to before ${target.label}? Choose whether to keep your current files or also restore the worktree, Git index, staged and unstaged changes, and untracked files to that point.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Revert files too", style: "destructive", onPress: () => revert(true) },
+          { text: "Revert and keep changes", onPress: () => revert(false) },
+        ],
+      );
     },
     [revertThreadCheckpoint, rollbackTargetIdle, selectedThread],
   );

@@ -43,7 +43,10 @@ function hasOpenInput(thread: OrchestrationReadModel["threads"][number]): boolea
 
 export interface RollbackAdmissionShape {
   readonly prepare: (input: {
-    readonly command: Extract<OrchestrationCommand, { readonly type: "thread.checkpoint.revert" }>;
+    readonly command: Extract<
+      OrchestrationCommand,
+      { readonly type: "thread.checkpoint.revert" | "thread.conversation.revert" }
+    >;
     readonly readModel: OrchestrationReadModel;
     readonly requestEventId: string;
   }) => Effect.Effect<Option.Option<RollbackSagaState>, OrchestrationCommandInvariantError>;
@@ -51,12 +54,6 @@ export interface RollbackAdmissionShape {
 export class RollbackAdmission extends Context.Service<RollbackAdmission, RollbackAdmissionShape>()(
   "t3/rollback/RollbackAdmission",
 ) {}
-
-const invariant = (detail: string) =>
-  new OrchestrationCommandInvariantError({
-    commandType: "thread.checkpoint.revert",
-    detail,
-  });
 
 export const make = Effect.gen(function* () {
   const provider = yield* ProviderService;
@@ -66,6 +63,8 @@ export const make = Effect.gen(function* () {
 
   const prepare: RollbackAdmissionShape["prepare"] = Effect.fn("RollbackAdmission.prepare")(
     function* ({ command, readModel, requestEventId }) {
+      const invariant = (detail: string) =>
+        new OrchestrationCommandInvariantError({ commandType: command.type, detail });
       const thread = readModel.threads.find((candidate) => candidate.id === command.threadId);
       if (!thread) return yield* invariant("Thread does not exist.");
       const capabilities = yield* provider
@@ -264,6 +263,7 @@ export const make = Effect.gen(function* () {
         workspaceCwd: sessionIdentity.cwd,
         sourceRevision,
         targetRevision: command.turnCount,
+        restoreFiles: command.type !== "thread.conversation.revert",
         sourceTurnId: sourceSummary.turnId,
         targetTurnId,
         sourceCheckpointRef,

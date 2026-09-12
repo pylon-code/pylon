@@ -172,7 +172,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         command.type !== "thread.approval.respond" &&
         command.type !== "thread.user-input.respond" &&
         command.type !== "thread.turn.diff.complete" &&
-        command.type !== "thread.checkpoint.revert"
+        command.type !== "thread.checkpoint.revert" &&
+        command.type !== "thread.conversation.revert"
       )
         return;
       const thread = commandReadModel.threads.find(
@@ -257,7 +258,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         }
 
         if (
-          envelope.command.type === "thread.checkpoint.revert" &&
+          (envelope.command.type === "thread.checkpoint.revert" ||
+            envelope.command.type === "thread.conversation.revert") &&
           Option.isSome(rollbackRepository)
         ) {
           const active = yield* rollbackRepository.value
@@ -274,11 +276,13 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           if (Option.isSome(active)) {
             if (
               active.value.state.targetRevision !== envelope.command.turnCount ||
-              active.value.state.sourceRevision !== envelope.command.expectedSourceRevision
+              active.value.state.sourceRevision !== envelope.command.expectedSourceRevision ||
+              (active.value.state.restoreFiles !== false) !==
+                (envelope.command.type !== "thread.conversation.revert")
             ) {
               return yield* new OrchestrationCommandInvariantError({
                 commandType: envelope.command.type,
-                detail: "Another rollback target already owns this thread.",
+                detail: "Another rollback target or file choice already owns this thread.",
               });
             }
             yield* commandReceiptRepository.upsert({
@@ -394,7 +398,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         );
         const commandEvents = Array.isArray(eventBase) ? eventBase : [eventBase];
         const preparedRollback =
-          envelope.command.type === "thread.checkpoint.revert" &&
+          (envelope.command.type === "thread.checkpoint.revert" ||
+            envelope.command.type === "thread.conversation.revert") &&
           Option.isSome(rollbackAdmission) &&
           commandEvents[0]?.type === "thread.checkpoint-revert-requested"
             ? yield* rollbackAdmission.value.prepare({
@@ -415,7 +420,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 targetTurnCount: preparedRollback.value.targetRevision,
                 sourceRevision: preparedRollback.value.sourceRevision,
                 detail:
-                  "Rewriting the provider conversation, Pylon history, and workspace to the selected message.",
+                  preparedRollback.value.restoreFiles === false
+                    ? "Rewriting the provider conversation and Pylon history to the selected message while keeping current files."
+                    : "Rewriting the provider conversation, Pylon history, and workspace to the selected message.",
                 allowedActions: [],
                 createdAt: preparedRollback.value.createdAt,
               },
@@ -555,7 +562,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       }).pipe(
         Effect.withSpan(`orchestration.command.${envelope.command.type}`),
         (processCommand) =>
-          envelope.command.type === "thread.checkpoint.revert" && Option.isSome(rollbackRepository)
+          (envelope.command.type === "thread.checkpoint.revert" ||
+            envelope.command.type === "thread.conversation.revert") &&
+          Option.isSome(rollbackRepository)
             ? rollbackRepository.value.withMutationFence(processCommand)
             : processCommand,
       ),

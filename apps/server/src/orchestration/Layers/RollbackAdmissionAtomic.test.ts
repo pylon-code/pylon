@@ -42,7 +42,7 @@ const operationId = "operation-atomic-rollback";
 const privateCanary = "PRIVATE_ATOMIC_TARGET_CANARY";
 
 const admission = Layer.succeed(RollbackAdmission, {
-  prepare: ({ requestEventId }) =>
+  prepare: ({ requestEventId, command }) =>
     Effect.succeed(
       Option.some({
         operationId,
@@ -53,6 +53,7 @@ const admission = Layer.succeed(RollbackAdmission, {
         workspaceCwd: "/workspace/atomic",
         sourceRevision: 2,
         targetRevision: 1,
+        ...(command.type === "thread.conversation.revert" ? { restoreFiles: false } : {}),
         sourceTurnId: null,
         targetTurnId: null,
         sourceCheckpointRef: checkpointRefForThreadTurn(threadId, 2),
@@ -106,142 +107,183 @@ const app = Layer.mergeAll(
   Layer.provideMerge(NodeServices.layer),
 );
 
-const layer = it.layer(app);
-layer("durable rollback admission", (it) => {
-  it.effect(
-    "atomically admits private state, publishes pending, and fences concurrent mutations",
-    () =>
-      Effect.gen(function* () {
-        const orchestration = yield* OrchestrationEngineService;
-        const snapshots = yield* ProjectionSnapshotQuery;
-        const repository = yield* RollbackSagaRepository;
-        yield* orchestration.dispatch({
-          type: "project.create",
-          commandId: CommandId.make("command-atomic-project"),
-          projectId,
-          title: "Atomic rollback",
-          workspaceRoot: "/workspace/atomic",
-          defaultModelSelection: { instanceId: providerInstanceId, model: "fake" },
-          createdAt: now,
-        });
-        for (const [id, title] of [
-          [threadId, "Atomic rollback"],
-          [siblingThreadId, "Atomic rollback sibling"],
-        ] as const) {
+for (const commandType of ["thread.checkpoint.revert", "thread.conversation.revert"] as const) {
+  const layer = it.layer(app);
+  layer(`durable rollback admission: ${commandType}`, (it) => {
+    it.effect(
+      "atomically admits private state, publishes pending, and fences concurrent mutations",
+      () =>
+        Effect.gen(function* () {
+          const orchestration = yield* OrchestrationEngineService;
+          const snapshots = yield* ProjectionSnapshotQuery;
+          const repository = yield* RollbackSagaRepository;
           yield* orchestration.dispatch({
-            type: "thread.create",
-            commandId: CommandId.make(`command-create-${id}`),
-            threadId: id,
+            type: "project.create",
+            commandId: CommandId.make("command-atomic-project"),
             projectId,
-            title,
-            modelSelection: { instanceId: providerInstanceId, model: "fake" },
-            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-            runtimeMode: "full-access",
-            branch: null,
-            worktreePath: null,
+            title: "Atomic rollback",
+            workspaceRoot: "/workspace/atomic",
+            defaultModelSelection: { instanceId: providerInstanceId, model: "fake" },
             createdAt: now,
           });
-        }
+          for (const [id, title] of [
+            [threadId, "Atomic rollback"],
+            [siblingThreadId, "Atomic rollback sibling"],
+          ] as const) {
+            yield* orchestration.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make(`command-create-${id}`),
+              threadId: id,
+              projectId,
+              title,
+              modelSelection: { instanceId: providerInstanceId, model: "fake" },
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt: now,
+            });
+          }
 
-        yield* orchestration.dispatch({
-          type: "thread.checkpoint.revert",
-          commandId: CommandId.make("command-atomic-revert"),
-          threadId,
-          turnCount: 1,
-          expectedSourceRevision: 2,
-          createdAt: now,
-        });
-
-        const joined = yield* orchestration.dispatch({
-          type: "thread.checkpoint.revert",
-          commandId: CommandId.make("command-atomic-revert-same-target"),
-          threadId,
-          turnCount: 1,
-          expectedSourceRevision: 2,
-          createdAt: now,
-        });
-        assert.equal(joined.sequence, 5);
-
-        const fencedCommands = [
-          orchestration.dispatch({
-            type: "thread.turn.start",
-            commandId: CommandId.make("command-fenced-send"),
+          yield* orchestration.dispatch({
+            type: commandType,
+            commandId: CommandId.make("command-atomic-revert"),
             threadId,
-            message: {
-              messageId: MessageId.make("message-fenced-send"),
-              role: "user",
-              text: "must not start",
-              attachments: [],
-            },
-            runtimeMode: "full-access",
-            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-            createdAt: now,
-          }),
-          orchestration.dispatch({
-            type: "thread.turn.start",
-            commandId: CommandId.make("command-fenced-sibling-send"),
-            threadId: siblingThreadId,
-            message: {
-              messageId: MessageId.make("message-fenced-sibling-send"),
-              role: "user",
-              text: "must not mutate shared workspace",
-              attachments: [],
-            },
-            runtimeMode: "full-access",
-            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-            createdAt: now,
-          }),
-          orchestration.dispatch({
-            type: "thread.session.stop",
-            commandId: CommandId.make("command-fenced-stop"),
-            threadId,
-            createdAt: now,
-          }),
-          orchestration.dispatch({
-            type: "thread.checkpoint.revert",
-            commandId: CommandId.make("command-fenced-second-revert"),
-            threadId,
-            turnCount: 0,
+            turnCount: 1,
             expectedSourceRevision: 2,
             createdAt: now,
-          }),
-          orchestration.dispatch({
-            type: "project.meta.update",
-            commandId: CommandId.make("command-fenced-project"),
-            projectId,
-            title: "must not change",
-          }),
-        ];
-        for (const [index, command] of fencedCommands.entries()) {
-          const result = yield* command.pipe(Effect.result);
-          assert.equal(result._tag, "Failure", `fenced command index ${index}`);
-        }
+          });
 
-        assert.isTrue(Option.isSome(yield* repository.get(operationId)));
-        const snapshot = yield* snapshots.getSnapshot();
-        const thread = snapshot.threads.find((candidate) => candidate.id === threadId);
-        assert.deepEqual(thread?.rollbackStatus, { state: "pending", updatedAt: now });
-        const shell = yield* snapshots.getShellSnapshot();
-        assert.deepEqual(
-          shell.threads.find((candidate) => candidate.id === threadId)?.rollbackStatus,
-          { state: "pending", updatedAt: now },
-        );
+          const joined = yield* orchestration.dispatch({
+            type: commandType,
+            commandId: CommandId.make("command-atomic-revert-same-target"),
+            threadId,
+            turnCount: 1,
+            expectedSourceRevision: 2,
+            createdAt: now,
+          });
+          assert.equal(joined.sequence, 5);
 
-        const events = yield* Stream.runCollect(orchestration.readEvents(0)).pipe(
-          Effect.map((chunk) => Array.from(chunk)),
-        );
-        assert.deepEqual(
-          events.slice(0, 5).map((event) => event.type),
-          [
-            "project.created",
-            "thread.created",
-            "thread.created",
-            "thread.checkpoint-revert-requested",
-            "thread.rollback-status-updated",
-          ],
-        );
-        assert.notInclude(JSON.stringify(events), privateCanary);
-        assert.notInclude(JSON.stringify(snapshot), privateCanary);
-      }),
-  );
-});
+          const fencedCommands = [
+            orchestration.dispatch({
+              type:
+                commandType === "thread.checkpoint.revert"
+                  ? "thread.conversation.revert"
+                  : "thread.checkpoint.revert",
+              commandId: CommandId.make("command-fenced-other-file-choice"),
+              threadId,
+              turnCount: 1,
+              expectedSourceRevision: 2,
+              createdAt: now,
+            }),
+            orchestration.dispatch({
+              type: "thread.conversation.revert",
+              commandId: CommandId.make("command-fenced-sibling-conversation"),
+              threadId: siblingThreadId,
+              turnCount: 1,
+              expectedSourceRevision: 2,
+              createdAt: now,
+            }),
+            orchestration.dispatch({
+              type: "thread.turn.start",
+              commandId: CommandId.make("command-fenced-send"),
+              threadId,
+              message: {
+                messageId: MessageId.make("message-fenced-send"),
+                role: "user",
+                text: "must not start",
+                attachments: [],
+              },
+              runtimeMode: "full-access",
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              createdAt: now,
+            }),
+            orchestration.dispatch({
+              type: "thread.turn.start",
+              commandId: CommandId.make("command-fenced-sibling-send"),
+              threadId: siblingThreadId,
+              message: {
+                messageId: MessageId.make("message-fenced-sibling-send"),
+                role: "user",
+                text: "must not mutate shared workspace",
+                attachments: [],
+              },
+              runtimeMode: "full-access",
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              createdAt: now,
+            }),
+            orchestration.dispatch({
+              type: "thread.session.stop",
+              commandId: CommandId.make("command-fenced-stop"),
+              threadId,
+              createdAt: now,
+            }),
+            orchestration.dispatch({
+              type: "thread.checkpoint.revert",
+              commandId: CommandId.make("command-fenced-second-revert"),
+              threadId,
+              turnCount: 0,
+              expectedSourceRevision: 2,
+              createdAt: now,
+            }),
+            orchestration.dispatch({
+              type: "project.meta.update",
+              commandId: CommandId.make("command-fenced-project"),
+              projectId,
+              title: "must not change",
+            }),
+          ];
+          for (const [index, command] of fencedCommands.entries()) {
+            const result = yield* command.pipe(Effect.result);
+            assert.equal(result._tag, "Failure", `fenced command index ${index}`);
+          }
+
+          assert.isTrue(Option.isSome(yield* repository.get(operationId)));
+          const snapshot = yield* snapshots.getSnapshot();
+          const thread = snapshot.threads.find((candidate) => candidate.id === threadId);
+          assert.deepEqual(thread?.rollbackStatus, { state: "pending", updatedAt: now });
+          const shell = yield* snapshots.getShellSnapshot();
+          assert.deepEqual(
+            shell.threads.find((candidate) => candidate.id === threadId)?.rollbackStatus,
+            { state: "pending", updatedAt: now },
+          );
+
+          const events = yield* Stream.runCollect(orchestration.readEvents(0)).pipe(
+            Effect.map((chunk) => Array.from(chunk)),
+          );
+          assert.deepEqual(
+            events.slice(0, 5).map((event) => event.type),
+            [
+              "project.created",
+              "thread.created",
+              "thread.created",
+              "thread.checkpoint-revert-requested",
+              "thread.rollback-status-updated",
+            ],
+          );
+          const request = events.find(
+            (event) => event.type === "thread.checkpoint-revert-requested",
+          );
+          assert.equal(
+            request?.payload.restoreFiles,
+            commandType === "thread.conversation.revert" ? false : undefined,
+          );
+          const admitted = yield* repository.get(operationId);
+          assert.isTrue(Option.isSome(admitted));
+          if (Option.isSome(admitted)) {
+            assert.equal(
+              admitted.value.state.restoreFiles,
+              commandType === "thread.conversation.revert" ? false : undefined,
+            );
+          }
+          const pending = events.find((event) => event.type === "thread.rollback-status-updated");
+          if (commandType === "thread.conversation.revert") {
+            assert.include(pending?.payload.detail ?? "", "keeping current files");
+            assert.notInclude(pending?.payload.detail ?? "", "and workspace");
+          }
+          assert.notInclude(JSON.stringify(events), privateCanary);
+          assert.notInclude(JSON.stringify(snapshot), privateCanary);
+        }),
+    );
+  });
+}

@@ -1,8 +1,10 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
+  CheckpointRef,
   CommandId,
   EnvironmentId,
+  EventId,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -12,6 +14,9 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { Atom, AsyncResult } from "effect/unstable/reactivity";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { environmentThreadDetails } from "../state/threads";
 
 import {
   selectThreadPreviewMiniPlayer,
@@ -83,6 +88,8 @@ import {
   shouldWriteThreadErrorToCurrentServerThread,
   toolGroupConsumesUpwardNavigation,
   getAntigravitySendBlockReason,
+  waitForRevertedMessage,
+  prepareRevertedMessageAttachments,
 } from "./ChatView.logic";
 
 describe("agent browser close confirmation", () => {
@@ -2309,5 +2316,201 @@ describe("threadShellHasStarted", () => {
       threadShellHasStarted({ latestTurn: null, latestUserMessageAt: null, session: null }),
     ).toBe(false);
     expect(threadShellHasStarted(null)).toBe(false);
+  });
+});
+
+describe("rewind draft recovery", () => {
+  const message = {
+    id: MessageId.make("rewound-message"),
+    role: "user" as const,
+    text: "edit this question",
+    turnId: TurnId.make("rewound-turn"),
+    createdAt: now,
+    updatedAt: now,
+    streaming: false,
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("waits past command acceptance until the exact message disappears", async () => {
+    const atom = Atom.make<Thread | null>(makeThread({ messages: [message] }));
+    vi.spyOn(environmentThreadDetails, "detailAtom").mockReturnValue(atom);
+    let accepted = false;
+    const result = waitForRevertedMessage({ environmentId, threadId }, message.id, 0, async () => {
+      accepted = true;
+    });
+    let completed = false;
+    void result.then(() => {
+      completed = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(accepted).toBe(true);
+    expect(completed).toBe(false);
+    appAtomRegistry.set(
+      atom,
+      makeThread({
+        messages: [],
+        latestTurn: completedTurn,
+        checkpoints: [
+          {
+            turnId: completedTurn.turnId,
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("refs/t3/checkpoints/1"),
+            status: "ready",
+            files: [],
+            assistantMessageId: null,
+            completedAt: now,
+          },
+        ],
+      }),
+    );
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    appAtomRegistry.set(
+      atom,
+      makeThread({
+        messages: [],
+        rollbackStatus: {
+          state: "completed",
+          updatedAt: now,
+          sourceRevision: 0,
+          targetTurnCount: 0,
+        },
+      }),
+    );
+    await result;
+  });
+
+  it.each(["failed", "manual-recovery"] as const)(
+    "rejects a matching durable %s receipt without restoring a draft",
+    async (state) => {
+      const atom = Atom.make<Thread | null>(makeThread({ messages: [message] }));
+      vi.spyOn(environmentThreadDetails, "detailAtom").mockReturnValue(atom);
+      const result = waitForRevertedMessage(
+        { environmentId, threadId },
+        message.id,
+        0,
+        async () => {
+          appAtomRegistry.set(
+            atom,
+            makeThread({
+              messages: [message],
+              rollbackStatus: {
+                state,
+                updatedAt: now,
+                sourceRevision: 0,
+                targetTurnCount: 0,
+                detail: "Native history unavailable",
+              },
+            }),
+          );
+        },
+      );
+      await expect(result).rejects.toThrow("Native history unavailable");
+    },
+  );
+
+  it("ignores another client's failure and waits for its own completed target", async () => {
+    const atom = Atom.make<Thread | null>(makeThread({ messages: [message] }));
+    vi.spyOn(environmentThreadDetails, "detailAtom").mockReturnValue(atom);
+    const result = waitForRevertedMessage({ environmentId, threadId }, message.id, 0, async () => {
+      appAtomRegistry.set(
+        atom,
+        makeThread({
+          messages: [message],
+          activities: [
+            {
+              id: EventId.make("other-rewind-failed"),
+              kind: "checkpoint.revert.failed",
+              tone: "error",
+              summary: "Another rollback target already owns this thread.",
+              payload: { turnCount: 2 },
+              turnId: null,
+              createdAt: now,
+            },
+          ],
+          rollbackStatus: {
+            state: "failed",
+            updatedAt: now,
+            sourceRevision: 3,
+            targetTurnCount: 2,
+          },
+        }),
+      );
+    });
+    let completed = false;
+    void result.then(() => {
+      completed = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    appAtomRegistry.set(
+      atom,
+      makeThread({
+        messages: [],
+        rollbackStatus: {
+          state: "completed",
+          updatedAt: now,
+          sourceRevision: 0,
+          targetTurnCount: 0,
+        },
+      }),
+    );
+    await result;
+  });
+
+  it("bounds waits when a provider never finishes", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+    const atom = Atom.make<Thread | null>(makeThread({ messages: [message] }));
+    vi.spyOn(environmentThreadDetails, "detailAtom").mockReturnValue(atom);
+    const result = waitForRevertedMessage(
+      { environmentId, threadId },
+      message.id,
+      0,
+      async () => {},
+      20,
+    );
+    const timeoutIndex = setTimeoutSpy.mock.calls.findIndex(([, delay]) => delay === 20);
+    const rewindTimeout = setTimeoutSpy.mock.results[timeoutIndex]?.value;
+    expect(rewindTimeout).toBeDefined();
+    const rejection = expect(result).rejects.toThrow("Timed out waiting");
+    await vi.advanceTimersByTimeAsync(20);
+    await rejection;
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(rewindTimeout);
+  });
+
+  it("copies attachment bytes before rewind into a fresh file", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("original bytes"));
+    vi.stubGlobal("fetch", fetchMock);
+    const files = await prepareRevertedMessageAttachments({
+      message: {
+        ...message,
+        attachments: [
+          {
+            type: "file",
+            id: "old-attachment",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            sizeBytes: 14,
+          },
+        ],
+      },
+      environmentId,
+      httpBaseUrl: "https://server.test",
+      createAssetUrl: async () =>
+        AsyncResult.success({ relativeUrl: "/asset/signed", expiresAt: Date.now() + 60_000 }),
+    });
+    expect(files[0]).toBeInstanceOf(File);
+    expect(files[0]?.name).toBe("notes.txt");
+    expect(await files[0]?.text()).toBe("original bytes");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://server.test/asset/signed");
   });
 });
