@@ -2633,7 +2633,10 @@ export function makePrimeAgentDaemonAdapter(
                         authoritativeSnapshot: true,
                       });
                     }
-                  } else {
+                  } else if (reconnectGeneration !== undefined) {
+                    // Only a runtime-fenced reconnect snapshot can own continuity
+                    // recovery. Ordered control-plane snapshots may arrive between
+                    // installing an active turn and submitting its native prompt.
                     const transcriptPlan = reconcileTranscriptTail({
                       observed: context.nativeTranscript,
                       observedCount: context.nativeTranscriptMessageCount,
@@ -2791,7 +2794,6 @@ export function makePrimeAgentDaemonAdapter(
                       return;
                     }
                     if (
-                      reconnectGeneration === undefined ||
                       !context.runtime.resolveReconnectSnapshot(reconnectGeneration, true, false)
                     ) {
                       reconnectRecoveryFailed = true;

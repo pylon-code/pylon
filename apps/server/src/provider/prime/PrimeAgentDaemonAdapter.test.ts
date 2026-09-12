@@ -1787,6 +1787,75 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("does not treat an ordinary session snapshot as reconnect recovery", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const submitResponse = yield* Deferred.make<PrimeDaemonPromptLifecycleSnapshot>();
+        const delegate = fakeRuntimeFactory(captures);
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: (input) =>
+            delegate(input).pipe(
+              Effect.map(
+                (runtime) =>
+                  ({
+                    ...runtime,
+                    submitCorrelatedPrompt: (prompt) =>
+                      Effect.gen(function* () {
+                        yield* Queue.offer(
+                          captures.correlatedPromptObserved!,
+                          prompt.correlationId,
+                        );
+                        return yield* Deferred.await(submitResponse);
+                      }),
+                  }) satisfies PrimeAgentDaemonSessionRuntime,
+              ),
+            ),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "survive ordinary resync" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+
+        // Prime can send a control-plane snapshot after startup or a settings
+        // change. Without a reconnect generation it is not continuity proof
+        // for the newly admitted prompt and must not fail that prompt.
+        yield* offer(captures, initialSnapshot());
+        yield* Effect.yieldNow;
+        const owned = lifecycleSnapshot(correlationId, "owned", 1);
+        yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: owned });
+        yield* Deferred.succeed(submitResponse, owned);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+        });
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message: assistantMessage("ordinary snapshot survived"),
+          attribution: { scope: "prompt", correlationId },
+        });
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "completed", 3, { usage }),
+        });
+
+        const result = yield* Fiber.join(turnFiber);
+        expect(result.turnId).toBe(started.turnId);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(turnEvents.filter((event) => event.type === "runtime.error")).toEqual([]);
+        expect(turnEvents.findLast((event) => event.type === "turn.completed")).toMatchObject({
+          payload: { state: "completed", totalCostUsd: usage.totalCostUsd },
+        });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("keeps background snapshot children unscoped from a queued correlation", () =>
     Effect.scoped(
       Effect.gen(function* () {
