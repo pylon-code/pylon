@@ -202,15 +202,17 @@ or an advanced transcript boundary excludes this case. The submission signature 
 memory and is absent from adopted restart turns. Unknown replay, changed transcript content, missing ownership
 proof, and additional unattributed output remain rejected.
 
-A complete snapshot may also supply durable tool results before their message-completion events.
-Pylon accepts only a delta consisting entirely of unique results whose IDs and names match the current
-correlated prompt's already observed tool calls. Current connection/proof epoch, delivered lifecycle
-continuity, no queued input, and exact observed transcript overlap remain required. Already recorded
-results, unrelated calls, changed names, duplicate IDs, and mixed assistant deltas fail closed.
-Call ownership comes from attributed live prompt events, never from an unchanged snapshot prefix.
-The runtime suppresses a later exact tool-result completion already published in that attachment's
-bounded correlated snapshot, keeping transcript progress from counting it twice. The snapshot cache
-is cleared for a new recovery and does not cover provisional worker snapshots or changed results.
+A complete snapshot may also supply durable tool results or completed tool cycles before their
+message-completion events. Each result must uniquely match an attributed call already observed for the
+current prompt, or a new assistant tool call preceding it in the same delta. Every new call needs a
+matching result within that delta. Current connection/proof epoch, delivered lifecycle continuity, no
+queued input, and exact observed transcript overlap remain required. Already recorded results, reused
+call IDs, changed names, duplicate IDs, unmatched calls, and extra user or terminal messages fail closed.
+An unchanged snapshot prefix alone does not establish an unobserved call's ownership.
+The runtime suppresses later exact assistant and tool-result completions already published in that
+attachment's bounded correlated snapshot, keeping output and transcript progress from duplicating.
+The snapshot cache is cleared for a new recovery and does not cover provisional worker snapshots or
+changed messages.
 
 Prime 0.9.4 can insert one hidden `harness_digest` before the first submitted user message. Pylon retains
 its timestamp and SHA-256 content/details identity in the native transcript, preserving the native absolute

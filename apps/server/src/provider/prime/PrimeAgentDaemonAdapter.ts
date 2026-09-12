@@ -2682,10 +2682,12 @@ export function makePrimeAgentDaemonAdapter(
                       lifecycle.deliveryCrossed &&
                       (primeAgentPromptLifecycleIsSame(currentLifecycle, lifecycle) ||
                         primeAgentPromptLifecycleCanAdvance(currentLifecycle, lifecycle));
-                    // A native tool can publish its durable result in a snapshot before
-                    // message_end. Admit only results for this prompt's observed calls.
+                    // Completed tool cycles can reach the durable snapshot before their
+                    // message events. Require ordered, uniquely matched calls and results
+                    // under the same delivered prompt, with no uncompleted new calls.
                     const recoveredToolIds = new Set<string>();
-                    const snapshotRecoversCurrentToolResults =
+                    const recoveredToolCalls = new Map<string, string>();
+                    const snapshotRecoversCurrentToolCycles =
                       activeTurn !== undefined &&
                       event.connectionGeneration !== undefined &&
                       event.correlatedProofEpoch !== undefined &&
@@ -2698,18 +2700,40 @@ export function makePrimeAgentDaemonAdapter(
                         primeAgentPromptLifecycleCanAdvance(currentLifecycle, lifecycle)) &&
                       missingMessages.length > 0 &&
                       missingMessages.every((message) => {
+                        if (message.role === "assistant") {
+                          if (message.stopReason !== "toolUse" || message.toolCalls.length === 0)
+                            return false;
+                          for (const call of message.toolCalls) {
+                            if (
+                              activeTurn.durableToolCallNames.has(call.id) ||
+                              recoveredToolCalls.has(call.id) ||
+                              context.nativeTranscript.some(
+                                (observed) =>
+                                  (observed.role === "assistant" &&
+                                    observed.toolCalls.some((prior) => prior.id === call.id)) ||
+                                  (observed.role === "toolResult" &&
+                                    observed.toolCallId === call.id),
+                              )
+                            )
+                              return false;
+                            recoveredToolCalls.set(call.id, call.name);
+                          }
+                          return true;
+                        }
                         if (
                           message.role !== "toolResult" ||
-                          activeTurn.durableToolCallNames.get(message.toolCallId) !==
-                            message.toolName ||
-                          !activeTurn.completedRunMessages.some(
-                            (observed) =>
-                              observed.role === "assistant" &&
-                              observed.toolCalls.some(
-                                (call) =>
-                                  call.id === message.toolCallId && call.name === message.toolName,
-                              ),
-                          ) ||
+                          (recoveredToolCalls.get(message.toolCallId) !== message.toolName &&
+                            (activeTurn.durableToolCallNames.get(message.toolCallId) !==
+                              message.toolName ||
+                              !activeTurn.completedRunMessages.some(
+                                (observed) =>
+                                  observed.role === "assistant" &&
+                                  observed.toolCalls.some(
+                                    (call) =>
+                                      call.id === message.toolCallId &&
+                                      call.name === message.toolName,
+                                  ),
+                              ))) ||
                           recoveredToolIds.has(message.toolCallId) ||
                           context.nativeTranscript.some(
                             (observed) =>
@@ -2720,11 +2744,12 @@ export function makePrimeAgentDaemonAdapter(
                           return false;
                         recoveredToolIds.add(message.toolCallId);
                         return true;
-                      });
+                      }) &&
+                      [...recoveredToolCalls.keys()].every((id) => recoveredToolIds.has(id));
                     const snapshotIsExactOrCurrentTerminal =
                       missingMessages.length === 0 ||
                       snapshotRecoversSubmittedUser ||
-                      snapshotRecoversCurrentToolResults ||
+                      snapshotRecoversCurrentToolCycles ||
                       (missingMessages.length === 1 &&
                         missingMessages[0]?.role === "assistant" &&
                         context.nativeTranscript.at(-1)?.role === "user");

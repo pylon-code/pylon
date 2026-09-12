@@ -1688,7 +1688,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     let rlmEventContinuityValid = true;
     let rlmTurnUsageBaseline: PrimeDaemonUsage | undefined;
     let observedCompletedMessageCount = 0;
-    let recoveredToolResults:
+    let recoveredMessageCompletions:
       | {
           readonly generation: number;
           readonly proofEpoch: number;
@@ -1958,7 +1958,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     };
 
     const beginReconnectResolution = () => {
-      recoveredToolResults = undefined;
+      recoveredMessageCompletions = undefined;
       if (reconnectResolution !== undefined && !reconnectResolution.settled) {
         reconnectResolution.settled = true;
         reconnectResolution.resolve(false);
@@ -3485,15 +3485,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           correlatedPromptLifecycle: correlatedPromptLifecycleAvailable,
         }),
       );
-      // A published native snapshot can precede a later message_end for the
-      // same tool result. Do not advance either runtime or adapter progress twice.
+      // A published native snapshot can precede message_end for either side of
+      // a completed tool cycle. Do not project or advance transcript progress twice.
       if (
         decoded._tag === "MessageCompleted" &&
-        decoded.message.role === "toolResult" &&
+        (decoded.message.role === "toolResult" || decoded.message.role === "assistant") &&
         activeWorkerRecovery === undefined &&
-        recoveredToolResults?.generation === connectionGeneration &&
-        recoveredToolResults.proofEpoch === correlatedProofEpoch &&
-        recoveredToolResults.fingerprints.has(transcriptFingerprint(decoded.message))
+        recoveredMessageCompletions?.generation === connectionGeneration &&
+        recoveredMessageCompletions.proofEpoch === correlatedProofEpoch &&
+        recoveredMessageCompletions.fingerprints.has(transcriptFingerprint(decoded.message))
       )
         return Effect.void;
       if (
@@ -3750,14 +3750,17 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 inputActivityRevisionAtOffer,
                 false,
               );
-              recoveredToolResults =
+              recoveredMessageCompletions =
                 correlatedPromptLifecycleAvailable && !event.replacementSnapshot
                   ? {
                       generation: eventConnectionGeneration,
                       proofEpoch: correlatedProofEpoch,
                       fingerprints: new Set(
                         event.messages
-                          .filter((message) => message.role === "toolResult")
+                          .filter(
+                            (message) =>
+                              message.role === "toolResult" || message.role === "assistant",
+                          )
                           .map(transcriptFingerprint),
                       ),
                     }
