@@ -294,4 +294,25 @@ layer("RollbackSagaRepository", (it) => {
         );
       }),
   );
+  it.effect("round-trips explicit file choices and preserves older records with no choice", () =>
+    Effect.gen(function* () {
+      const repository = yield* RollbackSagaRepository;
+      for (const [index, restoreFiles] of [undefined, false, true].entries()) {
+        const operationId = `operation-mode-${index}`;
+        const state = {
+          ...makeState(
+            operationId,
+            ThreadId.make(`thread-mode-${index}`),
+            `workspace-mode-${index}`,
+          ),
+          ...(restoreFiles === undefined ? {} : { restoreFiles }),
+        };
+        yield* repository.admit(state);
+        const persisted = yield* repository.get(operationId);
+        assert.isTrue(Option.isSome(persisted));
+        if (Option.isSome(persisted))
+          assert.equal(persisted.value.state.restoreFiles, restoreFiles);
+      }
+    }),
+  );
 });

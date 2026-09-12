@@ -1,10 +1,13 @@
 import {
   CheckpointRef,
+  CommandId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   RuntimeSessionId,
   ThreadId,
   TurnId,
+  type OrchestrationCompactionQueue,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -19,7 +22,7 @@ import {
 } from "../persistence/Services/RollbackSagas.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { make as makeRollbackAdmission } from "./RollbackAdmission.ts";
-import { RollbackWorkspace } from "./RollbackWorkspace.ts";
+import { RollbackWorkspace, RollbackWorkspaceError } from "./RollbackWorkspace.ts";
 
 const threadId = ThreadId.make("thread-admission");
 const projectId = ProjectId.make("project-admission");
@@ -37,9 +40,13 @@ type HarnessOptions = {
   readonly activeLease?: boolean;
   readonly missingAbsoluteMethod?: boolean;
   readonly checkpoints?: ReadonlyArray<number>;
+  readonly compactionQueue?: typeof OrchestrationCompactionQueue.Type;
 };
 
-const makeReadModel = (checkpoints: ReadonlyArray<number>): OrchestrationReadModel =>
+const makeReadModel = (
+  checkpoints: ReadonlyArray<number>,
+  compactionQueue?: typeof OrchestrationCompactionQueue.Type,
+): OrchestrationReadModel =>
   ({
     snapshotSequence: 10,
     projects: [
@@ -104,6 +111,7 @@ const makeReadModel = (checkpoints: ReadonlyArray<number>): OrchestrationReadMod
         session: {
           threadId,
           status: "idle",
+          ...(compactionQueue === undefined ? {} : { compactionQueue }),
           providerName: "fake",
           providerInstanceId,
           activeTurnId: null,
@@ -180,11 +188,16 @@ const makeHarness = (options: HarnessOptions = {}) => {
 
   const workspace = {
     resolveIdentity: (cwd: string) =>
-      Effect.succeed({
-        cwd,
-        workspaceKey: cwd === "/workspace/exact" ? "exact-key" : "other-key",
-        gitCommonDir: "/git/common",
-      }),
+      cwd === "/workspace/unavailable"
+        ? Effect.fail(new RollbackWorkspaceError({ code: "identity" }))
+        : Effect.succeed({
+            cwd,
+            workspaceKey:
+              cwd === "/workspace/exact" || cwd === "/workspace/exact-alias"
+                ? "exact-key"
+                : "other-key",
+            gitCommonDir: "/git/common",
+          }),
     resolveCheckpoint: (input: { readonly checkpointRef: CheckpointRef }) =>
       Effect.succeed(
         input.checkpointRef === turnTwoRef
@@ -201,19 +214,20 @@ const makeHarness = (options: HarnessOptions = {}) => {
     Effect.provideService(RollbackWorkspace, workspace as never),
     Effect.provide(NodeServices.layer),
   );
-  return { admission, readModel: makeReadModel(checkpoints) };
+  return { admission, readModel: makeReadModel(checkpoints, options.compactionQueue) };
 };
 
 const prepare = Effect.fn(function* (
   options: HarnessOptions,
   targetRevision: number,
   expectedSourceRevision: number | "omit" = 2,
+  keepFiles = false,
 ) {
   const harness = makeHarness(options);
   const admission = yield* harness.admission;
   return yield* admission.prepare({
     command: {
-      type: "thread.checkpoint.revert",
+      type: keepFiles ? "thread.conversation.revert" : "thread.checkpoint.revert",
       commandId: "command-admission" as never,
       threadId,
       turnCount: targetRevision,
@@ -257,6 +271,115 @@ it.effect("requires the full absolute adapter contract and an empty provider que
   }),
 );
 
+for (const keepFiles of [false, true]) {
+  it.effect(
+    `rejects compaction ownership even with no queued prompts (keepFiles=${keepFiles})`,
+    () =>
+      Effect.gen(function* () {
+        for (const queue of [
+          { phase: "running" },
+          { phase: "draining" },
+          {
+            phase: "draining",
+            inFlightRequestId: CommandId.make("in-flight"),
+            inFlightMessageId: MessageId.make("in-flight-message"),
+          },
+        ] as const) {
+          const result = yield* prepare(
+            {
+              compactionQueue: {
+                requestId: CommandId.make("compact"),
+                queued: [],
+                ...queue,
+              },
+            },
+            1,
+            2,
+            keepFiles,
+          ).pipe(Effect.result);
+          assert.equal(result._tag, "Failure");
+          if (result._tag === "Failure") assert.include(result.failure.detail, "exactly idle");
+        }
+        // Once the reactor removes compaction ownership, idle admission works again.
+        assert.isTrue(Option.isSome(yield* prepare({}, 1, 2, keepFiles)));
+      }),
+  );
+  it.effect(
+    `proves queued sibling separation without retaining deleted owners (keepFiles=${keepFiles})`,
+    () =>
+      Effect.gen(function* () {
+        for (const scenario of [
+          { state: "live", worktreePath: null, admitted: false },
+          { state: "live", worktreePath: "/workspace/exact-alias", admitted: false },
+          { state: "archived", worktreePath: null, admitted: false },
+          { state: "deleted", worktreePath: "/workspace/unavailable", admitted: true },
+          { state: "missing-project", worktreePath: null, admitted: false },
+          { state: "deleted-project", worktreePath: null, admitted: false },
+          { state: "live", worktreePath: "/workspace/unavailable", admitted: false },
+          { state: "live", worktreePath: "/workspace/other-worktree", admitted: true },
+        ] as const) {
+          const harness = makeHarness();
+          const baseThread = harness.readModel.threads[0]!;
+          const baseProject = harness.readModel.projects[0]!;
+          const siblingProjectId =
+            scenario.state === "missing-project" || scenario.state === "deleted-project"
+              ? ProjectId.make("sibling-project")
+              : projectId;
+          const result = yield* (yield* harness.admission)
+            .prepare({
+              command: {
+                type: keepFiles ? "thread.conversation.revert" : "thread.checkpoint.revert",
+                commandId: CommandId.make("sibling-admission"),
+                threadId,
+                turnCount: 1,
+                expectedSourceRevision: 2,
+                createdAt: now,
+              },
+              requestEventId: "sibling-admission-event",
+              readModel: {
+                ...harness.readModel,
+                projects: [
+                  ...harness.readModel.projects,
+                  ...(scenario.state === "deleted-project"
+                    ? [{ ...baseProject, id: siblingProjectId, deletedAt: now }]
+                    : []),
+                ],
+                threads: [
+                  baseThread,
+                  {
+                    ...baseThread,
+                    id: ThreadId.make("compacting-sibling"),
+                    projectId: siblingProjectId,
+                    worktreePath: scenario.worktreePath,
+                    deletedAt: scenario.state === "deleted" ? now : null,
+                    archivedAt: scenario.state === "archived" ? now : null,
+                    session: {
+                      ...baseThread.session!,
+                      threadId: ThreadId.make("compacting-sibling"),
+                      compactionQueue: {
+                        requestId: CommandId.make("compact"),
+                        phase: "draining",
+                        queued: [],
+                      },
+                    },
+                  },
+                ],
+              },
+            })
+            .pipe(Effect.result);
+          assert.equal(
+            result._tag,
+            scenario.admitted ? "Success" : "Failure",
+            `${scenario.state}: ${scenario.worktreePath}`,
+          );
+          if (result._tag === "Failure")
+            assert.include(result.failure.detail, "pending compaction");
+          else assert.isTrue(Option.isSome(result.success));
+        }
+      }),
+  );
+}
+
 it.effect("rejects stale clients, partial checkpoint history, and mismatched workspaces", () =>
   Effect.gen(function* () {
     assert.equal((yield* prepare({}, 1, "omit").pipe(Effect.result))._tag, "Failure");
@@ -274,4 +397,37 @@ it.effect("rejects a second thread or client when the canonical workspace lease 
     const result = yield* prepare({ activeLease: true }, 1).pipe(Effect.result);
     assert.equal(result._tag, "Failure");
   }),
+);
+
+it.effect(
+  "admits keep-files rewinds with the same immutable target, source revision, and lease",
+  () =>
+    Effect.gen(function* () {
+      const admitted = yield* prepare({}, 1, 2, true);
+      assert.isTrue(Option.isSome(admitted));
+      if (Option.isNone(admitted)) return;
+      assert.isFalse(admitted.value.restoreFiles);
+      assert.equal(admitted.value.sourceRevision, 2);
+      assert.equal(admitted.value.targetCheckpointOid, "1".repeat(40));
+      assert.equal(admitted.value.workspaceKey, "exact-key");
+      const full = yield* prepare({}, 1);
+      assert.isTrue(Option.isSome(full));
+      if (Option.isSome(full)) assert.isTrue(full.value.restoreFiles);
+      for (const options of [
+        { queueCount: 1 },
+        { workspaceMismatch: true },
+        { checkpoints: [2] },
+        { missingAbsoluteMethod: true },
+        { activeLease: true },
+      ]) {
+        const result = yield* prepare(options, 1, 2, true).pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure")
+          assert.equal(result.failure.commandType, "thread.conversation.revert");
+      }
+      assert.equal((yield* prepare({}, 1, "omit", true).pipe(Effect.result))._tag, "Failure");
+      assert.equal((yield* prepare({}, 1, 1, true).pipe(Effect.result))._tag, "Failure");
+      assert.isTrue(Option.isNone(yield* prepare({ mode: "relative" }, 1, 2, true)));
+      assert.isTrue(Option.isNone(yield* prepare({ mode: "unsupported" }, 1, 2, true)));
+    }),
 );

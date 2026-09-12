@@ -45,6 +45,8 @@ export const RollbackSagaState = Schema.Struct({
   workspaceCwd: Schema.String,
   sourceRevision: NonNegativeInt,
   targetRevision: NonNegativeInt,
+  /** Missing in older persisted operations, which always restore the workspace. */
+  restoreFiles: Schema.optional(Schema.Boolean),
   sourceTurnId: Schema.NullOr(TurnId),
   targetTurnId: Schema.NullOr(TurnId),
   sourceCheckpointRef: CheckpointRef,

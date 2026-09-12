@@ -44,7 +44,7 @@ export class RollbackSagaRunner extends Context.Service<
 
 const MAX_PROVIDER_TARGET_ATTEMPTS = 3;
 const privatePreimage = (state: RollbackSagaState) =>
-  state.preimage as RollbackWorkspacePreimage | null;
+  state.restoreFiles === false ? null : (state.preimage as RollbackWorkspacePreimage | null);
 
 export const make = Effect.gen(function* () {
   const repository = yield* RollbackSagaRepository;
@@ -82,17 +82,26 @@ export const make = Effect.gen(function* () {
           : state.compensation === "manual"
             ? (["resume-compensation"] as const)
             : [];
+    const keepFiles = state.restoreFiles === false;
     const detail =
       status === "pending"
-        ? "Rewriting the provider conversation, Pylon history, and workspace to the selected message."
+        ? keepFiles
+          ? "Rewriting the provider conversation and Pylon history to the selected message while keeping current files."
+          : "Rewriting the provider conversation, Pylon history, and workspace to the selected message."
         : status === "recovering"
-          ? "Verifying the provider conversation, Pylon history, and workspace before releasing the thread."
+          ? keepFiles
+            ? "Verifying the provider conversation and Pylon history before releasing the thread. Current files are kept."
+            : "Verifying the provider conversation, Pylon history, and workspace before releasing the thread."
           : status === "manual-recovery"
             ? `The thread remains fenced because automatic rollback recovery could not be proved (${state.lastErrorCode ?? "verification unavailable"}).`
             : status === "completed"
-              ? "Rollback completed and all rewritten state was verified."
+              ? keepFiles
+                ? "Conversation rewind completed and verified. Current files were kept."
+                : "Rollback completed and all rewritten state was verified."
               : status === "failed"
-                ? "Rollback did not complete. Pylon restored and verified the original provider conversation and workspace; no thread content was removed."
+                ? keepFiles
+                  ? "Conversation rewind did not complete. Pylon restored and verified the original provider conversation; current files were kept and no thread content was removed."
+                  : "Rollback did not complete. Pylon restored and verified the original provider conversation and workspace; no thread content was removed."
                 : undefined;
     yield* engine.dispatch({
       type: "thread.rollback.status.set",
@@ -170,40 +179,43 @@ export const make = Effect.gen(function* () {
     let workspaceProved = privatePreimage(record.state) === null;
     let providerProved = record.state.sourceAnchorDigest === null;
 
-    const workspaceStarted = yield* update(record, {
-      phase: "compensation-workspace-started",
-      compensation: "workspace",
-      lastErrorCode: code,
-    });
-    if (Option.isNone(workspaceStarted)) return;
-    record = workspaceStarted.value;
-    const preimage = privatePreimage(record.state);
-    if (preimage !== null) {
-      workspaceProved = yield* workspace
-        .restorePreimage({
-          cwd: record.state.workspaceCwd,
-          preimage,
-        })
-        .pipe(
-          Effect.tap(() => after("side-effect:workspace-compensated", record.operationId)),
-          Effect.match({
-            onFailure: () => false,
-            onSuccess: (receipt) => receipt.digest === preimage.digest,
-          }),
-        );
-    }
+    if (record.state.restoreFiles !== false) {
+      const workspaceStarted = yield* update(record, {
+        phase: "compensation-workspace-started",
+        compensation: "workspace",
+        lastErrorCode: code,
+      });
+      if (Option.isNone(workspaceStarted)) return;
+      record = workspaceStarted.value;
+      const preimage = privatePreimage(record.state);
+      if (preimage !== null) {
+        workspaceProved = yield* workspace
+          .restorePreimage({
+            cwd: record.state.workspaceCwd,
+            preimage,
+          })
+          .pipe(
+            Effect.tap(() => after("side-effect:workspace-compensated", record.operationId)),
+            Effect.match({
+              onFailure: () => false,
+              onSuccess: (receipt) => receipt.digest === preimage.digest,
+            }),
+          );
+      }
 
-    const workspaceComplete = yield* update(record, {
-      phase: "compensation-workspace-complete",
-      compensation: "provider",
-      lastErrorCode: workspaceProved ? code : "workspace-compensation-unproved",
-    });
-    if (Option.isNone(workspaceComplete)) return;
-    record = workspaceComplete.value;
+      const workspaceComplete = yield* update(record, {
+        phase: "compensation-workspace-complete",
+        compensation: "provider",
+        lastErrorCode: workspaceProved ? code : "workspace-compensation-unproved",
+      });
+      if (Option.isNone(workspaceComplete)) return;
+      record = workspaceComplete.value;
+    }
 
     const providerStarted = yield* update(record, {
       phase: "compensation-provider-started",
       compensation: "provider",
+      lastErrorCode: workspaceProved ? code : "workspace-compensation-unproved",
     });
     if (Option.isNone(providerStarted)) return;
     record = providerStarted.value;
@@ -301,12 +313,21 @@ export const make = Effect.gen(function* () {
           continue;
         }
         case "source-anchor-captured": {
-          const next = yield* update(record, { phase: "preimage-capture-started" });
+          const next = yield* update(record, {
+            phase:
+              state.restoreFiles === false ? "provider-apply-started" : "preimage-capture-started",
+          });
           if (Option.isNone(next)) return;
           record = next.value;
           continue;
         }
         case "preimage-capture-started": {
+          if (state.restoreFiles === false) {
+            const next = yield* update(record, { phase: "provider-apply-started" });
+            if (Option.isNone(next)) return;
+            record = next.value;
+            continue;
+          }
           const captured = yield* workspace
             .capturePreimage({
               operationId: state.operationId,
@@ -332,6 +353,12 @@ export const make = Effect.gen(function* () {
           continue;
         }
         case "workspace-apply-started": {
+          if (state.restoreFiles === false) {
+            const next = yield* update(record, { phase: "provider-apply-started" });
+            if (Option.isNone(next)) return;
+            record = next.value;
+            continue;
+          }
           const applied = yield* workspace
             .applyCheckpoint({
               cwd: state.workspaceCwd,
@@ -416,12 +443,19 @@ export const make = Effect.gen(function* () {
           return yield* manual(record, "provider-target-outcome-unknown");
         }
         case "provider-applied": {
-          const workspaceReceipt = yield* workspace
-            .inspectCheckpoint({
-              cwd: state.workspaceCwd,
-              checkpointOid: state.targetCheckpointOid,
-            })
-            .pipe(Effect.result);
+          const workspaceProved =
+            state.restoreFiles === false ||
+            (yield* workspace
+              .inspectCheckpoint({
+                cwd: state.workspaceCwd,
+                checkpointOid: state.targetCheckpointOid,
+              })
+              .pipe(
+                Effect.match({
+                  onFailure: () => false,
+                  onSuccess: (receipt) => receipt.digest === state.workspaceReceiptDigest,
+                }),
+              ));
           let providerReceipt = yield* inspectConversationAnchor!(state.threadId).pipe(
             Effect.result,
           );
@@ -444,11 +478,7 @@ export const make = Effect.gen(function* () {
           ) {
             return yield* manual(record, "provider-anchor-neither-source-nor-target");
           }
-          if (
-            workspaceReceipt._tag === "Failure" ||
-            workspaceReceipt.success.digest !== state.workspaceReceiptDigest ||
-            providerReceipt._tag === "Failure"
-          ) {
+          if (!workspaceProved || providerReceipt._tag === "Failure") {
             return yield* manual(record, "precommit-postcondition-lost");
           }
           if (providerReceipt.success.digest !== state.desiredAnchorDigest) {

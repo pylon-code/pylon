@@ -8,12 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  buildRollbackConfirmation,
-  deriveRollbackTargets,
-  formatRollbackTargetLabel,
-  isRollbackActive,
-} from "./rollback.ts";
+import { deriveRollbackTargets, formatRollbackTargetLabel, isRollbackActive } from "./rollback.ts";
 
 const createdAt = "2026-04-01T00:00:00.000Z";
 const message = (
@@ -101,16 +96,6 @@ describe("exact rollback client model", () => {
         checkpoints: [legacyTarget, checkpoint(1, "assistant-1", "available")],
       }).size,
     ).toBe(0);
-  });
-
-  it("uses exact destructive confirmation copy on every client", () => {
-    expect(buildRollbackConfirmation("your message “Keep this request”")).toBe(
-      [
-        "Revert to your message “Keep this request”?",
-        "This rewrites the provider conversation, Pylon history, the worktree, the Git index, staged and unstaged changes, and untracked files to that point.",
-        "Newer history is retained until the rollback commits.",
-      ].join("\n\n"),
-    );
   });
 
   it("keeps every nonterminal safety fence active", () => {

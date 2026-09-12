@@ -43,7 +43,10 @@ function hasOpenInput(thread: OrchestrationReadModel["threads"][number]): boolea
 
 export interface RollbackAdmissionShape {
   readonly prepare: (input: {
-    readonly command: Extract<OrchestrationCommand, { readonly type: "thread.checkpoint.revert" }>;
+    readonly command: Extract<
+      OrchestrationCommand,
+      { readonly type: "thread.checkpoint.revert" | "thread.conversation.revert" }
+    >;
     readonly readModel: OrchestrationReadModel;
     readonly requestEventId: string;
   }) => Effect.Effect<Option.Option<RollbackSagaState>, OrchestrationCommandInvariantError>;
@@ -51,12 +54,6 @@ export interface RollbackAdmissionShape {
 export class RollbackAdmission extends Context.Service<RollbackAdmission, RollbackAdmissionShape>()(
   "t3/rollback/RollbackAdmission",
 ) {}
-
-const invariant = (detail: string) =>
-  new OrchestrationCommandInvariantError({
-    commandType: "thread.checkpoint.revert",
-    detail,
-  });
 
 export const make = Effect.gen(function* () {
   const provider = yield* ProviderService;
@@ -66,6 +63,8 @@ export const make = Effect.gen(function* () {
 
   const prepare: RollbackAdmissionShape["prepare"] = Effect.fn("RollbackAdmission.prepare")(
     function* ({ command, readModel, requestEventId }) {
+      const invariant = (detail: string) =>
+        new OrchestrationCommandInvariantError({ commandType: command.type, detail });
       const thread = readModel.threads.find((candidate) => candidate.id === command.threadId);
       if (!thread) return yield* invariant("Thread does not exist.");
       const capabilities = yield* provider
@@ -97,6 +96,7 @@ export const make = Effect.gen(function* () {
         thread.session.pendingTurnRequestId !== undefined ||
         thread.session.activeTurnRequestId !== undefined ||
         thread.session.failedTurnRequestId !== undefined ||
+        thread.session.compactionQueue !== undefined ||
         thread.latestTurn?.state === "running" ||
         hasOpenInput(thread)
       ) {
@@ -145,6 +145,33 @@ export const make = Effect.gen(function* () {
         );
       if (sessionIdentity.workspaceKey !== configuredIdentity.workspaceKey) {
         return yield* invariant("The provider session is not bound to the exact thread workspace.");
+      }
+
+      // A workspace lease would also fence a sibling's next FIFO delivery. Keep
+      // accepted prompts intact by waiting for that ownership to drain first.
+      for (const sibling of readModel.threads) {
+        if (
+          sibling.id === thread.id ||
+          sibling.deletedAt !== null ||
+          sibling.session?.compactionQueue === undefined
+        )
+          continue;
+        const siblingProject = readModel.projects.find(
+          (candidate) => candidate.id === sibling.projectId,
+        );
+        if (!siblingProject || siblingProject.deletedAt !== null) {
+          return yield* invariant("The project owning pending compaction could not be proved.");
+        }
+        const siblingIdentity = yield* workspace
+          .resolveIdentity(sibling.worktreePath ?? siblingProject.workspaceRoot)
+          .pipe(
+            Effect.mapError(() =>
+              invariant("The workspace owning pending compaction could not be proved."),
+            ),
+          );
+        if (siblingIdentity.workspaceKey === sessionIdentity.workspaceKey) {
+          return yield* invariant("Rollback requires a workspace with no pending compaction.");
+        }
       }
 
       const sourceRevision = thread.checkpoints.reduce(
@@ -264,6 +291,7 @@ export const make = Effect.gen(function* () {
         workspaceCwd: sessionIdentity.cwd,
         sourceRevision,
         targetRevision: command.turnCount,
+        restoreFiles: command.type !== "thread.conversation.revert",
         sourceTurnId: sourceSummary.turnId,
         targetTurnId,
         sourceCheckpointRef,

@@ -93,6 +93,23 @@ Only the text you typed returns, not attachments or other context. While the com
 arrow keys move the caret unless the text is an unedited recalled prompt and the caret is on its
 first or last line.
 
+## Edit an earlier prompt
+
+On web and desktop, choose **Edit from here** beneath a sent message to rewind
+the conversation to before that message. Choose **Revert and keep changes** to
+leave files as they are, or **Revert files too** to also restore the worktree, Git
+index, staged and unstaged changes, and untracked files. The selected prompt and
+its attachments return to the composer for editing and resending. Any unsent
+draft stays above the restored prompt. Mobile offers the same file choice in its
+existing rollback action; restoring the prompt to the composer is available on
+web and desktop.
+
+This removes the selected message and later conversation from the active thread
+and provider history. It does not undo external actions or separate provider
+memory. Pylon enables the action only for an idle thread with a verified exact rollback target.
+Currently this requires a native Prime session and its recorded checkpoint anchors;
+providers that only expose relative history trimming remain unavailable.
+
 ## Prompt stash
 
 On web and desktop, press `Cmd+S` on macOS or `Ctrl+S` on Windows and Linux to save the current

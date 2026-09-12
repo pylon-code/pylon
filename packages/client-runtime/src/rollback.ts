@@ -74,11 +74,3 @@ export function deriveRollbackTargets(
   }
   return targets;
 }
-
-export function buildRollbackConfirmation(targetLabel: string): string {
-  return [
-    `Revert to ${targetLabel}?`,
-    "This rewrites the provider conversation, Pylon history, the worktree, the Git index, staged and unstaged changes, and untracked files to that point.",
-    "Newer history is retained until the rollback commits.",
-  ].join("\n\n");
-}

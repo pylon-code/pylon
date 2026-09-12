@@ -82,6 +82,7 @@ const makeEnvironment = (
   providerMode: ProviderMode = "success",
   cleanupFailures = 0,
   projectionCommitFails = false,
+  restoreFiles?: boolean,
 ) => {
   let record: RollbackSagaRecord = {
     operationId,
@@ -93,7 +94,7 @@ const makeEnvironment = (
     terminal: false,
     ownerId: null,
     version: 0,
-    state: makeState(operationId),
+    state: { ...makeState(operationId), ...(restoreFiles === undefined ? {} : { restoreFiles }) },
     createdAt: now,
     updatedAt: now,
   };
@@ -106,6 +107,8 @@ const makeEnvironment = (
   let staleRefsDeleted = false;
   let projectionCommitted = false;
   let projectionCommits = 0;
+  const workspaceCalls: string[] = [];
+  const providerApplies: string[] = [];
   const commands: OrchestrationCommand[] = [];
   const runtimeReceipts: OrchestrationRuntimeReceipt[] = [];
 
@@ -221,6 +224,7 @@ const makeEnvironment = (
       Effect.suspend(() => {
         const isTarget =
           (input.anchor as { readonly leafId?: string }).leafId === privateTargetCanary;
+        providerApplies.push(isTarget ? "target" : "source");
         if (!isTarget) {
           providerDigest = "provider-source";
           return Effect.void;
@@ -242,9 +246,14 @@ const makeEnvironment = (
   };
 
   const workspace = {
-    capturePreimage: () => Effect.succeed(preimage),
+    capturePreimage: () =>
+      Effect.sync(() => {
+        workspaceCalls.push("capturePreimage");
+        return preimage;
+      }),
     applyCheckpoint: () =>
       Effect.sync(() => {
+        workspaceCalls.push("applyCheckpoint");
         workspaceDigest = "workspace-target";
         return {
           digest: workspaceDigest,
@@ -254,6 +263,7 @@ const makeEnvironment = (
       }),
     restorePreimage: () =>
       Effect.sync(() => {
+        workspaceCalls.push("restorePreimage");
         workspaceDigest = "workspace-source";
         return {
           digest: workspaceDigest,
@@ -262,21 +272,28 @@ const makeEnvironment = (
         };
       }),
     inspect: () =>
-      Effect.succeed({
-        digest: workspaceDigest,
-        treeDigest: workspaceDigest,
-        headSymbolic: "refs/heads/main",
-        headOid: "f".repeat(40),
+      Effect.sync(() => {
+        workspaceCalls.push("inspect");
+        return {
+          digest: workspaceDigest,
+          treeDigest: workspaceDigest,
+          headSymbolic: "refs/heads/main",
+          headOid: "f".repeat(40),
+        };
       }),
     inspectCheckpoint: () =>
-      Effect.succeed({
-        digest: workspaceDigest,
-        treeDigest: workspaceDigest,
-        headSymbolic: "refs/heads/main",
-        headOid: "f".repeat(40),
+      Effect.sync(() => {
+        workspaceCalls.push("inspectCheckpoint");
+        return {
+          digest: workspaceDigest,
+          treeDigest: workspaceDigest,
+          headSymbolic: "refs/heads/main",
+          headOid: "f".repeat(40),
+        };
       }),
     cleanupPreimage: () =>
       Effect.suspend(() => {
+        workspaceCalls.push("cleanupPreimage");
         if (cleanupFailures > 0) {
           cleanupFailures -= 1;
           return Effect.fail("cleanup-failed");
@@ -348,7 +365,19 @@ const makeEnvironment = (
     setProviderMode: (mode: ProviderMode) => {
       currentProviderMode = mode;
     },
+    setPersistedState: (patch: Partial<RollbackSagaState>) => {
+      record = {
+        ...record,
+        state: { ...record.state, ...patch },
+        phase: patch.phase ?? record.phase,
+      };
+    },
+    setWorkspaceDigest: (digest: string) => {
+      workspaceDigest = digest;
+    },
     snapshot: () => ({
+      workspaceCalls,
+      providerApplies,
       record,
       lease,
       providerDigest,
@@ -384,6 +413,13 @@ it.effect("commits last, clears private state, and never publishes private canar
     assert.equal(snapshot.record.state.phase, "complete");
     assert.isTrue(snapshot.record.terminal);
     assert.isFalse(snapshot.lease);
+    assert.equal(snapshot.record.state.restoreFiles, undefined);
+    assert.deepEqual(snapshot.workspaceCalls, [
+      "capturePreimage",
+      "applyCheckpoint",
+      "inspectCheckpoint",
+      "cleanupPreimage",
+    ]);
     assert.equal(snapshot.workspaceDigest, "workspace-target");
     assert.equal(snapshot.providerDigest, "provider-target");
     assert.equal(snapshot.projectionCommits, 1);
@@ -499,6 +535,8 @@ it.effect("compensates workspace and provider when the provider stays at source"
     const snapshot = environment.snapshot();
     assert.equal(snapshot.record.state.phase, "compensated");
     assert.isTrue(snapshot.record.terminal);
+    assert.equal(snapshot.record.state.restoreFiles, undefined);
+    assert.include(snapshot.workspaceCalls, "restorePreimage");
     assert.equal(snapshot.workspaceDigest, "workspace-source");
     assert.equal(snapshot.providerDigest, "provider-source");
     assert.equal(snapshot.projectionCommits, 0);
@@ -780,6 +818,178 @@ for (const faultLabel of restartFaultLabels) {
       assert.isTrue(snapshot.preimageCleaned);
       assert.isTrue(snapshot.anchorsDeleted);
       assert.isTrue(snapshot.staleRefsDeleted);
+    }),
+  );
+}
+
+it.effect("rewinds and verifies conversation history without touching current files", () =>
+  Effect.gen(function* () {
+    const operationId = "operation-keep-files";
+    const environment = makeEnvironment(operationId, "unknown-target", 0, false, false);
+    const runner = yield* environment.makeRunner();
+    yield* runner.run(operationId, false);
+    yield* runner.run(operationId, true);
+    const snapshot = environment.snapshot();
+    assert.equal(snapshot.record.state.phase, "complete");
+    assert.isTrue(snapshot.record.terminal);
+    assert.isFalse(snapshot.lease);
+    assert.equal(snapshot.record.state.restoreFiles, false);
+    assert.equal(snapshot.workspaceDigest, "workspace-source");
+    assert.deepEqual(snapshot.workspaceCalls, []);
+    assert.equal(snapshot.providerDigest, "provider-target");
+    assert.deepEqual(snapshot.providerApplies, ["target"]);
+    assert.equal(snapshot.projectionCommits, 1);
+    assert.isTrue(snapshot.anchorsDeleted);
+    assert.isTrue(snapshot.staleRefsDeleted);
+    const statuses = snapshot.commands.filter(
+      (command) => command.type === "thread.rollback.status.set",
+    );
+    assert.include(statuses[0]?.detail ?? "", "keeping current files");
+    assert.include(statuses.at(-1)?.detail ?? "", "Current files were kept");
+  }),
+);
+
+for (const failure of ["provider", "projection"] as const) {
+  it.effect(`keeps current files throughout ${failure} failure and compensation`, () =>
+    Effect.gen(function* () {
+      const operationId = `operation-keep-files-${failure}-failure`;
+      const environment = makeEnvironment(
+        operationId,
+        failure === "provider" ? "stayed-source" : "success",
+        0,
+        failure === "projection",
+        false,
+      );
+      const runner = yield* environment.makeRunner();
+      yield* runner.run(operationId, false);
+      const snapshot = environment.snapshot();
+      assert.equal(snapshot.record.state.phase, "compensated");
+      assert.isTrue(snapshot.record.terminal);
+      assert.isFalse(snapshot.lease);
+      assert.equal(snapshot.workspaceDigest, "workspace-source");
+      assert.deepEqual(snapshot.workspaceCalls, []);
+      assert.equal(snapshot.providerDigest, "provider-source");
+      assert.equal(snapshot.projectionCommits, 0);
+      assert.equal(
+        snapshot.record.state.lastErrorCode,
+        failure === "provider" ? "provider-target-retry-exhausted" : "projection-commit-cas-failed",
+      );
+      if (failure === "projection")
+        assert.deepEqual(snapshot.providerApplies, ["target", "source"]);
+      const status = snapshot.commands.findLast(
+        (command) => command.type === "thread.rollback.status.set",
+      );
+      assert.include(status?.detail ?? "", "current files were kept");
+      assert.notInclude(status?.detail ?? "", "and workspace");
+    }),
+  );
+}
+
+const keepFilesFaultLabels = [
+  "side-effect:source-anchor-captured",
+  "persisted:source-anchor-captured",
+  "persisted:provider-apply-started",
+  "side-effect:provider-target-applied",
+  "persisted:provider-applied",
+  "persisted:projection-commit-started",
+  "side-effect:projection-committed",
+  "persisted:projection-committed",
+  "persisted:cleanup-started",
+  "side-effect:cleanup",
+  "persisted:complete",
+] as const;
+
+for (const faultLabel of keepFilesFaultLabels) {
+  it.effect(`recovers keep-files rewind without workspace access after ${faultLabel}`, () =>
+    Effect.gen(function* () {
+      const operationId = `keep-files-fault-${faultLabel}`;
+      const environment = makeEnvironment(operationId, "success", 0, false, false);
+      const interrupted = yield* environment.makeRunner(faultLabel);
+      assert.equal((yield* runInterrupted(interrupted, operationId))._tag, "Failure");
+      environment.setWorkspaceDigest("current-files-edited-while-offline");
+      yield* environment.repository.clearOwnersForStartup();
+      const recovered = yield* environment.makeRunner();
+      yield* recovered.run(operationId, true);
+      yield* recovered.run(operationId, true);
+      const snapshot = environment.snapshot();
+      assert.equal(snapshot.record.state.phase, "complete");
+      assert.isTrue(snapshot.record.terminal);
+      assert.isFalse(snapshot.lease);
+      assert.equal(snapshot.workspaceDigest, "current-files-edited-while-offline");
+      assert.deepEqual(snapshot.workspaceCalls, []);
+      assert.deepEqual(snapshot.providerApplies, ["target"]);
+      assert.equal(snapshot.projectionCommits, 1);
+      assert.isTrue(snapshot.anchorsDeleted);
+      assert.isTrue(snapshot.staleRefsDeleted);
+      const recovering = snapshot.commands
+        .filter((command) => command.type === "thread.rollback.status.set")
+        .find((command) => command.status === "recovering");
+      assert.include(recovering?.detail ?? "", "Current files are kept");
+    }),
+  );
+}
+
+for (const phase of [
+  "preimage-capture-started",
+  "preimage-captured",
+  "workspace-apply-started",
+  "workspace-applied",
+  "compensation-workspace-started",
+  "compensation-workspace-complete",
+  "compensation-provider-started",
+] as const) {
+  it.effect(
+    `never accesses workspace from a keep-files record at ${phase}, even with a preimage`,
+    () =>
+      Effect.gen(function* () {
+        const operationId = `keep-files-legacy-phase-${phase}`;
+        const environment = makeEnvironment(operationId, "success", 0, false, false);
+        const interrupted = yield* environment.makeRunner("persisted:source-anchor-captured");
+        assert.equal((yield* runInterrupted(interrupted, operationId))._tag, "Failure");
+        environment.setPersistedState({
+          phase,
+          preimage: { backupPath: "must-not-be-read", digest: "must-not-be-restored" },
+        });
+        environment.setWorkspaceDigest("current-files-kept");
+        yield* environment.repository.clearOwnersForStartup();
+        const recovered = yield* environment.makeRunner();
+        yield* recovered.run(operationId, true);
+        const snapshot = environment.snapshot();
+        assert.equal(
+          snapshot.record.state.phase,
+          phase.startsWith("compensation") ? "compensated" : "complete",
+        );
+        assert.isTrue(snapshot.record.terminal);
+        assert.isFalse(snapshot.lease);
+        assert.equal(snapshot.workspaceDigest, "current-files-kept");
+        assert.deepEqual(snapshot.workspaceCalls, []);
+      }),
+  );
+}
+
+for (const faultLabel of [
+  "persisted:compensation-provider-started",
+  "side-effect:provider-compensated",
+  "persisted:compensated",
+] as const) {
+  it.effect(`recovers keep-files compensation idempotently after ${faultLabel}`, () =>
+    Effect.gen(function* () {
+      const operationId = `keep-files-compensation-${faultLabel}`;
+      const environment = makeEnvironment(operationId, "success", 0, true, false);
+      const interrupted = yield* environment.makeRunner(faultLabel);
+      assert.equal((yield* runInterrupted(interrupted, operationId))._tag, "Failure");
+      yield* environment.repository.clearOwnersForStartup();
+      const recovered = yield* environment.makeRunner();
+      yield* recovered.run(operationId, true);
+      const snapshot = environment.snapshot();
+      assert.equal(snapshot.record.state.phase, "compensated");
+      assert.isTrue(snapshot.record.terminal);
+      assert.isFalse(snapshot.lease);
+      assert.deepEqual(snapshot.workspaceCalls, []);
+      assert.equal(snapshot.workspaceDigest, "workspace-source");
+      assert.equal(snapshot.providerDigest, "provider-source");
+      assert.deepEqual(snapshot.providerApplies, ["target", "source"]);
+      assert.equal(snapshot.projectionCommits, 0);
     }),
   );
 }

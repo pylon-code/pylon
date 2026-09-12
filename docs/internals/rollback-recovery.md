@@ -1,6 +1,8 @@
 # Exact conversation rollback state model
 
-Exact rollback is a durable server-owned saga. Clients can request a target or resume an action that the server explicitly permits. They cannot provide provider anchors, clear the fence, or forge completion.
+Exact rollback is a durable server-owned saga. Clients can request a target, choose whether to restore files, or resume an action that the server explicitly permits. They cannot provide provider anchors, clear the fence, or forge completion.
+
+`thread.checkpoint.revert` restores the workspace and conversation. `thread.conversation.revert` preserves files while rewinding the conversation and Pylon history. A separate command ensures older servers reject the file-preserving action instead of ignoring a new option and restoring files. The private saga persists `restoreFiles: false`; an absent value retains the original full-restore behavior. Both modes require the same exact target proof and workspace lease. File-preserving operations skip workspace capture, apply, inspection and compensation, including after restart; provider verification, projection compare-and-set, and terminal cleanup remain durable.
 
 ```text
 eligible checkpoint + exact idle provider gate
@@ -46,4 +48,4 @@ Admission repeats the proof, checks the exact source revision, requires an idle 
 
 ## Multi-client behavior
 
-The engine serializes admission. Requests for the same source and target join the active operation. A different target is rejected. Status is projected and streamed, so refresh, reconnect, remote clients, and multiple devices converge on the same fence and result.
+The engine serializes admission. Requests for the same source, target and file choice join the active operation. A different target or file choice is rejected. Status is projected and streamed, so refresh, reconnect, remote clients, and multiple devices converge on the same fence and result.
