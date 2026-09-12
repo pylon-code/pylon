@@ -99,14 +99,21 @@ export function resolveScopedSettingsTargets(
     return scope.members.flatMap((member) => {
       const environment = byId.get(member.environmentId);
       if (!environment?.serverConfig) return [];
-      const resolved = resolveProjectSettings(environment.serverConfig.settings, member.id);
+      const resolved = resolveProjectSettings(environment.serverConfig.settings, member.id, member);
+      // Settings editing must expose a stored override even when runtime
+      // resolution falls back because its provider is disabled. Otherwise
+      // admission still sees the preference but the per-key reset disappears.
+      const sources = { ...resolved.sources };
+      for (const key of PROJECT_SCOPED_SERVER_SETTING_KEYS) {
+        if (Object.hasOwn(resolved.overrides, key)) sources[key] = "project";
+      }
       return [
         {
           environmentId: member.environmentId,
           label: environment.label,
           projectId: member.id,
           settings: resolved.settings,
-          sources: resolved.sources,
+          sources,
         },
       ];
     });

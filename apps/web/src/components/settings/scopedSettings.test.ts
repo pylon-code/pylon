@@ -2,9 +2,11 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProjectId,
+  ProviderInstanceId,
   type ServerSettings,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { createModelSelection } from "@t3tools/shared/model";
 
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import {
@@ -155,6 +157,37 @@ describe("scoped settings targets", () => {
     expect(scopedSettingsSource([targets[0]!], ["defaultAutoPull"])).toBe("project");
     expect(scopedSettingsSource(targets, ["enableProviderUpdateChecks"])).toBe("environment");
     expect(scopedSettingsAreMixed(targets, ["defaultAutoPull"])).toBe(true);
+  });
+
+  it("keeps a disabled provider override visible and individually resettable", () => {
+    const selection = createModelSelection(ProviderInstanceId.make("claudeAgent"), "opus");
+    const configured = environment("Server", {
+      settings: {
+        providers: {
+          ...DEFAULT_SERVER_SETTINGS.providers,
+          claudeAgent: {
+            ...DEFAULT_SERVER_SETTINGS.providers.claudeAgent,
+            enabled: false,
+          },
+        },
+        projectSettingsOverrides: {
+          [projectId]: {
+            defaultModelSelection: selection,
+            defaultAutoPull: true,
+          },
+        },
+      },
+    });
+    const [target] = resolveScopedSettingsTargets(project, [configured]);
+    expect(target?.settings.defaultModelSelection).toEqual(
+      DEFAULT_SERVER_SETTINGS.defaultModelSelection,
+    );
+    expect(scopedSettingsSource(target ? [target] : [], ["defaultModelSelection"])).toBe("project");
+    const reset = planScopedSettingsClear(project, [configured], ["defaultModelSelection"]);
+    expect(reset.serverWrites).toHaveLength(1);
+    expect(reset.serverWrites[0]?.patch.projectSettingsOverrides).toEqual({
+      [projectId]: { defaultAutoPull: true },
+    });
   });
 });
 
