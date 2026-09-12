@@ -90,3 +90,7 @@ In an existing Codex thread, send `/feedback` with an optional description, for 
 `/feedback The agent stopped before finishing the tests`. This uploads the conversation and Codex
 logs to OpenAI without adding messages to the thread. When the upload succeeds, choose **Copy ID** to
 share the thread ID with OpenAI support.
+
+## Rewind a conversation
+
+Eligible completed turns support rewinding the conversation with either restored files or your current files. Pylon keeps private native snapshots and verifies the selected history before applying a rewind. Older or imported turns without a captured snapshot remain unavailable. Active native goals and histories that cannot be verified also prevent rewind; ordinary conversation resume remains usable.
