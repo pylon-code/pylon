@@ -103,7 +103,7 @@
       "generatedNotices": [
         {
           "licenseId": "Apache-2.0",
-          "copyrights": ["Copyright 2009, 2010, 2013 André Berg"]
+          "copyrights": ["Copyright 2009, 2010, 2013 Andr\u00e9 Berg"]
         }
       ]
     },
@@ -444,6 +444,18 @@
       "generatedNotice": {
         "licenseId": "MIT",
         "copyrights": ["Copyright (c) 2025 opencode"]
+      }
+    },
+    {
+      "name": "@npmcli/agent",
+      "version": "4.0.2",
+      "sourceUrl": "https://github.com/npm/agent/tree/v4.0.2",
+      "generatedNotice": {
+        "licenseId": "ISC",
+        "copyrights": ["Copyright (c) GitHub Inc."],
+        "preamble": [
+          "@npmcli/agent 4.0.2 declares ISC licensing and GitHub Inc. as its author in package.json. The published archive and tagged source do not include a license file."
+        ]
       }
     }
   ]

@@ -97,6 +97,10 @@ The `@react-grab/cli` override uses the root React Grab repository's MIT license
 npm archive omits both its license field and license file. Keep the override until the published
 CLI package carries that metadata itself.
 
+The version-specific `@npmcli/agent` 4.0.2 override uses the ISC identifier and GitHub Inc.
+author attribution declared in its tagged `package.json`; neither that tag nor the npm archive
+includes a license file. Recheck this override when upgrading the package.
+
 Generated mobile files live under `apps/mobile/.generated/`, while fetched SPDX templates live
 under the repository `.generated/` directory. Both are ignored. Do not commit or edit them;
 updating dependencies or configuration is enough for the next strict build to refresh the output.
