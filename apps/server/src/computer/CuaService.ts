@@ -16,7 +16,7 @@ import {
 import { ServerSettingsService } from "../serverSettings.ts";
 
 /** Latest published release verified when this integration was introduced. */
-export const CUA_DRIVER_VERSION = "0.28.1";
+const CUA_DRIVER_VERSION = "0.28.1";
 const REQUEST_TIMEOUT_MS = 120_000;
 
 export class CuaError extends Schema.TaggedError<CuaError>()("CuaError", {
