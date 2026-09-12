@@ -1657,9 +1657,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         canonicalEvent.type === "turn.aborted"
       ) {
         yield* recordTurnCompletedAnalytics(source, canonicalEvent);
-        if (source.provider === "claudeAgent") {
-          // Persist background turns' native boundaries before publishing the
-          // completion that lets checkpoint capture observe the new history.
+        if (
+          source.provider === "claudeAgent" ||
+          source.adapter.capabilities.conversationRollback === "absolute"
+        ) {
+          // Persist native boundaries and exact idle recovery proofs before
+          // publishing completion to checkpoint capture.
           yield* Effect.gen(function* () {
             const session = (yield* source.adapter.listSessions()).find(
               (entry) =>
@@ -1680,7 +1683,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             );
           }).pipe(
             Effect.catch((cause) =>
-              Effect.logWarning("failed to persist Claude turn resume state", { cause }),
+              Effect.logWarning("failed to persist provider turn resume state", {
+                provider: source.provider,
+                cause,
+              }),
             ),
           );
         }
@@ -4075,7 +4081,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "Exact provider conversation rollback is unavailable.",
       );
     }
-    return { routed, operations } as const;
+    const incarnation = currentSessionIncarnations.get(threadId);
+    if (incarnation?.adapter !== routed.adapter || incarnation.instanceId !== routed.instanceId) {
+      return yield* toValidationError(
+        "ProviderService.absoluteConversationRollback",
+        "The exact provider session incarnation could not be proved.",
+      );
+    }
+    return { routed, operations, incarnation } as const;
   });
 
   const hasAbsoluteConversationRollback: NonNullable<
@@ -4106,9 +4119,49 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return available;
   });
 
+  const persistExactConversationSelection = Effect.fn("persistExactConversationSelection")(
+    function* (
+      threadId: ThreadId,
+      adapter: ProviderAdapterShape<ProviderAdapterError>,
+      instanceId: ProviderInstanceId,
+      incarnation: NonNullable<ReturnType<typeof currentSessionIncarnations.get>>,
+      operation: string,
+    ) {
+      const sessions = yield* adapter.listSessions();
+      const selected = sessions.find((session) => session.threadId === threadId);
+      if (
+        selected === undefined ||
+        selected.sessionIncarnationId !== incarnation.id ||
+        selected.provider !== adapter.provider ||
+        currentSessionIncarnations.get(threadId) !== incarnation
+      ) {
+        return yield* toValidationError(
+          operation,
+          "The provider session changed while selecting the exact conversation anchor.",
+        );
+      }
+      // Fork-based adapters select a new native history without emitting public
+      // activity while the saga owns the thread. Persist that selection before
+      // acknowledging apply, including when retrying after a failed write.
+      yield* upsertSessionBinding({ ...selected, providerInstanceId: instanceId }, threadId, {
+        runtimeFence: adapter.runtimeFence,
+        commitGuard: Effect.sync(() => currentSessionIncarnations.get(threadId) === incarnation),
+      });
+      yield* requireAdapterGenerationCurrent(adapter, operation);
+      if (currentSessionIncarnations.get(threadId) !== incarnation) {
+        return yield* toValidationError(
+          operation,
+          "The exact provider session was replaced before its selection committed.",
+        );
+      }
+    },
+  );
+
   const captureConversationAnchor: NonNullable<ProviderServiceMethod<"captureConversationAnchor">> =
     Effect.fn("captureConversationAnchor")(function* (input) {
-      const { routed, operations } = yield* resolveAbsoluteConversationRollback(input.threadId);
+      const { routed, operations, incarnation } = yield* resolveAbsoluteConversationRollback(
+        input.threadId,
+      );
       const anchor = yield* operations
         .captureAnchor(input)
         .pipe(
@@ -4123,12 +4176,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         routed.adapter,
         "ProviderService.captureConversationAnchor",
       );
+      if (input.binding.kind === "source") {
+        yield* persistExactConversationSelection(
+          input.threadId,
+          routed.adapter,
+          routed.instanceId,
+          incarnation,
+          "ProviderService.captureConversationAnchor",
+        );
+      }
       return anchor;
     });
 
   const inspectConversationAnchor: NonNullable<ProviderServiceMethod<"inspectConversationAnchor">> =
     Effect.fn("inspectConversationAnchor")(function* (threadId) {
-      const { routed, operations } = yield* resolveAbsoluteConversationRollback(threadId);
+      const { routed, operations, incarnation } =
+        yield* resolveAbsoluteConversationRollback(threadId);
       const anchor = yield* operations
         .inspectAnchor(threadId)
         .pipe(
@@ -4143,12 +4206,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         routed.adapter,
         "ProviderService.inspectConversationAnchor",
       );
+      // Inspection may recover a successful native selection after the original
+      // apply's directory write failed. Its receipt must prove durable routing too.
+      yield* persistExactConversationSelection(
+        threadId,
+        routed.adapter,
+        routed.instanceId,
+        incarnation,
+        "ProviderService.inspectConversationAnchor",
+      );
       return anchor;
     });
 
   const applyConversationAnchor: NonNullable<ProviderServiceMethod<"applyConversationAnchor">> =
     Effect.fn("applyConversationAnchor")(function* (input) {
-      const { routed, operations } = yield* resolveAbsoluteConversationRollback(input.threadId);
+      const { routed, operations, incarnation } = yield* resolveAbsoluteConversationRollback(
+        input.threadId,
+      );
       yield* operations
         .applyAnchor(input.threadId, input.anchor)
         .pipe(
@@ -4163,11 +4237,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         routed.adapter,
         "ProviderService.applyConversationAnchor",
       );
+      yield* persistExactConversationSelection(
+        input.threadId,
+        routed.adapter,
+        routed.instanceId,
+        incarnation,
+        "ProviderService.applyConversationAnchor",
+      );
     });
 
   const releaseConversationAnchor: NonNullable<ProviderServiceMethod<"releaseConversationAnchor">> =
     Effect.fn("releaseConversationAnchor")(function* (input) {
-      const { routed, operations } = yield* resolveAbsoluteConversationRollback(input.threadId);
+      const { routed, operations, incarnation } = yield* resolveAbsoluteConversationRollback(
+        input.threadId,
+      );
       yield* operations
         .releaseAnchor(input.threadId, input.anchor)
         .pipe(
@@ -4180,6 +4263,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         );
       yield* requireAdapterGenerationCurrent(
         routed.adapter,
+        "ProviderService.releaseConversationAnchor",
+      );
+      yield* persistExactConversationSelection(
+        input.threadId,
+        routed.adapter,
+        routed.instanceId,
+        incarnation,
         "ProviderService.releaseConversationAnchor",
       );
     });
