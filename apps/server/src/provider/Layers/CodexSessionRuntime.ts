@@ -1,4 +1,10 @@
 import {
+  codexConversationDigest,
+  forkCodexConversation,
+  readCodexConversation,
+  type CodexConversationSnapshot,
+} from "./CodexAbsoluteHistory.ts";
+import {
   ApprovalRequestId,
   DEFAULT_MODEL,
   EventId,
@@ -20,10 +26,13 @@ import {
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import * as Crypto from "effect/Crypto";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -46,6 +55,9 @@ import {
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
+const CodexNotificationEpoch = Context.Reference<number | undefined>("t3/CodexNotificationEpoch", {
+  defaultValue: () => undefined,
+});
 
 const ANSI_ESCAPE_CHAR = String.fromCharCode(27);
 const ANSI_ESCAPE_REGEX = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, "g");
@@ -178,6 +190,11 @@ export interface CodexSessionRuntimeOptions {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
+  /** Private exact recovery never falls back to a different thread. */
+  readonly strictResume?: boolean;
+  readonly quarantined?: boolean;
+  readonly exactRecoverySnapshot?: CodexConversationSnapshot;
+  readonly exactRecoveryCheckpoint?: CodexConversationSnapshot;
   readonly appServerArgs?: ReadonlyArray<string>;
   /** Capabilities the session's `t3-code` MCP credential grants; drives the prompt blocks. */
   readonly mcpCapabilities?: ReadonlySet<string>;
@@ -206,6 +223,20 @@ export interface CodexThreadSnapshot {
 }
 
 export interface CodexSessionRuntimeShape {
+  readonly absoluteConversation?: {
+    readonly isIdle: Effect.Effect<boolean>;
+    readonly read: (
+      threadId?: string,
+    ) => Effect.Effect<CodexConversationSnapshot, CodexSessionRuntimeError>;
+    readonly fork: (input: {
+      source: CodexConversationSnapshot;
+      lastTurnId?: string;
+    }) => Effect.Effect<CodexConversationSnapshot, CodexSessionRuntimeError>;
+    readonly select: (
+      snapshot: CodexConversationSnapshot,
+    ) => Effect.Effect<void, CodexSessionRuntimeError>;
+    readonly quarantine: (enabled: boolean) => Effect.Effect<void>;
+  };
   readonly start: () => Effect.Effect<ProviderSession, CodexSessionRuntimeError>;
   readonly getSession: Effect.Effect<ProviderSession>;
   readonly sendTurn: (
@@ -724,6 +755,7 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  readonly strictResume?: boolean;
 }): Effect.Effect<typeof CodexThreadResumeMetadata.Type, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -734,6 +766,12 @@ export const openCodexThread = (input: {
   });
 
   if (resumeThreadId === undefined) {
+    if (input.strictResume)
+      return Effect.fail(
+        CodexErrors.CodexAppServerRequestError.internalError(
+          "Strict Codex recovery requires an existing native conversation.",
+        ),
+      );
     return input.client.request("thread/start", startParams);
   }
 
@@ -758,14 +796,16 @@ export const openCodexThread = (input: {
           ),
         ),
       ),
-      Effect.catchIf(isRecoverableThreadResumeError, (error) =>
-        Effect.logWarning("codex app-server thread resume fell back to fresh start", {
-          threadId: input.threadId,
-          requestedRuntimeMode: input.runtimeMode,
-          resumeThreadId,
-          recoverable: true,
-          cause: error,
-        }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
+      Effect.catchIf(
+        (error) => !input.strictResume && isRecoverableThreadResumeError(error),
+        (error) =>
+          Effect.logWarning("codex app-server thread resume fell back to fresh start", {
+            threadId: input.threadId,
+            requestedRuntimeMode: input.runtimeMode,
+            resumeThreadId,
+            recoverable: true,
+            cause: error,
+          }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
       ),
     );
 };
@@ -1288,13 +1328,18 @@ export const makeCodexSessionRuntime = (
 ): Effect.Effect<
   CodexSessionRuntimeShape,
   CodexErrors.CodexAppServerError,
-  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
+  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | FileSystem.FileSystem | Scope.Scope
 > =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
     const crypto = yield* Crypto.Crypto;
-    const events = yield* Queue.unbounded<ProviderEvent>();
+    const fileSystem = yield* FileSystem.FileSystem;
+    let quarantined = options.quarantined ?? false;
+    let eventEpoch = 0;
+    let privateForksInFlight = 0;
+    const privateSnapshotThreadIds = new Set<string>();
+    const events = yield* Queue.unbounded<{ event: ProviderEvent; epoch: number }>();
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
@@ -1350,7 +1395,74 @@ export const makeCodexSessionRuntime = (
     const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
       Effect.provide(clientContext),
     );
-    const serverNotifications = yield* Queue.unbounded<CodexServerNotification>();
+    const readRollout = (path: string) =>
+      Effect.gen(function* () {
+        const maxBytes = 16 * 1024 * 1024;
+        const before = yield* fileSystem.stat(path);
+        if (before.type !== "File" || before.size <= 0n || before.size > BigInt(maxBytes))
+          return yield* CodexErrors.CodexAppServerRequestError.internalError(
+            "The native Codex history is not a bounded regular file.",
+          );
+        const file = yield* fileSystem.open(path, { flag: "r" });
+        const opened = yield* file.stat;
+        const same = (a: FileSystem.File.Info, b: FileSystem.File.Info) =>
+          a.type === "File" &&
+          b.type === "File" &&
+          a.dev === b.dev &&
+          Option.isSome(a.ino) &&
+          Option.isSome(b.ino) &&
+          a.ino.value > 0 &&
+          a.ino.value === b.ino.value &&
+          a.size === b.size &&
+          Option.getOrUndefined(a.mtime)?.getTime() === Option.getOrUndefined(b.mtime)?.getTime();
+        if (!same(before, opened))
+          return yield* CodexErrors.CodexAppServerRequestError.internalError(
+            "The native Codex history changed before reading.",
+          );
+        const bytes = new Uint8Array(Number(opened.size) + 1);
+        let size = 0;
+        while (size < bytes.byteLength) {
+          const count = Number(yield* file.read(bytes.subarray(size)));
+          if (count <= 0) break;
+          size += count;
+        }
+        const after = yield* file.stat;
+        const pathAfter = yield* fileSystem.stat(path);
+        if (size !== Number(opened.size) || !same(opened, after) || !same(opened, pathAfter))
+          return yield* CodexErrors.CodexAppServerRequestError.internalError(
+            "The native Codex history changed during reading.",
+          );
+        return yield* Effect.try({
+          try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size)),
+          catch: () =>
+            CodexErrors.CodexAppServerRequestError.internalError(
+              "The native Codex history is not valid UTF-8.",
+            ),
+        });
+      }).pipe(
+        Effect.scoped,
+        Effect.mapError(() =>
+          CodexErrors.CodexAppServerRequestError.internalError(
+            "The complete native Codex history could not be verified.",
+          ),
+        ),
+      );
+    const exactForkConfig = runtimeModeToThreadConfig(options.runtimeMode);
+    const exactHistoryClient = {
+      raw: client.raw,
+      readRollout,
+      forkOptions: {
+        approvalPolicy: exactForkConfig.approvalPolicy,
+        sandbox: exactForkConfig.sandbox,
+        approvalsReviewer: exactForkConfig.approvalsReviewer,
+        ...(options.model ? { model: options.model } : {}),
+        ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
+      },
+    };
+    const serverNotifications = yield* Queue.unbounded<{
+      notification: CodexServerNotification;
+      epoch: number;
+    }>();
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = (purpose: CodexErrors.CodexAppServerIdentifierPurpose) =>
       crypto.randomUUIDv4.pipe(
@@ -1377,18 +1489,30 @@ export const makeCodexSessionRuntime = (
       updatedAt: sessionCreatedAt,
     } satisfies ProviderSession;
     const sessionRef = yield* Ref.make<ProviderSession>(initialSession);
-    const offerEvent = (event: ProviderEvent) => Queue.offer(events, event).pipe(Effect.asVoid);
+    const offerEvent = (event: ProviderEvent, epoch: number) =>
+      Effect.suspend(() =>
+        quarantined || epoch !== eventEpoch
+          ? Effect.void
+          : Queue.offer(events, { event, epoch }).pipe(Effect.asVoid),
+      );
 
     const emitEvent = (event: Omit<ProviderEvent, "id" | "provider" | "createdAt">) =>
       Effect.gen(function* () {
+        const epoch = (yield* CodexNotificationEpoch) ?? eventEpoch;
+        if (quarantined || epoch !== eventEpoch) return;
         const id = yield* randomUUIDv4("provider-event");
-        return yield* offerEvent({
-          id: EventId.make(id),
-          provider: PROVIDER,
-          ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
-          createdAt: yield* nowIso,
-          ...event,
-        });
+        return yield* offerEvent(
+          {
+            id: EventId.make(id),
+            provider: PROVIDER,
+            ...(options.providerInstanceId
+              ? { providerInstanceId: options.providerInstanceId }
+              : {}),
+            createdAt: yield* nowIso,
+            ...event,
+          },
+          epoch,
+        );
       });
     const emitSessionEvent = (method: string, message: string) =>
       emitEvent({
@@ -1871,6 +1995,19 @@ export const makeCodexSessionRuntime = (
 
     const handleRawNotification = (notification: CodexServerNotification) =>
       Effect.gen(function* () {
+        const notificationThreadId = readNotificationThreadId(notification);
+        const selectedThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+        const knownChild =
+          notificationThreadId !== undefined &&
+          ((yield* Ref.get(collabChildAgentsRef)).has(notificationThreadId) ||
+            (yield* Ref.get(collabReceiverTurnsRef)).has(notificationThreadId));
+        if (
+          notificationThreadId !== undefined &&
+          notificationThreadId !== selectedThreadId &&
+          (privateSnapshotThreadIds.has(notificationThreadId) ||
+            (privateForksInFlight > 0 && !knownChild))
+        )
+          return;
         const isMemoryConsolidationNotification =
           suppressMemoryConsolidationNotification(notification);
 
@@ -2064,11 +2201,20 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
       Effect.gen(function* () {
+        const requestEpoch = eventEpoch;
+        if (quarantined)
+          return yield* CodexErrors.CodexAppServerRequestError.invalidParams(
+            "Codex conversation is held for exact recovery.",
+          );
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("command-approval-request"));
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
         const decision = yield* Deferred.make<ProviderApprovalDecision>();
 
+        if (quarantined || requestEpoch !== eventEpoch)
+          return yield* CodexErrors.CodexAppServerRequestError.invalidParams(
+            "The Codex request belongs to a retired conversation boundary.",
+          );
         yield* Ref.update(pendingApprovalsRef, (current) => {
           const next = new Map(current);
           next.set(requestId, {
@@ -2101,7 +2247,7 @@ export const makeCodexSessionRuntime = (
           ...(turnId ? { turnId } : {}),
           ...(itemId ? { itemId } : {}),
           payload,
-        });
+        }).pipe(Effect.provideService(CodexNotificationEpoch, requestEpoch));
 
         const resolved = yield* Deferred.await(decision).pipe(
           Effect.ensuring(
@@ -2120,6 +2266,11 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/fileChange/requestApproval", (payload) =>
       Effect.gen(function* () {
+        const requestEpoch = eventEpoch;
+        if (quarantined)
+          return yield* CodexErrors.CodexAppServerRequestError.invalidParams(
+            "Codex conversation is held for exact recovery.",
+          );
         const requestId = ApprovalRequestId.make(
           yield* randomUUIDv4("file-change-approval-request"),
         );
@@ -2127,6 +2278,10 @@ export const makeCodexSessionRuntime = (
         const itemId = ProviderItemId.make(payload.itemId);
         const decision = yield* Deferred.make<ProviderApprovalDecision>();
 
+        if (quarantined || requestEpoch !== eventEpoch)
+          return yield* CodexErrors.CodexAppServerRequestError.invalidParams(
+            "The Codex request belongs to a retired conversation boundary.",
+          );
         yield* Ref.update(pendingApprovalsRef, (current) => {
           const next = new Map(current);
           next.set(requestId, {
@@ -2159,7 +2314,7 @@ export const makeCodexSessionRuntime = (
           ...(turnId ? { turnId } : {}),
           ...(itemId ? { itemId } : {}),
           payload,
-        });
+        }).pipe(Effect.provideService(CodexNotificationEpoch, requestEpoch));
 
         const resolved = yield* Deferred.await(decision).pipe(
           Effect.ensuring(
@@ -2178,6 +2333,11 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("mcpServer/elicitation/request", (payload) =>
       Effect.gen(function* () {
+        const requestEpoch = eventEpoch;
+        if (quarantined)
+          return yield* CodexErrors.CodexAppServerRequestError.invalidParams(
+            "Codex conversation is held for exact recovery.",
+          );
         if (toMcpElicitationResponse(payload, "accept").action !== "accept") {
           yield* Effect.logWarning("Declined an unsupported MCP elicitation.", {
             serverName: payload.serverName,
@@ -2195,6 +2355,10 @@ export const makeCodexSessionRuntime = (
         const jsonRpcId = payload.mode === "url" ? payload.elicitationId : requestId;
         const decision = yield* Deferred.make<ProviderApprovalDecision>();
 
+        if (quarantined || requestEpoch !== eventEpoch)
+          return yield* CodexErrors.CodexAppServerRequestError.invalidParams(
+            "The Codex request belongs to a retired conversation boundary.",
+          );
         yield* Ref.update(pendingApprovalsRef, (current) => {
           const next = new Map(current);
           next.set(requestId, {
@@ -2226,7 +2390,7 @@ export const makeCodexSessionRuntime = (
           requestKind: "mcp-elicitation",
           ...(turnId ? { turnId } : {}),
           payload,
-        });
+        }).pipe(Effect.provideService(CodexNotificationEpoch, requestEpoch));
 
         const resolved = yield* Deferred.await(decision).pipe(
           Effect.ensuring(
@@ -2243,11 +2407,20 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/tool/requestUserInput", (payload) =>
       Effect.gen(function* () {
+        const requestEpoch = eventEpoch;
+        if (quarantined)
+          return yield* CodexErrors.CodexAppServerRequestError.invalidParams(
+            "Codex conversation is held for exact recovery.",
+          );
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("user-input-request"));
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
         const answers = yield* Deferred.make<ProviderUserInputAnswers>();
 
+        if (quarantined || requestEpoch !== eventEpoch)
+          return yield* CodexErrors.CodexAppServerRequestError.invalidParams(
+            "The Codex request belongs to a retired conversation boundary.",
+          );
         yield* Ref.update(pendingUserInputsRef, (current) => {
           const next = new Map(current);
           next.set(requestId, {
@@ -2267,7 +2440,7 @@ export const makeCodexSessionRuntime = (
           ...(turnId ? { turnId } : {}),
           ...(itemId ? { itemId } : {}),
           payload,
-        });
+        }).pipe(Effect.provideService(CodexNotificationEpoch, requestEpoch));
 
         const resolvedAnswers = yield* Deferred.await(answers).pipe(
           Effect.ensuring(
@@ -2297,9 +2470,28 @@ export const makeCodexSessionRuntime = (
 
     const registerServerNotification = <M extends CodexRpc.ServerNotificationMethod>(method: M) =>
       client.handleServerNotification(method, (params) =>
-        Queue.offer(serverNotifications, makeCodexServerNotification(method, params)).pipe(
-          Effect.asVoid,
-        ),
+        Effect.gen(function* () {
+          if (quarantined) return;
+          const epoch = eventEpoch;
+          const notification = makeCodexServerNotification(method, params);
+          const notificationThreadId = readNotificationThreadId(notification);
+          const selectedThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+          const knownChild =
+            notificationThreadId !== undefined &&
+            ((yield* Ref.get(collabChildAgentsRef)).has(notificationThreadId) ||
+              (yield* Ref.get(collabReceiverTurnsRef)).has(notificationThreadId));
+          if (
+            notificationThreadId !== undefined &&
+            notificationThreadId !== selectedThreadId &&
+            (privateSnapshotThreadIds.has(notificationThreadId) ||
+              (privateForksInFlight > 0 && !knownChild))
+          ) {
+            privateSnapshotThreadIds.add(notificationThreadId);
+            return;
+          }
+          if (quarantined || epoch !== eventEpoch) return;
+          yield* Queue.offer(serverNotifications, { notification, epoch });
+        }),
       );
 
     yield* Effect.forEach(
@@ -2311,7 +2503,15 @@ export const makeCodexSessionRuntime = (
     );
 
     yield* Stream.fromQueue(serverNotifications).pipe(
-      Stream.runForEach(handleRawNotification),
+      Stream.runForEach(({ notification, epoch }) =>
+        Effect.suspend(() =>
+          quarantined || epoch !== eventEpoch
+            ? Effect.void
+            : handleRawNotification(notification).pipe(
+                Effect.provideService(CodexNotificationEpoch, epoch),
+              ),
+        ),
+      ),
       Effect.forkIn(runtimeScope),
     );
 
@@ -2329,6 +2529,7 @@ export const makeCodexSessionRuntime = (
             Effect.forEach(
               lines,
               (line) => {
+                if (privateForksInFlight > 0) return Effect.void;
                 const classified = classifyCodexStderrLine(line);
                 if (!classified) {
                   return Effect.void;
@@ -2337,7 +2538,11 @@ export const makeCodexSessionRuntime = (
                   kind: "notification",
                   threadId: options.threadId,
                   method: "process/stderr",
-                  message: classified.message,
+                  message: Array.from(privateSnapshotThreadIds).some((id) =>
+                    classified.message.includes(id),
+                  )
+                    ? "Codex reported a diagnostic for a private conversation snapshot."
+                    : classified.message,
                 });
               },
               { discard: true },
@@ -2382,6 +2587,49 @@ export const makeCodexSessionRuntime = (
 
       const requestedModel = normalizeCodexModelSlug(options.model);
 
+      let resumeThreadId = readResumeCursorThreadId(options.resumeCursor);
+      if (options.exactRecoverySnapshot) {
+        const selectedId = readResumeCursorThreadId(options.resumeCursor);
+        if (!selectedId)
+          return yield* CodexErrors.CodexAppServerRequestError.internalError(
+            "Exact Codex recovery requires a selected native conversation.",
+          );
+        const expected = options.exactRecoverySnapshot;
+        const selected = yield* readCodexConversation(exactHistoryClient, selectedId, options.cwd);
+        const immutable = yield* readCodexConversation(
+          exactHistoryClient,
+          expected.threadId,
+          options.cwd,
+        );
+        if (
+          codexConversationDigest(selected) !== codexConversationDigest(expected) ||
+          codexConversationDigest(immutable) !== codexConversationDigest(expected)
+        )
+          return yield* CodexErrors.CodexAppServerRequestError.internalError(
+            "The private Codex recovery proof changed before native resume.",
+          );
+        if (options.exactRecoveryCheckpoint) {
+          const checkpoint = yield* readCodexConversation(
+            exactHistoryClient,
+            options.exactRecoveryCheckpoint.threadId,
+            options.cwd,
+          );
+          if (
+            codexConversationDigest(checkpoint) !==
+            codexConversationDigest(options.exactRecoveryCheckpoint)
+          )
+            return yield* CodexErrors.CodexAppServerRequestError.internalError(
+              "The original Codex checkpoint changed before native resume.",
+            );
+        }
+        // A fresh fork persists goal-continuation deferral atomically. Resume that verified
+        // private owner, so activating an old native goal between reads cannot start recovery input.
+        const recoveredFork = yield* forkCodexConversation(exactHistoryClient, {
+          source: selected,
+        });
+        privateSnapshotThreadIds.add(recoveredFork.threadId);
+        resumeThreadId = recoveredFork.threadId;
+      }
       const opened = yield* openCodexThread({
         client,
         threadId: options.threadId,
@@ -2389,8 +2637,17 @@ export const makeCodexSessionRuntime = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
-        resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        resumeThreadId,
+        ...(options.strictResume ? { strictResume: true } : {}),
       });
+      if (
+        options.strictResume &&
+        (opened.thread.id !== resumeThreadId || opened.cwd !== options.cwd)
+      ) {
+        return yield* CodexErrors.CodexAppServerRequestError.internalError(
+          "Exact Codex recovery resumed a different conversation or workspace.",
+        );
+      }
 
       const providerThreadId = opened.thread.id;
       const session = {
@@ -2437,7 +2694,78 @@ export const makeCodexSessionRuntime = (
       yield* Queue.shutdown(events);
     });
 
+    const isExactIdle = Effect.gen(function* () {
+      const session = yield* Ref.get(sessionRef);
+      return (
+        !(yield* Ref.get(closedRef)) &&
+        session.status === "ready" &&
+        !session.activeTurnId &&
+        (yield* Ref.get(pendingApprovalsRef)).size === 0 &&
+        (yield* Ref.get(pendingUserInputsRef)).size === 0 &&
+        (yield* Ref.get(collabChildLiveTurnsRef)).size === 0
+      );
+    });
+    const requireExactIdle = Effect.gen(function* () {
+      if (!(yield* isExactIdle))
+        return yield* CodexErrors.CodexAppServerRequestError.internalError(
+          "Exact Codex recovery requires an idle conversation with no pending input or agents.",
+        );
+    });
     return {
+      absoluteConversation: {
+        isIdle: isExactIdle,
+        read: (threadId) =>
+          Effect.gen(function* () {
+            yield* requireExactIdle;
+            return yield* readCodexConversation(
+              exactHistoryClient,
+              threadId ?? (yield* readProviderThreadId),
+              options.cwd,
+              { requireLoaded: threadId === undefined },
+            );
+          }),
+        fork: (input) =>
+          Effect.gen(function* () {
+            yield* requireExactIdle;
+            privateForksInFlight += 1;
+            return yield* forkCodexConversation(exactHistoryClient, input).pipe(
+              Effect.tap((snapshot) =>
+                Effect.sync(() => privateSnapshotThreadIds.add(snapshot.threadId)),
+              ),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  privateForksInFlight -= 1;
+                }),
+              ),
+            );
+          }),
+        select: (snapshot) =>
+          Effect.gen(function* () {
+            yield* requireExactIdle;
+            const verified = yield* readCodexConversation(
+              exactHistoryClient,
+              snapshot.threadId,
+              options.cwd,
+              { requireLoaded: true },
+            );
+            if (codexConversationDigest(verified) !== codexConversationDigest(snapshot)) {
+              return yield* CodexErrors.CodexAppServerRequestError.internalError(
+                "The private Codex conversation changed before selection.",
+              );
+            }
+            yield* requireExactIdle;
+            yield* updateSession(sessionRef, {
+              resumeCursor: { threadId: verified.threadId },
+              activeTurnId: undefined,
+              status: "ready",
+            });
+          }),
+        quarantine: (enabled) =>
+          Effect.sync(() => {
+            quarantined = enabled;
+            eventEpoch += 1;
+          }),
+      },
       start,
       getSession: Ref.get(sessionRef),
       compactThread: Effect.gen(function* () {
@@ -2617,7 +2945,10 @@ export const makeCodexSessionRuntime = (
             },
           });
         }),
-      events: Stream.fromQueue(events),
+      events: Stream.fromQueue(events).pipe(
+        Stream.filter(({ epoch }) => !quarantined && epoch === eventEpoch),
+        Stream.map(({ event }) => event),
+      ),
       close,
     } satisfies CodexSessionRuntimeShape;
   });
