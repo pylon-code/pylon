@@ -1344,6 +1344,8 @@ describe("ProviderCommandReactor", () => {
       const thread = (yield* Effect.promise(() => harness.readModel())).threads[0];
       expect(thread?.session?.compactionQueue).toBeUndefined();
       expect(thread?.session?.pendingTurnRequestId).toBeUndefined();
+      // Cancellation receipts share a timestamp and have generated activity IDs;
+      // their presentation order is independent of the separately tested send FIFO.
       expect(
         thread?.activities
           .filter((activity) => activity.kind === "provider.turn.start.failed")
@@ -1353,7 +1355,8 @@ describe("ProviderCommandReactor", () => {
             "requestId" in activity.payload
               ? activity.payload.requestId
               : undefined,
-          ),
+          )
+          .sort(),
       ).toEqual(["message-restarted-one", "message-restarted-two"]);
       expect(harness.compactThread).not.toHaveBeenCalled();
       expect(harness.sendTurn).not.toHaveBeenCalled();
