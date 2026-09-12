@@ -1,3 +1,4 @@
+import { ComputerSetupSection } from "./ComputerSetupSection";
 import type { ServerSettingsPatch } from "@t3tools/contracts";
 import { useState } from "react";
 import { serverEnvironment } from "../../state/server";
@@ -30,6 +31,15 @@ export function ComputerIntegrationSettings() {
       id="computer"
       title={environment ? `Computer · ${environment.label}` : "Computer"}
     >
+      {environment && (
+        <ComputerSetupSection
+          key={environment.environmentId}
+          environmentId={environment.environmentId}
+          environmentLabel={environment.label}
+          binaryPath={settings?.computerUseBinaryPath ?? "cua-driver"}
+          connected={environment.connection.phase === "connected"}
+        />
+      )}
       <SettingsRow
         {...searchableSetting("agent-computer-access")}
         description="Allow agents from every provider to inspect and control the desktop on this environment’s server computer using Cua Driver. Start a new agent session after enabling. Turning this off closes Pylon’s Cua connections."
@@ -60,7 +70,7 @@ export function ComputerIntegrationSettings() {
       />
       <SettingsRow
         {...searchableSetting("computer-use-binary")}
-        description="Install Cua Driver on that computer first. On macOS, grant Accessibility and Screen Recording to CuaDriver. A remote environment controls its own desktop; it does not control the Mac displaying Pylon."
+        description="Use cua-driver for Pylon’s managed setup, or enter a custom executable on this environment. Pylon preserves custom installations; updates and repairs apply only to the default driver."
         control={
           <DraftInput
             key={environment?.environmentId ?? "none"}

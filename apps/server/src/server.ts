@@ -1,3 +1,6 @@
+import { ComputerSetupService } from "./computer/ComputerSetupService.ts";
+import { CuaDriverBackend } from "./computer/CuaDriverBackend.ts";
+import { ComputerRuntimeGate } from "./computer/ComputerRuntimeGate.ts";
 import { EnvironmentHttpApi } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -579,6 +582,9 @@ export const makeRoutesLayer = Layer.mergeAll(
     Layer.provide(CuaService.layer.pipe(Layer.provide(ServerSettingsLayerLive))),
   ),
 ).pipe(
+  Layer.provide(ComputerSetupService.layer.pipe(Layer.provide(ServerSettingsLayerLive))),
+  Layer.provide(CuaDriverBackend.layer),
+  Layer.provide(ComputerRuntimeGate.layer),
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),

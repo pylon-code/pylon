@@ -1,3 +1,6 @@
+import { CuaDriverBackend } from "./CuaDriverBackend.ts";
+import { ComputerRuntimeGate } from "./ComputerRuntimeGate.ts";
+import * as Option from "effect/Option";
 import type { ServerSettings } from "@t3tools/contracts";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -99,6 +102,8 @@ export class CuaService extends Context.Service<
 export const makeCuaService = (connect: typeof connectCua = connectCua) =>
   Effect.gen(function* () {
     const settings = yield* ServerSettingsService;
+    const backend = yield* Effect.serviceOption(CuaDriverBackend);
+    const runtime = yield* Effect.serviceOption(ComputerRuntimeGate);
     const lock = yield* Semaphore.make(1);
     const sessions = new Map<
       string,
@@ -119,6 +124,7 @@ export const makeCuaService = (connect: typeof connectCua = connectCua) =>
       epoch += 1;
     }).pipe(Effect.andThen(closeWhere(() => true)));
     yield* Effect.addFinalizer(() => closeAll);
+    if (Option.isSome(runtime)) yield* runtime.value.register(closeAll);
     const changes = yield* settings.subscribeChanges;
     // Optional computer access must not read settings/DB state during server construction.
     let previous: ServerSettings | undefined;
@@ -165,7 +171,11 @@ export const makeCuaService = (connect: typeof connectCua = connectCua) =>
                 "Computer access is off. Enable it in Settings → Integrations → Computer, then start a new agent session.",
             });
           }
-          const command = current.computerUseBinaryPath.trim() || "cua-driver";
+          const command = Option.isSome(backend)
+            ? yield* backend.value
+                .resolve(current.computerUseBinaryPath)
+                .pipe(Effect.mapError((error) => new CuaError({ message: error.message })))
+            : current.computerUseBinaryPath.trim() || "cua-driver";
           let entry = sessions.get(owner.providerSessionId);
           if (entry && entry.command !== command) {
             yield* closeWhere(
@@ -213,7 +223,13 @@ export const makeCuaService = (connect: typeof connectCua = connectCua) =>
           if (revoked())
             return yield* new CuaError({ message: "Computer access was revoked before dispatch." });
           return yield* operation(entry.connection, latest.allowAgentComputerForeground);
-        }).pipe(lock.withPermits(1));
+        }).pipe(lock.withPermits(1), (work) =>
+          Option.isSome(runtime)
+            ? runtime.value
+                .access(work)
+                .pipe(Effect.mapError((error) => new CuaError({ message: error.message })))
+            : work,
+        );
       });
 
     return CuaService.of({
