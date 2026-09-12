@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeChildProcess from "node:child_process";
 
 import { expect, it } from "vite-plus/test";
 import { parse } from "yaml";
@@ -52,13 +54,107 @@ it("keeps Prime artifact graduation manual, protected, read-only, and immutable"
 
 it("pins every action and exposes no publishing or secret-bearing surface", () => {
   const uses = [...source.matchAll(/^\s*uses:\s*([^\s#]+)/gmu)].map((match) => match[1]!);
-  expect(uses.length).toBeGreaterThanOrEqual(3);
+  expect(uses.length).toBeGreaterThanOrEqual(2);
   for (const action of uses) expect(action).toMatch(/^[^@\s]+@[0-9a-f]{40}$/u);
   expect(source).not.toMatch(/\$\{\{\s*secrets\./u);
   expect(() => assertNoPublishingOrSkippedProof(source)).not.toThrow();
   expect(source).not.toContain("/releases/latest");
   expect(source).not.toMatch(/curl[^\n]*latest/iu);
-  expect(source).toContain("persist-credentials: false");
+});
+
+it("checks out the exact public revision without credentials or traversing vendored gitlinks", () => {
+  const graduate = record(record(workflow.jobs, "jobs").graduate, "graduate");
+  if (!Array.isArray(graduate.steps)) throw new Error("Expected workflow steps.");
+  const checkout = record(
+    graduate.steps.find(
+      (step: unknown) => record(step, "step").name === "Checkout exact Pylon revision",
+    ),
+    "checkout",
+  );
+  expect(checkout.env).toEqual({
+    SOURCE_SHA: "${{ github.sha }}",
+    REPOSITORY_URL: "https://github.com/pylon-code/pylon.git",
+  });
+  if (typeof checkout.run !== "string") throw new Error("Expected checkout script.");
+
+  const fixture = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "prime-graduation-checkout-"));
+  const repository = NodePath.join(fixture, "repository");
+  const workspace = NodePath.join(fixture, "workspace");
+  const globalConfig = NodePath.join(fixture, "gitconfig");
+  const env = {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: globalConfig,
+    GIT_CONFIG_COUNT: "0",
+    GIT_AUTHOR_NAME: "Fixture",
+    GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+    GIT_COMMITTER_NAME: "Fixture",
+    GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+  };
+  const git = (cwd: string, ...args: string[]) => {
+    const result = NodeChildProcess.spawnSync("git", args, { cwd, env, encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    return result.stdout.trim();
+  };
+  try {
+    NodeFS.mkdirSync(repository);
+    NodeFS.mkdirSync(workspace);
+    NodeFS.writeFileSync(globalConfig, "[credential]\n\thelper = forbidden-fixture-helper\n");
+    git(repository, "init", "--quiet");
+    NodeFS.writeFileSync(NodePath.join(repository, "source.txt"), "selected revision\n");
+    git(repository, "add", "source.txt");
+    git(repository, "commit", "--quiet", "-m", "Initial fixture");
+    const gitlink = git(repository, "rev-parse", "HEAD");
+    const vendoredPath = ".repos/alchemy-effect/.vendor/alchemy";
+    git(repository, "update-index", "--add", "--cacheinfo", `160000,${gitlink},${vendoredPath}`);
+    git(repository, "commit", "--quiet", "-m", "Unregistered vendored gitlink");
+    const selectedSha = git(repository, "rev-parse", "HEAD");
+    NodeFS.writeFileSync(NodePath.join(repository, "source.txt"), "later branch revision\n");
+    git(repository, "commit", "--quiet", "-am", "Advance branch beyond selected revision");
+    git(
+      repository,
+      "config",
+      "--file",
+      globalConfig,
+      "url./missing-fixture-remote.insteadOf",
+      repository,
+    );
+    const result = NodeChildProcess.spawnSync("bash", ["-c", checkout.run], {
+      cwd: workspace,
+      env: {
+        ...env,
+        GITHUB_REPOSITORY: "pylon-code/pylon",
+        SOURCE_SHA: selectedSha,
+        REPOSITORY_URL: repository,
+      },
+      encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(git(workspace, "rev-parse", "HEAD")).toBe(selectedSha);
+    expect(NodeFS.readFileSync(NodePath.join(workspace, "source.txt"), "utf8")).toBe(
+      "selected revision\n",
+    );
+    expect(NodeFS.existsSync(NodePath.join(workspace, ".repos"))).toBe(false);
+    expect(git(workspace, "ls-files", "--stage", vendoredPath)).toBe(
+      `160000 ${gitlink} 0\t${vendoredPath}`,
+    );
+    expect(git(workspace, "config", "--local", "--list")).not.toMatch(
+      /credential|extraheader|sshcommand/iu,
+    );
+    const oldCleanup = NodeChildProcess.spawnSync(
+      "git",
+      ["submodule", "foreach", "--recursive", "true"],
+      {
+        cwd: workspace,
+        env,
+        encoding: "utf8",
+      },
+    );
+    expect(oldCleanup.status).not.toBe(0);
+    expect(oldCleanup.stderr).toContain("No url found for submodule path");
+  } finally {
+    NodeFS.rmSync(fixture, { recursive: true, force: true });
+  }
 });
 
 it("keeps mutation sentinels for publishing commands and skipped proofs", () => {

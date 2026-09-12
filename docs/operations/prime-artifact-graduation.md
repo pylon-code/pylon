@@ -29,6 +29,11 @@ Do not dispatch unless the first response matches every setting above and both c
 token itself has `contents: read` only. Model credentials are neither configured nor accepted; runtime
 proofs use a bounded faux backend.
 
+The job fetches its exact Pylon source commit from the public canonical repository without Git
+credentials. It excludes vendored references from the working tree while retaining the original Git
+index. This avoids checkout-action credential cleanup traversing the repository's unregistered vendored
+gitlinks. Global and system Git configuration cannot inject credentials into the fetch.
+
 ## Run the protected gate
 
 1. Complete the environment readback above.

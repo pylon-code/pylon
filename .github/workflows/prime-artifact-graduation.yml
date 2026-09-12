@@ -57,13 +57,23 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Checkout exact Pylon revision
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          REPOSITORY_URL: https://github.com/pylon-code/pylon.git
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "pylon-code/pylon"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test ! -e .git
+          export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
+          export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false
+          unset GIT_CONFIG_PARAMETERS
+          git init --quiet
+          git remote add origin "$REPOSITORY_URL"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c protocol.version=2 fetch --quiet --no-tags --no-recurse-submodules --depth=1 origin "$SOURCE_SHA"
+          git checkout --quiet --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15 # v1
