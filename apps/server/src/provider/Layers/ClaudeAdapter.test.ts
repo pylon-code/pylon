@@ -3,6 +3,7 @@ import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type {
@@ -14,6 +15,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   ApprovalRequestId,
+  CheckpointRef,
   ClaudeSettings,
   ProviderDriverKind,
   ProviderItemId,
@@ -52,6 +54,11 @@ import {
 } from "../ClaudeModelCatalog.testFixtures.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+import {
+  claudeProjectDirectoryName,
+  readClaudeConversationAnchor,
+  readClaudeExactCursor,
+} from "../claudeConversationHistory.ts";
 import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -166,6 +173,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
 function makeHarness(config?: {
   readonly nativeEventLogPath?: string;
+  readonly replacementQueries?: boolean;
   readonly nativeEventLogger?: ClaudeAdapterLiveOptions["nativeEventLogger"];
   readonly cwd?: string;
   readonly baseDir?: string;
@@ -194,7 +202,8 @@ function makeHarness(config?: {
     ...(config?.getSessionMessages ? { getSessionMessages: config.getSessionMessages } : {}),
     ...(config?.forkSession ? { forkSession: config.forkSession } : {}),
     createQuery: (input) => {
-      if (createInput && config?.getSessionMessages) queries.push(new FakeClaudeQuery());
+      if (createInput && (config?.getSessionMessages || config?.replacementQueries))
+        queries.push(new FakeClaudeQuery());
       createInput = input;
       return queries.at(-1)!;
     },
@@ -7032,6 +7041,375 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect("uses immutable full native Claude snapshots for exact retry and idle recovery", () =>
+    Effect.gen(function* () {
+      const tempRoot = NodeFS.realpathSync(
+        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "pylon-claude-exact-")),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(tempRoot, { recursive: true, force: true })),
+      );
+      const cwd = NodePath.join(tempRoot, "workspace");
+      const configDir = NodePath.join(tempRoot, "claude");
+      NodeFS.mkdirSync(cwd);
+      const projectDir = NodePath.join(configDir, "projects", claudeProjectDirectoryName(cwd));
+      NodeFS.mkdirSync(projectDir, { recursive: true });
+      const file = (id: string) => NodePath.join(projectDir, `${id}.jsonl`);
+      const callbackEntered = Promise.withResolvers<void>();
+      const callbackReleased = Promise.withResolvers<void>();
+      let blockCallbackUuid = false;
+      const harness = makeHarness({
+        cwd,
+        baseDir: tempRoot,
+        claudeConfig: { homePath: configDir },
+        replacementQueries: true,
+        crypto: (crypto) => ({
+          ...crypto,
+          randomUUIDv4: Effect.suspend(() => {
+            if (!blockCallbackUuid) return crypto.randomUUIDv4;
+            blockCallbackUuid = false;
+            callbackEntered.resolve();
+            return Effect.promise(() => callbackReleased.promise).pipe(
+              Effect.andThen(crypto.randomUUIDv4),
+            );
+          }),
+        }),
+      });
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const incarnation = RuntimeSessionId.make("claude-exact-incarnation");
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          sessionIncarnationId: incarnation,
+          cwd,
+        });
+        const nativeId = (session.resumeCursor as { resume: string }).resume;
+        const operations = adapter.absoluteConversationRollback!;
+        assert.isFalse(yield* operations.isAvailable(THREAD_ID));
+        const rows: Array<Record<string, unknown>> = [];
+        const finishTurn = (text: string, hiddenAttachment: boolean) =>
+          Effect.gen(function* () {
+            const turn = yield* adapter.sendTurn({ threadId: THREAD_ID, input: text });
+            yield* Effect.promise(() => readFirstPromptMessage(harness.getLastCreateQueryInput()));
+            const parent = rows.at(-1)?.uuid ?? null;
+            const user = {
+              type: "user",
+              uuid: turn.turnId,
+              parentUuid: parent,
+              sessionId: nativeId,
+              cwd,
+              isSidechain: false,
+              timestamp: "2026-09-01T00:00:00.000Z",
+              message: { role: "user", content: text },
+            };
+            rows.push(user);
+            if (hiddenAttachment)
+              rows.push({
+                type: "attachment",
+                uuid: NodeCrypto.randomUUID(),
+                parentUuid: user.uuid,
+                sessionId: nativeId,
+                cwd,
+                isSidechain: false,
+                timestamp: "2026-09-01T00:00:00.000Z",
+                attachment: { type: "context", content: "private attached context" },
+              });
+            const assistant = {
+              type: "assistant",
+              uuid: NodeCrypto.randomUUID(),
+              parentUuid: rows.at(-1)!.uuid,
+              sessionId: nativeId,
+              cwd,
+              isSidechain: false,
+              timestamp: "2026-09-01T00:00:00.000Z",
+              parent_tool_use_id: "preserved-tool-parent",
+              parent_agent_id: "preserved-agent-parent",
+              message: {
+                id: "semantic-message",
+                role: "assistant",
+                content: [{ type: "text", text: "finished" }],
+              },
+            };
+            rows.push(assistant);
+            NodeFS.writeFileSync(
+              file(nativeId),
+              rows.map((row) => encodeUnknownJsonString(row)).join("\n") + "\n",
+            );
+            const completed = yield* adapter.streamEvents.pipe(
+              Stream.filter(
+                (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+              ),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkChild,
+            );
+            harness.query.emit({
+              type: "assistant",
+              session_id: nativeId,
+              uuid: assistant.uuid,
+              parent_tool_use_id: null,
+              message: assistant.message,
+            } as unknown as SDKMessage);
+            harness.query.emit({
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              errors: [],
+              session_id: nativeId,
+              uuid: NodeCrypto.randomUUID(),
+            } as unknown as SDKMessage);
+            yield* Fiber.join(completed);
+            return turn.turnId;
+          });
+        const firstTurn = yield* finishTurn("first prompt", true);
+        assert.isTrue(yield* operations.isAvailable(THREAD_ID));
+        const target = yield* operations.captureAnchor({
+          threadId: THREAD_ID,
+          binding: {
+            kind: "checkpoint",
+            checkpointTurnCount: 1,
+            turnId: firstTurn,
+            checkpointRef: CheckpointRef.make("checkpoint-one"),
+            checkpointOid: "oid-one",
+            sourceRevision: 1,
+          },
+        });
+        const targetAnchor = readClaudeConversationAnchor(target.anchor)!;
+        const targetFile = NodeFS.readFileSync(file(targetAnchor.snapshotSessionId), "utf8");
+        const secondTurn = yield* finishTurn("second prompt", false);
+        const second = yield* operations.captureAnchor({
+          threadId: THREAD_ID,
+          binding: {
+            kind: "checkpoint",
+            checkpointTurnCount: 2,
+            turnId: secondTurn,
+            checkpointRef: CheckpointRef.make("checkpoint-two"),
+            checkpointOid: "oid-two",
+            sourceRevision: 2,
+          },
+        });
+        const callbacks = harness.getLastCreateQueryInput()!.options;
+        const signal = yield* Effect.abortSignal;
+        blockCallbackUuid = true;
+        const suspendedQuestion = callbacks.canUseTool!(
+          "AskUserQuestion",
+          { questions: [] },
+          { signal, toolUseID: "late-question", requestId: "late-question" },
+        );
+        yield* Effect.promise(() => callbackEntered.promise);
+        const source = yield* operations.captureAnchor({
+          threadId: THREAD_ID,
+          binding: {
+            kind: "source",
+            turnId: secondTurn,
+            checkpointRef: CheckpointRef.make("checkpoint-two"),
+            checkpointOid: "oid-two",
+            sourceRevision: 3,
+          },
+        });
+        assert.equal(
+          (yield* adapter
+            .sendTurn({ threadId: THREAD_ID, input: "blocked after source capture" })
+            .pipe(Effect.result))._tag,
+          "Failure",
+        );
+        callbackReleased.resolve();
+        assert.equal((yield* Effect.promise(() => suspendedQuestion))?.behavior, "deny");
+        for (const toolName of ["Write", "AskUserQuestion"]) {
+          assert.equal(
+            (yield* Effect.promise(() =>
+              callbacks.canUseTool!(
+                toolName,
+                {},
+                { signal, toolUseID: "quarantined", requestId: "quarantined" },
+              ),
+            ))?.behavior,
+            "deny",
+          );
+        }
+        assert.equal(
+          (yield* Effect.promise(() =>
+            callbacks.onUserDialog!(
+              {
+                dialogKind: "resume_return",
+                payload: { sessionAgeMinutes: 1, estimatedTokens: 1 },
+              },
+              { signal, requestId: "quarantined-resume" },
+            ),
+          ))?.behavior,
+          "cancelled",
+        );
+        const sourceAnchor = readClaudeConversationAnchor(source.anchor)!;
+        const sourceFile = NodeFS.readFileSync(file(sourceAnchor.snapshotSessionId), "utf8");
+        NodeFS.writeFileSync(
+          file(targetAnchor.snapshotSessionId),
+          targetFile.replace("private attached context", "changed attached context"),
+        );
+        assert.equal(
+          (yield* operations.applyAnchor(THREAD_ID, target.anchor).pipe(Effect.result))._tag,
+          "Failure",
+        );
+        assert.equal(harness.query.closeCalls, 0);
+        assert.equal((yield* operations.inspectAnchor(THREAD_ID)).digest, source.digest);
+        NodeFS.writeFileSync(file(targetAnchor.snapshotSessionId), targetFile);
+        yield* operations.applyAnchor(THREAD_ID, target.anchor);
+        const selected = (yield* adapter.listSessions())[0]!;
+        const selectedResume = selected.resumeCursor as { resume: string; claudeExact: unknown };
+        assert.notEqual(selectedResume.resume, targetAnchor.snapshotSessionId);
+        assert.equal((yield* operations.inspectAnchor(THREAD_ID)).digest, target.digest);
+        assert.equal(harness.queries.length, 2);
+        yield* operations.applyAnchor(THREAD_ID, target.anchor);
+        assert.equal(harness.queries.length, 2);
+        assert.equal((yield* adapter.listSessions())[0]?.sessionIncarnationId, incarnation);
+        assert.equal(NodeFS.readFileSync(file(targetAnchor.snapshotSessionId), "utf8"), targetFile);
+        assert.equal(NodeFS.readFileSync(file(sourceAnchor.snapshotSessionId), "utf8"), sourceFile);
+        assert.equal(
+          (yield* adapter
+            .sendTurn({ threadId: THREAD_ID, input: "blocked while quarantined" })
+            .pipe(Effect.result))._tag,
+          "Failure",
+        );
+        yield* operations.releaseAnchor(THREAD_ID, target.anchor);
+        const reboundAnchor = {
+          ...targetAnchor,
+          completedTurnId: "same-content-boundary",
+          checkpointTurnCount: 7,
+        };
+        yield* operations.applyAnchor(THREAD_ID, reboundAnchor);
+        const rebound = readClaudeExactCursor(
+          ((yield* adapter.listSessions())[0]!.resumeCursor as { claudeExact: unknown })
+            .claudeExact,
+        )!;
+        assert.equal(rebound.idle?.completedTurnId, "same-content-boundary");
+        assert.equal(rebound.idle?.turnCount, 7);
+        assert.equal(harness.queries.length, 2);
+        yield* operations.applyAnchor(THREAD_ID, target.anchor);
+        yield* operations.releaseAnchor(THREAD_ID, target.anchor);
+        const durable = (yield* adapter.listSessions())[0]!;
+        assert.equal(
+          readClaudeExactCursor((durable.resumeCursor as { claudeExact: unknown }).claudeExact)
+            ?.idle?.turnCount,
+          1,
+        );
+        yield* adapter.stopSession(THREAD_ID);
+        assert.equal(
+          yield* adapter.recoverSession!({
+            threadId: THREAD_ID,
+            providerInstanceId: session.providerInstanceId!,
+            sessionIncarnationId: RuntimeSessionId.make("wrong-incarnation"),
+            runtimeMode: "full-access",
+            cwd,
+            resumeCursor: durable.resumeCursor,
+          }),
+          null,
+        );
+        const recovered = yield* adapter.recoverSession!({
+          threadId: THREAD_ID,
+          providerInstanceId: session.providerInstanceId!,
+          sessionIncarnationId: incarnation,
+          runtimeMode: "full-access",
+          cwd,
+          resumeCursor: {
+            ...(durable.resumeCursor as Record<string, unknown>),
+            resumeSessionAt: "550e8400-e29b-41d4-a716-446655440099",
+            turnCount: 99,
+            turnStartMessageIds: [],
+          },
+        });
+        assert.isNotNull(recovered);
+        const recoveredPrivate = readClaudeExactCursor(
+          (durable.resumeCursor as { claudeExact: unknown }).claudeExact,
+        )!;
+        assert.equal(
+          (recovered!.resumeCursor as { resumeSessionAt: string }).resumeSessionAt,
+          recoveredPrivate.idle!.lastAssistantUuid,
+        );
+        assert.equal((recovered!.resumeCursor as { turnCount: number }).turnCount, 1);
+        assert.isUndefined(harness.getLastCreateQueryInput()?.options.resumeSessionAt);
+        yield* operations.prepareRecovery!({
+          threadId: THREAD_ID,
+          sourceAnchor: source.anchor,
+          desiredAnchor: target.anchor,
+          expectedAnchor: target.anchor,
+        });
+        yield* adapter.activateRecoveredSession!(THREAD_ID);
+        assert.equal(
+          (yield* adapter
+            .sendTurn({ threadId: THREAD_ID, input: "still quarantined" })
+            .pipe(Effect.result))._tag,
+          "Failure",
+        );
+        yield* operations.releaseAnchor(THREAD_ID, target.anchor);
+        assert.equal((yield* operations.inspectAnchor(THREAD_ID)).digest, target.digest);
+        const rootAttempt = yield* operations
+          .captureAnchor({
+            threadId: THREAD_ID,
+            binding: {
+              kind: "checkpoint",
+              checkpointTurnCount: 0,
+              turnId: null,
+              checkpointRef: CheckpointRef.make("root"),
+              checkpointOid: "root-oid",
+              sourceRevision: 4,
+            },
+          })
+          .pipe(Effect.result);
+        assert.equal(rootAttempt._tag, "Failure");
+        // Full JSONL proof catches context invisible to the SDK message projection.
+        const liveId = ((yield* adapter.listSessions())[0]!.resumeCursor as { resume: string })
+          .resume;
+        NodeFS.writeFileSync(
+          file(liveId),
+          NodeFS.readFileSync(file(liveId), "utf8").replace(
+            "private attached context",
+            "changed attached context",
+          ),
+        );
+        assert.equal(
+          (yield* operations.inspectAnchor(THREAD_ID).pipe(Effect.result))._tag,
+          "Failure",
+        );
+        assert.notEqual(second.digest, target.digest);
+        // Ordinary explicit resume keeps native history even when exact proof is
+        // stale, and never reuses a previous incarnation's private authorization.
+        const staleCursor = (yield* adapter.listSessions())[0]!.resumeCursor;
+        yield* adapter.stopSession(THREAD_ID);
+        assert.equal(
+          yield* adapter.recoverSession!({
+            threadId: THREAD_ID,
+            providerInstanceId: session.providerInstanceId!,
+            sessionIncarnationId: incarnation,
+            runtimeMode: "full-access",
+            cwd,
+            resumeCursor: staleCursor,
+          }),
+          null,
+        );
+        const resumed = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          cwd,
+          sessionIncarnationId: RuntimeSessionId.make("new-normal-incarnation"),
+          resumeCursor: staleCursor,
+        });
+        assert.equal(harness.getLastCreateQueryInput()?.options.resume, liveId);
+        assert.isUndefined((resumed.resumeCursor as { claudeExact?: unknown }).claudeExact);
+        assert.isFalse(yield* operations.isAvailable(THREAD_ID));
+        const resumedEvents = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil(
+            (event) =>
+              event.type === "session.state.changed" &&
+              event.sessionIncarnationId === resumed.sessionIncarnationId,
+          ),
+          Stream.runCollect,
+        );
+        assert.isFalse(encodeUnknownJsonString(resumedEvents).includes("claudeExact"));
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
 
   it.effect("rewinds a steered Claude turn after recovery and preserves fork boundaries", () => {
     const forkCalls: Array<Parameters<NonNullable<ClaudeAdapterLiveOptions["forkSession"]>>> = [];

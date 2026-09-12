@@ -41,7 +41,7 @@ A target is published as available only after checkpoint capture proves all of t
 
 1. the checkpoint is immutable and ready;
 2. the provider adapter advertises the absolute rollback gate;
-3. the live session is the managed native Prime or exact-capable OpenCode or Codex session for the projected incarnation;
+3. the live session is the managed native Prime or exact-capable OpenCode, Codex or Claude session for the projected incarnation;
 4. a matching exact provider anchor was stored for that checkpoint.
 
 Admission repeats the proof, checks the exact source revision, requires an idle thread and empty provider queues, and acquires the canonical workspace lease. Published availability is never admission authority.
@@ -51,6 +51,8 @@ OpenCode snapshots native history into private immutable forks and verifies full
 OpenCode's optional experimental plan mode stores a plan file under a name derived from the native session's creation time and slug. Native forks regenerate that identity without copying the file, so exact rewind is unavailable when `OPENCODE_EXPERIMENTAL_PLAN_MODE` is enabled, including through `OPENCODE_EXPERIMENTAL` unless the plan-mode flag explicitly disables it. Externally managed OpenCode servers also remain ineligible because their API does not expose that runtime flag. Ordinary plan mode, conversation history and resume remain usable; Pylon neither changes these flags nor copies plan files during rewind.
 
 Codex captures immutable full native forks for owned completed turns. Exact proof includes the complete bounded native JSONL history and inactive native goal state; fresh forks defer goal continuation until the next explicit send. Original checkpoints survive compaction separately from current source proofs. Recovery verifies the same account, workspace and incarnation before selecting a fresh deferred fork. Active or uninspectable goals, paginated forks, external history bases, non-regular files, histories over 16 MiB or 100,000 records, and lines over 1 MiB are ineligible. Imported history has no guessed root or old Pylon turn bindings. Ordinary resume remains available.
+
+Claude captures immutable inclusive native forks and verifies full raw JSONL context against the SDK projection. Proof uses scoped regular-file reads with a 64 MiB cap and a 30-second deadline. Source capture quarantines queries and callbacks before returning a receipt; selected-history recovery requires the same persisted incarnation. Empty roots, uncaptured or previous-incarnation checkpoints, pending native work, and missing, changed or unsupported histories remain unavailable. Compaction that removes a provable mapped boundary makes that checkpoint unavailable. Ordinary resume remains usable.
 
 ## Multi-client behavior
 

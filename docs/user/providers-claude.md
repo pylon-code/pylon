@@ -88,6 +88,18 @@ You can also send `/compact` in an existing conversation. Web and desktop offer 
 context meter and may suggest it when you return to a large older thread. See
 [commands and skills](./composer.md#commands-and-skills) for using composer commands.
 
+## Revert completed turns
+
+Pylon can revert Claude conversations to completed checkpoints whose full native history it has
+verified. You can keep the current files or restore the checkpoint's files. Pylon keeps immutable
+conversation snapshots and resumes a fresh fork, so retries do not remove additional turns.
+
+Exact revert requires an idle session and a checkpoint captured in the current session identity.
+It is unavailable for the empty conversation, older uncaptured checkpoints, or native history that
+is missing, changed, compacted beyond proof, unsupported, or larger than 64 MiB. Background tasks and
+pending inputs must finish first. Stopping and normally resuming a session preserves Claude's native
+conversation but requires new completed checkpoints before exact revert becomes available again.
+
 ## Task list
 
 Claude Code hides its task-tracking tools on its newest models. Pylon turns them back on by default,
@@ -131,3 +143,7 @@ put the router's endpoint and credential variables in that instance's **Environm
 router must run where the environment can reach it. Follow the
 [Claude Code Router instructions](https://github.com/musistudio/claude-code-router) for its
 installation and routing configuration.
+
+## Rewind a conversation
+
+Eligible completed turns support rewinding with either restored files or your current files. Pylon verifies private native history snapshots before selecting a restored conversation. Empty roots, older turns without snapshots, and checkpoints whose boundaries were removed by compaction remain unavailable. Finish pending tools and questions before rewinding. Ordinary resume remains usable when exact history cannot be verified.

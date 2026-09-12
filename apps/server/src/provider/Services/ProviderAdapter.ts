@@ -67,7 +67,7 @@ export type ProviderConversationRollbackMode = "absolute" | "relative" | "unsupp
 export const BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES = {
   antigravity: "unsupported",
   codex: "absolute",
-  claude: "relative",
+  claude: "absolute",
   cursor: "unsupported",
   grok: "unsupported",
   openCode: "absolute",

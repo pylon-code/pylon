@@ -7,7 +7,7 @@ describe("built-in provider conversation rollback modes", () => {
     expect(BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES).toEqual({
       antigravity: "unsupported",
       codex: "absolute",
-      claude: "relative",
+      claude: "absolute",
       cursor: "unsupported",
       grok: "unsupported",
       openCode: "absolute",
