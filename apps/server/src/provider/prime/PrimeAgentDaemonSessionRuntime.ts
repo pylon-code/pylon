@@ -1693,6 +1693,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           readonly generation: number;
           readonly proofEpoch: number;
           readonly fingerprints: ReadonlySet<string>;
+          readonly correlationIds: Set<string>;
+          provisionalAssistant?:
+            | {
+                readonly correlationId: string;
+                readonly events: Array<ReturnType<typeof offerRuntimeEvent>>;
+                weight: number;
+              }
+            | undefined;
         }
       | undefined;
     const transcriptFingerprint = (message: PrimeDaemonMessage) =>
@@ -3485,17 +3493,6 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           correlatedPromptLifecycle: correlatedPromptLifecycleAvailable,
         }),
       );
-      // A published native snapshot can precede message_end for either side of
-      // a completed tool cycle. Do not project or advance transcript progress twice.
-      if (
-        decoded._tag === "MessageCompleted" &&
-        (decoded.message.role === "toolResult" || decoded.message.role === "assistant") &&
-        activeWorkerRecovery === undefined &&
-        recoveredMessageCompletions?.generation === connectionGeneration &&
-        recoveredMessageCompletions.proofEpoch === correlatedProofEpoch &&
-        recoveredMessageCompletions.fingerprints.has(transcriptFingerprint(decoded.message))
-      )
-        return Effect.void;
       if (
         correlatedPromptLifecycleAvailable &&
         decoded._tag === "SessionResynced" &&
@@ -3665,7 +3662,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }
 
       const snapshotResolution = reconciledSnapshot ? reconnectResolution : undefined;
-      return offerRuntimeEvent(
+      const forwarded = offerRuntimeEvent(
         event,
         correlatedProofIngressEpoch,
         () => {
@@ -3755,6 +3752,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                   ? {
                       generation: eventConnectionGeneration,
                       proofEpoch: correlatedProofEpoch,
+                      correlationIds: new Set(
+                        event.messages.some((message) => message.role === "assistant")
+                          ? event.promptLifecycles?.records.map((record) => record.correlationId)
+                          : [],
+                      ),
                       fingerprints: new Set(
                         event.messages
                           .filter(
@@ -3796,6 +3798,72 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         providerRouteRetirement,
         rawRecoveryCursor,
       );
+      const recovered = recoveredMessageCompletions;
+      if (
+        activeWorkerRecovery !== undefined ||
+        recovered?.generation !== connectionGeneration ||
+        recovered.proofEpoch !== correlatedProofEpoch
+      )
+        return forwarded;
+
+      // Native start/update events have no mandatory message identity. Retain one
+      // bounded assistant segment until its exact completion proves whether the
+      // snapshot already published it. A different completion releases it in order.
+      const correlationId =
+        event.attribution?.scope === "prompt" ? event.attribution.correlationId : undefined;
+      if (correlationId !== undefined && !recovered.correlationIds.has(correlationId))
+        return forwarded;
+      if (
+        correlationId !== undefined &&
+        recovered.correlationIds.has(correlationId) &&
+        ((event._tag === "MessageStarted" && event.message.role === "assistant") ||
+          event._tag === "AssistantStream")
+      ) {
+        const pending = recovered.provisionalAssistant;
+        if (
+          pending !== undefined &&
+          (pending.correlationId !== correlationId || event._tag === "MessageStarted")
+        ) {
+          recovered.provisionalAssistant = undefined;
+          return offerRuntimeEvent(
+            { _tag: "CorrelatedProtocolViolation" },
+            correlatedProofIngressEpoch,
+            undefined,
+            ordinaryIngressFence,
+            providerRouteRetirement,
+          );
+        }
+        const segment = pending ?? { correlationId, events: [], weight: 0 };
+        const weight = boundedCorrelatedProofRouteWeight(event);
+        if (
+          segment.events.length >= PRIME_AGENT_EVENT_BUFFER_CAPACITY ||
+          weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - segment.weight
+        ) {
+          recovered.provisionalAssistant = undefined;
+          return failRuntimeEventIngress();
+        }
+        segment.events.push(forwarded);
+        segment.weight += weight;
+        recovered.provisionalAssistant = segment;
+        return Effect.void;
+      }
+      if (event._tag === "MessageCompleted") {
+        const duplicate = recovered.fingerprints.has(transcriptFingerprint(event.message));
+        if (event.message.role === "assistant") {
+          const pending = recovered.provisionalAssistant;
+          recovered.provisionalAssistant = undefined;
+          if (duplicate && (pending === undefined || pending.correlationId === correlationId))
+            return Effect.void;
+          if (correlationId !== undefined) recovered.correlationIds.delete(correlationId);
+          if (pending !== undefined)
+            return Effect.forEach(pending.events, (effect) => effect, { discard: true }).pipe(
+              Effect.andThen(forwarded),
+            );
+        } else if (event.message.role === "toolResult" && duplicate) {
+          return Effect.void;
+        }
+      }
+      return forwarded;
     };
     const routeRawEvent = (
       raw: unknown,

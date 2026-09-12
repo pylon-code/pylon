@@ -1586,6 +1586,136 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     );
   }
 
+  for (const variant of ["replayed", "different completion", "new prompt", "overflow"] as const) {
+    it.effect(`reconciles a delayed assistant segment after a snapshot: ${variant}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const correlationId = "recovered-prompt";
+          const lifecycle = promptLifecycle(correlationId, "delivered", 2);
+          const test = fixture({
+            correlatedPromptLifecycleCapability: true,
+            rawSnapshot: { ...snapshot(), promptLifecycles: { records: [], expired: [] } },
+          });
+          const runtime = yield* test.make();
+          const expectedCount = variant === "overflow" ? 5 : variant === "replayed" ? 7 : 10;
+          const received = yield* collectEvents(runtime, expectedCount).pipe(
+            Effect.forkChild({ startImmediately: true }),
+          );
+          const recovered = terminalAssistantMessage("recovered result", 2);
+          test.setCorrelatedPromptLifecycleProof(false);
+          yield* Effect.promise(() =>
+            test.emit({ type: "connection_status", status: "reconnecting" }),
+          );
+          test.setCorrelatedPromptLifecycleProof(true);
+          yield* Effect.promise(() =>
+            test.emit({
+              type: "session_resynced",
+              snapshot: {
+                ...snapshot(9),
+                state: { ...snapshot(9).state, messageCount: 1 },
+                messages: [recovered],
+                promptLifecycles: { records: [lifecycle], expired: [] },
+                replay: {
+                  status: "complete",
+                  toSequence: 9,
+                  toCursor: { generation: "daemon-1", sequence: 9 },
+                },
+              },
+            }),
+          );
+          expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+          yield* Effect.promise(() =>
+            test.emit({ type: "connection_status", status: "connected" }),
+          );
+          const attributedId = variant === "new prompt" ? "new-prompt" : correlationId;
+          const emit = (event: Record<string, unknown>) =>
+            Effect.promise(() =>
+              test.emit({
+                type: "session_event",
+                attribution: { scope: "prompt", correlationId: attributedId },
+                event: { ...event, promptCorrelationId: attributedId },
+              }),
+            );
+          yield* emit({ type: "message_start", message: { ...recovered, content: [] } });
+          if (variant === "overflow") {
+            for (let index = 0; index < 256; index += 1) {
+              yield* emit({
+                type: "message_update",
+                message: recovered,
+                assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "r" },
+              });
+            }
+            expect(yield* Fiber.join(received)).toEqual([
+              expect.objectContaining({ _tag: "SessionResynced" }),
+              expect.objectContaining({ _tag: "ConnectionStatus" }),
+              expect.objectContaining({ _tag: "SessionResynced" }),
+              expect.objectContaining({ _tag: "ConnectionStatus" }),
+              {
+                _tag: "SessionClosed",
+                error: "Prime Agent event ingress exceeded its bounded capacity.",
+              },
+            ]);
+            return;
+          }
+          yield* emit({
+            type: "message_update",
+            message: recovered,
+            assistantMessageEvent: {
+              type: "text_delta",
+              contentIndex: 0,
+              delta: "recovered result",
+            },
+          });
+          yield* emit({
+            type: "message_end",
+            message:
+              variant === "different completion" ? { ...recovered, timestamp: 3 } : recovered,
+          });
+          const next = terminalAssistantMessage("next genuine result", 4);
+          yield* emit({ type: "message_start", message: { ...next, content: [] } });
+          yield* emit({
+            type: "message_update",
+            message: next,
+            assistantMessageEvent: {
+              type: "text_delta",
+              contentIndex: 0,
+              delta: "next genuine result",
+            },
+          });
+          yield* emit({ type: "message_end", message: next });
+          const events = yield* Fiber.join(received);
+          const output = events.filter(
+            (event) =>
+              event._tag === "MessageStarted" ||
+              event._tag === "AssistantStream" ||
+              event._tag === "MessageCompleted",
+          );
+          const expected = [
+            expect.objectContaining({ _tag: "MessageStarted" }),
+            expect.objectContaining({ _tag: "AssistantStream", delta: "next genuine result" }),
+            expect.objectContaining({
+              _tag: "MessageCompleted",
+              message: expect.objectContaining({ text: "next genuine result" }),
+            }),
+          ];
+          expect(output).toEqual(
+            variant === "replayed"
+              ? expected
+              : [
+                  expect.objectContaining({ _tag: "MessageStarted" }),
+                  expect.objectContaining({ _tag: "AssistantStream", delta: "recovered result" }),
+                  expect.objectContaining({
+                    _tag: "MessageCompleted",
+                    message: expect.objectContaining({ text: "recovered result" }),
+                  }),
+                  ...expected,
+                ],
+          );
+        }),
+      ),
+    );
+  }
+
   it.effect("blocks correlated commands until the reconnect snapshot is adapter-settled", () =>
     Effect.scoped(
       Effect.gen(function* () {

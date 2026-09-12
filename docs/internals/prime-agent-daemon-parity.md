@@ -212,7 +212,12 @@ An unchanged snapshot prefix alone does not establish an unobserved call's owner
 The runtime suppresses later exact assistant and tool-result completions already published in that
 attachment's bounded correlated snapshot, keeping output and transcript progress from duplicating.
 The snapshot cache is cleared for a new recovery and does not cover provisional worker snapshots or
-changed messages.
+changed messages. Starts and deltas have no mandatory native message ID, so one provisional assistant
+segment for a prompt present in that snapshot is retained until its completed-message fingerprint is
+known. An exact match discards the replay; a different completion releases the segment in order and
+restores normal streaming for that prompt. Retention shares the 256-event/64-MiB limits and fails closed
+on overflow. A new connection/proof generation discards the provisional segment; new prompt IDs stream
+normally. Timestamps and optional response IDs are not treated as unique message identity.
 
 Prime 0.9.4 can insert one hidden `harness_digest` before the first submitted user message. Pylon retains
 its timestamp and SHA-256 content/details identity in the native transcript, preserving the native absolute
