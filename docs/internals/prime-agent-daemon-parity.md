@@ -341,6 +341,10 @@ with the transcript count and fingerprints it actually consumed, so an idle rest
 completed transcript rather than an earlier turn baseline. A later connection snapshot cannot substitute
 for an individual event's cursor.
 
+Correlated submission responses acknowledge admission; their lifecycle observations are already queued
+with the transcript events. The adapter settles turns only through that ordered stream, so a fast terminal
+response cannot overtake the delivered lifecycle or its final assistant message.
+
 A failed managed start returns its original error and cannot fall back to an ordinary native session.
 Any retained recovery row also excludes ordinary admission. Failed initialization uses the same exact
 owned cleanup proof as normal teardown: only a matched settled result clears its native receipt and

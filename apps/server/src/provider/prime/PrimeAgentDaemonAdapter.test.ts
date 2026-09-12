@@ -931,15 +931,17 @@ function fakeRuntimeFactory(
             if (captures.correlatedPromptObserved !== undefined) {
               yield* Queue.offer(captures.correlatedPromptObserved, prompt.correlationId);
             }
-            return (
-              captures.correlatedPromptSubmitResult ?? {
-                correlationId: prompt.correlationId,
-                phase: "owned",
-                kind: prompt.text.startsWith("/") ? "session_command" : "model_prompt",
-                revision: 1,
-                deliveryCrossed: false,
-              }
-            );
+            const lifecycle = captures.correlatedPromptSubmitResult ?? {
+              correlationId: prompt.correlationId,
+              phase: "owned" as const,
+              kind: prompt.text.startsWith("/")
+                ? ("session_command" as const)
+                : ("model_prompt" as const),
+              revision: 1,
+              deliveryCrossed: false,
+            };
+            yield* Queue.offer(queue, { _tag: "PromptLifecycleUpdated", lifecycle });
+            return lifecycle;
           }),
         cancelPromptLifecycle: (correlationId, options) =>
           Effect.gen(function* () {
@@ -1224,6 +1226,88 @@ const createContinuityImage = Effect.fn("createContinuityImage")(function* () {
 });
 
 describe("PrimeAgentDaemonAdapter", () => {
+  it.effect("keeps a fast submit response behind its queued lifecycle and transcript events", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const submitResponse = yield* Deferred.make<PrimeDaemonPromptLifecycleSnapshot>();
+        const deliveredBlocked = yield* Deferred.make<void>();
+        const releaseEvents = yield* Deferred.make<void>();
+        const delegate = fakeRuntimeFactory(captures);
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: (input) =>
+            delegate(input).pipe(
+              Effect.map(
+                (runtime) =>
+                  ({
+                    ...runtime,
+                    submitCorrelatedPrompt: (prompt) =>
+                      Effect.gen(function* () {
+                        yield* Queue.offer(
+                          captures.correlatedPromptObserved!,
+                          prompt.correlationId,
+                        );
+                        return yield* Deferred.await(submitResponse);
+                      }),
+                    events: runtime.events.pipe(
+                      Stream.tap((event) =>
+                        event._tag === "PromptLifecycleUpdated" &&
+                        event.lifecycle.phase === "delivered"
+                          ? Deferred.succeed(deliveredBlocked, undefined).pipe(
+                              Effect.andThen(Deferred.await(releaseEvents)),
+                            )
+                          : Effect.void,
+                      ),
+                    ),
+                  }) satisfies PrimeAgentDaemonSessionRuntime,
+              ),
+            ),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "fast complete response" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+        const attribution = { scope: "prompt" as const, correlationId };
+        const message = assistantMessage("the complete fast answer");
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "owned", 1),
+        });
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+        });
+        yield* offer(captures, { _tag: "MessageCompleted", message, attribution });
+        yield* offer(captures, { _tag: "RunCompleted", messages: [message], attribution });
+        const completed = lifecycleSnapshot(correlationId, "completed", 3, { usage });
+        yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: completed });
+        yield* Deferred.await(deliveredBlocked);
+        yield* Deferred.succeed(submitResponse, completed);
+        yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* Deferred.succeed(releaseEvents, undefined);
+        const result = yield* Fiber.join(turnFiber);
+        if (!subscription.events.some((event) => event.type === "turn.completed")) {
+          yield* awaitObservedType(subscription.observed, "turn.completed");
+        }
+        const events = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(events.filter((event) => event.type === "turn.completed")).toEqual([
+          expect.objectContaining({ payload: expect.objectContaining({ state: "completed" }) }),
+        ]);
+        expect(events.filter((event) => event.type === "runtime.error")).toHaveLength(0);
+        expect(
+          events.filter(
+            (event) => event.type === "content.delta" && event.payload.delta === message.text,
+          ),
+        ).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("stamps every daemon event path from the captured session incarnation", () =>
     Effect.scoped(
       Effect.gen(function* () {

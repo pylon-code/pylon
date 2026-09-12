@@ -1903,6 +1903,36 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect("queues a reconciled submission lifecycle before returning it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const correlationId = "6a02296b-5ec6-42c9-ad78-758fc6aac770";
+        const lifecycle = promptLifecycle(correlationId, "owned", 1);
+        const test = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: {
+            ...snapshot(),
+            promptLifecycles: { records: [], expired: [] },
+          },
+          submitCorrelatedPromptImpl: () => Promise.reject(new Error("lost submission response")),
+          getPromptLifecyclesImpl: () => Promise.resolve({ records: [lifecycle], expired: [] }),
+        });
+        const runtime = yield* test.make();
+        const events = yield* collectEvents(runtime, 2).pipe(Effect.forkChild);
+        expect(
+          yield* runtime.submitCorrelatedPrompt({
+            text: "reconcile the accepted submission",
+            correlationId,
+            queueIfBusy: true,
+          }),
+        ).toEqual(lifecycle);
+        expect((yield* Fiber.join(events)).slice(1)).toEqual([
+          { _tag: "PromptLifecycleUpdated", lifecycle },
+        ]);
+      }),
+    ),
+  );
+
   it.effect("rejects an awaited lifecycle reconciliation when its proof fence changes", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -1188,6 +1188,7 @@ export interface PrimeAgentDaemonSessionRuntime {
   ) => boolean;
   /** True only when the daemon explicitly negotiated correlated prompt lifecycle support. */
   readonly correlatedPromptLifecycleAvailable: boolean;
+  /** Accepted lifecycle observations are queued in events; the response must not settle a turn. */
   readonly submitCorrelatedPrompt: (
     input: PrimeAgentDaemonCorrelatedPromptInput,
   ) => Effect.Effect<PrimeDaemonPromptLifecycleSnapshot, PrimeAgentDaemonSessionRuntimeError>;

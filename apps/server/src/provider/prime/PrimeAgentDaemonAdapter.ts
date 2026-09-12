@@ -5973,7 +5973,8 @@ export function makePrimeAgentDaemonAdapter(
           const runPrompt = Effect.gen(function* () {
             const turnModel = requestedModel || context.session.model || "default";
             if (turn.correlationId !== undefined) {
-              const lifecycle = yield* context.runtime
+              // Lifecycle and transcript events settle through the same ordered stream.
+              yield* context.runtime
                 .submitCorrelatedPrompt({
                   text,
                   correlationId: turn.correlationId,
@@ -5986,10 +5987,6 @@ export function makePrimeAgentDaemonAdapter(
                     runtimeOperationError(input.threadId, "session/prompt", error),
                   ),
                 );
-              yield* withThreadLock(
-                context.threadId,
-                applyCorrelatedPromptLifecycleLocked(context, lifecycle),
-              );
             } else {
               yield* context.runtime
                 .prompt({
