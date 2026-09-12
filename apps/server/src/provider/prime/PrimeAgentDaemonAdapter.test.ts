@@ -2085,6 +2085,7 @@ describe("PrimeAgentDaemonAdapter", () => {
     "multiple",
     "unknown id",
     "wrong name",
+    "ambiguous name",
     "duplicate",
     "already observed",
     "unattributed call",
@@ -2138,6 +2139,7 @@ describe("PrimeAgentDaemonAdapter", () => {
               toolCalls: [
                 { id: "tool-1", name: "mcp_list_tools_t3-code" },
                 ...(variant === "multiple" ? [{ id: "tool-2", name: "read" }] : []),
+                ...(variant === "ambiguous name" ? [{ id: "tool-1", name: "different" }] : []),
               ],
             };
             const result = {

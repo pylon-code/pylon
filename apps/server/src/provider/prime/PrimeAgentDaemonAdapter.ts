@@ -2700,6 +2700,8 @@ export function makePrimeAgentDaemonAdapter(
                       missingMessages.every((message) => {
                         if (
                           message.role !== "toolResult" ||
+                          activeTurn.durableToolCallNames.get(message.toolCallId) !==
+                            message.toolName ||
                           !activeTurn.completedRunMessages.some(
                             (observed) =>
                               observed.role === "assistant" &&
