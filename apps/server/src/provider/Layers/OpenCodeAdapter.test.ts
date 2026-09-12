@@ -7899,6 +7899,89 @@ const completeExactOpenCodeTurn = (
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCode exact rollback", (it) => {
   it.effect(
+    "keeps the first completed boundary when a duplicate completion fork returns late",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("exact-duplicate-completion");
+        const push = makeOpenCodeEventQueue();
+        yield* startExactOpenCodeSession(adapter, threadId);
+        const completed = yield* Deferred.make<void>();
+        const drained = yield* Deferred.make<void>();
+        const observer = yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) => {
+            if (event.threadId !== threadId) return Effect.void;
+            if (event.type === "turn.completed") return Deferred.succeed(completed, undefined);
+            if (
+              event.type === "thread.metadata.updated" &&
+              event.payload.name === "completion drained"
+            )
+              return Deferred.succeed(drained, undefined);
+            return Effect.void;
+          }),
+          Effect.forkChild,
+        );
+        const turn = yield* adapter.sendTurn({
+          threadId,
+          input: "Complete once",
+          modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+        });
+        const prompt = runtimeMock.state.promptCalls.at(-1) as {
+          sessionID: string;
+          messageID: string;
+        };
+        runtimeMock.state.messages[0]!.info.sessionID = prompt.sessionID;
+        runtimeMock.state.messages.push({
+          info: {
+            id: "completed-answer",
+            sessionID: prompt.sessionID,
+            role: "assistant",
+            parentID: prompt.messageID,
+          },
+          parts: [],
+        });
+        const workerEntered = promiseWithResolvers<void>();
+        const workerRelease = promiseWithResolvers<void>();
+        const sseEntered = promiseWithResolvers<void>();
+        const sseRelease = promiseWithResolvers<void>();
+        let forks = 0;
+        runtimeMock.state.forkImplementation = () => {
+          if (++forks === 1) {
+            workerEntered.resolve();
+            return workerRelease.promise;
+          }
+          sseEntered.resolve();
+          return sseRelease.promise;
+        };
+        // Reconnection reconciles idle status in a worker while the event pump remains live.
+        push({ type: "server.connected", properties: {} });
+        yield* Effect.promise(() => workerEntered.promise);
+        push({
+          type: "session.status",
+          properties: { sessionID: prompt.sessionID, status: { type: "idle" } },
+        });
+        yield* Effect.promise(() => sseEntered.promise);
+        workerRelease.resolve();
+        yield* Deferred.await(completed);
+        const exact = adapter.absoluteConversationRollback!;
+        const binding = exactCheckpointBinding(1, turn.turnId);
+        const original = yield* exact.captureAnchor({ threadId, binding });
+        const cursor = (yield* adapter.listSessions())[0]!.resumeCursor;
+        sseRelease.resolve();
+        // An event behind the duplicate completion is an explicit event-pump drain receipt.
+        push({
+          type: "session.updated",
+          properties: { info: { id: prompt.sessionID, title: "completion drained" } },
+        });
+        yield* Deferred.await(drained);
+        NodeAssert.deepEqual((yield* adapter.listSessions())[0]!.resumeCursor, cursor);
+        NodeAssert.deepEqual(yield* exact.captureAnchor({ threadId, binding }), original);
+        NodeAssert.equal(forks, 2);
+        yield* Fiber.interrupt(observer);
+      }),
+  );
+
+  it.effect(
     "captures absolute completed turns, applies idempotently, and compensates without changing source history",
     () =>
       Effect.gen(function* () {

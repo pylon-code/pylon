@@ -1324,16 +1324,20 @@ export function makeOpenCodeAdapter(
       };
       return anchor;
     }, rollbackTimeout);
-    const rememberCompletedRollbackAnchor = Effect.fn(
-      "OpenCodeAdapter.rememberCompletedRollbackAnchor",
+    const captureCompletedRollbackAnchor = Effect.fn(
+      "OpenCodeAdapter.captureCompletedRollbackAnchor",
     )(function* (context: OpenCodeSessionContext, turnId: TurnId, generation: number) {
-      if (context.sessionIncarnationId === undefined) return;
+      const ownsUncapturedBoundary = () =>
+        context.activeTurnId === turnId &&
+        context.promptGeneration === generation &&
+        context.cancellation?.turnId !== turnId &&
+        !context.completedRollbackAnchors.has(turnId);
+      if (context.sessionIncarnationId === undefined || !ownsUncapturedBoundary()) return;
+      yield* requireRollbackCurrent(context, generation);
       const captured = yield* forkRollbackSnapshot(context).pipe(Effect.result);
       yield* requireRollbackCurrent(context, generation);
-      if (captured._tag === "Success") {
-        const anchor = { ...captured.success, completedTurnId: turnId };
-        context.completedRollbackAnchors.set(turnId, anchor);
-        writeExactCursor(context, anchor);
+      if (captured._tag === "Success" && ownsUncapturedBoundary()) {
+        return { ...captured.success, completedTurnId: turnId };
       }
     });
 
@@ -1385,14 +1389,23 @@ export function makeOpenCodeAdapter(
       ) {
         context.pendingIdleReconciliation = undefined;
       }
-      yield* rememberCompletedRollbackAnchor(context, turnId, promptGeneration).pipe(Effect.ignore);
+      const anchor = yield* captureCompletedRollbackAnchor(context, turnId, promptGeneration).pipe(
+        Effect.orElseSucceed(() => undefined),
+      );
       if (
         sessions.get(context.session.threadId) !== context ||
         Ref.getUnsafe(context.stopped) ||
         context.activeTurnId !== turnId ||
-        context.promptGeneration !== promptGeneration
+        context.promptGeneration !== promptGeneration ||
+        context.cancellation?.turnId === turnId
       )
         return;
+      // Idle reconciliation and SSE completion can race through native fork awaits.
+      // Publish once, together with releasing the active turn, without an intervening await.
+      if (anchor !== undefined && !context.completedRollbackAnchors.has(turnId)) {
+        context.completedRollbackAnchors.set(turnId, anchor);
+        writeExactCursor(context, anchor);
+      }
       const tokenUsage = takeOpenCodeTurnTokenUsage(context, true);
       context.activeTurnId = undefined;
       context.activeAgent = undefined;
