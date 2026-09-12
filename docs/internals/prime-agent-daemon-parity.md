@@ -271,8 +271,21 @@ adapter-settled resolution and passes through the same bounded proof route. Any 
 snapshot fails the strict session once instead of leaving hidden recovery pending. Pylon still validates
 request identity, sequence, provenance, lifecycle successors, and replacement state before advancing its
 cursor or projections. Other malformed capable frames become one private protocol violation marker and fail
-the correlated turn without exposing their correlation or native payload. Scoped cancellation can stop work only before delivery; after
-delivery it remains attached until an authoritative terminal lifecycle arrives. Stock Prime daemons and
+the correlated turn without exposing their correlation or native payload. Scoped lifecycle cancellation removes
+work before delivery. Explicit Stop on a proved delivered lifecycle also sends one owned-session
+`abort_and_clear_queue` command under the adapter mutation lock, with transport recovery and replay disabled.
+Current ownership and correlated proof must remain valid; terminal, unknown, expired, or mismatched
+lifecycles cannot authorize this abort. Pylon remains attached until the authoritative terminal lifecycle
+arrives, and resumes input before the next prompt. This is an owned-session operation: the native abort
+command does not carry a correlation or native-generation compare-and-swap fence. Pylon's admission and
+replacement exclusion, current attachment proof, and non-replayable transport bound its use.
+
+After adoption, a subscriber may observe the final assistant before a run-completion event supplies older
+tool messages. Pylon inserts each missing message before its next already-observed neighbor, preserving
+transcript order and one copy of each message. Completion therefore checks the actual final assistant;
+subsequent tool-only output still produces the missing-final notice.
+
+Stock Prime daemons and
 feature-absent fork builds remain supported through the conservative observed-activity path. That fallback
 returns typed `busy` before Pylon creates a turn when background activity is visible; it cannot eliminate the
 narrow race where unobserved native work starts between the activity check and ordinary prompt admission.

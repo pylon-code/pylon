@@ -333,6 +333,7 @@ function fixture(options?: {
     },
   ) => Promise<unknown>;
   readonly cancelPromptLifecycleImpl?: (correlationId: string) => Promise<unknown>;
+  readonly interruptOwnedSessionImpl?: () => Promise<unknown>;
   readonly getPromptLifecyclesImpl?: () => Promise<unknown>;
   readonly resumeQueueResponses?: ReadonlyArray<unknown>;
   readonly listedActiveSessionId?: string;
@@ -399,8 +400,31 @@ function fixture(options?: {
     waitForHello(): Promise<unknown> {
       return Promise.resolve({});
     }
-    request(command: Readonly<Record<string, unknown>>): Promise<unknown> {
+    request(
+      command: Readonly<Record<string, unknown>>,
+      timeoutMs?: number,
+      requestOptions?: {
+        readonly recoverable?: boolean;
+        readonly recoverAcrossReconnect?: boolean;
+      },
+    ): Promise<unknown> {
       captures.commands.push(command);
+      if (command.type === "abort_and_clear_queue") {
+        captures.connectionCalls.push({
+          method: "interruptOwnedSession",
+          args: [command, timeoutMs, requestOptions],
+        });
+        queuedInputSuspended = true;
+        return (
+          options?.interruptOwnedSessionImpl?.() ??
+          Promise.resolve({
+            type: "response",
+            command: "abort_and_clear_queue",
+            success: true,
+            data: { steering: [], followUp: [] },
+          })
+        );
+      }
       if (command.type === "complete_owned_session") {
         return Promise.resolve({
           type: "response",
@@ -1944,6 +1968,137 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
       }),
     ),
   );
+
+  for (const variant of [
+    "delivered",
+    "default-cancel",
+    "completed",
+    "cancelled",
+    "unknown",
+    "wrong-owner",
+    "owned-proof-lost",
+    "correlated-proof-lost",
+    "abort-response-invalid",
+    "abort-proof-lost",
+  ] as const) {
+    it.effect(`interrupts only the proved delivered owned session: ${variant}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const correlationId = "5cfb76d6-9765-4fd0-883b-d60fbed2f7b8";
+          const phase =
+            variant === "completed"
+              ? "completed"
+              : variant === "cancelled"
+                ? "cancelled"
+                : "delivered";
+          const lifecycle = promptLifecycle(correlationId, phase, 2);
+          let ownedProofCurrent = true;
+          let retireCorrelatedProof = () => {};
+          const test = fixture({
+            correlatedPromptLifecycleCapability: true,
+            rawSnapshot: { ...snapshot(), promptLifecycles: { records: [lifecycle], expired: [] } },
+            ownedSessionContractProofImpl: () =>
+              ownedProofCurrent
+                ? {
+                    feature: "caller_owned_session_environment_cleanup_v1",
+                    status: "attached",
+                    daemon: {
+                      protocolName: "prime-agent.daemon",
+                      protocolVersion: 7,
+                      schemaRevision: 30,
+                      appVersion: "0.7.1",
+                      supervisorGeneration: "supervisor-1",
+                      transportGeneration: 0,
+                    },
+                  }
+                : undefined,
+            cancelPromptLifecycleImpl: () => {
+              if (variant === "owned-proof-lost") ownedProofCurrent = false;
+              if (variant === "correlated-proof-lost") retireCorrelatedProof();
+              return Promise.resolve(
+                variant === "unknown"
+                  ? {
+                      status: "unknown",
+                      ownershipCrossed: "unknown",
+                      deliveryCrossed: "unknown",
+                    }
+                  : {
+                      status: variant === "cancelled" ? "cancelled" : "too_late",
+                      ownershipCrossed: true,
+                      deliveryCrossed: lifecycle.deliveryCrossed,
+                      lifecycle:
+                        variant === "wrong-owner"
+                          ? { ...lifecycle, correlationId: "another-owner" }
+                          : lifecycle,
+                    },
+              );
+            },
+            interruptOwnedSessionImpl: () => {
+              if (variant === "abort-proof-lost") retireCorrelatedProof();
+              return Promise.resolve(
+                variant === "abort-response-invalid"
+                  ? {
+                      type: "response",
+                      command: "abort_and_clear_queue",
+                      success: false,
+                    }
+                  : {
+                      type: "response",
+                      command: "abort_and_clear_queue",
+                      success: true,
+                      data: { steering: [], followUp: [] },
+                    },
+              );
+            },
+          });
+          retireCorrelatedProof = () => test.setCorrelatedPromptLifecycleProof(false);
+          const runtime = yield* test.make();
+          yield* Stream.runDrain(runtime.events).pipe(Effect.forkChild({ startImmediately: true }));
+          const interrupted = runtime.cancelPromptLifecycle(
+            correlationId,
+            variant === "default-cancel" ? undefined : { interruptDelivered: true },
+          );
+          const expectedError = [
+            "wrong-owner",
+            "owned-proof-lost",
+            "correlated-proof-lost",
+            "abort-response-invalid",
+            "abort-proof-lost",
+          ].includes(variant);
+          if (expectedError) {
+            expect(yield* Effect.flip(interrupted)).toMatchObject({ operation: "abort" });
+          } else {
+            expect(yield* interrupted).toMatchObject({
+              status:
+                variant === "cancelled"
+                  ? "cancelled"
+                  : variant === "unknown"
+                    ? "unknown"
+                    : "too_late",
+            });
+          }
+          const calls = test.captures.connectionCalls.filter(
+            (call) => call.method === "interruptOwnedSession",
+          );
+          expect(calls).toHaveLength(
+            ["delivered", "abort-response-invalid", "abort-proof-lost"].includes(variant) ? 1 : 0,
+          );
+          if (calls.length > 0) {
+            expect(calls[0]!.args).toEqual([
+              { type: "abort_and_clear_queue", activeSessionId: "active-secret-1" },
+              expect.any(Number),
+              { recoverable: false, recoverAcrossReconnect: false },
+            ]);
+          }
+          expect(
+            test.captures.connectionCalls.filter(
+              (call) => call.method === "abortAndClearQueue" || call.method === "abort",
+            ),
+          ).toEqual([]);
+        }),
+      ),
+    );
+  }
 
   it.effect("rejects an awaited correlated cancellation when its proof fence changes", () =>
     Effect.scoped(
