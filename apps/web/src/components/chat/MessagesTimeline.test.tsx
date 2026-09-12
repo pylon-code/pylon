@@ -853,7 +853,7 @@ describe("MessagesTimeline", () => {
     };
   }
 
-  it("hides checkpoint revert when the provider capability is unavailable", () => {
+  it("hides Edit from here when the provider capability is unavailable", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -862,15 +862,15 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).not.toContain('aria-label="Revert to this message"');
+    expect(markup).not.toContain('aria-label="Edit from here"');
   });
 
-  it("renders checkpoint revert only when the provider capability is explicit", () => {
+  it("renders Edit from here only when the provider capability is explicit", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline {...buildProps()} {...buildRevertibleTimeline()} />,
     );
 
-    expect(markup).toContain('aria-label="Revert to this message"');
+    expect(markup).toContain('aria-label="Edit from here"');
   });
 
   it("renders generic attachments as download links instead of image previews", () => {
