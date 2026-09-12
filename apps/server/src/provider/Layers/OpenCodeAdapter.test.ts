@@ -8353,6 +8353,27 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCode exact rollback", (it) => {
         NodeAssert.equal((yield* exact.inspectAnchor(threadId)).digest, target.digest);
         yield* exact.applyAnchor(threadId, source.anchor);
         yield* exact.releaseAnchor(threadId, source.anchor);
+        const selected = (yield* adapter.listSessions()).find(
+          (session) => session.threadId === threadId,
+        )!;
+        yield* adapter.stopSession(threadId);
+        yield* adapter.recoverSession!({
+          threadId,
+          providerInstanceId: ProviderInstanceId.make("opencode"),
+          sessionIncarnationId: selected.sessionIncarnationId!,
+          runtimeMode: "full-access",
+          cwd: process.cwd(),
+          modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+          resumeCursor: selected.resumeCursor,
+        });
+        yield* adapter.activateRecoveredSession!(threadId);
+        NodeAssert.equal(
+          (yield* exact.captureAnchor({ threadId, binding: exactCheckpointBinding(1, turnId) }))
+            .digest,
+          target.digest,
+        );
+        NodeAssert.equal((yield* exact.inspectAnchor(threadId)).digest, source.digest);
+
         runtimeMock.state.summarizeImplementation = async () => {
           throw new Error("uncertain summarize");
         };

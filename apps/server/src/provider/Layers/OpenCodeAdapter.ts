@@ -1251,6 +1251,16 @@ export function makeOpenCodeAdapter(
         return yield* rollbackError("The native OpenCode conversation cannot be verified exactly.");
       return { messages: response.data!, digest };
     }, rollbackTimeout);
+    const checkpointSnapshotAnchor = (
+      anchor: OpenCodeConversationAnchor,
+    ): OpenCodeConversationAnchor => {
+      const { checkpointSnapshotSessionId, checkpointTranscriptDigest, ...identity } = anchor;
+      return {
+        ...identity,
+        snapshotSessionId: checkpointSnapshotSessionId ?? anchor.snapshotSessionId,
+        transcriptDigest: checkpointTranscriptDigest ?? anchor.transcriptDigest,
+      };
+    };
     const writeExactCursor = (
       context: OpenCodeSessionContext,
       anchor: OpenCodeConversationAnchor,
@@ -1263,6 +1273,17 @@ export function makeOpenCodeAdapter(
           exactRollback: { ...anchor },
         },
       };
+      if (anchor.completedTurnId === null && context.rootRollbackAnchor === undefined)
+        context.rootRollbackAnchor = checkpointSnapshotAnchor(anchor);
+      else if (
+        anchor.completedTurnId !== undefined &&
+        anchor.completedTurnId !== null &&
+        !context.completedRollbackAnchors.has(TurnId.make(anchor.completedTurnId))
+      )
+        context.completedRollbackAnchors.set(
+          TurnId.make(anchor.completedTurnId),
+          checkpointSnapshotAnchor(anchor),
+        );
     };
     const forkRollbackSnapshot = Effect.fn("OpenCodeAdapter.forkRollbackSnapshot")(function* (
       context: OpenCodeSessionContext,
@@ -3415,11 +3436,12 @@ export function makeOpenCodeAdapter(
           );
         }
         writeExactCursor(context, exact.value);
-        if (exact.value.completedTurnId === null) context.rootRollbackAnchor = exact.value;
+        if (exact.value.completedTurnId === null)
+          context.rootRollbackAnchor = checkpointSnapshotAnchor(exact.value);
         else if (exact.value.completedTurnId !== undefined)
           context.completedRollbackAnchors.set(
             TurnId.make(exact.value.completedTurnId),
-            exact.value,
+            checkpointSnapshotAnchor(exact.value),
           );
       } else if (input.sessionIncarnationId !== undefined) {
         const root = yield* readRollbackTranscript(context, context.openCodeSessionId).pipe(
@@ -3930,7 +3952,15 @@ export function makeOpenCodeAdapter(
             const captured = yield* forkRollbackSnapshot(context).pipe(Effect.result);
             yield* requireRollbackCurrent(context, generation);
             if (captured._tag === "Success") {
-              writeExactCursor(context, { ...priorProof.value, ...captured.success });
+              writeExactCursor(context, {
+                ...priorProof.value,
+                ...captured.success,
+                checkpointSnapshotSessionId:
+                  priorProof.value.checkpointSnapshotSessionId ??
+                  priorProof.value.snapshotSessionId,
+                checkpointTranscriptDigest:
+                  priorProof.value.checkpointTranscriptDigest ?? priorProof.value.transcriptDigest,
+              });
             }
           }
         }),
@@ -4516,6 +4546,10 @@ export function makeOpenCodeAdapter(
                 ...snapshot,
                 completedTurnId: binding.turnId,
                 checkpointRevision: binding.sourceRevision,
+                checkpointSnapshotSessionId:
+                  known.checkpointSnapshotSessionId ?? known.snapshotSessionId,
+                checkpointTranscriptDigest:
+                  known.checkpointTranscriptDigest ?? known.transcriptDigest,
               };
               context.rollbackSource = anchor;
               context.rollbackTarget = undefined;

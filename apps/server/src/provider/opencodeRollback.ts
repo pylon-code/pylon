@@ -11,6 +11,8 @@ export const OpenCodeConversationAnchor = Schema.Struct({
   snapshotSessionId: Schema.String,
   transcriptDigest: Schema.String,
   completedTurnId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  checkpointSnapshotSessionId: Schema.optionalKey(Schema.String),
+  checkpointTranscriptDigest: Schema.optionalKey(Schema.String),
   checkpointRevision: Schema.optionalKey(
     Schema.Finite.check(Schema.isInt()).check(Schema.isGreaterThanOrEqualTo(0)),
   ),
