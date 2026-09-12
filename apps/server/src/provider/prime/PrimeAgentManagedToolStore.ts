@@ -11,6 +11,8 @@ import * as NodeZlib from "node:zlib";
 import {
   inspectPrimeAgentDistribution,
   persistPrimeManagedReceipt,
+  type PrimeDistributionInspectionDependencies,
+  type PrimeDistributionInspectionInput,
   type VerifiedPrimePublication,
 } from "./PrimeAgentDistributionVerifier.ts";
 
@@ -871,6 +873,22 @@ export async function resolvePrimeManagedBuildReceiptTarget(input: {
     stateDir: NodePath.join(managedRoot, buildId, RECEIPT_STATE_DIRECTORY),
     instanceId: `${RECEIPT_INSTANCE_PREFIX}${buildId}`,
   };
+}
+
+/** Inspect a configured launcher using its build-owned receipt when it belongs to this store. */
+export async function inspectPrimeAgentSelectedDistribution(
+  input: PrimeDistributionInspectionInput,
+  dependencies: PrimeDistributionInspectionDependencies,
+) {
+  const receiptTarget = await resolvePrimeManagedBuildReceiptTarget(input);
+  return await inspectPrimeAgentDistribution(
+    {
+      ...input,
+      stateDir: receiptTarget?.stateDir ?? input.stateDir,
+      instanceId: receiptTarget?.instanceId ?? input.instanceId,
+    },
+    dependencies,
+  );
 }
 
 export class PrimeAgentManagedToolStore {
