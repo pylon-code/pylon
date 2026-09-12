@@ -748,6 +748,7 @@ export const PrimeAgentDriver: ProviderDriver<
       );
       const checkProvider = checkPrimeAgentProviderStatus(effectiveConfig, processEnv, {
         readBackends,
+        ...(backend.runtime === "daemon" ? { modelDiscoveryDaemon: backend.manager } : {}),
       }).pipe(
         Effect.map(stampSnapshot),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

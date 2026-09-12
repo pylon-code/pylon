@@ -21,6 +21,7 @@ import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { PrimeAgentDaemonManagerError } from "../prime/PrimeAgentDaemonManager.ts";
 import { readPrimeAgentBackends } from "../primeAgentBackends.ts";
 import {
   acquireSharedUsageLock,
@@ -40,6 +41,7 @@ import {
 } from "./PrimeAgentProvider.ts";
 
 const decodeSettings = Schema.decodeSync(PrimeAgentSettings);
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const encoder = new TextEncoder();
 
@@ -547,6 +549,81 @@ it.layer(NodeServices.layer)("checkPrimeAgentProviderStatus", (it) => {
         "custom-model",
       ]);
     }).pipe(Effect.provide(mockPrimeAgentSpawner({ rpcOutput, calls, stdin })));
+  });
+
+  it.effect(
+    "waits for the owned native daemon before routing catalog discovery to its socket",
+    () =>
+      Effect.gen(function* () {
+        const preparing = yield* Deferred.make<void>();
+        const ready = yield* Deferred.make<void>();
+        const calls: Array<{ command: string; args: ReadonlyArray<string>; cwd?: string }> = [];
+        const stdin: string[] = [];
+        const rpcOutput = yield* encodeJson({
+          id: "pylon-prime-agent-models",
+          type: "response",
+          command: "get_available_models",
+          success: true,
+          data: { models: [{ provider: "test", id: "owned-model", name: "Owned model" }] },
+        });
+        const fiber = yield* checkPrimeAgentProviderStatus(
+          decodeSettings({ binaryPath: "/mock/prime-agent" }),
+          {},
+          {
+            modelDiscoveryDaemon: {
+              socket: "/private/owned-instance/daemon.sock",
+              prepare: () =>
+                Deferred.succeed(preparing, undefined).pipe(Effect.andThen(Deferred.await(ready))),
+            },
+          },
+        ).pipe(
+          Effect.provide(mockPrimeAgentSpawner({ rpcOutput, calls, stdin })),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(preparing);
+        expect(calls).toEqual([{ command: "/mock/prime-agent", args: ["--version"] }]);
+        yield* Deferred.succeed(ready, undefined);
+        const snapshot = yield* Fiber.join(fiber);
+        expect(calls[1]?.args).toEqual([
+          "--mode",
+          "rpc",
+          "--no-session",
+          "--offline",
+          "--cwd",
+          process.cwd(),
+          "--daemon-socket",
+          "/private/owned-instance/daemon.sock",
+        ]);
+        expect(snapshot.auth.status).toBe("authenticated");
+        expect(snapshot.models.map((model) => model.slug)).toContain("test/owned-model");
+      }),
+  );
+
+  it.effect("never falls back to the shared daemon when native preparation fails", () => {
+    const calls: Array<{ command: string; args: ReadonlyArray<string>; cwd?: string }> = [];
+    return Effect.gen(function* () {
+      const snapshot = yield* checkPrimeAgentProviderStatus(
+        decodeSettings({ binaryPath: "/mock/prime-agent" }),
+        {},
+        {
+          modelDiscoveryDaemon: {
+            socket: "/private/owned-instance/daemon.sock",
+            prepare: () =>
+              Effect.fail(
+                new PrimeAgentDaemonManagerError({
+                  reason: "readiness-failed",
+                  detail: "private fixture failure",
+                  socket: "/private/owned-instance/daemon.sock",
+                }),
+              ),
+          },
+        },
+      );
+      expect(calls).toEqual([{ command: "/mock/prime-agent", args: ["--version"] }]);
+      expect(snapshot.auth.status).toBe("unknown");
+      expect(snapshot.message).toContain("model discovery failed");
+      expect(snapshot.message).not.toContain("private fixture failure");
+    }).pipe(Effect.provide(mockPrimeAgentSpawner({ rpcOutput: "", calls, stdin: [] })));
   });
 
   it.effect("keeps authentication unknown for a valid empty catalog", () => {

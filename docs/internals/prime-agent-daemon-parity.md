@@ -82,6 +82,12 @@ remain distinct without exposing or persisting Prime's identifier. Missing token
 behavior. Invalid terminal correlation fails closed. Older ACP releases that publish no completion
 metadata retain prompt-response settlement.
 
+Native provider status prepares the instance-owned daemon before its offline RPC catalog probe and
+passes that daemon's exact private socket to the CLI. Prime 0.9.4 routes RPC through a supervisor;
+leaving its socket implicit would consult the OS-user-wide service, whose home and lifetime may belong
+to another client. Failed preparation preserves the discovery warning without falling back to that
+shared service. Attached-session catalog enrichment remains read-only.
+
 Prime Agent provider execution is supported on macOS, Linux, and WSL2, which reports itself as Linux.
 A native `win32` Pylon server fails closed at `PrimeAgentDriver.create`, before daemon or ACP selection,
 status and catalog probes, capacity reads, background writing, or install/update resolution. It exposes
