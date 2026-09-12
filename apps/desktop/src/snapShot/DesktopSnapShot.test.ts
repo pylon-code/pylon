@@ -2819,6 +2819,50 @@ it("keeps a truncated tree when flat text would not recover any text", async () 
   );
 });
 
+it.each([0, 8_000])(
+  "keeps a truncated tree when different flat text does not recover more text (%i chars)",
+  async (flatValueLength) => {
+    const bounds = { x: 0, y: 0, width: 800, height: 600 };
+    const textBounds = { x: 10, y: 50, width: 700, height: 500 };
+    accessibilityByPidMock.mockReset().mockResolvedValue({
+      children: async () => [
+        {
+          role: "window",
+          name: "Editor",
+          bounds,
+          tree: async () => ({
+            name: "Editor",
+            children:
+              flatValueLength > 0 ? [{ value: "y".repeat(flatValueLength), children: [] }] : [],
+          }),
+          children: async () => [
+            {
+              role: "text_area",
+              value: "x".repeat(8_001),
+              bounds: textBounds,
+              children: async () => [],
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await readAccessibleWindowContext(
+      { title: "Editor", bounds, owner: { processId: 123 } },
+      "darwin",
+      "Editor",
+    );
+    assert.equal(result?.accessibility?.format, "element-tree");
+    assert.isTrue(result?.accessibility?.truncated);
+    assert.deepInclude(
+      result?.accessibility?.format === "element-tree"
+        ? result.accessibility.root.children[0]
+        : undefined,
+      { value: "x".repeat(8_000), bounds: textBounds },
+    );
+  },
+);
+
 it("times out after three seconds without overlapping the outstanding accessibility read", async () => {
   vi.useFakeTimers();
   accessibilityByPidMock.mockReset();

@@ -62,10 +62,11 @@ function accessibilityReadSnapshot(
     : undefined;
   const accessibleText = progress.accessibleText ?? richText;
   const richTruncated = progress.richTruncated || richTree?.truncated === true;
+  // The flat API can expose less than rich traversal. Switch only when it
+  // recovers more text, preserving coordinates and state when it does not.
+  const flatRecoversMoreText = (progress.accessibleText?.length ?? 0) > (richText?.length ?? 0);
   const accessibility: SnapShotAccessibility | undefined =
-    progress.richComplete &&
-    richTree &&
-    (!richTruncated || !progress.accessibleText || progress.accessibleText === richText)
+    progress.richComplete && richTree && (!richTruncated || !flatRecoversMoreText)
       ? {
           format: "element-tree",
           coordinateSpace: "captured-image",
