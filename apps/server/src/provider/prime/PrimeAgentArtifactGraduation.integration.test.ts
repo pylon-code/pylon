@@ -120,7 +120,9 @@ it.skipIf(!configured)(
         maxBuffer: 256 * 1024,
         windowsHide: true,
       });
-      expect(version.stdout).toContain(harness.artifacts[0]!.publication.packageVersion);
+      expect(`${version.stdout}${version.stderr}`.trim()).toBe(
+        harness.artifacts[0]!.publication.packageVersion,
+      );
 
       let rollbackBuildId = harness.artifacts[0]!.publication.buildId;
       if (harness.artifacts.length === 2) {
@@ -154,7 +156,9 @@ it.skipIf(!configured)(
           maxBuffer: 256 * 1024,
           windowsHide: true,
         });
-        expect(secondVersion.stdout).toContain(secondArtifact.publication.packageVersion);
+        expect(`${secondVersion.stdout}${secondVersion.stderr}`.trim()).toBe(
+          secondArtifact.publication.packageVersion,
+        );
         expect(harness.binding().binaryPath).toBe(selectedSecondBuild!.binaryPath);
       } else {
         const update = await harness.command({

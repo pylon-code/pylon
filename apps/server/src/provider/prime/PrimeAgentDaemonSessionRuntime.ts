@@ -3871,11 +3871,21 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         if (rawType === "session_resynced" && mcpRecoveryPending && !mcpRecoveryFailed) {
           const recoveringWorkerSnapshot = activeWorkerRecovery?.explicitSnapshotRaw === raw;
-          if (recoveringWorkerSnapshot && rlmQuiescenceAvailable) {
-            // Prime ties MCP ownership to the exact daemon client and rejects replacement
-            // while an agent is streaming. Reconcile this same-worker snapshot now, but do
-            // not make the session usable until the authoritative barrier reaches idle and
-            // the new client reclaims scoped MCP ownership.
+          const resynced = decodePrimeAgentDaemonEvent(raw, {
+            correlatedPromptLifecycle: correlatedPromptLifecycleAvailable,
+          });
+          const streamingTransportReconnect =
+            activeWorkerRecovery === undefined &&
+            correlatedProofIngressEpoch !== undefined &&
+            hasCurrentOwnedSessionContractProof(connection!, client) &&
+            resynced._tag === "SessionResynced" &&
+            resynced.state.sessionId === sessionId &&
+            resynced.state.activeSessionId === activeSessionId &&
+            resynced.state.isStreaming;
+          if ((recoveringWorkerSnapshot || streamingTransportReconnect) && rlmQuiescenceAvailable) {
+            // Reattach releases the old client's MCP ownership, but Prime rejects replacement
+            // while the same agent is streaming. Reconcile its proved snapshot now; keep input
+            // blocked until authoritative quiescence and the new client's MCP reclamation.
             beginQuiescenceMcpRecovery();
             mcpRecoveryPending = false;
           } else {

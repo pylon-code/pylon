@@ -206,3 +206,91 @@ it("uploads only bounded summaries and makes the stable-approval run URL explici
   expect(source).toContain("Run URL (required for stable approval)");
   expect(source).toContain("github.run_id");
 });
+
+it.each(["failed", "passed", "missing", "malformed"] as const)(
+  "preserves secret-free diagnostics for a %s test report without changing the gate",
+  (outcome) => {
+    const graduate = record(record(workflow.jobs, "jobs").graduate, "graduate");
+    if (!Array.isArray(graduate.steps)) throw new Error("Expected workflow steps.");
+    const step = record(
+      graduate.steps.find(
+        (candidate: unknown) =>
+          record(candidate, "step").name === "Preserve bounded test diagnostics",
+      ),
+      "diagnostics",
+    );
+    expect(step.if).toBe("always()");
+    if (typeof step.run !== "string") throw new Error("Expected diagnostics script.");
+    const upload = record(
+      graduate.steps.find(
+        (candidate: unknown) =>
+          record(candidate, "step").name === "Upload bounded graduation evidence",
+      ),
+      "upload",
+    );
+    expect(upload.if).toBe("always()");
+    expect(record(upload.with, "upload.with").path).toContain("test-summary.json");
+    const fixture = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "prime-graduation-summary-"));
+    const directory = NodePath.join(fixture, "prime-graduation-results");
+    try {
+      NodeFS.mkdirSync(directory);
+      const report = {
+        numTotalTests: 1,
+        numPassedTests: outcome === "passed" ? 1 : 0,
+        numFailedTests: outcome === "failed" ? 1 : 0,
+        numPendingTests: 0,
+        testResults: [
+          {
+            name: "/private/sentinel/PrimeAgentMultipleInstances.integration.test.ts",
+            status: outcome,
+            message: "private-sentinel credential and socket",
+            assertionResults: [
+              {
+                fullName: "private-sentinel prompt",
+                status: outcome,
+                failureMessages: ["private-sentinel timeout stack and token"],
+              },
+            ],
+          },
+        ],
+      };
+      if (outcome !== "missing") {
+        NodeFS.writeFileSync(
+          NodePath.join(directory, "vitest.json"),
+          outcome === "malformed" ? "private-sentinel malformed JSON" : JSON.stringify(report),
+        );
+      }
+      const result = NodeChildProcess.spawnSync("bash", ["-c", step.run], {
+        env: { ...process.env, RUNNER_TEMP: fixture },
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const output = NodeFS.readFileSync(NodePath.join(directory, "test-summary.json"), "utf8");
+      expect(output + result.stdout + result.stderr).not.toMatch(
+        /private|sentinel|credential|socket|token|stack/u,
+      );
+      if (outcome === "missing" || outcome === "malformed") {
+        expect(JSON.parse(output)).toEqual({ status: "unavailable" });
+      } else {
+        expect(JSON.parse(output)).toEqual({
+          status: "available",
+          total: 1,
+          passed: outcome === "passed" ? 1 : 0,
+          failed: outcome === "failed" ? 1 : 0,
+          skipped: 0,
+          results: [
+            {
+              file: "PrimeAgentMultipleInstances.integration.test.ts",
+              failed: outcome === "failed",
+              failures: outcome === "failed" ? [{ index: 0, category: "timeout" }] : [],
+            },
+          ],
+        });
+      }
+      expect(source).toContain("Assert the protected gate ran with zero skips");
+      expect(source).not.toContain("continue-on-error");
+    } finally {
+      NodeFS.rmSync(fixture, { recursive: true, force: true });
+    }
+  },
+);

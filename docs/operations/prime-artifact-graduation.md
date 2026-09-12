@@ -74,6 +74,11 @@ A successful job uploads only bounded JSON with public tags, source identities, 
 names, and aggregate test counts. It never uploads packages, executables, managed roots, provider homes,
 credentials, tokens, PIDs, sockets, or raw test output. The gate rejects skipped proof tests.
 
+Failed runs also retain `test-summary.json`: aggregate counts, recognized test filenames, failed
+assertion indexes, and timeout/failure categories. It omits assertion text, error messages, and stacks;
+a missing or malformed report is marked unavailable. This diagnostic summary never substitutes for
+the successful zero-skip gate.
+
 Copy the complete GitHub Actions run URL from the job summary into the Prime stable-promotion approval.
 **Do not approve the Prime stable environment without that successful run URL for the exact preview tag.**
 A successful Pylon run is evidence for a later human promotion decision. It is not promotion authority.

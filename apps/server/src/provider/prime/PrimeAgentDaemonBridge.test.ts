@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 
 import { makePrimeArtifactGraduationHarness } from "./PrimeAgentArtifactGraduation.test-fixture.ts";
+import { PRIME_STOCK_ARTIFACT } from "./PrimeAgentStockArtifact.ts";
 import {
   isPathInside,
   loadPrimeAgentDaemonBridge,
@@ -460,13 +461,14 @@ export class DaemonClient`,
         expect(installed.status).toBe("succeeded");
         const bridge = yield* loadPrimeAgentDaemonBridge(harness.binding().binaryPath);
 
-        expect(bridge.version).toBe("0.8.1");
+        expect(bridge.version).toBe(harness.artifacts[0]!.publication.packageVersion);
         expect(bridge.protocolVersion).toBe(PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION);
         expect(bridge.negotiatedDaemonSessionCapabilitiesAvailable).toBe(true);
         expect(typeof bridge.DaemonAgentConnection.prototype.supportsNegotiatedCapability).toBe(
           "function",
         );
       }),
+    300_000,
   );
 
   it.effect.skipIf(!configuredStockArtifactBinary)(
@@ -475,7 +477,7 @@ export class DaemonClient`,
       Effect.gen(function* () {
         const bridge = yield* loadPrimeAgentDaemonBridge(configuredStockArtifactBinary!);
 
-        expect(bridge.version).toBe("0.8.1");
+        expect(bridge.version).toBe(PRIME_STOCK_ARTIFACT.version);
         expect(bridge.protocolVersion).toBe(PRIME_AGENT_MIN_DAEMON_PROTOCOL_VERSION);
         expect(bridge.negotiatedDaemonSessionCapabilitiesAvailable).toBe(false);
       }),
