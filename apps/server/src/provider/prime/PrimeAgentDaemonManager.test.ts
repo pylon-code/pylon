@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -109,6 +110,10 @@ function fakeBridge(input: {
   readonly shutdownHangs?: boolean;
   readonly shutdownDoesNotExit?: boolean;
   readonly shutdownRejects?: boolean;
+  readonly shutdownBarrier?: Promise<void>;
+  readonly onShutdownAcknowledged?: () => void;
+  readonly replacementListener?: boolean;
+  readonly shutdownResponseRejected?: boolean;
 }): PrimeAgentDaemonBridge {
   const hello =
     input.hello ??
@@ -123,6 +128,7 @@ function fakeBridge(input: {
     isConnected = false;
     hello = hello as NonNullable<PrimeAgentDaemonClient["hello"]>;
     readonly socketPath: string;
+    readonly closeListeners = new Set<() => void>();
 
     constructor(socketPath: string) {
       this.socketPath = socketPath;
@@ -157,14 +163,28 @@ function fakeBridge(input: {
         input.events?.push(input.existingLive?.value === true ? "existing-shutdown" : "shutdown");
         if (input.shutdownHangs === true) return new Promise<unknown>(() => undefined);
         if (input.shutdownRejects === true) return Promise.reject(new Error("shutdown rejected"));
-        if (input.existingLive) input.existingLive.value = false;
-        if (input.shutdownDoesNotExit !== true) input.processes.at(-1)?.complete();
+        const completeShutdown = () => {
+          if (input.existingLive) input.existingLive.value = input.replacementListener === true;
+          if (input.shutdownDoesNotExit !== true) input.processes.at(-1)?.complete();
+          this.close();
+        };
+        if (input.shutdownBarrier !== undefined) void input.shutdownBarrier.then(completeShutdown);
+        else completeShutdown();
+        input.onShutdownAcknowledged?.();
+        if (input.shutdownResponseRejected)
+          return Promise.resolve({ type: "response", success: false });
       }
       return Promise.resolve({ type: "response", success: true });
     }
 
     close(): void {
       this.isConnected = false;
+      for (const listener of this.closeListeners) listener();
+    }
+
+    onClose(listener: () => void): () => void {
+      this.closeListeners.add(listener);
+      return () => this.closeListeners.delete(listener);
     }
   }
 
@@ -255,6 +275,10 @@ function managerFixture(options?: {
   readonly shutdownHangs?: boolean;
   readonly shutdownDoesNotExit?: boolean;
   readonly shutdownRejects?: boolean;
+  readonly shutdownBarrier?: Promise<void>;
+  readonly onShutdownAcknowledged?: () => void;
+  readonly replacementListener?: boolean;
+  readonly shutdownResponseRejected?: boolean;
   readonly killHangs?: boolean;
   readonly postKillExitHangs?: boolean;
   readonly scopeCloseBarrier?: Promise<void>;
@@ -311,6 +335,16 @@ function managerFixture(options?: {
       ? {}
       : { shutdownDoesNotExit: options.shutdownDoesNotExit }),
     ...(options?.shutdownRejects === undefined ? {} : { shutdownRejects: options.shutdownRejects }),
+    ...(options?.shutdownBarrier === undefined ? {} : { shutdownBarrier: options.shutdownBarrier }),
+    ...(options?.onShutdownAcknowledged === undefined
+      ? {}
+      : { onShutdownAcknowledged: options.onShutdownAcknowledged }),
+    ...(options?.replacementListener === undefined
+      ? {}
+      : { replacementListener: options.replacementListener }),
+    ...(options?.shutdownResponseRejected === undefined
+      ? {}
+      : { shutdownResponseRejected: options.shutdownResponseRejected }),
     ...(options?.hello === undefined && recoveryHello === undefined
       ? {}
       : { hello: options?.hello ?? recoveryHello }),
@@ -1027,6 +1061,77 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
           expect(fixture.commands).toHaveLength(0);
         }),
       ),
+    );
+  });
+
+  it.effect("waits for an adopted supervisor to close after acknowledging shutdown", () =>
+    Effect.gen(function* () {
+      const acknowledged = yield* Deferred.make<void>();
+      const shutdown = Promise.withResolvers<void>();
+      const fixture = managerFixture({
+        existingLive: true,
+        recoverable: true,
+        shutdownBarrier: shutdown.promise,
+        onShutdownAcknowledged: () => Deferred.doneUnsafe(acknowledged, Effect.void),
+      });
+      const closing = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const manager = yield* fixture.make;
+          const client = yield* manager.openClient();
+          client.close();
+          manager.retainForRecovery!()();
+        }),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(acknowledged);
+      yield* Effect.yieldNow;
+      expect(closing.pollUnsafe()).toBeUndefined();
+      shutdown.resolve();
+      yield* Fiber.join(closing);
+      expect(fixture.shutdownRequests).toEqual([fixture.paths.socket]);
+      expect(fixture.commands).toHaveLength(0);
+    }),
+  );
+
+  it.live("does not replace an acknowledged supervisor whose connection never closes", () => {
+    const fixture = managerFixture({
+      existingLive: true,
+      shutdownBarrier: new Promise<void>(() => undefined),
+      shutdownTimeout: Duration.millis(5),
+    });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const manager = yield* fixture.make;
+        const result = yield* Effect.exit(manager.openClient());
+        expect(Exit.isFailure(result)).toBe(true);
+        expect(fixture.commands).toHaveLength(0);
+        expect(fixture.calls.connect).toBe(1);
+      }),
+    );
+  });
+
+  it.effect(
+    "rejects an unsuccessful shutdown acknowledgement even if the connection closes",
+    () => {
+      const fixture = managerFixture({ existingLive: true, shutdownResponseRejected: true });
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const manager = yield* fixture.make;
+          expect(Exit.isFailure(yield* Effect.exit(manager.openClient()))).toBe(true);
+          expect(fixture.commands).toHaveLength(0);
+        }),
+      );
+    },
+  );
+
+  it.effect("refuses a replacement listener after the acknowledged connection closes", () => {
+    const fixture = managerFixture({ existingLive: true, replacementListener: true });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const manager = yield* fixture.make;
+        expect(Exit.isFailure(yield* Effect.exit(manager.openClient()))).toBe(true);
+        expect(fixture.commands).toHaveLength(0);
+        expect(fixture.calls.connect).toBe(2);
+      }),
     );
   });
 });

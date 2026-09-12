@@ -123,6 +123,7 @@ export interface PrimeAgentDaemonClient {
     readonly recoverDaemon: () => Promise<void>;
     readonly timeoutMs?: number;
   }) => void;
+  readonly onClose?: (listener: () => void) => () => void;
   readonly close: () => void;
 }
 

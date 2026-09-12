@@ -350,8 +350,12 @@ quiescence before deletion. Uncertain or mismatched cleanup retains authority fo
 Graceful process shutdown detaches an eligible owned worker and leaves its compatible supervisor alive;
 explicit Stop and normal terminal cleanup still require Prime's authoritative owned-session cleanup proof.
 The private row is deleted only after that proof, terminal projection delivery, and checkpoint quiescence.
-A competing Pylon process cannot win the same ledger generation, and a process that did not spawn a
-compatible supervisor never shuts it down.
+A competing Pylon process cannot win the same ledger generation. Merely observing a compatible
+supervisor does not grant shutdown authority; a manager that adopts its recoverable session retires it
+after releasing all recovery retainers. Retirement requires a successful shutdown acknowledgement,
+then waits for the public connection-close event and confirms that the private socket no longer accepts
+connections. Local client disposal cannot satisfy that wait, and an unclosed or replaced listener remains
+a shutdown failure.
 
 Supervised and other approval-required sessions, ACP mode, stock/manual or unverified distributions,
 native Windows, copied state, a replaced supervisor, an unsupported host, unresolved interaction state,

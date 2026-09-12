@@ -994,35 +994,61 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
         "This Prime Agent runtime generation was replaced.",
       );
     }
-    const response = yield* Effect.tryPromise({
-      try: () => client.request({ type: "shutdown" }, timeoutMs),
-      catch: (cause) =>
-        managerError(
-          socket,
-          "shutdown-failed",
-          "Could not stop the prior Pylon-owned daemon on the stable private socket.",
-          cause,
-        ),
-    }).pipe(
-      Effect.timeoutOrElse({
-        duration: shutdownTimeout,
-        orElse: () =>
+    const closed = yield* Deferred.make<void>();
+    const unsubscribe = client.onClose?.(() => {
+      Deferred.doneUnsafe(closed, Effect.void);
+    });
+    return yield* Effect.gen(function* () {
+      const response = yield* Effect.tryPromise({
+        try: () => client.request({ type: "shutdown" }, timeoutMs),
+        catch: (cause) =>
           managerError(
             socket,
             "shutdown-failed",
-            "Timed out while requesting private daemon shutdown.",
+            "Could not stop the prior Pylon-owned daemon on the stable private socket.",
+            cause,
           ),
-      }),
-      Effect.ensuring(Effect.sync(() => client.close())),
-    );
-    if (!isDaemonSuccessResponse(response)) {
-      return yield* managerError(
-        socket,
-        "shutdown-failed",
-        "The prior daemon did not acknowledge its public shutdown command.",
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: shutdownTimeout,
+          orElse: () =>
+            managerError(
+              socket,
+              "shutdown-failed",
+              "Timed out while requesting private daemon shutdown.",
+            ),
+        }),
       );
-    }
-    yield* waitForSocketClosure();
+      if (!isDaemonSuccessResponse(response)) {
+        return yield* managerError(
+          socket,
+          "shutdown-failed",
+          "The prior daemon did not acknowledge its public shutdown command.",
+        );
+      }
+      // The acknowledgement fences admission; the remote close follows worker cleanup.
+      if (unsubscribe !== undefined) {
+        yield* Deferred.await(closed).pipe(
+          Effect.timeoutOrElse({
+            duration: shutdownTimeout,
+            orElse: () =>
+              managerError(
+                socket,
+                "shutdown-failed",
+                "Timed out while awaiting the acknowledged daemon connection closure.",
+              ),
+          }),
+        );
+      }
+      yield* waitForSocketClosure();
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          unsubscribe?.();
+          client.close();
+        }),
+      ),
+    );
   });
 
   const startLocked = Effect.fn("PrimeAgentDaemonManager.startLocked")(function* () {
