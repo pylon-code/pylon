@@ -6,6 +6,7 @@ import {
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
+import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
   canCreateProjectInEnvironment,
   getCloneDestinationBrowsePath,
@@ -1803,6 +1804,7 @@ function OpenCommandPaletteDialog(props: {
         value: "action:open-thread-pull-requests",
         searchTerms: ["pull requests", "linked", "stack", "prs"],
         title: "Show linked pull requests",
+        disabled: visibleThreadPullRequests(activeThread.pullRequests).length === 0,
         icon: <GitPullRequestArrowIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
           useRightPanelStore.getState().open(threadRef, "pull-requests");
