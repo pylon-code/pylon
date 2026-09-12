@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import {
   ForwardCompatibleNullable,
+  NonNegativeInt,
   ProjectId,
   TrimmedNonEmptyString,
   TrimmedString,
@@ -1188,6 +1189,10 @@ export const ServerSettings = Schema.Struct({
    * settings UI is not undone by the next server start.
    */
   projectSettingsFolded: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Server-owned replay cursor; committed with canonical overrides so legacy project edits are crash-safe. */
+  projectSettingsLegacySequence: Schema.NullOr(NonNegativeInt).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),

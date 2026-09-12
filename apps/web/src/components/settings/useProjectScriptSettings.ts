@@ -10,6 +10,7 @@ import {
   type ProjectScript,
   type ResolvedKeybindingsConfig,
   type ServerSettings,
+  type ExecutionEnvironmentCapabilities,
 } from "@t3tools/contracts";
 import { resolveProjectScripts } from "@t3tools/shared/projectScripts";
 import { clearProjectSettingsOverrides } from "@t3tools/shared/projectSettings";
@@ -29,9 +30,11 @@ import {
 } from "../../projectScripts";
 import { useProjects } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
+import { projectEnvironment } from "../../state/projects";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { NewProjectScriptInput } from "../projectScriptEditor";
 import { toastManager } from "../ui/toast";
+import { resolveProjectScriptsWrite } from "./ProjectSettingsPanel.logic";
 
 function reportScriptFailure(result: AtomCommandResult<unknown, unknown>) {
   if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -54,6 +57,7 @@ export function useProjectScriptSettings(
     environmentId: EnvironmentId;
     settings: ServerSettings;
     keybindings: ResolvedKeybindingsConfig;
+    capabilities: ExecutionEnvironmentCapabilities;
     project?: { id: ProjectId; scripts: readonly ProjectScript[] };
   }[],
 ) {
@@ -61,6 +65,7 @@ export function useProjectScriptSettings(
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, "project actions update");
+  const updateProject = useAtomCommand(projectEnvironment.update, "project actions update");
   const upsertKeybinding = useAtomCommand(
     serverEnvironment.upsertKeybinding,
     "action shortcut update",
@@ -83,32 +88,54 @@ export function useProjectScriptSettings(
     savingRef.current = true;
     setSaving(true);
     try {
-      for (const { environmentId, settings, keybindings, project } of targets) {
+      for (const { environmentId, settings, keybindings, capabilities, project } of targets) {
         const current = project
           ? resolveProjectScripts(settings, project)
           : settings.defaultProjectScripts;
         const nextScripts = transform(current);
         const effectiveScripts = nextScripts ?? settings.defaultProjectScripts;
-        const result = await updateSettings({
-          environmentId,
-          input: {
-            patch: project
-              ? {
-                  projectSettingsOverrides: {
-                    [project.id]:
-                      nextScripts === null
-                        ? clearProjectSettingsOverrides(settings, project.id, [
-                            "defaultProjectScripts",
-                          ])
-                        : {
-                            ...settings.projectSettingsOverrides[project.id],
-                            defaultProjectScripts: nextScripts,
-                          },
-                  },
-                }
-              : { defaultProjectScripts: nextScripts ?? [] },
-          },
+        const legacyWrite = resolveProjectScriptsWrite({
+          supportsProjectDefaults: capabilities.projectDefaults === true,
+          projectId: project?.id ?? null,
+          nextScripts,
         });
+        if (capabilities.projectSettingsOverrides !== true && legacyWrite.kind === "unsupported") {
+          return reportScriptFailure(
+            AsyncResult.failure(
+              Cause.fail(new Error("Update this environment to edit its default actions.")),
+            ),
+          );
+        }
+        const result =
+          capabilities.projectSettingsOverrides !== true && legacyWrite.kind === "project"
+            ? await updateProject({
+                environmentId,
+                input: { projectId: legacyWrite.projectId, scripts: legacyWrite.scripts },
+              })
+            : await updateSettings({
+                environmentId,
+                input: {
+                  patch:
+                    capabilities.projectSettingsOverrides !== true &&
+                    legacyWrite.kind === "settings"
+                      ? legacyWrite.patch
+                      : project
+                        ? {
+                            projectSettingsOverrides: {
+                              [project.id]:
+                                nextScripts === null
+                                  ? clearProjectSettingsOverrides(settings, project.id, [
+                                      "defaultProjectScripts",
+                                    ])
+                                  : {
+                                      ...settings.projectSettingsOverrides[project.id],
+                                      defaultProjectScripts: nextScripts,
+                                    },
+                            },
+                          }
+                        : { defaultProjectScripts: nextScripts ?? [] },
+                },
+              });
         if (result._tag === "Failure") return reportScriptFailure(result);
         if (!isElectron) continue;
         const changedIds = scriptId

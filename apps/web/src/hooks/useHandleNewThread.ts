@@ -22,7 +22,10 @@ import {
   getProjectOrderKey,
   selectProjectGroupingSettings,
 } from "../logicalProject";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import {
+  projectDefaultModelPreference,
+  resolveProjectSettings,
+} from "@t3tools/shared/projectSettings";
 import { resolveDefaultThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 import { readProjects, readThreadShell, useProjects, useThread } from "../state/entities";
 import {
@@ -136,7 +139,7 @@ export function useNewThreadHandler() {
         project?.id ?? null,
         project,
       );
-      const projectDefaultModelSelection = projectSettings.settings.defaultModelSelection;
+      const projectDefaultModelSelection = projectDefaultModelPreference(projectSettings);
       const defaultRuntimeMode = projectSettings.settings.defaultRuntimeMode;
       const projectThreadEnvMode =
         projectSettings.sources.defaultThreadEnvMode === "project"

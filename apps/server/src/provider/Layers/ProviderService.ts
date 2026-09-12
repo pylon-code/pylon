@@ -4205,31 +4205,34 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
-  const runStopAll = Effect.fn("runStopAll")(function* () {
-    // Continuation is project-scopable, so decide it per session's project;
-    // without orchestration the environment value is all there is.
-    const stopSettings = yield* serverSettings.getSettings.pipe(
-      Effect.map(Option.some),
-      Effect.orElseSucceed(() => Option.none<ServerSettingsValue>()),
+  // Snapshot settings once per stop operation, then resolve continuation against
+  // each session's project in both the ordinary and mixed-adapter shutdown paths.
+  const readStopSettings = serverSettings.getSettings.pipe(
+    Effect.map(Option.some),
+    Effect.orElseSucceed(() => Option.none<ServerSettingsValue>()),
+  );
+  const continueAfterRestartFor = Effect.fn("continueAfterRestartFor")(function* (
+    stopSettings: Option.Option<ServerSettingsValue>,
+    threadId: ThreadId,
+  ) {
+    if (Option.isNone(stopSettings)) return false;
+    const settings = stopSettings.value;
+    const overridden = Object.values(settings.projectSettingsOverrides).some(
+      (entry) => entry.continueThreadsAfterServerUpdate !== undefined,
     );
-    const continueAfterRestartFor = Effect.fn("continueAfterRestartFor")(function* (
-      threadId: ThreadId,
-    ) {
-      if (Option.isNone(stopSettings)) return false;
-      const settings = stopSettings.value;
-      const overridden = Object.values(settings.projectSettingsOverrides).some(
-        (entry) => entry.continueThreadsAfterServerUpdate !== undefined,
-      );
-      if (!overridden || Option.isNone(projectionQuery)) {
-        return settings.continueThreadsAfterServerUpdate;
-      }
-      const thread = yield* projectionQuery.value
-        .getThreadShellById(threadId)
-        .pipe(Effect.orElseSucceed(() => Option.none<{ projectId: ProjectId }>()));
-      if (Option.isNone(thread)) return settings.continueThreadsAfterServerUpdate;
-      return resolveProjectSettings(settings, thread.value.projectId).settings
-        .continueThreadsAfterServerUpdate;
-    });
+    if (!overridden || Option.isNone(projectionQuery)) {
+      return settings.continueThreadsAfterServerUpdate;
+    }
+    const thread = yield* projectionQuery.value
+      .getThreadShellById(threadId)
+      .pipe(Effect.orElseSucceed(() => Option.none<{ projectId: ProjectId }>()));
+    if (Option.isNone(thread)) return settings.continueThreadsAfterServerUpdate;
+    return resolveProjectSettings(settings, thread.value.projectId).settings
+      .continueThreadsAfterServerUpdate;
+  });
+
+  const runStopAll = Effect.fn("runStopAll")(function* () {
+    const stopSettings = yield* readStopSettings;
     yield* flushAllTurnAnalytics;
     const threadIds = yield* directory.listThreadIds();
     const currentAdapters = yield* getAdapterEntries;
@@ -4247,7 +4250,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       Effect.gen(function* () {
         const continueAfterRestart =
           session.status === "running" && session.activeTurnId
-            ? yield* continueAfterRestartFor(session.threadId)
+            ? yield* continueAfterRestartFor(stopSettings, session.threadId)
             : false;
         const lastRuntimeEventAt = yield* nowIso;
         yield* upsertSessionBinding(session, session.threadId, {
@@ -4296,10 +4299,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     if (currentAdapters.every(([, adapter]) => adapter.shutdown === undefined)) {
       return yield* runStopAll();
     }
-    const continueAfterRestart = yield* serverSettings.getSettings.pipe(
-      Effect.map((settings) => settings.continueThreadsAfterServerUpdate),
-      Effect.orElseSucceed(() => false),
-    );
+    const stopSettings = yield* readStopSettings;
     const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
     yield* Effect.forEach(
       currentAdapters,
@@ -4309,21 +4309,24 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           : Effect.gen(function* () {
               const activeSessions = yield* adapter.listSessions();
               yield* Effect.forEach(activeSessions, (session) =>
-                Effect.flatMap(nowIso, (lastRuntimeEventAt) =>
-                  upsertSessionBinding(
+                Effect.gen(function* () {
+                  const continueAfterRestart =
+                    session.status === "running" && session.activeTurnId
+                      ? yield* continueAfterRestartFor(stopSettings, session.threadId)
+                      : false;
+                  const lastRuntimeEventAt = yield* nowIso;
+                  yield* upsertSessionBinding(
                     { ...session, providerInstanceId: instanceId },
                     session.threadId,
                     {
-                      ...(continueAfterRestart &&
-                      session.status === "running" &&
-                      session.activeTurnId
+                      ...(continueAfterRestart && session.activeTurnId
                         ? { continueAfterServerUpdate: session.activeTurnId }
                         : {}),
                       lastRuntimeEvent: "provider.stopAll",
                       lastRuntimeEventAt,
                     },
-                  ),
-                ),
+                  );
+                }),
               );
               yield* adapter.stopAll().pipe(
                 Effect.ensuring(

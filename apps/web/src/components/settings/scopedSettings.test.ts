@@ -27,6 +27,12 @@ function environment(
     loaded?: boolean;
     settings?: Partial<ServerSettings>;
     projectOverrides?: boolean;
+    capabilities?: {
+      projectDefaults?: boolean;
+      threadRestartContinuation?: boolean;
+      threadAutoSettlement?: boolean;
+      defaultRuntimeMode?: boolean;
+    };
   } = {},
 ) {
   return {
@@ -41,7 +47,14 @@ function environment(
         : {
             settings: { ...DEFAULT_SERVER_SETTINGS, ...options.settings },
             environment: {
-              capabilities: { projectSettingsOverrides: options.projectOverrides !== false },
+              capabilities: {
+                projectSettingsOverrides: options.projectOverrides !== false,
+                projectDefaults: true,
+                threadRestartContinuation: true,
+                threadAutoSettlement: true,
+                defaultRuntimeMode: true,
+                ...options.capabilities,
+              },
             },
           },
   };
@@ -146,6 +159,70 @@ describe("scoped settings targets", () => {
 });
 
 describe("scoped settings writes", () => {
+  it.each([
+    ["projectDefaults", { defaultModelSelection: null }],
+    ["threadRestartContinuation", { continueThreadsAfterServerUpdate: true }],
+    ["threadAutoSettlement", { sidebarAutoSettleOnMerge: false }],
+    ["defaultRuntimeMode", { defaultRuntimeMode: "approval-required" }],
+  ] as const)("does not silently acknowledge unsupported %s writes", async (capability, patch) => {
+    const legacy = environment("Server", {
+      projectOverrides: false,
+      capabilities: { [capability]: false },
+    });
+    const available = [laptop, legacy];
+    const scope = resolveSettingsScope({}, [], available);
+    const plan = planScopedSettingsPatch(scope, available, patch);
+    expect(plan.serverWrites.map((write) => write.environmentId)).toEqual([laptop.environmentId]);
+    expect(plan.skippedEnvironments).toEqual([
+      { environmentId: legacy.environmentId, label: legacy.label },
+    ]);
+    const persistServer = vi.fn().mockResolvedValue({ _tag: "Success" });
+    const result = await persistScopedSettingsPatch(plan, persistServer, vi.fn());
+    expect(result.savedEnvironmentCount).toBe(1);
+    expect(result.failedEnvironments).toEqual(plan.skippedEnvironments);
+    expect(persistServer).toHaveBeenCalledTimes(1);
+  });
+
+  it("gates generic overrides independently of legacy project-default support", () => {
+    const legacy = environment("Server", { projectOverrides: false });
+    const plan = planScopedSettingsPatch(named, [legacy], {
+      projectSettingsOverrides: { [projectId]: { defaultAutoPull: true } },
+    });
+    expect(plan.serverWrites).toEqual([]);
+    expect(plan.unavailableReason).toContain("Update");
+  });
+
+  it("requires the permissions-default capability even on an environment with generic overrides", () => {
+    const older = environment("Server", { capabilities: { defaultRuntimeMode: false } });
+    const plan = planScopedSettingsPatch(checkout, [older], {
+      defaultRuntimeMode: "approval-required",
+    });
+    expect(plan.serverWrites).toEqual([]);
+    expect(plan.skippedEnvironments).toEqual([
+      { environmentId: older.environmentId, label: older.label },
+    ]);
+  });
+
+  it("reports disconnected targets while preserving local-only preferences", async () => {
+    const persistServer = vi.fn().mockResolvedValue({ _tag: "Success" });
+    const persistClient = vi.fn();
+    const plan = planScopedSettingsPatch(all, environments, {
+      enableProviderUpdateChecks: false,
+      diffIgnoreWhitespace: false,
+    });
+    const result = await persistScopedSettingsPatch(plan, persistServer, persistClient);
+    expect(result.savedEnvironmentCount).toBe(2);
+    expect(result.failedEnvironments.map((entry) => entry.environmentId)).toEqual([
+      offline.environmentId,
+      loading.environmentId,
+    ]);
+    expect(persistClient).toHaveBeenCalledExactlyOnceWith({ diffIgnoreWhitespace: false });
+    expect(
+      planScopedSettingsPatch(all, environments, { diffIgnoreWhitespace: false })
+        .skippedEnvironments,
+    ).toEqual([]);
+  });
+
   it("isolates a formerly shared server preference to the named environment", async () => {
     const persistServer = vi.fn().mockResolvedValue({ _tag: "Success" });
     const persistClient = vi.fn();
@@ -297,6 +374,8 @@ describe("scoped settings writes", () => {
     expect(result.failedEnvironments.map(({ label }) => label)).toEqual([
       server.label,
       third.label,
+      offline.label,
+      loading.label,
     ]);
     expect(persistServer).toHaveBeenCalledTimes(4);
   });

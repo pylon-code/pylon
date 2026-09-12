@@ -1,3 +1,4 @@
+import { ProjectActionsSettings } from "./ProjectActionsSettings";
 import { Spinner } from "~/components/ui/spinner";
 import { ArchiveIcon, ArchiveX, ChevronRightIcon, SettingsIcon } from "lucide-react";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -2070,6 +2071,9 @@ export function GeneralSettingsPanel() {
       settings,
     ),
   );
+  const hasTextGenerationProvider = textGenerationModelInstanceEntries.some(
+    (entry) => entry.enabled && entry.isAvailable,
+  );
   const textGenInstanceEntry = textGenerationModelInstanceEntries.find(
     (entry) => entry.instanceId === textGenInstanceId,
   );
@@ -2109,6 +2113,7 @@ export function GeneralSettingsPanel() {
   return (
     <SettingsPageContainer>
       <ProjectDefaultsSettings category="general" />
+      {scope.kind === "all" || scope.kind === "environment" ? <ProjectActionsSettings /> : null}
       <SettingsSection id="organization" title="Organization">
         <SettingsRow
           {...searchableSetting("project-grouping")}
@@ -2878,7 +2883,7 @@ export function GeneralSettingsPanel() {
                           ...settings,
                           textGenerationModelSelection: createModelSelection(instanceId, model),
                         },
-                        textGenerationProviders,
+                        backgroundTextGenerationProviders,
                       ),
                     });
                   }}
@@ -2912,7 +2917,7 @@ export function GeneralSettingsPanel() {
                               nextOptions,
                             ),
                           },
-                          textGenerationProviders,
+                          backgroundTextGenerationProviders,
                         ),
                       });
                     }}

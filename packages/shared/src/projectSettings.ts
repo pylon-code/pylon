@@ -26,6 +26,15 @@ export interface ResolvedProjectSettings {
 
 const EMPTY_OVERRIDES: ProjectSettingsOverrides = {};
 
+/** Keep the configured provider intent available to new-thread admission checks. */
+export function projectDefaultModelPreference(
+  resolved: ResolvedProjectSettings,
+): ModelSelection | null {
+  return Object.hasOwn(resolved.overrides, "defaultModelSelection")
+    ? (resolved.overrides.defaultModelSelection ?? null)
+    : resolved.settings.defaultModelSelection;
+}
+
 const ENVIRONMENT_SOURCES: ProjectSettingSources = Object.fromEntries(
   PROJECT_SCOPED_SERVER_SETTING_KEYS.map((key) => [key, "environment"]),
 ) as Record<ProjectScopedServerSettingKey, ProjectSettingSource>;

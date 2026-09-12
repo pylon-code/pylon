@@ -730,16 +730,67 @@ function makeProviderServiceLayer(
   };
 }
 
-for (const [enabled, completed, retainedDaemon] of [
-  [false, false, false],
-  [true, false, false],
-  [true, true, false],
-  [false, false, true],
-  [true, false, true],
-  [true, true, true],
+const makeThreadProjectProjectionLayer = (threadId: ThreadId, projectId: ProjectId) =>
+  Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+    getPendingRequestActivities: () => Effect.die("unused"),
+    getUserInputActivity: () => Effect.die("unused"),
+    getCommandReadModel: () => Effect.die("unused"),
+    getSnapshot: () => Effect.die("unused"),
+    getShellSnapshot: () => Effect.die("unused"),
+    getArchivedShellSnapshot: () => Effect.die("unused"),
+    getSnapshotSequence: () => Effect.die("unused"),
+    getCounts: () => Effect.die("unused"),
+    getEventReplayStats: () => Effect.die("unused"),
+    getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
+    getProjectShellById: () => Effect.die("unused"),
+    getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
+    getImportedAgentSessionSources: () => Effect.die("unused"),
+    getThreadCheckpointContext: () => Effect.die("unused"),
+    getFullThreadDiffContext: () => Effect.die("unused"),
+    getThreadRuntimeContext: () => Effect.die("unused"),
+    getTurnStartMessage: () => Effect.die("unused"),
+    getThreadShellById: (requestedThreadId) =>
+      Effect.gen(function* () {
+        assert.equal(requestedThreadId, threadId);
+        return Option.some(
+          yield* Schema.decodeUnknownEffect(OrchestrationThreadShell)({
+            id: threadId,
+            projectId,
+            title: "Project settings test",
+            modelSelection: createModelSelection(codexInstanceId, "gpt-5.4"),
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            latestTurn: null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            session: null,
+            latestUserMessageAt: null,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+            hasActionableProposedPlan: false,
+          }),
+        );
+      }).pipe(Effect.orDie),
+    getThreadDetailById: () => Effect.die("unused"),
+    getThreadDetailSnapshot: () => Effect.die("unused"),
+    searchThreads: () => Effect.die("unused"),
+  });
+
+for (const [enabled, completed, retainedDaemon, projectOverride] of [
+  [false, false, false, undefined],
+  [true, false, false, undefined],
+  [true, true, false, undefined],
+  [false, false, true, undefined],
+  [true, false, true, undefined],
+  [true, true, true, undefined],
+  [false, false, false, true],
+  [true, false, false, false],
+  [false, false, true, true],
+  [true, false, true, false],
 ] as const) {
   it.effect(
-    `persists shutdown recovery before stopping providers when enabled=${enabled}, completed=${completed}, retainedDaemon=${retainedDaemon}`,
+    `persists shutdown recovery before stopping providers when enabled=${enabled}, completed=${completed}, retainedDaemon=${retainedDaemon}, projectOverride=${projectOverride}`,
     () =>
       Effect.gen(function* () {
         const codex = makeFakeCodexAdapter();
@@ -756,6 +807,7 @@ for (const [enabled, completed, retainedDaemon] of [
           Effect.provide(persistence),
         );
         const threadId = asThreadId("shutdown-recovery");
+        const projectId = ProjectId.make("shutdown-project");
         const turnId = asTurnId("shutdown-recovery-turn");
         const scope = yield* Scope.make();
         const services = yield* Layer.build(
@@ -772,7 +824,20 @@ for (const [enabled, completed, retainedDaemon] of [
                 }),
               ),
             ),
-            Layer.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: enabled })),
+            Layer.provide(
+              ServerSettings.layerTest({
+                continueThreadsAfterServerUpdate: enabled,
+                projectSettingsOverrides:
+                  projectOverride === undefined
+                    ? {}
+                    : { [projectId]: { continueThreadsAfterServerUpdate: projectOverride } },
+              }),
+            ),
+            Layer.provide(
+              projectOverride === undefined
+                ? Layer.empty
+                : makeThreadProjectProjectionLayer(threadId, projectId),
+            ),
             Layer.provide(serverConfigTestLayer),
             Layer.provide(AnalyticsService.layerTest),
             Layer.provide(
@@ -837,7 +902,7 @@ for (const [enabled, completed, retainedDaemon] of [
         assert.deepStrictEqual(binding.value.resumeCursor, session.resumeCursor);
         assert.equal(binding.value.status, "stopped");
         assert.propertyVal(markers[0], "activeTurnId", completed ? null : turnId);
-        if (enabled && !completed) {
+        if ((projectOverride ?? enabled) && !completed) {
           assert.propertyVal(markers[0], "continueAfterServerUpdate", turnId);
           assert.propertyVal(binding.value.runtimePayload, "continueAfterServerUpdate", turnId);
         } else if (completed) {
@@ -6564,8 +6629,6 @@ boundedListing.layer("ProviderServiceLive session listing", (it) => {
   );
 });
 
-const decodeBrowserAccessThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
-
 class RuntimeRollbackAdmission extends Context.Service<RuntimeRollbackAdmission, {}>()(
   "t3/provider/Layers/ProviderService.test/RuntimeRollbackAdmission",
 ) {}
@@ -6580,51 +6643,7 @@ describe("agent browser access", () => {
   const projectId = ProjectId.make("project-browser-access");
 
   const makeBrowserAccessProjectionLayer = (threadId: ThreadId) =>
-    Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-      getPendingRequestActivities: () => Effect.die("unused"),
-      getUserInputActivity: () => Effect.die("unused"),
-      getCommandReadModel: () => Effect.die("unused"),
-      getSnapshot: () => Effect.die("unused"),
-      getShellSnapshot: () => Effect.die("unused"),
-      getArchivedShellSnapshot: () => Effect.die("unused"),
-      getSnapshotSequence: () => Effect.die("unused"),
-      getCounts: () => Effect.die("unused"),
-      getEventReplayStats: () => Effect.die("unused"),
-      getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
-      getProjectShellById: () => Effect.die("unused"),
-      getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
-      getImportedAgentSessionSources: () => Effect.die("unused"),
-      getThreadCheckpointContext: () => Effect.die("unused"),
-      getFullThreadDiffContext: () => Effect.die("unused"),
-      getThreadRuntimeContext: () => Effect.die("unused"),
-      getTurnStartMessage: () => Effect.die("unused"),
-      getThreadShellById: (requestedThreadId) =>
-        Effect.gen(function* () {
-          assert.equal(requestedThreadId, threadId);
-          return Option.some(
-            yield* decodeBrowserAccessThreadShell({
-              id: threadId,
-              projectId,
-              title: "Browser access test",
-              modelSelection: createModelSelection(codexInstanceId, "gpt-5.4"),
-              runtimeMode: "full-access",
-              branch: null,
-              worktreePath: null,
-              latestTurn: null,
-              createdAt: "2026-01-01T00:00:00.000Z",
-              updatedAt: "2026-01-01T00:00:00.000Z",
-              session: null,
-              latestUserMessageAt: null,
-              hasPendingApprovals: false,
-              hasPendingUserInput: false,
-              hasActionableProposedPlan: false,
-            }),
-          );
-        }).pipe(Effect.orDie),
-      getThreadDetailById: () => Effect.die("unused"),
-      getThreadDetailSnapshot: () => Effect.die("unused"),
-      searchThreads: () => Effect.die("unused"),
-    });
+    makeThreadProjectProjectionLayer(threadId, projectId);
 
   const makeAgentBrowserProviderLayer = (
     enableAgentBrowserAccess: boolean,

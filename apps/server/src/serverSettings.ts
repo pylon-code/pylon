@@ -17,6 +17,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
   ProjectScript,
+  ProjectMetaUpdatedPayload,
   type ProjectSettingsOverrides,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
@@ -831,6 +832,99 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  const readLegacyProjectRows = sql<LegacyProjectSettingsRow>`
+          SELECT
+            project_id AS "projectId",
+            default_model_selection_json AS "defaultModelSelection",
+            default_thread_env_mode AS "defaultThreadEnvMode",
+            auto_pull AS "autoPull",
+            scripts_json AS "scripts"
+          FROM projection_projects
+          WHERE deleted_at IS NULL
+        `.pipe(
+    Effect.mapError(
+      (cause) =>
+        new ServerSettingsError({
+          settingsPath,
+          operation: "read-project-settings",
+          cause,
+        }),
+    ),
+  );
+
+  const reconcileLegacyProjectSettings = Effect.fn("ServerSettings.reconcileLegacyProjectSettings")(
+    function* (settings: ServerSettings) {
+      // The journal is durable even if the server stops before its live reactor
+      // observes the event. Capture rows and cursors in one SQL read transaction.
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const [latest] = yield* sql<{
+            sequence: number;
+          }>`SELECT COALESCE(MAX(sequence), 0) AS sequence FROM orchestration_events`;
+          const head = latest?.sequence ?? 0;
+          const [projection] = yield* sql<{
+            sequence: number;
+          }>`SELECT last_applied_sequence AS sequence FROM projection_state WHERE projector = 'projection.projects'`;
+          const cursor = settings.projectSettingsLegacySequence ?? projection?.sequence ?? 0;
+          const rows = settings.projectSettingsFolded ? [] : yield* readLegacyProjectRows;
+          const folded = foldLegacyProjectSettings(settings, rows);
+          const events = yield* sql<{ payload: string }>`
+          SELECT payload_json AS payload FROM orchestration_events
+          WHERE sequence > ${cursor} AND sequence <= ${head}
+            AND event_type IN ('project.created', 'project.meta-updated')
+          ORDER BY sequence
+        `;
+          const entries: Record<string, ProjectSettingsOverrides> = {
+            ...folded.projectSettingsOverrides,
+          };
+          for (const event of events) {
+            const payload = yield* Schema.decodeUnknownEffect(
+              Schema.fromJsonString(ProjectMetaUpdatedPayload),
+            )(event.payload);
+            const entry = { ...entries[payload.projectId] };
+            // In the old aggregate, null/empty/false mean inherit. Explicit false
+            // and empty-list overrides remain representable in the legacy maps.
+            if (payload.defaultModelSelection !== undefined) {
+              if (payload.defaultModelSelection === null) delete entry.defaultModelSelection;
+              else entry.defaultModelSelection = payload.defaultModelSelection;
+            }
+            if (payload.defaultThreadEnvMode !== undefined) {
+              if (payload.defaultThreadEnvMode === null) delete entry.defaultThreadEnvMode;
+              else entry.defaultThreadEnvMode = payload.defaultThreadEnvMode;
+            }
+            if (payload.autoPull !== undefined) {
+              if (payload.autoPull) entry.defaultAutoPull = true;
+              else delete entry.defaultAutoPull;
+            }
+            if (payload.scripts !== undefined) {
+              if (payload.scripts.length === 0) delete entry.defaultProjectScripts;
+              else entry.defaultProjectScripts = payload.scripts;
+            }
+            if (Object.keys(entry).length === 0) delete entries[payload.projectId];
+            else entries[payload.projectId] = entry;
+          }
+          if (
+            folded === settings &&
+            cursor === head &&
+            (settings.projectSettingsLegacySequence !== null || head === 0)
+          )
+            return settings;
+          return {
+            ...folded,
+            projectSettingsFolded: folded.projectSettingsFolded || head > 0,
+            projectSettingsLegacySequence: head,
+            projectSettingsOverrides: entries,
+            ...deriveLegacyProjectOverrides({ projectSettingsOverrides: entries }),
+          };
+        }),
+      );
+    },
+    Effect.mapError(
+      (cause) =>
+        new ServerSettingsError({ settingsPath, operation: "read-project-settings", cause }),
+    ),
+  );
+
   const loadSettingsFromDisk = Effect.gen(function* () {
     let settings = DEFAULT_SERVER_SETTINGS;
     let persisted: typeof PersistedOptionalProviderSettings.Type = {};
@@ -886,35 +980,10 @@ const make = Effect.gen(function* () {
       ),
     );
 
-    const legacyProjectRows =
-      settings.projectSettingsFolded || !settingsFileTrusted
-        ? []
-        : yield* sql<LegacyProjectSettingsRow>`
-          SELECT
-            project_id AS "projectId",
-            default_model_selection_json AS "defaultModelSelection",
-            default_thread_env_mode AS "defaultThreadEnvMode",
-            auto_pull AS "autoPull",
-            scripts_json AS "scripts"
-          FROM projection_projects
-          WHERE deleted_at IS NULL
-        `.pipe(
-            Effect.mapError(
-              (cause) =>
-                new ServerSettingsError({
-                  settingsPath,
-                  operation: "read-project-settings",
-                  cause,
-                }),
-            ),
-          );
-
     const loaded = foldProviderInstanceEnabledFlags(
       restoreUsedProviders(settings, persisted, providerHistory),
     );
-    const folded = settingsFileTrusted
-      ? foldLegacyProjectSettings(loaded, legacyProjectRows)
-      : loaded;
+    const folded = settingsFileTrusted ? yield* reconcileLegacyProjectSettings(loaded) : loaded;
     if (folded !== loaded) {
       yield* writeSettingsAtomically(folded);
     }
@@ -1250,7 +1319,7 @@ const make = Effect.gen(function* () {
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
           yield* rejectLegacyProviderInstancesPatch(patch);
-          const current = yield* getSettingsFromCache;
+          const current = yield* reconcileLegacyProjectSettings(yield* getSettingsFromCache);
           const currentMaterialized = yield* materializeProviderEnvironmentSecrets(current);
           const candidate = yield* normalizeServerSettings(
             applyServerSettingsPatch(currentMaterialized, patch),

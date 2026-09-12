@@ -9,6 +9,7 @@ import { createModelSelection } from "./model.ts";
 import {
   clearProjectSettingsOverrides,
   hasProjectSettingsOverrides,
+  projectDefaultModelPreference,
   resolveProjectSettings,
   withProjectSettingsOverrides,
 } from "./projectSettings.ts";
@@ -60,6 +61,22 @@ describe("resolveProjectSettings", () => {
       settings.textGenerationModelSelection,
     );
     expect(resolved.sources.textGenerationModelSelection).toBe("environment");
+  });
+
+  it("preserves an unavailable project provider preference for web and mobile admission", () => {
+    const selection = createModelSelection(ProviderInstanceId.make("claudeAgent"), "opus");
+    const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      providers: { claudeAgent: { enabled: false } },
+      projectSettingsOverrides: { [projectId]: { defaultModelSelection: selection } },
+    });
+    const resolved = resolveProjectSettings(settings, projectId);
+    expect(resolved.settings.defaultModelSelection).toEqual(settings.defaultModelSelection);
+    expect(projectDefaultModelPreference(resolved)).toEqual(selection);
+    const inherited = resolveProjectSettings(
+      { ...settings, projectSettingsOverrides: {} },
+      projectId,
+    );
+    expect(projectDefaultModelPreference(inherited)).toEqual(settings.defaultModelSelection);
   });
 
   it("honours the aggregate's own fields only until the server has folded them", () => {

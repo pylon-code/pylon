@@ -18,6 +18,7 @@ import {
 import * as Equal from "effect/Equal";
 
 import type { ResolvedSettingsScope } from "./settingsScope";
+import { settingRequiresProjectDefaults } from "./ProjectSettingsPanel.logic";
 
 export type ScopedSettingsPatch = ServerSettingsPatch & ClientSettingsPatch;
 
@@ -28,7 +29,13 @@ interface ScopedSettingsEnvironment {
   readonly serverConfig: {
     readonly settings: ServerSettings;
     readonly environment?: {
-      readonly capabilities: { readonly projectSettingsOverrides?: boolean | undefined };
+      readonly capabilities: {
+        readonly projectSettingsOverrides?: boolean | undefined;
+        readonly projectDefaults?: boolean | undefined;
+        readonly threadRestartContinuation?: boolean | undefined;
+        readonly threadAutoSettlement?: boolean | undefined;
+        readonly defaultRuntimeMode?: boolean | undefined;
+      };
     };
   } | null;
 }
@@ -188,6 +195,51 @@ function projectOverrideWrites(
   return [...writes.values()];
 }
 
+interface SkippedSettingsEnvironment {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+}
+
+function supportsScopedPatch(
+  environment: ScopedSettingsEnvironment,
+  keys: readonly string[],
+  projectScope: boolean,
+): boolean {
+  const capabilities = environment.serverConfig?.environment?.capabilities;
+  if (projectScope && capabilities?.projectSettingsOverrides !== true) return false;
+  return keys.every((key) => {
+    if (key === "defaultRuntimeMode") return capabilities?.defaultRuntimeMode === true;
+    if (key === "projectSettingsOverrides") return capabilities?.projectSettingsOverrides === true;
+    // Generic overrides imply support for the original project-scoped keys.
+    if (capabilities?.projectSettingsOverrides === true) return true;
+    if (settingRequiresProjectDefaults(key as keyof ServerSettingsPatch)) {
+      return capabilities?.projectDefaults === true;
+    }
+    if (key === "continueThreadsAfterServerUpdate") {
+      return capabilities?.threadRestartContinuation === true;
+    }
+    if (key === "sidebarAutoSettleOnMerge" || key === "sidebarAutoSettleAfterDays") {
+      return capabilities?.threadAutoSettlement === true;
+    }
+    return true;
+  });
+}
+
+function skippedSettingsEnvironments(
+  ids: readonly EnvironmentId[],
+  environments: readonly ScopedSettingsEnvironment[],
+  writes: readonly ScopedServerWrite[],
+): SkippedSettingsEnvironment[] {
+  const saved = new Set(writes.map((write) => write.environmentId));
+  const byId = new Map(environments.map((environment) => [environment.environmentId, environment]));
+  return [...new Set(ids)]
+    .filter((id) => !saved.has(id))
+    .map((environmentId) => ({
+      environmentId,
+      label: byId.get(environmentId)?.label ?? environmentId,
+    }));
+}
+
 /**
  * Environment scopes write the patch to every connected environment; project
  * and checkout scopes write the scopable keys into each member's override
@@ -216,25 +268,33 @@ export function planScopedSettingsPatch(
       : isProjectScope
         ? unscopableKeys.length > 0
           ? []
-          : projectOverrideWrites(scope, environments, (current, settings, projectId) => {
-              // Object-valued keys arrive as partial patches (the writing style
-              // rows send one field); an override entry stores the whole value,
-              // so complete the patch from the target's effective value.
-              const effective = resolveProjectSettings(settings, projectId).settings;
-              const next: Record<string, unknown> = { ...current };
-              for (const [key, value] of Object.entries(serverPatch)) {
-                const base = effective[key as keyof ServerSettings];
-                next[key] =
-                  isPlainObject(value) && isPlainObject(base) ? { ...base, ...value } : value;
-              }
-              return next as ProjectSettingsOverrides;
-            })
+          : projectOverrideWrites(
+              scope,
+              environments.filter((environment) =>
+                supportsScopedPatch(environment, serverKeys, true),
+              ),
+              (current, settings, projectId) => {
+                // Object-valued keys arrive as partial patches (the writing style
+                // rows send one field); an override entry stores the whole value,
+                // so complete the patch from the target's effective value.
+                const effective = resolveProjectSettings(settings, projectId).settings;
+                const next: Record<string, unknown> = { ...current };
+                for (const [key, value] of Object.entries(serverPatch)) {
+                  const base = effective[key as keyof ServerSettings];
+                  next[key] =
+                    isPlainObject(value) && isPlainObject(base) ? { ...base, ...value } : value;
+                }
+                return next as ProjectSettingsOverrides;
+              },
+            )
         : scope.kind === "all" || scope.kind === "environment"
-          ? connectedEnvironments.map((environment) => ({
-              environmentId: environment.environmentId,
-              label: environment.label,
-              patch: serverPatch,
-            }))
+          ? connectedEnvironments
+              .filter((environment) => supportsScopedPatch(environment, serverKeys, false))
+              .map((environment) => ({
+                environmentId: environment.environmentId,
+                label: environment.label,
+                patch: serverPatch,
+              }))
           : [];
   const hasClientWrite = Object.keys(clientPatch).length > 0;
   const hasWrite = hasClientWrite || serverWrites.length > 0;
@@ -247,8 +307,14 @@ export function planScopedSettingsPatch(
           ? "This setting is environment-wide and cannot be overridden by a project."
           : isProjectScope
             ? "Connect the selected checkouts, or update their environments, to save a project override."
-            : `Connect ${scope.kind === "environment" ? scope.label : "an environment"} to save this setting.`;
-  return { clientPatch, hasClientWrite, serverWrites, unavailableReason };
+            : connectedEnvironments.length > 0
+              ? "Update the selected environments to save this setting."
+              : `Connect ${scope.kind === "environment" ? scope.label : "an environment"} to save this setting.`;
+  const skippedEnvironments =
+    serverKeys.length === 0
+      ? []
+      : skippedSettingsEnvironments(scope.environmentIds, environments, serverWrites);
+  return { clientPatch, hasClientWrite, serverWrites, unavailableReason, skippedEnvironments };
 }
 
 /** Remove the keys' project overrides so each member inherits its environment value again. */
@@ -267,6 +333,11 @@ export function planScopedSettingsClear(
     clientPatch: {} as ClientSettingsPatch,
     hasClientWrite: false,
     serverWrites,
+    skippedEnvironments: skippedSettingsEnvironments(
+      scope.environmentIds,
+      environments,
+      serverWrites,
+    ),
     unavailableReason:
       serverWrites.length > 0
         ? null
@@ -311,7 +382,12 @@ export function planProjectOverridesClear(
   const writes = new Map<EnvironmentId, ScopedServerWrite>();
   for (const { environmentId, projectId } of entries) {
     const environment = byId.get(environmentId);
-    if (!environment?.serverConfig || environment.connection.phase !== "connected") continue;
+    if (
+      !environment?.serverConfig ||
+      environment.connection.phase !== "connected" ||
+      environment.serverConfig.environment?.capabilities.projectSettingsOverrides !== true
+    )
+      continue;
     const settings = environment.serverConfig.settings;
     const existing = writes.get(environmentId);
     writes.set(environmentId, {
@@ -330,6 +406,11 @@ export function planProjectOverridesClear(
     clientPatch: {} as ClientSettingsPatch,
     hasClientWrite: false,
     serverWrites,
+    skippedEnvironments: skippedSettingsEnvironments(
+      entries.map((entry) => entry.environmentId),
+      environments,
+      serverWrites,
+    ),
     unavailableReason:
       serverWrites.length > 0 ? null : "Connect the environments to reset these overrides.",
   };
@@ -350,12 +431,13 @@ export async function persistScopedSettingsPatch(
       persistServer({ environmentId, input: { patch } }),
     ),
   );
-  const failedEnvironments = plan.serverWrites.filter((_, index) => {
+  const failedWrites = plan.serverWrites.filter((_, index) => {
     const result = results[index];
     return result?.status !== "fulfilled" || result.value._tag === "Failure";
   });
   return {
-    failedEnvironments,
-    savedEnvironmentCount: plan.serverWrites.length - failedEnvironments.length,
+    failedEnvironments: [...failedWrites, ...plan.skippedEnvironments],
+    skippedEnvironments: plan.skippedEnvironments,
+    savedEnvironmentCount: plan.serverWrites.length - failedWrites.length,
   };
 }

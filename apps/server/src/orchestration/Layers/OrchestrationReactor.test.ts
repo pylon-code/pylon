@@ -11,6 +11,7 @@ import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeInge
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import * as ThreadSettlementReactor from "../ThreadSettlementReactor.ts";
 import * as PullRequestSyncReactor from "../PullRequestSyncReactor.ts";
+import * as ProjectSettingsReactor from "../ProjectSettingsReactor.ts";
 import * as ThreadPullRequestReactor from "../ThreadPullRequestReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
@@ -68,6 +69,15 @@ describe("OrchestrationReactor", () => {
           }),
         ),
         Layer.provideMerge(
+          Layer.succeed(ProjectSettingsReactor.ProjectSettingsReactor, {
+            start: () =>
+              Effect.sync(() => {
+                started.push("project-settings-reactor");
+              }),
+            drain: Effect.void,
+          }),
+        ),
+        Layer.provideMerge(
           Layer.succeed(ThreadPullRequestReactor.ThreadPullRequestReactor, {
             start: () => {
               started.push("thread-pull-request-reactor");
@@ -117,6 +127,7 @@ describe("OrchestrationReactor", () => {
       "checkpoint-reactor",
       "thread-deletion-reactor",
       "thread-pull-request-reactor",
+      "project-settings-reactor",
       "thread-settlement-reactor",
       "pull-request-sync-reactor",
       "agent-awareness-relay",

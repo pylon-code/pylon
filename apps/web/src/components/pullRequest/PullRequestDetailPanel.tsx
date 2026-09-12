@@ -1,3 +1,5 @@
+import { serverEnvironment } from "~/state/server";
+import { useAtomValue } from "@effect/atom-react";
 import { resolveEnvironmentMachineKind } from "@t3tools/contracts";
 import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 import { usePullRequestStack } from "~/state/usePullRequestStack";
@@ -604,9 +606,10 @@ export function PullRequestDetailPanel({
     (settings) => settings.pullRequestMergeMethodOverrides,
   );
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const environmentConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const projectDefaultMergeMethod =
     resolveProjectSettings(
-      environmentConfigs.get(environmentId)?.settings ?? DEFAULT_SERVER_SETTINGS,
+      environmentConfig?.settings ?? DEFAULT_SERVER_SETTINGS,
       reference.projectId,
     ).settings.pullRequestMergeMethod ?? undefined;
   const [mergeMethodSelection, setMergeMethodSelection] = useState<{

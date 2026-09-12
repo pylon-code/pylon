@@ -19,7 +19,10 @@ import {
   T3_PROJECT_FILE_NAME,
   ThreadId,
 } from "@t3tools/contracts";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import {
+  projectDefaultModelPreference,
+  resolveProjectSettings,
+} from "@t3tools/shared/projectSettings";
 import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import {
   isDefaultThreadEnvModeSettled,
@@ -481,7 +484,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   // server status for remediation and require a new pick instead of silently
   // switching providers. Project and sticky defaults also reject legacy models.
   const storedDraftModelSelection = selectedProjectDraft.modelSelection ?? null;
-  const storedProjectDefaultModelSelection = projectSettings.settings.defaultModelSelection;
+  const storedProjectDefaultModelSelection = projectDefaultModelPreference(projectSettings);
   const storedStickyModelSelection = useStickyComposerModelSelection();
   const unavailablePreferredProvider = resolveNewTaskUnavailableProvider(
     selectedEnvironmentServerConfig,

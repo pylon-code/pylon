@@ -3,6 +3,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
   ProjectId,
+  ProjectMetaUpdatedPayload,
   ProjectScript,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -32,6 +33,34 @@ import { resolveProviderInstanceTerminalEnvironment } from "./terminal/Manager.t
 
 const decodeSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
+
+const appendLegacyProjectEdit = Effect.fn("appendLegacyProjectEdit")(function* (
+  version: number,
+  payload: typeof ProjectMetaUpdatedPayload.Type,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(ProjectMetaUpdatedPayload))(
+    payload,
+  );
+  yield* sql`
+    INSERT INTO orchestration_events (
+      event_id, aggregate_kind, stream_id, stream_version, event_type,
+      occurred_at, actor_kind, payload_json, metadata_json
+    ) VALUES (
+      ${`${payload.projectId}-${version}`}, ${"project"}, ${payload.projectId}, ${version},
+      ${"project.meta-updated"}, ${payload.updatedAt}, ${"client"}, ${encoded}, ${"{}"}
+    )
+  `;
+});
+
+const reloadSettings = Effect.gen(function* () {
+  const fresh = yield* ServerSettingsModule.ServerSettingsService;
+  return yield* fresh.getSettings;
+}).pipe(
+  Effect.provide(
+    Layer.fresh(ServerSettingsModule.layer).pipe(Layer.provide(ServerSecretStore.layer)),
+  ),
+);
 
 let providerMutationSequence = 0;
 const updateSettingsWithProviderInstances = Effect.fn("updateSettingsWithProviderInstances")(
@@ -1619,6 +1648,113 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       );
       assert.isTrue(persisted.projectSettingsFolded);
       assert.isUndefined(persisted.projectSettingsOverrides[legacyProject]);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("replays a committed legacy edit before the project projection catches up", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const projectId = ProjectId.make("unprojected-project");
+      const model = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.5");
+      // No projection row exists yet: journal persistence already accepted the edit.
+      yield* appendLegacyProjectEdit(1, {
+        projectId,
+        defaultModelSelection: model,
+        defaultThreadEnvMode: "worktree",
+        updatedAt: "2026-09-12T00:00:00.000Z",
+      });
+      const settings = yield* serverSettings.getSettings;
+      assert.deepEqual(settings.projectSettingsOverrides[projectId], {
+        defaultModelSelection: model,
+        defaultThreadEnvMode: "worktree",
+      });
+      assert.equal(settings.projectSettingsLegacySequence, 1);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect(
+    "canonical reset consumes prior legacy events but a repeated later edit still applies",
+    () =>
+      Effect.gen(function* () {
+        const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+        const projectId = ProjectId.make("reset-project");
+        const payload = {
+          projectId,
+          defaultThreadEnvMode: "worktree" as const,
+          updatedAt: "2026-09-12T00:00:00.000Z",
+        };
+        yield* serverSettings.getSettings;
+        yield* appendLegacyProjectEdit(1, payload);
+        // The reactor has not handled this event yet. The canonical write observes it.
+        const reset = yield* serverSettings.updateSettings({
+          projectSettingsOverrides: { [projectId]: null },
+        });
+        assert.isUndefined(reset.projectSettingsOverrides[projectId]);
+        assert.equal(reset.projectSettingsLegacySequence, 1);
+        const delayedReceipt = yield* serverSettings.updateSettings({});
+        assert.isUndefined(delayedReceipt.projectSettingsOverrides[projectId]);
+        assert.isUndefined((yield* reloadSettings).projectSettingsOverrides[projectId]);
+        // Same old aggregate value is a new user edit, not a stale projection value.
+        yield* appendLegacyProjectEdit(2, payload);
+        const edited = yield* serverSettings.updateSettings({});
+        assert.deepEqual(edited.projectSettingsOverrides[projectId], {
+          defaultThreadEnvMode: "worktree",
+        });
+        assert.equal(edited.projectSettingsLegacySequence, 2);
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("replays legacy edits after restart and clears only their legacy fields", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const projectId = ProjectId.make("restart-project");
+      const model = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.5");
+      const script: ProjectScript = {
+        id: "check",
+        name: "Check",
+        command: "npm test",
+        icon: "play",
+        runOnWorktreeCreate: false,
+      };
+      yield* serverSettings.updateSettings({
+        projectSettingsOverrides: {
+          [projectId]: {
+            enableAgentBrowserAccess: false,
+          },
+        },
+      });
+      yield* appendLegacyProjectEdit(1, {
+        projectId,
+        defaultModelSelection: model,
+        defaultThreadEnvMode: "worktree",
+        autoPull: true,
+        scripts: [script],
+        updatedAt: "2026-09-12T00:00:00.000Z",
+      });
+      // Simulate stopping after commit but before the live reactor handled it.
+      const recovered = yield* reloadSettings;
+      assert.deepEqual(recovered.projectSettingsOverrides[projectId], {
+        enableAgentBrowserAccess: false,
+        defaultModelSelection: model,
+        defaultThreadEnvMode: "worktree",
+        defaultAutoPull: true,
+        defaultProjectScripts: [script],
+      });
+      yield* appendLegacyProjectEdit(2, {
+        projectId,
+        defaultModelSelection: null,
+        defaultThreadEnvMode: null,
+        autoPull: false,
+        scripts: [],
+        updatedAt: "2026-09-12T00:00:01.000Z",
+      });
+      const cleared = yield* reloadSettings;
+      assert.deepEqual(cleared.projectSettingsOverrides[projectId], {
+        enableAgentBrowserAccess: false,
+      });
+      assert.isUndefined(cleared.projectScriptOverrides[projectId]);
+      assert.isUndefined(cleared.projectAutoPullOverrides[projectId]);
+      assert.equal(cleared.projectSettingsLegacySequence, 2);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 

@@ -98,6 +98,8 @@ vi.mock("@t3tools/contracts", () => ({
   DEFAULT_SERVER_SETTINGS: {},
 }));
 vi.mock("@t3tools/shared/projectSettings", () => ({
+  projectDefaultModelPreference: (resolved: { settings: { defaultModelSelection: null } }) =>
+    resolved.settings.defaultModelSelection,
   // Environment settings pass through; the tests set project fields on the
   // project record, which the hook still honors until the server folds them.
   resolveProjectSettings: (settings: Record<string, unknown>) => ({

@@ -4,6 +4,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { resolveProjectScripts } from "@t3tools/shared/projectScripts";
 import { ChevronDownIcon, PlusIcon } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { useT3ProjectFileState } from "../../hooks/useT3ProjectFileScripts";
@@ -42,20 +43,24 @@ export function ProjectActionsSettings() {
   const { scope, targets, target } = useSettingsScope();
   const { environments } = useEnvironments();
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
+  const memberById = new Map(
+    isProjectScope ? scope.members.map((member) => [member.id, member]) : [],
+  );
+  const representativeMember = target?.projectId ? memberById.get(target.projectId) : undefined;
   const representativeConfig = target
     ? environments.find((environment) => environment.environmentId === target.environmentId)
         ?.serverConfig
     : undefined;
-  const scripts = target?.settings.defaultProjectScripts ?? [];
+  const scripts =
+    representativeConfig && representativeMember
+      ? resolveProjectScripts(representativeConfig.settings, representativeMember)
+      : (target?.settings.defaultProjectScripts ?? []);
   const keybindings = representativeConfig?.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS;
   const mixed = targets.some(
     (candidate) =>
       JSON.stringify(candidate.settings.defaultProjectScripts) !== JSON.stringify(scripts),
   );
   const [request, setRequest] = useState<ProjectScriptEditorRequest | null>(null);
-  const memberById = new Map(
-    isProjectScope ? scope.members.map((member) => [member.id, member]) : [],
-  );
   const { saving, persist, submit } = useProjectScriptSettings(
     targets.flatMap((candidate) => {
       const environment = environments.find(
@@ -63,15 +68,6 @@ export function ProjectActionsSettings() {
       );
       if (!environment?.serverConfig) return [];
       const member = candidate.projectId ? memberById.get(candidate.projectId) : undefined;
-      // An older server ignores the override record, so a project edit there
-      // would report success and vanish; such environments are left out and
-      // the legacy per-project map keeps serving them.
-      if (
-        member &&
-        environment.serverConfig.environment?.capabilities.projectSettingsOverrides !== true
-      ) {
-        return [];
-      }
       return [
         {
           environmentId: candidate.environmentId,
@@ -79,6 +75,7 @@ export function ProjectActionsSettings() {
           // extended, not derived from already-resolved values.
           settings: environment.serverConfig.settings,
           keybindings: environment.serverConfig.keybindings,
+          capabilities: environment.serverConfig.environment.capabilities,
           ...(member ? { project: member } : {}),
         },
       ];
@@ -87,7 +84,6 @@ export function ProjectActionsSettings() {
 
   // A project's t3.json can declare actions to import. Read it from the
   // representative checkout; the imported action still fans out.
-  const representativeMember = target?.projectId ? memberById.get(target.projectId) : undefined;
   const t3File = useT3ProjectFileState(
     representativeMember?.environmentId ?? EnvironmentId.make("none"),
     representativeMember?.workspaceRoot ?? null,
@@ -129,13 +125,17 @@ export function ProjectActionsSettings() {
   );
 
   return (
-    <SettingsSection id="project-actions" title="Actions">
+    <SettingsSection id="project-actions" title={isProjectScope ? "Actions" : "Default actions"}>
       <SettingsRow
         serverScoped
         settingKeys={["defaultProjectScripts"]}
         mixed={mixed}
-        title="Actions"
-        description="Commands that run in this project's checkout or its worktree, with optional shortcuts."
+        title={isProjectScope ? "Actions" : "Default actions"}
+        description={
+          isProjectScope
+            ? "Commands that run in this project's checkout or its worktree, with optional shortcuts."
+            : "Shared commands inherited by projects without their own action list."
+        }
         onResetOverride={() => void persist(() => null)}
         control={
           <div className="flex flex-wrap items-center gap-1.5">

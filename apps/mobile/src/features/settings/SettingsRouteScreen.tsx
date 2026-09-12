@@ -1,3 +1,4 @@
+import type { ServerSettings } from "@t3tools/contracts";
 import { useAuth, useUser } from "@clerk/expo";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import Constants from "expo-constants";
@@ -46,9 +47,7 @@ import {
 } from "@t3tools/contracts";
 import {
   filterSharedServerPatch,
-  findSharedSettingsMismatches,
   supportsSharedSettingsSync,
-  pickSharedServerSettings,
 } from "@t3tools/client-runtime/state/shared-settings";
 import { useThreadListV2Enabled } from "../threads/use-thread-list-v2-enabled";
 import {
@@ -649,7 +648,9 @@ function SharedThreadSettingsRows() {
     return null;
   }
 
-  const writeToAll = (patch: Partial<AutoSettleSettings>) => {
+  const writeToAll = (
+    patch: Partial<AutoSettleSettings & Pick<ServerSettings, "continueThreadsAfterServerUpdate">>,
+  ) => {
     for (const environment of syncTargets) {
       const supportedPatch = filterSharedServerPatch(
         patch,
@@ -674,6 +675,12 @@ function SharedThreadSettingsRows() {
   );
 
   const afterDays = referenceSettings.sidebarAutoSettleAfterDays;
+  const continuationMismatches = syncTargets.filter(
+    (environment) =>
+      environment.serverConfig?.environment.capabilities.threadRestartContinuation === true &&
+      environment.serverConfig.settings.continueThreadsAfterServerUpdate !==
+        referenceSettings.continueThreadsAfterServerUpdate,
+  );
   const commitDays = () => {
     const draft = (daysDraft ?? "").trim();
     setDaysDraft(null);
@@ -754,6 +761,28 @@ function SharedThreadSettingsRows() {
             <Text className="text-base font-t3-medium text-foreground">
               Apply auto-settle defaults
             </Text>
+          </Pressable>
+        </View>
+      ) : null}
+      {continuationMismatches.length > 0 ? (
+        <View className="flex-row items-center gap-4 border-t border-border-subtle p-4">
+          <View className="min-w-0 flex-1">
+            <Text className="text-lg text-foreground">Restart continuation defaults differ</Text>
+            <Text className="text-sm text-foreground-muted">
+              {continuationMismatches.map((environment) => environment.label).join(", ")}
+            </Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() =>
+              writeToAll({
+                continueThreadsAfterServerUpdate:
+                  referenceSettings.continueThreadsAfterServerUpdate,
+              })
+            }
+            className="rounded-full bg-subtle px-4 py-2 active:opacity-70"
+          >
+            <Text className="text-base font-t3-medium text-foreground">Apply restart defaults</Text>
           </Pressable>
         </View>
       ) : null}

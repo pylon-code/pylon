@@ -120,6 +120,9 @@ export function SourceControlWritingSettingsSection() {
       settings,
     ),
   );
+  const canEnableDedicatedModel = instanceEntries.some(
+    (entry) => entry.enabled && entry.isAvailable,
+  );
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
     backgroundTextGenerationProviders,
