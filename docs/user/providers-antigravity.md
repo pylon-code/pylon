@@ -89,6 +89,13 @@ Pylon keeps conversation history and file diffs, but Antigravity cannot rewind i
 Reverting a thread or editing and resubmitting an earlier turn is unavailable. Continue with a
 follow-up message or start a new thread.
 
+### Command output
+
+Background command completion notices appear as expandable command results, with
+terminal output and the command's exit status. Antigravity may also report the
+original command separately. Long output uses the same truncation limits as other
+command results.
+
 ### Skills and attachments
 
 Put project skills in `.agents/skills`. Pylon also reads `.gemini/skills` and the legacy

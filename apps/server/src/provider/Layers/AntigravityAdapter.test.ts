@@ -528,6 +528,126 @@ it.layer(layer)("AntigravityAdapter", (it) => {
     }),
   );
 
+  it.effect(
+    "renders chunked task notices as command results without assistant-message shells",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Run tests" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        for (const [index, exitCode] of [0, 1].entries()) {
+          const itemId = `notice-${index}`;
+          yield* h.emitNative({ _tag: "AssistantItemStarted", itemId });
+          const notice = `<task_notification>\nTask completed: pnpm test (task ID: session/task-${index})\nExit code: ${exitCode}\nOutput:\n> test\nresult ${index}\n\n</task_notification>`;
+          for (const text of [notice.slice(0, 7), notice.slice(7, 40), notice.slice(40)]) {
+            yield* h.emitNative({ _tag: "ContentDelta", itemId, text, rawPayload: {} });
+          }
+          yield* h.emitNative({ _tag: "AssistantItemCompleted", itemId });
+        }
+        yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+        const result = yield* Fiber.join(sending);
+        yield* h.waitForEvent((event) => event.type === "turn.completed");
+        expect(h.seen.filter((event) => event.type === "content.delta")).toEqual([]);
+        expect(
+          h.seen.filter(
+            (event) =>
+              (event.type === "item.started" || event.type === "item.completed") &&
+              event.payload.itemType === "assistant_message",
+          ),
+        ).toEqual([]);
+        const tools = h.seen.filter((event) => event.type === "item.completed");
+        expect(tools).toHaveLength(2);
+        expect(tools.map((event) => event.itemId)).toEqual([
+          "antigravity-task:session/task-0",
+          "antigravity-task:session/task-1",
+        ]);
+        expect(tools.map((event) => event.payload.status)).toEqual(["completed", "failed"]);
+        expect(tools.every((event) => event.turnId === result.turnId)).toBe(true);
+        expect(tools[1]?.payload.data).toMatchObject({
+          command: "pnpm test",
+          taskId: "session/task-1",
+          item: { command: "pnpm test", aggregatedOutput: "> test\nresult 1\n", exitCode: 1 },
+        });
+      }),
+  );
+
+  it.effect("preserves normal streaming, malformed notices, and interrupted message buffers", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Run tests" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      yield* h.emitNative({ _tag: "AssistantItemStarted", itemId: "prose" });
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "prose",
+        text: "Testing now.",
+        rawPayload: {},
+      });
+      const streamed = yield* h.waitForEvent((event) => event.type === "content.delta");
+      expect(streamed.payload.delta).toBe("Testing now.");
+      yield* h.emitNative({ _tag: "AssistantItemCompleted", itemId: "prose" });
+      yield* h.emitNative({ _tag: "AssistantItemStarted", itemId: "partial" });
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "partial",
+        text: "<task_notification>\npartial",
+        rawPayload: {},
+      });
+      yield* Deferred.succeed(prompt.result, { stopReason: "cancelled" });
+      yield* Fiber.join(sending);
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+      expect(
+        h.seen
+          .filter((event) => event.type === "content.delta")
+          .map((event) => event.payload.delta),
+      ).toEqual(["Testing now.", "<task_notification>\npartial"]);
+      expect(
+        h.seen.filter((event) => event.type === "item.completed").map((event) => event.itemId),
+      ).toEqual(["prose", "partial"]);
+    }),
+  );
+
+  it.effect(
+    "normalizes replayed notices with stable task IDs and flushes partial text on stop",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const text =
+          "<task_notification>\nTask completed: pnpm test (task ID: session/task-1)\nExit code: 0\nOutput:\ndone\n</task_notification>";
+        for (const itemId of ["replay-1", "replay-2"]) {
+          yield* h.emitNative({ _tag: "AssistantItemStarted", itemId });
+          yield* h.emitNative({ _tag: "ContentDelta", itemId, text, rawPayload: {} });
+          yield* h.emitNative({ _tag: "AssistantItemCompleted", itemId });
+          const result = yield* h.waitForEvent((event) => event.type === "item.completed");
+          expect(result.itemId).toBe("antigravity-task:session/task-1");
+          expect(result.turnId).toBeUndefined();
+        }
+        yield* h.emitNative({
+          _tag: "ContentDelta",
+          itemId: "partial",
+          text: "<task_",
+          rawPayload: {},
+        });
+        const acknowledge = yield* Deferred.make<void>();
+        yield* h.emitNative({ _tag: "EventStreamBarrier", acknowledge });
+        yield* Deferred.await(acknowledge);
+        yield* h.adapter.stopSession(threadId);
+        yield* h.waitForEvent((event) => event.type === "session.exited");
+        expect(
+          h.seen
+            .filter((event) => event.type === "content.delta")
+            .map((event) => event.payload.delta),
+        ).toEqual(["<task_"]);
+      }),
+  );
+
   it.effect("does not auto-approve a remaining native request in full access", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
