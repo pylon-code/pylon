@@ -169,7 +169,9 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<ProviderSession, TError>;
 
   /**
-   * Send a turn to an active provider session.
+   * Send a turn to an active provider session. Resolve once the prompt is
+   * dispatched, not when its response completes: the reactor holds the ordered
+   * admission lane until this returns. Session-owned work emits completion.
    */
   readonly sendTurn: (
     input: ProviderSendTurnInput,

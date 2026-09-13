@@ -1045,7 +1045,12 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         });
       }).pipe(Effect.uninterruptible);
 
-    return yield* Effect.gen(function* () {
+    const admitted = yield* Deferred.make<{
+      threadId: ThreadId;
+      turnId: TurnId;
+      resumeCursor: ProviderSession["resumeCursor"];
+    }>();
+    const runTurn = Effect.gen(function* () {
       const launch = yield* context.promptLock.withPermit(
         Effect.gen(function* () {
           yield* requireSession(input.threadId);
@@ -1127,6 +1132,11 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           return { turn, fiber };
         }),
       );
+      yield* Deferred.succeed(admitted, {
+        threadId: input.threadId,
+        turnId: launch.turn.turnId,
+        resumeCursor: context.session.resumeCursor,
+      });
       const result = yield* Fiber.await(launch.fiber).pipe(Effect.flatMap((exit) => exit));
       yield* context.runtime.drainEvents;
       if (context.stopped) {
@@ -1182,6 +1192,14 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         ),
       ),
     );
+    // The reactor serializes admission, not the lifetime of the response.
+    // Keep completion and cancellation owned by the session after dispatch so
+    // a later steer can enter the adapter while the native prompt is running.
+    const worker = yield* runTurn.pipe(Effect.forkIn(context.scope));
+    return yield* Effect.raceFirst(
+      Deferred.await(admitted),
+      Fiber.await(worker).pipe(Effect.flatMap((exit) => exit)),
+    ).pipe(Effect.onInterrupt(() => Fiber.interrupt(worker)));
   });
 
   const interruptTurn: Adapter["interruptTurn"] = (threadId) =>

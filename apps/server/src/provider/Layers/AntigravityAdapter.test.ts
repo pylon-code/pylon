@@ -690,6 +690,44 @@ it.layer(layer)("AntigravityAdapter", (it) => {
     }),
   );
 
+  it.effect(
+    "admits repeated steering and a fresh turn after Stop without waiting for completion",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const first = yield* h.adapter.sendTurn({ threadId, input: "Start" });
+        yield* h.nextPrompt;
+        for (const input of ["Steer once", "Steer again"]) {
+          const steered = yield* h.adapter.sendTurn({ threadId, input });
+          yield* h.nextPrompt;
+          expect(steered.turnId).toBe(first.turnId);
+          expect(h.hasActivePrompt()).toBe(true);
+        }
+        yield* h.adapter.interruptTurn(threadId);
+        yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed" && event.turnId === first.turnId,
+        );
+        const requestId = CommandId.make("fresh-after-stop");
+        const fresh = yield* h.adapter.sendTurn({
+          threadId,
+          input: "Fresh",
+          admissionRequestId: requestId,
+        });
+        const prompt = yield* h.nextPrompt;
+        expect(fresh.turnId).not.toBe(first.turnId);
+        expect(
+          h.seen.find((event) => event.type === "turn.started" && event.turnId === fresh.turnId),
+        ).toMatchObject({ admissionRequestId: requestId });
+        yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+        yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed" && event.turnId === fresh.turnId,
+        );
+      }),
+  );
+
   it.effect("rejects an unavailable steer model without cancelling current work", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
@@ -750,11 +788,15 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
       const recovered = yield* Fiber.join(later);
       expect(recovered.turnId).not.toBe(ended.turnId);
+      yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed" && event.turnId === recovered.turnId,
+      );
       expect((yield* h.adapter.listSessions())[0]?.status).toBe("ready");
     }),
   );
 
-  it.effect("cancels the native prompt if its send caller is interrupted", () =>
+  it.effect("returns admission while the prompt runs and stops it through interruptTurn", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
       yield* h.adapter.startSession({
@@ -766,7 +808,9 @@ it.layer(layer)("AntigravityAdapter", (it) => {
         .sendTurn({ threadId, input: "Keep working" })
         .pipe(Effect.forkChild);
       yield* h.nextPrompt;
-      yield* Fiber.interrupt(sending);
+      yield* Fiber.join(sending);
+      expect(h.hasActivePrompt()).toBe(true);
+      yield* h.adapter.interruptTurn(threadId);
       const ended = yield* h.waitForEvent((event) => event.type === "turn.completed");
       expect(ended.payload.state).toBe("cancelled");
       expect(h.hasActivePrompt()).toBe(false);

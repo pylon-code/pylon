@@ -482,6 +482,8 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       .sendTurn({ threadId, input: "first turn", attachments: [] })
       .pipe(Effect.forkChild);
     yield* Deferred.await(interruptStarted);
+    yield* Fiber.join(firstTurnFiber);
+    assert.isFalse(yield* Deferred.isDone(interruptCompleted));
     const interruptedTurnId = events.findLast(
       (event) => event.threadId === threadId && event.type === "turn.started",
     )?.turnId;
@@ -583,8 +585,14 @@ exec ${process.execPath} ${mockAgentPath} "$@"
     );
     const failingThreadId = ThreadId.make("prompt-failure");
     const failureEvents: Array<ProviderRuntimeEvent> = [];
+    const failureCompleted = yield* Deferred.make<void>();
     const failureEventFiber = yield* failingAdapter.streamEvents.pipe(
-      Stream.runForEach((event) => Effect.sync(() => failureEvents.push(event))),
+      Stream.runForEach((event) =>
+        Effect.gen(function* () {
+          failureEvents.push(event);
+          if (event.type === "turn.completed") yield* Deferred.succeed(failureCompleted, undefined);
+        }),
+      ),
       Effect.forkChild,
     );
     yield* Effect.yieldNow;
@@ -598,6 +606,7 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       .sendTurn({ threadId: failingThreadId, input: "fail", attachments: [] })
       .pipe(Effect.result);
     assert.equal(failedPrompt._tag, "Success");
+    yield* Deferred.await(failureCompleted);
     const failedTurnId = failureEvents.find(
       (event) => event.threadId === failingThreadId && event.type === "turn.started",
     )?.turnId;
