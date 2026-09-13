@@ -1642,7 +1642,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     useRightPanelStore.getState().open(threadRef, "pull-requests");
     if (!props.isActive) onThreadActivate(threadRef);
   }, [onThreadActivate, props.isActive, threadRef]);
-  const prBadge =
+  const renderPrBadge = (iconOnly: boolean) =>
     prBadgeShape?.kind === "stack" || pr || currentLinkedPr ? (
       <ThreadPullRequestBadgeControl
         variant="underline"
@@ -1650,10 +1650,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         number={pr?.number ?? currentLinkedPr?.number}
         url={pr?.url ?? currentLinkedPr?.url}
         status={prStatus}
+        iconOnly={iconOnly}
         onOpenStack={handlePrStackClick}
         onOpenPullRequest={handlePrClick}
       />
     ) : null;
+  const prBadge = renderPrBadge(false);
   const terminalStatusIcon = terminalStatus ? (
     <span
       role="img"
@@ -1750,17 +1752,37 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               />
             }
           >
-            {props.project ? (
-              <ProjectFavicon project={props.project} className="size-4 shrink-0" />
-            ) : driverKind ? (
-              <ProviderInstanceIcon
-                driverKind={driverKind}
-                displayName={providerEntry?.displayName ?? modelInstanceId}
-                iconClassName="size-4"
-              />
-            ) : (
-              <SquarePenIcon aria-hidden className="size-4" />
-            )}
+            <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
+              {props.project ? (
+                <ProjectFavicon project={props.project} className="size-4" />
+              ) : driverKind ? (
+                <ProviderInstanceIcon
+                  driverKind={driverKind}
+                  displayName={providerEntry?.displayName ?? modelInstanceId}
+                  iconClassName="size-4"
+                />
+              ) : (
+                <SquarePenIcon aria-hidden className="size-4" />
+              )}
+              {isRemote ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <span
+                        role="img"
+                        aria-label={props.environmentLabel ?? "Remote environment"}
+                        className="absolute -left-1 -bottom-1 inline-flex size-3 items-center justify-center rounded-full bg-sidebar text-sidebar-muted-foreground ring-1 ring-sidebar"
+                      />
+                    }
+                  >
+                    <EnvironmentMachineIcon kind={props.environmentMachine} className="size-2.5" />
+                  </TooltipTrigger>
+                  <TooltipPopup side="right">
+                    {props.environmentLabel ?? "Remote environment"}
+                  </TooltipPopup>
+                </Tooltip>
+              ) : null}
+            </span>
             {topStatus ? (
               <span
                 aria-hidden
@@ -2025,7 +2047,47 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             <div className="flex h-5 w-full min-w-0 items-center gap-1.5">
               {draftIndicator}
               {props.project ? (
-                <ProjectFavicon project={props.project} className="size-4 shrink-0" />
+                <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
+                  <ProjectFavicon project={props.project} className="size-4" />
+                  {compactRows && isRemote ? (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <span
+                            role="img"
+                            aria-label={props.environmentLabel ?? "Remote environment"}
+                            className="absolute -right-1 -bottom-1 inline-flex size-3 items-center justify-center rounded-full bg-sidebar text-sidebar-muted-foreground ring-1 ring-sidebar"
+                          />
+                        }
+                      >
+                        <EnvironmentMachineIcon
+                          kind={props.environmentMachine}
+                          className="size-2.5"
+                        />
+                      </TooltipTrigger>
+                      <TooltipPopup side="top">
+                        {props.environmentLabel ?? "Remote environment"}
+                      </TooltipPopup>
+                    </Tooltip>
+                  ) : null}
+                </span>
+              ) : compactRows && isRemote ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <span
+                        role="img"
+                        aria-label={props.environmentLabel ?? "Remote environment"}
+                        className="inline-flex size-4 shrink-0 items-center justify-center text-sidebar-muted-foreground/70"
+                      />
+                    }
+                  >
+                    <EnvironmentMachineIcon kind={props.environmentMachine} className="size-3.5" />
+                  </TooltipTrigger>
+                  <TooltipPopup side="top">
+                    {props.environmentLabel ?? "Remote environment"}
+                  </TooltipPopup>
+                </Tooltip>
               ) : null}
               {compactRows ? (
                 title
@@ -2044,18 +2106,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               {pinIndicator}
               {compactRows ? (
                 <>
-                  {isRemote ? (
-                    <span
-                      role="img"
-                      aria-label={props.environmentLabel ?? "Remote environment"}
-                      className="inline-flex shrink-0 text-sidebar-muted-foreground/70"
-                    >
-                      <EnvironmentMachineIcon
-                        kind={props.environmentMachine}
-                        className="size-3.5"
-                      />
-                    </span>
-                  ) : null}
                   {terminalStatusIcon}
                   {topStatus && CompactStatusIcon ? (
                     isWokeStatus ? (
@@ -2083,7 +2133,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                       </span>
                     )
                   ) : null}
-                  {prBadge}
+                  {renderPrBadge(true)}
                 </>
               ) : null}
               {/* The visible state owns this slot's width: status at rest,
@@ -2113,7 +2163,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                   >
                     {compactRows ? (
                       status === "working" ? (
-                        <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                        <span className={topStatus?.className}>
+                          <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                        </span>
                       ) : compactCompletedAt ? (
                         <SidebarCompletedTime completedAt={compactCompletedAt} />
                       ) : (
