@@ -9,6 +9,11 @@ vi.mock("../ui/sidebar", () => ({
   SidebarMenuButton: ({ size: _size, ...props }: ComponentProps<"button"> & { size?: string }) => (
     <button {...props} />
   ),
+  useSidebar: () => ({
+    state: "expanded",
+    isMobile: false,
+    setOpen: vi.fn(),
+  }),
 }));
 vi.mock("../ui/tooltip", () => ({
   Tooltip: ({ children }: { children: ReactNode }) => children,
