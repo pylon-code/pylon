@@ -1748,8 +1748,11 @@ export function makePrimeAgentDaemonAdapter(
           snapshotCount: event.state.messageCount,
         });
         if (reconciliation === undefined) return false;
+        const transcriptContinuityVerified =
+          event.replayContinuity === "complete" ||
+          (event.orderedSnapshot === true && event.replayContinuity === "unknown");
         if (
-          event.replayContinuity !== "complete" &&
+          !transcriptContinuityVerified &&
           (event.streamingMessage !== undefined ||
             (context.nativeTranscriptMessageCount > 0 && reconciliation.overlapCount === 0))
         ) {
@@ -1879,7 +1882,7 @@ export function makePrimeAgentDaemonAdapter(
         );
         if (
           authoritativeRunIdle &&
-          event.replayContinuity !== "complete" &&
+          !transcriptContinuityVerified &&
           snapshotProvesRunOutput &&
           !turn.awaitingQueuedRun &&
           turn.pendingRunCompletionHandoff === undefined
@@ -2757,7 +2760,8 @@ export function makePrimeAgentDaemonAdapter(
                         missingMessages[0]?.role === "assistant" &&
                         context.nativeTranscript.at(-1)?.role === "user");
                     const transcriptReconciled =
-                      event.replayContinuity === "complete" &&
+                      (event.replayContinuity === "complete" ||
+                        (event.orderedSnapshot === true && event.replayContinuity === "unknown")) &&
                       transcriptPlan !== undefined &&
                       snapshotIsExactOrCurrentTerminal &&
                       (yield* reconcileTranscriptSnapshotLocked(context, event));
@@ -2778,7 +2782,17 @@ export function makePrimeAgentDaemonAdapter(
                       reconnectRecoveryFailed = true;
                       return;
                     }
-                    if (activeTurn?.correlationId !== undefined && lifecycle === undefined) {
+                    // A settings snapshot can precede native prompt ownership. It
+                    // may preserve an exact transcript, but cannot settle the turn.
+                    const snapshotPrecedesPromptDelivery =
+                      event.orderedSnapshot === true &&
+                      missingMessages.length === 0 &&
+                      currentLifecycle?.deliveryCrossed !== true;
+                    if (
+                      activeTurn?.correlationId !== undefined &&
+                      lifecycle === undefined &&
+                      !snapshotPrecedesPromptDelivery
+                    ) {
                       if (reconnectGeneration !== undefined) {
                         context.runtime.resolveReconnectSnapshot(reconnectGeneration, false, false);
                       }
