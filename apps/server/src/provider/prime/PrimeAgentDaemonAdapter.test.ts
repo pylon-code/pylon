@@ -1856,6 +1856,83 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("preserves an exact ordered snapshot before prompt ownership", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const captures = makeCaptures();
+        captures.correlatedPromptLifecycleAvailable = true;
+        captures.correlatedRecoveryProofEpoch = 0;
+        captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+        const submitResponse = yield* Deferred.make<PrimeDaemonPromptLifecycleSnapshot>();
+        const delegate = fakeRuntimeFactory(captures);
+        const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+          instanceId,
+          runtimeFactory: (input) =>
+            delegate(input).pipe(
+              Effect.map(
+                (runtime) =>
+                  ({
+                    ...runtime,
+                    submitCorrelatedPrompt: (prompt) =>
+                      Effect.gen(function* () {
+                        yield* Queue.offer(
+                          captures.correlatedPromptObserved!,
+                          prompt.correlationId,
+                        );
+                        return yield* Deferred.await(submitResponse);
+                      }),
+                  }) satisfies PrimeAgentDaemonSessionRuntime,
+              ),
+            ),
+        });
+        const subscription = yield* subscribe(adapter);
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const turnFiber = yield* adapter
+          .sendTurn({ threadId, input: "survive ordinary resync" })
+          .pipe(Effect.forkChild);
+        const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+
+        const resolutions = yield* Queue.unbounded<FakeCaptures["reconnectResolutions"][number]>();
+        captures.reconnectSnapshotResolutionObserved = (resolution) => {
+          Queue.offerUnsafe(resolutions, resolution);
+        };
+        yield* offer(captures, {
+          ...initialSnapshot(),
+          connectionGeneration: 0,
+          correlatedProofEpoch: 0,
+          replayContinuity: "unknown",
+          orderedSnapshot: true,
+        });
+        expect((yield* Queue.take(resolutions)).reconciled).toBe(true);
+        const owned = lifecycleSnapshot(correlationId, "owned", 1);
+        yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: owned });
+        yield* Deferred.succeed(submitResponse, owned);
+        const started = yield* awaitObservedType(subscription.observed, "turn.started");
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+        });
+        yield* offer(captures, {
+          _tag: "MessageCompleted",
+          message: assistantMessage("ordinary snapshot survived"),
+          attribution: { scope: "prompt", correlationId },
+        });
+        yield* offer(captures, {
+          _tag: "PromptLifecycleUpdated",
+          lifecycle: lifecycleSnapshot(correlationId, "completed", 3, { usage }),
+        });
+
+        const result = yield* Fiber.join(turnFiber);
+        expect(result.turnId).toBe(started.turnId);
+        const turnEvents = subscription.events.filter((event) => event.turnId === result.turnId);
+        expect(turnEvents.filter((event) => event.type === "runtime.error")).toEqual([]);
+        expect(turnEvents.findLast((event) => event.type === "turn.completed")).toMatchObject({
+          payload: { state: "completed", totalCostUsd: usage.totalCostUsd },
+        });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("keeps background snapshot children unscoped from a queued correlation", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -2314,25 +2391,28 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
-  for (const variant of [
-    "known",
-    "multiple",
-    "unknown id",
-    "wrong name",
-    "ambiguous name",
-    "duplicate",
-    "already observed",
-    "unattributed call",
-    "unattributed through snapshot",
-    "changed prefix",
-    "missing proof",
-    "missing lifecycle",
-    "undelivered",
-    "unavailable replay",
-    "extra assistant",
-  ] as const) {
+  for (const { variant, orderedSnapshot } of (
+    [
+      "known",
+      "streaming",
+      "multiple",
+      "unknown id",
+      "wrong name",
+      "ambiguous name",
+      "duplicate",
+      "already observed",
+      "unattributed call",
+      "unattributed through snapshot",
+      "changed prefix",
+      "missing proof",
+      "missing lifecycle",
+      "undelivered",
+      "unavailable replay",
+      "extra assistant",
+    ] as const
+  ).flatMap((variant) => [false, true].map((orderedSnapshot) => ({ variant, orderedSnapshot })))) {
     it.effect(
-      `reconciles only current correlated tool results from a complete snapshot: ${variant}`,
+      `reconciles only current correlated tool results: ${variant} (ordered: ${orderedSnapshot})`,
       () =>
         Effect.scoped(
           Effect.gen(function* () {
@@ -2442,7 +2522,14 @@ describe("PrimeAgentDaemonAdapter", () => {
                 messageCount: messages.length,
               },
               messages,
-              replayContinuity: variant === "unavailable replay" ? "unavailable" : "complete",
+              replayContinuity:
+                variant === "unavailable replay"
+                  ? "unavailable"
+                  : orderedSnapshot
+                    ? "unknown"
+                    : "complete",
+              ...(orderedSnapshot ? { orderedSnapshot: true } : {}),
+              ...(variant === "streaming" ? { streamingMessage: assistantMessage("") } : {}),
               connectionGeneration: 0,
               ...(variant === "missing proof" ? {} : { correlatedProofEpoch: 0 }),
               promptLifecycles: {
@@ -2458,7 +2545,8 @@ describe("PrimeAgentDaemonAdapter", () => {
               },
             });
             const resolution = yield* Queue.take(resolutions);
-            const accepted = variant === "known" || variant === "multiple";
+            const accepted =
+              variant === "known" || variant === "multiple" || variant === "streaming";
             expect(resolution.reconciled).toBe(accepted);
             if (accepted) {
               expect(turnFiber.pollUnsafe()).toBeUndefined();

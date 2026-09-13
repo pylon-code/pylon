@@ -3990,6 +3990,44 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     }),
   );
 
+  for (const reconnect of [false, true]) {
+    it.effect(`marks only live-transport snapshots as ordered (reconnect: ${reconnect})`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const test = fixture({
+            correlatedPromptLifecycleCapability: true,
+            rawSnapshot: { ...snapshot(), promptLifecycles: { records: [], expired: [] } },
+          });
+          const runtime = yield* test.make();
+          yield* collectEvents(runtime, 1);
+          if (reconnect) {
+            yield* Effect.promise(() =>
+              test.emit({ type: "connection_status", status: "reconnecting" }),
+            );
+            yield* collectEvents(runtime, 1);
+          }
+          yield* Effect.promise(() =>
+            test.emit({
+              type: "session_resynced",
+              orderedSnapshot: true,
+              snapshot: { ...snapshot(5), promptLifecycles: { records: [], expired: [] } },
+            }),
+          );
+          const [event] = yield* collectEvents(runtime, 1);
+          expect(event).toMatchObject({
+            _tag: "SessionResynced",
+            replayContinuity: "unknown",
+            connectionGeneration: reconnect ? 1 : 0,
+          });
+          expect(event?._tag === "SessionResynced" && event.orderedSnapshot === true).toBe(
+            !reconnect,
+          );
+          expect(runtime.resolveReconnectSnapshot(reconnect ? 1 : 0, true)).toBe(true);
+        }),
+      ),
+    );
+  }
+
   it.effect("does not replace live MCP ownership for an ordinary resync snapshot", () =>
     Effect.scoped(
       Effect.gen(function* () {

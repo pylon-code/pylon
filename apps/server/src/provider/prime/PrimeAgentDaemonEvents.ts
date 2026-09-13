@@ -1254,6 +1254,8 @@ export type PrimeDaemonEvent = (
       readonly lastEventSequence?: number | undefined;
       /** Prime replay status after validating the snapshot tail metadata. */
       readonly replayContinuity?: "complete" | "unavailable" | "unknown" | undefined;
+      /** Runtime-proved ordered snapshot on a live transport, without a replay envelope. */
+      readonly orderedSnapshot?: boolean | undefined;
       /** Local Pylon transport generation, attached by the session runtime. */
       readonly connectionGeneration?: number | undefined;
       /** Runtime-local authority for a proved correlated recovery snapshot. */

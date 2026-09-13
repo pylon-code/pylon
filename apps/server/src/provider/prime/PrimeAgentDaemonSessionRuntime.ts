@@ -1743,6 +1743,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       readonly promise: Promise<boolean>;
       readonly resolve: (reconciled: boolean) => void;
       correlatedProofEpoch?: number;
+      orderedSnapshot: boolean;
       snapshotPublished: boolean;
       settled: boolean;
     };
@@ -1965,7 +1966,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       }
     };
 
-    const beginReconnectResolution = () => {
+    const beginReconnectResolution = (orderedSnapshot = false) => {
       recoveredMessageCompletions = undefined;
       if (reconnectResolution !== undefined && !reconnectResolution.settled) {
         reconnectResolution.settled = true;
@@ -1979,6 +1980,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         generation: connectionGeneration,
         promise,
         resolve,
+        orderedSnapshot,
         snapshotPublished: false,
         settled: false,
       };
@@ -3616,6 +3618,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           ? {
               ...decoded,
               connectionGeneration: eventConnectionGeneration,
+              ...(reconnectResolution?.orderedSnapshot === true ? { orderedSnapshot: true } : {}),
               ...(correlatedProofIngressEpoch === undefined
                 ? {}
                 : { correlatedProofEpoch: correlatedProofIngressEpoch }),
@@ -4886,7 +4889,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         (reconnectResolution === undefined || reconnectResolution.settled)
       ) {
         correlatedProofRecoveryPending = true;
-        beginReconnectResolution();
+        // Prime also sends ordered control-plane/catch-up snapshots on a live
+        // transport. They have no replay envelope because no reconnect occurred.
+        // Keep this authority local to ingress; never infer it after reconnecting.
+        const orderedSnapshot =
+          Predicate.isObject(raw) &&
+          "snapshot" in raw &&
+          Predicate.isObject(raw.snapshot) &&
+          !("replay" in raw.snapshot && raw.snapshot.replay !== undefined);
+        beginReconnectResolution(orderedSnapshot);
       }
       const snapshotResolution =
         rawType === "session_resynced" &&
