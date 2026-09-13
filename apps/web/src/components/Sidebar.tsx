@@ -1642,10 +1642,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     useRightPanelStore.getState().open(threadRef, "pull-requests");
     if (!props.isActive) onThreadActivate(threadRef);
   }, [onThreadActivate, props.isActive, threadRef]);
-  const renderPrBadge = (iconOnly: boolean) =>
+  const renderPrBadge = (iconOnly: boolean, variant: "underline" | "badge" = "underline") =>
     prBadgeShape?.kind === "stack" || pr || currentLinkedPr ? (
       <ThreadPullRequestBadgeControl
-        variant="underline"
+        variant={variant}
         badge={prBadgeShape}
         number={pr?.number ?? currentLinkedPr?.number}
         url={pr?.url ?? currentLinkedPr?.url}
@@ -1655,6 +1655,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         onOpenPullRequest={handlePrClick}
       />
     ) : null;
+  const hasPrBadge = prBadgeShape?.kind === "stack" || pr !== null || currentLinkedPr !== null;
   const prBadge = renderPrBadge(false);
   const terminalStatusIcon = terminalStatus ? (
     <span
@@ -1781,6 +1782,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                     {props.environmentLabel ?? "Remote environment"}
                   </TooltipPopup>
                 </Tooltip>
+              ) : null}
+              {hasPrBadge ? (
+                <span className="absolute -top-1 -right-1 inline-flex">
+                  {renderPrBadge(true, "badge")}
+                </span>
               ) : null}
             </span>
             {topStatus ? (
