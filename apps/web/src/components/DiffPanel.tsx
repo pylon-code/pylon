@@ -247,10 +247,6 @@ export default function DiffPanel({
     ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}:${reviewSectionId}`
     : null;
   const codeViewMountKey = `${collapseScopeKey ?? reviewSectionId}:${codeViewRevision}`;
-  const collapsedDiffFileKeys =
-    collapsedDiffFiles.scopeKey === collapseScopeKey
-      ? collapsedDiffFiles.fileKeys
-      : EMPTY_COLLAPSED_DIFF_FILE_KEYS;
   const reviewSectionTitle = selectedTurn
     ? `Turn ${selectedCheckpointTurnCount ?? "?"}`
     : selectedGitScope === "unstaged"
@@ -467,7 +463,7 @@ export default function DiffPanel({
     () => renderableFiles.map(getCachedFileEntry),
     [renderableFiles],
   );
-const renderLoadingBoundary = useCallback(
+  const renderLoadingBoundary = useCallback(
     () =>
       settledFileCount < renderableFiles.length ? (
         <DiffFileLoadingBoundary
@@ -477,6 +473,17 @@ const renderLoadingBoundary = useCallback(
       ) : null,
     [settledFileCount, renderableFiles.length, loadNextFiles],
   );
+  const defaultCollapsedDiffFileKeys = useMemo(
+    () =>
+      settings.diffFilesCollapsed
+        ? new Set(renderableFileEntries.map((file) => file.fileKey))
+        : EMPTY_COLLAPSED_DIFF_FILE_KEYS,
+    [renderableFileEntries, settings.diffFilesCollapsed],
+  );
+  const collapsedDiffFileKeys =
+    collapsedDiffFiles.scopeKey === collapseScopeKey
+      ? collapsedDiffFiles.fileKeys
+      : defaultCollapsedDiffFileKeys;
   const codeViewFiles = useMemo(
     () =>
       renderableFileEntries
@@ -538,9 +545,9 @@ const renderLoadingBoundary = useCallback(
       );
       const file = renderableFileEntries[index];
       if (!file) return;
-setCollapsedDiffFiles((current) => {
+      setCollapsedDiffFiles((current) => {
         const next = new Set(
-          current.scopeKey === collapseScopeKey ? current.fileKeys : EMPTY_COLLAPSED_DIFF_FILE_KEYS,
+          current.scopeKey === collapseScopeKey ? current.fileKeys : defaultCollapsedDiffFileKeys,
         );
         next.delete(file.fileKey);
         return { scopeKey: collapseScopeKey, fileKeys: next };
@@ -553,6 +560,7 @@ setCollapsedDiffFiles((current) => {
     [
       renderableFileEntries,
       collapseScopeKey,
+      defaultCollapsedDiffFileKeys,
       requestTreeReveal,
       lazySource,
       settledFileCount,
@@ -604,7 +612,9 @@ setCollapsedDiffFiles((current) => {
   const toggleDiffFileCollapsed = useCallback(
     (fileKey: string) => {
       setCollapsedDiffFiles((current) => {
-        const next = new Set(current.scopeKey === collapseScopeKey ? current.fileKeys : []);
+        const next = new Set(
+          current.scopeKey === collapseScopeKey ? current.fileKeys : defaultCollapsedDiffFileKeys,
+        );
         if (next.has(fileKey)) {
           next.delete(fileKey);
         } else {
@@ -613,21 +623,21 @@ setCollapsedDiffFiles((current) => {
         return { scopeKey: collapseScopeKey, fileKeys: next };
       });
     },
-    [collapseScopeKey],
+    [collapseScopeKey, defaultCollapsedDiffFileKeys],
   );
 
   const toggleDiffFileCollapse = useCallback(() => {
     setCodeViewRevision((current) => current + 1);
     setCollapsedDiffFiles((current) => {
       const currentKeys =
-        current.scopeKey === collapseScopeKey ? current.fileKeys : EMPTY_COLLAPSED_DIFF_FILE_KEYS;
+        current.scopeKey === collapseScopeKey ? current.fileKeys : defaultCollapsedDiffFileKeys;
 
       return {
         scopeKey: collapseScopeKey,
         fileKeys: toggleAllDiffFiles(diffFileKeys, currentKeys),
       };
     });
-  }, [collapseScopeKey, diffFileKeys]);
+  }, [collapseScopeKey, defaultCollapsedDiffFileKeys, diffFileKeys]);
 
   const selectTurn = (turnId: TurnId) => {
     if (!routeThreadRef) return;
@@ -1029,7 +1039,7 @@ setCollapsedDiffFiles((current) => {
                   </p>
                 </div>
               )
-) : lazySource || renderablePatch?.kind === "files" ? (
+            ) : lazySource || renderablePatch?.kind === "files" ? (
               <div className="@container/diff-layout min-h-0 flex-1">
                 <div className="flex h-full min-h-0 flex-col overflow-hidden @min-[32rem]/diff-layout:flex-row">
                   <div
@@ -1040,7 +1050,10 @@ setCollapsedDiffFiles((current) => {
                         if (!(node instanceof HTMLElement)) continue;
                         // Header controls keep their own actions. In particular, the chevron must
                         // not also trigger the row handler or the two toggles cancel each other.
-                        if (node instanceof HTMLButtonElement || node instanceof HTMLAnchorElement) {
+                        if (
+                          node instanceof HTMLButtonElement ||
+                          node instanceof HTMLAnchorElement
+                        ) {
                           return;
                         }
                       }
