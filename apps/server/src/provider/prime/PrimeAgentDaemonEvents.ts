@@ -161,9 +161,9 @@ const PrimeAgentDaemonHarnessDigestMessage = Schema.Struct({
 
 // Refinement writes a native custom message even when no user turn is active.
 // Keep its identity in the transcript; the separate refinement event owns UI projection.
-const PrimeAgentDaemonRefinementOutcomeMessage = Schema.Struct({
+const PrimeAgentDaemonRefinementMessage = Schema.Struct({
   role: Schema.Literal("custom"),
-  customType: Schema.Literal("refinement_outcome"),
+  customType: Schema.Literals(["refinement_outcome", "refinement_notice"]),
   display: Schema.Boolean,
   content: Schema.Union([Schema.String, Schema.Array(Schema.Union([textContent, imageContent]))]),
   details: Schema.Unknown,
@@ -175,7 +175,7 @@ export const PrimeAgentDaemonMessage = Schema.Union([
   PrimeAgentDaemonAssistantMessage,
   PrimeAgentDaemonToolResultMessage,
   PrimeAgentDaemonHarnessDigestMessage,
-  PrimeAgentDaemonRefinementOutcomeMessage,
+  PrimeAgentDaemonRefinementMessage,
 ]);
 export type PrimeAgentDaemonMessage = typeof PrimeAgentDaemonMessage.Type;
 
@@ -776,7 +776,7 @@ export interface PrimeDaemonPlanUpdate {
 
 export type PrimeDaemonMessage =
   | {
-      readonly role: "refinementOutcome";
+      readonly role: "refinementOutcome" | "refinementNotice";
       readonly timestamp: number;
       /** Private refinement content participates in continuity, never client projection. */
       readonly contentDigest: string;
@@ -1419,20 +1419,20 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage;
 function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
   switch (value.role) {
     case "custom":
-      if (value.customType === "refinement_outcome") {
+      if (value.customType === "harness_digest") {
         return {
-          role: "refinementOutcome",
+          role: "harnessDigest",
           timestamp: value.timestamp,
           contentDigest: NodeCrypto.createHash("sha256")
-            .update(JSON.stringify([value.display, value.content, value.details]), "utf8")
+            .update(JSON.stringify([value.content, value.details.digest]), "utf8")
             .digest("hex"),
         };
       }
       return {
-        role: "harnessDigest",
+        role: value.customType === "refinement_outcome" ? "refinementOutcome" : "refinementNotice",
         timestamp: value.timestamp,
         contentDigest: NodeCrypto.createHash("sha256")
-          .update(JSON.stringify([value.content, value.details.digest]), "utf8")
+          .update(JSON.stringify([value.display, value.content, value.details]), "utf8")
           .digest("hex"),
       };
     case "user": {

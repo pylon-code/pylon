@@ -142,49 +142,83 @@ describe("PrimeAgentDaemonEvents", () => {
     }
   });
 
-  it("retains refinement outcome identity in live events and snapshots without private content", () => {
-    const refinement = {
-      role: "custom",
-      customType: "refinement_outcome",
-      display: true,
-      content: "private memory update",
-      details: { refinementId: "refine-1", edits: [{ content: "private memory" }] },
-      timestamp: 10,
-    };
-    const completed = decodePrimeAgentDaemonEvent(
-      sessionEvent({ type: "message_end", message: refinement }),
-    );
-    expect(completed).toMatchObject({
-      _tag: "MessageCompleted",
-      message: {
-        role: "refinementOutcome",
+  for (const customType of ["refinement_outcome", "refinement_notice"] as const) {
+    it(`retains ${customType} identity in live events and snapshots without private content`, () => {
+      const refinement = {
+        role: "custom",
+        customType,
+        display: customType === "refinement_outcome",
+        content: "private memory update",
+        details: { refinementId: "refine-1", edits: [{ content: "private memory" }] },
         timestamp: 10,
-        contentDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
-      },
-    });
-    const snapshot = decodePrimeAgentDaemonEvent({
-      type: "session_resynced",
-      snapshot: { state: { ...state, messageCount: 1 }, messages: [refinement] },
-    });
-    if (completed?._tag !== "MessageCompleted") throw new Error("missing refinement");
-    expect(snapshot).toMatchObject({
-      _tag: "SessionResynced",
-      state: { messageCount: 1 },
-      messages: [completed.message],
-    });
-    expect(
-      decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_start", message: refinement })),
-    ).toEqual({ _tag: "MessageStarted", message: completed.message });
-    expect(JSON.stringify(snapshot)).not.toContain("private");
-    for (const changed of [
-      { ...refinement, content: "changed" },
-      { ...refinement, details: { refinementId: "refine-2" } },
-    ]) {
+      };
+      const completed = decodePrimeAgentDaemonEvent(
+        sessionEvent({ type: "message_end", message: refinement }),
+      );
+      expect(completed).toMatchObject({
+        _tag: "MessageCompleted",
+        message: {
+          role: customType === "refinement_outcome" ? "refinementOutcome" : "refinementNotice",
+          timestamp: 10,
+          contentDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      });
+      for (const attribution of [
+        { scope: "session" },
+        { scope: "prompt", correlationId: "fixture-turn" },
+      ]) {
+        const event = {
+          type: "message_end",
+          message: refinement,
+          promptCorrelationId: attribution.correlationId ?? null,
+        };
+        expect(
+          decodePrimeAgentDaemonEvent(
+            { type: "session_event", attribution, event },
+            { correlatedPromptLifecycle: true },
+          ),
+        ).toEqual({ ...completed, attribution });
+        expect(
+          decodePrimeAgentDaemonEvent(
+            {
+              type: "session_event",
+              attribution,
+              event: { ...event, promptCorrelationId: "foreign" },
+            },
+            { correlatedPromptLifecycle: true },
+          ),
+        ).toEqual({ _tag: "CorrelatedProtocolViolation" });
+      }
+      const snapshot = decodePrimeAgentDaemonEvent({
+        type: "session_resynced",
+        snapshot: { state: { ...state, messageCount: 1 }, messages: [refinement] },
+      });
+      if (completed?._tag !== "MessageCompleted") throw new Error("missing refinement");
+      expect(snapshot).toMatchObject({
+        _tag: "SessionResynced",
+        state: { messageCount: 1 },
+        messages: [completed.message],
+      });
       expect(
-        decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_end", message: changed })),
-      ).not.toEqual(completed);
-    }
-  });
+        decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_start", message: refinement })),
+      ).toEqual({ _tag: "MessageStarted", message: completed.message });
+      expect(JSON.stringify(snapshot)).not.toContain("private");
+      for (const changed of [
+        { ...refinement, content: "changed" },
+        { ...refinement, display: !refinement.display },
+        {
+          ...refinement,
+          customType:
+            customType === "refinement_outcome" ? "refinement_notice" : "refinement_outcome",
+        },
+        { ...refinement, details: { refinementId: "refine-2" } },
+      ]) {
+        expect(
+          decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_end", message: changed })),
+        ).not.toEqual(completed);
+      }
+    });
+  }
 
   it("does not recognize unrelated or visible custom messages as hidden harness digests", () => {
     for (const hidden of [

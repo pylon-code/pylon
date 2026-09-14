@@ -3,7 +3,7 @@ import * as NodeCrypto from "node:crypto";
 
 import { describe, expect, it } from "@effect/vitest";
 
-import type { PrimeDaemonMessage } from "./PrimeAgentDaemonEvents.ts";
+import { decodePrimeAgentDaemonEvent, type PrimeDaemonMessage } from "./PrimeAgentDaemonEvents.ts";
 import { planPrimeAgentRestartReplay } from "./PrimeAgentDaemonAdapter.ts";
 
 const message = (index: number): PrimeDaemonMessage => ({
@@ -26,6 +26,53 @@ describe("planPrimeAgentRestartReplay", () => {
       snapshotMessages: messages,
     });
     expect(replay).toEqual({ valid: true, backlog: messages.slice(3) });
+  });
+
+  it("resumes paired refinement messages without accepting changed or reordered history", () => {
+    const refinements = ["refinement_outcome", "refinement_notice"].map((customType, index) => {
+      const decoded = decodePrimeAgentDaemonEvent(
+        {
+          type: "session_event",
+          attribution: { scope: "session" },
+          event: {
+            type: "message_end",
+            promptCorrelationId: null,
+            message: {
+              role: "custom",
+              customType,
+              display: index === 0,
+              timestamp: index,
+              content: "private memory",
+              details: { refinementId: "fixture", source: "auto" },
+            },
+          },
+        },
+        { correlatedPromptLifecycle: true },
+      );
+      if (decoded._tag !== "MessageCompleted") throw new Error("missing refinement");
+      return decoded.message;
+    });
+    const snapshotMessages = [...refinements, message(3)];
+    const authority = {
+      authorityMessageCount: 2,
+      authorityFingerprints: refinements.map(fingerprint),
+    };
+    expect(
+      planPrimeAgentRestartReplay({ ...authority, snapshotMessageCount: 3, snapshotMessages }),
+    ).toEqual({ valid: true, backlog: [message(3)] });
+    for (const history of [
+      refinements.toReversed(),
+      refinements.map((item) => ({ ...item, timestamp: 99 })),
+      refinements.slice(0, 1),
+    ]) {
+      expect(
+        planPrimeAgentRestartReplay({
+          ...authority,
+          snapshotMessageCount: 3,
+          snapshotMessages: [...history, message(3)],
+        }),
+      ).toEqual({ valid: false });
+    }
   });
 
   it("fails closed on changed overlap or a transcript retention gap", () => {
