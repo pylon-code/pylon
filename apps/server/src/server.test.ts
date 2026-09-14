@@ -7286,7 +7286,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-it.effect("starts a project clone in the background and blocks threads until it lands", () =>
+  it.effect("starts a project clone in the background and blocks threads until it lands", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
