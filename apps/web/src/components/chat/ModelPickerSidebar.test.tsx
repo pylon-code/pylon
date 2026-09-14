@@ -37,6 +37,7 @@ function renderEntry(providerEntry: ProviderInstanceEntry): string {
     <ModelPickerSidebar
       selectedInstanceId={providerEntry.instanceId}
       onSelectInstance={() => undefined}
+      onFocusSearch={() => undefined}
       instanceEntries={[providerEntry]}
       showFavorites={false}
     />,
@@ -61,7 +62,8 @@ describe("ModelPickerSidebar unavailable provider presentation", () => {
     expect(markup).toContain('aria-disabled="true"');
     expect(markup).toContain('aria-describedby="model-picker-provider-primeAgent-disabled-reason"');
     expect(markup).toContain('class="sr-only"');
-    expect(markup).toContain('aria-hidden="true" tabindex="-1"');
+    expect(markup).toContain('aria-hidden="true"');
+    expect(markup).toContain('tabindex="-1"');
   });
 
   it("keeps ordinary disabled copy when availability is not unavailable", () => {
