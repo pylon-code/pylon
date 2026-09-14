@@ -53,7 +53,7 @@ Pylon supports SVG, PNG, ICO, JPEG, GIF, AVIF, and WebP images. Custom icons and
 desktop; mobile uses the project's image when one is available. Mobile **Client storage** includes
 cached project images and can clear them.
 
-When no image is found, web and desktop show a two-character monogram with colors
+When no custom icon or image is found, web and desktop show a two-character monogram with colors
 derived from the saved project name. For example, `Nebula` becomes `NA`,
 `Silver Orchard` becomes `SO`, and `M7 Forge` becomes `M7`.
 

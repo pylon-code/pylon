@@ -10,6 +10,11 @@ describe("deriveProjectIdentity", () => {
     ["M7 Forge", "M7"],
     ["X", "XX"],
     ["---", "PR"],
+    ["", "PR"],
+    ["   ", "PR"],
+    ["123", "12"],
+    ["项目管理", "项理"],
+    ["🚀 Launch", "LA"],
   ])("derives %s as %s", (projectName, expected) => {
     expect(deriveProjectIdentity(projectName).monogram).toBe(expected);
   });
