@@ -755,6 +755,19 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     expect(JSON.stringify(partial)).not.toContain("summary");
   });
 
+  it("never projects private refinement transcript messages even inside an active turn", () => {
+    for (const role of ["refinementOutcome", "refinementNotice"] as const) {
+      for (const _tag of ["MessageStarted", "MessageCompleted"] as const) {
+        expect(
+          mapPrimeAgentDaemonRuntimeEventDrafts({
+            ...context,
+            event: { _tag, message: { role, timestamp: 1, contentDigest: "private-identity" } },
+          }),
+        ).toEqual([]);
+      }
+    }
+  });
+
   it("maps compaction lifecycle without provider instructions, summaries, or error text", () => {
     expect(
       mapPrimeAgentDaemonRuntimeEventDrafts({
