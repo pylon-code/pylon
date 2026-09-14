@@ -10479,6 +10479,7 @@ export default function ChatView(props: ChatViewProps) {
         <RightPanelTabs
           environmentId={activeThreadEnvironmentId}
           mode="inline"
+          widthStorageKey={`t3code:preview-panel-width:${activeThreadKey}`}
           open={rightPanelOpen}
           maximized={rightPanelMaximized}
           surfaces={renderedRightPanelSurfaces}
