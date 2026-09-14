@@ -159,11 +159,23 @@ const PrimeAgentDaemonHarnessDigestMessage = Schema.Struct({
   timestamp: Schema.Number,
 });
 
+// Refinement writes a native custom message even when no user turn is active.
+// Keep its identity in the transcript; the separate refinement event owns UI projection.
+const PrimeAgentDaemonRefinementOutcomeMessage = Schema.Struct({
+  role: Schema.Literal("custom"),
+  customType: Schema.Literal("refinement_outcome"),
+  display: Schema.Boolean,
+  content: Schema.Union([Schema.String, Schema.Array(Schema.Union([textContent, imageContent]))]),
+  details: Schema.Unknown,
+  timestamp: Schema.Number,
+});
+
 export const PrimeAgentDaemonMessage = Schema.Union([
   PrimeAgentDaemonUserMessage,
   PrimeAgentDaemonAssistantMessage,
   PrimeAgentDaemonToolResultMessage,
   PrimeAgentDaemonHarnessDigestMessage,
+  PrimeAgentDaemonRefinementOutcomeMessage,
 ]);
 export type PrimeAgentDaemonMessage = typeof PrimeAgentDaemonMessage.Type;
 
@@ -763,6 +775,12 @@ export interface PrimeDaemonPlanUpdate {
 }
 
 export type PrimeDaemonMessage =
+  | {
+      readonly role: "refinementOutcome";
+      readonly timestamp: number;
+      /** Private refinement content participates in continuity, never client projection. */
+      readonly contentDigest: string;
+    }
   | {
       readonly role: "harnessDigest";
       readonly timestamp: number;
@@ -1401,6 +1419,15 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage;
 function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
   switch (value.role) {
     case "custom":
+      if (value.customType === "refinement_outcome") {
+        return {
+          role: "refinementOutcome",
+          timestamp: value.timestamp,
+          contentDigest: NodeCrypto.createHash("sha256")
+            .update(JSON.stringify([value.display, value.content, value.details]), "utf8")
+            .digest("hex"),
+        };
+      }
       return {
         role: "harnessDigest",
         timestamp: value.timestamp,
