@@ -1,8 +1,8 @@
 ---
 remote: t3code-upstream
 branch: main
-reviewed-through: "a43f9b45ae85caf37e0be8270ad3d27365ece2bd"
-reviewed-through-date: "2026-09-13"
+reviewed-through: "bbedad0278bbf753503184c00e0c09a0eab6679c"
+reviewed-through-date: "2026-09-14"
 ---
 
 # T3 upstream decision index
@@ -137,6 +137,12 @@ The maintainer explicitly reopened the four remaining functional exceptions on 2
 | Snapshot preview grid sizing / `a43f9b45ae85caf37e0be8270ad3d27365ece2bd` | `18d8cbfd920d0a53e5b5206456585aea767e852c`, `5349522108bec896bb6a69ae76c6e1b8d419ae16`, `a43f9b45ae85caf37e0be8270ad3d27365ece2bd` | `18d8cbfd92` already merged in [#523](https://github.com/pylon-code/pylon/pull/523). `5349522108` covered: gitignore and accidental pnpm store removal absent from Pylon. `a43f9b45ae` adopted: snapshot image preview frame spans both columns (`col-span-2`) in `MessagesTimeline`, preventing horizontal compression in sent message grids. | Implementation PR linked in [#536](https://github.com/pylon-code/pylon/issues/536); independent review, 58 focused timeline unit tests, web typecheck, lint, and final-head CI. |
 
 All three sources in the range `d1d15c67f4a5fb82fd8d5e01e5e3b288296789c3..a43f9b45ae85caf37e0be8270ad3d27365ece2bd` are accounted for in [#536](https://github.com/pylon-code/pylon/issues/536). This advances the decision cursor without merging upstream ancestry. The opening trigger audit found WATCH-1 still open/unmerged; DEF-7, WATCH-2 and WATCH-3 retain their earliest 2026-11-01 checks.
+
+## Completed cycle through `bbedad0278`
+
+| Group / bounded head                                                          | Sources                                    | Outcome and remaining scope                                                                                                                                                                                                                                                                                     | Pylon PR / verification                                                                                                           |
+| ----------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Mobile off-thread JPEG rendering / `bbedad0278bbf753503184c00e0c09a0eab6679c` | `bbedad0278bbf753503184c00e0c09a0eab6679c` | Adopted: render photo library picks to a bounded JPEG (longest edge 2048px, quality 0.85) off the JS thread using `expo-image-manipulator`. Avoids UI freezes and high-resolution OOMs on mobile; preserves raw originals for small supported PNG/GIF/WebP. Preserved Pylon branding in composer documentation. | Implementation PR; independent review, 1694 mobile tests (including 46 composer file tests), mobile typecheck, and final-head CI. |
 
 ## Deferred register
 

@@ -20,8 +20,8 @@ and sends once its files reach the server. A Prime Agent follow-up still waits f
 Retry or remove a failed upload.
 
 You can drag or paste images into the web or desktop composer. HEIC and HEIF photos are converted to
-JPEG there and when selected from the iOS photo library; the image limit applies after conversion.
-On mobile, tap **+** for **Photo Library** or **Choose Files**, or send photos, videos, and files to
+JPEG there and when selected from the mobile photo library; photos over the image limit are also resized
+to fit. On mobile, tap **+** for **Photo Library** or **Choose Files**, or send photos, videos, and files to
 Pylon through another app's share sheet. Select a received file on mobile to preview it, save it,
 or open it in another app.
 
