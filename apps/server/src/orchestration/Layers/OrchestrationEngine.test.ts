@@ -622,6 +622,7 @@ describe("OrchestrationEngine", () => {
         Layer.succeed(ProjectionSnapshotQuery, {
           getPendingRequestActivities: () => Effect.succeed([]),
           getUserInputActivity: () => Effect.die("unused"),
+          listActivitiesByKind: () => Effect.die("unused"),
           getCommandReadModel: () => Effect.succeed(commandReadModel),
           getSnapshot: () =>
             Effect.sync(() => {

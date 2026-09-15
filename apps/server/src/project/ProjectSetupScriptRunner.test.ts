@@ -32,6 +32,7 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
     getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
     getPendingRequestActivities: () => Effect.succeed([]),
     getUserInputActivity: () => Effect.die("unused"),
+    listActivitiesByKind: () => Effect.die("unused"),
     getCommandReadModel: () => Effect.die("unused"),
     getSnapshot: () => Effect.die("unused"),
     getShellSnapshot: () => Effect.die("unused"),
