@@ -19,6 +19,8 @@ import { projectEvent } from "./projector.ts";
 import { isThreadDetailEvent } from "../ws.ts";
 
 const decodeCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
+const encodeOrchestrationEvent = Schema.encodeEffect(OrchestrationEvent);
+const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 
 type PlannedEvent = Omit<OrchestrationEvent, "sequence">;
 
@@ -251,8 +253,8 @@ it.layer(NodeServices.layer)("pull request link decider", (it) => {
         const events = Array.isArray(decided) ? decided : [decided];
         for (const planned of events) {
           const event = { ...planned, sequence: model.snapshotSequence + 1 };
-          const encoded = yield* Schema.encodeEffect(OrchestrationEvent)(event);
-          const decoded = yield* Schema.decodeUnknownEffect(OrchestrationEvent)(encoded);
+          const encoded = yield* encodeOrchestrationEvent(event);
+          const decoded = yield* decodeOrchestrationEvent(encoded);
           // Older detail-event unions must never receive the new PR discriminants.
           expect(isThreadDetailEvent(decoded)).toBe(false);
           model = yield* projectEvent(model, decoded);
