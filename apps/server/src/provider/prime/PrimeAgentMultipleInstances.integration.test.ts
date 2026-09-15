@@ -182,15 +182,54 @@ function proofEnvironment(
   });
 }
 
+// Observe the real per-handle notification tasks without replacing a host handler or notice.
+// A FIFO keeps completion out of the creating cell; awaiting the notification task in the
+// second cell establishes host acceptance before the result read withdraws that notice.
+const BACKGROUND_CONSUMPTION_CELLS = [
+  `import asyncio, os, shlex, tempfile
+from rlm import bash
+background_directory = tempfile.TemporaryDirectory(dir=os.getcwd())
+background_fifo = os.path.join(background_directory.name, "release")
+os.mkfifo(background_fifo)
+background_handle = bash("cat " + shlex.quote(background_fifo) + " >/dev/null; printf background-result")
+def background_tasks(method):
+    return [task for task in asyncio.all_tasks()
+            if getattr(task.get_coro(), "__qualname__", "") == "BashHandle." + method
+            and task.get_coro().cr_frame is not None
+            and task.get_coro().cr_frame.f_locals.get("self") is background_handle]
+background_notices = background_tasks("_notify_background_completion")
+assert len(background_notices) == 1
+background_notice = background_notices[0]
+print("BACKGROUND_COMMAND_STARTED")`,
+  `with open(background_fifo, "w") as release:
+    release.write("release\\n")
+await background_notice
+assert background_handle._consumed_notice is not None, "Host did not acknowledge the completion identity"
+assert "background-result" in background_handle.output()
+background_loop = asyncio.get_running_loop()
+background_dispatched = background_loop.create_future()
+def capture_background_consumption():
+    background_dispatched.set_result(background_tasks("_notify_result_consumed"))
+# output() schedules dispatch first. This callback observes its task before it runs.
+background_loop.call_soon(capture_background_consumption)
+background_withdrawals = await background_dispatched
+assert len(background_withdrawals) == 1
+await background_withdrawals[0]
+background_directory.cleanup()
+print("BACKGROUND_RESULT_RECEIPT_CONFIRMED")`,
+] as const;
+
 interface FauxMultiBackend {
   readonly port: number;
   readonly reconnectAdmission: Promise<void>;
+  readonly backgroundRequests: number;
   finishReconnect(): boolean;
   close(): Promise<void>;
 }
 
 function startFauxMultiBackend(): Promise<FauxMultiBackend> {
   return new Promise((resolve, reject) => {
+    let backgroundRequests = 0;
     const sockets = new Set<import("node:net").Socket>();
     let resolveReconnect!: () => void;
     const reconnectAdmission = new Promise<void>((admitted) => {
@@ -254,13 +293,60 @@ function startFauxMultiBackend(): Promise<FauxMultiBackend> {
       });
       request.once("end", () => {
         const payload = JSON.parse(body) as {
-          readonly messages?: ReadonlyArray<{ readonly content?: unknown }>;
+          readonly messages?: ReadonlyArray<{ readonly role?: string; readonly content?: unknown }>;
         };
         const text = (payload.messages ?? [])
           .toReversed()
           .map((message) => messageText(message.content))
           .find((message) => message.includes("PYLON_NATIVE_"));
         const token = /PYLON_NATIVE_[A-Z0-9_]+/u.exec(text ?? "")?.[0] ?? "PYLON_NATIVE_OK";
+        if (token === "PYLON_NATIVE_BACKGROUND_CONSUMED_OK") {
+          backgroundRequests += 1;
+          const code = BACKGROUND_CONSUMPTION_CELLS[backgroundRequests - 1];
+          if (code !== undefined) {
+            response.writeHead(200, {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+              Connection: "close",
+            });
+            response.end(
+              `data: ${JSON.stringify({
+                id: "faux-multi",
+                object: "chat.completion.chunk",
+                created: 0,
+                model: "faux-multi/faux-multi",
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      role: "assistant",
+                      tool_calls: [
+                        {
+                          index: 0,
+                          id: `background-cell-${backgroundRequests}`,
+                          type: "function",
+                          function: { name: "ipython", arguments: JSON.stringify({ code }) },
+                        },
+                      ],
+                    },
+                    finish_reason: null,
+                  },
+                ],
+              })}\n\n${chunk("", "tool_calls")}data: [DONE]\n\n`,
+            );
+            return;
+          }
+          const resultRead = (payload.messages ?? []).some(
+            (message) =>
+              message.role === "tool" &&
+              messageText(message.content).includes("BACKGROUND_RESULT_RECEIPT_CONFIRMED"),
+          );
+          finish(
+            response,
+            backgroundRequests === 3 && resultRead ? token : "BACKGROUND_CONSUMPTION_PROOF_FAILED",
+          );
+          return;
+        }
         if (token === "PYLON_NATIVE_AFTER_RECONNECT_OK") {
           reconnectResponse = response;
           reconnectToken = token;
@@ -283,6 +369,9 @@ function startFauxMultiBackend(): Promise<FauxMultiBackend> {
       }
       resolve({
         port: address.port,
+        get backgroundRequests() {
+          return backgroundRequests;
+        },
         reconnectAdmission,
         finishReconnect() {
           if (!reconnectResponse || !reconnectToken) {
@@ -873,6 +962,61 @@ it.live.skipIf(!configuredGraduationArtifact || !runMultipleInstanceProof)(
           ),
           { concurrency: "unbounded" },
         );
+
+        reportSafePhase("background-result-consumption");
+        const backgroundInstance = instances[0]!;
+        const completedBeforeBackground = backgroundInstance.completed.size;
+        const backgroundTurn = yield* backgroundInstance.adapter.sendTurn({
+          threadId: backgroundInstance.threadId,
+          input:
+            "Run the two background-result cells, then reply PYLON_NATIVE_BACKGROUND_CONSUMED_OK.",
+          attachments: [],
+        });
+        yield* waitForTurn(backgroundInstance, backgroundTurn.turnId);
+        // A subsequent admitted turn also drains the native input queue before transcript inspection.
+        yield* promptAndWait(backgroundInstance, "PYLON_NATIVE_AFTER_BACKGROUND_OK");
+        expect(fauxBackend.backgroundRequests).toBe(3);
+        expect(backgroundInstance.completed.size).toBe(completedBeforeBackground + 2);
+        const backgroundEntries = NodeFS.readFileSync(
+          backgroundInstance.initialSession.sessionFile,
+          "utf8",
+        )
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as unknown);
+        expect(
+          backgroundEntries.some(
+            (entry) =>
+              typeof entry === "object" &&
+              entry !== null &&
+              "customType" in entry &&
+              entry.customType === "async_bash_completion",
+          ),
+        ).toBe(false);
+        expect(
+          backgroundEntries.some((entry) => {
+            if (typeof entry !== "object" || entry === null || !("message" in entry)) return false;
+            const message = entry.message;
+            if (
+              typeof message !== "object" ||
+              message === null ||
+              !("role" in message) ||
+              message.role !== "toolResult" ||
+              ("isError" in message && message.isError === true) ||
+              !("content" in message) ||
+              !Array.isArray(message.content)
+            )
+              return false;
+            return message.content.some(
+              (part: unknown) =>
+                typeof part === "object" &&
+                part !== null &&
+                "text" in part &&
+                typeof part.text === "string" &&
+                part.text.includes("BACKGROUND_RESULT_RECEIPT_CONFIRMED"),
+            );
+          }),
+        ).toBe(true);
 
         const afterTurns =
           platform === "darwin"

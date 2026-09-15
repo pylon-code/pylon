@@ -64,7 +64,11 @@ without a package manager or lifecycle script.
 The cases cover stock and signed-preview bridge capability, side-by-side installation, real start/use,
 update or exact no-op, rollback, stock switch-back, unchanged stock bytes, receipt-owned-only cleanup,
 repeated Pylon restart/crash receipt recovery, and native multiple-instance evidence. The native multi
-result remains evidence only. It does not enable `supportsMultipleInstances` because the distinct
+proof also executes a real background command through Pylon's native adapter. A later cell waits for
+the host's completion acknowledgment and consumes the result; the proof requires no redundant
+completion notice or extra model turn. This requires the identity-aware consumption fix in Prime
+#72 and stable custom-message timestamps in Prime #77; older previews can fail this acceptance case.
+The native multi result remains evidence only. It does not enable `supportsMultipleInstances` because the distinct
 account, package-root, catalog, capacity, MCP, checkpoint, macOS, Linux, and WSL2 requirements remain
 separate.
 
