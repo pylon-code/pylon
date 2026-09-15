@@ -197,12 +197,30 @@ Size T3MarkdownTextShadowNode::measureContent(
         }
         if (props.nativeId.rfind("t3-chip:", 0) == 0 && fragmentLength > 0) {
           const std::string uri = props.nativeId.substr(3);
-          NSDictionary *payload = T3ContextChipPayload([NSString stringWithUTF8String:uri.c_str()]);
+          NSDictionary *basePayload =
+              T3ContextChipPayload([NSString stringWithUTF8String:uri.c_str()]);
+          std::string finalUri = uri;
+          NSMutableDictionary *payload = nil;
+          if (basePayload != nil) {
+            payload = [basePayload mutableCopy];
+            // Chips must scale with the paragraph or smaller Dynamic Type sizes clip them.
+            // Store the scaled payload so measurement and the rendered bitmap use the same font.
+            payload[@"fontSizeMultiplier"] = @(fontSizeMultiplier);
+            if ([NSJSONSerialization isValidJSONObject:payload]) {
+              NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+              if (data != nil) {
+                NSString *jsonStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+                if (jsonStr != nil) {
+                  finalUri = "chip:" + std::string(jsonStr.UTF8String);
+                }
+              }
+            }
+          }
           const CGFloat maxWidth = std::isfinite(layoutConstraints.maximumSize.width)
               ? layoutConstraints.maximumSize.width : 320;
-          const CGSize size = T3ContextChipSize(payload, maxWidth);
+          const CGSize size = T3ContextChipSize(payload ?: basePayload, maxWidth);
           attachmentRanges.push_back(T3MarkdownTextAttachmentRange{
-              utf16Offset, 1, uri, false,
+              utf16Offset, 1, finalUri, false,
               static_cast<Float>(size.width), static_cast<Float>(size.height),
           });
         } else if (props.nativeId.rfind(FileAttachmentNativeIdPrefix, 0) == 0 && fragmentLength > 0) {
