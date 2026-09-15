@@ -14,7 +14,7 @@ describe("deriveProjectIdentity", () => {
     ["   ", "PR"],
     ["123", "12"],
     ["项目管理", "项理"],
-    ["🚀 Launch", "LA"],
+    ["🚀 Launch", "LH"],
   ])("derives %s as %s", (projectName, expected) => {
     expect(deriveProjectIdentity(projectName).monogram).toBe(expected);
   });
