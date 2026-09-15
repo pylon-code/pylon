@@ -142,6 +142,30 @@ describe("PrimeAgentDaemonEvents", () => {
     }
   });
 
+  it("accepts compaction summaries only in snapshots, never as live messages", () => {
+    const message = {
+      role: "compactionSummary",
+      summary: "private compaction",
+      tokensBefore: 100,
+      retainedMessageCount: 0,
+      timestamp: 10,
+    };
+    for (const type of ["message_start", "message_end"]) {
+      expect(decodePrimeAgentDaemonEvent(sessionEvent({ type, message }))).toEqual({
+        _tag: "CorrelatedProtocolViolation",
+      });
+    }
+    const snapshot = decodePrimeAgentDaemonEvent({
+      type: "session_resynced",
+      snapshot: { state: { ...state, messageCount: 1 }, messages: [message] },
+    });
+    expect(snapshot).toMatchObject({
+      _tag: "SessionResynced",
+      messages: [{ role: "nativePrivate", kind: "compactionSummary", timestamp: 10 }],
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("private compaction");
+  });
+
   for (const customType of ["refinement_outcome", "refinement_notice"] as const) {
     it(`retains ${customType} identity in live events and snapshots without private content`, () => {
       const refinement = {
@@ -223,6 +247,7 @@ describe("PrimeAgentDaemonEvents", () => {
   for (const customType of [
     "compaction_outcome",
     "ipython_state_restored",
+    "ipython_state",
     "session_slash_command",
     "session_slash_command_result",
     "rlm_child_failure",

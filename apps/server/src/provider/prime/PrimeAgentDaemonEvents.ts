@@ -8,6 +8,7 @@ import {
   type SessionGoalUpdatedPayload,
   type SessionInputQueueDeliveryMode,
 } from "@t3tools/contracts";
+import type { PrimeCompactionHistory } from "./PrimeAgentCompactionHistory.ts";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -177,6 +178,7 @@ const PrimeAgentDaemonPrivateMessage = Schema.Struct({
   customType: Schema.Literals([
     "compaction_outcome",
     "ipython_state_restored",
+    "ipython_state",
     "session_slash_command",
     "session_slash_command_result",
     "rlm_child_failure",
@@ -208,6 +210,16 @@ const PrimeAgentDaemonBashExecution = Schema.Struct({
   timestamp: Schema.Finite,
 });
 
+const PrimeAgentDaemonCompactionSummary = Schema.Struct({
+  role: Schema.Literal("compactionSummary"),
+  summary: Schema.String,
+  tokensBefore: Schema.Finite,
+  retainedMessageCount: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  customInstructions: Schema.optional(Schema.String),
+  harnessDigest: Schema.optional(Schema.String),
+  timestamp: Schema.Finite,
+});
+
 export const PrimeAgentDaemonMessage = Schema.Union([
   PrimeAgentDaemonUserMessage,
   PrimeAgentDaemonAssistantMessage,
@@ -217,6 +229,7 @@ export const PrimeAgentDaemonMessage = Schema.Union([
   PrimeAgentDaemonPrivateMessage,
   PrimeAgentDaemonBranchSummary,
   PrimeAgentDaemonBashExecution,
+  PrimeAgentDaemonCompactionSummary,
 ]);
 export type PrimeAgentDaemonMessage = typeof PrimeAgentDaemonMessage.Type;
 
@@ -525,6 +538,7 @@ const contextUsage = Schema.Struct({
 
 const sessionState = Schema.Struct({
   activeSessionId: Schema.optional(Schema.String),
+  leafId: Schema.optional(Schema.NullOr(Schema.String)),
   cwd: Schema.String,
   thinkingLevel,
   serviceTier,
@@ -821,7 +835,8 @@ export type PrimeDaemonMessage =
       readonly kind:
         | typeof PrimeAgentDaemonPrivateMessage.Type.customType
         | "branchSummary"
-        | "bashExecution";
+        | "bashExecution"
+        | "compactionSummary";
       readonly timestamp: number;
       readonly contentDigest: string;
     }
@@ -870,6 +885,7 @@ export type PrimeDaemonMessage =
     };
 
 export interface PrimeDaemonSessionState {
+  readonly leafId?: string | undefined;
   readonly activeSessionId?: string | undefined;
   readonly sessionId: string;
   readonly sessionName?: string | undefined;
@@ -1312,6 +1328,7 @@ export type PrimeDaemonEvent = (
     }
   | {
       readonly _tag: "SessionResynced";
+      readonly compactionHistory?: PrimeCompactionHistory | undefined;
       readonly state: PrimeDaemonSessionState;
       readonly messages: ReadonlyArray<PrimeDaemonMessage>;
       readonly streamingMessage?: PrimeDaemonMessage | undefined;
@@ -1497,6 +1514,7 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
       };
     case "branchSummary":
     case "bashExecution":
+    case "compactionSummary":
       return {
         role: "nativePrivate",
         kind: value.role,
@@ -1580,6 +1598,11 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
   }
 }
 
+export function decodePrimeAgentDaemonMessage(value: unknown): PrimeDaemonMessage | undefined {
+  const decoded = decodeMessage(value);
+  return Option.isSome(decoded) ? mapMessage(decoded.value) : undefined;
+}
+
 function mapUnknownMessages(values: ReadonlyArray<unknown>): ReadonlyArray<PrimeDaemonMessage> {
   return values.slice(-PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES).flatMap((value) => {
     const decoded = decodeMessage(value);
@@ -1636,6 +1659,7 @@ export function decodePrimeAgentDaemonSessionState(
 
 function mapState(value: typeof sessionState.Type): PrimeDaemonSessionState {
   return {
+    ...(typeof value.leafId === "string" ? { leafId: value.leafId } : {}),
     activeSessionId: optionalBounded(value.activeSessionId, MAX_PREVIEW_LENGTH),
     sessionId: bounded(value.sessionId, MAX_PREVIEW_LENGTH),
     sessionName: optionalBounded(value.sessionName, MAX_PREVIEW_LENGTH),
@@ -1773,10 +1797,14 @@ function mapSessionEvent(event: typeof agentSessionEvent.Type): PrimeDaemonEvent
         toolResults: event.toolResults.map((message) => mapMessage(message)),
       };
     case "message_start":
+      if (event.message.role === "compactionSummary")
+        return { _tag: "CorrelatedProtocolViolation" };
       return { _tag: "MessageStarted", message: mapMessage(event.message) };
     case "message_update":
       return mapAssistantStream(event.assistantMessageEvent);
     case "message_end":
+      if (event.message.role === "compactionSummary")
+        return { _tag: "CorrelatedProtocolViolation" };
       return { _tag: "MessageCompleted", message: mapMessage(event.message) };
     case "tool_execution_start":
       return {

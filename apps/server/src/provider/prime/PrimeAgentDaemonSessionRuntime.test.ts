@@ -17,6 +17,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Scheduler from "effect/Scheduler";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -69,6 +70,7 @@ const goal = {
   continuationsUsed: 0,
 };
 const activeSignal = () => new AbortController().signal;
+const encodePrivateHistory = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 function snapshot(sequence = 4) {
   return {
@@ -299,6 +301,7 @@ function fixture(options?: {
   readonly omitQueueMutation?: boolean;
   readonly queueMutationCapability?: boolean;
   readonly getStateImpl?: () => Promise<unknown>;
+  readonly getSessionTreeImpl?: (() => Promise<unknown>) | undefined;
   readonly navigateTreeImpl?: (
     targetId: string,
     options?: { readonly summarize?: boolean },
@@ -525,6 +528,8 @@ function fixture(options?: {
 
   class FakeConnection implements PrimeAgentDaemonAgentConnection {
     constructor() {
+      if (options?.getSessionTreeImpl === undefined)
+        Object.defineProperty(this, "getSessionTree", { value: undefined });
       if (options?.omitSendAgentMessage === true) {
         Object.defineProperty(this, "sendAgentMessage", { value: undefined });
       }
@@ -596,6 +601,10 @@ function fixture(options?: {
         });
       }
       return options?.rawSnapshotImpl?.() ?? options?.rawSnapshot ?? snapshot();
+    }
+    getSessionTree(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "getSessionTree", args: [] });
+      return options?.getSessionTreeImpl?.() ?? Promise.resolve(undefined);
     }
     getRlmChildSnapshots(): Promise<unknown> {
       captures.connectionCalls.push({ method: "getRlmChildSnapshots", args: [] });
@@ -12046,6 +12055,76 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
       }),
     ),
   );
+
+  for (const variant of [
+    "valid",
+    "wrong leaf",
+    "wrong session",
+    "stale generation",
+    "retired during read",
+    "unavailable",
+  ] as const) {
+    it.effect(`fences compaction tree reads: ${variant}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const timestamp = "2026-09-14T12:00:00.000Z";
+          const tree = {
+            leafId: variant === "wrong leaf" ? "foreign" : "c",
+            tree: [
+              {
+                entry: {
+                  id: "a",
+                  parentId: null,
+                  timestamp,
+                  type: "message",
+                  message: { role: "user", content: "before", timestamp: 1 },
+                },
+                children: [
+                  {
+                    entry: {
+                      id: "c",
+                      parentId: "a",
+                      timestamp,
+                      type: "compaction",
+                      summary: "private summary",
+                      tokensBefore: 10,
+                      firstKeptEntryId: "a",
+                    },
+                    children: [],
+                  },
+                ],
+              },
+            ],
+          };
+          const test = fixture({
+            getSessionTreeImpl:
+              variant === "unavailable"
+                ? undefined
+                : async () => {
+                    if (variant === "retired during read")
+                      await test.emit({ type: "connection_status", status: "reconnecting" });
+                    return tree;
+                  },
+          });
+          const runtime = yield* test.make();
+          if (runtime.getCompactionHistory === undefined) throw new Error("missing history reader");
+          const candidate = {
+            ...runtime.initialSnapshot,
+            state: {
+              ...runtime.initialSnapshot.state,
+              leafId: "c",
+              ...(variant === "wrong session" ? { sessionId: "foreign" } : {}),
+            },
+            ...(variant === "stale generation" ? { connectionGeneration: 99 } : {}),
+          };
+          const history = yield* runtime.getCompactionHistory(candidate);
+          expect(history !== undefined).toBe(variant === "valid");
+          if (history !== undefined)
+            expect(encodePrivateHistory(history)).not.toContain("private summary");
+        }),
+      ),
+    );
+  }
 
   it.effect("uses argument-free compaction controls and projects only safe state", () =>
     Effect.scoped(

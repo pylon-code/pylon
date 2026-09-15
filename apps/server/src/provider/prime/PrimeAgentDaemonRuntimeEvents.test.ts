@@ -772,6 +772,7 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     for (const kind of [
       "compaction_outcome",
       "ipython_state_restored",
+      "ipython_state",
       "session_slash_command",
       "session_slash_command_result",
       "rlm_child_failure",
