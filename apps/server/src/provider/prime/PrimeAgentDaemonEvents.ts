@@ -8,6 +8,7 @@ import {
   type SessionGoalUpdatedPayload,
   type SessionInputQueueDeliveryMode,
 } from "@t3tools/contracts";
+import type { PrimeCompactionHistory } from "./PrimeAgentCompactionHistory.ts";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -170,12 +171,65 @@ const PrimeAgentDaemonRefinementMessage = Schema.Struct({
   timestamp: Schema.Number,
 });
 
+// These built-in records participate in native history, but do not own a Pylon turn.
+// Automation messages remain unsupported until Pylon owns their occurrences.
+const PrimeAgentDaemonPrivateMessage = Schema.Struct({
+  role: Schema.Literal("custom"),
+  customType: Schema.Literals([
+    "compaction_outcome",
+    "ipython_state_restored",
+    "ipython_state",
+    "session_slash_command",
+    "session_slash_command_result",
+    "rlm_child_failure",
+    "rlm_child_terminal_notice",
+    "async_bash_completion",
+    "agent_message",
+  ]),
+  display: Schema.Boolean,
+  content: Schema.Union([Schema.String, Schema.Array(Schema.Union([textContent, imageContent]))]),
+  details: Schema.optional(Schema.Unknown),
+  timestamp: Schema.Finite,
+});
+
+const PrimeAgentDaemonBranchSummary = Schema.Struct({
+  role: Schema.Literal("branchSummary"),
+  summary: Schema.String,
+  fromId: Schema.String,
+  timestamp: Schema.Finite,
+});
+const PrimeAgentDaemonBashExecution = Schema.Struct({
+  role: Schema.Literal("bashExecution"),
+  command: Schema.String,
+  output: Schema.String,
+  exitCode: Schema.optional(Schema.Finite),
+  cancelled: Schema.Boolean,
+  truncated: Schema.Boolean,
+  fullOutputPath: Schema.optional(Schema.String),
+  excludeFromContext: Schema.optional(Schema.Boolean),
+  timestamp: Schema.Finite,
+});
+
+const PrimeAgentDaemonCompactionSummary = Schema.Struct({
+  role: Schema.Literal("compactionSummary"),
+  summary: Schema.String,
+  tokensBefore: Schema.Finite,
+  retainedMessageCount: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  customInstructions: Schema.optional(Schema.String),
+  harnessDigest: Schema.optional(Schema.String),
+  timestamp: Schema.Finite,
+});
+
 export const PrimeAgentDaemonMessage = Schema.Union([
   PrimeAgentDaemonUserMessage,
   PrimeAgentDaemonAssistantMessage,
   PrimeAgentDaemonToolResultMessage,
   PrimeAgentDaemonHarnessDigestMessage,
   PrimeAgentDaemonRefinementMessage,
+  PrimeAgentDaemonPrivateMessage,
+  PrimeAgentDaemonBranchSummary,
+  PrimeAgentDaemonBashExecution,
+  PrimeAgentDaemonCompactionSummary,
 ]);
 export type PrimeAgentDaemonMessage = typeof PrimeAgentDaemonMessage.Type;
 
@@ -484,6 +538,7 @@ const contextUsage = Schema.Struct({
 
 const sessionState = Schema.Struct({
   activeSessionId: Schema.optional(Schema.String),
+  leafId: Schema.optional(Schema.NullOr(Schema.String)),
   cwd: Schema.String,
   thinkingLevel,
   serviceTier,
@@ -776,6 +831,16 @@ export interface PrimeDaemonPlanUpdate {
 
 export type PrimeDaemonMessage =
   | {
+      readonly role: "nativePrivate";
+      readonly kind:
+        | typeof PrimeAgentDaemonPrivateMessage.Type.customType
+        | "branchSummary"
+        | "bashExecution"
+        | "compactionSummary";
+      readonly timestamp: number;
+      readonly contentDigest: string;
+    }
+  | {
       readonly role: "refinementOutcome" | "refinementNotice";
       readonly timestamp: number;
       /** Private refinement content participates in continuity, never client projection. */
@@ -820,6 +885,7 @@ export type PrimeDaemonMessage =
     };
 
 export interface PrimeDaemonSessionState {
+  readonly leafId?: string | undefined;
   readonly activeSessionId?: string | undefined;
   readonly sessionId: string;
   readonly sessionName?: string | undefined;
@@ -1262,6 +1328,7 @@ export type PrimeDaemonEvent = (
     }
   | {
       readonly _tag: "SessionResynced";
+      readonly compactionHistory?: PrimeCompactionHistory | undefined;
       readonly state: PrimeDaemonSessionState;
       readonly messages: ReadonlyArray<PrimeDaemonMessage>;
       readonly streamingMessage?: PrimeDaemonMessage | undefined;
@@ -1428,11 +1495,32 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
             .digest("hex"),
         };
       }
+      if (value.customType !== "refinement_outcome" && value.customType !== "refinement_notice") {
+        return {
+          role: "nativePrivate",
+          kind: value.customType,
+          timestamp: value.timestamp,
+          contentDigest: NodeCrypto.createHash("sha256")
+            .update(JSON.stringify([value.display, value.content, value.details]), "utf8")
+            .digest("hex"),
+        };
+      }
       return {
         role: value.customType === "refinement_outcome" ? "refinementOutcome" : "refinementNotice",
         timestamp: value.timestamp,
         contentDigest: NodeCrypto.createHash("sha256")
           .update(JSON.stringify([value.display, value.content, value.details]), "utf8")
+          .digest("hex"),
+      };
+    case "branchSummary":
+    case "bashExecution":
+    case "compactionSummary":
+      return {
+        role: "nativePrivate",
+        kind: value.role,
+        timestamp: value.timestamp,
+        contentDigest: NodeCrypto.createHash("sha256")
+          .update(JSON.stringify(value), "utf8")
           .digest("hex"),
       };
     case "user": {
@@ -1510,6 +1598,11 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
   }
 }
 
+export function decodePrimeAgentDaemonMessage(value: unknown): PrimeDaemonMessage | undefined {
+  const decoded = decodeMessage(value);
+  return Option.isSome(decoded) ? mapMessage(decoded.value) : undefined;
+}
+
 function mapUnknownMessages(values: ReadonlyArray<unknown>): ReadonlyArray<PrimeDaemonMessage> {
   return values.slice(-PRIME_AGENT_DAEMON_TRANSCRIPT_MAX_MESSAGES).flatMap((value) => {
     const decoded = decodeMessage(value);
@@ -1566,6 +1659,7 @@ export function decodePrimeAgentDaemonSessionState(
 
 function mapState(value: typeof sessionState.Type): PrimeDaemonSessionState {
   return {
+    ...(typeof value.leafId === "string" ? { leafId: value.leafId } : {}),
     activeSessionId: optionalBounded(value.activeSessionId, MAX_PREVIEW_LENGTH),
     sessionId: bounded(value.sessionId, MAX_PREVIEW_LENGTH),
     sessionName: optionalBounded(value.sessionName, MAX_PREVIEW_LENGTH),
@@ -1703,10 +1797,14 @@ function mapSessionEvent(event: typeof agentSessionEvent.Type): PrimeDaemonEvent
         toolResults: event.toolResults.map((message) => mapMessage(message)),
       };
     case "message_start":
+      if (event.message.role === "compactionSummary")
+        return { _tag: "CorrelatedProtocolViolation" };
       return { _tag: "MessageStarted", message: mapMessage(event.message) };
     case "message_update":
       return mapAssistantStream(event.assistantMessageEvent);
     case "message_end":
+      if (event.message.role === "compactionSummary")
+        return { _tag: "CorrelatedProtocolViolation" };
       return { _tag: "MessageCompleted", message: mapMessage(event.message) };
     case "tool_execution_start":
       return {

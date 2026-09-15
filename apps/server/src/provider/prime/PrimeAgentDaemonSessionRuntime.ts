@@ -59,6 +59,7 @@ import {
   decodePrimeAgentDaemonSessionState,
   decodePrimeAgentPromptLifecycleCancellationResult,
   decodePrimeAgentPromptLifecycleStateSnapshot,
+  decodePrimeAgentDaemonMessage,
   decodePrimeAgentPromptLifecycleSubmitResult,
   primeAgentDaemonImageDigest,
   PRIME_AGENT_DAEMON_MESSAGE_TEXT_MAX_CHARS,
@@ -73,6 +74,10 @@ import {
   type PrimeDaemonPromptLifecycleStateSnapshot,
   type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
+import {
+  decodePrimeCompactionHistory,
+  type PrimeCompactionHistory,
+} from "./PrimeAgentCompactionHistory.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
 import type { PrimeAgentOwnershipReceiptHandle } from "./PrimeAgentOwnershipReceipt.ts";
 import type { PrimeAgentRuntimeContext } from "./PrimeAgentRuntimeContext.ts";
@@ -121,6 +126,10 @@ export const isPrimeAgentWorkerRecovering = (cause: unknown, activeSessionId: st
       Predicate.isString(cause.activeSessionId) &&
       cause.activeSessionId === activeSessionId));
 
+function recordCompactionSummary(value: unknown): boolean {
+  return Predicate.isObject(value) && value.role === "compactionSummary";
+}
+
 function workerRecoverySnapshotIsUnsafe(
   raw: unknown,
   baselineMessageCount: number,
@@ -130,7 +139,14 @@ function workerRecoverySnapshotIsUnsafe(
   const messages = raw.snapshot.messages;
   if (!Array.isArray(messages)) return true;
   const advancedMessageCount = messageCount - baselineMessageCount;
-  if (advancedMessageCount < 0 || advancedMessageCount > messages.length) return true;
+  if (advancedMessageCount < 0) {
+    return !(
+      recordCompactionSummary(messages[0]) &&
+      Predicate.isObject(raw.snapshot.state) &&
+      typeof raw.snapshot.state.leafId === "string"
+    );
+  }
+  if (advancedMessageCount > messages.length) return true;
   if (advancedMessageCount === 0) return false;
   return messages
     .slice(-advancedMessageCount)
@@ -1091,6 +1107,9 @@ export interface PrimeAgentDaemonSessionRuntime {
   /** Stable only within one compatible daemon supervisor generation. */
   readonly conversationRuntimeGeneration?: string;
   readonly initialSnapshot: PrimeAgentDaemonCanonicalSnapshot;
+  readonly getCompactionHistory?: (
+    snapshot: PrimeAgentDaemonCanonicalSnapshot,
+  ) => Effect.Effect<PrimeCompactionHistory | undefined>;
   /** Private immutable root selected from the raw initial snapshot. */
   readonly initialConversationLeafId?: string;
   readonly conversationRollbackAvailable: boolean;
@@ -5722,6 +5741,42 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       } satisfies PrimeAgentDaemonCompactionState;
     });
 
+    const getCompactionHistory = (snapshot: PrimeAgentDaemonCanonicalSnapshot) =>
+      Effect.gen(function* () {
+        const native = connection;
+        const generation = connectionGeneration;
+        const epoch = correlatedProofEpoch;
+        const leafId = snapshot.state.leafId;
+        if (
+          disposeStarted ||
+          disposed ||
+          native?.getSessionTree === undefined ||
+          leafId === undefined ||
+          snapshot.state.sessionId !== sessionId ||
+          snapshot.state.activeSessionId !== activeSessionId ||
+          (snapshot.connectionGeneration !== undefined &&
+            snapshot.connectionGeneration !== generation)
+        )
+          return undefined;
+        const tree = yield* Effect.tryPromise({
+          try: () => native.getSessionTree!(),
+          catch: () => undefined,
+        }).pipe(
+          Effect.timeoutOption(COMMAND_TIMEOUT_MS),
+          Effect.orElseSucceed(() => Option.none()),
+        );
+        if (
+          Option.isNone(tree) ||
+          connection !== native ||
+          connectionGeneration !== generation ||
+          correlatedProofEpoch !== epoch ||
+          disposeStarted ||
+          disposed
+        )
+          return undefined;
+        return decodePrimeCompactionHistory(tree.value, leafId, decodePrimeAgentDaemonMessage);
+      });
+
     const compact = Effect.gen(function* () {
       yield* ensureOpen("compact");
       if (!compactionAvailable) {
@@ -8783,6 +8838,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       autoCompactionWritable,
       initialCompactionState,
       getCompactionState,
+      getCompactionHistory,
       compact,
       refineLocalHarness,
       abortCompaction,

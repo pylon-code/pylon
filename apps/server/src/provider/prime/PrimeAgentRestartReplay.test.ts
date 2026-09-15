@@ -75,6 +75,67 @@ describe("planPrimeAgentRestartReplay", () => {
     }
   });
 
+  it("resumes built-in private messages without accepting changed or reordered history", () => {
+    const refinements = [
+      "compaction_outcome",
+      "ipython_state_restored",
+      "ipython_state",
+      "session_slash_command",
+      "session_slash_command_result",
+      "rlm_child_failure",
+      "rlm_child_terminal_notice",
+      "async_bash_completion",
+      "agent_message",
+    ].map((customType, index) => {
+      const decoded = decodePrimeAgentDaemonEvent(
+        {
+          type: "session_event",
+          attribution: { scope: "session" },
+          event: {
+            type: "message_end",
+            promptCorrelationId: null,
+            message: {
+              role: "custom",
+              customType,
+              display: index === 0,
+              timestamp: index,
+              content: "private memory",
+              details: { refinementId: "fixture", source: "auto" },
+            },
+          },
+        },
+        { correlatedPromptLifecycle: true },
+      );
+      if (decoded._tag !== "MessageCompleted") throw new Error("missing refinement");
+      return decoded.message;
+    });
+    const snapshotMessages = [...refinements, message(20)];
+    const authority = {
+      authorityMessageCount: refinements.length,
+      authorityFingerprints: refinements.map(fingerprint),
+    };
+    expect(
+      planPrimeAgentRestartReplay({
+        ...authority,
+        snapshotMessageCount: refinements.length + 1,
+        snapshotMessages,
+      }),
+    ).toEqual({ valid: true, backlog: [message(20)] });
+    for (const history of [
+      refinements.toReversed(),
+      refinements.map((item) => ({ ...item, timestamp: 99 })),
+      refinements.slice(0, 1),
+    ]) {
+      expect(
+        planPrimeAgentRestartReplay({
+          ...authority,
+          snapshotMessageCount: refinements.length + 1,
+          snapshotMessages: [...history, message(20)],
+        }),
+      ).toEqual({ valid: false });
+    }
+  });
+
   it("fails closed on changed overlap or a transcript retention gap", () => {
     const messages = [1, 2, 3, 4, 5].map(message);
     expect(

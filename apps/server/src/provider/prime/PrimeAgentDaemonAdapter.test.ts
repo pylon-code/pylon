@@ -1,3 +1,4 @@
+import type { PrimeCompactionHistory } from "./PrimeAgentCompactionHistory.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -178,6 +179,7 @@ function initialSnapshot(): Extract<PrimeDaemonEvent, { readonly _tag: "SessionR
 }
 
 interface FakeCaptures {
+  compactionHistory?: PrimeCompactionHistory;
   readonly runtimeInputs: Array<PrimeAgentDaemonSessionRuntimeInput>;
   readonly prompts: Array<{
     readonly text: string;
@@ -628,6 +630,7 @@ function fakeRuntimeFactory(
         inputQueueModesAvailable: captures.inputQueueModesAvailable,
         inputQueueMutationAvailable: captures.inputQueueMutationAvailable,
         compactionAvailable: captures.compactionAvailable,
+        getCompactionHistory: () => Effect.sync(() => captures.compactionHistory),
         refinementAvailable: captures.refinementAvailable && input.resumeCursor === undefined,
         refineLocalHarness: Effect.gen(function* () {
           captures.refinementCalls += 1;
@@ -3206,6 +3209,283 @@ describe("PrimeAgentDaemonAdapter", () => {
           ).pipe(Effect.provide(testLayer)),
       );
     }
+  }
+
+  for (const customType of [
+    "compaction_outcome",
+    "ipython_state_restored",
+    "ipython_state",
+    "session_slash_command",
+    "session_slash_command_result",
+    "rlm_child_failure",
+    "rlm_child_terminal_notice",
+    "async_bash_completion",
+    "agent_message",
+  ]) {
+    for (const changed of [false, true]) {
+      for (const withNotice of [false]) {
+        it.effect(
+          `verifies a background ${customType} before a later tool snapshot: changed=${changed}, notice=${withNotice}`,
+          () =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const captures = makeCaptures();
+                captures.correlatedPromptLifecycleAvailable = true;
+                captures.correlatedRecoveryProofEpoch = 0;
+                captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+                const resolutions =
+                  yield* Queue.unbounded<FakeCaptures["reconnectResolutions"][number]>();
+                captures.reconnectSnapshotResolutionObserved = (resolution) => {
+                  Queue.offerUnsafe(resolutions, resolution);
+                };
+                const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+                  instanceId,
+                  runtimeFactory: fakeRuntimeFactory(captures),
+                });
+                const subscription = yield* subscribe(adapter);
+                yield* adapter.startSession({
+                  threadId,
+                  cwd: process.cwd(),
+                  runtimeMode: "full-access",
+                });
+                const refinement = decodePrimeAgentDaemonEvent({
+                  type: "session_event",
+                  event: {
+                    type: "message_end",
+                    message: {
+                      role: "custom",
+                      customType,
+                      display: true,
+                      content: "private memory update",
+                      details: { refinementId: "refine-1", edits: [] },
+                      timestamp: 1,
+                    },
+                  },
+                });
+                if (refinement?._tag !== "MessageCompleted") throw new Error("missing refinement");
+                yield* offer(captures, { ...refinement, attribution: { scope: "session" } });
+                const notice = decodePrimeAgentDaemonEvent(
+                  {
+                    type: "session_event",
+                    attribution: { scope: "session" },
+                    event: {
+                      type: "message_end",
+                      promptCorrelationId: null,
+                      message: {
+                        role: "custom",
+                        customType: "refinement_notice",
+                        display: false,
+                        content: "private applied memory",
+                        details: { refinementId: "refine-1", source: "auto" },
+                        timestamp: 1.5,
+                      },
+                    },
+                  },
+                  { correlatedPromptLifecycle: true },
+                );
+                if (notice._tag !== "MessageCompleted")
+                  throw new Error("missing refinement notice");
+                if (withNotice) yield* offer(captures, notice);
+                // Drain startup notifications, then wait for an ordered event behind the refinement.
+                yield* Queue.takeAll(subscription.observed);
+                yield* offer(captures, { _tag: "ConnectionStatus", status: "connected" });
+                yield* awaitObservedType(subscription.observed, "session.state.changed");
+                const turnFiber = yield* adapter
+                  .sendTurn({ threadId, input: "Read fixture" })
+                  .pipe(Effect.forkChild);
+                const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+                const delivered = lifecycleSnapshot(correlationId, "delivered", 2);
+                yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: delivered });
+                const prompt = {
+                  role: "user",
+                  timestamp: 2,
+                  text: "Read fixture",
+                  imageMimeTypes: [],
+                  imageDigests: [],
+                } satisfies PrimeDaemonMessage;
+                const call = {
+                  ...assistantMessage("", "toolUse"),
+                  timestamp: 3,
+                  toolCalls: [{ id: "read-1", name: "read" }],
+                };
+                for (const message of [prompt, call]) {
+                  yield* offer(captures, {
+                    _tag: "MessageCompleted",
+                    message,
+                    attribution: { scope: "prompt", correlationId },
+                  });
+                }
+                const result = {
+                  role: "toolResult",
+                  timestamp: 4,
+                  toolCallId: "read-1",
+                  toolName: "read",
+                  text: "fixture",
+                  imageMimeTypes: [],
+                  isError: false,
+                } satisfies PrimeDaemonMessage;
+                yield* offer(captures, {
+                  ...initialSnapshot(),
+                  state: {
+                    ...initialSnapshot().state,
+                    isStreaming: true,
+                    messageCount: withNotice ? 5 : 4,
+                  },
+                  messages: [
+                    changed ? { ...refinement.message, timestamp: 999 } : refinement.message,
+                    ...(withNotice ? [notice.message] : []),
+                    prompt,
+                    call,
+                    result,
+                  ],
+                  orderedSnapshot: true,
+                  replayContinuity: "unknown",
+                  connectionGeneration: 0,
+                  correlatedProofEpoch: 0,
+                  promptLifecycles: { records: [delivered], expired: [] },
+                });
+                expect((yield* Queue.take(resolutions)).reconciled).toBe(!changed);
+                if (!changed) {
+                  yield* offer(captures, {
+                    _tag: "MessageCompleted",
+                    message: { ...assistantMessage("Read complete"), timestamp: 5 },
+                    attribution: { scope: "prompt", correlationId },
+                  });
+                  yield* offer(captures, {
+                    _tag: "PromptLifecycleUpdated",
+                    lifecycle: lifecycleSnapshot(correlationId, "completed", 3, { usage }),
+                  });
+                }
+                const settled = yield* Fiber.join(turnFiber);
+                const events = subscription.events.filter(
+                  (event) => event.turnId === settled.turnId,
+                );
+                expect(events.findLast((event) => event.type === "turn.completed")).toMatchObject({
+                  payload: { state: changed ? "failed" : "completed" },
+                });
+                expect(events.filter((event) => event.type === "runtime.error")).toHaveLength(
+                  changed ? 1 : 0,
+                );
+                expect(encodeUnknownJson(subscription.events)).not.toContain("private memory");
+                expect(encodeUnknownJson(subscription.events)).not.toContain("refinementOutcome");
+                expect(encodeUnknownJson(subscription.events)).not.toContain("refinementNotice");
+              }),
+            ).pipe(Effect.provide(testLayer)),
+        );
+      }
+    }
+  }
+
+  for (const variant of ["valid", "changed", "missing proof"] as const) {
+    it.effect(`proves context replacement after compaction: ${variant}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          captures.correlatedPromptLifecycleAvailable = true;
+          captures.correlatedRecoveryProofEpoch = 0;
+          captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+          const resolutions =
+            yield* Queue.unbounded<FakeCaptures["reconnectResolutions"][number]>();
+          captures.reconnectSnapshotResolutionObserved = (resolution) => {
+            Queue.offerUnsafe(resolutions, resolution);
+          };
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          const old: PrimeDaemonMessage[] = [1, 2, 3].map((timestamp) => ({
+            role: "refinementOutcome",
+            timestamp,
+            contentDigest: `old-${timestamp}`,
+          }));
+          for (const message of old)
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              message,
+              attribution: { scope: "session" },
+            });
+          yield* Queue.takeAll(subscription.observed);
+          yield* offer(captures, { _tag: "ConnectionStatus", status: "connected" });
+          yield* awaitObservedType(subscription.observed, "session.state.changed");
+          const turn = yield* adapter
+            .sendTurn({ threadId, input: "Continue after compaction" })
+            .pipe(Effect.forkChild);
+          const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+          const delivered = lifecycleSnapshot(correlationId, "delivered", 2);
+          yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: delivered });
+          const prompt: PrimeDaemonMessage = {
+            role: "user",
+            timestamp: 4,
+            text: "Continue after compaction",
+            imageMimeTypes: [],
+            imageDigests: [],
+          };
+          yield* offer(captures, {
+            _tag: "MessageCompleted",
+            message: prompt,
+            attribution: { scope: "prompt", correlationId },
+          });
+          yield* offer(captures, {
+            _tag: "CompactionStarted",
+            attribution: { scope: "prompt", correlationId },
+          });
+          yield* offer(captures, {
+            _tag: "CompactionCompleted",
+            outcome: "completed",
+            willRetry: true,
+            attribution: { scope: "prompt", correlationId },
+          });
+          const summary: PrimeDaemonMessage = {
+            role: "nativePrivate",
+            kind: "compactionSummary",
+            timestamp: 5,
+            contentDigest: "private-summary",
+          };
+          const current = [summary, prompt];
+          if (variant !== "missing proof")
+            captures.compactionHistory = {
+              previous: [...old, prompt],
+              current,
+              appended: [],
+              retainedCount: 1,
+            };
+          const snapshot = {
+            ...initialSnapshot(),
+            state: { ...initialSnapshot().state, messageCount: 2, isStreaming: true },
+            messages: variant === "changed" ? [summary, { ...prompt, timestamp: 99 }] : current,
+            orderedSnapshot: true,
+            replayContinuity: "unknown" as const,
+            connectionGeneration: 0,
+            correlatedProofEpoch: 0,
+            promptLifecycles: { records: [delivered], expired: [] },
+          };
+          yield* offer(captures, snapshot);
+          expect((yield* Queue.take(resolutions)).reconciled).toBe(variant === "valid");
+          if (variant === "valid") {
+            yield* offer(captures, snapshot);
+            expect((yield* Queue.take(resolutions)).reconciled).toBe(true);
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              message: { ...assistantMessage("Continued safely"), timestamp: 6 },
+              attribution: { scope: "prompt", correlationId },
+            });
+            yield* offer(captures, {
+              _tag: "PromptLifecycleUpdated",
+              lifecycle: lifecycleSnapshot(correlationId, "completed", 3, { usage }),
+            });
+          }
+          const settled = yield* Fiber.join(turn);
+          expect(
+            subscription.events.findLast(
+              (event) => event.type === "turn.completed" && event.turnId === settled.turnId,
+            ),
+          ).toMatchObject({ payload: { state: variant === "valid" ? "completed" : "failed" } });
+          expect(encodeUnknownJson(subscription.events)).not.toContain("private-summary");
+        }),
+      ).pipe(Effect.provide(testLayer)),
+    );
   }
 
   it.effect("accepts exact complete capable recovery with already observed output", () =>

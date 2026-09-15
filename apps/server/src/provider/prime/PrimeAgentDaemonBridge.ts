@@ -189,6 +189,7 @@ export interface PrimeAgentDaemonSessionWatcher {
 export interface PrimeAgentDaemonAgentConnection {
   readonly subscribe: (listener: (event: unknown) => void | Promise<void>) => () => void;
   readonly getInitialSnapshot: () => Promise<unknown>;
+  readonly getSessionTree?: () => Promise<unknown>;
   readonly getRlmChildSnapshots?: () => Promise<unknown>;
   readonly getState?: () => Promise<unknown>;
   readonly navigateTree?: (

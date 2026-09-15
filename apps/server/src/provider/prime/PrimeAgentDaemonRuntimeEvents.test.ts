@@ -768,6 +768,39 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     }
   });
 
+  it("never projects built-in private native history as user or assistant output", () => {
+    for (const kind of [
+      "compaction_outcome",
+      "ipython_state_restored",
+      "ipython_state",
+      "session_slash_command",
+      "session_slash_command_result",
+      "rlm_child_failure",
+      "rlm_child_terminal_notice",
+      "async_bash_completion",
+      "agent_message",
+      "branchSummary",
+      "bashExecution",
+    ] as const) {
+      for (const _tag of ["MessageStarted", "MessageCompleted"] as const) {
+        expect(
+          mapPrimeAgentDaemonRuntimeEventDrafts({
+            ...context,
+            event: {
+              _tag,
+              message: {
+                role: "nativePrivate",
+                kind,
+                timestamp: 1,
+                contentDigest: "private-identity",
+              },
+            },
+          }),
+        ).toEqual([]);
+      }
+    }
+  });
+
   it("maps compaction lifecycle without provider instructions, summaries, or error text", () => {
     expect(
       mapPrimeAgentDaemonRuntimeEventDrafts({

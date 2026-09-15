@@ -142,6 +142,30 @@ describe("PrimeAgentDaemonEvents", () => {
     }
   });
 
+  it("accepts compaction summaries only in snapshots, never as live messages", () => {
+    const message = {
+      role: "compactionSummary",
+      summary: "private compaction",
+      tokensBefore: 100,
+      retainedMessageCount: 0,
+      timestamp: 10,
+    };
+    for (const type of ["message_start", "message_end"]) {
+      expect(decodePrimeAgentDaemonEvent(sessionEvent({ type, message }))).toEqual({
+        _tag: "CorrelatedProtocolViolation",
+      });
+    }
+    const snapshot = decodePrimeAgentDaemonEvent({
+      type: "session_resynced",
+      snapshot: { state: { ...state, messageCount: 1 }, messages: [message] },
+    });
+    expect(snapshot).toMatchObject({
+      _tag: "SessionResynced",
+      messages: [{ role: "nativePrivate", kind: "compactionSummary", timestamp: 10 }],
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("private compaction");
+  });
+
   for (const customType of ["refinement_outcome", "refinement_notice"] as const) {
     it(`retains ${customType} identity in live events and snapshots without private content`, () => {
       const refinement = {
@@ -220,9 +244,147 @@ describe("PrimeAgentDaemonEvents", () => {
     });
   }
 
+  for (const customType of [
+    "compaction_outcome",
+    "ipython_state_restored",
+    "ipython_state",
+    "session_slash_command",
+    "session_slash_command_result",
+    "rlm_child_failure",
+    "rlm_child_terminal_notice",
+    "async_bash_completion",
+    "agent_message",
+  ] as const) {
+    it(`retains ${customType} identity in live events and snapshots without private content`, () => {
+      const refinement = {
+        role: "custom",
+        customType,
+        display: true,
+        content: "private memory update",
+        details: { refinementId: "refine-1", edits: [{ content: "private memory" }] },
+        timestamp: 10,
+      };
+      const completed = decodePrimeAgentDaemonEvent(
+        sessionEvent({ type: "message_end", message: refinement }),
+      );
+      expect(completed).toMatchObject({
+        _tag: "MessageCompleted",
+        message: {
+          role: "nativePrivate",
+          kind: customType,
+          timestamp: 10,
+          contentDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      });
+      for (const attribution of [
+        { scope: "session" },
+        { scope: "prompt", correlationId: "fixture-turn" },
+      ]) {
+        const event = {
+          type: "message_end",
+          message: refinement,
+          promptCorrelationId: attribution.correlationId ?? null,
+        };
+        expect(
+          decodePrimeAgentDaemonEvent(
+            { type: "session_event", attribution, event },
+            { correlatedPromptLifecycle: true },
+          ),
+        ).toEqual({ ...completed, attribution });
+        expect(
+          decodePrimeAgentDaemonEvent(
+            {
+              type: "session_event",
+              attribution,
+              event: { ...event, promptCorrelationId: "foreign" },
+            },
+            { correlatedPromptLifecycle: true },
+          ),
+        ).toEqual({ _tag: "CorrelatedProtocolViolation" });
+      }
+      const snapshot = decodePrimeAgentDaemonEvent({
+        type: "session_resynced",
+        snapshot: { state: { ...state, messageCount: 1 }, messages: [refinement] },
+      });
+      if (completed?._tag !== "MessageCompleted") throw new Error("missing refinement");
+      expect(snapshot).toMatchObject({
+        _tag: "SessionResynced",
+        state: { messageCount: 1 },
+        messages: [completed.message],
+      });
+      expect(
+        decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_start", message: refinement })),
+      ).toEqual({ _tag: "MessageStarted", message: completed.message });
+      expect(JSON.stringify(snapshot)).not.toContain("private");
+      for (const changed of [
+        { ...refinement, content: "changed" },
+        { ...refinement, display: !refinement.display },
+        {
+          ...refinement,
+          customType: "refinement_outcome",
+        },
+        { ...refinement, details: { refinementId: "refine-2" } },
+      ]) {
+        expect(
+          decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_end", message: changed })),
+        ).not.toEqual(completed);
+      }
+    });
+  }
+
+  it("retains exact native branch and bash records without exposing their content", () => {
+    for (const message of [
+      { role: "branchSummary", summary: "private branch", fromId: "private-source", timestamp: 1 },
+      {
+        role: "bashExecution",
+        command: "private command",
+        output: "private output",
+        exitCode: 0,
+        cancelled: false,
+        truncated: true,
+        fullOutputPath: "/private/output",
+        excludeFromContext: true,
+        timestamp: 1,
+      },
+    ]) {
+      const completed = decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_end", message }));
+      expect(completed).toMatchObject({
+        _tag: "MessageCompleted",
+        message: { role: "nativePrivate", kind: message.role },
+      });
+      if (completed?._tag !== "MessageCompleted") throw new Error("missing native record");
+      const snapshot = decodePrimeAgentDaemonEvent({
+        type: "session_resynced",
+        snapshot: { state: { ...state, messageCount: 1 }, messages: [message] },
+      });
+      expect(snapshot).toMatchObject({ messages: [completed.message] });
+      expect(JSON.stringify(snapshot)).not.toContain("private");
+      for (const [key, value] of Object.entries(message)) {
+        if (key === "role") continue;
+        const changed = {
+          ...message,
+          [key]:
+            typeof value === "boolean"
+              ? !value
+              : typeof value === "number"
+                ? value + 1
+                : `${value}-changed`,
+        };
+        expect(
+          decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_end", message: changed })),
+        ).not.toEqual(completed);
+      }
+    }
+  });
+
   it("does not recognize unrelated or visible custom messages as hidden harness digests", () => {
     for (const hidden of [
       { customType: "other", display: false, details: { digest: "x" } },
+      ...["heartbeat_prompt", "thread_goal_state", "goal_context"].map((customType) => ({
+        customType,
+        display: true,
+        details: {},
+      })),
       { customType: "harness_digest", display: true, details: { digest: "x" } },
       { customType: "harness_digest", display: false, details: {} },
     ]) {

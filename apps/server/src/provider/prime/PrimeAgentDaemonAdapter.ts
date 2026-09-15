@@ -74,6 +74,10 @@ import {
   ProviderAdapterValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
+import {
+  planPrimeCompactionReplacement,
+  type PrimeCompactionHistory,
+} from "./PrimeAgentCompactionHistory.ts";
 import type { PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
 import {
   BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES,
@@ -270,7 +274,7 @@ interface PrimeAgentDaemonActiveTurn {
   awaitingQueuedRun: boolean;
   queuedActionObserved: boolean;
   readonly completedRunMessages: Array<PrimeDaemonMessage>;
-  readonly nativeTranscriptBaselineMessageCount: number;
+  nativeTranscriptBaselineMessageCount: number;
   readonly observedToolStarts: Set<string>;
   readonly observedToolCompletions: Set<string>;
   /** Durable assistant tool-call messages, retained only for in-memory correlation. */
@@ -678,6 +682,32 @@ export function planPrimeAgentRestartReplay(input: {
   readonly authorityFingerprints: ReadonlyArray<string>;
   readonly snapshotMessageCount: number;
   readonly snapshotMessages: ReadonlyArray<PrimeDaemonMessage>;
+  readonly compactionHistory?: PrimeCompactionHistory | undefined;
+}) {
+  const unchanged = planPrimeAgentRestartReplayUnchanged(input);
+  if (unchanged.valid || input.compactionHistory === undefined) return unchanged;
+  const replacement = planPrimeCompactionReplacement({
+    history: input.compactionHistory,
+    observedCount: input.authorityMessageCount,
+    observedFingerprints: input.authorityFingerprints,
+    snapshotCount: input.snapshotMessageCount,
+    snapshot: input.snapshotMessages,
+    fingerprint: primeDaemonMessageFingerprint,
+  });
+  return replacement === undefined
+    ? unchanged
+    : planPrimeAgentRestartReplayUnchanged({
+        ...input,
+        authorityMessageCount: replacement.observedCount,
+        authorityFingerprints: replacement.observed.map(primeDaemonMessageFingerprint),
+      });
+}
+
+function planPrimeAgentRestartReplayUnchanged(input: {
+  readonly authorityMessageCount: number;
+  readonly authorityFingerprints: ReadonlyArray<string>;
+  readonly snapshotMessageCount: number;
+  readonly snapshotMessages: ReadonlyArray<PrimeDaemonMessage>;
 }):
   | { readonly valid: true; readonly backlog: ReadonlyArray<PrimeDaemonMessage> }
   | {
@@ -739,6 +769,38 @@ function matchesSubmittedUserMessage(
 // Reconnect snapshots keep only a bounded completed-message tail. Absolute
 // message counts make a shifted tail exact without retaining the full history.
 function reconcileTranscriptTail(input: {
+  readonly observed: ReadonlyArray<PrimeDaemonMessage>;
+  readonly observedCount: number;
+  readonly snapshot: ReadonlyArray<PrimeDaemonMessage>;
+  readonly snapshotCount: number;
+  readonly compactionHistory?: PrimeCompactionHistory | undefined;
+}):
+  | {
+      readonly missingMessages: ReadonlyArray<PrimeDaemonMessage>;
+      readonly overlapCount: number;
+      readonly transition?: { readonly previousCount: number; readonly retainedCount: number };
+    }
+  | undefined {
+  const unchanged = reconcileUnchangedTranscriptTail(input);
+  if (unchanged !== undefined || input.compactionHistory === undefined) return unchanged;
+  const replacement = planPrimeCompactionReplacement({
+    history: input.compactionHistory,
+    observedCount: input.observedCount,
+    observedFingerprints: input.observed.map(primeDaemonMessageFingerprint),
+    snapshotCount: input.snapshotCount,
+    snapshot: input.snapshot,
+    fingerprint: primeDaemonMessageFingerprint,
+  });
+  if (replacement === undefined) return undefined;
+  const reconciled = reconcileUnchangedTranscriptTail({
+    ...input,
+    observed: replacement.observed,
+    observedCount: replacement.observedCount,
+  });
+  return reconciled === undefined ? undefined : { ...reconciled, transition: replacement };
+}
+
+function reconcileUnchangedTranscriptTail(input: {
   readonly observed: ReadonlyArray<PrimeDaemonMessage>;
   readonly observedCount: number;
   readonly snapshot: ReadonlyArray<PrimeDaemonMessage>;
@@ -1746,6 +1808,7 @@ export function makePrimeAgentDaemonAdapter(
           observedCount: context.nativeTranscriptMessageCount,
           snapshot: event.messages,
           snapshotCount: event.state.messageCount,
+          compactionHistory: event.compactionHistory,
         });
         if (reconciliation === undefined) return false;
         const transcriptContinuityVerified =
@@ -1785,6 +1848,16 @@ export function makePrimeAgentDaemonAdapter(
         }
 
         if (turn === undefined) return true;
+        if (reconciliation.transition !== undefined) {
+          const transition = reconciliation.transition;
+          turn.nativeTranscriptBaselineMessageCount =
+            1 +
+            Math.max(
+              0,
+              turn.nativeTranscriptBaselineMessageCount -
+                (transition.previousCount - transition.retainedCount),
+            );
+        }
         const snapshotStartMessageCount = event.state.messageCount - event.messages.length;
         const currentTurnMessages = event.messages.slice(
           Math.max(0, turn.nativeTranscriptBaselineMessageCount - snapshotStartMessageCount),
@@ -2584,6 +2657,18 @@ export function makePrimeAgentDaemonAdapter(
           return;
         }
         if (event._tag === "SessionResynced") {
+          const unchanged = reconcileUnchangedTranscriptTail({
+            observed: context.nativeTranscript,
+            observedCount: context.nativeTranscriptMessageCount,
+            snapshot: event.messages,
+            snapshotCount: event.state.messageCount,
+          });
+          const compactionHistory =
+            unchanged === undefined && context.runtime.getCompactionHistory !== undefined
+              ? yield* context.runtime.getCompactionHistory(event)
+              : undefined;
+          const snapshotEvent =
+            compactionHistory === undefined ? event : { ...event, compactionHistory };
           const managedSourceVerified = yield* fileSystem
             .readFileString(context.managedExtensionPath)
             .pipe(
@@ -2596,12 +2681,12 @@ export function makePrimeAgentDaemonAdapter(
             context.threadId,
             Effect.gen(function* () {
               if (sessions.get(context.threadId) === context && !context.stopped) {
-                const reconnectGeneration = event.connectionGeneration;
+                const reconnectGeneration = snapshotEvent.connectionGeneration;
                 if (
                   reconnectGeneration !== undefined &&
                   !context.runtime.isConnectionGenerationCurrent(
                     reconnectGeneration,
-                    event.correlatedProofEpoch,
+                    snapshotEvent.correlatedProofEpoch,
                   )
                 ) {
                   return;
@@ -2624,11 +2709,11 @@ export function makePrimeAgentDaemonAdapter(
                 context.managedPlanProjectionEnabled = true;
                 const activeTurn = context.activeTurn;
                 if (context.runtime.correlatedPromptLifecycleAvailable) {
-                  if (event.initialSnapshot === true) {
+                  if (snapshotEvent.initialSnapshot === true) {
                     const lifecycle =
                       activeTurn?.correlationId === undefined
                         ? undefined
-                        : event.promptLifecycles?.records.find(
+                        : snapshotEvent.promptLifecycles?.records.find(
                             (candidate) => candidate.correlationId === activeTurn.correlationId,
                           );
                     if (lifecycle !== undefined) {
@@ -2643,14 +2728,15 @@ export function makePrimeAgentDaemonAdapter(
                     const transcriptPlan = reconcileTranscriptTail({
                       observed: context.nativeTranscript,
                       observedCount: context.nativeTranscriptMessageCount,
-                      snapshot: event.messages,
-                      snapshotCount: event.state.messageCount,
+                      snapshot: snapshotEvent.messages,
+                      snapshotCount: snapshotEvent.state.messageCount,
+                      compactionHistory: snapshotEvent.compactionHistory,
                     });
                     const missingMessages = transcriptPlan?.missingMessages ?? [];
                     const lifecycle =
                       activeTurn?.correlationId === undefined
                         ? undefined
-                        : event.promptLifecycles?.records.find(
+                        : snapshotEvent.promptLifecycles?.records.find(
                             (candidate) => candidate.correlationId === activeTurn.correlationId,
                           );
                     const currentLifecycle = activeTurn?.correlatedLifecycle;
@@ -2669,8 +2755,8 @@ export function makePrimeAgentDaemonAdapter(
                         : 0;
                     const snapshotRecoversSubmittedUser =
                       activeTurn !== undefined &&
-                      event.connectionGeneration !== undefined &&
-                      event.correlatedProofEpoch !== undefined &&
+                      snapshotEvent.connectionGeneration !== undefined &&
+                      snapshotEvent.correlatedProofEpoch !== undefined &&
                       activeTurn.queuedInputCount === 0 &&
                       (context.nativeTranscriptMessageCount ===
                         activeTurn.nativeTranscriptBaselineMessageCount ||
@@ -2695,8 +2781,8 @@ export function makePrimeAgentDaemonAdapter(
                     const recoveredToolCalls = new Map<string, string>();
                     const snapshotRecoversCurrentToolCycles =
                       activeTurn !== undefined &&
-                      event.connectionGeneration !== undefined &&
-                      event.correlatedProofEpoch !== undefined &&
+                      snapshotEvent.connectionGeneration !== undefined &&
+                      snapshotEvent.correlatedProofEpoch !== undefined &&
                       activeTurn.queuedInputCount === 0 &&
                       currentLifecycle?.kind === "model_prompt" &&
                       currentLifecycle.phase === "delivered" &&
@@ -2760,11 +2846,12 @@ export function makePrimeAgentDaemonAdapter(
                         missingMessages[0]?.role === "assistant" &&
                         context.nativeTranscript.at(-1)?.role === "user");
                     const transcriptReconciled =
-                      (event.replayContinuity === "complete" ||
-                        (event.orderedSnapshot === true && event.replayContinuity === "unknown")) &&
+                      (snapshotEvent.replayContinuity === "complete" ||
+                        (snapshotEvent.orderedSnapshot === true &&
+                          snapshotEvent.replayContinuity === "unknown")) &&
                       transcriptPlan !== undefined &&
                       snapshotIsExactOrCurrentTerminal &&
-                      (yield* reconcileTranscriptSnapshotLocked(context, event));
+                      (yield* reconcileTranscriptSnapshotLocked(context, snapshotEvent));
                     if (!transcriptReconciled) {
                       if (reconnectGeneration !== undefined) {
                         context.runtime.resolveReconnectSnapshot(reconnectGeneration, false, false);
@@ -2785,7 +2872,7 @@ export function makePrimeAgentDaemonAdapter(
                     // A settings snapshot can precede native prompt ownership. It
                     // may preserve an exact transcript, but cannot settle the turn.
                     const snapshotPrecedesPromptDelivery =
-                      event.orderedSnapshot === true &&
+                      snapshotEvent.orderedSnapshot === true &&
                       missingMessages.length === 0 &&
                       currentLifecycle?.deliveryCrossed !== true;
                     if (
@@ -2821,7 +2908,10 @@ export function makePrimeAgentDaemonAdapter(
                   }
                 } else if (reconnectGeneration !== undefined) {
                   const pendingRunCompletionBefore = activeTurn?.pendingRunCompletionHandoff;
-                  const reconciled = yield* reconcileTranscriptSnapshotLocked(context, event);
+                  const reconciled = yield* reconcileTranscriptSnapshotLocked(
+                    context,
+                    snapshotEvent,
+                  );
                   recoveredSnapshotRunCompletion =
                     activeTurn !== undefined &&
                     pendingRunCompletionBefore === undefined &&
@@ -2852,46 +2942,48 @@ export function makePrimeAgentDaemonAdapter(
                     return;
                   }
                 }
-                context.autoCompactionEnabled = event.state.autoCompactionEnabled;
-                context.nativeRunActive = event.state.isStreaming;
+                context.autoCompactionEnabled = snapshotEvent.state.autoCompactionEnabled;
+                context.nativeRunActive = snapshotEvent.state.isStreaming;
                 if (
                   context.activeTurn === undefined &&
-                  (event.state.isStreaming ||
-                    event.state.isCompacting ||
-                    event.state.isBashRunning ||
-                    event.state.retryAttempt > 0 ||
-                    event.state.inputQueue.activeAction ||
-                    event.state.inputQueue.steeringCount + event.state.inputQueue.followUpCount >
+                  (snapshotEvent.state.isStreaming ||
+                    snapshotEvent.state.isCompacting ||
+                    snapshotEvent.state.isBashRunning ||
+                    snapshotEvent.state.retryAttempt > 0 ||
+                    snapshotEvent.state.inputQueue.activeAction ||
+                    snapshotEvent.state.inputQueue.steeringCount +
+                      snapshotEvent.state.inputQueue.followUpCount >
                       0 ||
-                    event.children.some(
+                    snapshotEvent.children.some(
                       (child) => child.status === "queued" || child.status === "running",
                     ))
                 ) {
                   yield* startBackgroundQuiescenceWatchLocked(context);
                 }
-                context.nativeBashActive = event.state.isBashRunning;
+                context.nativeBashActive = snapshotEvent.state.isBashRunning;
                 const compactionWasActive = context.activeCompactionScope !== undefined;
-                context.activeCompactionScope = event.state.isCompacting
+                context.activeCompactionScope = snapshotEvent.state.isCompacting
                   ? (context.activeCompactionScope ?? {})
                   : undefined;
-                if (!event.state.isCompacting && !context.manualCompactionRequestActive) {
+                if (!snapshotEvent.state.isCompacting && !context.manualCompactionRequestActive) {
                   context.compactionAbortRequested = false;
                 }
                 const initialRosterAlreadyProjected =
                   context.agentRosterProjected &&
-                  event.lastEventSequence !== undefined &&
-                  event.lastEventSequence === context.runtime.initialSnapshot.lastEventSequence;
+                  snapshotEvent.lastEventSequence !== undefined &&
+                  snapshotEvent.lastEventSequence ===
+                    context.runtime.initialSnapshot.lastEventSequence;
                 yield* applyAgentRosterSnapshot(
                   context,
-                  event.children,
+                  snapshotEvent.children,
                   !initialRosterAlreadyProjected,
                 );
-                context.nativeQueueActionActive = event.state.inputQueue.activeAction;
-                yield* updateInputQueueProjection(context, event.state.inputQueue);
+                context.nativeQueueActionActive = snapshotEvent.state.inputQueue.activeAction;
+                yield* updateInputQueueProjection(context, snapshotEvent.state.inputQueue);
                 yield* updateGoalProjection(
                   context,
                   context.session.runtimeMode === "full-access"
-                    ? event.state.goal
+                    ? snapshotEvent.state.goal
                     : unavailableSessionGoal,
                 );
                 yield* updateCompactionProjectionLocked(context, {
@@ -2899,18 +2991,18 @@ export function makePrimeAgentDaemonAdapter(
                     (context.manualCompactionRequestActive &&
                       context.compaction.status === "starting") ||
                     (context.compactionAbortRequested &&
-                      event.state.isCompacting &&
+                      snapshotEvent.state.isCompacting &&
                       context.compaction.status === "abort-requested")
                       ? context.compaction.status
-                      : event.state.isCompacting
+                      : snapshotEvent.state.isCompacting
                         ? "compacting"
                         : "idle",
                   abortable:
-                    event.state.isCompacting && context.manualCompactionRequestActive
+                    snapshotEvent.state.isCompacting && context.manualCompactionRequestActive
                       ? context.compaction.abortable
                       : false,
                   ...(context.compaction.available
-                    ? { autoCompactionEnabled: event.state.autoCompactionEnabled }
+                    ? { autoCompactionEnabled: snapshotEvent.state.autoCompactionEnabled }
                     : {}),
                 });
                 const turn =
@@ -2920,16 +3012,17 @@ export function makePrimeAgentDaemonAdapter(
                     : context.activeTurn;
                 if (turn !== undefined) {
                   turn.queuedInputCount =
-                    event.state.inputQueue.steeringCount + event.state.inputQueue.followUpCount;
-                  if (event.state.isStreaming) {
+                    snapshotEvent.state.inputQueue.steeringCount +
+                    snapshotEvent.state.inputQueue.followUpCount;
+                  if (snapshotEvent.state.isStreaming) {
                     // The continuation may have started while disconnected. Apply every
                     // RunStarted invariant from this authoritative snapshot too.
                     observeNativeRunStarted(context, turn);
                   }
                   const authoritativeIdle =
                     turn.queuedInputCount === 0 &&
-                    !event.state.inputQueue.activeAction &&
-                    !event.state.isStreaming;
+                    !snapshotEvent.state.inputQueue.activeAction &&
+                    !snapshotEvent.state.isStreaming;
                   if (turn.pendingRunCompletionHandoff !== undefined) {
                     if (
                       recoveredSnapshotRunCompletion &&
@@ -2946,7 +3039,7 @@ export function makePrimeAgentDaemonAdapter(
                         });
                         if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
                       }
-                    } else if (compactionWasActive && !event.state.isCompacting) {
+                    } else if (compactionWasActive && !snapshotEvent.state.isCompacting) {
                       // The compaction terminal event may have been lost while
                       // disconnected. Replace its consumed grace from the snapshot.
                       yield* restartPendingRunCompletionHandoffLocked(context, turn);
@@ -2962,7 +3055,10 @@ export function makePrimeAgentDaemonAdapter(
                     if (explicitClear) {
                       const settled = yield* settleActiveTurnLocked(context, turn, {
                         state: "completed",
-                        event: { _tag: "RunCompleted", messages: turn.completedRunMessages },
+                        event: {
+                          _tag: "RunCompleted",
+                          messages: turn.completedRunMessages,
+                        },
                       });
                       if (settled) yield* refreshContextUsage(context).pipe(Effect.forkDetach);
                     } else {
@@ -4809,12 +4905,19 @@ export function makePrimeAgentDaemonAdapter(
           let recoveryBacklog: ReadonlyArray<PrimeDaemonMessage> = [];
           if (recoveryStart?.kind === "adopt") {
             const authority = recoveryStart.authority;
-            const replay = planPrimeAgentRestartReplay({
+            const replayInput = {
               authorityMessageCount: authority.transcriptMessageCount,
               authorityFingerprints: authority.transcriptFingerprints,
               snapshotMessageCount: runtime.initialSnapshot.state.messageCount,
               snapshotMessages: runtime.initialSnapshot.messages,
-            });
+            };
+            let replay = planPrimeAgentRestartReplay(replayInput);
+            if (!replay.valid && runtime.getCompactionHistory !== undefined) {
+              const compactionHistory = yield* runtime.getCompactionHistory(
+                runtime.initialSnapshot,
+              );
+              replay = planPrimeAgentRestartReplay({ ...replayInput, compactionHistory });
+            }
             if (
               !replay.valid ||
               (authority.turnId === null &&
