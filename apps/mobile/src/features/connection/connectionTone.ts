@@ -21,6 +21,12 @@ export function connectionTone(state: RemoteClientConnectionState): StatusTone {
         pillClassName: "bg-adaptive-sky-500-a12-a16",
         textClassName: "text-adaptive-sky-700-300",
       };
+    case "unsupported":
+      return {
+        label: "Client not supported",
+        pillClassName: "bg-danger",
+        textClassName: "text-danger-foreground",
+      };
     case "error":
       return {
         label: "Connection failed",
