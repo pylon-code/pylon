@@ -101,8 +101,14 @@ static inline NSAttributedString *T3MarkdownTextAttachmentString(
 
 static UIFont *T3ContextChipFont(NSDictionary *payload)
 {
-  CGFloat size = MAX(10, MIN(40, [payload[@"fontSize"] doubleValue]));
-  size *= payload[@"fontSizeMultiplier"] != nil ? [payload[@"fontSizeMultiplier"] doubleValue] : 1;
+  CGFloat baseSize = [payload[@"fontSize"] isKindOfClass:NSNumber.class]
+      ? [payload[@"fontSize"] doubleValue] : 12.0;
+  if (baseSize <= 0) baseSize = 12.0;
+  CGFloat multiplier = [payload[@"fontSizeMultiplier"] isKindOfClass:NSNumber.class]
+      ? [payload[@"fontSizeMultiplier"] doubleValue] : 1.0;
+  if (multiplier <= 0) multiplier = 1.0;
+
+  CGFloat size = MAX(10, MIN(40, baseSize * multiplier));
   return [UIFont fontWithName:@"DMSans-Medium" size:size]
     ?: [UIFont systemFontOfSize:size weight:UIFontWeightMedium];
 }
@@ -121,9 +127,15 @@ static inline UIImage *T3ContextChipImage(NSDictionary *payload, CGSize size, UI
   static NSCache<NSString *, UIImage *> *cache;
   static dispatch_once_t once;
   dispatch_once(&once, ^{ cache = [NSCache new]; cache.countLimit = 256; });
-  NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:NSJSONWritingSortedKeys error:nil];
-  NSString *key = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-  key = [key stringByAppendingString:NSStringFromCGSize(size)];
+  NSData *data = (payload != nil && [NSJSONSerialization isValidJSONObject:payload])
+      ? [NSJSONSerialization dataWithJSONObject:payload options:NSJSONWritingSortedKeys error:nil]
+      : nil;
+  NSString *key = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+  if (key == nil) {
+    key = [NSString stringWithFormat:@"chip:%@:%@", payload[@"label"] ?: @"", NSStringFromCGSize(size)];
+  } else {
+    key = [key stringByAppendingString:NSStringFromCGSize(size)];
+  }
   if (fileIcon != nil) key = [key stringByAppendingString:@":file-icon"];
   UIImage *cached = [cache objectForKey:key];
   if (cached) return cached;
