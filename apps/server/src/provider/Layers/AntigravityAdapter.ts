@@ -240,15 +240,23 @@ const resolveClientFilePath = Effect.fn("AntigravityAdapter.resolveClientFilePat
     readonly allowedRoots: ReadonlyArray<string>;
     readonly requestPath: string;
   }) {
-    const { path } = input;
+    const { path, fileSystem } = input;
     const resolved = path.resolve(input.requestPath);
-    // Follow symlinks on the parent so a link out of the workspace cannot escape it.
-    const parent = yield* input.fileSystem
-      .realPath(path.dirname(resolved))
-      .pipe(Effect.orElseSucceed(() => path.dirname(resolved)));
-    const real = path.join(parent, path.basename(resolved));
+    // Follow symlinks by resolving the closest existing ancestor directory so
+    // that paths with non-existent subdirectories (like new files) match canonical roots.
+    const findExistingAncestorReal = (current: string): Effect.Effect<string> =>
+      fileSystem.realPath(current).pipe(
+        Effect.catch(() => {
+          const parentDir = path.dirname(current);
+          if (parentDir === current) return Effect.succeed(current);
+          return findExistingAncestorReal(parentDir).pipe(
+            Effect.map((realParent) => path.join(realParent, path.basename(current))),
+          );
+        }),
+      );
+    const real = yield* findExistingAncestorReal(resolved);
     const roots = yield* Effect.forEach(input.allowedRoots, (root) =>
-      input.fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root)),
+      fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root)),
     );
     if (!roots.some((root) => isInsideRoot(path, root, real))) {
       return yield* EffectAcpErrors.AcpRequestError.invalidParams(

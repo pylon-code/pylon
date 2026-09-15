@@ -92,7 +92,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
         ...(loginRequired
           ? [`printf '%s\\n' ${shellQuote(ANTIGRAVITY_AUTH_STDOUT_PREFIX + authorizationUrl)} >&2`]
           : []),
-        `exec ${shellQuote(nodePath)} ${shellQuote(mockAgentPath)} "$@"`,
+        `exec ${shellQuote(nodePath)} ${process.features?.typescript ? "" : "--experimental-strip-types "}${shellQuote(mockAgentPath)} "$@"`,
         "",
       ].join("\n"),
     );
