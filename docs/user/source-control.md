@@ -61,6 +61,10 @@ provider or paste a Git URL, then choose where to save it. GitHub repositories c
 working `gh auth login` is enough; GitLab, Bitbucket, and Azure DevOps clone over SSH. Paste a full
 `git@` URL to force SSH.
 
+The project opens right away while the clone runs in the background: you can write your first prompt, and
+sending waits until the files are in place. A toast tracks progress and lets you cancel; if the clone fails,
+retry it from the toast or from the banner above the composer.
+
 For a local Git repository without a remote, **Publish Repository** creates a hosted repository, adds
 it as `origin`, and pushes your commits. If there are no commits yet, it creates the remote; make your
 first commit before pushing.
