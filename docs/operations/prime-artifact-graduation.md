@@ -67,7 +67,9 @@ repeated Pylon restart/crash receipt recovery, and native multiple-instance evid
 proof also executes a real background command through Pylon's native adapter. A later cell waits for
 the host's completion acknowledgment and consumes the result; the proof requires no redundant
 completion notice or extra model turn. This requires the identity-aware consumption fix in Prime
-#72 and stable custom-message timestamps in Prime #77; older previews can fail this acceptance case.
+#72 and stable custom-message timestamps in Prime #77; older candidates can fail this acceptance case.
+When a second preview is supplied, the native proof exercises that second build, while the managed-store
+cases retain the first build as the update and rollback baseline.
 The native multi result remains evidence only. It does not enable `supportsMultipleInstances` because the distinct
 account, package-root, catalog, capacity, MCP, checkpoint, macOS, Linux, and WSL2 requirements remain
 separate.

@@ -52,6 +52,8 @@ import type { PrimeAgentRuntimeContext } from "./PrimeAgentRuntimeContext.ts";
 
 const configuredArtifactDirectory = process.env.PYLON_PRIME_ARTIFACT_DIR?.trim();
 const configuredPreviewTag = process.env.PYLON_PRIME_PREVIEW_TAG?.trim();
+const configuredSecondArtifactDirectory = process.env.PYLON_PRIME_SECOND_ARTIFACT_DIR?.trim();
+const configuredSecondPreviewTag = process.env.PYLON_PRIME_SECOND_PREVIEW_TAG?.trim();
 const configuredStockBinary = process.env.PYLON_PRIME_AGENT_STOCK_ARTIFACT_BIN?.trim();
 const configuredAuthHome = process.env.PYLON_REAL_PRIME_AGENT_AUTH_HOME?.trim();
 const runMultipleInstanceProof = process.env.PYLON_REAL_PRIME_AGENT_MULTI_PROOF === "1";
@@ -577,8 +579,14 @@ it.live.skipIf(!configuredGraduationArtifact || !runMultipleInstanceProof)(
             previewTag: configuredPreviewTag!,
             stockBinaryPath: configuredStockBinary!,
             platform,
+            ...(configuredSecondArtifactDirectory
+              ? { secondArtifactDirectory: configuredSecondArtifactDirectory }
+              : {}),
+            ...(configuredSecondPreviewTag ? { secondPreviewTag: configuredSecondPreviewTag } : {}),
           }),
         );
+        // With an update pair, the candidate is the second verified artifact, not its baseline.
+        graduation.useArtifact(graduation.artifacts.length - 1);
         const installation = yield* Effect.promise(() =>
           graduation.command({
             commandId: "native-multi-graduation-install",
