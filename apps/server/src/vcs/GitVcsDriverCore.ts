@@ -662,18 +662,20 @@ const collectOutput = Effect.fnUntraced(function* (
   const maxPendingLineBytes = 64 * 1024;
 
   const emitCompleteLines = Effect.fnUntraced(function* (flush: boolean) {
-    let newlineIndex = lineBuffer.indexOf("\n");
-    while (newlineIndex >= 0) {
-      const line = lineBuffer.slice(0, newlineIndex).replace(/\r$/, "");
-      lineBuffer = lineBuffer.slice(newlineIndex + 1);
+    while (lineBuffer.length > 0) {
+      const match = /[\r\n]/.exec(lineBuffer);
+      if (!match) break;
+      const index = match.index;
+      const delimiterLength = lineBuffer[index] === "\r" && lineBuffer[index + 1] === "\n" ? 2 : 1;
+      const line = lineBuffer.slice(0, index);
+      lineBuffer = lineBuffer.slice(index + delimiterLength);
       if (line.length > 0 && onLine) {
         yield* onLine(line);
       }
-      newlineIndex = lineBuffer.indexOf("\n");
     }
 
     if (flush) {
-      const trailing = lineBuffer.replace(/\r$/, "");
+      const trailing = lineBuffer.replace(/[\r\n]+$/, "");
       lineBuffer = "";
       if (trailing.length > 0 && onLine) {
         yield* onLine(trailing);

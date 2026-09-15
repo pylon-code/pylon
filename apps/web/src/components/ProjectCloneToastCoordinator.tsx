@@ -41,7 +41,7 @@ export function ProjectCloneToastCoordinator() {
 }
 
 interface TrackedToast {
-  readonly toastId: ReturnType<typeof toastManager.add>;
+  readonly toastId?: ReturnType<typeof toastManager.add>;
   /** The last snapshot rendered, so an identical redraw does not touch the toast. */
   readonly renderedKey: string;
   readonly phase: ProjectCloneSnapshot["phase"];
@@ -112,14 +112,20 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
       const closeToast = () => {
         const current = toasts.current.get(clone.projectId);
         if (!current) return;
-        toastManager.close(current.toastId);
+        if (current.toastId) {
+          toastManager.close(current.toastId);
+        }
         toasts.current.delete(clone.projectId);
       };
       if (isViewingProjectDraft(clone.projectId)) {
-        closeToast();
+        if (tracked?.toastId) {
+          toastManager.close(tracked.toastId);
+        }
+        toasts.current.set(clone.projectId, { renderedKey: key, phase: clone.phase });
         continue;
       }
-      if (tracked?.renderedKey === key) continue;
+      if (tracked?.renderedKey === key && tracked.toastId) continue;
+      if (!tracked?.toastId && tracked?.phase === "done") continue;
 
       if (clone.phase === "running") {
         const options = stackedThreadToast({
@@ -137,7 +143,7 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
           },
           data: { hideCopyButton: true },
         });
-        if (tracked) {
+        if (tracked?.toastId) {
           toastManager.update(tracked.toastId, options);
           toasts.current.set(clone.projectId, { ...tracked, renderedKey: key, phase: "running" });
         } else {
@@ -162,7 +168,7 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
           },
           data: { hideCopyButton: true },
         });
-        if (tracked) {
+        if (tracked?.toastId) {
           toastManager.update(tracked.toastId, options);
           toasts.current.set(clone.projectId, { ...tracked, renderedKey: key, phase: "done" });
         } else {
@@ -200,7 +206,7 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
           },
         },
       });
-      if (tracked) {
+      if (tracked?.toastId) {
         toastManager.update(tracked.toastId, options);
         toasts.current.set(clone.projectId, { ...tracked, renderedKey: key, phase: clone.phase });
       } else {
@@ -214,7 +220,7 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
     // timed success toast that dismisses itself.
     for (const [projectId, tracked] of toasts.current) {
       if (seen.has(projectId)) continue;
-      if (tracked.phase !== "done") toastManager.close(tracked.toastId);
+      if (tracked.toastId && tracked.phase !== "done") toastManager.close(tracked.toastId);
       toasts.current.delete(projectId);
     }
   }, [
@@ -230,7 +236,9 @@ function EnvironmentCloneToasts({ environmentId }: { environmentId: EnvironmentI
 
   useEffect(
     () => () => {
-      for (const tracked of toasts.current.values()) toastManager.close(tracked.toastId);
+      for (const tracked of toasts.current.values()) {
+        if (tracked.toastId) toastManager.close(tracked.toastId);
+      }
       toasts.current.clear();
     },
     [],

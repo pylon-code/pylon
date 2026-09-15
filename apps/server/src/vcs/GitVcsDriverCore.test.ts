@@ -798,6 +798,30 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("emits bare carriage returns as individual lines for progress updates", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const lines: Array<string> = [];
+        yield* driver.execute({
+          operation: "GitVcsDriver.test.carriageReturnProgress",
+          cwd,
+          args: [
+            "-c",
+            'alias.progress=!printf "Receiving objects:  10%% (10/100)\rReceiving objects:  50%% (50/100)\rReceiving objects: 100%% (100/100)\n" >&2',
+            "progress",
+          ],
+          progress: { onStderrLine: (line) => Effect.sync(() => void lines.push(line)) },
+        });
+
+        assert.deepStrictEqual(lines, [
+          "Receiving objects:  10% (10/100)",
+          "Receiving objects:  50% (50/100)",
+          "Receiving objects: 100% (100/100)",
+        ]);
+      }),
+    );
+
     it.effect("recovers a structurally identified missing cwd as a non-repository", () =>
       Effect.gen(function* () {
         const parent = yield* makeTmpDir();
