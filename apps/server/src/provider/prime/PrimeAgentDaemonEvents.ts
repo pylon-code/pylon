@@ -170,12 +170,53 @@ const PrimeAgentDaemonRefinementMessage = Schema.Struct({
   timestamp: Schema.Number,
 });
 
+// These built-in records participate in native history, but do not own a Pylon turn.
+// Automation messages remain unsupported until Pylon owns their occurrences.
+const PrimeAgentDaemonPrivateMessage = Schema.Struct({
+  role: Schema.Literal("custom"),
+  customType: Schema.Literals([
+    "compaction_outcome",
+    "ipython_state_restored",
+    "session_slash_command",
+    "session_slash_command_result",
+    "rlm_child_failure",
+    "rlm_child_terminal_notice",
+    "async_bash_completion",
+    "agent_message",
+  ]),
+  display: Schema.Boolean,
+  content: Schema.Union([Schema.String, Schema.Array(Schema.Union([textContent, imageContent]))]),
+  details: Schema.optional(Schema.Unknown),
+  timestamp: Schema.Finite,
+});
+
+const PrimeAgentDaemonBranchSummary = Schema.Struct({
+  role: Schema.Literal("branchSummary"),
+  summary: Schema.String,
+  fromId: Schema.String,
+  timestamp: Schema.Finite,
+});
+const PrimeAgentDaemonBashExecution = Schema.Struct({
+  role: Schema.Literal("bashExecution"),
+  command: Schema.String,
+  output: Schema.String,
+  exitCode: Schema.optional(Schema.Finite),
+  cancelled: Schema.Boolean,
+  truncated: Schema.Boolean,
+  fullOutputPath: Schema.optional(Schema.String),
+  excludeFromContext: Schema.optional(Schema.Boolean),
+  timestamp: Schema.Finite,
+});
+
 export const PrimeAgentDaemonMessage = Schema.Union([
   PrimeAgentDaemonUserMessage,
   PrimeAgentDaemonAssistantMessage,
   PrimeAgentDaemonToolResultMessage,
   PrimeAgentDaemonHarnessDigestMessage,
   PrimeAgentDaemonRefinementMessage,
+  PrimeAgentDaemonPrivateMessage,
+  PrimeAgentDaemonBranchSummary,
+  PrimeAgentDaemonBashExecution,
 ]);
 export type PrimeAgentDaemonMessage = typeof PrimeAgentDaemonMessage.Type;
 
@@ -775,6 +816,15 @@ export interface PrimeDaemonPlanUpdate {
 }
 
 export type PrimeDaemonMessage =
+  | {
+      readonly role: "nativePrivate";
+      readonly kind:
+        | typeof PrimeAgentDaemonPrivateMessage.Type.customType
+        | "branchSummary"
+        | "bashExecution";
+      readonly timestamp: number;
+      readonly contentDigest: string;
+    }
   | {
       readonly role: "refinementOutcome" | "refinementNotice";
       readonly timestamp: number;
@@ -1428,11 +1478,31 @@ function mapMessage(value: PrimeAgentDaemonMessage): PrimeDaemonMessage {
             .digest("hex"),
         };
       }
+      if (value.customType !== "refinement_outcome" && value.customType !== "refinement_notice") {
+        return {
+          role: "nativePrivate",
+          kind: value.customType,
+          timestamp: value.timestamp,
+          contentDigest: NodeCrypto.createHash("sha256")
+            .update(JSON.stringify([value.display, value.content, value.details]), "utf8")
+            .digest("hex"),
+        };
+      }
       return {
         role: value.customType === "refinement_outcome" ? "refinementOutcome" : "refinementNotice",
         timestamp: value.timestamp,
         contentDigest: NodeCrypto.createHash("sha256")
           .update(JSON.stringify([value.display, value.content, value.details]), "utf8")
+          .digest("hex"),
+      };
+    case "branchSummary":
+    case "bashExecution":
+      return {
+        role: "nativePrivate",
+        kind: value.role,
+        timestamp: value.timestamp,
+        contentDigest: NodeCrypto.createHash("sha256")
+          .update(JSON.stringify(value), "utf8")
           .digest("hex"),
       };
     case "user": {
