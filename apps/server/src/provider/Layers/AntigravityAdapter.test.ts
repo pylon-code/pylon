@@ -332,7 +332,10 @@ it.layer(layer)("AntigravityAdapter", (it) => {
               childProcessSpawner,
               spawn: {
                 command: process.execPath,
-                args: [mockAgentPath],
+                args: [
+                  ...(process.features?.typescript ? [] : ["--experimental-strip-types"]),
+                  mockAgentPath,
+                ],
                 cwd: input.cwd,
                 env: {
                   ...process.env,

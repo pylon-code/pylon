@@ -13,6 +13,10 @@ import { make, type AcpSessionRequestLogEvent } from "./AcpSessionRuntime.ts";
 const mockPeerPath = NodeURL.fileURLToPath(
   new URL("../../../../../packages/effect-acp/test/fixtures/acp-mock-peer.ts", import.meta.url),
 );
+const mockPeerArgs = [
+  ...(process.features?.typescript ? [] : ["--experimental-strip-types"]),
+  mockPeerPath,
+];
 
 const startRuntime = (authMethodId?: string) =>
   Effect.gen(function* () {
@@ -20,7 +24,7 @@ const startRuntime = (authMethodId?: string) =>
     const runtime = yield* make({
       spawn: {
         command: process.execPath,
-        args: [mockPeerPath],
+        args: mockPeerArgs,
       },
       cwd: process.cwd(),
       clientInfo: {
@@ -82,7 +86,7 @@ it.effect("bounds every ACP startup RPC with typed default and configured timeou
         const runtime = yield* make({
           spawn: {
             command: process.execPath,
-            args: [mockPeerPath],
+            args: mockPeerArgs,
             env: { [testCase.hangEnvironment]: "1" },
           },
           cwd: process.cwd(),
@@ -125,7 +129,7 @@ it.effect("does not apply the startup RPC timeout to long prompt calls", () =>
     const runtime = yield* make({
       spawn: {
         command: process.execPath,
-        args: [mockPeerPath],
+        args: mockPeerArgs,
         env: { ACP_MOCK_HANG_PROMPT: "1" },
       },
       cwd: process.cwd(),
