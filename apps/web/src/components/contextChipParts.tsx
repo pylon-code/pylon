@@ -1,11 +1,12 @@
 import type { PullRequestContextMetadata } from "@t3tools/contracts";
-import { CircleDashedIcon, FilmIcon, GitPullRequestIcon, ImageIcon } from "lucide-react";
+import { CircleDashedIcon, FilmIcon, ImageIcon } from "lucide-react";
 import { createContext, use, type ComponentProps, type MouseEvent, type ReactNode } from "react";
 import { composerFloatingLayerProps } from "./chat/composerEventScope";
 
 export const ComposerContextScope = createContext(false);
 
 import { cn } from "~/lib/utils";
+import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import {
   COMPOSER_INLINE_CHIP_ICON_CLASS_NAME,
@@ -124,7 +125,7 @@ export function PullRequestChip(props: {
       triggerClassName={props.className}
       chip={
         <>
-          <GitPullRequestIcon className={cn(COMPOSER_INLINE_CHIP_ICON_CLASS_NAME, "size-3.5")} />
+          <PullRequestGlyph.pullRequest className={cn(COMPOSER_INLINE_CHIP_ICON_CLASS_NAME, "size-3.5")} />
           <span className={props.labelClassName}>{props.label}</span>
         </>
       }
