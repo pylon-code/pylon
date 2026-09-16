@@ -1,3 +1,4 @@
+import { primeDaemonMessageFingerprint } from "./PrimeAgentTranscriptIdentity.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
 
@@ -68,7 +69,6 @@ import {
   primeAgentPromptLifecycleIsSame,
   primeAgentPromptLifecycleIsSuccessor,
   type PrimeDaemonEvent,
-  type PrimeDaemonMessage,
   type PrimeDaemonPromptLifecycleCancellationResult,
   type PrimeDaemonPromptLifecycleSnapshot,
   type PrimeDaemonPromptLifecycleStateSnapshot,
@@ -1722,8 +1722,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             | undefined;
         }
       | undefined;
-    const transcriptFingerprint = (message: PrimeDaemonMessage) =>
-      NodeCrypto.createHash("sha256").update(JSON.stringify(message), "utf8").digest("hex");
+    const transcriptFingerprint = primeDaemonMessageFingerprint;
     let nativeRunObservedActive = false;
     let nativeInputRunActive = false;
     let nativeInputCompactionActive = false;

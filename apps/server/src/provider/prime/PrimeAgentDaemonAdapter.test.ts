@@ -28,6 +28,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -2276,6 +2277,105 @@ describe("PrimeAgentDaemonAdapter", () => {
       }),
     ).pipe(Effect.provide(testLayer)),
   );
+
+  for (const changedContent of [false, true]) {
+    it.effect(
+      `reconciles historical usage updates while rejecting content changes (${changedContent})`,
+      () => {
+        const logs: Array<unknown> = [];
+        const logger = Logger.make(({ message }) => {
+          logs.push(message);
+        });
+        return Effect.scoped(
+          Effect.gen(function* () {
+            const captures = makeCaptures();
+            captures.correlatedPromptLifecycleAvailable = true;
+            captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+            const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+              instanceId,
+              runtimeFactory: fakeRuntimeFactory(captures),
+            });
+            const subscription = yield* subscribe(adapter);
+            yield* adapter.startSession({
+              threadId,
+              cwd: process.cwd(),
+              runtimeMode: "full-access",
+            });
+            const running = yield* adapter
+              .sendTurn({ threadId, input: "account for child usage" })
+              .pipe(Effect.forkChild);
+            const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+            yield* awaitObservedType(subscription.observed, "turn.started");
+            yield* offer(captures, {
+              _tag: "PromptLifecycleUpdated",
+              lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+            });
+            const original = assistantMessage("PRIVATE original answer");
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              message: original,
+              attribution: { scope: "prompt", correlationId },
+            });
+            const updated = {
+              ...original,
+              text: changedContent ? "PRIVATE changed answer" : original.text,
+              usage: { ...usage, totalTokens: 999, totalCostUsd: 5 },
+            };
+            yield* offer(captures, {
+              ...initialSnapshot(),
+              state: { ...initialSnapshot().state, messageCount: 1 },
+              messages: [updated],
+              replayContinuity: "complete",
+              connectionGeneration: 0,
+              correlatedProofEpoch: 1,
+              promptLifecycles: {
+                records: [
+                  lifecycleSnapshot(correlationId, "completed", 3, { usage: updated.usage }),
+                ],
+                expired: [],
+              },
+            });
+            const result = yield* Fiber.join(running);
+            const completed = subscription.events.findLast(
+              (event) => event.turnId === result.turnId && event.type === "turn.completed",
+            );
+            expect(completed).toMatchObject({
+              payload: { state: changedContent ? "failed" : "completed" },
+            });
+            if (changedContent) {
+              expect(logs).toContainEqual([
+                "Prime Agent transcript continuity verification failed.",
+                expect.objectContaining({
+                  threadId,
+                  reason: "transcript-tail-mismatch",
+                  mismatchIndex: 0,
+                  changedFields: ["text"],
+                  observedCount: 1,
+                  snapshotCount: 1,
+                }),
+              ]);
+              expect(encodeUnknownJson(logs)).not.toContain("PRIVATE");
+            } else {
+              expect(completed).toMatchObject({
+                payload: { usage: { totalTokens: 999 }, totalCostUsd: 5 },
+              });
+              expect(subscription.events.filter((event) => event.type === "runtime.error")).toEqual(
+                [],
+              );
+              expect(logs).not.toContainEqual(
+                expect.arrayContaining(["Prime Agent transcript continuity verification failed."]),
+              );
+            }
+            yield* Fiber.interrupt(subscription.fiber);
+          }),
+        ).pipe(
+          Effect.provide(
+            Layer.merge(testLayer, Logger.layer([logger], { mergeWithExisting: false })),
+          ),
+        );
+      },
+    );
+  }
 
   it.effect("fails closed on a capable reconnect transcript delta", () =>
     Effect.scoped(
