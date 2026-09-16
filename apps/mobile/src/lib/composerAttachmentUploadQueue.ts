@@ -34,6 +34,7 @@ export function composerDraftEnvironmentId(
     readonly environmentId: EnvironmentId;
   }>,
   draft?: { readonly project?: { readonly environmentId: EnvironmentId } },
+  knownEnvironmentIds: ReadonlyArray<EnvironmentId> = [],
 ): EnvironmentId | null {
   if (draftKey.startsWith("pending-task:")) {
     return (
@@ -48,6 +49,19 @@ export function composerDraftEnvironmentId(
     const legacy = parseLegacyNewTaskDraftKey(draftKey);
     return legacy === null ? null : EnvironmentId.make(legacy.environmentId);
   }
+  // Thread ids (`import:…`, `delegated:…`) and environment ids may both
+  // contain ":", so a known environment id wins over any fixed split; the
+  // longest match keeps "a" from shadowing "a:b".
+  let known: EnvironmentId | null = null;
+  for (const candidate of knownEnvironmentIds) {
+    if (
+      draftKey.startsWith(`${candidate}:`) &&
+      (known === null || candidate.length > known.length)
+    ) {
+      known = candidate;
+    }
+  }
+  if (known !== null) return known;
   const separator = draftKey.lastIndexOf(":");
   return separator > 0 ? EnvironmentId.make(draftKey.slice(0, separator)) : null;
 }

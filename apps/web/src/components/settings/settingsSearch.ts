@@ -496,6 +496,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow simulator emulator ios android drive tools sessions"],
   },
   {
+    id: "agent-delegation",
+    title: "Agent delegation",
+    to: "/settings/integrations",
+    scope: "project-defaults",
+    searchTerms: ["child threads subagents delegate orchestrate other providers worktrees"],
+  },
+  {
     id: "device-hub",
     title: "Device hub",
     to: "/settings/integrations",

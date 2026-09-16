@@ -73,6 +73,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const mixedWorkspace = useScopedSettingsMixed(["defaultThreadEnvMode"]);
   const mixedBrowser = useScopedSettingsMixed(["enableAgentBrowserAccess"]);
   const mixedDevice = useScopedSettingsMixed(["enableAgentDeviceAccess"]);
+  const mixedDelegation = useScopedSettingsMixed(["enableAgentDelegation"]);
   const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
   const mixedMergeMethod = useScopedSettingsMixed(["pullRequestMergeMethod"]);
   const modelSource = useScopedSettingSource(["defaultModelSelection"]);
@@ -450,6 +451,25 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 mixed={mixedBrowser}
                 checked={mixedBrowser ? false : settings.enableAgentBrowserAccess}
                 onCheckedChange={(enabled) => updateSettings({ enableAgentBrowserAccess: enabled })}
+              />
+            }
+          />
+          <SettingsRow
+            serverScoped
+            settingKeys={["enableAgentDelegation"]}
+            mixed={mixedDelegation}
+            {...searchableSetting("agent-delegation")}
+            description={
+              isProjectScope
+                ? "Allow agents in this project to start and manage child threads on other providers. Each child runs in its own worktree and uses that provider's account. Applies when the agent session next starts."
+                : "Allow agents to start and manage child threads on other providers. Each child runs in its own worktree. Projects can override it."
+            }
+            control={
+              <Switch
+                aria-label="Agent delegation"
+                mixed={mixedDelegation}
+                checked={mixedDelegation ? false : settings.enableAgentDelegation}
+                onCheckedChange={(enabled) => updateSettings({ enableAgentDelegation: enabled })}
               />
             }
           />

@@ -1165,12 +1165,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         (entry) => entry.enableAgentBrowserAccess !== undefined,
       );
       const deviceOverridden = entries.some((entry) => entry.enableAgentDeviceAccess !== undefined);
+      const delegationOverridden = entries.some(
+        (entry) => entry.enableAgentDelegation !== undefined,
+      );
       const environment = {
         browser: settings.enableAgentBrowserAccess,
         device: settings.enableAgentDeviceAccess,
         computer: settings.enableAgentComputerAccess,
+        delegation: settings.enableAgentDelegation,
       };
-      if (!browserOverridden && !deviceOverridden) return environment;
+      if (!browserOverridden && !deviceOverridden && !delegationOverridden) return environment;
       // Provider-only runtimes may omit orchestration. An unresolved project
       // must not bypass an explicit project override, but a capability no
       // project overrides keeps its environment value.
@@ -1178,6 +1182,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         browser: browserOverridden ? false : environment.browser,
         device: deviceOverridden ? false : environment.device,
         computer: environment.computer,
+        delegation: delegationOverridden ? false : environment.delegation,
       };
       if (Option.isNone(projectionQuery)) return denied;
       const thread = yield* projectionQuery.value
@@ -1189,13 +1194,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         browser: resolved.enableAgentBrowserAccess,
         device: resolved.enableAgentDeviceAccess,
         computer: environment.computer,
+        delegation: resolved.enableAgentDelegation,
       };
     },
     Effect.catch((cause) =>
       Effect.logWarning(
-        "Could not read server settings; withholding agent browser and device access for this session.",
+        "Could not read server settings; withholding agent browser, device, and delegation access for this session.",
         { cause },
-      ).pipe(Effect.as({ browser: false, device: false, computer: false })),
+      ).pipe(Effect.as({ browser: false, device: false, computer: false, delegation: false })),
     ),
   );
 
@@ -1207,6 +1213,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     if (access.browser) capabilities.add("preview");
     if (access.device) capabilities.add("device");
     if (access.computer) capabilities.add("computer");
+    // A delegated child never receives delegation; its id carries the prefix.
+    if (access.delegation && !threadId.startsWith("delegated:")) capabilities.add("delegation");
     return capabilities;
   });
 

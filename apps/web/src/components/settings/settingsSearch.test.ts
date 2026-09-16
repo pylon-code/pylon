@@ -264,6 +264,7 @@ describe("searchSettings", () => {
     ["default model", "default-model", "/settings/general"],
     ["new threads", "new-threads", "/settings/general"],
     ["agent browser access", "agent-browser-access", "/settings/integrations"],
+    ["agent delegation", "agent-delegation", "/settings/integrations"],
     ["automatically pull", "automatic-pull", "/settings/source-control"],
     ["actions", "project-actions", "/settings/projects"],
     ["project overview", "project-overview", "/settings/projects"],
@@ -309,7 +310,7 @@ describe("settings search targets", () => {
   it.each(["all", "environment", "project", "checkout"] as const)(
     "makes browser access editable at the %s scope",
     (kind) => {
-      for (const id of ["agent-browser-access", "agent-device-access"]) {
+      for (const id of ["agent-browser-access", "agent-device-access", "agent-delegation"]) {
         const setting = getSettingsSearchTargetScope(id)!;
         expect(isSettingsSearchScopeAvailable(setting.scope, kind)).toBe(true);
         expect(isSettingsSearchScopeAvailable(setting.scope, "unavailable")).toBe(false);
