@@ -6855,7 +6855,11 @@ describe("agent browser access", () => {
       readonly threadId: ThreadId;
       readonly override?:
         | boolean
-        | { readonly browser?: boolean; readonly device?: boolean }
+        | {
+            readonly browser?: boolean;
+            readonly device?: boolean;
+            readonly delegation?: boolean;
+          }
         | undefined;
       /** False leaves the projection query to the surrounding runtime composition. */
       readonly provideProjection?: boolean;
@@ -6863,6 +6867,7 @@ describe("agent browser access", () => {
     },
     enableAgentDeviceAccess = false,
     enableAgentComputerAccess = false,
+    enableAgentDelegation = false,
   ) => {
     const providerAdapterLayer = Layer.succeed(
       ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -6886,6 +6891,7 @@ describe("agent browser access", () => {
           enableAgentBrowserAccess,
           enableAgentDeviceAccess,
           enableAgentComputerAccess,
+          enableAgentDelegation,
           projectSettingsOverrides:
             projectOverride === undefined
               ? {}
@@ -6899,6 +6905,9 @@ describe("agent browser access", () => {
                             : {}),
                           ...(projectOverride.device !== undefined
                             ? { enableAgentDeviceAccess: projectOverride.device }
+                            : {}),
+                          ...(projectOverride.delegation !== undefined
+                            ? { enableAgentDelegation: projectOverride.delegation }
                             : {}),
                         },
                 },
@@ -6990,6 +6999,52 @@ describe("agent browser access", () => {
           undefined,
           device,
           computer,
+        );
+        yield* Effect.gen(function* () {
+          const provider = yield* ProviderService.ProviderService;
+          yield* provider.startSession(threadId, {
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            threadId,
+            runtimeMode: "full-access",
+          });
+        }).pipe(Effect.provide(layer));
+        assert.deepEqual(issued, [[...expected]]);
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("grants delegation only when enabled and never to a delegated child thread", () =>
+    Effect.gen(function* () {
+      for (const [threadName, delegation, override, expected] of [
+        ["thread-delegation-off", false, undefined, ["pull-requests"]],
+        ["thread-delegation-on", true, undefined, ["delegation", "pull-requests"]],
+        ["delegated:thread-delegation-on:0123456789abcdef", true, undefined, ["pull-requests"]],
+        [
+          "thread-delegation-project-on",
+          false,
+          { delegation: true },
+          ["delegation", "pull-requests"],
+        ],
+        ["thread-delegation-project-off", true, { delegation: false }, ["pull-requests"]],
+      ] as const) {
+        const threadId = asThreadId(threadName);
+        const issued: string[][] = [];
+        const codex = makeFakeCodexAdapter();
+        const layer = makeAgentBrowserProviderLayer(
+          false,
+          codex,
+          {
+            issueMcpCredential: (request) =>
+              Effect.sync(() => {
+                issued.push([...request.capabilities].sort());
+                return undefined;
+              }),
+          },
+          override === undefined ? undefined : { threadId, override },
+          false,
+          false,
+          delegation,
         );
         yield* Effect.gen(function* () {
           const provider = yield* ProviderService.ProviderService;

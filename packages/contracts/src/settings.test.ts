@@ -9,6 +9,8 @@ import {
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   decodeStoredClientSettings,
+  PROJECT_SCOPED_SERVER_SETTING_KEYS,
+  ProjectSettingsOverrides,
   encodeStoredClientSettings,
   resolveProviderInstanceEnabled,
   retainUnreadClientSettings,
@@ -23,6 +25,7 @@ const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+const decodeProjectSettingsOverrides = Schema.decodeUnknownSync(ProjectSettingsOverrides);
 
 describe("ServerSettings default permissions", () => {
   it("keeps full access for settings saved before a default was configured", () => {
@@ -965,5 +968,19 @@ describe("optional computer access", () => {
         patch,
       );
     }
+  });
+});
+
+describe("agent delegation access", () => {
+  it("defaults off, patches, and accepts a project override", () => {
+    expect(decodeServerSettings({}).enableAgentDelegation).toBe(false);
+    expect(DEFAULT_SERVER_SETTINGS.enableAgentDelegation).toBe(false);
+    expect(decodeServerSettingsPatch({ enableAgentDelegation: true })).toEqual({
+      enableAgentDelegation: true,
+    });
+    expect(decodeProjectSettingsOverrides({ enableAgentDelegation: true })).toEqual({
+      enableAgentDelegation: true,
+    });
+    expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain("enableAgentDelegation");
   });
 });
