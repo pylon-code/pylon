@@ -1423,7 +1423,8 @@ function SavedBackendListRow({
   onRemove,
 }: SavedBackendListRowProps) {
   const environmentId = environment.environmentId;
-  const enabled = environment.entry.enabled;
+  const unsupported = environment.connection.phase === "unsupported";
+  const enabled = environment.entry.enabled && !unsupported;
   const connectionState = environment.connection.phase;
   const isConnected = connectionState === "connected";
   const isRemoving = removingEnvironmentId === environmentId;
@@ -1436,7 +1437,8 @@ function SavedBackendListRow({
         : connectionState === "error"
           ? "bg-destructive"
           : "bg-muted-foreground/40";
-  const statusTooltip = enabled ? connectionStatusText(environment.connection) : "Off";
+  const statusTooltip =
+    enabled || unsupported ? connectionStatusText(environment.connection) : "Off";
   const errorTraceId = environment.connection.traceId;
   const { copyToClipboard: copyTraceIdToClipboard } = useCopyToClipboard<{ traceId: string }>({
     target: "trace ID",
@@ -1549,7 +1551,7 @@ function SavedBackendListRow({
               </TooltipPopup>
             </Tooltip>
           ) : null}
-          {enabled && environment.connection.error && !resumingServerUpdate ? (
+          {(enabled || unsupported) && environment.connection.error && !resumingServerUpdate ? (
             <p className="flex min-w-0 items-center gap-2 text-destructive text-xs">
               <span className="min-w-0 break-words">
                 {connectionStatusText(environment.connection)}
@@ -1600,7 +1602,7 @@ function SavedBackendListRow({
                     <Switch
                       size="sm"
                       checked={enabled}
-                      disabled={isRemoving}
+                      disabled={isRemoving || unsupported}
                       aria-label={`${enabled ? "Switch off" : "Switch on"} ${environment.label}`}
                       onCheckedChange={(checked) => onSetEnabled(environmentId, checked)}
                     />
