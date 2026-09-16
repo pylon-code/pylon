@@ -42,6 +42,18 @@ export function delegatedChildPrefix(parentThreadId: ThreadId): string {
   return `${DELEGATED_THREAD_ID_PREFIX}${parentThreadId}:`;
 }
 
+const CHILD_HASH_PATTERN = /^[0-9a-f]{16}$/;
+
+/**
+ * Exact ownership test. A plain prefix match would also claim children of a
+ * different parent whose id extends this one after a colon (`import:a` vs
+ * `import:a:b`).
+ */
+export function isChildOfParent(threadId: string, parentThreadId: ThreadId): boolean {
+  const prefix = delegatedChildPrefix(parentThreadId);
+  return threadId.startsWith(prefix) && CHILD_HASH_PATTERN.test(threadId.slice(prefix.length));
+}
+
 /**
  * The child id embeds its parent, so ownership, depth, and the live-children
  * count need no lookup and survive restarts. `sha256Hex` is injected so the
@@ -61,7 +73,18 @@ export function deriveDelegatedThreadState(shell: OrchestrationThreadShell): Del
   const turn = shell.latestTurn;
   const session = shell.session;
   if (session?.status === "error" || turn?.state === "error") return "error";
-  if (turn === null) return "queued";
+  // A turn start waiting for provider admission does not touch latestTurn, so
+  // a follow-up would otherwise read as the previous, completed turn.
+  if (session?.status === "starting" || session?.pendingTurnRequestId !== undefined) {
+    return turn === null ? "queued" : "running";
+  }
+  if (session?.failedTurnRequestId !== undefined && session.activeTurnId === null) return "error";
+  if (session?.status === "running" && session.activeTurnId !== null) return "running";
+  if (turn === null) {
+    // No session yet: the first turn has not been dispatched. A session that
+    // settled without ever producing a turn was stopped before admission.
+    return session === null ? "queued" : "interrupted";
+  }
   if (turn.state === "running") return "running";
   if (turn.state === "interrupted") return "interrupted";
   // Native subagents can outlive the turn; the child is not done until they settle.
@@ -154,7 +177,8 @@ export function selectAssistantMessage(
   const referenced = thread.latestTurn?.assistantMessageId ?? null;
   if (referenced !== null) {
     const found = thread.messages.find((message) => message.id === referenced);
-    if (found) return found;
+    // A message still streaming is partial; fall back to the last settled one.
+    if (found && !found.streaming) return found;
   }
   for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
     const message = thread.messages[index];

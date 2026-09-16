@@ -37,7 +37,10 @@ const dependencies = [
 ];
 
 const MAX_TASK_CHARS = 32_000;
-const MAX_WAIT_SECONDS = 60;
+// Prime Agent's MCP client cancels any call after 60 s, and each poll adds
+// query time, so the budget stays well inside that.
+const MAX_WAIT_SECONDS = 45;
+const MAX_TITLE_CHARS = 200;
 const MIN_RESULT_CHARS = 1_000;
 const MAX_RESULT_CHARS = 60_000;
 
@@ -76,7 +79,7 @@ export const DelegateThreadInput = Schema.Struct({
     }),
   ),
   title: Schema.optional(
-    TrimmedNonEmptyString.annotate({
+    TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_TITLE_CHARS)).annotate({
       description: "Thread title. Defaults to the first line of the task.",
     }),
   ),
@@ -111,7 +114,7 @@ export const DelegatedThreadStatusInput = Schema.Struct({
   waitSeconds: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_WAIT_SECONDS })).annotate({
       description:
-        "Wait up to this many seconds for the child's state to change before answering. Prefer 20 and call again while it is running. Each call must finish inside your provider's own tool timeout.",
+        "Wait up to this many seconds (at most 45) for the child's state to change before answering. Prefer 20 and call again while it is running.",
     }),
   ),
 });
@@ -392,7 +395,7 @@ export type DelegationToolError = typeof DelegationToolError.Type;
 
 const DelegateThreadTool = Tool.make("delegate_thread", {
   description:
-    "Start a child Pylon thread on another provider instance to work on a task in its own git worktree, then return immediately. Children are ordinary threads the user can open. Use delegated_thread_status to wait for it, delegated_thread_result to read its answer and changed files, and send_to_delegated_thread for follow-ups. Reusing a delegationKey returns the existing child. Requires Agent delegation in Pylon Settings → Projects.",
+    "Start a child Pylon thread on another provider instance to work on a task in its own git worktree, then return immediately. Children are ordinary threads the user can open. Use delegated_thread_status to wait for it, delegated_thread_result to read its answer and changed files, and send_to_delegated_thread for follow-ups. Reusing a delegationKey returns the existing child. Requires Agent delegation in Pylon Settings → Integrations. A child runs in your own interaction mode, so a plan-mode parent gets a plan-mode child.",
   parameters: DelegateThreadInput,
   success: DelegateThreadResult,
   failure: DelegationToolError,
@@ -406,7 +409,7 @@ const DelegateThreadTool = Tool.make("delegate_thread", {
 
 const DelegatedThreadStatusTool = Tool.make("delegated_thread_status", {
   description:
-    "Report a child thread's state (queued, running, completed, interrupted, error, archived) and whether it is waiting on an approval or a question. Pass waitSeconds to wait up to 60 seconds until something changes; prefer 20 and call again while it is running.",
+    "Report a child thread's state (queued, running, completed, interrupted, error, archived) and whether it is waiting on an approval or a question. Pass waitSeconds to wait up to 45 seconds until something changes; prefer 20 and call again while it is running.",
   parameters: DelegatedThreadStatusInput,
   success: DelegatedThreadStatusResult,
   failure: DelegationToolError,

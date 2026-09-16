@@ -21,6 +21,7 @@ import {
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -28,6 +29,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 
+import { ServerConfig } from "../../../config.ts";
 import * as GitWorkflowService from "../../../git/GitWorkflowService.ts";
 import type { OrchestrationDispatchError } from "../../../orchestration/Errors.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
@@ -40,9 +42,9 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
   aggregateFilesChanged,
   defaultTitleFor,
-  delegatedChildPrefix,
   delegatedThreadId,
   deriveDelegatedThreadState,
+  isChildOfParent,
   isDelegatedThreadId,
   isLiveDelegatedState,
   isValidDelegationKey,
@@ -75,7 +77,7 @@ import {
 import { prepareChildWorktree, removeChildWorktree } from "./worktree.ts";
 
 const DEFAULT_RESULT_CHARS = 20_000;
-const POLL_INTERVAL = "1 second";
+const POLL_INTERVAL_MS = 1_000;
 const INITIAL_MESSAGE_KEY = "initial";
 
 const bytesToHex = (bytes: Uint8Array): string =>
@@ -129,6 +131,7 @@ const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const vcsStatus = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
   const git = yield* GitWorkflowService.GitWorkflowService;
+  const config = yield* ServerConfig;
   const crypto = yield* Crypto.Crypto;
 
   // One permit per parent: providers issue tool calls in parallel, and the
@@ -192,6 +195,13 @@ const make = Effect.gen(function* () {
     return { scope, childId, shell: found.value };
   });
 
+  const isManagedWorktreePath = (path: string) => {
+    const root = config.worktreesDir.endsWith("/")
+      ? config.worktreesDir
+      : `${config.worktreesDir}/`;
+    return path.startsWith(root) && !path.slice(root.length).split("/").includes("..");
+  };
+
   const removeWorktree = (projectCwd: string, path: string) =>
     removeChildWorktree({ projectCwd, path }).pipe(
       Effect.provideService(GitWorkflowService.GitWorkflowService, git),
@@ -204,13 +214,22 @@ const make = Effect.gen(function* () {
     readonly worktreePath: string | null;
   }) =>
     Effect.gen(function* () {
-      if (input.projectCwd !== null && input.worktreePath !== null) {
+      // Force removal only ever touches Pylon-managed worktrees. A thread can
+      // record any path, including a checkout another thread uses.
+      if (
+        input.projectCwd !== null &&
+        input.worktreePath !== null &&
+        isManagedWorktreePath(input.worktreePath)
+      ) {
         yield* removeWorktree(input.projectCwd, input.worktreePath);
       }
+      // Unique per discard: a deterministic id would replay as success
+      // without deleting if the same child id were ever created again.
+      const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orElseSucceed(() => "retry"));
       yield* engine
         .dispatch({
           type: "thread.delete",
-          commandId: CommandId.make(`server:mcp-delegate-delete:${input.childId}`),
+          commandId: CommandId.make(`server:mcp-delegate-delete:${input.childId}:${uuid}`),
           threadId: input.childId,
         })
         .pipe(Effect.ignoreCause({ log: true }));
@@ -274,14 +293,14 @@ const make = Effect.gen(function* () {
 
   const countLiveChildren = (parentId: ThreadId) =>
     orFail(snapshots.getShellSnapshot()).pipe(
-      Effect.map((snapshot) => {
-        const prefix = delegatedChildPrefix(parentId);
-        return snapshot.threads.filter(
-          (thread) =>
-            thread.id.startsWith(prefix) &&
-            isLiveDelegatedState(deriveDelegatedThreadState(thread)),
-        ).length;
-      }),
+      Effect.map(
+        (snapshot) =>
+          snapshot.threads.filter(
+            (thread) =>
+              isChildOfParent(thread.id, parentId) &&
+              isLiveDelegatedState(deriveDelegatedThreadState(thread)),
+          ).length,
+      ),
     );
 
   const delegated_thread_status = (input: {
@@ -291,27 +310,31 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const { childId, shell } = yield* lookupChild(input.delegationKey);
       const initial = statusOf(shell);
-      const budget = input.waitSeconds ?? 0;
+      const startedAt = yield* Clock.currentTimeMillis;
+      // Wall-clock bound: each poll's query time counts against the budget so
+      // the call always returns inside the caller's tool timeout.
+      const deadline = startedAt + (input.waitSeconds ?? 0) * 1_000;
+      const elapsedSeconds = (now: number) => Math.round((now - startedAt) / 1_000);
       let current = shell;
-      let waited = 0;
-      while (waited < budget) {
-        yield* Effect.sleep(POLL_INTERVAL);
-        waited += 1;
+      let now = startedAt;
+      while (now < deadline) {
+        yield* Effect.sleep(Math.min(POLL_INTERVAL_MS, deadline - now));
         const next = yield* findChild(childId);
+        now = yield* Clock.currentTimeMillis;
         if (Option.isNone(next)) {
           return yield* new DelegatedThreadNotFoundError({ delegationKey: input.delegationKey });
         }
         current = next.value;
-        const now = statusOf(current);
+        const latest = statusOf(current);
         if (
-          now.state !== initial.state ||
-          now.hasPendingApprovals !== initial.hasPendingApprovals ||
-          now.hasPendingUserInput !== initial.hasPendingUserInput
+          latest.state !== initial.state ||
+          latest.hasPendingApprovals !== initial.hasPendingApprovals ||
+          latest.hasPendingUserInput !== initial.hasPendingUserInput
         ) {
-          return statusPayload(input.delegationKey, current, waited, true);
+          return statusPayload(input.delegationKey, current, elapsedSeconds(now), true);
         }
       }
-      return statusPayload(input.delegationKey, current, waited, false);
+      return statusPayload(input.delegationKey, current, elapsedSeconds(now), false);
     });
 
   const delegated_thread_result = (input: {
@@ -389,9 +412,16 @@ const make = Effect.gen(function* () {
             const started = yield* orFail(
               snapshots.getTurnStartMessage({ threadId: childId, messageId: initialMessageId }),
             );
-            if (Option.isSome(started)) return existingResult(input.delegationKey, shell);
-            // Created but never given its task: an attempt interrupted by a
-            // crash or restart. Discard it rather than guess at its state.
+            // Only an attempt that demonstrably never ran is discarded: no
+            // initial message, no session, no turn, and no rollback. A user
+            // rewinding the child's first message also removes that message,
+            // but leaves a session and a later source epoch behind.
+            const neverRan =
+              Option.isNone(started) &&
+              shell.session === null &&
+              shell.latestTurn === null &&
+              (shell.sourceEpoch ?? 0) === 0;
+            if (!neverRan) return existingResult(input.delegationKey, shell);
             yield* discardChild({
               childId,
               projectCwd: yield* projectCwdOf(shell.projectId),
@@ -468,7 +498,7 @@ const make = Effect.gen(function* () {
                 title: input.title ?? defaultTitleFor(input.task),
                 modelSelection,
                 runtimeMode: mode.mode,
-                interactionMode: "default",
+                interactionMode: parent.value.interactionMode,
                 branch: null,
                 worktreePath: null,
                 createdAt: yield* nowIso,
@@ -533,7 +563,7 @@ const make = Effect.gen(function* () {
                 },
                 modelSelection,
                 runtimeMode: mode.mode,
-                interactionMode: "default",
+                interactionMode: parent.value.interactionMode,
                 sourceEpoch: 0,
                 createdAt: yield* nowIso,
               })

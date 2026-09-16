@@ -79,6 +79,9 @@ const DelegationTestLayer = McpHttpServer.DelegationToolkitRegistrationLive.pipe
       Layer.mock(GitWorkflowService.GitWorkflowService)({}),
       Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
       ServerSettings.layerTest(),
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-delegation-test-" }).pipe(
+        Layer.provide(NodeServices.layer),
+      ),
       NodeServices.layer,
     ),
   ),

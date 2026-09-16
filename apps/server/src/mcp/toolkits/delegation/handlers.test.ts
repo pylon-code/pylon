@@ -2,6 +2,7 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   CheckpointRef,
+  CommandId,
   EnvironmentId,
   GitCommandError,
   MessageId,
@@ -20,6 +21,7 @@ import {
   type ServerProvider,
   type VcsStatusLocalResult,
 } from "@t3tools/contracts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -32,6 +34,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import type { Tool } from "effect/unstable/ai";
 
+import * as ServerConfig from "../../../config.ts";
 import * as GitWorkflowService from "../../../git/GitWorkflowService.ts";
 import {
   OrchestrationCommandInvariantError,
@@ -243,6 +246,13 @@ interface HarnessOptions {
 }
 
 const makeHarness = Effect.fn("makeDelegationHarness")(function* (options: HarnessOptions = {}) {
+  const baseConfig = yield* ServerConfig.ServerConfig.pipe(
+    Effect.provide(
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-delegation-handlers-test-" }).pipe(
+        Layer.provide(NodeServices.layer),
+      ),
+    ),
+  );
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
   const gitCalls = yield* Ref.make<ReadonlyArray<string>>([]);
   const refreshed = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -404,6 +414,7 @@ const makeHarness = Effect.fn("makeDelegationHarness")(function* (options: Harne
       enableAgentDelegation: true,
       newWorktreesStartFromOrigin: options.startFromOrigin ?? false,
     }),
+    ServerConfig.layer({ ...baseConfig, worktreesDir: "/wt" }),
     Layer.succeed(Crypto.Crypto, testCrypto),
   );
 
@@ -535,7 +546,7 @@ describe("delegated_thread_status", () => {
       const running = makeShell(CHILD_ID, { latestTurn: turn() });
       const harness = yield* makeHarness({ shells: [makeShell(PARENT_ID), running] });
       const fiber = yield* Effect.forkChild(
-        harness.call("delegated_thread_status", { delegationKey: "k1", waitSeconds: 60 }),
+        harness.call("delegated_thread_status", { delegationKey: "k1", waitSeconds: 45 }),
       );
       yield* TestClock.adjust("1 second");
       harness.shells.set(CHILD_ID, { ...running, hasPendingApprovals: true });
@@ -706,6 +717,74 @@ describe("delegate_thread", () => {
       expect(yield* Ref.get(harness.gitCalls)).toEqual([`remove:${WORKTREE_PATH}:true`]);
       expect(yield* harness.commandTypes).toEqual(["thread.delete"]);
       expect(harness.shells.has(CHILD_ID)).toBe(false);
+    }),
+  );
+
+  const readySession = {
+    threadId: CHILD_ID,
+    status: "ready",
+    providerName: "antigravity",
+    runtimeMode: "full-access",
+    activeTurnId: null,
+    lastError: null,
+    updatedAt: NOW,
+  } satisfies OrchestrationThreadShell["session"];
+
+  it.effect.each([
+    ["a session and a later source epoch", { session: readySession, sourceEpoch: 1 }],
+    ["a session only", { session: readySession }],
+    ["a later source epoch only", { sourceEpoch: 1 }],
+  ] as const)("keeps a child whose first message was rewound, evidenced by %s", ([, evidence]) =>
+    Effect.gen(function* () {
+      const rewound = makeShell(CHILD_ID, { worktreePath: WORKTREE_PATH, ...evidence });
+      const harness = yield* makeHarness({ shells: [makeShell(PARENT_ID), rewound] });
+      expect(yield* harness.call("delegate_thread", delegateInput)).toMatchObject({
+        created: false,
+        threadId: CHILD_ID,
+        worktreePath: WORKTREE_PATH,
+      });
+      expect(yield* Ref.get(harness.gitCalls)).toEqual([]);
+      expect(yield* harness.commandTypes).toEqual([]);
+      expect(harness.shells.has(CHILD_ID)).toBe(true);
+    }),
+  );
+
+  it.effect("never force-removes a worktree outside Pylon's managed directory", () =>
+    Effect.gen(function* () {
+      const halfBuilt = makeShell(CHILD_ID, { worktreePath: "/repo", branch: "main" });
+      const harness = yield* makeHarness({ shells: [makeShell(PARENT_ID), halfBuilt] });
+      expect(yield* harness.call("delegate_thread", delegateInput).pipe(Effect.flip)).toMatchObject(
+        {
+          _tag: "DelegationKeyConsumedError",
+        },
+      );
+      expect(yield* Ref.get(harness.gitCalls)).toEqual([]);
+      expect(yield* harness.commandTypes).toEqual(["thread.delete"]);
+    }),
+  );
+
+  it.effect("gives the child the parent's interaction mode", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        shells: [makeShell(PARENT_ID, { interactionMode: "plan" })],
+      });
+      yield* harness.call("delegate_thread", delegateInput);
+      const recorded = yield* Ref.get(harness.commands);
+      expect(recorded[0]).toMatchObject({ type: "thread.create", interactionMode: "plan" });
+      expect(recorded[2]).toMatchObject({ type: "thread.turn.start", interactionMode: "plan" });
+    }),
+  );
+
+  it.effect("does not count another parent's children against the limit", () =>
+    Effect.gen(function* () {
+      const extended = ThreadId.make(`${PARENT_ID}:extended`);
+      const others = Array.from({ length: 8 }, (_, index) =>
+        makeShell(childIdFor(`busy-${index}`, extended), { latestTurn: turn() }),
+      );
+      const harness = yield* makeHarness({ shells: [makeShell(PARENT_ID), ...others] });
+      expect(yield* harness.call("delegate_thread", delegateInput)).toMatchObject({
+        created: true,
+      });
     }),
   );
 
@@ -960,6 +1039,55 @@ describe("send_to_delegated_thread", () => {
         runtimeMode: "full-access",
         interactionMode: "default",
         sourceEpoch: 2,
+      });
+    }),
+  );
+
+  it.effect("refuses a second follow-up while the first waits for admission", () =>
+    Effect.gen(function* () {
+      const pending = makeShell(CHILD_ID, {
+        latestTurn: completedTurn(),
+        session: {
+          threadId: CHILD_ID,
+          status: "starting",
+          providerName: "antigravity",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          pendingTurnRequestId: CommandId.make(`server:mcp-delegate-turn:${CHILD_ID}:first`),
+          lastError: null,
+          updatedAt: NOW,
+        },
+      });
+      const harness = yield* makeHarness({ shells: [makeShell(PARENT_ID), pending] });
+      expect(yield* harness.call("send_to_delegated_thread", send).pipe(Effect.flip)).toMatchObject(
+        { _tag: "DelegatedThreadBusyError", state: "running" },
+      );
+      expect(
+        yield* harness.call("interrupt_delegated_thread", { delegationKey: "k1" }),
+      ).toMatchObject({ interrupted: true, state: "running" });
+      expect(yield* harness.commandTypes).toEqual(["thread.turn.interrupt"]);
+    }),
+  );
+
+  it.effect("accepts a follow-up once a first turn was stopped before admission", () =>
+    Effect.gen(function* () {
+      const stopped = makeShell(CHILD_ID, {
+        session: {
+          threadId: CHILD_ID,
+          status: "stopped",
+          providerName: "antigravity",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: NOW,
+        },
+      });
+      const harness = yield* makeHarness({ shells: [makeShell(PARENT_ID), stopped] });
+      expect(yield* harness.call("delegated_thread_status", { delegationKey: "k1" })).toMatchObject(
+        { state: "interrupted" },
+      );
+      expect(yield* harness.call("send_to_delegated_thread", send)).toMatchObject({
+        accepted: true,
       });
     }),
   );

@@ -1,6 +1,7 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
+  CommandId,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -23,6 +24,7 @@ import {
   delegatedChildPrefix,
   delegatedThreadId,
   deriveDelegatedThreadState,
+  isChildOfParent,
   isDelegatedThreadId,
   isLiveDelegatedState,
   isValidDelegationKey,
@@ -124,6 +126,16 @@ describe("delegation keys and ids", () => {
     expect(delegatedChildPrefix(PARENT)).toBe("delegated:thread-parent:");
     expect(id.startsWith(delegatedChildPrefix(PARENT))).toBe(true);
   });
+
+  it("matches children of exactly one parent", () => {
+    const importParent = ThreadId.make("import:codex");
+    const longerParent = ThreadId.make("import:codex:session-9");
+    const child = delegatedThreadId(longerParent, "k1", sha256Hex);
+    expect(isChildOfParent(child, longerParent)).toBe(true);
+    expect(child.startsWith(delegatedChildPrefix(importParent))).toBe(true);
+    expect(isChildOfParent(child, importParent)).toBe(false);
+    expect(isChildOfParent(`${delegatedChildPrefix(PARENT)}not-a-hash`, PARENT)).toBe(false);
+  });
 });
 
 describe("deriveDelegatedThreadState", () => {
@@ -163,6 +175,45 @@ describe("deriveDelegatedThreadState", () => {
         }),
       ),
     ).toBe("running");
+  });
+
+  it("treats a turn waiting for admission as live, not as the previous result", () => {
+    const pending = session({
+      status: "starting",
+      activeTurnId: null,
+      pendingTurnRequestId: CommandId.make("server:mcp-delegate-turn:child:confirm"),
+    });
+    const completed = turn({ state: "completed", completedAt: NOW });
+    expect(deriveDelegatedThreadState(shell({ latestTurn: completed, session: pending }))).toBe(
+      "running",
+    );
+    expect(deriveDelegatedThreadState(shell({ session: pending }))).toBe("queued");
+    expect(
+      deriveDelegatedThreadState(
+        shell({ latestTurn: completed, session: session({ status: "starting" }) }),
+      ),
+    ).toBe("running");
+  });
+
+  it("treats a first turn stopped before admission as interrupted, not queued forever", () => {
+    for (const status of ["stopped", "interrupted", "ready", "idle"] as const) {
+      expect(deriveDelegatedThreadState(shell({ session: session({ status }) }))).toBe(
+        "interrupted",
+      );
+    }
+  });
+
+  it("reports a failed admission as an error", () => {
+    const failed = session({
+      status: "ready",
+      failedTurnRequestId: CommandId.make("server:mcp-delegate-turn:child:initial"),
+    });
+    expect(deriveDelegatedThreadState(shell({ session: failed }))).toBe("error");
+    expect(
+      deriveDelegatedThreadState(
+        shell({ latestTurn: turn({ state: "completed", completedAt: NOW }), session: failed }),
+      ),
+    ).toBe("error");
   });
 
   it("treats only queued and running as live", () => {
@@ -213,6 +264,14 @@ describe("results", () => {
       message("u1", { role: "user" }),
     ];
     expect(selectAssistantMessage(thread({ latestTurn: null, messages }))?.id).toBe("m2");
+    expect(
+      selectAssistantMessage(
+        thread({
+          latestTurn: turn({ assistantMessageId: MessageId.make("m3") }),
+          messages,
+        }),
+      )?.id,
+    ).toBe("m2");
     expect(
       selectAssistantMessage(
         thread({

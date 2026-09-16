@@ -21,21 +21,34 @@ Thread ids are otherwise opaque. The one exception was the mobile composer draft
 `${environmentId}:${threadId}`: both halves may contain colons, so the parser now takes the
 environment ids its caller already knows instead of splitting on a fixed colon.
 
-Caveat: a client acting for the same user could create a thread with a delegated id first; the
-toolkit then treats it as an existing child. Nothing crosses a user boundary.
+Caveat: a client acting for the same user could create a thread with a delegated id first. If that
+thread has a session, a turn, or a rollback, the toolkit treats it as an existing child; if it has
+none of those, it looks like a crash-orphaned attempt and is deleted. Nothing crosses a user boundary.
 
 ## Idempotency and cleanup
 
-Every dispatched command has a deterministic id, so the receipt store absorbs retries. A child that
-exists but never received its first message is a half-built attempt from a crash or restart; the
-next call with that key discards it. Any failure or interruption after `thread.create` removes the
-child's worktree and deletes the thread. The worktree path and the created flag are recorded inside
-the uninterruptible steps that create them, so cleanup cannot miss a resource that exists. After
-cleanup the key is consumed for good: replaying an accepted create onto a missing thread, or a
-rejected receipt, reports a consumed key rather than resurrecting the attempt.
+Every create, meta update, and turn command has a deterministic id, so the receipt store absorbs
+retries. Discards use a unique delete id instead, because a deterministic one would replay as success
+without deleting if the same child id were ever created again.
+
+A child counts as a crash-orphaned attempt only when it has no initial message, no session, no turn,
+and a source epoch of zero. The initial message alone is not proof: rewinding a child's first message
+removes it too, but leaves a session and a later source epoch behind. The next call with an orphan's key
+discards it. Any failure or interruption after `thread.create` also removes the child's worktree and
+deletes the thread. The worktree path and the created flag are recorded inside the uninterruptible
+steps that create them, so cleanup cannot miss a resource that exists. Forced worktree removal is
+limited to paths under the server's managed worktrees directory, since a thread can record any path.
+After cleanup the key is consumed for good.
 
 Thread deletion itself never removes worktrees (the web client does that), which is why the toolkit
 removes them explicitly.
+
+## Child state
+
+A turn start waiting for provider admission changes the session, not `latestTurn`. The state rules
+therefore check pending admission first, or a follow-up would read as the previous completed turn. A
+first turn stopped before admission leaves a session but no turn and is reported as interrupted, not
+queued forever.
 
 ## Accepted limits
 
@@ -44,7 +57,11 @@ removes them explicitly.
   does. Not guarded.
 - The per-parent semaphore that serializes delegation is in memory, which is enough because one
   server process owns the orchestration engine.
-- Waiting is bounded polling of the projection inside the tool call. Pylon disables Prime's
-  autonomous continuation, so a parent cannot be woken when a child finishes.
+- Waiting is polling of the projection inside the tool call, bounded by wall-clock time to 45
+  seconds. Prime Agent's MCP client cancels any call after 60 seconds, measured in a live run.
+  Pylon disables Prime's autonomous continuation, so a parent cannot be woken when a child finishes.
+- The per-parent semaphores are never evicted; one small entry per thread that has delegated.
+- An interrupt command id is deterministic per turn, so a parent cannot retry an interrupt the
+  provider failed to apply to that same turn.
 - Worktree creation mirrors the websocket bootstrap sequence without sharing code with `ws.ts`, and
   does not run project setup scripts. Changes to how clients create worktrees must be checked here.

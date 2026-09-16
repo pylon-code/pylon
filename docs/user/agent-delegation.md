@@ -25,7 +25,8 @@ questions, approve its actions, or stop it yourself.
   back automatically; the parent agent reviews the child's work and merges it with its own tools.
 - **No setup script.** Project setup actions do not run in delegated worktrees.
 - **Same or narrower permissions.** A child runs in the parent's permission mode or in
-  Supervised, never with more autonomy than the parent.
+  Supervised, never with more autonomy than the parent. A parent in plan mode gets children in plan
+  mode.
 - **One level deep.** A child cannot delegate further.
 - **A limit per parent.** An agent can have up to eight children queued or running at once.
 - **The provider's own usage.** Work in a child counts against that provider account, not the
@@ -33,7 +34,7 @@ questions, approve its actions, or stop it yourself.
 
 ## Things to know
 
-- An agent waits for a child in short checks of up to a minute each, all inside its current turn.
+- An agent waits for a child in short checks of up to 45 seconds each, all inside its current turn.
   Pylon does not wake the parent when a child finishes. If the parent's turn ends first, ask it to
   check on its children in your next message.
 - A child that sits idle for thirty minutes has its provider session stopped. Its next message
