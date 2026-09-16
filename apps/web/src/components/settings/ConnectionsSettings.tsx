@@ -1485,9 +1485,13 @@ function SavedBackendListRow({
   const discoveredDescriptor = Option.getOrNull(
     relayDiscovery.environments.get(environmentId)?.status ?? Option.none(),
   )?.descriptor;
+  const [lastDescriptor, setLastDescriptor] = useState(discoveredDescriptor);
+  if (discoveredDescriptor !== undefined && discoveredDescriptor !== lastDescriptor) {
+    setLastDescriptor(discoveredDescriptor);
+  }
   const machineKind = resolveEnvironmentMachineKind(
     environment.serverConfig ??
-      (discoveredDescriptor === undefined ? null : { environment: discoveredDescriptor }),
+      (lastDescriptor === undefined ? null : { environment: lastDescriptor }),
   );
 
   // The WSL backend is a desktop-managed local backend (it surfaces as a bearer
