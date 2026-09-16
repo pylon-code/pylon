@@ -84,6 +84,10 @@ import {
   sanitizeAntigravityToolPayload,
   selectAntigravityPermissionOptionId,
 } from "../acp/AntigravityProtocol.ts";
+import {
+  formatAntigravityErrorMessage,
+  isAntigravityCorruptedSessionError,
+} from "../acp/AntigravityErrors.ts";
 import { AntigravityTaskNotificationBuffer } from "../acp/AntigravityTaskNotification.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
@@ -96,6 +100,7 @@ const ResumeCursor = Schema.Struct({
 });
 const decodeResumeCursor = Schema.decodeUnknownOption(ResumeCursor);
 const isAcpError = Schema.is(EffectAcpErrors.AcpError);
+const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 
 type Adapter = ProviderAdapterShape<ProviderAdapterError>;
 type Runtime = Pick<
@@ -116,14 +121,23 @@ type NativePermission = EffectAcpSchema.RequestPermissionRequest;
 type NativePermissionResponse = EffectAcpSchema.RequestPermissionResponse;
 
 function mapAntigravityError(threadId: ThreadId, method: string, cause: EffectAcpErrors.AcpError) {
-  return isAntigravitySignInRequiredError(cause)
+  if (isAntigravitySignInRequiredError(cause)) {
+    return new ProviderAdapterRequestError({
+      provider: PROVIDER,
+      method,
+      detail: ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE,
+      cause,
+    });
+  }
+  const error = mapAcpToAdapterError(PROVIDER, threadId, method, cause);
+  return isProviderAdapterRequestError(error)
     ? new ProviderAdapterRequestError({
         provider: PROVIDER,
         method,
-        detail: ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE,
+        detail: formatAntigravityErrorMessage(error.detail),
         cause,
       })
-    : mapAcpToAdapterError(PROVIDER, threadId, method, cause);
+    : error;
 }
 
 export interface AntigravityAdapterOptions {
@@ -211,6 +225,7 @@ interface SessionContext {
       buffer: AntigravityTaskNotificationBuffer;
       turnId: TurnId | undefined;
       started: boolean;
+      accumulatedText: string;
     }
   >;
   /** Keep only IDs after settlement or MCP exclusion so merged late updates cannot change identity. */
@@ -223,6 +238,7 @@ interface SessionContext {
   stopped: boolean;
   closed: boolean;
   disconnected: boolean;
+  fatalError: string | undefined;
 }
 
 const CLIENT_FILE_MAX_BYTES = 8 * 1024 * 1024;
@@ -366,6 +382,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       buffer: new AntigravityTaskNotificationBuffer(),
       turnId: context.activeTurnId,
       started: false,
+      accumulatedText: "",
     };
     context.assistantMessages.set(itemId, message);
     return message;
@@ -377,8 +394,15 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
     text: string,
     rawPayload: unknown,
   ) {
-    if (!text) return;
+    if (context.fatalError) return;
     const message = assistantMessage(context, itemId);
+    message.accumulatedText += text;
+    if (isAntigravityCorruptedSessionError(message.accumulatedText)) {
+      context.fatalError = formatAntigravityErrorMessage(message.accumulatedText);
+      return;
+    }
+    const formatted = formatAntigravityErrorMessage(text);
+    if (!formatted) return;
     if (itemId && !message.started) {
       yield* emit(
         context,
@@ -401,7 +425,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         threadId: context.threadId,
         turnId: message.turnId,
         ...(itemId ? { itemId } : {}),
-        text,
+        text: formatted,
         rawPayload,
       }),
     );
@@ -566,13 +590,21 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             }
           }).pipe(Effect.ensuring(Scope.close(context.scope, Exit.void)));
           yield* finishAssistantMessages(context);
+          if (context.fatalError) {
+            context.session = {
+              ...context.session,
+              resumeCursor: undefined,
+            };
+          }
           context.closed = true;
           if (sessions.get(context.threadId) === context) sessions.delete(context.threadId);
           yield* finishBackgroundCommands(context);
           yield* finishSubagents(
             context,
             context.disconnected ? "failed" : "cancelled",
-            context.disconnected ? "Antigravity process stopped." : undefined,
+            context.disconnected
+              ? (context.fatalError ?? "Antigravity process stopped.")
+              : undefined,
           );
           context.subagents.clear();
           yield* emit(context, {
@@ -582,7 +614,9 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             threadId: context.threadId,
             payload: {
               exitKind: context.disconnected ? "error" : "graceful",
-              ...(context.disconnected ? { reason: "Antigravity process stopped." } : {}),
+              ...(context.disconnected
+                ? { reason: context.fatalError ?? "Antigravity process stopped." }
+                : {}),
             },
           });
         }),
@@ -694,6 +728,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       return;
     }
     if (context.stopped) return;
+    if (context.fatalError && event._tag !== "ConnectionTerminated") return;
     switch (event._tag) {
       case "ModeChanged":
         return;
@@ -757,7 +792,33 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       case "ToolCallUpdated":
         yield* context.commandLock.withPermit(
           Effect.gen(function* () {
+            if (context.fatalError) return;
             const toolCall = normalizeAntigravityToolCall(event.toolCall);
+            if (toolCall.status === "failed") {
+              const rawOutput = event.toolCall.data?.rawOutput;
+              const combinedOutput = (rawOutput as { combinedOutput?: unknown } | undefined)
+                ?.combinedOutput;
+              const errorCandidate =
+                (typeof rawOutput === "string" && isAntigravityCorruptedSessionError(rawOutput)
+                  ? rawOutput
+                  : undefined) ??
+                (typeof toolCall.data?.rawOutput === "string" &&
+                isAntigravityCorruptedSessionError(toolCall.data.rawOutput)
+                  ? toolCall.data.rawOutput
+                  : undefined) ??
+                (typeof combinedOutput === "string" &&
+                isAntigravityCorruptedSessionError(combinedOutput)
+                  ? combinedOutput
+                  : undefined) ??
+                (isAntigravityCorruptedSessionError(event.toolCall.detail)
+                  ? event.toolCall.detail
+                  : undefined) ??
+                (isAntigravityCorruptedSessionError(toolCall.detail) ? toolCall.detail : undefined);
+
+              if (errorCandidate) {
+                context.fatalError = formatAntigravityErrorMessage(errorCandidate);
+              }
+            }
             const tracked = context.subagents.get(toolCall.toolCallId);
             if (tracked === "finished") return;
             const kind = classifyAntigravitySubagentToolCall(toolCall, event.rawPayload);
@@ -1028,6 +1089,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                 stopped: false,
                 closed: false,
                 disconnected: false,
+                fatalError: undefined,
               };
               const running = context;
               sessions.set(input.threadId, running);
@@ -1138,7 +1200,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
     // The caller holds promptLock while it changes or settles the active turn.
     const finishTurn = (turn: TurnIntent, payload: TurnCompletedPayload) =>
       Effect.gen(function* () {
-        if (turn.settled || context.stopped || context.generation !== turn.generation) return;
+        if (turn.settled || context.generation !== turn.generation) return;
         turn.settled = true;
         yield* finishAssistantMessages(context);
         yield* promoteBackgroundCommands(context);
@@ -1275,12 +1337,34 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       const record = context.turns.find((turn) => turn.id === launch.turn.turnId);
       if (record) record.items.push(result);
       else context.turns.push({ id: launch.turn.turnId, items: [result] });
-      yield* context.promptLock.withPermit(
-        finishTurn(launch.turn, {
-          state: result.stopReason === "cancelled" ? "cancelled" : "completed",
-          stopReason: result.stopReason,
-        }),
-      );
+      const fatalError =
+        context.fatalError ??
+        (isAntigravityCorruptedSessionError(result.stopReason)
+          ? formatAntigravityErrorMessage(result.stopReason)
+          : undefined);
+      if (fatalError) {
+        context.session = {
+          ...context.session,
+          resumeCursor: undefined,
+        };
+        yield* context.promptLock.withPermit(
+          finishTurn(launch.turn, {
+            state: "failed",
+            errorMessage: fatalError,
+            stopReason: "error",
+          }),
+        );
+        context.stopped = true;
+        context.disconnected = true;
+        yield* stopContext(context).pipe(Effect.forkIn(ownerScope));
+      } else {
+        yield* context.promptLock.withPermit(
+          finishTurn(launch.turn, {
+            state: result.stopReason === "cancelled" ? "cancelled" : "completed",
+            stopReason: result.stopReason,
+          }),
+        );
+      }
       return {
         threadId: input.threadId,
         turnId: launch.turn.turnId,
@@ -1299,22 +1383,44 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         Effect.suspend(() =>
           intent
             ? context.promptLock.withPermit(
-                finishTurn(intent, { state: "failed", errorMessage: cause.message }),
+                finishTurn(intent, {
+                  state: "failed",
+                  errorMessage: isProviderAdapterRequestError(cause)
+                    ? cause.detail
+                    : formatAntigravityErrorMessage(cause.message),
+                }),
               )
             : Effect.void,
         ),
       ),
+      Effect.tapError((cause) => {
+        const errorText = isProviderAdapterRequestError(cause) ? cause.detail : cause.message;
+        if (isAntigravityCorruptedSessionError(errorText)) {
+          context.stopped = true;
+          context.disconnected = true;
+          return stopContext(context).pipe(Effect.forkIn(ownerScope));
+        }
+        return Effect.void;
+      }),
       Effect.onInterrupt(() =>
         context.promptLock.withPermit(
           Effect.gen(function* () {
             const turn = intent;
-            if (!turn || turn.settled || context.stopped || context.generation !== turn.generation)
-              return;
+            if (!turn || turn.settled || context.generation !== turn.generation) return;
             const promptFiber = context.promptFiber;
             yield* cancelRequests(context);
-            yield* Effect.ignore(context.runtime.cancel);
+            if (!context.disconnected) {
+              yield* Effect.ignore(context.runtime.cancel);
+            }
             if (promptFiber) yield* Fiber.interrupt(promptFiber);
-            yield* finishTurn(turn, { state: "cancelled", stopReason: "cancelled" });
+            const interruptedState = context.disconnected ? "failed" : "cancelled";
+            yield* finishTurn(turn, {
+              state: interruptedState,
+              stopReason: interruptedState,
+              ...(context.disconnected
+                ? { errorMessage: context.fatalError ?? "Antigravity process stopped." }
+                : {}),
+            });
           }),
         ),
       ),

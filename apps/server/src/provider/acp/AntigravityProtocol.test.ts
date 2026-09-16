@@ -482,4 +482,21 @@ describe("Antigravity tool results", () => {
     );
     expect(isAntigravityOpenCommand(completed)).toBe(false);
   });
+  it("sanitizes capacity and retryable error strings in rawOutput and detail", () => {
+    const rawError =
+      'Encountered retryable error from model provider: Agent execution terminated due to error. ("request failed (code 503): No capacity available for model gemini-3.8-flash-high on the server")';
+    const normalized = normalizeAntigravityToolCall({
+      toolCallId: "call_123",
+      kind: "read",
+      status: "failed",
+      detail: rawError,
+      data: {
+        rawOutput: rawError,
+      },
+    });
+    const expected =
+      "Google Antigravity model capacity exhausted for gemini-3.8-flash-high (503 UNAVAILABLE). The Gemini server is temporarily overloaded; please try again in a moment or switch models.";
+    expect(normalized.data.rawOutput).toBe(expected);
+    expect(normalized.detail).toBe(expected);
+  });
 });
