@@ -290,7 +290,6 @@ const make = Effect.gen(function* () {
     providerInstanceId: shell.modelSelection.instanceId,
     model: shell.modelSelection.model,
     runtimeMode: shell.runtimeMode,
-    defaultApplied: "none",
     worktreePath: shell.worktreePath,
     branch: shell.branch,
     startedFromOrigin: false,

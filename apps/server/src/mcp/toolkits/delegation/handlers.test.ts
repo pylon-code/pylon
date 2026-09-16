@@ -706,6 +706,8 @@ describe("delegate_thread", () => {
         threadId: CHILD_ID,
         worktreePath: WORKTREE_PATH,
       });
+      // The original default choice is not recorded, so a reuse makes no claim about it.
+      expect(replay).not.toHaveProperty("defaultApplied");
       expect(yield* harness.commandTypes).toHaveLength(3);
     }),
   );

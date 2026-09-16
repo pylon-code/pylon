@@ -27,7 +27,8 @@ delegation itself, they can be set for all projects or overridden per project.
   before running commands or editing files.
 
 Your request always wins. "Delegate this to Claude" uses Claude even when the default is Antigravity.
-"Delegate this with Gemini 3.6 Flash" keeps the default provider but uses that model. Asking for a
+"Delegate this with gemini-3.6-flash-low" keeps the default provider but uses that model; a model
+has to be one the provider offers, as listed in its Models section under Settings → Providers. Asking for a
 permission mode works the same way, but a child can never have broader permissions than the agent that
 started it.
 

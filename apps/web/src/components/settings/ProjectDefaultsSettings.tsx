@@ -87,11 +87,12 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const mixedDelegation = useScopedSettingsMixed(["enableAgentDelegation"]);
   const mixedDelegationModel = useScopedSettingsMixed(["delegationDefaultModelSelection"]);
   const mixedChildPermissions = useScopedSettingsMixed(["delegationChildRuntimeMode"]);
-  // With no default saved the picker shows a suggestion; nothing is stored until a pick.
-  const delegationSelection = resolveDefaultProviderModelSelection(
-    providers,
-    settings.delegationDefaultModelSelection,
-  );
+  // A saved default is shown exactly as stored, even when unavailable, because
+  // delegation never substitutes another provider. With none saved the picker
+  // shows a suggestion; nothing is stored until a pick.
+  const delegationSelection =
+    settings.delegationDefaultModelSelection ??
+    resolveDefaultProviderModelSelection(providers, null);
   const delegationModelOptions = getCustomModelOptionsByInstance(
     settings,
     providers,
@@ -593,6 +594,11 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                         />
                       ) : null}
                     </div>
+                  ) : settings.delegationDefaultModelSelection !== null ? (
+                    <span className="text-sm text-muted-foreground">
+                      Unavailable provider: {settings.delegationDefaultModelSelection.instanceId} ·{" "}
+                      {settings.delegationDefaultModelSelection.model}
+                    </span>
                   ) : (
                     <span className="text-sm text-muted-foreground">No providers available</span>
                   )

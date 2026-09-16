@@ -102,8 +102,12 @@ export const DelegateThreadResult = Schema.Struct({
   providerInstanceId: Schema.String,
   model: Schema.String,
   runtimeMode: RuntimeMode,
-  /** Which part of the provider and model came from the user's default delegation model. */
-  defaultApplied: Schema.Literals(["none", "provider", "provider-and-model"]),
+  /**
+   * Which part of the provider and model came from the user's default delegation
+   * model. Present only when this call created the child; a reused child's
+   * original choice is not recorded.
+   */
+  defaultApplied: Schema.optional(Schema.Literals(["none", "provider", "provider-and-model"])),
   worktreePath: Schema.NullOr(Schema.String),
   branch: Schema.NullOr(Schema.String),
   startedFromOrigin: Schema.Boolean,
