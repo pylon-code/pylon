@@ -1,3 +1,8 @@
+import {
+  primeDaemonMessageFingerprint,
+  primeDaemonMessageMatchesFingerprint,
+  primeTranscriptMismatchDetails,
+} from "./PrimeAgentTranscriptIdentity.ts";
 import * as NodeCrypto from "node:crypto";
 import * as NodeUtil from "node:util";
 
@@ -673,10 +678,6 @@ function completePrimeAgentAdoptionRoute(authority: PrimeAgentRecoveryAuthority)
   };
 }
 
-function primeDaemonMessageFingerprint(message: PrimeDaemonMessage): string {
-  return NodeCrypto.createHash("sha256").update(JSON.stringify(message), "utf8").digest("hex");
-}
-
 export function planPrimeAgentRestartReplay(input: {
   readonly authorityMessageCount: number;
   readonly authorityFingerprints: ReadonlyArray<string>;
@@ -693,6 +694,7 @@ export function planPrimeAgentRestartReplay(input: {
     snapshotCount: input.snapshotMessageCount,
     snapshot: input.snapshotMessages,
     fingerprint: primeDaemonMessageFingerprint,
+    matchesFingerprint: primeDaemonMessageMatchesFingerprint,
   });
   return replacement === undefined
     ? unchanged
@@ -736,7 +738,11 @@ function planPrimeAgentRestartReplayUnchanged(input: {
   ) {
     const expected = input.authorityFingerprints[absoluteIndex - authorityStart];
     const observed = input.snapshotMessages[absoluteIndex - snapshotStart];
-    if (observed === undefined || primeDaemonMessageFingerprint(observed) !== expected) {
+    if (
+      observed === undefined ||
+      expected === undefined ||
+      !primeDaemonMessageMatchesFingerprint(observed, expected)
+    ) {
       return { valid: false };
     }
   }
@@ -2853,6 +2859,47 @@ export function makePrimeAgentDaemonAdapter(
                       snapshotIsExactOrCurrentTerminal &&
                       (yield* reconcileTranscriptSnapshotLocked(context, snapshotEvent));
                     if (!transcriptReconciled) {
+                      yield* Effect.logError(
+                        "Prime Agent transcript continuity verification failed.",
+                        {
+                          threadId: context.session.threadId,
+                          turnId: activeTurn?.id,
+                          connectionGeneration: reconnectGeneration,
+                          correlatedProofEpoch: snapshotEvent.correlatedProofEpoch,
+                          replayContinuity: snapshotEvent.replayContinuity,
+                          orderedSnapshot: snapshotEvent.orderedSnapshot === true,
+                          reason: !(
+                            snapshotEvent.replayContinuity === "complete" ||
+                            (snapshotEvent.orderedSnapshot === true &&
+                              snapshotEvent.replayContinuity === "unknown")
+                          )
+                            ? "replay-continuity-unproven"
+                            : transcriptPlan === undefined
+                              ? "transcript-tail-mismatch"
+                              : !snapshotIsExactOrCurrentTerminal
+                                ? "unexpected-transcript-suffix"
+                                : "transcript-projection-rejected",
+                          observedCount: context.nativeTranscriptMessageCount,
+                          observedTailLength: context.nativeTranscript.length,
+                          snapshotCount: snapshotEvent.state.messageCount,
+                          snapshotTailLength: snapshotEvent.messages.length,
+                          missingMessageCount: missingMessages.length,
+                          hasCompactionHistory: snapshotEvent.compactionHistory !== undefined,
+                          hasStreamingMessage: snapshotEvent.streamingMessage !== undefined,
+                          currentLifecyclePhase: currentLifecycle?.phase,
+                          snapshotLifecyclePhase: lifecycle?.phase,
+                          hasActiveAssistantItem: activeTurn?.activeAssistantItemId !== undefined,
+                          assistantTextRecoveryComparable:
+                            activeTurn?.assistantTextRecoveryComparable,
+                          isStreaming: snapshotEvent.state.isStreaming,
+                          ...primeTranscriptMismatchDetails({
+                            observed: context.nativeTranscript,
+                            observedCount: context.nativeTranscriptMessageCount,
+                            snapshot: snapshotEvent.messages,
+                            snapshotCount: snapshotEvent.state.messageCount,
+                          }),
+                        },
+                      );
                       if (reconnectGeneration !== undefined) {
                         context.runtime.resolveReconnectSnapshot(reconnectGeneration, false, false);
                       }
@@ -4923,6 +4970,23 @@ export function makePrimeAgentDaemonAdapter(
               (authority.turnId === null &&
                 (replay.backlog.length > 0 || runtime.inputAdmissionBusy))
             ) {
+              yield* Effect.logError(
+                "Prime Agent restart transcript continuity verification failed.",
+                {
+                  threadId: input.threadId,
+                  reason: !replay.valid
+                    ? "transcript-proof-mismatch"
+                    : "unowned-transcript-activity",
+                  observedCount: authority.transcriptMessageCount,
+                  observedFingerprintCount: authority.transcriptFingerprints.length,
+                  legacyFingerprintCount: authority.transcriptFingerprints.filter(
+                    (value) => !value.startsWith("transcript-v2:"),
+                  ).length,
+                  snapshotCount: runtime.initialSnapshot.state.messageCount,
+                  snapshotTailLength: runtime.initialSnapshot.messages.length,
+                  inputAdmissionBusy: runtime.inputAdmissionBusy,
+                },
+              );
               return yield* new ProviderAdapterProcessError({
                 provider: PROVIDER,
                 threadId: input.threadId,

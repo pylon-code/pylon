@@ -157,6 +157,7 @@ export function planPrimeCompactionReplacement(input: {
   readonly snapshotCount: number;
   readonly snapshot: ReadonlyArray<PrimeDaemonMessage>;
   readonly fingerprint: (message: PrimeDaemonMessage) => string;
+  readonly matchesFingerprint?: (message: PrimeDaemonMessage, expected: string) => boolean;
 }):
   | {
       readonly observedCount: number;
@@ -186,7 +187,11 @@ export function planPrimeCompactionReplacement(input: {
     .slice(-TRANSCRIPT_TAIL);
   if (
     input.observedFingerprints.some(
-      (identity, index) => identity !== fingerprint(oldPrefix[index]!),
+      (identity, index) =>
+        !(
+          input.matchesFingerprint?.(oldPrefix[index]!, identity) ??
+          identity === fingerprint(oldPrefix[index]!)
+        ),
     )
   )
     return undefined;

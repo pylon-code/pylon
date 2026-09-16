@@ -1,3 +1,4 @@
+import { primeDaemonMessageFingerprint } from "./PrimeAgentTranscriptIdentity.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
 import { describe, expect, it } from "@effect/vitest";
@@ -56,6 +57,41 @@ const requireHistory = () => {
 };
 
 describe("compaction history proof", () => {
+  it("proves compaction with versioned or mixed legacy identities after usage attribution", () => {
+    const history = decodePrimeCompactionHistory(
+      nativeFixture.tree,
+      nativeFixture.tree.leafId,
+      decodePrimeAgentDaemonMessage,
+    );
+    if (history === undefined) throw new Error("missing fixture history");
+    expect(history.previous.some((message) => message.role === "assistant")).toBe(true);
+    const previous = history.previous.map((message) =>
+      message.role === "assistant"
+        ? { ...message, usage: { ...message.usage, totalTokens: message.usage.totalTokens + 100 } }
+        : message,
+    );
+    expect(
+      planPrimeAgentRestartReplay({
+        authorityMessageCount: previous.length,
+        authorityFingerprints: previous.map(primeDaemonMessageFingerprint),
+        snapshotMessageCount: history.current.length,
+        snapshotMessages: history.current,
+        compactionHistory: history,
+      }),
+    ).toEqual({ valid: true, backlog: [] });
+    expect(
+      planPrimeAgentRestartReplay({
+        authorityMessageCount: history.previous.length,
+        authorityFingerprints: history.previous.map((message, index) =>
+          index % 2 === 0 ? fingerprint(message) : primeDaemonMessageFingerprint(message),
+        ),
+        snapshotMessageCount: history.current.length,
+        snapshotMessages: history.current,
+        compactionHistory: history,
+      }),
+    ).toEqual({ valid: true, backlog: [] });
+  });
+
   it("proves a real Prime faux-provider compaction captured from the public session tree", () => {
     // Captured from Prime 72e4e9fbb (issue #76 timestamp fix): two persisted prompts, then session.compact(),
     // using suite/harness.ts with faux responses, auto-refine disabled and keepRecentTokens=1.
