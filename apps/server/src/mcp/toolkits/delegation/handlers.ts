@@ -670,28 +670,42 @@ const make = Effect.gen(function* () {
 
   const interrupt_delegated_thread = (input: { readonly delegationKey: string }) =>
     Effect.gen(function* () {
-      const { childId, shell } = yield* lookupChild(input.delegationKey);
-      const state = deriveDelegatedThreadState(shell);
-      if (!isLiveDelegatedState(state)) {
-        return { delegationKey: input.delegationKey, threadId: childId, interrupted: false, state };
-      }
-      // Key the id on the admission being interrupted, not latestTurn: a
-      // follow-up waiting for admission still shows the previous turn, and an
-      // id shared across attempts would replay an old receipt and do nothing.
-      const target =
-        shell.session?.pendingTurnRequestId ??
-        shell.session?.activeTurnRequestId ??
-        shell.latestTurn?.turnId ??
-        "pending";
-      yield* engine
-        .dispatch({
-          type: "thread.turn.interrupt",
-          commandId: CommandId.make(`server:mcp-delegate-interrupt:${childId}:${target}`),
-          threadId: childId,
-          createdAt: yield* nowIso,
-        })
-        .pipe(mapDispatch(() => undefined));
-      return { delegationKey: input.delegationKey, threadId: childId, interrupted: true, state };
+      const scope = yield* McpInvocationContext.requireMcpCapability("delegation");
+      yield* requireKey("delegationKey", input.delegationKey);
+      // Gated so an interrupt cannot land between a child's creation and its
+      // first turn start inside a concurrent delegate_thread.
+      return yield* withParentGate(scope.threadId)(
+        Effect.gen(function* () {
+          const { childId, shell } = yield* lookupChild(input.delegationKey);
+          const state = deriveDelegatedThreadState(shell);
+          if (!isLiveDelegatedState(state)) {
+            return {
+              delegationKey: input.delegationKey,
+              threadId: childId,
+              interrupted: false,
+              state,
+            };
+          }
+          // A unique id per call. Interrupting a live child twice is harmless,
+          // while any id shared across calls (per turn or per admission) can
+          // replay an earlier receipt and silently dispatch nothing.
+          const uuid = yield* orFail(crypto.randomUUIDv4);
+          yield* engine
+            .dispatch({
+              type: "thread.turn.interrupt",
+              commandId: CommandId.make(`server:mcp-delegate-interrupt:${childId}:${uuid}`),
+              threadId: childId,
+              createdAt: yield* nowIso,
+            })
+            .pipe(mapDispatch(() => undefined));
+          return {
+            delegationKey: input.delegationKey,
+            threadId: childId,
+            interrupted: true,
+            state,
+          };
+        }),
+      );
     });
 
   return DelegationToolkit.of({

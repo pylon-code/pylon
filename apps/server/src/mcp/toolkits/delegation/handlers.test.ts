@@ -64,13 +64,17 @@ const childIdFor = (key: string, parent: ThreadId = PARENT_ID) =>
 const CHILD_ID = childIdFor("k1");
 const WORKTREE_PATH = "/wt/repo/t3code-07070707";
 
-// Real SHA-256 so distinct keys never collide; fixed random bytes so the
-// temporary branch is always t3code/07070707.
-const testCrypto = Crypto.make({
-  randomBytes: (size) => new Uint8Array(size).fill(7),
-  digest: (_algorithm, data) =>
-    Effect.succeed(new Uint8Array(NodeCrypto.createHash("sha256").update(data).digest())),
-});
+// Real SHA-256 so distinct keys never collide. Random bytes start at 7, so the
+// first random value in a harness (the child's temporary branch) is always
+// t3code/07070707, and advance on every call so later ids stay unique.
+const makeTestCrypto = () => {
+  let fill = 7;
+  return Crypto.make({
+    randomBytes: (size) => new Uint8Array(size).fill(fill++ % 256),
+    digest: (_algorithm, data) =>
+      Effect.succeed(new Uint8Array(NodeCrypto.createHash("sha256").update(data).digest())),
+  });
+};
 
 const invocation = (
   threadId: ThreadId = PARENT_ID,
@@ -415,7 +419,7 @@ const makeHarness = Effect.fn("makeDelegationHarness")(function* (options: Harne
       newWorktreesStartFromOrigin: options.startFromOrigin ?? false,
     }),
     ServerConfig.layer({ ...baseConfig, worktreesDir: "/wt" }),
-    Layer.succeed(Crypto.Crypto, testCrypto),
+    Layer.succeed(Crypto.Crypto, makeTestCrypto()),
   );
 
   const toolkit = yield* DelegationToolkit.pipe(
@@ -1065,13 +1069,7 @@ describe("send_to_delegated_thread", () => {
       expect(
         yield* harness.call("interrupt_delegated_thread", { delegationKey: "k1" }),
       ).toMatchObject({ interrupted: true, state: "running" });
-      // Keyed on the pending admission, not the previous turn the shell still shows.
-      expect(yield* Ref.get(harness.commands)).toMatchObject([
-        {
-          type: "thread.turn.interrupt",
-          commandId: `server:mcp-delegate-interrupt:${CHILD_ID}:server:mcp-delegate-turn:${CHILD_ID}:first`,
-        },
-      ]);
+      expect(yield* harness.commandTypes).toEqual(["thread.turn.interrupt"]);
     }),
   );
 
@@ -1157,37 +1155,52 @@ describe("interrupt_delegated_thread", () => {
       ).toMatchObject({ interrupted: true, state: "running" });
       expect((yield* Ref.get(harness.commands))[0]).toMatchObject({
         type: "thread.turn.interrupt",
-        commandId: `server:mcp-delegate-interrupt:${CHILD_ID}:turn-1`,
+        commandId: expect.stringMatching(new RegExp(`^server:mcp-delegate-interrupt:${CHILD_ID}:`)),
         threadId: CHILD_ID,
       });
     }),
   );
 
-  it.effect("gives interrupts of different admissions different command ids", () =>
+  it.effect("dispatches every interrupt of a live child, across admission and running", () =>
     Effect.gen(function* () {
-      const admission = (requestId: string) =>
+      const requestId = CommandId.make(`server:mcp-delegate-turn:${CHILD_ID}:first`);
+      const starting = makeShell(CHILD_ID, {
+        latestTurn: completedTurn(),
+        session: {
+          threadId: CHILD_ID,
+          status: "starting",
+          providerName: "antigravity",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          pendingTurnRequestId: requestId,
+          lastError: null,
+          updatedAt: NOW,
+        },
+      });
+      const harness = yield* makeHarness({ shells: [makeShell(PARENT_ID), starting] });
+      yield* harness.call("interrupt_delegated_thread", { delegationKey: "k1" });
+      // The provider admitted the turn anyway: same request, now running.
+      harness.shells.set(
+        CHILD_ID,
         makeShell(CHILD_ID, {
-          latestTurn: completedTurn(),
+          latestTurn: turn({ turnId: TurnId.make("turn-2") }),
           session: {
             threadId: CHILD_ID,
-            status: "starting",
+            status: "running",
             providerName: "antigravity",
             runtimeMode: "full-access",
-            activeTurnId: null,
-            pendingTurnRequestId: CommandId.make(requestId),
+            activeTurnId: TurnId.make("turn-2"),
+            activeTurnRequestId: requestId,
             lastError: null,
             updatedAt: NOW,
           },
-        });
-      const harness = yield* makeHarness({ shells: [makeShell(PARENT_ID), admission("first")] });
+        }),
+      );
       yield* harness.call("interrupt_delegated_thread", { delegationKey: "k1" });
-      harness.shells.set(CHILD_ID, admission("second"));
       yield* harness.call("interrupt_delegated_thread", { delegationKey: "k1" });
-      // Both reached the engine; a shared id would have replayed the first receipt.
-      expect(yield* harness.commandTypes).toEqual([
-        "thread.turn.interrupt",
-        "thread.turn.interrupt",
-      ]);
+      const commandIds = (yield* Ref.get(harness.commands)).map((command) => command.commandId);
+      expect(commandIds).toHaveLength(3);
+      expect(new Set(commandIds).size).toBe(3);
     }),
   );
 
@@ -1198,7 +1211,7 @@ describe("interrupt_delegated_thread", () => {
         yield* harness.call("interrupt_delegated_thread", { delegationKey: "k1" }),
       ).toMatchObject({ interrupted: true, state: "queued" });
       expect((yield* Ref.get(harness.commands))[0]).toMatchObject({
-        commandId: `server:mcp-delegate-interrupt:${CHILD_ID}:pending`,
+        commandId: expect.stringMatching(new RegExp(`^server:mcp-delegate-interrupt:${CHILD_ID}:`)),
       });
     }),
   );

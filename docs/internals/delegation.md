@@ -47,8 +47,8 @@ removes them explicitly.
 
 A turn start waiting for provider admission changes the session to `starting`, not `latestTurn`. The
 state rules therefore check `starting` first, or a follow-up would read as the previous completed turn.
-The pending admission id alone is not used: interrupting a child before its provider binds stops the
-session but leaves that id set, and nothing clears it. A first turn stopped before admission leaves a
+The pending admission id alone is not used: interrupt recovery before the provider binds stops the
+session but leaves that id set until the next turn start replaces it. A first turn stopped before admission leaves a
 session but no turn and is reported as interrupted, not queued forever.
 
 ## Accepted limits
@@ -62,8 +62,8 @@ session but no turn and is reported as interrupted, not queued forever.
   seconds. Prime Agent's MCP client cancels any call after 60 seconds, measured in a live run.
   Pylon disables Prime's autonomous continuation, so a parent cannot be woken when a child finishes.
 - The per-parent semaphores are never evicted; one small entry per thread that has delegated.
-- An interrupt command id is keyed on the admission it targets (pending request, active request,
-  then turn), so a parent cannot retry an interrupt the provider failed to apply to that same
-  admission. A new admission gets a new id.
+- Interrupts use a unique command id per call rather than a deterministic one. Every deterministic
+  key tried (per turn, per admission) let a later interrupt replay an earlier receipt and dispatch
+  nothing; a duplicate interrupt on a live child is harmless.
 - Worktree creation mirrors the websocket bootstrap sequence without sharing code with `ws.ts`, and
   does not run project setup scripts. Changes to how clients create worktrees must be checked here.

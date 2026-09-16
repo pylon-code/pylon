@@ -75,8 +75,10 @@ export function deriveDelegatedThreadState(shell: OrchestrationThreadShell): Del
   if (session?.status === "error" || turn?.state === "error") return "error";
   // A turn start waiting for provider admission does not touch latestTurn, so
   // a follow-up would otherwise read as the previous, completed turn. Only the
-  // "starting" status counts: a session stopped mid-admission can keep a stale
-  // pendingTurnRequestId that nothing clears.
+  // "starting" status counts: a session stopped by interrupt recovery before
+  // its provider bound keeps a stale pendingTurnRequestId. A provider
+  // reconnecting after a runtime-mode change also reports "starting" briefly;
+  // that reads as running until its next lifecycle event.
   if (session?.status === "starting") {
     return turn === null ? "queued" : "running";
   }
