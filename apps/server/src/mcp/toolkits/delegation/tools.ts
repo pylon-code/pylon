@@ -36,10 +36,10 @@ const dependencies = [
   ServerSettings.ServerSettingsService,
 ];
 
-export const MAX_TASK_CHARS = 32_000;
-export const MAX_WAIT_SECONDS = 60;
-export const MIN_RESULT_CHARS = 1_000;
-export const MAX_RESULT_CHARS = 60_000;
+const MAX_TASK_CHARS = 32_000;
+const MAX_WAIT_SECONDS = 60;
+const MIN_RESULT_CHARS = 1_000;
+const MAX_RESULT_CHARS = 60_000;
 
 const DelegationKey = TrimmedNonEmptyString.annotate({
   description:

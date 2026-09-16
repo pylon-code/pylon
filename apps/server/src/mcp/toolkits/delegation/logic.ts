@@ -16,7 +16,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 
-export const DELEGATED_THREAD_ID_PREFIX = "delegated:";
+const DELEGATED_THREAD_ID_PREFIX = "delegated:";
 export const MAX_LIVE_CHILDREN = 8;
 const KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const TITLE_MAX = 80;
