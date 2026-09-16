@@ -1595,7 +1595,13 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     );
   }
 
-  for (const variant of ["replayed", "different completion", "new prompt", "overflow"] as const) {
+  for (const variant of [
+    "replayed",
+    "usage updated",
+    "different completion",
+    "new prompt",
+    "overflow",
+  ] as const) {
     it.effect(`reconciles a delayed assistant segment after a snapshot: ${variant}`, () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -1606,7 +1612,8 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
             rawSnapshot: { ...snapshot(), promptLifecycles: { records: [], expired: [] } },
           });
           const runtime = yield* test.make();
-          const expectedCount = variant === "overflow" ? 5 : variant === "replayed" ? 7 : 10;
+          const isReplay = variant === "replayed" || variant === "usage updated";
+          const expectedCount = variant === "overflow" ? 5 : isReplay ? 7 : 10;
           const received = yield* collectEvents(runtime, expectedCount).pipe(
             Effect.forkChild({ startImmediately: true }),
           );
@@ -1622,7 +1629,18 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
               snapshot: {
                 ...snapshot(9),
                 state: { ...snapshot(9).state, messageCount: 1 },
-                messages: [recovered],
+                messages: [
+                  variant === "usage updated"
+                    ? {
+                        ...recovered,
+                        usage: {
+                          ...recovered.usage,
+                          totalTokens: 200,
+                          cost: { ...recovered.usage.cost, total: 2 },
+                        },
+                      }
+                    : recovered,
+                ],
                 promptLifecycles: { records: [lifecycle], expired: [] },
                 replay: {
                   status: "complete",
@@ -1708,7 +1726,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
             }),
           ];
           expect(output).toEqual(
-            variant === "replayed"
+            isReplay
               ? expected
               : [
                   expect.objectContaining({ _tag: "MessageStarted" }),

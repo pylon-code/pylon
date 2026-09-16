@@ -66,6 +66,60 @@ describe("Prime transcript identity", () => {
     ])
       expect(replay(primeDaemonMessageFingerprint(original), changed)).toEqual({ valid: false });
   });
+  it("rejects version tampering and cannot downgrade a changed legacy message", () => {
+    const legacy = legacyPrimeDaemonMessageFingerprint(original);
+    const current = primeDaemonMessageFingerprint(original);
+    for (const authority of [
+      "transcript-v2:" + legacy,
+      current.replace("transcript-v2:", ""),
+      current.replace("v2", "v3"),
+      "",
+      legacy,
+    ]) {
+      expect(replay(authority, updated)).toEqual({ valid: false });
+    }
+  });
+  it("protects tool IDs, names, and arguments even when usage changes", () => {
+    for (const toolCall of [
+      { ...original.toolCalls[0]!, id: "different" },
+      { ...original.toolCalls[0]!, name: "different" },
+      { ...original.toolCalls[0]!, input: { path: "different" } },
+    ])
+      expect(
+        replay(primeDaemonMessageFingerprint(original), { ...updated, toolCalls: [toolCall] }),
+      ).toEqual({ valid: false });
+  });
+  it("rejects reordered, deleted, or altered messages in mixed-version authority", () => {
+    const second = { ...original, timestamp: 2, text: "second" };
+    const third = { ...original, timestamp: 3, text: "third" };
+    const authority = [
+      legacyPrimeDaemonMessageFingerprint(original),
+      primeDaemonMessageFingerprint(second),
+      primeDaemonMessageFingerprint(third),
+    ];
+    const input = { authorityMessageCount: 3, authorityFingerprints: authority };
+    expect(
+      planPrimeAgentRestartReplay({
+        ...input,
+        snapshotMessageCount: 3,
+        snapshotMessages: [original, { ...second, usage: updated.usage }, third],
+      }),
+    ).toEqual({ valid: true, backlog: [] });
+    for (const messages of [
+      [second, original, third],
+      [original, third],
+      [original, { ...second, text: "altered" }, third],
+      [updated, second, third],
+    ]) {
+      expect(
+        planPrimeAgentRestartReplay({
+          ...input,
+          snapshotMessageCount: messages.length,
+          snapshotMessages: messages,
+        }),
+      ).toEqual({ valid: false });
+    }
+  });
   it("logs the absolute mismatch position and field names without private values", () => {
     expect(
       primeTranscriptMismatchDetails({
