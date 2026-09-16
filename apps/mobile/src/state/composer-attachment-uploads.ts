@@ -82,7 +82,8 @@ export function useComposerAttachmentUploadWorker() {
               let retained = false;
               for (const [key, draft] of Object.entries(appAtomRegistry.get(composerDraftsAtom))) {
                 if (
-                  composerDraftEnvironmentId(key, queued, draft) === environmentId &&
+                  composerDraftEnvironmentId(key, queued, draft, [environmentId]) ===
+                    environmentId &&
                   draft.attachments.some((candidate) => candidate.id === attachment.id)
                 ) {
                   retained = setComposerDraftAttachmentUpload(key, uploaded) || retained;
@@ -116,7 +117,7 @@ export function useComposerAttachmentUploadWorker() {
         .map((environment) => environment.environmentId),
     );
     const requests = Object.entries(drafts).flatMap(([key, draft]) => {
-      const environmentId = composerDraftEnvironmentId(key, queued, draft);
+      const environmentId = composerDraftEnvironmentId(key, queued, draft, [...connected]);
       if (environmentId === null || !connected.has(environmentId)) return [];
       return draft.attachments
         .filter((attachment) =>
