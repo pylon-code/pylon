@@ -507,7 +507,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Default delegation model",
     to: "/settings/integrations",
     scope: "project-defaults",
-    searchTerms: ["child thread provider model antigravity delegate fallback"],
+    searchTerms: ["child thread provider model antigravity delegate"],
   },
   {
     id: "delegation-child-permissions",

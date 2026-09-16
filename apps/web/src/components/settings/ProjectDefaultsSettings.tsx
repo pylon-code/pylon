@@ -531,7 +531,10 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                     ? undefined
                     : settings.delegationDefaultModelSelection === null
                       ? "Not set"
-                      : undefined
+                      : delegationEntry &&
+                          (!delegationEntry.enabled || !delegationEntry.isAvailable)
+                        ? "Provider unavailable"
+                        : undefined
                 }
                 resetAction={
                   settings.delegationDefaultModelSelection !== null ? (
