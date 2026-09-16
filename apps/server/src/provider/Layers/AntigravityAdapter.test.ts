@@ -1500,4 +1500,327 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       expect(active.launches).toHaveLength(0);
     }),
   );
+  it.effect("sanitizes 503 capacity errors when a prompt fails", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Hello" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      const rawError =
+        "Agent execution error: model unreachable: Error 503, Message: No capacity available for model gemini-3.8-flash-high on the server, Status: UNAVAILABLE, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:cloudcode-pa.googleapis.com metadata:map[OVERLOADED_TOO_MANY_RETRIES_PER_REQUEST:true error_number:2010 model:gemini-3.8-flash-high] reason:MODEL_CAPACITY_EXHAUSTED]] request failed (code 503): No capacity available for model gemini-3.8-flash-high on the server";
+      yield* Deferred.fail(
+        prompt.result,
+        new AcpErrors.AcpRequestError({ code: -32603, errorMessage: rawError }),
+      );
+      yield* Fiber.join(sending);
+      const ended = yield* h.waitForEvent((event) => event.type === "turn.completed");
+      expect(ended.payload.state).toBe("failed");
+      expect(ended.payload.errorMessage).toBe(
+        "Google Antigravity model capacity exhausted for gemini-3.8-flash-high (503 UNAVAILABLE). The Gemini server is temporarily overloaded; please try again in a moment or switch models.",
+      );
+      expect((yield* h.adapter.listSessions())[0]).toMatchObject({
+        status: "error",
+        lastError:
+          "Google Antigravity model capacity exhausted for gemini-3.8-flash-high (503 UNAVAILABLE). The Gemini server is temporarily overloaded; please try again in a moment or switch models.",
+      });
+    }),
+  );
+
+  it.effect("sanitizes 503 capacity errors emitted in assistant content deltas", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Hello" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      const rawError =
+        "Agent execution error: model unreachable: Error 503, Message: No capacity available for model gemini-3.8-flash-high on the server, Status: UNAVAILABLE, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:cloudcode-pa.googleapis.com metadata:map[OVERLOADED_TOO_MANY_RETRIES_PER_REQUEST:true error_number:2010 model:gemini-3.8-flash-high] reason:MODEL_CAPACITY_EXHAUSTED]]";
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        text: rawError,
+        rawPayload: {},
+      });
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* Fiber.join(sending);
+      const delta = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "content.delta" }> =>
+          event.type === "content.delta",
+      );
+      expect((delta.payload as any).delta).toBe(
+        "Google Antigravity model capacity exhausted for gemini-3.8-flash-high (503 UNAVAILABLE). The Gemini server is temporarily overloaded; please try again in a moment or switch models.",
+      );
+    }),
+  );
+  it.effect(
+    "fails turn, suppresses corrupted assistant text, and terminates session on internal checkpoint error in content delta",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        yield* h.adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Do something" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        const checkpointError = "Agent execution error: could not find doneCh for checkpoint";
+        yield* h.emitNative({
+          _tag: "ContentDelta",
+          itemId: "assistant-seg-1",
+          text: checkpointError,
+          rawPayload: {},
+        });
+        yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+        yield* Fiber.join(sending);
+
+        const ended = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed",
+        );
+        expect(ended.payload.state).toBe("failed");
+        expect(ended.payload.errorMessage).toBe(
+          "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.",
+        );
+
+        // Verify corrupted text was NOT emitted as assistant delta
+        expect(
+          h.seen.some(
+            (event) =>
+              event.type === "content.delta" &&
+              (event.payload as any).delta?.includes("could not find doneCh"),
+          ),
+        ).toBe(false);
+
+        // Verify session was exited and evicted
+        const exited = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "session.exited" }> =>
+            event.type === "session.exited",
+        );
+        expect(exited.payload.exitKind).toBe("error");
+        expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+      }),
+  );
+
+  it.effect("fails turn and terminates session on tool call checkpoint error", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Read file" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      yield* h.emitNative(
+        nativeToolUpdate({
+          sessionUpdate: "tool_call",
+          toolCallId: "call_read_1",
+          title: "Read file",
+          kind: "read",
+          status: "failed",
+          rawOutput:
+            'Agent execution terminated due to error. ("agent executor error: could not find doneCh for checkpoint")',
+        }),
+      );
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* Fiber.join(sending);
+
+      const ended = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      expect(ended.payload.state).toBe("failed");
+      expect(ended.payload.errorMessage).toBe(
+        "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.",
+      );
+
+      const exited = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "session.exited" }> =>
+          event.type === "session.exited",
+      );
+      expect(exited.payload.exitKind).toBe("error");
+      expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+    }),
+  );
+  it.effect("terminates session when prompt fails with internal checkpoint error", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Execute prompt" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      const checkpointError = "Agent execution error: could not find doneCh for checkpoint";
+      yield* Deferred.fail(
+        prompt.result,
+        new AcpErrors.AcpRequestError({ code: -32603, errorMessage: checkpointError }),
+      );
+      yield* Fiber.join(sending);
+
+      const ended = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      expect(ended.payload.state).toBe("failed");
+      expect(ended.payload.errorMessage).toBe(
+        "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.",
+      );
+
+      const exited = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "session.exited" }> =>
+          event.type === "session.exited",
+      );
+      expect(exited.payload.exitKind).toBe("error");
+      expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+    }),
+  );
+  it.effect("detects and recovers from checkpoint error split across streaming chunks", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Execute prompt" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "msg_split_1",
+        text: "Agent execution error: could not find done",
+        rawPayload: {},
+      });
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "msg_split_1",
+        text: "Ch for checkpoint",
+        rawPayload: {},
+      });
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* Fiber.join(sending);
+
+      const ended = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      expect(ended.payload.state).toBe("failed");
+      expect(ended.payload.errorMessage).toBe(
+        "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.",
+      );
+      expect(
+        h.seen.some(
+          (e) => e.type === "content.delta" && (e as any).payload?.delta?.includes("doneCh"),
+        ),
+      ).toBe(false);
+
+      const exited = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "session.exited" }> =>
+          event.type === "session.exited",
+      );
+      expect(exited.payload.exitKind).toBe("error");
+      expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+    }),
+  );
+
+  it.effect("does not mutate normal bash 503 or terminate session on ordinary tool output", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Run curl test" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      yield* h.emitNative(
+        nativeToolUpdate({
+          sessionUpdate: "tool_call",
+          toolCallId: "call_bash_503",
+          title: "curl test",
+          kind: "execute",
+          status: "completed",
+          rawOutput: "HTTP/1.1 503 Service Unavailable\nBackend server overloaded",
+        }),
+      );
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* Fiber.join(sending);
+
+      const ended = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      expect(ended.payload.state).toBe("completed");
+      expect(yield* h.adapter.hasSession(threadId)).toBe(true);
+
+      const toolEvent = h.seen.find(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+          event.type === "item.completed" && event.itemId === "call_bash_503",
+      );
+      expect(toolEvent).toBeDefined();
+      expect((toolEvent?.payload.data as any)?.rawOutput).toBe(
+        "HTTP/1.1 503 Service Unavailable\nBackend server overloaded",
+      );
+    }),
+  );
+
+  it.effect("does not terminate session on legitimate prose mentioning checkpoints", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Explain checkpointing" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "msg_prose_1",
+        text: "We can use internal checkpoint mechanisms to save state safely.",
+        rawPayload: {},
+      });
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* Fiber.join(sending);
+
+      const delta = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "content.delta" }> =>
+          event.type === "content.delta",
+      );
+      expect((delta.payload as any).delta).toBe(
+        "We can use internal checkpoint mechanisms to save state safely.",
+      );
+
+      const ended = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      expect(ended.payload.state).toBe("completed");
+      expect(yield* h.adapter.hasSession(threadId)).toBe(true);
+    }),
+  );
 });
