@@ -451,7 +451,7 @@ const SendToDelegatedThreadTool = Tool.make("send_to_delegated_thread", {
 
 const InterruptDelegatedThreadTool = Tool.make("interrupt_delegated_thread", {
   description:
-    "Interrupt a child thread's running or queued turn. Returns interrupted=false without doing anything when the child is not running.",
+    "Request an interrupt of a child thread's running or queued turn. interrupted=true means the request was accepted, not that the turn has stopped; confirm with delegated_thread_status. Returns interrupted=false without doing anything when the child is not running.",
   parameters: InterruptDelegatedThreadInput,
   success: InterruptDelegatedThreadResult,
   failure: DelegationToolError,

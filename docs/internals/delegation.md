@@ -62,6 +62,8 @@ session but no turn and is reported as interrupted, not queued forever.
   seconds. Prime Agent's MCP client cancels any call after 60 seconds, measured in a live run.
   Pylon disables Prime's autonomous continuation, so a parent cannot be woken when a child finishes.
 - The per-parent semaphores are never evicted; one small entry per thread that has delegated.
+- Sends and interrupts take the same per-parent gate as delegation, so an interrupt waits behind a
+  delegation in progress, including its git fetch. Status and result reads do not take the gate.
 - Interrupts use a unique command id per call rather than a deterministic one. Every deterministic
   key tried (per turn, per admission) let a later interrupt replay an earlier receipt and dispatch
   nothing; a duplicate interrupt on a live child is harmless.

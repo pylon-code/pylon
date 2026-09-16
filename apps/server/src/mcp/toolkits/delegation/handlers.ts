@@ -2,8 +2,9 @@
  * Delegation MCP toolkit handlers.
  *
  * A sidecar over existing orchestration: every write is an existing command
- * with a deterministic id, so the command receipt store absorbs retries, and
- * every read is an existing projection. Child ownership and depth come from
+ * and every read is an existing projection. Creates, meta updates, and turn
+ * starts use deterministic ids so the command receipt store absorbs retries;
+ * deletes and interrupts use a unique id per call. Child ownership and depth come from
  * the child's id (see `logic.ts`), never from a lookup.
  *
  * @module mcp/toolkits/delegation/handlers
