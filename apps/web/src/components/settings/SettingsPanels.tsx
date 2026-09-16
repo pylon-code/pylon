@@ -2429,7 +2429,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           {...searchableSetting("proactive-panels")}
-          description="Open linked pull requests when found and turn diffs when work changes files. Manual panel choices take priority."
+          description="Open linked pull requests first. Otherwise, open turn diffs for changes to at least 3 files or 50 lines. Manual panel choices take priority."
           resetAction={
             settings.proactivePanelsEnabled !== DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled ? (
               <SettingResetButton
