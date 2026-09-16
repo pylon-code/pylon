@@ -151,6 +151,7 @@ import {
   type EnvironmentPresentation,
   useEnvironments,
   usePrimaryEnvironment,
+  useRelayEnvironmentDiscovery,
 } from "~/state/environments";
 import { requestConfirmDialog } from "~/confirmDialog";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -1478,8 +1479,16 @@ function SavedBackendListRow({
   const metadataBits = [
     sshTarget ? `SSH ${formatDesktopSshTarget(sshTarget)}` : null,
     environment.relayManaged ? "Pylon Connect" : null,
-    enabled ? null : "Off",
+    unsupported ? "Client not supported" : enabled ? null : "Off",
   ].filter((value): value is string => value !== null);
+  const relayDiscovery = useRelayEnvironmentDiscovery();
+  const discoveredDescriptor = Option.getOrNull(
+    relayDiscovery.environments.get(environmentId)?.status ?? Option.none(),
+  )?.descriptor;
+  const machineKind = resolveEnvironmentMachineKind(
+    environment.serverConfig ??
+      (discoveredDescriptor === undefined ? null : { environment: discoveredDescriptor }),
+  );
 
   // The WSL backend is a desktop-managed local backend (it surfaces as a bearer
   // environment whose connection id is prefixed "local:"), not a remote
@@ -1510,7 +1519,7 @@ function SavedBackendListRow({
             />
             <EnvironmentMachineIcon
               aria-hidden
-              kind={resolveEnvironmentMachineKind(environment.serverConfig)}
+              kind={machineKind}
               className="size-3.5 shrink-0 text-muted-foreground"
             />
             <h3 className="min-w-0 truncate text-sm font-medium text-foreground">
@@ -1552,7 +1561,12 @@ function SavedBackendListRow({
             </Tooltip>
           ) : null}
           {(enabled || unsupported) && environment.connection.error && !resumingServerUpdate ? (
-            <p className="flex min-w-0 items-center gap-2 text-destructive text-xs">
+            <p
+              className={cn(
+                "flex min-w-0 items-center gap-2 text-xs",
+                unsupported ? "text-muted-foreground" : "text-destructive",
+              )}
+            >
               <span className="min-w-0 break-words">
                 {connectionStatusText(environment.connection)}
               </span>
