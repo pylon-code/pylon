@@ -11,6 +11,8 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
+  type DelegationChildRuntimeMode,
+  type ModelSelection,
   type OrchestrationCheckpointSummary,
   type OrchestrationCommand,
   type OrchestrationLatestTurn,
@@ -18,6 +20,7 @@ import {
   type OrchestrationProjectShell,
   type OrchestrationThread,
   type OrchestrationThreadShell,
+  type ProjectSettingsOverrides,
   type ServerProvider,
   type VcsStatusLocalResult,
 } from "@t3tools/contracts";
@@ -245,6 +248,9 @@ interface HarnessOptions {
   readonly startFromOrigin?: boolean;
   readonly failCreateWorktree?: boolean;
   readonly parentRefName?: string | null;
+  readonly delegationDefault?: ModelSelection | null;
+  readonly childRuntimeMode?: DelegationChildRuntimeMode;
+  readonly projectOverrides?: ProjectSettingsOverrides;
   /** Completed when the first turn start arrives; that dispatch then never returns. */
   readonly holdTurnStart?: Deferred.Deferred<void>;
 }
@@ -417,6 +423,11 @@ const makeHarness = Effect.fn("makeDelegationHarness")(function* (options: Harne
     ServerSettings.layerTest({
       enableAgentDelegation: true,
       newWorktreesStartFromOrigin: options.startFromOrigin ?? false,
+      delegationDefaultModelSelection: options.delegationDefault ?? null,
+      delegationChildRuntimeMode: options.childRuntimeMode ?? "inherit",
+      ...(options.projectOverrides === undefined
+        ? {}
+        : { projectSettingsOverrides: { [PROJECT_ID]: options.projectOverrides } }),
     }),
     ServerConfig.layer({ ...baseConfig, worktreesDir: "/wt" }),
     Layer.succeed(Crypto.Crypto, makeTestCrypto()),
@@ -642,6 +653,7 @@ describe("delegate_thread", () => {
         providerInstanceId: "antigravity",
         model: "gemini-3-pro",
         runtimeMode: "full-access",
+        defaultApplied: "none",
         worktreePath: WORKTREE_PATH,
         branch: "t3code/07070707",
         startedFromOrigin: false,
@@ -1018,6 +1030,186 @@ describe("delegate_thread", () => {
       );
       expect(yield* harness.commandTypes).toEqual([]);
       expect(yield* Ref.get(harness.gitCalls)).toEqual([]);
+    }),
+  );
+});
+
+describe("delegation defaults", () => {
+  const CODEX = ProviderInstanceId.make("codex");
+  const codex: ServerProvider = {
+    ...antigravity,
+    instanceId: CODEX,
+    driver: ProviderDriverKind.make("codex"),
+    models: [
+      {
+        slug: "gpt-5.6-luna",
+        name: "GPT-5.6 Luna",
+        isCustom: false,
+        capabilities: null,
+        isDefault: true,
+      },
+    ],
+  };
+  const flash38: ServerProvider = {
+    ...antigravity,
+    models: [
+      ...antigravity.models,
+      {
+        slug: "gemini-3.8-flash-medium",
+        name: "Gemini 3.8 Flash (Medium)",
+        isCustom: false,
+        capabilities: null,
+      },
+    ],
+  };
+  const flashDefault: ModelSelection = {
+    instanceId: ANTIGRAVITY,
+    model: "gemini-3.8-flash-medium",
+    options: [{ id: "thinking", value: "low" }],
+  };
+  const unnamed = { delegationKey: "k1", task: "Review auth" };
+
+  it.effect(
+    "uses the default provider and model, with its options, when the agent names neither",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({
+          providers: [flash38, codex],
+          delegationDefault: flashDefault,
+        });
+        expect(yield* harness.call("delegate_thread", unnamed)).toMatchObject({
+          created: true,
+          providerInstanceId: "antigravity",
+          model: "gemini-3.8-flash-medium",
+          defaultApplied: "provider-and-model",
+        });
+        expect((yield* Ref.get(harness.commands))[0]).toMatchObject({
+          type: "thread.create",
+          modelSelection: flashDefault,
+        });
+      }),
+  );
+
+  it.effect(
+    "uses the default provider with a model the agent names, without the default's options",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({
+          providers: [flash38, codex],
+          delegationDefault: flashDefault,
+        });
+        expect(
+          yield* harness.call("delegate_thread", { ...unnamed, model: "gemini-3-pro" }),
+        ).toMatchObject({
+          providerInstanceId: "antigravity",
+          model: "gemini-3-pro",
+          defaultApplied: "provider",
+        });
+        expect((yield* Ref.get(harness.commands))[0]).toMatchObject({
+          modelSelection: { instanceId: ANTIGRAVITY, model: "gemini-3-pro" },
+        });
+        expect((yield* Ref.get(harness.commands))[0]).not.toHaveProperty("modelSelection.options");
+      }),
+  );
+
+  it.effect("lets a named provider override the default entirely", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        providers: [flash38, codex],
+        delegationDefault: flashDefault,
+      });
+      expect(
+        yield* harness.call("delegate_thread", { ...unnamed, providerInstanceId: CODEX }),
+      ).toMatchObject({
+        providerInstanceId: "codex",
+        model: "gpt-5.6-luna",
+        defaultApplied: "none",
+      });
+    }),
+  );
+
+  it.effect("refuses to guess when no default is set and no provider is named", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ providers: [flash38, codex] });
+      expect(yield* harness.call("delegate_thread", unnamed).pipe(Effect.flip)).toMatchObject({
+        _tag: "DelegationDefaultMissingError",
+      });
+      expect(yield* harness.commandTypes).toEqual([]);
+    }),
+  );
+
+  it.effect("fails instead of falling back when the default model is no longer offered", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        providers: [antigravity, codex],
+        delegationDefault: flashDefault,
+      });
+      expect(yield* harness.call("delegate_thread", unnamed).pipe(Effect.flip)).toMatchObject({
+        _tag: "DelegationModelUnavailableError",
+        providerInstanceId: "antigravity",
+        model: "gemini-3.8-flash-medium",
+      });
+      expect(yield* harness.commandTypes).toEqual([]);
+    }),
+  );
+
+  it.effect("fails instead of falling back when the default provider is unavailable", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        providers: [{ ...flash38, enabled: false }, codex],
+        delegationDefault: flashDefault,
+      });
+      expect(yield* harness.call("delegate_thread", unnamed).pipe(Effect.flip)).toMatchObject({
+        _tag: "DelegationProviderUnavailableError",
+        providerInstanceId: "antigravity",
+      });
+    }),
+  );
+
+  it.effect("prefers the project's default over the environment's", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        providers: [flash38, codex],
+        delegationDefault: flashDefault,
+        projectOverrides: {
+          delegationDefaultModelSelection: { instanceId: CODEX, model: "gpt-5.6-luna" },
+        },
+      });
+      expect(yield* harness.call("delegate_thread", unnamed)).toMatchObject({
+        providerInstanceId: "codex",
+        defaultApplied: "provider-and-model",
+      });
+    }),
+  );
+
+  it.effect("runs children Supervised when the user's child permission is Supervised", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ childRuntimeMode: "approval-required" });
+      expect(
+        yield* harness.call("delegate_thread", { ...unnamed, providerInstanceId: ANTIGRAVITY }),
+      ).toMatchObject({ runtimeMode: "approval-required" });
+      const recorded = yield* Ref.get(harness.commands);
+      expect(recorded[0]).toMatchObject({
+        type: "thread.create",
+        runtimeMode: "approval-required",
+      });
+      expect(recorded[2]).toMatchObject({
+        type: "thread.turn.start",
+        runtimeMode: "approval-required",
+      });
+    }),
+  );
+
+  it.effect("still lets the agent ask for the parent's own mode when the user asks for it", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ childRuntimeMode: "approval-required" });
+      expect(
+        yield* harness.call("delegate_thread", {
+          ...unnamed,
+          providerInstanceId: ANTIGRAVITY,
+          runtimeMode: "full-access",
+        }),
+      ).toMatchObject({ runtimeMode: "full-access" });
     }),
   );
 });

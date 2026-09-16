@@ -52,6 +52,7 @@ import {
   MAX_LIVE_CHILDREN,
   resolveDelegatedModel,
   resolveDelegatedRuntimeMode,
+  resolveDelegationTarget,
   selectAssistantMessage,
   truncateText,
 } from "./logic.ts";
@@ -62,6 +63,7 @@ import {
   DelegatedThreadNotFoundError,
   DelegatedThreadTurnRejectedError,
   DelegatingThreadNotFoundError,
+  DelegationDefaultMissingError,
   DelegationDepthExceededError,
   DelegationFailedError,
   DelegationKeyConsumedError,
@@ -288,6 +290,7 @@ const make = Effect.gen(function* () {
     providerInstanceId: shell.modelSelection.instanceId,
     model: shell.modelSelection.model,
     runtimeMode: shell.runtimeMode,
+    defaultApplied: "none",
     worktreePath: shell.worktreePath,
     branch: shell.branch,
     startedFromOrigin: false,
@@ -392,7 +395,7 @@ const make = Effect.gen(function* () {
   const delegate_thread = (input: {
     readonly delegationKey: string;
     readonly task: string;
-    readonly providerInstanceId: ProviderInstanceId;
+    readonly providerInstanceId?: ProviderInstanceId | undefined;
     readonly model?: string | undefined;
     readonly title?: string | undefined;
     readonly runtimeMode?: RuntimeMode | undefined;
@@ -442,8 +445,18 @@ const make = Effect.gen(function* () {
             return yield* new DelegatingThreadNotFoundError({ threadId: scope.threadId });
           }
 
+          // Defaults come from the parent's project, falling back to the environment.
+          const settings = yield* orFail(serverSettings.getSettings);
+          const projectSettings = resolveProjectSettings(settings, project.value.id).settings;
+          const target = resolveDelegationTarget({
+            defaultSelection: projectSettings.delegationDefaultModelSelection,
+            requestedInstanceId: input.providerInstanceId,
+            requestedModel: input.model,
+          });
+          if (!target.ok) return yield* new DelegationDefaultMissingError();
+
           const snapshot = (yield* providers.getProviders).find(
-            (provider) => provider.instanceId === input.providerInstanceId,
+            (provider) => provider.instanceId === target.instanceId,
           );
           if (
             snapshot === undefined ||
@@ -452,18 +465,24 @@ const make = Effect.gen(function* () {
             snapshot.auth.status === "unauthenticated"
           ) {
             return yield* new DelegationProviderUnavailableError({
-              providerInstanceId: input.providerInstanceId,
+              providerInstanceId: target.instanceId,
             });
           }
-          const model = resolveDelegatedModel(snapshot, input.model);
+          // A default is validated exactly like an explicit choice: a model the
+          // provider no longer offers fails rather than falling back.
+          const model = resolveDelegatedModel(snapshot, target.model);
           if (!model.ok) {
             return yield* new DelegationModelUnavailableError({
-              providerInstanceId: input.providerInstanceId,
-              model: input.model ?? null,
+              providerInstanceId: target.instanceId,
+              model: target.model ?? null,
             });
           }
           const parentMode = parent.value.runtimeMode;
-          const mode = resolveDelegatedRuntimeMode(parentMode, input.runtimeMode);
+          const mode = resolveDelegatedRuntimeMode(
+            parentMode,
+            input.runtimeMode,
+            projectSettings.delegationChildRuntimeMode,
+          );
           if (!mode.ok) {
             return yield* new DelegationRuntimeModeEscalationError({
               parentMode,
@@ -472,7 +491,7 @@ const make = Effect.gen(function* () {
           }
           if (!getServerProviderSupportedRuntimeModes(snapshot).includes(mode.mode)) {
             return yield* new DelegationRuntimeModeUnsupportedError({
-              providerInstanceId: input.providerInstanceId,
+              providerInstanceId: target.instanceId,
               runtimeMode: mode.mode,
             });
           }
@@ -480,11 +499,17 @@ const make = Effect.gen(function* () {
             return yield* new DelegationLimitExceededError({ limit: MAX_LIVE_CHILDREN });
           }
 
-          const settings = yield* orFail(serverSettings.getSettings);
-          const startFromOrigin = resolveProjectSettings(settings, project.value.id).settings
-            .newWorktreesStartFromOrigin;
+          const startFromOrigin = projectSettings.newWorktreesStartFromOrigin;
           const projectCwd = project.value.workspaceRoot;
-          const modelSelection = { instanceId: input.providerInstanceId, model: model.model };
+          // Model options (such as thinking level) are carried only when the
+          // default supplied the model; a named model uses its own defaults.
+          const modelSelection = {
+            instanceId: target.instanceId,
+            model: model.model,
+            ...(target.defaultApplied === "provider-and-model" && target.options !== undefined
+              ? { options: target.options }
+              : {}),
+          };
 
           // Set inside the uninterruptible steps that create each resource, so
           // cleanup never misses something that exists.
@@ -597,9 +622,10 @@ const make = Effect.gen(function* () {
             threadId: childId,
             created: true,
             state: Option.isSome(current) ? deriveDelegatedThreadState(current.value) : "queued",
-            providerInstanceId: input.providerInstanceId,
+            providerInstanceId: target.instanceId,
             model: model.model,
             runtimeMode: mode.mode,
+            defaultApplied: target.defaultApplied,
             worktreePath: worktree.path,
             branch: worktree.branch,
             startedFromOrigin: worktree.startedFromOrigin,

@@ -599,6 +599,31 @@ describe("buildCodexDeveloperInstructions", () => {
   });
 });
 
+describe("Codex delegation developer instructions", () => {
+  const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
+
+  it("includes the delegation block only when the delegation tools are attached", () => {
+    for (const mode of ["default", "plan"] as const) {
+      NodeAssert.match(
+        buildCodexDeveloperInstructions(mode, runtime, {
+          browser: false,
+          device: false,
+          delegation: true,
+        }),
+        /<pylon_delegation>/,
+      );
+      NodeAssert.doesNotMatch(
+        buildCodexDeveloperInstructions(mode, runtime, { browser: true, device: true }),
+        /<pylon_delegation>/,
+      );
+      NodeAssert.doesNotMatch(
+        buildCodexDeveloperInstructions(mode, runtime, true),
+        /<pylon_delegation>/,
+      );
+    }
+  });
+});
+
 describe("T3 browser developer instructions", () => {
   const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
 

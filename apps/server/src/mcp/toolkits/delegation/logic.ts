@@ -7,6 +7,9 @@
  */
 import {
   DEFAULT_MODEL_BY_PROVIDER,
+  type DelegationChildRuntimeMode,
+  type ModelSelection,
+  type ProviderInstanceId,
   ThreadId,
   type OrchestrationCheckpointSummary,
   type OrchestrationMessage,
@@ -163,14 +166,19 @@ export function resolveDelegatedModel(
   return fallback === undefined ? { ok: false } : { ok: true, model: fallback };
 }
 
-/** A child may run in its parent's mode or approval-required, never with broader autonomy. */
+/**
+ * A child may run in its parent's mode or approval-required, never with broader
+ * autonomy. The user's child default applies only when the agent asks for no mode.
+ */
 export function resolveDelegatedRuntimeMode(
   parentMode: RuntimeMode,
   requested: RuntimeMode | undefined,
+  childDefault: DelegationChildRuntimeMode = "inherit",
 ):
   | { readonly ok: true; readonly mode: RuntimeMode }
   | { readonly ok: false; readonly reason: "escalation" } {
-  const mode = requested ?? parentMode;
+  const mode =
+    requested ?? (childDefault === "approval-required" ? "approval-required" : parentMode);
   if (mode === parentMode || mode === "approval-required") return { ok: true, mode };
   return { ok: false, reason: "escalation" };
 }
@@ -191,4 +199,55 @@ export function selectAssistantMessage(
     }
   }
   return null;
+}
+
+/** Which part of a delegation target came from the user's configured default. */
+export type DelegationDefaultApplied = "none" | "provider" | "provider-and-model";
+
+export type DelegationTarget =
+  | {
+      readonly ok: true;
+      readonly instanceId: ProviderInstanceId;
+      /** Undefined means the instance's own default model. */
+      readonly model?: string;
+      readonly options?: ModelSelection["options"];
+      readonly defaultApplied: DelegationDefaultApplied;
+    }
+  | { readonly ok: false };
+
+/**
+ * An explicit provider always wins and ignores the default entirely. Without
+ * one, the default supplies the provider, and its model unless the agent named
+ * a model. With neither a provider nor a default there is nothing to guess.
+ */
+export function resolveDelegationTarget(input: {
+  readonly defaultSelection: ModelSelection | null;
+  readonly requestedInstanceId?: ProviderInstanceId | undefined;
+  readonly requestedModel?: string | undefined;
+}): DelegationTarget {
+  if (input.requestedInstanceId !== undefined) {
+    return {
+      ok: true,
+      instanceId: input.requestedInstanceId,
+      ...(input.requestedModel === undefined ? {} : { model: input.requestedModel }),
+      defaultApplied: "none",
+    };
+  }
+  const fallback = input.defaultSelection;
+  if (fallback === null) return { ok: false };
+  if (input.requestedModel !== undefined) {
+    return {
+      ok: true,
+      instanceId: fallback.instanceId,
+      model: input.requestedModel,
+      defaultApplied: "provider",
+    };
+  }
+  return {
+    ok: true,
+    instanceId: fallback.instanceId,
+    model: fallback.model,
+    ...(fallback.options === undefined ? {} : { options: fallback.options }),
+    defaultApplied: "provider-and-model",
+  };
 }

@@ -503,6 +503,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["child threads subagents delegate orchestrate other providers worktrees"],
   },
   {
+    id: "delegation-default-model",
+    title: "Default delegation model",
+    to: "/settings/integrations",
+    scope: "project-defaults",
+    searchTerms: ["child thread provider model antigravity delegate fallback"],
+  },
+  {
+    id: "delegation-child-permissions",
+    title: "Child permissions",
+    to: "/settings/integrations",
+    scope: "project-defaults",
+    searchTerms: ["delegated child supervised approval permission mode"],
+  },
+  {
     id: "device-hub",
     title: "Device hub",
     to: "/settings/integrations",

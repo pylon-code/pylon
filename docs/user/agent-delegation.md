@@ -15,6 +15,30 @@ keeps the tools it started with.
 The delegating thread needs Pylon's agent tools. On Prime Agent that means **Full access**:
 Supervised sessions deny tools that Pylon cannot review, including delegation.
 
+## Defaults
+
+With delegation on, two more settings appear under it in **Settings → Integrations**. Like
+delegation itself, they can be set for all projects or overridden per project.
+
+- **Default delegation model** is the provider and model a child uses when your request doesn't
+  name one. It starts unset. Without a default, the agent asks you which provider to use instead of
+  choosing one itself.
+- **Child permissions** is **Same as parent** by default. Choose **Supervised** to have children ask
+  before running commands or editing files.
+
+Your request always wins. "Delegate this to Claude" uses Claude even when the default is Antigravity.
+"Delegate this with Gemini 3.6 Flash" keeps the default provider but uses that model. Asking for a
+permission mode works the same way, but a child can never have broader permissions than the agent that
+started it.
+
+A default is never swapped for something else. If the default provider is signed out or disabled, or
+no longer offers that model, delegation fails with an error until you pick a new default.
+
+Agents learn when to delegate from Pylon's instructions: delegation for work on another provider or in
+its own thread, and their built-in subagents for quick help within the same session. Delegation doesn't
+turn off built-in subagents. To make a Prime Agent thread use only delegation, set its **Subagent
+depth** to 0 under **Harness**.
+
 ## What a child thread is
 
 Each delegated task becomes an ordinary thread in the sidebar, so you can open it, answer its

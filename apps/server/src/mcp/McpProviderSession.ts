@@ -64,6 +64,11 @@ export function readMcpProviderSession(threadId: ThreadId): McpProviderSessionCo
   return sessionsByThread.get(threadId);
 }
 
+/** Whether the thread's live provider MCP session was granted a capability. */
+export function hasMcpProviderCapability(threadId: ThreadId, capability: string): boolean {
+  return readMcpProviderSession(threadId)?.capabilities.has(capability) === true;
+}
+
 export function isMcpProviderSessionOwnedByGeneration(
   threadId: ThreadId,
   runtimeFence: ProviderRuntimeFence,

@@ -983,4 +983,29 @@ describe("agent delegation access", () => {
     });
     expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain("enableAgentDelegation");
   });
+
+  it("defaults to no delegation model and children in the parent's permission mode", () => {
+    const decoded = decodeServerSettings({});
+    expect(decoded.delegationDefaultModelSelection).toBeNull();
+    expect(decoded.delegationChildRuntimeMode).toBe("inherit");
+    const selection = { instanceId: "antigravity", model: "gemini-3.8-flash-medium" };
+    expect(
+      decodeServerSettingsPatch({
+        delegationDefaultModelSelection: selection,
+        delegationChildRuntimeMode: "approval-required",
+      }),
+    ).toMatchObject({
+      delegationDefaultModelSelection: selection,
+      delegationChildRuntimeMode: "approval-required",
+    });
+    expect(decodeProjectSettingsOverrides({ delegationDefaultModelSelection: null })).toEqual({
+      delegationDefaultModelSelection: null,
+    });
+    expect(() =>
+      decodeServerSettingsPatch({ delegationChildRuntimeMode: "full-access" }),
+    ).toThrow();
+    for (const key of ["delegationDefaultModelSelection", "delegationChildRuntimeMode"] as const) {
+      expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain(key);
+    }
+  });
 });

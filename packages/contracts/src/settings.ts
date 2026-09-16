@@ -1069,6 +1069,10 @@ export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
  * background activity, theme. UI, search and the write planner derive
  * eligibility from this list, so adding a key here is the whole opt-in.
  */
+/** How a delegated child's permission mode is chosen when the agent does not ask for one. */
+export const DelegationChildRuntimeMode = Schema.Literals(["inherit", "approval-required"]);
+export type DelegationChildRuntimeMode = typeof DelegationChildRuntimeMode.Type;
+
 export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "defaultModelSelection",
   "defaultRuntimeMode",
@@ -1079,6 +1083,8 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "enableAgentBrowserAccess",
   "enableAgentDeviceAccess",
   "enableAgentDelegation",
+  "delegationDefaultModelSelection",
+  "delegationChildRuntimeMode",
   "textGenerationModelSelection",
   "sourceControlWriterModelSelection",
   "sourceControlWritingStyle",
@@ -1105,6 +1111,8 @@ export const ProjectSettingsOverrides = Schema.Struct({
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   enableAgentDelegation: Schema.optionalKey(Schema.Boolean),
+  delegationDefaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  delegationChildRuntimeMode: Schema.optionalKey(DelegationChildRuntimeMode),
   textGenerationModelSelection: Schema.optionalKey(ModelSelection),
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   sourceControlWritingStyle: Schema.optionalKey(SourceControlWritingStyleSettings),
@@ -1182,6 +1190,23 @@ export const ServerSettings = Schema.Struct({
    * is itself a delegated child.
    */
   enableAgentDelegation: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Provider instance and model a delegated child uses when the agent names
+   * none. Null means no default: the agent must name a provider. It is only a
+   * fallback; an explicit provider or model in the tool call always wins, and
+   * an unavailable default fails instead of falling back to something else.
+   */
+  delegationDefaultModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /**
+   * Permission mode for delegated children when the agent does not ask for
+   * one: the parent's own mode, or Supervised (approval-required). A child
+   * never gets broader permissions than its parent either way.
+   */
+  delegationChildRuntimeMode: DelegationChildRuntimeMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed("inherit" as const)),
+  ),
   /**
    * Whether this server may install and run T3's device helper processes.
    * Kept separate from agent access so enabling the user's Device panel does
@@ -1516,6 +1541,8 @@ export const ServerSettingsPatch = Schema.Struct({
   computerUseBinaryPath: Schema.optionalKey(Schema.String),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   enableAgentDelegation: Schema.optionalKey(Schema.Boolean),
+  delegationDefaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  delegationChildRuntimeMode: Schema.optionalKey(DelegationChildRuntimeMode),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),
