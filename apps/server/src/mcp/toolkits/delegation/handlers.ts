@@ -225,7 +225,9 @@ const make = Effect.gen(function* () {
       }
       // Unique per discard: a deterministic id would replay as success
       // without deleting if the same child id were ever created again.
-      const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orElseSucceed(() => "retry"));
+      const uuid = yield* crypto.randomUUIDv4.pipe(
+        Effect.catch(() => Clock.currentTimeMillis.pipe(Effect.map(String))),
+      );
       yield* engine
         .dispatch({
           type: "thread.delete",
@@ -673,11 +675,18 @@ const make = Effect.gen(function* () {
       if (!isLiveDelegatedState(state)) {
         return { delegationKey: input.delegationKey, threadId: childId, interrupted: false, state };
       }
-      const turnId = shell.latestTurn?.turnId ?? "pending";
+      // Key the id on the admission being interrupted, not latestTurn: a
+      // follow-up waiting for admission still shows the previous turn, and an
+      // id shared across attempts would replay an old receipt and do nothing.
+      const target =
+        shell.session?.pendingTurnRequestId ??
+        shell.session?.activeTurnRequestId ??
+        shell.latestTurn?.turnId ??
+        "pending";
       yield* engine
         .dispatch({
           type: "thread.turn.interrupt",
-          commandId: CommandId.make(`server:mcp-delegate-interrupt:${childId}:${turnId}`),
+          commandId: CommandId.make(`server:mcp-delegate-interrupt:${childId}:${target}`),
           threadId: childId,
           createdAt: yield* nowIso,
         })

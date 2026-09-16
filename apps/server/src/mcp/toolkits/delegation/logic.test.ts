@@ -203,6 +203,20 @@ describe("deriveDelegatedThreadState", () => {
     }
   });
 
+  it("ignores a stale pending admission id on a stopped session", () => {
+    const stale = session({
+      status: "stopped",
+      activeTurnId: null,
+      pendingTurnRequestId: CommandId.make("server:mcp-delegate-turn:child:initial"),
+    });
+    expect(deriveDelegatedThreadState(shell({ session: stale }))).toBe("interrupted");
+    expect(
+      deriveDelegatedThreadState(
+        shell({ latestTurn: turn({ state: "completed", completedAt: NOW }), session: stale }),
+      ),
+    ).toBe("completed");
+  });
+
   it("reports a failed admission as an error", () => {
     const failed = session({
       status: "ready",

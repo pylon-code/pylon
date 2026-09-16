@@ -395,7 +395,7 @@ export type DelegationToolError = typeof DelegationToolError.Type;
 
 const DelegateThreadTool = Tool.make("delegate_thread", {
   description:
-    "Start a child Pylon thread on another provider instance to work on a task in its own git worktree, then return immediately. Children are ordinary threads the user can open. Use delegated_thread_status to wait for it, delegated_thread_result to read its answer and changed files, and send_to_delegated_thread for follow-ups. Reusing a delegationKey returns the existing child. Requires Agent delegation in Pylon Settings → Integrations. A child runs in your own interaction mode, so a plan-mode parent gets a plan-mode child.",
+    "Start a child Pylon thread on another provider instance to work on a task in its own git worktree, then return immediately. Children are ordinary threads the user can open. Use delegated_thread_status to wait for it, delegated_thread_result to read its answer and changed files, and send_to_delegated_thread for follow-ups. Reusing a delegationKey returns the existing child. Requires Agent delegation in Pylon Settings → Integrations. A child starts in your own interaction mode; providers without a plan mode run it normally.",
   parameters: DelegateThreadInput,
   success: DelegateThreadResult,
   failure: DelegationToolError,

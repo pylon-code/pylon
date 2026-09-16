@@ -25,8 +25,8 @@ questions, approve its actions, or stop it yourself.
   back automatically; the parent agent reviews the child's work and merges it with its own tools.
 - **No setup script.** Project setup actions do not run in delegated worktrees.
 - **Same or narrower permissions.** A child runs in the parent's permission mode or in
-  Supervised, never with more autonomy than the parent. A parent in plan mode gets children in plan
-  mode.
+  Supervised, never with more autonomy than the parent. A parent in plan mode starts its children in
+  plan mode on providers that support it; others run the child normally.
 - **One level deep.** A child cannot delegate further.
 - **A limit per parent.** An agent can have up to eight children queued or running at once.
 - **The provider's own usage.** Work in a child counts against that provider account, not the

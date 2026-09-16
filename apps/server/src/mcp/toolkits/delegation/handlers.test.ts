@@ -1065,7 +1065,13 @@ describe("send_to_delegated_thread", () => {
       expect(
         yield* harness.call("interrupt_delegated_thread", { delegationKey: "k1" }),
       ).toMatchObject({ interrupted: true, state: "running" });
-      expect(yield* harness.commandTypes).toEqual(["thread.turn.interrupt"]);
+      // Keyed on the pending admission, not the previous turn the shell still shows.
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        {
+          type: "thread.turn.interrupt",
+          commandId: `server:mcp-delegate-interrupt:${CHILD_ID}:server:mcp-delegate-turn:${CHILD_ID}:first`,
+        },
+      ]);
     }),
   );
 
@@ -1154,6 +1160,34 @@ describe("interrupt_delegated_thread", () => {
         commandId: `server:mcp-delegate-interrupt:${CHILD_ID}:turn-1`,
         threadId: CHILD_ID,
       });
+    }),
+  );
+
+  it.effect("gives interrupts of different admissions different command ids", () =>
+    Effect.gen(function* () {
+      const admission = (requestId: string) =>
+        makeShell(CHILD_ID, {
+          latestTurn: completedTurn(),
+          session: {
+            threadId: CHILD_ID,
+            status: "starting",
+            providerName: "antigravity",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            pendingTurnRequestId: CommandId.make(requestId),
+            lastError: null,
+            updatedAt: NOW,
+          },
+        });
+      const harness = yield* makeHarness({ shells: [makeShell(PARENT_ID), admission("first")] });
+      yield* harness.call("interrupt_delegated_thread", { delegationKey: "k1" });
+      harness.shells.set(CHILD_ID, admission("second"));
+      yield* harness.call("interrupt_delegated_thread", { delegationKey: "k1" });
+      // Both reached the engine; a shared id would have replayed the first receipt.
+      expect(yield* harness.commandTypes).toEqual([
+        "thread.turn.interrupt",
+        "thread.turn.interrupt",
+      ]);
     }),
   );
 
