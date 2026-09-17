@@ -1939,7 +1939,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect((yield* collectEvents(runtime, 1))[0]).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent correlated prompt capability proof was lost during recovery.",
-          diagnostic: expect.objectContaining({ reason: "snapshot-reconciliation" }),
+          diagnostic: expect.objectContaining({ reason: "snapshot-reconciliation", proofEpoch: 2 }),
         });
         expect(snapshotReads).toBe(2);
       }),
@@ -9640,7 +9640,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect((yield* collectEvents(runtime, 1))[0]).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent correlated prompt capability proof was lost during recovery.",
-          diagnostic: expect.objectContaining({ reason: "snapshot-reconciliation" }),
+          diagnostic: expect.objectContaining({ reason: "proof-lost" }),
         });
         expect(test.captures.commands.filter((command) => command.type === "list")).toHaveLength(0);
         const callsBefore = [...test.captures.connectionCalls];

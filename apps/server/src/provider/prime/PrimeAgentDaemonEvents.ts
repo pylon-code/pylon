@@ -30,6 +30,7 @@ const stopReason = Schema.Literals(["stop", "length", "toolUse", "error", "abort
 
 export const PrimeSessionClosedDiagnosticReason = Schema.Literals([
   "proof-lost",
+  "unknown-recovery",
   "ingress-capacity",
   "snapshot-reconciliation",
   "mcp-restore",
@@ -37,10 +38,12 @@ export const PrimeSessionClosedDiagnosticReason = Schema.Literals([
 ]);
 export type PrimeSessionClosedDiagnosticReason = typeof PrimeSessionClosedDiagnosticReason.Type;
 
+const nonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+
 export const PrimeSessionClosedDiagnostic = Schema.Struct({
   reason: PrimeSessionClosedDiagnosticReason,
-  connectionGeneration: Schema.optional(Schema.Number),
-  proofEpoch: Schema.optional(Schema.Number),
+  connectionGeneration: Schema.optional(nonNegativeInt),
+  proofEpoch: Schema.optional(nonNegativeInt),
 });
 export type PrimeSessionClosedDiagnostic = typeof PrimeSessionClosedDiagnostic.Type;
 
@@ -669,7 +672,6 @@ export const PrimeAgentDaemonConnectionEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("closed"),
     error: Schema.optional(Schema.String),
-    diagnostic: Schema.optional(PrimeSessionClosedDiagnostic),
   }),
 ]);
 export type PrimeAgentDaemonConnectionEvent = typeof PrimeAgentDaemonConnectionEvent.Type;
@@ -2072,7 +2074,7 @@ function mapPrimeAgentDaemonConnectionEvent(
       return {
         _tag: "SessionClosed",
         error: optionalBounded(event.error),
-        diagnostic: event.diagnostic ?? { reason: "provider-closed" },
+        diagnostic: { reason: "provider-closed" },
       };
   }
 }

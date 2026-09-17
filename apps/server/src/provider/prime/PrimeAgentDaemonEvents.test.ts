@@ -1251,7 +1251,7 @@ describe("PrimeAgentDaemonEvents", () => {
     ).toEqual({
       _tag: "SessionClosed",
       error: undefined,
-      diagnostic: { reason: "ingress-capacity", connectionGeneration: 3 },
+      diagnostic: { reason: "provider-closed" },
     });
   });
 
