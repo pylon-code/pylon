@@ -1986,6 +1986,17 @@ describe("resolveWorkingStartedAt", () => {
     ).toBe("2026-03-09T10:00:00.000Z");
   });
 
+  it("does not restart a delegation timer after unrelated parent responses", () => {
+    for (const updatedAt of ["2026-03-09T10:03:00.000Z", "2026-03-09T10:04:00.000Z"]) {
+      expect(
+        resolveWorkingStartedAt({
+          latestTurn: makeLatestTurn(),
+          session: { ...session, status: "ready", activeTurnId: null, updatedAt },
+        }),
+      ).toBeNull();
+    }
+  });
+
   it("returns null with neither a running turn nor a session", () => {
     expect(resolveWorkingStartedAt({ latestTurn: null, session: null })).toBeNull();
   });
