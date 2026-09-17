@@ -4185,6 +4185,12 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           "ConnectionStatus",
           "SessionClosed",
         ]);
+        expect(events[2]).toMatchObject({
+          _tag: "SessionClosed",
+          error:
+            "Pylon browser tools could not be restored after the Prime Agent daemon reconnected.",
+          diagnostic: expect.objectContaining({ reason: "mcp-restore" }),
+        });
         const prompt = yield* Fiber.join(promptFiber);
         expect(prompt).toMatchObject({
           _tag: "Failure",
@@ -4193,6 +4199,41 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(captures.connectionCalls.filter((call) => call.method === "prompt")).toEqual([]);
       }),
     ),
+  );
+
+  it.effect(
+    "classifies internally synthesized MCP reconnect failure without snapshot as mcp-restore",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { emit, make } = fixture();
+          const runtime = yield* make(undefined, undefined, undefined, undefined, {
+            ownerId: "pylon:mcp-restore-test",
+            server: {
+              name: "t3-code",
+              type: "http",
+              url: "http://127.0.0.1:4321/mcp/mcp-restore-test",
+              headers: { Authorization: "Bearer scoped-secret" },
+            },
+          });
+          const eventsFiber = yield* collectEvents(runtime, 3).pipe(Effect.forkChild);
+
+          yield* Effect.promise(() => emit({ type: "connection_status", status: "reconnecting" }));
+          yield* Effect.promise(() => emit({ type: "connection_status", status: "connected" }));
+
+          const events = yield* Fiber.join(eventsFiber);
+          expect(events.map((event) => event._tag)).toEqual([
+            "SessionResynced",
+            "ConnectionStatus",
+            "SessionClosed",
+          ]);
+          expect(events[2]).toMatchObject({
+            _tag: "SessionClosed",
+            error: "Prime Agent reconnected without restoring Pylon's scoped browser tools.",
+            diagnostic: expect.objectContaining({ reason: "mcp-restore" }),
+          });
+        }),
+      ),
   );
 
   it.effect("fails closed before snapshot when the daemon cannot own scoped MCP servers", () =>
@@ -5576,6 +5617,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
             _tag: "SessionClosed",
             error:
               "Pylon's managed provider extension could not be verified after Prime Agent reconnected.",
+            diagnostic: expect.objectContaining({ reason: "snapshot-reconciliation" }),
           });
           expect(
             test.captures.connectionCalls.filter((call) => call.method === "getToolDefinition"),
@@ -8940,6 +8982,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           _tag: "SessionClosed",
           error:
             "Pylon's managed provider extension could not be verified after Prime Agent reconnected.",
+          diagnostic: expect.objectContaining({ reason: "snapshot-reconciliation" }),
         });
       }),
     ),

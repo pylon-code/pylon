@@ -3495,6 +3495,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       correlatedProofIngressEpoch?: number,
       ordinaryIngressFence?: OrdinaryIngressFence,
       providerRouteRetirement?: ProviderRouteRetirement,
+      synthesizedDiagnosticReason?: PrimeSessionClosedDiagnosticReason,
     ) => {
       if (
         !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
@@ -3520,6 +3521,15 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           correlatedPromptLifecycle: correlatedPromptLifecycleAvailable,
         }),
       );
+      if (decoded._tag === "SessionClosed" && synthesizedDiagnosticReason !== undefined) {
+        decoded = {
+          ...decoded,
+          diagnostic: {
+            ...decoded.diagnostic,
+            reason: synthesizedDiagnosticReason,
+          },
+        };
+      }
       if (
         correlatedPromptLifecycleAvailable &&
         decoded._tag === "SessionResynced" &&
@@ -3898,6 +3908,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       correlatedProofIngressEpoch?: number,
       ordinaryIngressFence?: OrdinaryIngressFence,
       providerRouteRetirement?: ProviderRouteRetirement,
+      synthesizedDiagnosticReason?: PrimeSessionClosedDiagnosticReason,
     ) =>
       Effect.suspend(() => {
         if (
@@ -3918,6 +3929,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             correlatedProofIngressEpoch,
             ordinaryIngressFence,
             providerRouteRetirement,
+            synthesizedDiagnosticReason,
           );
         }
         const workerCloseRaw = Predicate.isObject(raw) && "type" in raw && raw.type === "closed";
@@ -3937,6 +3949,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                   correlatedProofIngressEpoch,
                   ordinaryIngressFence,
                   providerRouteRetirement,
+                  synthesizedDiagnosticReason,
                 ),
           ),
         );
@@ -3946,12 +3959,19 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       proofEpoch: number | undefined,
       ordinaryIngressFence?: OrdinaryIngressFence,
       providerRouteRetirement?: ProviderRouteRetirement,
+      synthesizedDiagnosticReason?: PrimeSessionClosedDiagnosticReason,
     ) =>
       !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
       !providerRouteRetirementIsCurrent(providerRouteRetirement)
         ? Effect.void
         : proofEpoch === undefined || correlatedPromptLifecycleProofFenceIsCurrent(proofEpoch)
-          ? routeRawEvent(raw, proofEpoch, ordinaryIngressFence, providerRouteRetirement)
+          ? routeRawEvent(
+              raw,
+              proofEpoch,
+              ordinaryIngressFence,
+              providerRouteRetirement,
+              synthesizedDiagnosticReason,
+            )
           : Effect.fail(CORRELATED_PROOF_FENCE_RETIRED);
     let mcpRecoveryTail = Promise.resolve();
     let mcpRecoveryPending = false;
@@ -4034,6 +4054,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       correlatedProofIngressEpoch?: number,
       ordinaryIngressFence?: OrdinaryIngressFence,
       providerRouteRetirement?: ProviderRouteRetirement,
+      synthesizedDiagnosticReason?: PrimeSessionClosedDiagnosticReason,
     ): Promise<void> => {
       if (
         !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
@@ -4116,6 +4137,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               undefined,
               ordinaryIngressFence,
               providerRouteRetirement,
+              "mcp-restore",
             );
             return;
           }
@@ -4185,6 +4207,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
                 undefined,
                 ordinaryIngressFence,
                 providerRouteRetirement,
+                "mcp-restore",
               );
               return;
             }
@@ -4201,6 +4224,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             correlatedProofIngressEpoch,
             ordinaryIngressFence,
             providerRouteRetirement,
+            synthesizedDiagnosticReason,
           );
         }
       });
@@ -4389,6 +4413,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       correlatedProofIngressEpoch?: number,
       ordinaryIngressFence?: OrdinaryIngressFence,
       providerRouteRetirement?: ProviderRouteRetirement,
+      synthesizedDiagnosticReason?: PrimeSessionClosedDiagnosticReason,
     ): Promise<void> => {
       if (
         !ordinaryIngressFenceIsCurrent(ordinaryIngressFence) ||
@@ -4445,6 +4470,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           correlatedProofIngressEpoch,
           ordinaryIngressFence,
           providerRouteRetirement,
+          synthesizedDiagnosticReason,
         );
       }
       const routeEffect = Effect.gen(function* () {
@@ -4481,6 +4507,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             undefined,
             ordinaryIngressFence,
             providerRouteRetirement,
+            "snapshot-reconciliation",
           );
           return;
         }
@@ -4514,6 +4541,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               undefined,
               ordinaryIngressFence,
               providerRouteRetirement,
+              "snapshot-reconciliation",
             );
             return;
           }
@@ -4529,6 +4557,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               correlatedProofIngressEpoch,
               ordinaryIngressFence,
               providerRouteRetirement,
+              synthesizedDiagnosticReason,
             ),
           );
           if (
@@ -4728,12 +4757,17 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         failActivePrivateSideQuestions().pipe(Effect.andThen(offerRuntimeEvent(terminal))),
       );
     };
-    const routeProvedCorrelatedRawEvent = (raw: unknown, proofEpoch: number): Promise<void> =>
+    const routeProvedCorrelatedRawEvent = (
+      raw: unknown,
+      proofEpoch: number,
+      synthesizedDiagnosticReason?: PrimeSessionClosedDiagnosticReason,
+    ): Promise<void> =>
       routeManagedAwareRawEvent(
         raw,
         proofEpoch,
         undefined,
         correlatedProviderRouteRetirement,
+        synthesizedDiagnosticReason,
       ).catch((cause) => {
         if (cause !== CORRELATED_PROOF_FENCE_RETIRED) return Promise.reject(cause);
         if (initializing && initializationOverflow) return Promise.resolve();
@@ -6795,18 +6829,22 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     ) => {
       if (recovery.terminalFallbackRouted) return;
       recovery.terminalFallbackRouted = true;
+      const isSynthesizedFallback = recovery.fallbackCloseRaw === undefined;
       const fallback =
         recovery.fallbackCloseRaw ??
         ({
           type: "closed",
           error: "Prime Agent replacement-worker recovery ended before Pylon could verify it.",
         } as const);
+      const synthesizedReason: PrimeSessionClosedDiagnosticReason | undefined =
+        isSynthesizedFallback ? "snapshot-reconciliation" : undefined;
       if (recovery.correlatedProofEpoch === undefined) {
         await routeManagedAwareRawEvent(
           fallback,
           undefined,
           recovery.ordinaryIngressFence,
           recovery.ordinaryIngressFence,
+          synthesizedReason,
         );
         return;
       }
@@ -6814,7 +6852,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         await failCorrelatedProofRecovery(undefined, "proof-lost");
         return;
       }
-      await routeProvedCorrelatedRawEvent(fallback, recovery.correlatedProofEpoch);
+      await routeProvedCorrelatedRawEvent(
+        fallback,
+        recovery.correlatedProofEpoch,
+        synthesizedReason,
+      );
     };
     const finishSuccessfulWorkerCloseRecovery = (
       recovery: NonNullable<typeof activeWorkerRecovery>,

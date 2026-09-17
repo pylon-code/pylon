@@ -1246,11 +1246,12 @@ describe("PrimeAgentDaemonEvents", () => {
     expect(
       decodePrimeAgentDaemonEvent({
         type: "closed",
-        diagnostic: { reason: "ingress-capacity", connectionGeneration: 3 },
+        error: "daemon exited",
+        diagnostic: { reason: "mcp-restore", connectionGeneration: 3, proofEpoch: 4 },
       }),
     ).toEqual({
       _tag: "SessionClosed",
-      error: undefined,
+      error: "daemon exited",
       diagnostic: { reason: "provider-closed" },
     });
   });

@@ -30,7 +30,6 @@ const stopReason = Schema.Literals(["stop", "length", "toolUse", "error", "abort
 
 export const PrimeSessionClosedDiagnosticReason = Schema.Literals([
   "proof-lost",
-  "unknown-recovery",
   "ingress-capacity",
   "snapshot-reconciliation",
   "mcp-restore",
