@@ -416,7 +416,10 @@ export function PullRequestActorLabel({
       >
         {label}
       </TooltipTrigger>
-      <TooltipPopup side="top">{profileUrl ? `Open ${login}'s profile` : login}</TooltipPopup>
+      <TooltipPopup side="top">
+        {actor?.name && actor.name !== login ? `${actor.name} (@${login})` : login}
+        {profileUrl ? " · Open profile" : ""}
+      </TooltipPopup>
     </Tooltip>
   );
 }
