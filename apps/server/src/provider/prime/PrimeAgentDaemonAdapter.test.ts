@@ -2097,6 +2097,143 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect(
+    "rearms quiescence across child stop, compaction, and resync, and admits follow-up input only after background barrier completes",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          captures.correlatedPromptLifecycleAvailable = true;
+          captures.rlmQuiescenceAvailable = true;
+          captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+          captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+          captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+          captures.backgroundQuiescenceCompleted = yield* Queue.unbounded<string>();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+
+          const turnFiber = yield* adapter
+            .sendTurn({ threadId, input: "run subagent task" })
+            .pipe(Effect.forkChild);
+          const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+          const delivered = lifecycleSnapshot(correlationId, "delivered", 2);
+          yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: delivered });
+
+          captures.inputAdmissionBusy = true;
+          yield* offer(captures, {
+            _tag: "ChildUpdated",
+            child: { id: "child-agent-1", label: "research agent", status: "running" },
+          });
+
+          captures.correlatedPromptCancellationResult = {
+            status: "too_late",
+            ownershipCrossed: true,
+            deliveryCrossed: true,
+            lifecycle: delivered,
+          };
+          yield* adapter.interruptTurn(threadId);
+
+          yield* offer(captures, {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: lifecycleSnapshot(correlationId, "completed", 3),
+          });
+          yield* Fiber.join(turnFiber);
+
+          // Settle armed the background quiescence watch because inputAdmissionBusy was true
+          const settlementToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+          expect(settlementToken).toMatch(/^background:/);
+          expect(captures.inputAdmissionBusy).toBe(true);
+
+          // Follow-up with mismatched controls is rejected while background quiescence is pending
+          const rejectedSend = yield* adapter
+            .sendTurn({
+              threadId,
+              input: "premature input before subagent completes",
+              modelSelection: { instanceId, model: "openai/other" },
+            })
+            .pipe(Effect.flip);
+          expect(rejectedSend).toMatchObject({
+            _tag: "ProviderAdapterValidationError",
+            reason: "busy",
+            issue: "Prime Agent background work is still running. Try again after it finishes.",
+          });
+
+          // Child cancellation rearms quiescence in idle state
+          yield* offer(captures, {
+            _tag: "ChildUpdated",
+            child: { id: "child-agent-1", label: "research agent", status: "cancelled" },
+          });
+          const childStopToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+          expect(childStopToken).toMatch(/^background:/);
+
+          // Compaction completion rearms quiescence in idle state
+          yield* offer(captures, {
+            _tag: "CompactionCompleted",
+            outcome: "completed",
+            willRetry: false,
+          });
+          const compactionToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+          expect(compactionToken).toMatch(/^background:/);
+
+          // SessionResynced rearms quiescence while inputAdmissionBusy remains true
+          yield* offer(captures, {
+            _tag: "SessionResynced",
+            messages: [],
+            state: {
+              ...initialSnapshot().state,
+              isStreaming: false,
+              isCompacting: false,
+              isBashRunning: false,
+            },
+            children: [{ id: "child-agent-1", label: "research agent", status: "cancelled" }],
+          });
+          const resyncToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+          expect(resyncToken).toMatch(/^background:/);
+          expect(captures.inputAdmissionBusy).toBe(true);
+
+          // Releasing the barrier completes quiescence and clears inputAdmissionBusy
+          yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+          const completedTokens = [
+            yield* Queue.take(captures.backgroundQuiescenceCompleted),
+            yield* Queue.take(captures.backgroundQuiescenceCompleted),
+            yield* Queue.take(captures.backgroundQuiescenceCompleted),
+            yield* Queue.take(captures.backgroundQuiescenceCompleted),
+          ];
+          expect(new Set(completedTokens)).toEqual(
+            new Set([settlementToken, childStopToken, compactionToken, resyncToken]),
+          );
+          expect(captures.rlmQuiescenceSignals.map((signal) => signal.aborted)).toEqual([
+            true,
+            true,
+            true,
+            false,
+          ]);
+          expect(captures.inputAdmissionBusy).toBe(false);
+
+          // Follow-up turn with changed controls is now admitted
+          const secondTurnFiber = yield* adapter
+            .sendTurn({
+              threadId,
+              input: "follow-up input after background quiescence",
+              modelSelection: { instanceId, model: "openai/other" },
+            })
+            .pipe(Effect.forkChild);
+          const secondCorrelationId = yield* Queue.take(captures.correlatedPromptObserved);
+          expect(secondCorrelationId).toBeDefined();
+          yield* offer(captures, {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: lifecycleSnapshot(secondCorrelationId, "completed", 2),
+          });
+          yield* Fiber.join(secondTurnFiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects interactions and approvals after too-late cancellation", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -7565,6 +7565,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       yield* refreshMcpAfterAdoption();
       yield* requireCorrelatedPromptLifecycleAdmission("prompt");
       const proofEpoch = yield* requireCurrentCorrelatedPromptLifecycleProof("prompt");
+      yield* resumeAfterAbort();
       const images = yield* validateImages("prompt", promptInput.images);
       yield* validatePromptContent("prompt", promptInput.text, images);
       yield* requireCorrelatedPromptLifecycleAdmission("prompt");

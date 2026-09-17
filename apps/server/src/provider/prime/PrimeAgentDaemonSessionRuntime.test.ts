@@ -12304,6 +12304,97 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
+  it.effect(
+    "resumes session queue before submitting a correlated prompt after delivered cancellation, and blocks submission if resume fails",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const correlationId1 = "5c290a6f-2733-43de-89bf-b5a72a400e3f";
+          const correlationId2 = "6c290a6f-2733-43de-89bf-b5a72a400e3f";
+          const correlationId3 = "7c290a6f-2733-43de-89bf-b5a72a400e3f";
+          const lifecycle1 = promptLifecycle(correlationId1, "delivered", 2);
+          const test = fixture({
+            correlatedPromptLifecycleCapability: true,
+            rawSnapshot: {
+              ...snapshot(),
+              promptLifecycles: {
+                records: [lifecycle1],
+                expired: [],
+              },
+            },
+            cancelPromptLifecycleImpl: () =>
+              Promise.resolve({
+                status: "too_late",
+                ownershipCrossed: true,
+                deliveryCrossed: true,
+                lifecycle: lifecycle1,
+              }),
+            submitCorrelatedPromptImpl: (_message, options) =>
+              Promise.resolve({
+                lifecycle: promptLifecycle(options.correlationId, "owned", 1),
+                duplicate: false,
+              }),
+            resumeQueueResponses: [
+              {
+                type: "response",
+                command: "resume_queue",
+                success: false,
+                error: "daemon resume failed",
+              },
+              {
+                type: "response",
+                command: "resume_queue",
+                success: true,
+                data: { resumed: true },
+              },
+            ],
+          });
+          const runtime = yield* test.make();
+          yield* Stream.runDrain(runtime.events).pipe(Effect.forkChild({ startImmediately: true }));
+
+          const cancelResult = yield* runtime.cancelPromptLifecycle(correlationId1, {
+            interruptDelivered: true,
+          });
+          expect(cancelResult).toMatchObject({ status: "too_late" });
+          const abortCalls = test.captures.commands.filter(
+            (c) => c.type === "abort_and_clear_queue",
+          );
+          expect(abortCalls).toHaveLength(1);
+
+          const failedSubmit = yield* runtime
+            .submitCorrelatedPrompt({
+              text: "blocked prompt after abort",
+              correlationId: correlationId2,
+              queueIfBusy: true,
+            })
+            .pipe(Effect.flip);
+          expect(failedSubmit).toMatchObject({
+            operation: "resume-after-abort",
+            reason: "invalid-response",
+          });
+          expect(
+            test.captures.connectionCalls.filter(
+              (call) => call.method === "submitCorrelatedPrompt",
+            ),
+          ).toHaveLength(0);
+
+          yield* runtime.submitCorrelatedPrompt({
+            text: "allowed prompt after resumed queue",
+            correlationId: correlationId3,
+            queueIfBusy: true,
+          });
+
+          const resumeCalls = test.captures.commands.filter((c) => c.type === "resume_queue");
+          expect(resumeCalls).toHaveLength(2);
+          expect(
+            test.captures.connectionCalls.filter(
+              (call) => call.method === "submitCorrelatedPrompt",
+            ),
+          ).toHaveLength(1);
+        }),
+      ),
+  );
+
   it.effect("rejects malformed and timed-out input delivery mode mutations", () =>
     Effect.scoped(
       Effect.gen(function* () {
