@@ -1014,6 +1014,13 @@ export function sortSettledThreadsForSidebar<
 export function resolveWorkingStartedAt(
   thread: Pick<SidebarThreadSummary, "latestTurn" | "session">,
 ): string | null {
+  // Background agents have their own lifetimes. A settled parent's latest
+  // transition must not restart a duration for their independent work.
+  if (
+    thread.session?.status !== "starting" &&
+    !(thread.session?.status === "running" && thread.session.activeTurnId !== null)
+  )
+    return null;
   const turn = thread.latestTurn;
   if (turn && turn.completedAt === null) {
     return firstValidTimestamp(turn.startedAt, turn.requestedAt, thread.session?.updatedAt);

@@ -2342,6 +2342,14 @@ const make = Effect.gen(function* () {
       ) {
         return;
       }
+      // Background tasks belong to the session, not the parent turn that spawned
+      // them. Their spawn turn remains useful for grouping after that turn ends.
+      // Incarnation, failed-admission, and Stop barriers above still apply.
+      const isSessionTaskEvent =
+        event.type === "task.started" ||
+        event.type === "task.progress" ||
+        event.type === "task.updated" ||
+        event.type === "task.completed";
       let admissionAcceptedByCas = false;
       // A turn the provider opened on its own (Claude continuing after a
       // background task finishes) carries no admission request id. It is
@@ -2404,26 +2412,29 @@ const make = Effect.gen(function* () {
       } else if (
         strictSessionIncarnation !== undefined &&
         thread.session?.status === "starting" &&
-        thread.session.pendingTurnRequestId !== undefined
+        thread.session.pendingTurnRequestId !== undefined &&
+        !isSessionTaskEvent
       ) {
-        // No output or lifecycle transition may pass a pending exact admission.
+        // Parent output cannot pass a pending admission; existing background
+        // tasks may still settle within the already-bound session.
         return;
       }
 
       if (strictSessionIncarnation !== undefined) {
         const activeRequestId = thread.session?.activeTurnRequestId;
         const isTurnScoped =
-          event.turnId !== undefined ||
-          event.admissionRequestId !== undefined ||
-          event.type.startsWith("turn.") ||
-          event.type.startsWith("item.") ||
-          event.type === "content.delta" ||
-          event.type === "request.opened" ||
-          event.type === "request.resolved" ||
-          event.type === "user-input.requested" ||
-          event.type === "user-input.resolved" ||
-          event.type === "interaction.requested" ||
-          event.type === "interaction.resolved";
+          !isSessionTaskEvent &&
+          (event.turnId !== undefined ||
+            event.admissionRequestId !== undefined ||
+            event.type.startsWith("turn.") ||
+            event.type.startsWith("item.") ||
+            event.type === "content.delta" ||
+            event.type === "request.opened" ||
+            event.type === "request.resolved" ||
+            event.type === "user-input.requested" ||
+            event.type === "user-input.resolved" ||
+            event.type === "interaction.requested" ||
+            event.type === "interaction.resolved");
         if (
           !admissionAcceptedByCas &&
           isTurnScoped &&

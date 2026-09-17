@@ -1205,6 +1205,187 @@ describe("ProviderRuntimeIngestion", () => {
     }),
   );
 
+  describe("session-scoped background task lifecycle", () => {
+    it.each(
+      (["ready", "running", "starting"] as const).flatMap((status) =>
+        [false, true].map((oldAdmission) => ({ status, oldAdmission })),
+      ),
+    )(
+      "settles older children while parent is $status (old admission: $oldAdmission)",
+      async ({ status, oldAdmission }) => {
+        const harness = await createHarness();
+        const threadId = asThreadId("thread-1");
+        const incarnation = RuntimeSessionId.make("background-session");
+        const providerInstanceId = ProviderInstanceId.make("codex");
+        const nextRequest = CommandId.make("next-parent-request");
+        const session = {
+          threadId,
+          status,
+          providerName: "codex",
+          providerInstanceId,
+          sessionIncarnationId: incarnation,
+          runtimeMode: "approval-required" as const,
+          activeTurnId: status === "running" ? asTurnId("later-parent-turn") : null,
+          ...(status === "running" ? { activeTurnRequestId: nextRequest } : {}),
+          ...(status === "starting"
+            ? {
+                pendingTurnRequestId: nextRequest,
+                pendingTurnMessageId: asMessageId("next-message"),
+                pendingTurnSessionId: incarnation,
+                pendingTurnRequestedAt: "2026-01-01T00:01:00.000Z",
+                pendingTurnDeadlineAt: "2026-01-01T00:02:00.000Z",
+              }
+            : {}),
+          lastError: null,
+          updatedAt: "2026-01-01T00:01:00.000Z",
+        };
+        const spawnRequest = CommandId.make("spawn-parent-request");
+        await harness.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("bind-spawn-session"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId,
+            sessionIncarnationId: incarnation,
+            runtimeMode: "approval-required",
+            lastError: null,
+            activeTurnId: asTurnId("original-spawn-turn"),
+            activeTurnRequestId: spawnRequest,
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        const base = {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId,
+          sessionIncarnationId: incarnation,
+          threadId,
+          turnId: asTurnId("original-spawn-turn"),
+          ...(oldAdmission ? { admissionRequestId: spawnRequest } : {}),
+          createdAt: "2026-01-01T00:01:01.000Z",
+        };
+        for (const taskId of ["child-a", "child-b"]) {
+          harness.emit({
+            ...base,
+            admissionRequestId: spawnRequest,
+            type: "task.started",
+            eventId: asEventId(`start-${taskId}`),
+            payload: { taskId, taskType: "agent", description: taskId },
+          });
+        }
+        await harness.drain();
+        expect((await harness.readThreadShell()).backgroundLiveness).toBe("working");
+        await harness.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("bind-background-session"),
+          threadId,
+          session,
+          createdAt: session.updatedAt,
+        });
+        harness.emit({
+          ...base,
+          type: "task.updated",
+          eventId: asEventId("child-a-idle"),
+          payload: { taskId: "child-a", status: "idle", timelineBypass: true },
+        });
+        harness.emit({
+          ...base,
+          type: "task.completed",
+          eventId: asEventId("child-b-completed"),
+          payload: { taskId: "child-b", status: "completed" },
+        });
+        await harness.drain();
+        expect((await harness.readThreadShell()).backgroundLiveness).toBeNull();
+        const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+        expect(thread?.activities.some((entry) => entry.id === "child-a-idle")).toBe(true);
+        expect(thread?.activities.some((entry) => entry.id === "child-b-completed")).toBe(true);
+        expect(thread?.session?.status).toBe(status);
+        expect(thread?.session?.activeTurnId).toBe(session.activeTurnId);
+        // Neither late usage nor another parent response may restart the fleet.
+        harness.emit({
+          ...base,
+          type: "task.progress",
+          eventId: asEventId("late-child-usage"),
+          payload: { taskId: "child-a", description: "Final usage", summary: "Final usage" },
+        });
+        harness.emit({
+          ...base,
+          type: "content.delta",
+          eventId: asEventId("stale-parent-output"),
+          payload: { streamKind: "assistant_text", delta: "must remain fenced" },
+        });
+        await harness.drain();
+        expect((await harness.readThreadShell()).backgroundLiveness).toBeNull();
+        const finalThread = (await harness.readModel()).threads[0];
+        expect(finalThread?.messages.some((m) => m.text.includes("must remain fenced"))).toBe(
+          false,
+        );
+        expect(finalThread?.activities).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "task.progress",
+              payload: expect.objectContaining({ taskId: "child-a" }),
+            }),
+          ]),
+        );
+      },
+    );
+
+    it.each(["incarnation", "provider", "stopped", "failed-admission"] as const)(
+      "keeps the %s fence for background task events",
+      async (fence) => {
+        const harness = await createHarness();
+        const threadId = asThreadId("thread-1");
+        const incarnation = RuntimeSessionId.make("bound-session");
+        await harness.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("bind-fenced-background"),
+          threadId,
+          session: {
+            threadId,
+            status:
+              fence === "stopped" ? "stopped" : fence === "failed-admission" ? "error" : "ready",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            sessionIncarnationId: incarnation,
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            ...(fence === "failed-admission"
+              ? { failedTurnRequestId: CommandId.make("failed-request") }
+              : {}),
+            lastError: null,
+            updatedAt: "2026-01-01T00:01:00.000Z",
+          },
+          createdAt: "2026-01-01T00:01:00.000Z",
+        });
+        harness.emit({
+          type: "task.updated",
+          eventId: asEventId("fenced-child-status"),
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make(
+            fence === "provider" ? "other-codex" : "codex",
+          ),
+          sessionIncarnationId:
+            fence === "incarnation" ? RuntimeSessionId.make("old-session") : incarnation,
+          threadId,
+          turnId: asTurnId("spawn-turn"),
+          createdAt: "2026-01-01T00:01:01.000Z",
+          payload: { taskId: "fenced-child", status: "running", timelineBypass: true },
+        });
+        await harness.drain();
+        expect((await harness.readThreadShell()).backgroundLiveness).toBeNull();
+        expect(
+          (await harness.readModel()).threads[0]?.activities.some(
+            (a) => a.id === "fenced-child-status",
+          ),
+        ).toBe(false);
+      },
+    );
+  });
+
   it("accepts only the exact pending admission and provider session incarnation", async () => {
     const harness = await createHarness();
     const threadId = asThreadId("thread-1");
