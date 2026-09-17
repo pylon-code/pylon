@@ -577,6 +577,70 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       }),
   );
 
+  it.effect(
+    "renders chunked system message task notices as command results without assistant-message shells",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Run tests" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        for (const [index, exitCode] of [0, 8].entries()) {
+          const itemId = "sys-notice-" + index;
+          yield* h.emitNative({ _tag: "AssistantItemStarted", itemId });
+          const notice =
+            "The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n" +
+            "<SYSTEM_MESSAGE> [Message] timestamp=2026-09-17T17:21:40Z sender=session/task-" +
+            index +
+            ' priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-' +
+            index +
+            '" finished with result:\n\n' +
+            "The command exited with code " +
+            exitCode +
+            ". Output: $ vp test run\nresult " +
+            index +
+            "\n\n" +
+            "}\n<attachment>\nAttachment processed: No MIME type detected.\nOriginal path: /path/to/tasks/task-" +
+            index +
+            ".log\nDescription: Task Description: pnpm --filter t3 test\n</attachment>";
+          for (const text of [notice.slice(0, 25), notice.slice(25, 90), notice.slice(90)]) {
+            yield* h.emitNative({ _tag: "ContentDelta", itemId, text, rawPayload: {} });
+          }
+          yield* h.emitNative({ _tag: "AssistantItemCompleted", itemId });
+        }
+        yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+        const result = yield* Fiber.join(sending);
+        yield* h.waitForEvent((event) => event.type === "turn.completed");
+        expect(h.seen.filter((event) => event.type === "content.delta")).toEqual([]);
+        expect(
+          h.seen.filter(
+            (event) =>
+              (event.type === "item.started" || event.type === "item.completed") &&
+              event.payload.itemType === "assistant_message",
+          ),
+        ).toEqual([]);
+        const tools = h.seen.filter((event) => event.type === "item.completed");
+        expect(tools).toHaveLength(2);
+        expect(tools.map((event) => event.itemId)).toEqual([
+          "antigravity-task:session/task-0",
+          "antigravity-task:session/task-1",
+        ]);
+        expect(tools.map((event) => event.payload.status)).toEqual(["completed", "failed"]);
+        expect(tools.every((event) => event.turnId === result.turnId)).toBe(true);
+        expect(tools[1]?.payload.data).toMatchObject({
+          command: "pnpm --filter t3 test",
+          taskId: "session/task-1",
+          item: {
+            command: "pnpm --filter t3 test",
+            aggregatedOutput: "$ vp test run\nresult 1\n",
+            exitCode: 8,
+          },
+        });
+      }),
+  );
+
   it.effect("preserves normal streaming, malformed notices, and interrupted message buffers", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
@@ -595,6 +659,18 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       const streamed = yield* h.waitForEvent((event) => event.type === "content.delta");
       expect(streamed.payload.delta).toBe("Testing now.");
       yield* h.emitNative({ _tag: "AssistantItemCompleted", itemId: "prose" });
+      yield* h.emitNative({ _tag: "AssistantItemStarted", itemId: "system-prose" });
+      const peerMsg =
+        "<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-14T23:22:20Z sender=reviewer priority=NORMAL content=### Adversarial Review: PR";
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "system-prose",
+        text: peerMsg,
+        rawPayload: {},
+      });
+      const peerStreamed = yield* h.waitForEvent((event) => event.type === "content.delta");
+      expect(peerStreamed.payload.delta).toBe(peerMsg);
+      yield* h.emitNative({ _tag: "AssistantItemCompleted", itemId: "system-prose" });
       yield* h.emitNative({ _tag: "AssistantItemStarted", itemId: "partial" });
       yield* h.emitNative({
         _tag: "ContentDelta",
@@ -609,10 +685,10 @@ it.layer(layer)("AntigravityAdapter", (it) => {
         h.seen
           .filter((event) => event.type === "content.delta")
           .map((event) => event.payload.delta),
-      ).toEqual(["Testing now.", "<task_notification>\npartial"]);
+      ).toEqual(["Testing now.", peerMsg, "<task_notification>\npartial"]);
       expect(
         h.seen.filter((event) => event.type === "item.completed").map((event) => event.itemId),
-      ).toEqual(["prose", "partial"]);
+      ).toEqual(["prose", "system-prose", "partial"]);
     }),
   );
 
