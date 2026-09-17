@@ -414,7 +414,7 @@ export type DelegationToolError = typeof DelegationToolError.Type;
 
 const DelegateThreadTool = Tool.make("delegate_thread", {
   description:
-    "Start a separate Pylon thread in its own worktree and return immediately. Keep small or tightly coupled work local; prefer built-in subagents for independent work. Use only when the user explicitly requests a separate Pylon thread or another provider, model, or account. Enabling delegation or lacking built-in agents is not a reason to use it. First load read_delegation_skill once for the workflow, defaults, waiting, and review rules. Reusing a delegationKey returns the existing child. Requires Pylon delegation in Settings → Integrations.",
+    "Start a separate Pylon thread in its own worktree and return immediately. Keep small or tightly coupled work local. For worthwhile independent work, follow the current preference returned by read_delegation_skill; default to built-in agents. Explicit user instructions override the preference. Availability alone is not a request to delegate. First load read_delegation_skill once for the workflow, defaults, waiting, and review rules. Reusing a delegationKey returns the existing child. Requires Pylon delegation in Settings → Integrations.",
   parameters: DelegateThreadInput,
   success: DelegateThreadResult,
   failure: DelegationToolError,
@@ -484,10 +484,10 @@ const InterruptDelegatedThreadTool = Tool.make("interrupt_delegated_thread", {
 
 const ReadDelegationSkillTool = Tool.make("read_delegation_skill", {
   description:
-    "Read the Pylon delegation skill: choose local work, built-in subagents, or explicitly requested Pylon child threads, then manage and review them efficiently. Load once before using Pylon delegation; no child is started. Requires the delegation capability.",
+    "Read the Pylon delegation skill: choose local work, built-in subagents, or Pylon child threads, then manage and review them efficiently. Read when choosing a delegation method for a task: includes the current project preference. No child is started. Requires the delegation capability.",
   success: Schema.String,
-  failure: McpCapabilityUnavailableError,
-  dependencies: [McpInvocationContext.McpInvocationContext],
+  failure: DelegationToolError,
+  dependencies,
 })
   .annotate(Tool.Title, "Read the Pylon delegation skill")
   .annotate(Tool.Readonly, true)

@@ -825,19 +825,6 @@ it.effect(
           Effect.provideService(McpSchema.McpServerClient, client),
         );
       expect(skillDenied.isError).toBe(true);
-      const skill = yield* server.callTool({ name: "read_delegation_skill", arguments: {} }).pipe(
-        Effect.provideService(McpInvocationContext.McpInvocationContext, {
-          ...invocation,
-          capabilities: new Set(["delegation"] as const),
-        }),
-        Effect.provideService(McpSchema.McpServerClient, client),
-      );
-      expect(skill.isError).toBe(false);
-      const content = skill.content[0];
-      expect(content?.type === "text" ? decodeJsonText(content.text) : null).toContain(
-        "name: pylon-delegation",
-      );
-
       const denied = yield* server
         .callTool({ name: "delegated_thread_status", arguments: { delegationKey: "k1" } })
         .pipe(

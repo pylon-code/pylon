@@ -1099,6 +1099,9 @@ export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 export const DelegationChildRuntimeMode = Schema.Literals(["inherit", "approval-required"]);
 export type DelegationChildRuntimeMode = typeof DelegationChildRuntimeMode.Type;
 
+export const DelegationPreference = Schema.Literals(["built-in", "pylon"]);
+export type DelegationPreference = typeof DelegationPreference.Type;
+
 export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "defaultModelSelection",
   "defaultRuntimeMode",
@@ -1109,6 +1112,7 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "enableAgentBrowserAccess",
   "enableAgentDeviceAccess",
   "enableAgentDelegation",
+  "delegationPreference",
   "delegationDefaultModelSelection",
   "delegationChildRuntimeMode",
   "textGenerationModelSelection",
@@ -1137,6 +1141,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   enableAgentDelegation: Schema.optionalKey(Schema.Boolean),
+  delegationPreference: Schema.optionalKey(DelegationPreference),
   delegationDefaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   delegationChildRuntimeMode: Schema.optionalKey(DelegationChildRuntimeMode),
   textGenerationModelSelection: Schema.optionalKey(ModelSelection),
@@ -1216,6 +1221,10 @@ export const ServerSettings = Schema.Struct({
    * is itself a delegated child.
    */
   enableAgentDelegation: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Preferred method when delegation is worthwhile; inactive while Pylon delegation is off. */
+  delegationPreference: DelegationPreference.pipe(
+    Schema.withDecodingDefault(Effect.succeed("built-in" as const)),
+  ),
   /**
    * Provider instance and model a delegated child uses when the agent names
    * none. Null means no default: the agent must name a provider. It is only a
@@ -1567,6 +1576,7 @@ export const ServerSettingsPatch = Schema.Struct({
   computerUseBinaryPath: Schema.optionalKey(Schema.String),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   enableAgentDelegation: Schema.optionalKey(Schema.Boolean),
+  delegationPreference: Schema.optionalKey(DelegationPreference),
   delegationDefaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   delegationChildRuntimeMode: Schema.optionalKey(DelegationChildRuntimeMode),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),

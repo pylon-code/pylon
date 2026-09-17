@@ -86,6 +86,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const mixedDevice = useScopedSettingsMixed(["enableAgentDeviceAccess"]);
   const mixedDelegation = useScopedSettingsMixed(["enableAgentDelegation"]);
   const mixedDelegationModel = useScopedSettingsMixed(["delegationDefaultModelSelection"]);
+  const mixedDelegationPreference = useScopedSettingsMixed(["delegationPreference"]);
   const mixedChildPermissions = useScopedSettingsMixed(["delegationChildRuntimeMode"]);
   // A saved default is shown exactly as stored, even when unavailable, because
   // delegation never substitutes another provider. With none saved the picker
@@ -502,8 +503,8 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
             {...searchableSetting("agent-delegation")}
             description={
               isProjectScope
-                ? "Built-in subagents stay the default. Allow separate Pylon threads in this project when you explicitly request them. Changes apply to new agent sessions; existing sessions and children keep running."
-                : "Built-in subagents stay the default. Allow separate Pylon threads when you explicitly request them. Changes apply to new agent sessions; existing sessions and children keep running. Projects can override it."
+                ? "Allow agents to use separate Pylon threads in this project according to your preferred method or an explicit request. Changes apply to new agent sessions; existing sessions and children keep running."
+                : "Allow agents to use separate Pylon threads according to your preferred method or an explicit request. Changes apply to new agent sessions; existing sessions and children keep running. Projects can override it."
             }
             control={
               <Switch
@@ -512,6 +513,44 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 checked={mixedDelegation ? false : settings.enableAgentDelegation}
                 onCheckedChange={(enabled) => updateSettings({ enableAgentDelegation: enabled })}
               />
+            }
+          />
+          <SettingsRow
+            serverScoped
+            settingKeys={["delegationPreference"]}
+            mixed={mixedDelegationPreference}
+            {...searchableSetting("delegation-preference")}
+            description="Choose the method when delegation is worthwhile. Small tasks stay local, and your message takes priority. The Pylon preference is inactive while delegation is off."
+            resetAction={
+              settings.delegationPreference !== "built-in" ? (
+                <SettingResetButton
+                  label="preferred delegation method"
+                  onClick={() => updateSettings({ delegationPreference: "built-in" })}
+                />
+              ) : null
+            }
+            control={
+              <Select
+                value={mixedDelegationPreference ? null : settings.delegationPreference}
+                onValueChange={(value) => {
+                  if (value === "built-in" || value === "pylon")
+                    updateSettings({ delegationPreference: value });
+                }}
+              >
+                <SelectTrigger size="sm" aria-label="Preferred delegation method">
+                  <SelectValue>
+                    {mixedDelegationPreference
+                      ? "Mixed"
+                      : settings.delegationPreference === "pylon"
+                        ? "Pylon threads"
+                        : "Built-in agents"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  <SelectItem value="built-in">Built-in agents</SelectItem>
+                  <SelectItem value="pylon">Pylon threads</SelectItem>
+                </SelectPopup>
+              </Select>
             }
           />
           <SettingsRow

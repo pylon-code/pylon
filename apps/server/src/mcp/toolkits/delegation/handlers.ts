@@ -95,10 +95,11 @@ const orFail = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
 ): Effect.Effect<A, DelegationFailedError, R> =>
   effect.pipe(
-    Effect.catchCause((cause): Effect.Effect<never, DelegationFailedError> =>
-      Cause.hasInterruptsOnly(cause)
-        ? Effect.failCause(cause as Cause.Cause<never>)
-        : Effect.fail(new DelegationFailedError({ cause })),
+    Effect.catchCause(
+      (cause): Effect.Effect<never, DelegationFailedError> =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause as Cause.Cause<never>)
+          : Effect.fail(new DelegationFailedError({ cause })),
     ),
   );
 
@@ -747,7 +748,18 @@ const make = Effect.gen(function* () {
 
   return DelegationToolkit.of({
     read_delegation_skill: () =>
-      McpInvocationContext.requireMcpCapability("delegation").pipe(Effect.as(delegationSkill)),
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.requireMcpCapability("delegation");
+        const parent = yield* orFail(snapshots.getThreadShellById(scope.threadId));
+        if (Option.isNone(parent))
+          return yield* new DelegatingThreadNotFoundError({ threadId: scope.threadId });
+        const settings = yield* orFail(serverSettings.getSettings);
+        const effective = resolveProjectSettings(settings, parent.value.projectId).settings;
+        const preference = effective.enableAgentDelegation
+          ? effective.delegationPreference
+          : "built-in";
+        return `Current preferred delegation method: ${preference}. Explicit user instructions override this preference. Small or tightly coupled work stays local.\n\n${delegationSkill}`;
+      }),
     delegate_thread,
     delegated_thread_status,
     delegated_thread_result,

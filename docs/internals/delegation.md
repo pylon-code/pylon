@@ -61,14 +61,14 @@ validated exactly like an explicit choice, and an unavailable one fails. The new
 not in `resolveProjectSettings`' disabled-provider fallback, which would otherwise swap a project's
 default for the environment's without saying so.
 
-Agents are told how to use delegation in two places. Every provider that takes Pylon runtime instructions
-(Claude, Codex, Cursor, Grok, OpenCode, Antigravity) gets a `<pylon_delegation>` block when its session's
-MCP credential grants `delegation`. Prime Agent sessions receive no Pylon instructions, so the same
-guidance also lives in the `delegate_thread` tool and parameter descriptions. Both prefer native
-subagents for bounded independent work and reserve Pylon delegation for explicit requests; enabling
-the capability alone is not an instruction to create child threads. Neither carries the
-configured default's name: settings can change mid-session, so the server resolves defaults when the tool
-runs and reports what it used in `defaultApplied`.
+Provider runtime instructions and MCP tool descriptions route agents to `read_delegation_skill`.
+Prime Agent uses the tool description because it does not receive Pylon runtime instructions.
+The canonical repo skill is embedded in the server bundle so installed servers need no source checkout.
+The read resolves the current parent project's `delegationPreference`, defaulting to built-in agents
+and treating a saved Pylon preference as inactive while delegation is disabled. Reading at task
+routing time avoids freezing a preference in provider session instructions. Explicit user instructions
+override the preference; neither availability nor preference means every task should be delegated.
+Provider/model defaults are still resolved at child creation and reported in `defaultApplied`.
 
 ## Accepted limits
 

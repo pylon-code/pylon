@@ -192,6 +192,15 @@ describe("scoped settings targets", () => {
 });
 
 describe("scoped settings writes", () => {
+  it("stores delegation preference per project without enabling delegation", () => {
+    const plan = planScopedSettingsPatch(checkout, [server], { delegationPreference: "pylon" });
+    expect(plan.serverWrites[0]?.patch).toEqual({
+      projectSettingsOverrides: { [projectId]: { delegationPreference: "pylon" } },
+    });
+    expect(server.serverConfig?.settings.delegationPreference).toBe("built-in");
+    expect(server.serverConfig?.settings.enableAgentDelegation).toBe(false);
+  });
+
   it("stores project device permission without changing the environment's permission", () => {
     const plan = planScopedSettingsPatch(checkout, [server], { enableAgentDeviceAccess: true });
     expect(plan.serverWrites[0]?.patch).toEqual({

@@ -9,8 +9,7 @@ When the t3-code MCP server exposes link_pull_request, you must use it to regist
  * go stale when settings change mid-session.
  */
 const DELEGATION_INSTRUCTIONS = `<pylon_delegation>
-Keep small or tightly coupled work local. For worthwhile bounded parallel work, prefer your own built-in subagents when available. Use Pylon delegation only when the user explicitly asks for a separate Pylon thread or work on another provider, model, or account. Enabling delegation is not a request to use it. Never fall back to Pylon delegation merely because built-in subagents are unavailable.
-Before using Pylon delegation, call the t3-code MCP tool read_delegation_skill once to load its workflow, defaults, waiting, and review rules. It does not start a child. Follow that skill when using delegate_thread and managing its results.
+Keep small or tightly coupled work local. Before choosing a delegation method for worthwhile independent work, call the t3-code MCP tool read_delegation_skill to read the current project preference and workflow. It does not start a child. The default is built-in subagents; a saved Pylon preference permits Pylon child threads without a separate request each time. Explicit user instructions override the preference. Availability alone is not a request to delegate, and missing built-in agents do not justify an automatic Pylon fallback. Follow the skill when using delegate_thread and managing results.
 </pylon_delegation>`;
 
 /** Shared runtime context; omit model and effort when the harness manages them dynamically. */

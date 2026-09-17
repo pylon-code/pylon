@@ -251,6 +251,8 @@ interface HarnessOptions {
   readonly delegationDefault?: ModelSelection | null;
   readonly childRuntimeMode?: DelegationChildRuntimeMode;
   readonly projectOverrides?: ProjectSettingsOverrides;
+  readonly delegationEnabled?: boolean;
+  readonly delegationPreference?: "built-in" | "pylon";
   /** Completed when the first turn start arrives; that dispatch then never returns. */
   readonly holdTurnStart?: Deferred.Deferred<void>;
 }
@@ -421,7 +423,8 @@ const makeHarness = Effect.fn("makeDelegationHarness")(function* (options: Harne
         ),
     }),
     ServerSettings.layerTest({
-      enableAgentDelegation: true,
+      enableAgentDelegation: options.delegationEnabled ?? true,
+      delegationPreference: options.delegationPreference ?? "built-in",
       newWorktreesStartFromOrigin: options.startFromOrigin ?? false,
       delegationDefaultModelSelection: options.delegationDefault ?? null,
       delegationChildRuntimeMode: options.childRuntimeMode ?? "inherit",
@@ -464,6 +467,31 @@ const delegateInput = {
 };
 
 describe("delegation toolkit gate", () => {
+  it.effect("resolves preference with project overrides and ignores it when disabled", () =>
+    Effect.gen(function* () {
+      for (const [options, expected] of [
+        [{}, "built-in"],
+        [{ delegationPreference: "pylon" }, "pylon"],
+        [
+          { delegationPreference: "pylon", projectOverrides: { delegationPreference: "built-in" } },
+          "built-in",
+        ],
+        [{ projectOverrides: { delegationPreference: "pylon" } }, "pylon"],
+        [{ delegationPreference: "pylon", delegationEnabled: false }, "built-in"],
+        [
+          { delegationPreference: "pylon", projectOverrides: { enableAgentDelegation: false } },
+          "built-in",
+        ],
+      ] as const) {
+        const harness = yield* makeHarness(options);
+        expect(yield* harness.call("read_delegation_skill", {})).toContain(
+          `Current preferred delegation method: ${expected}.`,
+        );
+        expect(yield* harness.commandTypes).toEqual([]);
+      }
+    }),
+  );
+
   it.effect("reads the skill without starting a child or touching git", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();

@@ -46,12 +46,10 @@ describe("buildRuntimeInstructions", () => {
       delegationAvailable: true,
     });
     expect(instructions).toContain("<pylon_delegation>");
-    // When to choose delegation over built-in subagents.
-    expect(instructions).toContain("prefer your own built-in subagents");
-    expect(instructions).toContain("only when the user explicitly asks");
-    expect(instructions).toContain("Never fall back to Pylon delegation");
-    expect(instructions).toContain("read_delegation_skill once");
-    // Load the workflow on demand instead of repeating it in every session.
+    expect(instructions).toContain("read_delegation_skill");
+    expect(instructions).toContain("current project preference");
+    expect(instructions).toContain("default is built-in subagents");
+    expect(instructions).toContain("Explicit user instructions override");
     expect(instructions).not.toContain("waitSeconds 45");
   });
 });

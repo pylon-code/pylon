@@ -37,11 +37,16 @@ started it.
 A default is never swapped for something else. If the default provider is signed out or disabled, or
 no longer offers that model, delegation fails with an error until you pick a new default.
 
-Keep small or tightly coupled tasks in the current thread. Pylon instructs agents to prefer their
-built-in subagents for worthwhile independent work, and to use Pylon delegation only when you
-explicitly request a separate Pylon thread or work on another provider, model, or account. Turning
-the switch on makes delegation available; it does not ask the agent to use it. If built-in subagents
-are unavailable, the agent should continue locally instead of automatically creating Pylon threads.
+**Preferred delegation method** chooses how agents delegate worthwhile independent work:
+**Built-in agents** (the default) or **Pylon threads**. Set it once for all projects or override it
+per project. Choosing Pylon lets agents use your default delegation model without being asked each
+time. Small or tightly coupled tasks stay local, and explicit instructions in your message take
+priority. Enabling delegation alone does not request it. With the built-in preference, unavailable
+built-in subagents do not trigger automatic Pylon delegation.
+
+The preference is read when the agent chooses a method for a new task. Turning delegation off makes
+the saved Pylon preference inactive; turning it on restores it. To make a one-time request, say
+“Use Pylon delegation for this task” or “Keep this task local.”
 
 Turning Pylon delegation off leaves built-in subagents alone. Existing agent sessions retain their
 tools until their next session start, and existing children keep running. Start a new thread for the

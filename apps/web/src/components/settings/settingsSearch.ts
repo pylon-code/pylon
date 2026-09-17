@@ -567,6 +567,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "delegation-preference",
+    title: "Preferred delegation method",
+    to: "/settings/integrations",
+    scope: "project-defaults",
+    searchTerms: ["prefer native built-in agents pylon threads delegation method"],
+  },
+  {
     id: "delegation-default-model",
     title: "Default delegation model",
     to: "/settings/integrations",

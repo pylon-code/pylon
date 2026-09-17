@@ -1,13 +1,13 @@
 ---
 name: pylon-delegation
-description: Decide between local work, built-in subagents, and Pylon child threads; run and review explicitly requested Pylon delegation without unnecessary context, polling, or duplicate work. Use when choosing a delegation route or managing Pylon delegation tools.
+description: Decide between local work, built-in subagents, and Pylon child threads; run and review Pylon delegation without unnecessary context, polling, or duplicate work. Use when choosing a delegation route or managing Pylon delegation tools.
 ---
 
 # Pylon delegation
 
 ## Choose the route
 
-Keep small or tightly coupled work local. Prefer the agent's built-in subagents for worthwhile independent work. Use Pylon's `delegate_thread` only when the user explicitly requests a separate Pylon thread or work on another provider, model, or account. Enabling Pylon delegation is availability, not a request to use it. Missing built-in agents are not a reason to fall back to Pylon.
+Keep small or tightly coupled work local. For worthwhile independent work, follow the current preferred delegation method supplied by `read_delegation_skill`: **built-in** (default) or **pylon**. When reading this repo file directly, call that tool before choosing the route; the file does not contain the user's current preference. A saved Pylon preference permits Pylon child threads without a separate request every time. Explicit user instructions override the preference, including requests to stay local or use a particular method. Enabling Pylon delegation alone is availability, not a request to use it. With the built-in preference, missing built-in agents are not a reason to fall back to Pylon.
 
 Delegation adds briefing, startup, and review costs. Identify the independent deliverable and useful work the parent can do concurrently; avoid delegating a tiny change just to exercise the feature unless explicitly asked to test it. Do not promise token savings without measured evidence.
 
@@ -29,6 +29,6 @@ A child gets its own worktree; uncommitted parent changes are not a handoff mech
 
 ## Availability and controls
 
-The MCP server provides this skill through `read_delegation_skill`; load it once when needed, not before every status call. If delegation tools are unavailable, continue locally or explain how to enable them; do not install another orchestrator automatically.
+The MCP server provides this skill through `read_delegation_skill`; read it when choosing a method for a new task, not before every status call. If delegation tools are unavailable, continue locally or explain how to enable them; do not install another orchestrator automatically.
 
-**Settings → Integrations → Pylon delegation** controls availability, default model, and child permissions globally or per project. Availability changes apply at the next session start. Turning it off does not stop existing children or disable built-in subagents; stop a child in its thread. Provider usage is charged to each child's account. Pylon does not yet show a combined billed cost or enforce a delegation token budget.
+**Settings → Integrations → Pylon delegation** controls availability, preferred delegation method, default model, and child permissions globally or per project. Availability changes apply at the next session start. While off, the saved Pylon preference is inactive. Turning it off does not stop existing children or disable built-in subagents; stop a child in its thread. Provider usage is charged to each child's account. Pylon does not yet show a combined billed cost or enforce a delegation token budget.
