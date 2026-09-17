@@ -162,6 +162,8 @@ type TurnStartRequestedDomainEvent = Extract<
   { type: "thread.turn-start-requested" }
 >;
 
+type ProviderDiffEvent = Extract<ProviderRuntimeEvent, { type: "turn.diff.updated" }>;
+
 type RuntimeIngestionInput =
   | {
       source: "runtime";
@@ -170,6 +172,12 @@ type RuntimeIngestionInput =
   | {
       source: "domain";
       event: TurnStartRequestedDomainEvent;
+    }
+  | {
+      /** A diff whose workspace the diff worker confirmed is a Git repository. */
+      source: "diff";
+      event: ProviderDiffEvent;
+      workspaceCwd: string;
     };
 
 function toTurnId(value: TurnId | string | undefined): TurnId | undefined {
@@ -2212,7 +2220,7 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const processRuntimeEvent = (event: ProviderRuntimeEvent) => {
+  const processRuntimeEvent = (event: ProviderRuntimeEvent, confirmedDiffWorkspace?: string) => {
     const runtimeFence = readProviderRuntimeEventFence(event);
     const process = Effect.gen(function* () {
       if (runtimeFence !== undefined && !(yield* runtimeFence.isCurrent)) return;
@@ -3024,6 +3032,9 @@ const make = Effect.gen(function* () {
 
       if (event.type === "turn.diff.updated") {
         const turnId = toTurnId(event.turnId);
+        if (!turnId) return;
+        const turn = yield* projectionTurnRepository.getByTurnId({ threadId: thread.id, turnId });
+        if (Option.isNone(turn) || turn.value.state !== "running") return;
         const checkpointContext = turnId
           ? yield* projectionSnapshotQuery
               .getThreadCheckpointContext(thread.id)
@@ -3035,7 +3046,7 @@ const make = Effect.gen(function* () {
           turnId &&
           checkpointContext &&
           workspaceCwd &&
-          (yield* checkpointStore.isGitRepository(workspaceCwd))
+          workspaceCwd === confirmedDiffWorkspace
         ) {
           // Skip if a checkpoint already exists for this turn. A real
           // (non-placeholder) capture from CheckpointReactor should not
@@ -3228,31 +3239,66 @@ const make = Effect.gen(function* () {
 
   const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;
 
-  const processInput = (input: RuntimeIngestionInput) =>
-    input.source === "runtime" ? processRuntimeEvent(input.event) : processDomainEvent(input.event);
+  const processInput = (input: RuntimeIngestionInput) => {
+    switch (input.source) {
+      case "runtime":
+        return processRuntimeEvent(input.event);
+      case "domain":
+        return processDomainEvent(input.event);
+      case "diff":
+        // Re-enter Pylon's normal incarnation, stop and runtime-fence checks.
+        return processRuntimeEvent(input.event, input.workspaceCwd);
+    }
+  };
 
-  const processInputSafely = (input: RuntimeIngestionInput) =>
-    processInput(input).pipe(
-      Effect.catchCause((cause) => {
-        if (Cause.hasInterruptsOnly(cause)) {
-          return Effect.failCause(cause);
-        }
-        return Effect.logWarning("provider runtime ingestion failed to process event", {
-          source: input.source,
-          eventId: input.event.eventId,
-          eventType: input.event.type,
-          cause: Cause.pretty(cause),
-        });
-      }),
-    );
+  const logIngestionFailure =
+    (source: string, event: { readonly eventId: string; readonly type: string }) =>
+    <E, R>(effect: Effect.Effect<void, E, R>) =>
+      effect.pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.failCause(cause);
+          }
+          return Effect.logWarning("provider runtime ingestion failed to process event", {
+            source,
+            eventId: event.eventId,
+            eventType: event.type,
+            cause: Cause.pretty(cause),
+          });
+        }),
+      );
 
-  const worker = yield* makeDrainableWorker(processInputSafely);
+  const worker = yield* makeDrainableWorker((input: RuntimeIngestionInput) =>
+    processInput(input).pipe(logIngestionFailure(input.source, input.event)),
+  );
+
+  // Repository detection for a diff goes through VCS subprocesses, which can
+  // stall behind slow or hung git. It runs on its own worker so a stuck diff
+  // never delays the lifecycle worker; confirmed diffs are handed back to it.
+  const detectProviderDiffRepository = Effect.fn("detectProviderDiffRepository")(function* (
+    event: ProviderDiffEvent,
+  ) {
+    if (!toTurnId(event.turnId)) return;
+    const fence = readProviderRuntimeEventFence(event);
+    if (fence !== undefined && !(yield* fence.isCurrent)) return;
+    const checkpointContext = yield* projectionSnapshotQuery
+      .getThreadCheckpointContext(event.threadId)
+      .pipe(Effect.map(Option.getOrUndefined));
+    const workspaceCwd = checkpointContext?.worktreePath ?? checkpointContext?.workspaceRoot;
+    if (!workspaceCwd || !(yield* checkpointStore.isGitRepository(workspaceCwd))) return;
+    yield* worker.enqueue({ source: "diff", event, workspaceCwd });
+  });
+  const diffWorker = yield* makeDrainableWorker((event: ProviderDiffEvent) =>
+    detectProviderDiffRepository(event).pipe(logIngestionFailure("diff", event)),
+  );
 
   const start: ProviderRuntimeIngestionShape["start"] = () =>
     Effect.gen(function* () {
       yield* forkParked(
         Stream.runForEach(providerService.streamEvents, (event) =>
-          worker.enqueue({ source: "runtime", event }),
+          event.type === "turn.diff.updated"
+            ? diffWorker.enqueue(event)
+            : worker.enqueue({ source: "runtime", event }),
         ),
       );
       yield* forkParked(
@@ -3267,7 +3313,8 @@ const make = Effect.gen(function* () {
 
   return {
     start,
-    drain: worker.drain,
+    // The diff worker feeds the lifecycle worker, so drain it first.
+    drain: diffWorker.drain.pipe(Effect.andThen(worker.drain)),
   } satisfies ProviderRuntimeIngestionShape;
 });
 
