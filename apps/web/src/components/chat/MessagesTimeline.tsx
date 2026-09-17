@@ -763,13 +763,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       // Index scrolling starts from estimates. Keep the saved row mounted
       // until its measured position and the DOM agree for two layout frames.
       let stableFrames = 0;
+      let remainingFrames = 120;
       const reconcile = () => {
         if (cancelled) return;
+        if (--remainingFrames <= 0) {
+          setPositionedThreadKey(listIdentityKey);
+          return;
+        }
         const state = list.getState();
         const rowIndex = state.indexByKey(position.rowId);
         const row = rowIndex === undefined ? undefined : state.elementAtIndex(rowIndex);
         const element = list.getScrollableNode();
-        if (!row || !element) return;
+        if (!row || !element) {
+          settleFrame = requestAnimationFrame(reconcile);
+          return;
+        }
         const offset = Math.max(
           0,
           Math.min(

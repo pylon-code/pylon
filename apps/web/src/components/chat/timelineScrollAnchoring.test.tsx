@@ -189,3 +189,14 @@ describe("remembered timeline positions", () => {
     expect(readTimelinePosition("scroll-test-a:thread-1")).toEqual(following);
   });
 });
+
+it("evicts the oldest remembered thread while refreshing recently saved positions", () => {
+  const position = { rowId: "row", offsetWithinRow: 0, scrollOffset: 0, atEnd: false };
+  for (let index = 0; index < 100; index++)
+    rememberTimelinePosition(`cache-bound-${index}`, position);
+  rememberTimelinePosition("cache-bound-0", position);
+  rememberTimelinePosition("cache-bound-new", position);
+  expect(readTimelinePosition("cache-bound-1")).toBeUndefined();
+  expect(readTimelinePosition("cache-bound-0")).toEqual(position);
+  expect(readTimelinePosition("cache-bound-new")).toEqual(position);
+});
