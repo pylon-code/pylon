@@ -6,6 +6,7 @@ import {
   OrchestrationMessageContext,
   CheckpointRef,
   CommandId,
+  EventId,
   IsoDateTime,
   MessageId,
   NonNegativeInt,
@@ -1741,6 +1742,33 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     `,
   });
 
+  const deliveredDelegationNotificationRows = SqlSchema.findAll({
+    Request: Schema.Struct({ threadId: ThreadId, notificationIds: Schema.Array(EventId) }),
+    Result: Schema.Struct({ notificationId: EventId }),
+    execute: ({ threadId, notificationIds }) => sql`
+      SELECT DISTINCT notice.value AS "notificationId"
+      FROM projection_thread_activities AS activity,
+           json_each(activity.payload_json, '$.notificationIds') AS notice
+      WHERE activity.thread_id = ${threadId}
+        AND activity.kind = 'delegation.follow-through.delivered'
+        AND notice.type = 'text'
+        AND ${sql.in("notice.value", notificationIds)}
+    `,
+  });
+  const getDeliveredDelegationNotificationIds: ProjectionSnapshotQueryShape["getDeliveredDelegationNotificationIds"] =
+    (input) =>
+      input.notificationIds.length === 0
+        ? Effect.succeed([])
+        : deliveredDelegationNotificationRows(input).pipe(
+            Effect.map((rows) => rows.map((row) => row.notificationId)),
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getDeliveredDelegationNotificationIds:query",
+                "ProjectionSnapshotQuery.getDeliveredDelegationNotificationIds:decodeRows",
+              ),
+            ),
+          );
+
   const getPendingRequestActivities: ProjectionSnapshotQueryShape["getPendingRequestActivities"] = (
     input,
   ) =>
@@ -1826,6 +1854,30 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE ${sql.in("activity_id", activityIds)}
       `,
   });
+
+  const getDelegationObservationActivities: ProjectionSnapshotQueryShape["getDelegationObservationActivities"] =
+    (input) =>
+      input.childThreadIds.length === 0
+        ? Effect.succeed([])
+        : listThreadActivityRowsByIds({
+            activityIds: input.childThreadIds.map((id) =>
+              EventId.make(`delegation-observation:${id}`),
+            ),
+          }).pipe(
+            Effect.map((rows) =>
+              rows
+                .filter(
+                  (row) => row.threadId === input.threadId && row.kind === "delegation.child-state",
+                )
+                .map(mapThreadActivityRow),
+            ),
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getDelegationObservationActivities:query",
+                "ProjectionSnapshotQuery.getDelegationObservationActivities:decodeRows",
+              ),
+            ),
+          );
 
   const listThreadActivityRowsByThreadAndKinds = SqlSchema.findAll({
     Request: ThreadActivityKindsLookupInput,
@@ -4179,6 +4231,8 @@ pending_approval_requests AS (
 
   return {
     getCommandReadModel,
+    getDeliveredDelegationNotificationIds,
+    getDelegationObservationActivities,
     getUserInputActivity,
     getPendingRequestActivities,
     getSnapshot,

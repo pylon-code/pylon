@@ -76,6 +76,7 @@ import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import * as RollbackSagaRunner from "./rollback/RollbackSagaRunner.ts";
 import * as ThreadSettlementReactor from "./orchestration/ThreadSettlementReactor.ts";
+import * as DelegationFollowThroughReactor from "./orchestration/DelegationFollowThroughReactor.ts";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
 import * as ProjectSettingsReactor from "./orchestration/ProjectSettingsReactor.ts";
 import * as ThreadPullRequestReactor from "./orchestration/ThreadPullRequestReactor.ts";
@@ -301,6 +302,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(RollbackSagaRuntimeLayerLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
   Layer.provideMerge(ThreadSettlementReactor.layer),
+  Layer.provideMerge(DelegationFollowThroughReactor.layer),
   Layer.provideMerge(PullRequestSyncReactor.layer),
   Layer.provideMerge(ThreadPullRequestReactor.layer),
   Layer.provideMerge(ProjectSettingsReactor.layer),
@@ -477,7 +479,7 @@ const ProviderRuntimeLayerLive = composeProviderRuntimeLayer({
   ),
   orchestration: OrchestrationLayerLive,
   reaper: ProviderSessionReaperLive,
-});
+}).pipe(Layer.provideMerge(ServerSettingsLayerLive));
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services

@@ -7,6 +7,8 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { CommandId, OrchestrationCommand } from "@t3tools/contracts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -95,6 +97,7 @@ function commandToAggregateRef(command: OrchestrationCommand): {
 
 const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const settingsService = yield* Effect.serviceOption(ServerSettingsService);
   const eventStore = yield* OrchestrationEventStore;
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
@@ -167,6 +170,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       }
       if (
         command.type !== "thread.turn.start" &&
+        command.type !== "thread.delegation.follow-through" &&
         command.type !== "thread.compaction.queue.resume" &&
         command.type !== "thread.input-queue.follow-up" &&
         command.type !== "thread.approval.respond" &&
@@ -372,14 +376,54 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             ? yield* projectionSnapshotQuery.getUserInputActivity(envelope.command)
             : Option.none();
         const pendingRequestActivities =
+          envelope.command.type === "thread.delegation.follow-through" ||
           envelope.command.type === "thread.settle" ||
           envelope.command.type === "thread.auto-settle" ||
           envelope.command.type === "thread.snooze"
             ? yield* projectionSnapshotQuery.getPendingRequestActivities(envelope.command)
             : undefined;
+        const delegationAdmission =
+          envelope.command.type === "thread.delegation.follow-through"
+            ? yield* Effect.gen(function* () {
+                const command = envelope.command;
+                if (command.type !== "thread.delegation.follow-through") return undefined;
+                const message = yield* projectionSnapshotQuery.getTurnStartMessage({
+                  threadId: command.threadId,
+                  messageId: command.messageId,
+                });
+                const deliveredNotificationIds =
+                  yield* projectionSnapshotQuery.getDeliveredDelegationNotificationIds(command);
+                const parent = commandReadModel.threads.find(
+                  (thread) => thread.id === command.threadId,
+                );
+                if (Option.isNone(settingsService))
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: command.type,
+                    detail: "Delegation admission requires the server settings service.",
+                  });
+                const settings = yield* settingsService.value.getSettings.pipe(
+                  Effect.mapError(
+                    () =>
+                      new OrchestrationCommandInvariantError({
+                        commandType: command.type,
+                        detail: "Delegation settings could not be read.",
+                      }),
+                  ),
+                );
+                return {
+                  enabled:
+                    parent !== undefined &&
+                    resolveProjectSettings(settings, parent.projectId).settings
+                      .enableAgentDelegation,
+                  messageExists: Option.isSome(message),
+                  deliveredNotificationIds,
+                };
+              })
+            : undefined;
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel: commandReadModel,
+          ...(delegationAdmission !== undefined ? { delegationAdmission } : {}),
           ...(pendingRequestActivities !== undefined ? { pendingRequestActivities } : {}),
           ...(Option.isSome(userInputActivity)
             ? { userInputActivity: userInputActivity.value }
@@ -492,6 +536,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
               const lastSavedEvent = committedEvents.at(-1) ?? null;
               const acceptsStaleNoEvent =
+                envelope.command.type === "thread.delegation.follow-through" ||
                 envelope.command.type === "thread.meta.update" ||
                 envelope.command.type === "thread.runtime-mode.set" ||
                 envelope.command.type === "thread.interaction-mode.set" ||

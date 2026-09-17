@@ -428,7 +428,7 @@ const DelegateThreadTool = Tool.make("delegate_thread", {
 
 const DelegatedThreadStatusTool = Tool.make("delegated_thread_status", {
   description:
-    "Report a child thread's state (queued, running, completed, interrupted, error, archived) and whether it is waiting on an approval or a question. Pass waitSeconds to wait up to 45 seconds until something changes; use 45 when waiting is necessary. Completed children and children needing approval or input return immediately. Do independent work before checking again; avoid short polling and unchanged progress updates. This tool does not arrange an automatic parent wake-up.",
+    "Report a child thread's state (queued, running, completed, interrupted, error, archived) and whether it is waiting on an approval or a question. Pass waitSeconds to wait up to 45 seconds until something changes; use 45 when waiting is necessary. Completed children and children needing approval or input return immediately. Do independent work before checking again; avoid short polling and unchanged progress updates. While Pylon delegation is enabled, child lifecycle changes can queue automatic parent follow-through at an eligible idle boundary; see read_delegation_skill for limits.",
   parameters: DelegatedThreadStatusInput,
   success: DelegatedThreadStatusResult,
   failure: DelegationToolError,
