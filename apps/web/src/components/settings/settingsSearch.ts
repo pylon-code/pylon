@@ -397,6 +397,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "desktop-notification-sound",
+    to: "/settings/general",
+    title: "Notification sounds",
+    searchTerms: ["audio sound notification"],
+    desktopOnly: true,
+  },
+  {
     id: "desktop-notifications-test",
     title: "Send test notification",
     to: "/settings/general",

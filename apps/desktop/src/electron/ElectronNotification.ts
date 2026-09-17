@@ -9,7 +9,9 @@ export class ElectronNotification extends Context.Service<
   {
     /** False on Linux without a notification daemon; the feature no-ops. */
     readonly isSupported: Effect.Effect<boolean>;
+    readonly dismiss: (key: string) => Effect.Effect<void>;
     readonly show: (input: {
+      readonly key?: string;
       readonly title: string;
       readonly body: string;
       readonly onClick: () => void;
@@ -19,22 +21,45 @@ export class ElectronNotification extends Context.Service<
 
 export const make = Effect.gen(function* () {
   // Electron drops the native event delegate when the JS notification is collected.
-  const pending = new Set<Electron.Notification>();
+  const pending = new Map<string, Electron.Notification>();
+  let sequence = 0;
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
-      for (const notification of pending) notification.close();
+      for (const notification of pending.values()) notification.close();
       pending.clear();
     }),
   );
 
   return ElectronNotification.of({
     isSupported: Effect.sync(() => Electron.Notification.isSupported()),
+    dismiss: (key) =>
+      Effect.sync(() => {
+        const notification = pending.get(key);
+        pending.delete(key);
+        notification?.close();
+      }),
     show: (input) =>
       Effect.sync(() => {
-        const notification = new Electron.Notification({ title: input.title, body: input.body });
-        pending.add(notification);
+        const key = input.key ?? `test:${++sequence}`;
+        const replaced = pending.get(key);
+        pending.delete(key);
+        replaced?.close();
+        const notification = new Electron.Notification({
+          title: input.title,
+          body: input.body,
+          silent: true,
+        });
+        pending.set(key, notification);
+        if (pending.size > 128) {
+          const oldest = pending.keys().next().value;
+          if (oldest !== undefined) {
+            const expired = pending.get(oldest);
+            pending.delete(oldest);
+            expired?.close();
+          }
+        }
         const release = () => {
-          pending.delete(notification);
+          if (pending.get(key) === notification) pending.delete(key);
         };
         notification.once("click", () => {
           try {

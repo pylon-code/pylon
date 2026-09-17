@@ -1,4 +1,7 @@
-import type { DesktopNotificationCandidate } from "@t3tools/contracts";
+import type {
+  DesktopNotificationCandidate,
+  DesktopNotificationNavigation,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -15,7 +18,10 @@ export class DesktopNotifications extends Context.Service<
   {
     readonly deliver: (
       candidates: ReadonlyArray<DesktopNotificationCandidate>,
-    ) => Effect.Effect<void>;
+    ) => Effect.Effect<boolean>;
+    readonly dismiss: (key: string) => Effect.Effect<void>;
+    readonly getNavigation: Effect.Effect<typeof DesktopNotificationNavigation.Type | null>;
+    readonly completeNavigation: (id: number) => Effect.Effect<void>;
     readonly sendTest: Effect.Effect<boolean>;
   }
 >()("@t3tools/desktop/notifications/DesktopNotifications") {}
@@ -29,25 +35,37 @@ export const make = Effect.gen(function* () {
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
 
+  let pendingNavigation: typeof DesktopNotificationNavigation.Type | null = null;
+  let navigationId = 0;
+
   const navigate = Effect.fn("desktop.notifications.navigate")(
     function* (candidate: DesktopNotificationCandidate) {
-      const window = yield* desktopWindow.revealOrCreateMain;
-      window.webContents.send(NOTIFICATION_NAVIGATE_CHANNEL, {
+      pendingNavigation = {
+        id: ++navigationId,
         environmentId: candidate.environmentId,
         threadId: candidate.threadId,
-      });
+      };
+      const window = yield* desktopWindow.revealOrCreateMain;
+      window.webContents.send(NOTIFICATION_NAVIGATE_CHANNEL);
     },
     Effect.catchCause((cause) => logWarning("failed to open notification thread", { cause })),
   );
 
   return DesktopNotifications.of({
+    dismiss: notifications.dismiss,
+    getNavigation: Effect.sync(() => pendingNavigation),
+    completeNavigation: (id) =>
+      Effect.sync(() => {
+        if (pendingNavigation?.id === id) pendingNavigation = null;
+      }),
     deliver: Effect.fn("desktop.notifications.deliver")(function* (candidates) {
-      if (!(yield* notifications.isSupported)) return;
+      if (!(yield* notifications.isSupported)) return false;
       const focused = yield* windows.focusedMainOrFirst;
       // The accessor falls back to the main window even when no window is focused.
-      if (Option.isSome(focused) && focused.value.isFocused()) return;
+      if (Option.isSome(focused) && focused.value.isFocused()) return false;
       for (const candidate of candidates) {
         yield* notifications.show({
+          key: `${candidate.environmentId}:${candidate.threadId}`,
           title: candidate.title,
           body: candidate.body,
           onClick: () => {
@@ -55,6 +73,7 @@ export const make = Effect.gen(function* () {
           },
         });
       }
+      return true;
     }),
     sendTest: Effect.gen(function* () {
       if (!(yield* notifications.isSupported)) return false;

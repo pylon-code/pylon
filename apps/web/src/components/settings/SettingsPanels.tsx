@@ -503,6 +503,16 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
+      ...(settings.desktopNotificationsEnabled !==
+        DEFAULT_UNIFIED_SETTINGS.desktopNotificationsEnabled ||
+      settings.desktopNotifyOnApproval !== DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnApproval ||
+      settings.desktopNotifyOnInput !== DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnInput ||
+      settings.desktopNotifyOnCompletion !== DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnCompletion ||
+      settings.desktopNotifyOnFailure !== DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnFailure ||
+      settings.desktopNotificationSoundEnabled !==
+        DEFAULT_UNIFIED_SETTINGS.desktopNotificationSoundEnabled
+        ? ["Desktop notification preferences"]
+        : []),
       ...(settings.notificationMode !== DEFAULT_UNIFIED_SETTINGS.notificationMode
         ? ["Thread notifications"]
         : []),
@@ -634,6 +644,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.showSkillsInSlashMenu,
       settings.timestampFormat,
       settings.showProviderUsageInContextPopover,
+      settings.desktopNotificationsEnabled,
+      settings.desktopNotifyOnApproval,
+      settings.desktopNotifyOnInput,
+      settings.desktopNotifyOnCompletion,
+      settings.desktopNotifyOnFailure,
+      settings.desktopNotificationSoundEnabled,
       settings.notificationMode,
       settings.inAppNotificationsEnabled,
       settings.wordWrap,
@@ -709,6 +725,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       appearanceContrast: DEFAULT_UNIFIED_SETTINGS.appearanceContrast,
       diffColorScheme: DEFAULT_UNIFIED_SETTINGS.diffColorScheme,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
+      desktopNotificationsEnabled: DEFAULT_UNIFIED_SETTINGS.desktopNotificationsEnabled,
+      desktopNotifyOnApproval: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnApproval,
+      desktopNotifyOnInput: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnInput,
+      desktopNotifyOnCompletion: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnCompletion,
+      desktopNotifyOnFailure: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnFailure,
+      desktopNotificationSoundEnabled: DEFAULT_UNIFIED_SETTINGS.desktopNotificationSoundEnabled,
       notificationMode: DEFAULT_UNIFIED_SETTINGS.notificationMode,
       inAppNotificationsEnabled: DEFAULT_UNIFIED_SETTINGS.inAppNotificationsEnabled,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
@@ -2245,7 +2267,7 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection id="behavior" title="Behavior">
-        <NotificationSettings />
+        {!isElectron ? <NotificationSettings /> : null}
         <SettingsRow
           {...searchableSetting("in-app-notifications")}
           description="Show a toast when another thread finishes, fails, or needs input or approval while this app has focus."
@@ -2973,6 +2995,19 @@ export function GeneralSettingsPanel() {
                   updateSettings({ desktopNotifyOnFailure: Boolean(checked) })
                 }
                 aria-label="Notify when an agent fails"
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("desktop-notification-sound")}
+            description="Play a sound when an enabled notification event occurs."
+            control={
+              <Switch
+                checked={settings.desktopNotificationSoundEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotificationSoundEnabled: checked })
+                }
+                aria-label="Notification sounds"
               />
             }
           />

@@ -1,3 +1,4 @@
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { act } from "react";
@@ -29,8 +30,13 @@ vi.mock("../state/environments", () => ({
 vi.mock("../hooks/useSettings", () => ({
   useClientSettings: (
     select: (settings: { notificationMode: string; inAppNotificationsEnabled: boolean }) => unknown,
-  ) => select({ notificationMode: state.mode, inAppNotificationsEnabled: state.inApp }),
-  getClientSettings: () => ({ notificationMode: state.mode }),
+  ) =>
+    select({
+      ...DEFAULT_CLIENT_SETTINGS,
+      notificationMode: state.mode,
+      inAppNotificationsEnabled: state.inApp,
+    }),
+  getClientSettings: () => ({ ...DEFAULT_CLIENT_SETTINGS, notificationMode: state.mode }),
 }));
 vi.mock("../threadNotifications", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../threadNotifications")>()),
@@ -60,6 +66,8 @@ class TestNotification extends EventTarget {
 const thread = {
   id: "thread",
   title: "Test thread",
+  projectId: "project",
+  modelSelection: { model: "test" },
   archivedAt: null as string | null,
   hasPendingApprovals: false,
   hasPendingUserInput: false,
@@ -71,7 +79,10 @@ let focused = false;
 let visibility = "visible";
 
 function shell(overrides: Partial<typeof thread> = {}) {
-  return { status: "live", snapshot: Option.some({ threads: [{ ...thread, ...overrides }] }) };
+  return {
+    status: "live",
+    snapshot: Option.some({ projects: [], threads: [{ ...thread, ...overrides }] }),
+  };
 }
 function complete(environment = "one", completedAt = "2026-09-13T08:00:00Z") {
   state.shells.set(
@@ -175,6 +186,7 @@ it("starts a fresh count after another native app window gains focus", async () 
   const unsubscribe = vi.fn();
   Object.assign(window, {
     desktopBridge: {
+      notifyAgentAwareness: async () => true,
       onNotificationBadgeClear: (listener: () => void) => {
         clear = listener;
         return unsubscribe;

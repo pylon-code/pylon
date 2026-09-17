@@ -35,6 +35,7 @@ const clientSettings: ClientSettings = {
   confirmThreadUnpin: false,
   contextWindowIndicatorEnabled: false,
   desktopNotificationsEnabled: true,
+  desktopNotificationSoundEnabled: false,
   desktopNotifyOnApproval: true,
   desktopNotifyOnInput: true,
   desktopNotifyOnCompletion: true,

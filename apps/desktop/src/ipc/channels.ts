@@ -113,3 +113,7 @@ export const NOTIFICATION_NAVIGATE_CHANNEL = "desktop:notification-navigate";
 
 export const NOTIFY_AGENT_AWARENESS_CHANNEL = "desktop:notify-agent-awareness";
 export const SEND_TEST_NOTIFICATION_CHANNEL = "desktop:send-test-notification";
+
+export const DISMISS_AGENT_NOTIFICATION_CHANNEL = "desktop:dismiss-agent-notification";
+export const GET_NOTIFICATION_NAVIGATION_CHANNEL = "desktop:get-notification-navigation";
+export const COMPLETE_NOTIFICATION_NAVIGATION_CHANNEL = "desktop:complete-notification-navigation";

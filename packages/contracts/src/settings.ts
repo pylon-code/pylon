@@ -359,6 +359,9 @@ export const ClientSettingsSchema = Schema.Struct({
   desktopNotificationsEnabled: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
+  desktopNotificationSoundEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   desktopNotifyOnApproval: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   desktopNotifyOnInput: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   desktopNotifyOnCompletion: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -1683,6 +1686,7 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   confirmThreadUnpin: Schema.optionalKey(Schema.Boolean),
   desktopNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
+  desktopNotificationSoundEnabled: Schema.optionalKey(Schema.Boolean),
   desktopNotifyOnApproval: Schema.optionalKey(Schema.Boolean),
   desktopNotifyOnInput: Schema.optionalKey(Schema.Boolean),
   desktopNotifyOnCompletion: Schema.optionalKey(Schema.Boolean),

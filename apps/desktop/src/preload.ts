@@ -1,3 +1,4 @@
+import { subscribeNotificationNavigation } from "./notifications/notificationNavigation.ts";
 import type {
   DesktopBridge,
   DesktopPreviewPointerEvent,
@@ -50,26 +51,19 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.NOTIFY_AGENT_AWARENESS_CHANNEL, candidates),
   sendTestNotification: () =>
     ipcRenderer.invoke(IpcChannels.SEND_TEST_NOTIFICATION_CHANNEL, undefined),
-  onNotificationNavigate: (listener) => {
-    const wrappedListener = (_event: Electron.IpcRendererEvent, target: unknown) => {
-      if (
-        typeof target !== "object" ||
-        target === null ||
-        !("environmentId" in target) ||
-        typeof target.environmentId !== "string" ||
-        !("threadId" in target) ||
-        typeof target.threadId !== "string"
-      )
-        return;
-      listener({ environmentId: target.environmentId, threadId: target.threadId });
-    };
-
-    ipcRenderer.on(IpcChannels.NOTIFICATION_NAVIGATE_CHANNEL, wrappedListener);
-    return () => {
-      ipcRenderer.removeListener(IpcChannels.NOTIFICATION_NAVIGATE_CHANNEL, wrappedListener);
-    };
-  },
-
+  dismissAgentNotification: (key) =>
+    ipcRenderer.invoke(IpcChannels.DISMISS_AGENT_NOTIFICATION_CHANNEL, key),
+  onNotificationNavigate: (navigate) =>
+    subscribeNotificationNavigation({
+      read: () => ipcRenderer.invoke(IpcChannels.GET_NOTIFICATION_NAVIGATION_CHANNEL),
+      complete: (id) =>
+        ipcRenderer.invoke(IpcChannels.COMPLETE_NOTIFICATION_NAVIGATION_CHANNEL, id),
+      listen: (signal) => {
+        ipcRenderer.on(IpcChannels.NOTIFICATION_NAVIGATE_CHANNEL, signal);
+        return () => ipcRenderer.removeListener(IpcChannels.NOTIFICATION_NAVIGATE_CHANNEL, signal);
+      },
+      navigate,
+    }),
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
     if (typeof result !== "object" || result === null) {
@@ -77,6 +71,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     }
     return result as ReturnType<DesktopBridge["getAppBranding"]>;
   },
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- The sandboxed Electron preload exposes the client platform, not the server platform.
   getClientPlatform: () => process.platform,
   setNotificationBadge: (badge) =>
     ipcRenderer.invoke(IpcChannels.SET_NOTIFICATION_BADGE_CHANNEL, badge),

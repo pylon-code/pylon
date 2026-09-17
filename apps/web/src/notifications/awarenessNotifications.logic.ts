@@ -5,7 +5,7 @@ import type {
 } from "@t3tools/shared/agentAwareness";
 import { projectThreadAwareness } from "@t3tools/shared/agentAwareness";
 import type { ClientSettings } from "@t3tools/contracts/settings";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
 export interface AwarenessNotificationPreferences {
   readonly enabled: boolean;
@@ -34,13 +34,13 @@ export function selectAwarenessNotificationPreferences(
  * listener navigates by params.
  */
 export interface AwarenessNotificationCandidate {
-  readonly environmentId: string;
-  readonly threadId: string;
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
   readonly title: string;
   readonly body: string;
 }
 
-export type ThreadPhaseMap = ReadonlyMap<string, AgentAwarenessPhase>;
+export type ThreadPhaseMap = ReadonlyMap<string, string>;
 
 function awarenessThreadKey(state: Pick<AgentAwarenessState, "environmentId" | "threadId">) {
   return `${state.environmentId}:${state.threadId}`;
@@ -81,12 +81,14 @@ export function projectAwarenessStates(input: {
     {
       readonly environmentId: EnvironmentId;
       readonly projectId: string;
+      readonly archivedAt?: string | null;
     } & ProjectThreadAwarenessInput["thread"]
   >;
   readonly projectTitleByKey: ReadonlyMap<string, string>;
-}): AgentAwarenessState[] {
-  const states: AgentAwarenessState[] = [];
+}): Array<AgentAwarenessState & { readonly eventKey: string }> {
+  const states: Array<AgentAwarenessState & { readonly eventKey: string }> = [];
   for (const thread of input.threads) {
+    if (thread.archivedAt != null) continue;
     const state = projectThreadAwareness({
       environmentId: thread.environmentId,
       project: {
@@ -94,16 +96,46 @@ export function projectAwarenessStates(input: {
       },
       thread,
     });
-    if (state !== null) states.push(state);
+    if (state !== null) {
+      // A batched snapshot may skip running entirely between two finished turns.
+      // Names, usage and other metadata must not create a new notification.
+      const turn = thread.latestTurn;
+      states.push({
+        ...state,
+        eventKey: JSON.stringify([
+          state.phase,
+          turn?.turnId ?? null,
+          state.phase === "completed" ? (turn?.completedAt ?? null) : null,
+        ]),
+      });
+    }
   }
   return states;
+}
+
+function isOlderCompletion(previous: string, current: string): boolean {
+  try {
+    const before: unknown = JSON.parse(previous);
+    const after: unknown = JSON.parse(current);
+    return (
+      Array.isArray(before) &&
+      Array.isArray(after) &&
+      before[0] === "completed" &&
+      after[0] === "completed" &&
+      typeof before[2] === "string" &&
+      typeof after[2] === "string" &&
+      Date.parse(after[2]) < Date.parse(before[2])
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
  * The whole feature's brain. Two rules, both load-bearing:
  *
  * 1. A thread key absent from previousPhases primes without notifying, so
- *    launch and reconnect bursts (where every thread's state arrives at once)
+ *    launch bursts (the coordinator clears this baseline before reconnect)
  *    are silent. Threads absent from the snapshot drop out of nextPhases, so
  *    a reappearing thread re-primes rather than firing on stale history.
  * 2. The phase map updates unconditionally; preferences gate only emission.
@@ -112,19 +144,21 @@ export function projectAwarenessStates(input: {
  */
 export function reconcileAwarenessNotifications(input: {
   readonly previousPhases: ThreadPhaseMap;
-  readonly states: ReadonlyArray<AgentAwarenessState>;
+  readonly states: ReadonlyArray<AgentAwarenessState & { readonly eventKey?: string }>;
   readonly preferences: AwarenessNotificationPreferences;
 }): {
   readonly notifications: ReadonlyArray<AwarenessNotificationCandidate>;
   readonly nextPhases: ThreadPhaseMap;
 } {
   const notifications: AwarenessNotificationCandidate[] = [];
-  const nextPhases = new Map<string, AgentAwarenessPhase>();
+  const nextPhases = new Map<string, string>();
   for (const state of input.states) {
     const key = awarenessThreadKey(state);
     const previousPhase = input.previousPhases.get(key);
-    nextPhases.set(key, state.phase);
-    if (previousPhase === undefined || previousPhase === state.phase) continue;
+    const eventKey = state.eventKey ?? state.phase;
+    nextPhases.set(key, eventKey);
+    if (previousPhase === undefined || previousPhase === eventKey) continue;
+    if (isOlderCompletion(previousPhase, eventKey)) continue;
     if (!preferenceAllowsPhase(state.phase, input.preferences)) continue;
     notifications.push(buildCandidate(state));
   }

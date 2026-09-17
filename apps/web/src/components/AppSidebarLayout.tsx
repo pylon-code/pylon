@@ -204,7 +204,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       return;
     }
     return onNotificationNavigate(({ environmentId, threadId }) => {
-      void navigate({ to: "/$environmentId/$threadId", params: { environmentId, threadId } });
+      return navigate({ to: "/$environmentId/$threadId", params: { environmentId, threadId } });
     });
   }, [navigate]);
 

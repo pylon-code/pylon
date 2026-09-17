@@ -4,6 +4,12 @@ import completionUrl from "./assets/notification-completion.mp3";
 import inputUrl from "./assets/notification-input.mp3";
 
 type NotificationMode = ClientSettings["notificationMode"];
+export function notificationModeForClient(settings: ClientSettings): NotificationMode {
+  if (!window.desktopBridge) return settings.notificationMode;
+  if (!settings.desktopNotificationsEnabled) return "off";
+  return settings.desktopNotificationSoundEnabled ? "notifications-and-sound" : "notifications";
+}
+
 export const NOTIFICATION_MODE_LABELS = {
   off: "Off",
   notifications: "Notifications only",

@@ -1,37 +1,35 @@
-# Desktop notifications
+# Notifications
 
-Pylon can show a system notification when an agent needs approval, asks for input,
-finishes its work, or fails. Notifications appear while a Pylon window is open and
-no Pylon window is focused. Click a notification to bring Pylon forward and open
-the thread that raised it.
+Pylon can alert you when an agent needs approval, asks for input, finishes a turn,
+or fails. Click an alert to open its thread. Completion refers to the foreground
+turn; separately running background work may continue.
 
-Closing the Pylon window stops new notifications, even if the server keeps
-running. Desktop notifications are unavailable in a plain web browser.
+## Desktop
 
-## Preferences
+Open **Settings → General → Notifications**. Native desktop notifications and
+all four event categories are on by default. Turn off the master switch or
+individual categories to reduce interruptions. Notification sounds are opt-in.
+Select **Send test notification** to check system delivery even while Pylon is
+focused. Your operating system may hide banners when notifications are denied
+or Focus / Do Not Disturb is enabled. On Linux, a notification daemon is required.
 
-Open **Settings → General → Notifications**. Desktop notifications and all four
-event types are on by default. Use the master switch to turn them all off, or
-choose which events notify you. Preferences are stored per device, so each
-machine has its own settings.
+## Browser and in-app alerts
 
-Events that happen while Pylon is focused or a notification preference is off
-are not saved for later delivery. Opening Pylon also does not notify you about
-threads that were already finished or waiting for attention.
+In a browser, choose **Settings → General → Behavior → Thread notifications**
+to enable system notifications, sounds, or both. Browser notifications need a
+supported secure context and permission. Sound requires interaction with the
+page after enabling it. These options are off by default.
 
-## Check delivery
+Enable **In-app notifications** to show a notice when another thread needs your
+attention while you are using Pylon. System popups are suppressed while Pylon is
+focused; enabled sounds can still play. Background system notifications also
+add a badge, which clears when you return to the app.
 
-Select **Send test notification** to check delivery, including while Pylon is
-focused. This test works independently of the notification switches.
+## Delivery behavior
 
-If no banner appears:
-
-- On macOS, open **System Settings → Notifications** and allow notifications for
-  the app. With unsigned builds, notifications may be attributed to **Electron**;
-  check its notification settings as well.
-- Check whether your operating system's Focus or Do Not Disturb mode is hiding
-  banners.
-- On Linux, make sure a notification daemon is running.
-
-The test button reports when the system says notifications are unsupported.
-It cannot reliably detect whether notification permission has been denied.
+Preferences belong to this device. The app or browser tab must remain open to
+observe new events; this feature does not add mobile push notifications.
+Opening or reconnecting Pylon does not replay old alerts. Events suppressed by
+focus or preferences are consumed rather than saved for later. Archived threads
+are silent. Clicking a previously delivered desktop notification can reopen its
+thread even if you closed the main window.

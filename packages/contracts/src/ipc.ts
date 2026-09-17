@@ -1221,9 +1221,18 @@ export const DesktopNotificationCandidate = Schema.Struct({
 });
 export type DesktopNotificationCandidate = typeof DesktopNotificationCandidate.Type;
 
+export const DesktopNotificationNavigation = Schema.Struct({
+  id: Schema.Int,
+  environmentId: Schema.String,
+  threadId: Schema.String,
+});
+
 export interface DesktopBridge {
   /** Optional while older desktop shells can host a newer web client. */
-  notifyAgentAwareness?: (candidates: ReadonlyArray<DesktopNotificationCandidate>) => Promise<void>;
+  notifyAgentAwareness?: (
+    candidates: ReadonlyArray<DesktopNotificationCandidate>,
+  ) => Promise<boolean>;
+  dismissAgentNotification?: (key: string) => Promise<void>;
   /**
    * Shows a notification immediately, bypassing the focus gate (the user is
    * necessarily focused while clicking the button). Resolves false when the
@@ -1233,7 +1242,7 @@ export interface DesktopBridge {
   sendTestNotification?: () => Promise<boolean>;
   /** Optional while older desktop shells can host a newer web client. */
   onNotificationNavigate?: (
-    listener: (target: { environmentId: string; threadId: string }) => void,
+    listener: (target: { environmentId: string; threadId: string }) => void | Promise<void>,
   ) => () => void;
 
   getAppBranding: () => DesktopAppBranding | null;

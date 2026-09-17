@@ -65,7 +65,13 @@ import * as PreviewIpc from "./methods/preview.ts";
 import * as AppActivationIpc from "./methods/appActivation.ts";
 import { getWslState, setWslBackendEnabled, setWslDistro, setWslOnly } from "./methods/wsl.ts";
 
-import { notifyAgentAwareness, sendTestNotification } from "./methods/notifications.ts";
+import {
+  notifyAgentAwareness,
+  sendTestNotification,
+  dismissAgentNotification,
+  getNotificationNavigation,
+  completeNotificationNavigation,
+} from "./methods/notifications.ts";
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
@@ -124,6 +130,9 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(pickThemeFiles);
   yield* ipc.handle(notifyAgentAwareness);
   yield* ipc.handle(sendTestNotification);
+  yield* ipc.handle(dismissAgentNotification);
+  yield* ipc.handle(getNotificationNavigation);
+  yield* ipc.handle(completeNotificationNavigation);
   yield* ipc.handle(setTheme);
   yield* ipc.handle(showContextMenu);
   yield* ipc.handle(openExternal);

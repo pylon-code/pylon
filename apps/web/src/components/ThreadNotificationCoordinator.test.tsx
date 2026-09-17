@@ -1,3 +1,4 @@
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import * as Option from "effect/Option";
 import { act } from "react";
@@ -17,6 +18,10 @@ const state = vi.hoisted(() => ({
   approval: false,
   sessionError: false,
   turnError: false,
+  turnId: "turn-1",
+  interrupted: false,
+  sessionOnly: false,
+  notifyCompletion: true,
   add: vi.fn(
     (_toast: { title: string; description: string; actionProps: { onClick: () => void } }) =>
       "toast-1",
@@ -33,19 +38,34 @@ vi.mock("@effect/atom-react", () => ({
   useAtomValue: () => ({
     status: state.live ? "live" : "disconnected",
     snapshot: Option.some({
+      projects: [],
       threads: [
         {
           id: "thread-1",
           title: "Fix the login form",
+          projectId: "project",
+          modelSelection: { model: "test" },
           archivedAt: state.archivedAt,
           hasPendingUserInput: state.input,
           hasPendingApprovals: state.approval,
-          session: state.sessionError ? { status: "error" } : null,
-          latestTurn: {
-            turnId: "turn-1",
-            state: state.turnError ? "error" : state.completedAt ? "completed" : "running",
-            completedAt: state.completedAt,
-          },
+          session: state.sessionError
+            ? { status: "error" }
+            : state.sessionOnly
+              ? { status: "ready" }
+              : null,
+          latestTurn: state.sessionOnly
+            ? null
+            : {
+                turnId: state.turnId,
+                state: state.turnError
+                  ? "error"
+                  : state.interrupted
+                    ? "interrupted"
+                    : state.completedAt
+                      ? "completed"
+                      : "running",
+                completedAt: state.completedAt,
+              },
         },
       ],
     }),
@@ -56,12 +76,14 @@ vi.mock("@tanstack/react-router", () => ({
   useParams: () => state.active,
 }));
 vi.mock("../hooks/useSettings", () => ({
-  useClientSettings: (
-    select: (
-      settings: Pick<ClientSettings, "notificationMode" | "inAppNotificationsEnabled">,
-    ) => unknown,
-  ) => select({ notificationMode: state.mode, inAppNotificationsEnabled: state.inApp }),
-  getClientSettings: () => ({ notificationMode: state.mode }),
+  useClientSettings: (select: (settings: ClientSettings) => unknown) =>
+    select({
+      ...DEFAULT_CLIENT_SETTINGS,
+      notificationMode: state.mode,
+      inAppNotificationsEnabled: state.inApp,
+      desktopNotifyOnCompletion: state.notifyCompletion,
+    }),
+  getClientSettings: () => ({ ...DEFAULT_CLIENT_SETTINGS, notificationMode: state.mode }),
 }));
 vi.mock("../state/environments", () => ({
   useEnvironments: () => ({ environments: [{ environmentId: "env-1" }] }),
@@ -109,6 +131,10 @@ beforeEach(() => {
     approval: false,
     sessionError: false,
     turnError: false,
+    turnId: "turn-1",
+    interrupted: false,
+    sessionOnly: false,
+    notifyCompletion: true,
   });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("window", new EventTarget());
@@ -251,4 +277,69 @@ describe("thread notifications", () => {
       silent: true,
     });
   });
+});
+
+describe("Pylon notification integration regressions", () => {
+  it("detects a new completed turn without an intermediate running snapshot", async () => {
+    await complete(); // First snapshot primes silently.
+    state.turnId = "turn-2";
+    await render(); // Even an equal timestamp belongs to a different turn.
+    expect(state.add).toHaveBeenCalledTimes(1);
+    await render();
+    expect(state.add).toHaveBeenCalledTimes(1);
+  });
+  it("silently re-primes after cached running state changes during reconnect", async () => {
+    await render();
+    state.live = false;
+    await render();
+    await complete();
+    state.live = true;
+    await render();
+    expect(state.add).not.toHaveBeenCalled();
+  });
+  it.each(["interrupted", "sessionOnly"] as const)(
+    "preserves %s completion semantics",
+    async (kind) => {
+      await render();
+      state[kind] = true;
+      await complete();
+      expect(state.add).toHaveBeenCalledTimes(1);
+      expect(state.add).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Thread completed" }),
+      );
+    },
+  );
+  it("consumes disabled category transitions without replay", async () => {
+    await render();
+    state.notifyCompletion = false;
+    await complete();
+    state.notifyCompletion = true;
+    await render();
+    expect(state.add).not.toHaveBeenCalled();
+  });
+  it("uses native delivery once and does not also create a browser notification", async () => {
+    const notify = vi.fn(async () => true);
+    Object.assign(window, { desktopBridge: { notifyAgentAwareness: notify } });
+    state.focused = false;
+    await render();
+    await complete();
+    await render();
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(state.notification).not.toHaveBeenCalled();
+  });
+  it("safely omits delivery on older desktop shells", async () => {
+    Object.assign(window, { desktopBridge: {} });
+    state.focused = false;
+    await render();
+    await complete();
+    expect(state.notification).not.toHaveBeenCalled();
+  });
+});
+
+it("does not announce an older completion selected by rollback", async () => {
+  await complete();
+  state.turnId = "older-turn";
+  state.completedAt = "2026-09-12T10:00:00Z";
+  await render();
+  expect(state.add).not.toHaveBeenCalled();
 });

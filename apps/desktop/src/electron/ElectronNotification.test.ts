@@ -1,4 +1,4 @@
-import { queryObjects } from "node:v8";
+import * as NodeV8 from "node:v8";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { vi } from "vite-plus/test";
@@ -34,29 +34,27 @@ vi.mock("electron", () => ({ Notification: NativeNotification }));
 import * as ElectronNotification from "./ElectronNotification.ts";
 
 describe("ElectronNotification lifetime", () => {
-  it("keeps displayed notifications alive for clicks and releases them at shutdown", () => {
-    // queryObjects performs a full collection before counting; no timing or GC polling.
-    const baseline = queryObjects(NativeNotification);
-    if (typeof baseline !== "number") throw new Error("Expected an instance count");
-    const closedBefore = NativeNotification.closed;
-    Effect.runSync(
-      Effect.gen(function* () {
+  it.effect("keeps native notifications alive for delayed clicks and releases at shutdown", () =>
+    Effect.gen(function* () {
+      const baseline = NodeV8.queryObjects(NativeNotification);
+      const closedBefore = NativeNotification.closed;
+      yield* Effect.gen(function* () {
         const service = yield* ElectronNotification.ElectronNotification;
-        yield* service.show({ title: "Thread", body: "Agent finished", onClick: () => {} });
-        assert.strictEqual(queryObjects(NativeNotification), baseline + 1);
-      }).pipe(Effect.provide(ElectronNotification.layer), Effect.scoped),
-    );
-    assert.strictEqual(NativeNotification.closed, closedBefore + 1);
-    assert.strictEqual(queryObjects(NativeNotification), baseline);
-  });
+        yield* service.show({ title: "Thread", body: "Done", onClick: () => {} });
+        assert.strictEqual(NodeV8.queryObjects(NativeNotification), Number(baseline) + 1);
+      }).pipe(Effect.provide(ElectronNotification.layer), Effect.scoped);
+      assert.strictEqual(NativeNotification.closed, closedBefore + 1);
+      assert.strictEqual(NodeV8.queryObjects(NativeNotification), baseline);
+    }),
+  );
   for (const event of ["click", "close", "failed"]) {
-    it(`releases a notification after ${event}`, () => {
-      const baseline = queryObjects(NativeNotification);
-      let clicked = 0;
-      NativeNotification.eventOnShow = event;
-      try {
-        Effect.runSync(
-          Effect.gen(function* () {
+    it.effect(`releases a notification after ${event}`, () =>
+      Effect.gen(function* () {
+        const baseline = NodeV8.queryObjects(NativeNotification);
+        let clicked = 0;
+        NativeNotification.eventOnShow = event;
+        try {
+          yield* Effect.gen(function* () {
             const service = yield* ElectronNotification.ElectronNotification;
             yield* service.show({
               title: "Thread",
@@ -65,32 +63,54 @@ describe("ElectronNotification lifetime", () => {
                 clicked++;
               },
             });
-            assert.strictEqual(queryObjects(NativeNotification), baseline);
+            assert.strictEqual(NodeV8.queryObjects(NativeNotification), baseline);
             assert.strictEqual(clicked, event === "click" ? 1 : 0);
-          }).pipe(Effect.provide(ElectronNotification.layer), Effect.scoped),
-        );
-      } finally {
-        NativeNotification.eventOnShow = undefined;
-      }
-    });
+          }).pipe(Effect.provide(ElectronNotification.layer), Effect.scoped);
+        } finally {
+          NativeNotification.eventOnShow = undefined;
+        }
+      }),
+    );
   }
-
-  it("retains a Windows notification moved into Action Center", () => {
-    const baseline = queryObjects(NativeNotification);
-    if (typeof baseline !== "number") throw new Error("Expected an instance count");
-    NativeNotification.eventOnShow = "close";
-    NativeNotification.closeReason = "timedOut";
-    try {
-      Effect.runSync(
-        Effect.gen(function* () {
+  it.effect("retains a Windows notification moved into Action Center", () =>
+    Effect.gen(function* () {
+      const baseline = NodeV8.queryObjects(NativeNotification);
+      NativeNotification.eventOnShow = "close";
+      NativeNotification.closeReason = "timedOut";
+      try {
+        yield* Effect.gen(function* () {
           const service = yield* ElectronNotification.ElectronNotification;
           yield* service.show({ title: "Thread", body: "Done", onClick: () => {} });
-          assert.strictEqual(queryObjects(NativeNotification), baseline + 1);
-        }).pipe(Effect.provide(ElectronNotification.layer), Effect.scoped),
-      );
-    } finally {
-      NativeNotification.eventOnShow = undefined;
-      NativeNotification.closeReason = undefined;
-    }
-  });
+          assert.strictEqual(NodeV8.queryObjects(NativeNotification), Number(baseline) + 1);
+        }).pipe(Effect.provide(ElectronNotification.layer), Effect.scoped);
+      } finally {
+        NativeNotification.eventOnShow = undefined;
+        NativeNotification.closeReason = undefined;
+      }
+      assert.strictEqual(NodeV8.queryObjects(NativeNotification), baseline);
+    }),
+  );
+  it.effect("replaces notifications for a thread and bounds retained native objects", () =>
+    Effect.gen(function* () {
+      const baseline = NodeV8.queryObjects(NativeNotification);
+      yield* Effect.gen(function* () {
+        const service = yield* ElectronNotification.ElectronNotification;
+        yield* service.show({ key: "same", title: "Thread", body: "Done", onClick: () => {} });
+        yield* service.show({ key: "same", title: "Thread", body: "Again", onClick: () => {} });
+        assert.strictEqual(NodeV8.queryObjects(NativeNotification), Number(baseline) + 1);
+        yield* service.dismiss("same");
+        assert.strictEqual(NodeV8.queryObjects(NativeNotification), baseline);
+        for (let index = 0; index < 140; index++) {
+          yield* service.show({
+            key: String(index),
+            title: "Thread",
+            body: "Done",
+            onClick: () => {},
+          });
+        }
+        assert.strictEqual(NodeV8.queryObjects(NativeNotification), Number(baseline) + 128);
+      }).pipe(Effect.provide(ElectronNotification.layer), Effect.scoped);
+      assert.strictEqual(NodeV8.queryObjects(NativeNotification), baseline);
+    }),
+  );
 });

@@ -997,7 +997,7 @@ describe("ClientSettings desktop notification preferences", () => {
 
   it("decodes a settings payload written before the feature, new fields taking defaults", () => {
     const settings = decodeClientSettings({ confirmQuit: false, wordWrap: false });
-    expect(settings.confirmQuit).toBe(false);
+    expect(settings.confirmQuit).toBe("direct");
     expect(settings.wordWrap).toBe(false);
     expect(settings.desktopNotificationsEnabled).toBe(true);
   });

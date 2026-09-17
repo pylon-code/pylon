@@ -1,5 +1,4 @@
 import { assert, describe, it } from "@effect/vitest";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -31,6 +30,7 @@ function harness(
   const dependencies = Layer.mergeAll(
     Layer.succeed(ElectronNotification.ElectronNotification, {
       isSupported: Effect.succeed(options.supported ?? true),
+      dismiss: () => Effect.void,
       show: (input) =>
         Effect.sync(() => {
           shown.push(input);
@@ -116,11 +116,10 @@ describe("DesktopNotifications", () => {
 
   it.effect("reveals the window before sending the clicked candidate's route parameters", () =>
     Effect.gen(function* () {
-      const sent = yield* Deferred.make<void>();
-      const runSync = Effect.runSyncWith(yield* Effect.context<never>());
+      const sent = Promise.withResolvers<void>();
       const h = harness({
         onSend: () => {
-          runSync(Deferred.succeed(sent, undefined));
+          sent.resolve();
         },
       });
       yield* Effect.gen(function* () {
@@ -129,12 +128,17 @@ describe("DesktopNotifications", () => {
         const second = h.shown[1];
         assert.isDefined(second);
         second!.onClick();
-        yield* Deferred.await(sent);
+        yield* Effect.promise(() => sent.promise);
         assert.strictEqual(h.reveal.mock.calls.length, 1);
-        assert.deepEqual(h.send.mock.calls, [
-          [NOTIFICATION_NAVIGATE_CHANNEL, { environmentId: "env-2", threadId: "t2" }],
-        ]);
+        assert.deepEqual(h.send.mock.calls, [[NOTIFICATION_NAVIGATE_CHANNEL]]);
         assert.isBelow(h.reveal.mock.invocationCallOrder[0]!, h.send.mock.invocationCallOrder[0]!);
+        // Clicks survive a renderer being created before it subscribes.
+        const pending = yield* service.getNavigation;
+        assert.deepEqual(pending, { id: 1, environmentId: "env-2", threadId: "t2" });
+        yield* service.completeNavigation(999);
+        assert.deepEqual(yield* service.getNavigation, pending);
+        yield* service.completeNavigation(1);
+        assert.isNull(yield* service.getNavigation);
       }).pipe(Effect.provide(h.layer));
     }),
   );
