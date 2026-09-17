@@ -57,15 +57,36 @@ describe("effect-acp errors", () => {
     });
   });
 
-  it("does not expose legacy diagnostic detail as the transport message", () => {
-    const cause = new Error("connection refused at a private endpoint");
-    const error = new AcpError.AcpTransportError({
-      detail: cause.message,
-      cause,
+  it("formats transport error message with and without detail", () => {
+    const withoutDetail = new AcpError.AcpTransportError({
+      operation: "call-rpc",
+      method: "session/prompt",
+      cause: undefined,
     });
+    expect(withoutDetail.message).toBe(
+      "ACP transport operation call-rpc failed for method session/prompt.",
+    );
 
-    expect(error.message).toBe("ACP transport operation failed.");
-    expect(error.cause).toBe(cause);
+    const withDetail = new AcpError.AcpTransportError({
+      operation: "call-rpc",
+      method: "session/prompt",
+      detail: "Process killed after inactivity",
+      cause: undefined,
+    });
+    expect(withDetail.message).toBe(
+      "ACP transport operation call-rpc failed for method session/prompt. Process killed after inactivity",
+    );
+
+    const fallbackWithoutDetail = new AcpError.AcpTransportError({
+      cause: undefined,
+    });
+    expect(fallbackWithoutDetail.message).toBe("ACP transport operation failed.");
+
+    const fallbackWithDetail = new AcpError.AcpTransportError({
+      detail: "Connection refused",
+      cause: undefined,
+    });
+    expect(fallbackWithDetail.message).toBe("ACP transport operation failed. Connection refused");
   });
 
   it("preserves structured extension handler failures behind stable request errors", () => {

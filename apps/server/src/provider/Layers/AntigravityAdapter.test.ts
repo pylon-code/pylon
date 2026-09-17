@@ -212,7 +212,7 @@ const makeHarness = Effect.fn("makeAntigravityAdapterHarness")(function* (option
       yield* Queue.offer(cancellations, prompt.index);
       if (options?.holdCancel) yield* Deferred.await(cancelRelease);
       yield* Deferred.succeed(prompt.result, { stopReason: "cancelled" });
-      yield* Deferred.await(prompt.result);
+      yield* Effect.ignore(Deferred.await(prompt.result));
       yield* drainEvents;
       calls.push(`drained:${prompt.index}`);
     }),
@@ -1897,6 +1897,140 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       expect((toolEvent?.payload.data as any)?.rawOutput).toBe(
         "HTTP/1.1 503 Service Unavailable\nBackend server overloaded",
       );
+    }),
+  );
+
+  it.effect(
+    "settles turn cancelled with fatalError when user cancel requested and connection terminated",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness({ holdCancel: true });
+        yield* h.adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Cancel me with forced stop" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        const interrupting = yield* h.adapter.interruptTurn(threadId).pipe(Effect.forkChild);
+        yield* h.nextCancellation;
+        const cancelDetail = "The ACP agent did not finish cancellation. Its process was stopped.";
+        yield* h.emitNative({
+          _tag: "ConnectionTerminated",
+          error: new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/cancel",
+            detail: cancelDetail,
+            cause: undefined,
+          }),
+        });
+        yield* h.drainEvents;
+        yield* Deferred.fail(
+          prompt.result,
+          new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/prompt",
+            detail: cancelDetail,
+            cause: undefined,
+          }),
+        );
+        yield* Deferred.succeed(h.cancelRelease, undefined);
+        yield* Fiber.join(interrupting);
+        yield* Fiber.await(sending);
+
+        const ended = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed",
+        );
+        expect(ended.payload.state).toBe("cancelled");
+        expect(ended.payload.errorMessage).toBe(cancelDetail);
+
+        const exited = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "session.exited" }> =>
+            event.type === "session.exited",
+        );
+        expect(exited.payload.exitKind).toBe("error");
+        expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "settles turn failed with stall explanation when connection terminated without user cancel",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        yield* h.adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Stall out" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        const stallDetail =
+          "The agent sent nothing for 5 minutes after its last message and never completed the prompt. Its process was stopped.";
+        yield* h.emitNative({
+          _tag: "ConnectionTerminated",
+          error: new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/prompt",
+            detail: stallDetail,
+            cause: undefined,
+          }),
+        });
+        yield* h.drainEvents;
+        yield* Deferred.fail(
+          prompt.result,
+          new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/prompt",
+            detail: stallDetail,
+            cause: undefined,
+          }),
+        );
+        yield* Fiber.await(sending);
+
+        const ended = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed",
+        );
+        expect(ended.payload.state).toBe("failed");
+        expect(ended.payload.errorMessage).toBe(stallDetail);
+
+        const exited = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "session.exited" }> =>
+            event.type === "session.exited",
+        );
+        expect(exited.payload.exitKind).toBe("error");
+        expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+      }),
+  );
+
+  it.effect("settles turn cancelled without errorMessage on clean cancel", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Clean cancel" })
+        .pipe(Effect.forkChild);
+      yield* h.nextPrompt;
+      yield* h.adapter.interruptTurn(threadId);
+      yield* Fiber.await(sending);
+
+      const ended = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      expect(ended.payload.state).toBe("cancelled");
+      expect(ended.payload.errorMessage).toBeUndefined();
+      expect(yield* h.adapter.hasSession(threadId)).toBe(true);
     }),
   );
 
