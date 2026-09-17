@@ -1323,11 +1323,14 @@ describe("ProviderRuntimeIngestion", () => {
         expect(finalThread?.messages.some((m) => m.text.includes("must remain fenced"))).toBe(
           false,
         );
-        expect(
-          finalThread?.activities.some(
-            (a) => a.kind === "task.progress" && a.payload.taskId === "child-a",
-          ),
-        ).toBe(true);
+        expect(finalThread?.activities).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "task.progress",
+              payload: expect.objectContaining({ taskId: "child-a" }),
+            }),
+          ]),
+        );
       },
     );
 
