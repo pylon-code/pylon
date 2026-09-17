@@ -48,13 +48,22 @@ export function nestDelegatedThreads<T extends ScopedThread>(
   threads: readonly T[],
 ): NestedDelegatedThreads<T> {
   const keys = new Set(threads.map(keyOf));
+  const listedParentKey = (environmentId: EnvironmentId, threadId: ThreadId): string | null => {
+    const parentId = delegatedParentThreadId(threadId);
+    if (parentId === null) return null;
+    const parentKey = keyOf({ environmentId, id: parentId });
+    return keys.has(parentKey) ? parentKey : null;
+  };
   const topLevel: T[] = [];
   const childrenByParentKey = new Map<string, T[]>();
   for (const thread of threads) {
+    const parentKey = listedParentKey(thread.environmentId, thread.id);
+    // Nesting is one level deep. The server never delegates from a child, but a
+    // grandchild under a nested row would never render, so it stays top-level.
     const parentId = delegatedParentThreadId(thread.id);
-    const parentKey =
-      parentId === null ? null : keyOf({ environmentId: thread.environmentId, id: parentId });
-    if (parentKey === null || !keys.has(parentKey)) {
+    const parentIsNested =
+      parentId !== null && listedParentKey(thread.environmentId, parentId) !== null;
+    if (parentKey === null || parentIsNested) {
       topLevel.push(thread);
       continue;
     }

@@ -64,6 +64,19 @@ describe("nestDelegatedThreads", () => {
     expect(nested.childrenByParentKey.size).toBe(0);
   });
 
+  it("nests one level deep, leaving a grandchild top-level", () => {
+    const grandchildId = `delegated:delegated:parent:${HASH}:fedcba9876543210`;
+    const nested = nestDelegatedThreads([
+      thread(local, "parent"),
+      thread(local, `delegated:parent:${HASH}`),
+      thread(local, grandchildId),
+    ]);
+    expect(ids(nested.topLevel)).toEqual(["parent", grandchildId]);
+    expect(ids(nested.childrenByParentKey.get("local:parent"))).toEqual([
+      `delegated:parent:${HASH}`,
+    ]);
+  });
+
   it("matches the parent within the child's own environment", () => {
     const nested = nestDelegatedThreads([
       thread(remote, "parent"),

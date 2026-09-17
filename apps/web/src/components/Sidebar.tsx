@@ -22,6 +22,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-settled";
 import { resolveSettledThreadTimestamp } from "@t3tools/client-runtime/state/thread-sort";
 import {
+  delegatedParentThreadId,
   flattenNestedThreads,
   nestDelegatedThreads,
   nestedRowContainsThread,
@@ -2714,7 +2715,7 @@ export default function Sidebar() {
 
   // Delegated children render under their parent when both share a section.
   // Only top-level rows take part in paging, collapse, and drag order: a
-  // child's own order keys are never shown, so they must never be written.
+  // nested child's order keys are never shown, so drops never write them.
   const nestedPinned = useMemo(() => nestDelegatedThreads(pinnedThreads), [pinnedThreads]);
   const nestedActive = useMemo(() => nestDelegatedThreads(activeThreads), [activeThreads]);
   const nestedSnoozed = useMemo(() => nestDelegatedThreads(snoozedThreads), [snoozedThreads]);
@@ -2728,6 +2729,26 @@ export default function Sidebar() {
     }
     return merged.size === 0 ? EMPTY_CHILD_THREADS : merged;
   }, [nestedActive, nestedPinned, nestedSettled, nestedSnoozed]);
+  // Rows whose sortable node also holds nested children, for drag geometry.
+  const groupThreadKeys = useMemo(
+    () => new Set(childThreadsByParentKey.keys()),
+    [childThreadsByParentKey],
+  );
+  // Every live delegated child by parent, wherever it renders. A parent dropped
+  // into a child's section absorbs that child, so the drop order must skip it.
+  const delegatedChildKeysByParentKey = useMemo(() => {
+    const byParent = new Map<string, Set<string>>();
+    for (const thread of threads) {
+      if (thread.archivedAt !== null) continue;
+      const parentId = delegatedParentThreadId(thread.id);
+      if (parentId === null) continue;
+      const parentKey = scopedThreadKey(scopeThreadRef(thread.environmentId, parentId));
+      const children = byParent.get(parentKey) ?? new Set<string>();
+      children.add(threadKeyOf(thread));
+      byParent.set(parentKey, children);
+    }
+    return byParent;
+  }, [threads]);
 
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
@@ -2801,6 +2822,15 @@ export default function Sidebar() {
     return visible;
   }, [nestedSettled, routeThreadKey, settledVisibleCount]);
   const hiddenSettledCount = nestedSettled.topLevel.length - visibleSettledThreads.length;
+  // The settled row that shows the open thread: the thread itself, or the
+  // parent it is nested under. Drag previews keep this row in the tail.
+  const routeSettledRowKey = useMemo(() => {
+    if (routeThreadKey === null) return null;
+    const row = nestedSettled.topLevel.find((thread) =>
+      nestedRowContainsThread(thread, nestedSettled, routeThreadKey),
+    );
+    return row === undefined ? routeThreadKey : threadKeyOf(row);
+  }, [nestedSettled, routeThreadKey]);
   const showMoreSettled = useCallback(
     () => setSettledVisibleCount((count) => count + SETTLED_TAIL_PAGE_COUNT),
     [],
@@ -3543,12 +3573,14 @@ export default function Sidebar() {
         settledOrder: draggedSettledOrder,
         settledExpanded: settledShelfExpanded,
         settledVisibleCount,
-        routeThreadKey,
+        routeThreadKey: routeSettledRowKey,
         snoozedThreadCount: snoozedThreads.length,
+        groupKeys: groupThreadKeys,
       }),
     [
       draggedSettledOrder,
-      routeThreadKey,
+      groupThreadKeys,
+      routeSettledRowKey,
       settledShelfExpanded,
       settledVisibleCount,
       sidebarListItems,
@@ -3584,7 +3616,12 @@ export default function Sidebar() {
     if (source === undefined) return createSidebarCollisionDetection(() => false);
     return createSidebarCollisionDetection(
       (id) => {
-        const target = resolveSidebarDropTarget(sidebarListItems, draggedThreadKey, id);
+        const target = resolveSidebarDropTarget(
+          sidebarListItems,
+          draggedThreadKey,
+          id,
+          delegatedChildKeysByParentKey.get(draggedThreadKey),
+        );
         if (target === null) return false;
         return (
           planSidebarThreadDrop({
@@ -3612,6 +3649,7 @@ export default function Sidebar() {
     );
   }, [
     activeKeysById,
+    delegatedChildKeysByParentKey,
     pinnedKeysById,
     serverConfigs,
     activeKeys,
@@ -3631,7 +3669,12 @@ export default function Sidebar() {
       const target =
         event.over === null
           ? null
-          : resolveSidebarDropTarget(sidebarListItems, activeKey, String(event.over.id));
+          : resolveSidebarDropTarget(
+              sidebarListItems,
+              activeKey,
+              String(event.over.id),
+              delegatedChildKeysByParentKey.get(activeKey),
+            );
       const activeThread = threadByKey.get(activeKey);
       if (activeSection === undefined || target === null || activeThread === undefined) return;
       const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
@@ -3756,6 +3799,7 @@ export default function Sidebar() {
     },
     [
       activeKeysById,
+      delegatedChildKeysByParentKey,
       pinnedKeysById,
       serverConfigs,
       activeKeys,
@@ -4842,7 +4886,6 @@ export default function Sidebar() {
                             <ul
                               role="list"
                               aria-label="Delegated threads"
-                              data-thread-selection-safe
                               className="ml-3 flex flex-col gap-px border-l border-sidebar-foreground/15 pl-1.5"
                             >
                               {children.map((child) => renderThreadRowInner(child, section))}
