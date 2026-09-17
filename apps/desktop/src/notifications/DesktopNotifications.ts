@@ -28,7 +28,7 @@ export class DesktopNotifications extends Context.Service<
 
 const { logWarning } = makeComponentLogger("desktop-notifications");
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const notifications = yield* ElectronNotification.ElectronNotification;
   const windows = yield* ElectronWindow.ElectronWindow;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;

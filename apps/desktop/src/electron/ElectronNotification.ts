@@ -19,7 +19,7 @@ export class ElectronNotification extends Context.Service<
   }
 >()("@t3tools/desktop/electron/ElectronNotification") {}
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   // Electron drops the native event delegate when the JS notification is collected.
   const pending = new Map<string, Electron.Notification>();
   let sequence = 0;

@@ -169,7 +169,7 @@ notices, and badges while preserving Pylon completion semantics and desktop defa
 Sources: `0e0ddaeedf30698bec131caf040a8e8d7b2e3f37`,
 `42b6bcc6f59bd0369377746b0f2ef370c275b624`,
 `6e5e986f15b3cbec3588646ddf216f00b4301785`.
-The implementation PR records final verification and attribution. Intentional
+[Implementation PR #583](https://github.com/pylon-code/pylon/pull/583) records verification and attribution. Intentional
 adaptations: native Electron transport on desktop, Pylon's default-on desktop
 categories, opt-in custom sound and browser/in-app delivery, foreground-turn
 completion semantics, live-snapshot fencing, bounded native lifetime and
