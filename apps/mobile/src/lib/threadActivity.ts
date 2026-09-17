@@ -272,6 +272,10 @@ const turnFoldRowsCache = new WeakMap<
 >();
 let cachedThinkingRow: Extract<ThreadFeedEntry, { readonly type: "thinking" }> | null = null;
 
+function isUserInputActivityGroup(entry: ThreadFeedActivityGroup): boolean {
+  return entry.activities.some((activity) => activity.workEntry.questionAnswer !== undefined);
+}
+
 function normalizeDraftAnswer(value: string | undefined): string | null {
   if (typeof value !== "string") {
     return null;
@@ -1585,11 +1589,11 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
       continue;
     }
 
-    // Terminal response notices and context compaction each own their card, so
-    // neither joins the surrounding tool group.
+    // Terminal notices, compaction and user answers own their cards.
     const isStandalone =
       entry.activity.terminalResponseNotice === true ||
-      entry.activity.workEntry.sourceActivityKind === "context-compaction";
+      entry.activity.workEntry.sourceActivityKind === "context-compaction" ||
+      entry.activity.workEntry.questionAnswer !== undefined;
     if (isStandalone || firstActivityEntry?.turnId !== entry.turnId) {
       flushGroup();
     }
@@ -1705,7 +1709,8 @@ function deriveThreadFeedTurnFolds(
             entry.id !== terminalAssistantMessageId &&
             !(
               entry.type === "activity-group" &&
-              entry.activities.some((activity) => activity.terminalResponseNotice === true)
+              (isUserInputActivityGroup(entry) ||
+                entry.activities.some((activity) => activity.terminalResponseNotice === true))
             ),
         )
         .map((entry) => entry.id),
@@ -1887,7 +1892,7 @@ function appendPresentedFeedEntry(
     result.push(entry);
     return;
   }
-  if (isContextCompactionActivityGroup(entry)) {
+  if (isContextCompactionActivityGroup(entry) || isUserInputActivityGroup(entry)) {
     result.push(entry);
     return;
   }

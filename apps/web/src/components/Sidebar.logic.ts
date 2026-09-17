@@ -827,7 +827,7 @@ export function shouldRecedeSidebarThread(input: {
 
 export interface SidebarThreadActivityVisual {
   readonly label: "Working" | "Delegating" | "Monitoring";
-  readonly icon: "working" | "delegating" | null;
+  readonly icon: "working" | "delegating" | "monitoring";
   readonly className: string;
 }
 
@@ -852,8 +852,8 @@ export function resolveSidebarThreadActivityVisual(
     case "monitoring":
       return {
         label: "Monitoring",
-        icon: null,
-        className: "text-sky-600 dark:text-sky-400",
+        icon: "monitoring",
+        className: "text-foreground dark:text-white",
       };
     default:
       return null;
