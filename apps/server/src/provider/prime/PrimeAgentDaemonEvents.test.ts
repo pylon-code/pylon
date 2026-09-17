@@ -1241,6 +1241,17 @@ describe("PrimeAgentDaemonEvents", () => {
     expect(decodePrimeAgentDaemonEvent({ type: "closed", error: "daemon exited" })).toEqual({
       _tag: "SessionClosed",
       error: "daemon exited",
+      diagnostic: { reason: "provider-closed" },
+    });
+    expect(
+      decodePrimeAgentDaemonEvent({
+        type: "closed",
+        diagnostic: { reason: "ingress-capacity", connectionGeneration: 3 },
+      }),
+    ).toEqual({
+      _tag: "SessionClosed",
+      error: undefined,
+      diagnostic: { reason: "ingress-capacity", connectionGeneration: 3 },
     });
   });
 

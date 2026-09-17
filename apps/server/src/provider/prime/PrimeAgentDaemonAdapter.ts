@@ -1431,6 +1431,9 @@ export function makePrimeAgentDaemonAdapter(
               provider: PROVIDER,
               threadId,
               method: event._tag,
+              ...(event._tag === "SessionClosed" && event.diagnostic !== undefined
+                ? { diagnostic: event.diagnostic }
+                : {}),
             },
           },
           threadId,

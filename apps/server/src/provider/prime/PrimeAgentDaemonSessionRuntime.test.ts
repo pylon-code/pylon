@@ -1419,6 +1419,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "proof-lost" }),
           },
         ]);
         expect(
@@ -1478,6 +1479,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "proof-lost" }),
           },
         ]);
       }),
@@ -1680,6 +1682,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
               {
                 _tag: "SessionClosed",
                 error: "Prime Agent event ingress exceeded its bounded capacity.",
+                diagnostic: expect.objectContaining({ reason: "ingress-capacity" }),
               },
             ]);
             return;
@@ -1888,6 +1891,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "proof-lost" }),
           },
         ]);
         expect(test.captures.order.filter((step) => step === "snapshot")).toHaveLength(1);
@@ -1935,6 +1939,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect((yield* collectEvents(runtime, 1))[0]).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+          diagnostic: expect.objectContaining({ reason: "snapshot-reconciliation" }),
         });
         expect(snapshotReads).toBe(2);
       }),
@@ -2006,6 +2011,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(recoveredEvents[3]).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+          diagnostic: expect.objectContaining({ reason: "proof-lost" }),
         });
         expect(
           test.captures.connectionCalls.filter((call) => call.method === "submitCorrelatedPrompt"),
@@ -2511,6 +2517,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(published.at(-1)).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+          diagnostic: expect.objectContaining({ reason: "proof-lost" }),
         });
         expect(published.filter((event) => event._tag === "SessionClosed")).toHaveLength(1);
         const afterTerminal = yield* runtime
@@ -2620,6 +2627,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
             expect(published.at(-1)).toEqual({
               _tag: "SessionClosed",
               error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+              diagnostic: expect.objectContaining({ reason: "proof-lost" }),
             });
           }),
         );
@@ -2712,6 +2720,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "ingress-capacity" }),
           },
         ]);
       }),
@@ -2788,6 +2797,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect((yield* collectEvents(runtime, 1))[0]).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+          diagnostic: expect.objectContaining({ reason: "ingress-capacity" }),
         });
         yield* Fiber.join(callbacks);
         expect(verificationCalls).toBe(2);
@@ -2874,6 +2884,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect((yield* collectEvents(runtime, 1))[0]).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+          diagnostic: expect.objectContaining({ reason: "proof-lost" }),
         });
         expect(verificationCalls).toBe(2);
         expect(resourceCalls).toBe(2);
@@ -3060,6 +3071,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect((yield* collectEvents(runtime, 1))[0]).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+          diagnostic: expect.objectContaining({ reason: "proof-lost" }),
         });
         expect(replacementCalls).toBe(2);
       }),
@@ -3104,6 +3116,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(published.at(-1)).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+          diagnostic: expect.objectContaining({ reason: "proof-lost" }),
         });
         expect(published.filter((event) => event._tag === "SessionClosed")).toHaveLength(1);
       }),
@@ -3528,6 +3541,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "proof-lost" }),
           },
         ]);
         const afterTerminal = yield* runtime
@@ -3592,6 +3606,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "proof-lost" }),
           },
         ]);
       }),
@@ -3816,6 +3831,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "proof-lost" }),
           },
         ]);
       }),
@@ -5623,6 +5639,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "proof-lost" }),
           },
         ]);
         const extra = yield* runtime.events.pipe(
@@ -5687,6 +5704,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "proof-lost" }),
           },
         ]);
         const extra = yield* runtime.events.pipe(
@@ -6212,6 +6230,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(published.at(-1)).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent event ingress exceeded its bounded capacity.",
+          diagnostic: expect.objectContaining({ reason: "ingress-capacity" }),
         });
         expect(published.filter((event) => event._tag === "SessionClosed")).toHaveLength(1);
         const promptError = yield* runtime.prompt({ text: "must remain failed" }).pipe(Effect.flip);
@@ -6259,6 +6278,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(published.at(-1)).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent event ingress exceeded its bounded capacity.",
+          diagnostic: expect.objectContaining({ reason: "ingress-capacity" }),
         });
         const answer = yield* Fiber.join(asking);
         expect(answer).toMatchObject({
@@ -6607,6 +6627,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect(published.at(-1)).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent event ingress exceeded its bounded capacity.",
+          diagnostic: expect.objectContaining({ reason: "ingress-capacity" }),
         });
         expect(verificationCalls).toBe(1);
         const prompt = yield* Fiber.join(promptFiber);
@@ -6677,6 +6698,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect((yield* collectEvents(runtime, 1))[0]).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent event ingress exceeded its bounded capacity.",
+          diagnostic: expect.objectContaining({ reason: "ingress-capacity" }),
         });
         yield* Fiber.join(callbacks);
         expect(yield* Fiber.join(prompt)).toMatchObject({
@@ -9053,6 +9075,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "proof-lost" }),
           },
         ]);
         expect(snapshotReads).toBe(2);
@@ -9099,6 +9122,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "proof-lost" }),
           },
         ]);
         yield* Fiber.join(closing);
@@ -9144,6 +9168,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect((yield* collectEvents(runtime, 1))[0]).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+          diagnostic: expect.objectContaining({ reason: "proof-lost" }),
         });
         yield* Effect.promise(() =>
           test.emit({
@@ -9231,6 +9256,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "proof-lost" }),
           },
         ]);
         yield* Fiber.join(closing);
@@ -9395,7 +9421,11 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           ]).then(() => undefined),
         );
         expect(yield* collectEvents(runtime, 1)).toEqual([
-          { _tag: "SessionClosed", error: undefined },
+          {
+            _tag: "SessionClosed",
+            error: undefined,
+            diagnostic: expect.objectContaining({ reason: "provider-closed" }),
+          },
         ]);
         const callsBefore = [...test.captures.connectionCalls];
         expect(yield* runtime.getInputQueueStatus.pipe(Effect.flip)).toMatchObject({
@@ -9610,6 +9640,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect((yield* collectEvents(runtime, 1))[0]).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+          diagnostic: expect.objectContaining({ reason: "snapshot-reconciliation" }),
         });
         expect(test.captures.commands.filter((command) => command.type === "list")).toHaveLength(0);
         const callsBefore = [...test.captures.connectionCalls];
@@ -9717,6 +9748,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         expect((yield* collectEvents(runtime, 1))[0]).toEqual({
           _tag: "SessionClosed",
           error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+          diagnostic: expect.objectContaining({ reason: "proof-lost" }),
         });
         test.setCorrelatedPromptLifecycleProof(true);
         yield* Effect.promise(() =>
@@ -11291,6 +11323,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           {
             _tag: "SessionClosed",
             error: "Prime Agent correlated prompt capability proof was lost during recovery.",
+            diagnostic: expect.objectContaining({ reason: "proof-lost" }),
           },
         ]);
       }),
