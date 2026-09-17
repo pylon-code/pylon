@@ -224,7 +224,8 @@ export const readAntigravityUsageLimits = Effect.fn("readAntigravityUsageLimits"
       const version =
         input.runtimeVersion.replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 64) || "unknown";
       const userAgent = `antigravity/acp/${version} (aidev_client; os_type=${platform === "win32" ? "windows" : platform}; arch=${architecture === "x64" ? "x86_64" : architecture}; host_path=pylon/0.0.0; proxy_client=antigravity/sdk)`;
-      const requestJson = Effect.fn("antigravityQuota.request")(function* (
+      // Keep parse failures inside the outer recovery: a nested failed span could retain response text.
+      const requestJson = Effect.fnUntraced(function* (
         request: HttpClientRequest.HttpClientRequest,
       ) {
         const response = yield* http.execute(request);
