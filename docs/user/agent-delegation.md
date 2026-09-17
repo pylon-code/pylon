@@ -1,4 +1,4 @@
-# Agent delegation
+# Pylon delegation
 
 Agent delegation lets an agent hand work to other threads that run on a different provider or
 account, then follow that work through to the end. A Prime Agent thread can, for example, send a
@@ -7,7 +7,7 @@ answer and the files it changed, and send follow-ups.
 
 ## Turn it on
 
-Delegation is off by default. Open **Settings → Integrations** and turn on **Agent delegation**
+Delegation is off by default. Open **Settings → Integrations** and turn on **Pylon delegation**
 under **All projects** for a machine default, or select a project to override that default. The
 setting takes effect the next time an agent's session starts; a session that is already running
 keeps the tools it started with.
@@ -17,8 +17,10 @@ Supervised sessions deny tools that Pylon cannot review, including delegation.
 
 ## Defaults
 
-With delegation on, two more settings appear under it in **Settings → Integrations**. Like
-delegation itself, they can be set for all projects or overridden per project.
+**Default delegation model** and **Child permissions** are always visible under **Pylon delegation**
+in **Settings → Integrations**, even while it is off. You can configure them before enabling it.
+Like delegation itself, they can be set for all projects or overridden per project. These settings
+apply only to Pylon child threads, not the provider’s built-in subagents.
 
 - **Default delegation model** is the provider and model a child uses when your request doesn't
   name one. It starts unset. Without a default, the agent asks you which provider to use instead of
@@ -35,10 +37,30 @@ started it.
 A default is never swapped for something else. If the default provider is signed out or disabled, or
 no longer offers that model, delegation fails with an error until you pick a new default.
 
-Agents learn when to delegate from Pylon's instructions: delegation for work on another provider or in
-its own thread, and their built-in subagents for quick help within the same session. Delegation doesn't
-turn off built-in subagents. To make a Prime Agent thread use only delegation, set its **Subagent
-depth** to 0 under **Harness**.
+**Preferred delegation method** chooses how agents delegate worthwhile independent work:
+**Built-in agents** (the default) or **Pylon threads**. Set it once for all projects or override it
+per project. Choosing Pylon lets agents use your default delegation model without being asked each
+time. Small or tightly coupled tasks stay local, and explicit instructions in your message take
+priority. Enabling delegation alone does not request it. With the built-in preference, unavailable
+built-in subagents do not trigger automatic Pylon delegation.
+
+The preference is read when the agent chooses a method for a new task. Turning delegation off makes
+the saved Pylon preference inactive; turning it on restores it. To make a one-time request, say
+“Use Pylon delegation for this task” or “Keep this task local.”
+
+Turning Pylon delegation off leaves built-in subagents alone. Existing agent sessions retain their
+tools until their next session start, and existing children keep running. Start a new thread for the
+new setting to apply immediately; open a running child and stop it if you want that work to end.
+Native subagent controls belong to the provider’s harness; for example, Prime Agent’s **Harness →
+Subagent depth** controls its built-in agents separately.
+
+## Ask for delegation
+
+For example: “Use a separate Pylon thread to review the authentication changes. Keep the review
+read-only and report concrete bugs with file references.” The agent loads Pylon's delegation skill
+on demand, then follows its guidance for choosing the route, briefing the child, waiting, and
+reviewing the result. The skill is available in any project through Pylon's agent tools; no separate
+skill installation is needed. Enabling delegation alone does not start a child.
 
 ## What a child thread is
 
@@ -60,11 +82,36 @@ children as ordinary threads.
 - **The provider's own usage.** Work in a child counts against that provider account, not the
   parent's.
 
+## Monitor delegated work
+
+The parent thread shows a persistent Pylon delegation summary and includes child threads in its
+**Agents** panel. Expand the summary for each child's provider/model, status, and available activity;
+choose **Open thread** to inspect its result, answer a question, approve an action, or stop it.
+Children remain visible after the parent's turn ends. “Completed” means the child's execution
+finished, not that its changes have been reviewed or merged. Native-agent token totals are labeled
+separately; Pylon children do not yet contribute to a combined usage total.
+
+Recognized Pylon delegation calls also appear as expandable rows in the streaming work log, with
+access to the Agents panel and original tool details. A specific child is linked when the provider
+preserves its thread ID in the result; truncated results may only show the task title.
+“Waiting for delegated agent” requires an active parent turn and a recognized running status call
+with a positive wait budget. Codex and Claude expose this structured tool data. Providers that do
+not preserve it, including current Prime and OpenCode live events, still show child status in the
+summary and Agents panel without claiming the parent is waiting. This display does not automatically
+resume the parent when a child finishes. Mobile retains its existing child-thread sidebar display.
+
 ## Things to know
 
-- An agent waits for a child in short checks of up to 45 seconds each, all inside its current turn.
+- Give a child one bounded task, relevant file references, acceptance criteria, and a concise report.
+  Review its completed changes and checks, then send consolidated corrections. Separate threads add
+  briefing and review overhead; using them is not a guarantee of lower total usage.
+- When waiting is necessary, an agent checks for up to 45 seconds inside its current turn. Completed
+  children and children waiting for an approval or answer return immediately.
   Pylon does not wake the parent when a child finishes. If the parent's turn ends first, ask it to
   check on its children in your next message.
+- Result summaries are limited to 4,000 characters by default. The agent can request more and should
+  expand a truncated result before accepting the work. If the 60,000-character limit is still too
+  small, inspect the child thread or ask it for a concise handoff.
 - A child that sits idle for thirty minutes has its provider session stopped. Its next message
   starts a fresh session, which may not keep the provider's own conversation memory.
 - Archiving a child hides its result from the parent agent. Unarchive it to let the parent read it

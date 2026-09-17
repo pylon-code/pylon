@@ -251,6 +251,8 @@ interface HarnessOptions {
   readonly delegationDefault?: ModelSelection | null;
   readonly childRuntimeMode?: DelegationChildRuntimeMode;
   readonly projectOverrides?: ProjectSettingsOverrides;
+  readonly delegationEnabled?: boolean;
+  readonly delegationPreference?: "built-in" | "pylon";
   /** Completed when the first turn start arrives; that dispatch then never returns. */
   readonly holdTurnStart?: Deferred.Deferred<void>;
 }
@@ -421,7 +423,8 @@ const makeHarness = Effect.fn("makeDelegationHarness")(function* (options: Harne
         ),
     }),
     ServerSettings.layerTest({
-      enableAgentDelegation: true,
+      enableAgentDelegation: options.delegationEnabled ?? true,
+      delegationPreference: options.delegationPreference ?? "built-in",
       newWorktreesStartFromOrigin: options.startFromOrigin ?? false,
       delegationDefaultModelSelection: options.delegationDefault ?? null,
       delegationChildRuntimeMode: options.childRuntimeMode ?? "inherit",
@@ -464,12 +467,49 @@ const delegateInput = {
 };
 
 describe("delegation toolkit gate", () => {
+  it.effect("resolves preference with project overrides and ignores it when disabled", () =>
+    Effect.gen(function* () {
+      for (const [options, expected] of [
+        [{}, "built-in"],
+        [{ delegationPreference: "pylon" }, "pylon"],
+        [
+          { delegationPreference: "pylon", projectOverrides: { delegationPreference: "built-in" } },
+          "built-in",
+        ],
+        [{ projectOverrides: { delegationPreference: "pylon" } }, "pylon"],
+        [{ delegationPreference: "pylon", delegationEnabled: false }, "built-in"],
+        [
+          { delegationPreference: "pylon", projectOverrides: { enableAgentDelegation: false } },
+          "built-in",
+        ],
+      ] as const) {
+        const harness = yield* makeHarness(options);
+        expect(yield* harness.call("read_delegation_skill", {})).toContain(
+          `Current preferred delegation method: ${expected}.`,
+        );
+        expect(yield* harness.commandTypes).toEqual([]);
+      }
+    }),
+  );
+
+  it.effect("reads the skill without starting a child or touching git", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const skill = yield* harness.call("read_delegation_skill", {});
+      expect(skill).toContain("name: pylon-delegation");
+      expect(skill).toContain("## Choose the route");
+      expect(yield* harness.commandTypes).toEqual([]);
+      expect(yield* Ref.get(harness.gitCalls)).toEqual([]);
+    }),
+  );
+
   it.effect("refuses a credential without the delegation capability", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
       for (const [name, params] of [
         ["delegated_thread_status", { delegationKey: "k1" }],
         ["delegate_thread", delegateInput],
+        ["read_delegation_skill", {}],
       ] as const) {
         const error = yield* harness
           .call(name, params, invocation(PARENT_ID, ["pull-requests"]))
@@ -538,6 +578,28 @@ describe("delegated_thread_status", () => {
           changed: false,
         },
       );
+    }),
+  );
+
+  it.effect("returns settled and actionable children immediately even with a wait budget", () =>
+    Effect.gen(function* () {
+      for (const child of [
+        makeShell(CHILD_ID, { latestTurn: completedTurn() }),
+        makeShell(CHILD_ID, { latestTurn: completedTurn({ state: "error" }) }),
+        makeShell(CHILD_ID, { latestTurn: completedTurn({ state: "interrupted" }) }),
+        makeShell(CHILD_ID, { latestTurn: turn(), hasPendingApprovals: true }),
+        makeShell(CHILD_ID, { latestTurn: turn(), hasPendingUserInput: true }),
+        makeShell(CHILD_ID, { archivedAt: NOW }),
+      ]) {
+        const harness = yield* makeHarness({ shells: [makeShell(PARENT_ID), child] });
+        // No TestClock advancement: waiting would hang this test.
+        expect(
+          yield* harness.call("delegated_thread_status", {
+            delegationKey: "k1",
+            waitSeconds: 45,
+          }),
+        ).toMatchObject({ waitedSeconds: 0, changed: false });
+      }
     }),
   );
 
@@ -622,6 +684,27 @@ describe("delegated_thread_result", () => {
         branch: "t3code/1",
       });
       expect(result.assistantMessage?.text).toHaveLength(1_000);
+    }),
+  );
+
+  it.effect("bounds the default result and lets the caller expand truncated output", () =>
+    Effect.gen(function* () {
+      const shell = makeShell(CHILD_ID, {
+        latestTurn: completedTurn({ assistantMessageId: MessageId.make("m1") }),
+      });
+      const text = "x".repeat(6_000);
+      const harness = yield* makeHarness({
+        shells: [makeShell(PARENT_ID), shell],
+        details: [detailOf(shell, { messages: [message("m1", { text })], checkpoints: [] })],
+      });
+      const compact = yield* harness.call("delegated_thread_result", { delegationKey: "k1" });
+      expect(compact.assistantMessage?.text).toHaveLength(4_000);
+      expect(compact.assistantMessage?.truncated).toBe(true);
+      const expanded = yield* harness.call("delegated_thread_result", {
+        delegationKey: "k1",
+        maxChars: 8_000,
+      });
+      expect(expanded.assistantMessage).toMatchObject({ text, truncated: false });
     }),
   );
 

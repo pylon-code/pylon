@@ -1,3 +1,4 @@
+import { DelegatedThreadList, type DelegatedThreadRows } from "./DelegatedThreadList";
 /**
  * Agents right-panel surface: the fleet view over the native subagent fold,
  * and the ONLY place the roster renders (the chat carries one CTA row per
@@ -687,10 +688,12 @@ function agentPanelAgents(model: AgentPanelModel): ReadonlyArray<RuntimeSubagent
   ];
 }
 
+const EMPTY_DELEGATED_THREADS: DelegatedThreadRows = [];
 const EMPTY_CANCELLING_AGENT_IDS: ReadonlySet<string> = new Set();
 
 export function AgentsPanel({
   model,
+  delegatedThreads = EMPTY_DELEGATED_THREADS,
   environmentId = null,
   threadId = null,
   canCancelAgents = false,
@@ -703,6 +706,7 @@ export function AgentsPanel({
   onMessageAgent,
 }: {
   model: AgentPanelModel;
+  delegatedThreads?: DelegatedThreadRows;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
   canCancelAgents?: boolean;
@@ -831,7 +835,7 @@ export function AgentsPanel({
       if (messageScopeRef.current === expectedScopeKey) setMessagePending(false);
     }
   };
-  if (!model.hasAgents) {
+  if (!model.hasAgents && delegatedThreads.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <Bot aria-hidden className="size-6 text-muted-foreground/60" />
@@ -863,6 +867,14 @@ export function AgentsPanel({
       ) : null}
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2 p-2">
+          {delegatedThreads.length > 0 ? (
+            <section>
+              <div className="px-1.5 py-1 text-xs font-medium text-muted-foreground">
+                Pylon threads
+              </div>
+              <DelegatedThreadList rows={delegatedThreads} />
+            </section>
+          ) : null}
           {model.workflows.map((group) => (
             <WorkflowSection
               key={group.workflow.id}
@@ -892,18 +904,21 @@ export function AgentsPanel({
           ) : null}
         </div>
       </ScrollArea>
-      <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
-        <span className="flex items-center gap-2">
-          {model.runningCount + model.waitingCount > 0 ? (
-            <span className="text-info-foreground">
-              ● {model.runningCount + model.waitingCount} working
-            </span>
-          ) : null}
-          {model.idleCount > 0 ? <span>{model.idleCount} idle</span> : null}
-          {model.settledCount > 0 ? <span>{model.settledCount} settled</span> : null}
-        </span>
-        <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
-      </footer>
+      {model.hasAgents ? (
+        <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
+          <span className="flex items-center gap-2">
+            <span>Native agents</span>
+            {model.runningCount + model.waitingCount > 0 ? (
+              <span className="text-info-foreground">
+                ● {model.runningCount + model.waitingCount} working
+              </span>
+            ) : null}
+            {model.idleCount > 0 ? <span>{model.idleCount} idle</span> : null}
+            {model.settledCount > 0 ? <span>{model.settledCount} settled</span> : null}
+          </span>
+          <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
+        </footer>
+      ) : null}
       <Dialog
         open={liveActivityOpen}
         onOpenChange={(open) => {

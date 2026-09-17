@@ -66,7 +66,7 @@ export const DelegateThreadInput = Schema.Struct({
   delegationKey: DelegationKey,
   task: TaskText.annotate({
     description:
-      "The child's first user message. Say what to do, where to look, and what to report back.",
+      "One bounded task: specify relevant files, acceptance criteria, exclusions, and a concise final report of changes, checks, and unresolved issues. Do not copy the full conversation.",
   }),
   providerInstanceId: Schema.optional(
     ProviderInstanceId.annotate({
@@ -122,7 +122,7 @@ export const DelegatedThreadStatusInput = Schema.Struct({
   waitSeconds: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_WAIT_SECONDS })).annotate({
       description:
-        "Wait up to this many seconds (at most 45) for the child's state to change before answering. Prefer 20 and call again while it is running.",
+        "Wait up to this many seconds (at most 45) for the child's state to change before answering. Use 45 when waiting is necessary; do independent work before checking again. Completed or blocked children return immediately.",
     }),
   ),
 });
@@ -163,7 +163,8 @@ export const DelegatedThreadResultInput = Schema.Struct({
     Schema.Int.check(
       Schema.isBetween({ minimum: MIN_RESULT_CHARS, maximum: MAX_RESULT_CHARS }),
     ).annotate({
-      description: "Maximum characters of the child's final message to return. Default 20000.",
+      description:
+        "Maximum characters of the child's final message to return. Default 4000. Expand truncated results before accepting work; at the 60000 limit, inspect the child thread or ask for a concise handoff.",
     }),
   ),
 });
@@ -413,7 +414,7 @@ export type DelegationToolError = typeof DelegationToolError.Type;
 
 const DelegateThreadTool = Tool.make("delegate_thread", {
   description:
-    "Start a separate Pylon thread, visible to the user, on another provider in its own git worktree, then return immediately. Use it when the user asks for a different provider, model, or account, or for a separate thread; for quick in-session help, prefer your own built-in subagents. Omit providerInstanceId, model, and runtimeMode unless the user asked for them: Pylon applies the user's defaults, and the result reports what was used. Then wait with delegated_thread_status, read delegated_thread_result, and review the child's changes before relying on them. Reusing a delegationKey returns the existing child. Children cannot delegate further. Requires Agent delegation in Pylon Settings → Integrations.",
+    "Start a separate Pylon thread in its own worktree and return immediately. Keep small or tightly coupled work local. For worthwhile independent work, follow the current preference returned by read_delegation_skill; default to built-in agents. Explicit user instructions override the preference. Availability alone is not a request to delegate. First load read_delegation_skill once for the workflow, defaults, waiting, and review rules. Reusing a delegationKey returns the existing child. Requires Pylon delegation in Settings → Integrations.",
   parameters: DelegateThreadInput,
   success: DelegateThreadResult,
   failure: DelegationToolError,
@@ -427,7 +428,7 @@ const DelegateThreadTool = Tool.make("delegate_thread", {
 
 const DelegatedThreadStatusTool = Tool.make("delegated_thread_status", {
   description:
-    "Report a child thread's state (queued, running, completed, interrupted, error, archived) and whether it is waiting on an approval or a question. Pass waitSeconds to wait up to 45 seconds until something changes; prefer 20 and call again while it is running.",
+    "Report a child thread's state (queued, running, completed, interrupted, error, archived) and whether it is waiting on an approval or a question. Pass waitSeconds to wait up to 45 seconds until something changes; use 45 when waiting is necessary. Completed children and children needing approval or input return immediately. Do independent work before checking again; avoid short polling and unchanged progress updates. This tool does not arrange an automatic parent wake-up.",
   parameters: DelegatedThreadStatusInput,
   success: DelegatedThreadStatusResult,
   failure: DelegationToolError,
@@ -481,7 +482,21 @@ const InterruptDelegatedThreadTool = Tool.make("interrupt_delegated_thread", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const ReadDelegationSkillTool = Tool.make("read_delegation_skill", {
+  description:
+    "Read the Pylon delegation skill: choose local work, built-in subagents, or Pylon child threads, then manage and review them efficiently. Read when choosing a delegation method for a task: includes the current project preference. No child is started. Requires the delegation capability.",
+  success: Schema.String,
+  failure: DelegationToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Read the Pylon delegation skill")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const DelegationToolkit = Toolkit.make(
+  ReadDelegationSkillTool,
   DelegateThreadTool,
   DelegatedThreadStatusTool,
   DelegatedThreadResultTool,

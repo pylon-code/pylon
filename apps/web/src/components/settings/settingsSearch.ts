@@ -559,10 +559,19 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "agent-delegation",
-    title: "Agent delegation",
+    title: "Pylon delegation",
     to: "/settings/integrations",
     scope: "project-defaults",
-    searchTerms: ["child threads subagents delegate orchestrate other providers worktrees"],
+    searchTerms: [
+      "agent delegation native built-in subagents child threads delegate orchestrate other providers worktrees enable disable off on",
+    ],
+  },
+  {
+    id: "delegation-preference",
+    title: "Preferred delegation method",
+    to: "/settings/integrations",
+    scope: "project-defaults",
+    searchTerms: ["prefer native built-in agents pylon threads delegation method"],
   },
   {
     id: "delegation-default-model",

@@ -61,12 +61,14 @@ validated exactly like an explicit choice, and an unavailable one fails. The new
 not in `resolveProjectSettings`' disabled-provider fallback, which would otherwise swap a project's
 default for the environment's without saying so.
 
-Agents are told how to use delegation in two places. Every provider that takes Pylon runtime instructions
-(Claude, Codex, Cursor, Grok, OpenCode, Antigravity) gets a `<pylon_delegation>` block when its session's
-MCP credential grants `delegation`. Prime Agent sessions receive no Pylon instructions, so the same
-guidance also lives in the `delegate_thread` tool and parameter descriptions. Neither carries the
-configured default's name: settings can change mid-session, so the server resolves defaults when the tool
-runs and reports what it used in `defaultApplied`.
+Provider runtime instructions and MCP tool descriptions route agents to `read_delegation_skill`.
+Prime Agent uses the tool description because it does not receive Pylon runtime instructions.
+The canonical repo skill is embedded in the server bundle so installed servers need no source checkout.
+The read resolves the current parent project's `delegationPreference`, defaulting to built-in agents
+and treating a saved Pylon preference as inactive while delegation is disabled. Reading at task
+routing time avoids freezing a preference in provider session instructions. Explicit user instructions
+override the preference; neither availability nor preference means every task should be delegated.
+Provider/model defaults are still resolved at child creation and reported in `defaultApplied`.
 
 ## Accepted limits
 
@@ -76,7 +78,7 @@ runs and reports what it used in `defaultApplied`.
 - The per-parent semaphore that serializes delegation is in memory, which is enough because one
   server process owns the orchestration engine.
 - Waiting is polling of the projection inside the tool call, bounded by wall-clock time to 45
-  seconds. Prime Agent's MCP client cancels any call after 60 seconds, measured in a live run.
+  seconds; already-settled children and pending approvals/input return immediately. Prime Agent's MCP client cancels any call after 60 seconds, measured in a live run.
   Pylon disables Prime's autonomous continuation, so a parent cannot be woken when a child finishes.
 - The per-parent semaphores are never evicted; one small entry per thread that has delegated.
 - Sends and interrupts take the same per-parent gate as delegation, so an interrupt waits behind a

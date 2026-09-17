@@ -9,11 +9,7 @@ When the t3-code MCP server exposes link_pull_request, you must use it to regist
  * go stale when settings change mid-session.
  */
 const DELEGATION_INSTRUCTIONS = `<pylon_delegation>
-The t3-code MCP server exposes delegation tools: delegate_thread, delegated_thread_status, delegated_thread_result, send_to_delegated_thread, and interrupt_delegated_thread. Delegation starts a separate Pylon thread, visible to the user, on another provider in its own git worktree.
-Use delegation when the user asks for work on a different provider, model, or account, or for a separate thread, or when a sizable independent task should run in its own worktree. For quick in-session help that needs no other provider, prefer your own built-in subagents or tools.
-If the user names no provider or model, omit providerInstanceId and model: Pylon applies the user's default delegation model, and a new child's result shows what was used in defaultApplied. If the user names one, pass exactly that. If the tool reports that no default is set, ask the user which provider to use; never pick a provider yourself.
-Do not pass runtimeMode unless the user asks for a permission mode. Pylon applies the user's child permission setting, and a child never gets broader permissions than you. Children cannot delegate further, and each child uses its own provider's quota.
-delegate_thread returns immediately. Wait with delegated_thread_status (waitSeconds 20, repeated while running), read delegated_thread_result, and review the child's changes in its worktree before relying on or merging them. Never report delegated work as done without reading its result.
+Keep small or tightly coupled work local. Before choosing a delegation method for worthwhile independent work, call the t3-code MCP tool read_delegation_skill to read the current project preference and workflow. It does not start a child. The default is built-in subagents; a saved Pylon preference permits Pylon child threads without a separate request each time. Explicit user instructions override the preference. Availability alone is not a request to delegate, and missing built-in agents do not justify an automatic Pylon fallback. Follow the skill when using delegate_thread and managing results.
 </pylon_delegation>`;
 
 /** Shared runtime context; omit model and effort when the harness manages them dynamically. */

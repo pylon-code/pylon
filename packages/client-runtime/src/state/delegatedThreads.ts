@@ -9,6 +9,8 @@
  */
 import { ThreadId, type EnvironmentId } from "@t3tools/contracts";
 
+import type { EnvironmentThreadShell } from "./models.ts";
+
 import { scopedThreadKey, scopeThreadRef } from "../environment/scoped.ts";
 
 type ScopedThread = { readonly environmentId: EnvironmentId; readonly id: ThreadId };
@@ -96,4 +98,70 @@ export function nestedRowContainsThread<T extends ScopedThread>(
   return (
     nested.childrenByParentKey.get(rowKey)?.some((child) => keyOf(child) === threadKey) ?? false
   );
+}
+
+/** Shell-only lifecycle; keep admission/terminal precedence aligned with server delegation. */
+function delegatedThreadStatus(shell: EnvironmentThreadShell) {
+  if (shell.archivedAt !== null) return "archived";
+  const { session, latestTurn: turn } = shell;
+  if (session?.status === "error" || turn?.state === "error") return "error";
+  if (
+    session?.status !== "starting" &&
+    session?.failedTurnRequestId !== undefined &&
+    session.activeTurnId === null
+  )
+    return "error";
+  if (shell.hasPendingApprovals) return "needs-approval";
+  if (shell.hasPendingUserInput) return "needs-input";
+  if (session?.status === "starting") return turn === null ? "starting" : "running";
+  if (session?.status === "running" && session.activeTurnId !== null) return "running";
+  if (turn === null) return session === null ? "starting" : "interrupted";
+  if (turn.state === "running") return "running";
+  if (turn.state === "interrupted") return "interrupted";
+  if (
+    turn.state === "completed" &&
+    (session === null || session.activeTurnId === null) &&
+    shell.backgroundLiveness !== "working"
+  )
+    return "completed";
+  return "running";
+}
+
+/**
+ * Compact delegated children from the existing environment shell subscription.
+ * The parent's session is deliberately irrelevant: children can outlive it.
+ * Completion means execution finished, not that the parent reviewed the result.
+ */
+export function delegatedThreadRows(
+  threads: readonly EnvironmentThreadShell[],
+  parent: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId },
+) {
+  return threads
+    .filter(
+      (thread) =>
+        thread.environmentId === parent.environmentId &&
+        delegatedParentThreadId(thread.id) === parent.threadId,
+    )
+    .sort(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+    )
+    .map((thread) => {
+      const status = delegatedThreadStatus(thread);
+      const activity =
+        status === "error"
+          ? thread.session?.lastError
+          : status === "running"
+            ? thread.planProgress?.step
+            : null;
+      return {
+        threadId: thread.id,
+        environmentId: thread.environmentId,
+        title: thread.title,
+        modelSelection: thread.modelSelection,
+        providerName: thread.session?.providerName ?? null,
+        status,
+        activity: activity?.replace(/\s+/g, " ").trim().slice(0, 160) || null,
+      } as const;
+    });
 }

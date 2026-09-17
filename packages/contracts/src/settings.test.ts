@@ -972,6 +972,18 @@ describe("optional computer access", () => {
 });
 
 describe("agent delegation access", () => {
+  it("defaults to built-in and supports a scoped delegation preference", () => {
+    expect(decodeServerSettings({}).delegationPreference).toBe("built-in");
+    expect(decodeServerSettingsPatch({ delegationPreference: "pylon" })).toEqual({
+      delegationPreference: "pylon",
+    });
+    expect(decodeProjectSettingsOverrides({ delegationPreference: "built-in" })).toEqual({
+      delegationPreference: "built-in",
+    });
+    expect(() => decodeServerSettingsPatch({ delegationPreference: "always" })).toThrow();
+    expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain("delegationPreference");
+  });
+
   it("defaults off, patches, and accepts a project override", () => {
     expect(decodeServerSettings({}).enableAgentDelegation).toBe(false);
     expect(DEFAULT_SERVER_SETTINGS.enableAgentDelegation).toBe(false);

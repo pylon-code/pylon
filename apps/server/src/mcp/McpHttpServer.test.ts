@@ -801,6 +801,7 @@ it.effect(
       const names = server.tools.map(({ tool }) => tool.name);
       expect(names).toEqual(
         expect.arrayContaining([
+          "read_delegation_skill",
           "delegate_thread",
           "delegated_thread_status",
           "delegated_thread_result",
@@ -815,6 +816,15 @@ it.effect(
       const status = server.tools.find(({ tool }) => tool.name === "delegated_thread_status");
       expect(status?.tool.annotations?.readOnlyHint).toBe(true);
 
+      const skillTool = server.tools.find(({ tool }) => tool.name === "read_delegation_skill");
+      expect(skillTool?.tool.annotations?.readOnlyHint).toBe(true);
+      const skillDenied = yield* server
+        .callTool({ name: "read_delegation_skill", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(skillDenied.isError).toBe(true);
       const denied = yield* server
         .callTool({ name: "delegated_thread_status", arguments: { delegationKey: "k1" } })
         .pipe(
