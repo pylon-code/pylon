@@ -711,6 +711,20 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
 
           expect(refreshed.usageLimits?.checkedAt).toBe(testLimits.checkedAt);
 
+          // A returned failure snapshot also retains the original timestamp and windows.
+          yield* Ref.set(harness.usageLimitsRef, {
+            checkedAt: "2026-09-17T19:00:00.000Z",
+            windows: [],
+            unavailable: { reason: "probeFailed" },
+          });
+          const failedSnapshot = yield* harness.provider.snapshot.refresh;
+          expect(failedSnapshot.usageLimits?.checkedAt).toBe(testLimits.checkedAt);
+          expect(failedSnapshot.usageLimits?.windows).toEqual(testLimits.windows);
+          yield* harness.provider.onSessionStarted(started);
+          expect((yield* harness.provider.snapshot.getSnapshot).usageLimits?.windows).toEqual(
+            testLimits.windows,
+          );
+
           // Sign out resets usage limits
           yield* harness.provider.onSignedOut;
           snapshot = yield* harness.provider.snapshot.getSnapshot;

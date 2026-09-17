@@ -284,7 +284,10 @@ export const readAntigravityUsageLimits = Effect.fn("readAntigravityUsageLimits"
         return yield* new AntigravityQuotaError({ message: "Unrecognized quota response." });
       // Sign-out/account replacement may race this read. Never publish the previous account's limits.
       if ((yield* fs.readFileString(tokenPath)) !== original) {
-        return yield* new AntigravityQuotaError({ message: "Account changed during quota read." });
+        return unavailable(
+          "unsupported",
+          "Account changed; refresh to load its subscription limits.",
+        );
       }
       return limits;
     });

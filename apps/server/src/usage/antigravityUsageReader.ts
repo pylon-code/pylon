@@ -613,7 +613,9 @@ export function parseAntigravityGenMetadataBlob(
     let chatModel: ParsedChatModelMetadata | undefined;
 
     for (const field of iterateProtobufFields(blob, 0, blob.length)) {
-      if (field.fieldNumber === 1 && field.wireType === WIRE_LENGTH_DELIMITED) {
+      if (field.fieldNumber === 1) {
+        if (field.wireType !== WIRE_LENGTH_DELIMITED)
+          throw new Error("Invalid chat model wire type");
         chatModel = parseChatModelMetadata(blob, field.dataOffset, field.dataLength);
         break;
       }
@@ -882,7 +884,7 @@ export async function readAntigravityDatabase(
           continue;
         }
 
-        cumulativeBytes += byteLen;
+        cumulativeBytes += blob.byteLength;
 
         const parseResult = parseAntigravityGenMetadataBlob(blob, { sessionId, rowIdx });
 
