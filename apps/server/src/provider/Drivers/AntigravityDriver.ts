@@ -98,6 +98,8 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         serverConfig.stateDir,
         instanceId,
       );
+      // Another driver or server can still own processes under this profile.
+      // Only remove directories acquired by this runtime, after its child exits.
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER,
         instanceId,
@@ -142,6 +144,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
                   instanceId,
                   operation: "resolve",
                   detail: cause.detail,
+                  cause,
                 }),
             ),
           );
@@ -155,6 +158,32 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           Effect.provideService(Path.Path, path),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         );
+        // Each process unpacks into its own directory that dies with the
+        // runtime scope, after the child is killed. A shared directory would
+        // let one session's teardown delete files a sibling still reads.
+        // Removal is best effort: a handle can outlive the kill on Windows,
+        // so failed removals are retained rather than sweeping shared state.
+        const runtimeTempDirectory = yield* Effect.acquireRelease(
+          fileSystem.makeTempDirectory({ directory: profile.tempDirectory, prefix: "run-" }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderSetupError({
+                  instanceId,
+                  operation: "start",
+                  detail: "Could not create an Antigravity runtime temp directory.",
+                  cause,
+                }),
+            ),
+          ),
+          (directory) =>
+            fileSystem
+              .remove(directory, { recursive: true, force: true })
+              .pipe(
+                Effect.catch(() =>
+                  Effect.logWarning("Could not remove an Antigravity runtime temp directory."),
+                ),
+              ),
+        );
         const runtime = yield* makeAntigravityAcpRuntime({
           ...input,
           authMethod: auth.authMethod,
@@ -165,6 +194,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             cwd: input.cwd,
             baseEnv: withAgentDeviceEnvironment(processEnvironment, input),
             auth,
+            runtimeTempDirectory,
           }),
         }).pipe(Effect.provideService(Crypto.Crypto, crypto));
         return {
@@ -258,24 +288,40 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       // Kick the TTL-gated manifest refresh alongside the health check, as
       // Codex and Claude do. Without it an environment that only runs
       // Antigravity would keep classifying against a stale disk cache.
+      // The probe must not spawn. The agent is a PyInstaller one-file bundle
+      // that unpacks about 1 GB per launch, and the health check runs every
+      // minute. Resolving the install on disk is enough to report installed
+      // and version. Sessions and manual refreshes still spawn.
       const probe = Effect.gen(function* () {
         yield* modelManifest.refreshInBackground;
-        const processScope = yield* Scope.make();
-        yield* Effect.addFinalizer((exit) => Scope.close(processScope, exit));
-        return yield* authFlow
-          .withProcess(
-            Scope.close(processScope, Exit.void),
-            Effect.gen(function* () {
-              const runtime = yield* makeRuntime({
-                cwd: serverConfig.stateDir,
-                clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
-                mcpServers: [],
-              });
-              return yield* runtime.initialize();
-            }),
-          )
-          .pipe(Effect.provideService(Scope.Scope, processScope));
-      }).pipe(Effect.scoped);
+        if (authConfigIssue !== null) {
+          return yield* new ProviderSetupError({
+            instanceId,
+            operation: "configure",
+            detail: authConfigIssue,
+          });
+        }
+        const executable = yield* installation
+          .resolve(settings.binaryPath, processEnvironment)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderSetupError({
+                  instanceId,
+                  operation: "resolve",
+                  detail: cause.detail,
+                  cause,
+                }),
+            ),
+          );
+        return {
+          agentInfo: {
+            name: "antigravity-acp",
+            title: "Google Antigravity",
+            version: executable.version ?? "unknown",
+          },
+        };
+      });
 
       const provider = yield* makeAntigravityProvider(settings, {
         stampIdentity: classifyModels,
