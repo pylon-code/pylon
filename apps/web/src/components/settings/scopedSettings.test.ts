@@ -225,6 +225,31 @@ describe("scoped settings writes", () => {
     expect(persistServer).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["defaultModelSelection", "delegationDefaultModelSelection"] as const)(
+    "replaces a project %s override without keeping the previous model's options",
+    (key) => {
+      const withOptions = environment("Server", {
+        settings: {
+          projectSettingsOverrides: {
+            [projectId]: {
+              [key]: createModelSelection(ProviderInstanceId.make("antigravity"), "gemini-flash", [
+                { id: "thinking", value: "low" },
+              ]),
+            },
+          },
+        },
+      });
+      const plan = planScopedSettingsPatch(checkout, [withOptions], {
+        [key]: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-luna"),
+      });
+      expect(plan.serverWrites[0]?.patch).toEqual({
+        projectSettingsOverrides: {
+          [projectId]: { [key]: { instanceId: "codex", model: "gpt-5.6-luna" } },
+        },
+      });
+    },
+  );
+
   it("gates generic overrides independently of legacy project-default support", () => {
     const legacy = environment("Server", { projectOverrides: false });
     const plan = planScopedSettingsPatch(named, [legacy], {

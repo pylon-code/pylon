@@ -51,6 +51,23 @@ The pending admission id alone is not used: interrupt recovery before the provid
 session but leaves that id set until the next turn start replaces it. A first turn stopped before admission leaves a
 session but no turn and is reported as interrupted, not queued forever.
 
+## Defaults and agent guidance
+
+`delegationDefaultModelSelection` and `delegationChildRuntimeMode` are project-scoped settings resolved
+from the parent's project when `delegate_thread` runs. An explicit provider in the call ignores the
+default entirely. An explicit model without a provider keeps the default's provider but drops its model
+options. With neither and no default, the call fails rather than choosing a provider. A default is
+validated exactly like an explicit choice, and an unavailable one fails. The new keys are deliberately
+not in `resolveProjectSettings`' disabled-provider fallback, which would otherwise swap a project's
+default for the environment's without saying so.
+
+Agents are told how to use delegation in two places. Every provider that takes Pylon runtime instructions
+(Claude, Codex, Cursor, Grok, OpenCode, Antigravity) gets a `<pylon_delegation>` block when its session's
+MCP credential grants `delegation`. Prime Agent sessions receive no Pylon instructions, so the same
+guidance also lives in the `delegate_thread` tool and parameter descriptions. Neither carries the
+configured default's name: settings can change mid-session, so the server resolves defaults when the tool
+runs and reports what it used in `defaultApplied`.
+
 ## Accepted limits
 
 - A follow-up is refused while the child is running, but a user message can arrive between the

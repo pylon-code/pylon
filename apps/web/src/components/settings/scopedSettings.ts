@@ -44,6 +44,13 @@ const SERVER_KEYS = new Set<string>(Object.keys(ServerSettings.fields));
 const CLIENT_KEYS = new Set<string>(Object.keys(ClientSettingsSchema.fields));
 const PROJECT_SCOPED_KEYS = new Set<string>(PROJECT_SCOPED_SERVER_SETTING_KEYS);
 
+const WHOLE_VALUE_KEYS: ReadonlySet<string> = new Set([
+  "defaultModelSelection",
+  "delegationDefaultModelSelection",
+  "sourceControlWriterModelSelection",
+  "textGenerationModelSelection",
+]);
+
 export function isProjectScopedSettingKey(key: string): key is ProjectScopedServerSettingKey {
   return PROJECT_SCOPED_KEYS.has(key);
 }
@@ -285,13 +292,17 @@ export function planScopedSettingsPatch(
               (current, settings, projectId) => {
                 // Object-valued keys arrive as partial patches (the writing style
                 // rows send one field); an override entry stores the whole value,
-                // so complete the patch from the target's effective value.
+                // so complete the patch from the target's effective value. A model
+                // selection is always a whole value: merging would keep the previous
+                // model's options (such as a thinking level) on the new model.
                 const effective = resolveProjectSettings(settings, projectId).settings;
                 const next: Record<string, unknown> = { ...current };
                 for (const [key, value] of Object.entries(serverPatch)) {
                   const base = effective[key as keyof ServerSettings];
                   next[key] =
-                    isPlainObject(value) && isPlainObject(base) ? { ...base, ...value } : value;
+                    !WHOLE_VALUE_KEYS.has(key) && isPlainObject(value) && isPlainObject(base)
+                      ? { ...base, ...value }
+                      : value;
                 }
                 return next as ProjectSettingsOverrides;
               },

@@ -35,4 +35,26 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("through the Cursor harness.");
     expect(instructions).not.toContain("reasoning effort");
   });
+
+  it("describes delegation only when the session has the delegation tools", () => {
+    expect(buildRuntimeInstructions({ harness: "Claude Code" })).not.toContain("delegate_thread");
+    expect(
+      buildRuntimeInstructions({ harness: "Claude Code", delegationAvailable: false }),
+    ).not.toContain("<pylon_delegation>");
+    const instructions = buildRuntimeInstructions({
+      harness: "Claude Code",
+      delegationAvailable: true,
+    });
+    expect(instructions).toContain("<pylon_delegation>");
+    // When to choose delegation over built-in subagents.
+    expect(instructions).toContain("prefer your own built-in subagents");
+    // Defaults apply only when the user names nothing, and are never guessed.
+    expect(instructions).toContain("omit providerInstanceId and model");
+    expect(instructions).toContain("never pick a provider yourself");
+    // Permissions: never broaden, follow the user's child setting.
+    expect(instructions).toContain("Do not pass runtimeMode unless the user asks");
+    expect(instructions).toContain("never gets broader permissions than you");
+    // Review before relying on a child's work.
+    expect(instructions).toContain("delegated_thread_result");
+  });
 });

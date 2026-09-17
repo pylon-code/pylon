@@ -367,6 +367,30 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("replaces the default delegation model without retaining stale options", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      delegationDefaultModelSelection: createModelSelection(
+        ProviderInstanceId.make("antigravity"),
+        "gemini-3.8-flash-medium",
+        [{ id: "thinking", value: "low" }],
+      ),
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        delegationDefaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.6-luna",
+        },
+      }).delegationDefaultModelSelection,
+    ).toEqual({ instanceId: "codex", model: "gpt-5.6-luna" });
+    expect(
+      applyServerSettingsPatch(current, { delegationDefaultModelSelection: null })
+        .delegationDefaultModelSelection,
+    ).toBeNull();
+  });
+
   it("clears source control writer selection with null", () => {
     const current = {
       ...DEFAULT_SERVER_SETTINGS,

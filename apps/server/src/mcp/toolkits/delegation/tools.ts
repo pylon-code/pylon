@@ -68,14 +68,16 @@ export const DelegateThreadInput = Schema.Struct({
     description:
       "The child's first user message. Say what to do, where to look, and what to report back.",
   }),
-  providerInstanceId: ProviderInstanceId.annotate({
-    description:
-      "The provider instance to run the child on, as listed in Pylon Settings → Providers.",
-  }),
+  providerInstanceId: Schema.optional(
+    ProviderInstanceId.annotate({
+      description:
+        "Provider instance to run the child on, as listed in Pylon Settings → Providers. Omit unless the user named a provider: Pylon then uses the user's default delegation model.",
+    }),
+  ),
   model: Schema.optional(
     TrimmedNonEmptyString.annotate({
       description:
-        "A model slug or alias offered by that provider instance. Omit to use its default model.",
+        "Model slug or alias. Omit unless the user named a model. With providerInstanceId it defaults to that provider's default model; without it, to the user's default delegation model.",
     }),
   ),
   title: Schema.optional(
@@ -86,7 +88,7 @@ export const DelegateThreadInput = Schema.Struct({
   runtimeMode: Schema.optional(
     RuntimeMode.annotate({
       description:
-        "Permission mode for the child. Defaults to your own; you may choose only your own mode or approval-required.",
+        "Omit unless the user asks for a permission mode. Pylon applies the user's child permission setting. You may only choose your own mode or approval-required.",
     }),
   ),
 });
@@ -100,6 +102,12 @@ export const DelegateThreadResult = Schema.Struct({
   providerInstanceId: Schema.String,
   model: Schema.String,
   runtimeMode: RuntimeMode,
+  /**
+   * Which part of the provider and model came from the user's default delegation
+   * model. Present only when this call created the child; a reused child's
+   * original choice is not recorded.
+   */
+  defaultApplied: Schema.optional(Schema.Literals(["none", "provider", "provider-and-model"])),
   worktreePath: Schema.NullOr(Schema.String),
   branch: Schema.NullOr(Schema.String),
   startedFromOrigin: Schema.Boolean,
@@ -269,6 +277,15 @@ export class DelegationModelUnavailableError extends Schema.TaggedError<Delegati
   }
 }
 
+export class DelegationDefaultMissingError extends Schema.TaggedError<DelegationDefaultMissingError>()(
+  "DelegationDefaultMissingError",
+  {},
+) {
+  override get message(): string {
+    return "No default delegation model is set. Ask the user which provider to use and pass providerInstanceId, or ask them to set Default delegation model in Pylon Settings → Integrations.";
+  }
+}
+
 export class DelegationRuntimeModeEscalationError extends Schema.TaggedError<DelegationRuntimeModeEscalationError>()(
   "DelegationRuntimeModeEscalationError",
   { parentMode: RuntimeMode, requested: RuntimeMode },
@@ -375,6 +392,7 @@ export const DelegationToolError = Schema.Union([
   DelegationKeyInvalidError,
   DelegationProviderUnavailableError,
   DelegationModelUnavailableError,
+  DelegationDefaultMissingError,
   DelegationRuntimeModeEscalationError,
   DelegationRuntimeModeUnsupportedError,
   DelegationLimitExceededError,
@@ -395,7 +413,7 @@ export type DelegationToolError = typeof DelegationToolError.Type;
 
 const DelegateThreadTool = Tool.make("delegate_thread", {
   description:
-    "Start a child Pylon thread on another provider instance to work on a task in its own git worktree, then return immediately. Children are ordinary threads the user can open. Use delegated_thread_status to wait for it, delegated_thread_result to read its answer and changed files, and send_to_delegated_thread for follow-ups. Reusing a delegationKey returns the existing child. Requires Agent delegation in Pylon Settings → Integrations. A child starts in your own interaction mode; providers without a plan mode run it normally.",
+    "Start a separate Pylon thread, visible to the user, on another provider in its own git worktree, then return immediately. Use it when the user asks for a different provider, model, or account, or for a separate thread; for quick in-session help, prefer your own built-in subagents. Omit providerInstanceId, model, and runtimeMode unless the user asked for them: Pylon applies the user's defaults, and the result reports what was used. Then wait with delegated_thread_status, read delegated_thread_result, and review the child's changes before relying on them. Reusing a delegationKey returns the existing child. Children cannot delegate further. Requires Agent delegation in Pylon Settings → Integrations.",
   parameters: DelegateThreadInput,
   success: DelegateThreadResult,
   failure: DelegationToolError,

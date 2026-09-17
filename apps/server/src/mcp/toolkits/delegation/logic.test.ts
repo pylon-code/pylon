@@ -30,6 +30,7 @@ import {
   isValidDelegationKey,
   resolveDelegatedModel,
   resolveDelegatedRuntimeMode,
+  resolveDelegationTarget,
   selectAssistantMessage,
   truncateText,
 } from "./logic.ts";
@@ -340,6 +341,25 @@ describe("model and runtime mode policy", () => {
     expect(resolveDelegatedModel(unknownDriver, undefined)).toEqual({ ok: false });
   });
 
+  it("applies the child permission default only when the agent asks for none", () => {
+    expect(resolveDelegatedRuntimeMode("full-access", undefined, "approval-required")).toEqual({
+      ok: true,
+      mode: "approval-required",
+    });
+    expect(resolveDelegatedRuntimeMode("full-access", undefined, "inherit")).toEqual({
+      ok: true,
+      mode: "full-access",
+    });
+    // An explicit request still wins, within the same no-escalation rule.
+    expect(resolveDelegatedRuntimeMode("full-access", "full-access", "approval-required")).toEqual({
+      ok: true,
+      mode: "full-access",
+    });
+    expect(
+      resolveDelegatedRuntimeMode("approval-required", "full-access", "approval-required"),
+    ).toEqual({ ok: false, reason: "escalation" });
+  });
+
   it("never lets a child run with more autonomy than its parent", () => {
     expect(resolveDelegatedRuntimeMode("full-access", undefined)).toEqual({
       ok: true,
@@ -361,5 +381,61 @@ describe("model and runtime mode policy", () => {
       ok: false,
       reason: "escalation",
     });
+  });
+});
+
+describe("resolveDelegationTarget", () => {
+  const antigravityDefault = {
+    instanceId: ProviderInstanceId.make("antigravity"),
+    model: "gemini-3.8-flash-medium",
+    options: [{ id: "thinking", value: "low" }],
+  };
+  const codex = ProviderInstanceId.make("codex");
+
+  it("uses the configured default provider and model when the agent names neither", () => {
+    expect(resolveDelegationTarget({ defaultSelection: antigravityDefault })).toEqual({
+      ok: true,
+      instanceId: antigravityDefault.instanceId,
+      model: "gemini-3.8-flash-medium",
+      options: antigravityDefault.options,
+      defaultApplied: "provider-and-model",
+    });
+  });
+
+  it("uses the default provider with a requested model", () => {
+    expect(
+      resolveDelegationTarget({
+        defaultSelection: antigravityDefault,
+        requestedModel: "gemini-3.6-flash-low",
+      }),
+    ).toEqual({
+      ok: true,
+      instanceId: antigravityDefault.instanceId,
+      model: "gemini-3.6-flash-low",
+      defaultApplied: "provider",
+    });
+  });
+
+  it("lets an explicit provider override the default entirely", () => {
+    expect(
+      resolveDelegationTarget({ defaultSelection: antigravityDefault, requestedInstanceId: codex }),
+    ).toEqual({ ok: true, instanceId: codex, defaultApplied: "none" });
+    expect(
+      resolveDelegationTarget({
+        defaultSelection: antigravityDefault,
+        requestedInstanceId: codex,
+        requestedModel: "gpt-5.6-luna",
+      }),
+    ).toEqual({ ok: true, instanceId: codex, model: "gpt-5.6-luna", defaultApplied: "none" });
+  });
+
+  it("fails without a default when the agent names no provider, and never guesses", () => {
+    expect(resolveDelegationTarget({ defaultSelection: null })).toEqual({ ok: false });
+    expect(resolveDelegationTarget({ defaultSelection: null, requestedModel: "x" })).toEqual({
+      ok: false,
+    });
+    expect(resolveDelegationTarget({ defaultSelection: null, requestedInstanceId: codex })).toEqual(
+      { ok: true, instanceId: codex, defaultApplied: "none" },
+    );
   });
 });
