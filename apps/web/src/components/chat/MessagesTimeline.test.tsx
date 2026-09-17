@@ -2090,7 +2090,7 @@ describe("MessagesTimeline", () => {
     // pins it to h-6 so swapping between "Working for" and the worktree-setup
     // label cannot change the row's height.
     expect(markup).toContain(
-      'class="flex h-6 min-w-0 items-baseline px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
+      'class="flex h-6 min-w-0 items-baseline gap-2 px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
     );
     expect(markup).not.toContain('class="pt-0.5 pb-5 pl-1.5"');
     expect(markup).not.toContain('data-slot="dot-matrix"');
@@ -2114,7 +2114,7 @@ describe("MessagesTimeline", () => {
     // matching the working row's h-6, which is what this asserts.
     expect(markup).toContain("gap-1.5 py-0.5 px-0.5");
     expect(markup).toContain("flex size-6 shrink-0 items-center justify-center");
-    expect(markup).toContain("flex h-6 min-w-0 items-baseline px-1");
+    expect(markup).toContain("flex h-6 min-w-0 items-baseline gap-2 px-1");
   });
 
   it("renders review comment contexts as structured cards instead of raw tags", () => {

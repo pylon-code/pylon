@@ -248,6 +248,7 @@ function SetupDetailsSheet({
     <WorktreeSetupSheet height={bodyHeight} onClose={onClose}>
       <ScrollView
         bounces={false}
+        keyboardShouldPersistTaps="handled"
         onContentSizeChange={(_width, height) => setBodyHeight(height)}
         contentContainerStyle={{
           paddingHorizontal: 20,

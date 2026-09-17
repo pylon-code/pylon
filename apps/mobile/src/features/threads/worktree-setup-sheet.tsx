@@ -1,15 +1,7 @@
 import { useState, type ReactElement } from "react";
-import { Modal, View } from "react-native";
-import { Screen, ScreenStack, ScreenStackHeaderConfig } from "react-native-screens";
-import { withUniwind } from "uniwind";
+import { Modal, Pressable, View } from "react-native";
+import { AppText as Text } from "../../components/AppText";
 import { ContextSheetSize } from "../../components/ContextSheetSize";
-
-const NativeScreen = withUniwind(Screen);
-const NativeHeader = withUniwind(ScreenStackHeaderConfig, {
-  backgroundColor: { fromClassName: "backgroundColorClassName", styleProperty: "backgroundColor" },
-  color: { fromClassName: "tintColorClassName", styleProperty: "accentColor" },
-  titleColor: { fromClassName: "titleColorClassName", styleProperty: "accentColor" },
-});
 
 export interface WorktreeSetupSheetProps {
   children: ReactElement;
@@ -18,7 +10,7 @@ export interface WorktreeSetupSheetProps {
 }
 
 export function WorktreeSetupSheet({ children, height, onClose }: WorktreeSetupSheetProps) {
-  const [headerHeight, setHeaderHeight] = useState(44);
+  const [headerHeight, setHeaderHeight] = useState(64);
   return (
     <Modal
       animationType="slide"
@@ -28,38 +20,23 @@ export function WorktreeSetupSheet({ children, height, onClose }: WorktreeSetupS
     >
       <View collapsable={false} className="flex-1 bg-sheet-solid">
         <ContextSheetSize height={height + headerHeight} />
-        {/* The nested stack supplies UIKit's navigation bar inside the sheet. */}
-        <ScreenStack style={{ flex: 1 }}>
-          <NativeScreen
-            activityState={2}
-            enabled
-            isNativeStack
-            screenId="worktree-setup-details"
-            onHeaderHeightChange={(event) => setHeaderHeight(event.nativeEvent.headerHeight)}
-            className="flex-1 bg-sheet-solid"
+        <View
+          onLayout={(event) => setHeaderHeight(event.nativeEvent.layout.height)}
+          className="flex-row items-center justify-between px-5 pt-3 pb-1"
+        >
+          <Text accessibilityRole="header" className="font-t3-medium text-lg text-foreground">
+            Worktree setup
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close setup details"
+            onPress={onClose}
+            className="min-h-11 justify-center px-2"
           >
-            {children}
-            <NativeHeader
-              title="Worktree setup"
-              titleColorClassName="accent-foreground"
-              tintColorClassName="accent-foreground"
-              backgroundColorClassName="bg-sheet-solid"
-              hideBackButton
-              hideShadow
-              translucent={false}
-              headerRightBarButtonItems={[
-                {
-                  type: "button",
-                  title: "Done",
-                  variant: "done",
-                  accessibilityLabel: "Close setup details",
-                  identifier: "worktree-setup-done",
-                  onPress: onClose,
-                },
-              ]}
-            />
-          </NativeScreen>
-        </ScreenStack>
+            <Text className="font-t3-medium text-sm text-foreground">Done</Text>
+          </Pressable>
+        </View>
+        {children}
       </View>
     </Modal>
   );
