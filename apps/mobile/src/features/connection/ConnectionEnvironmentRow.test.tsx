@@ -14,6 +14,7 @@ vi.mock("react-native-reanimated", () => ({
 }));
 vi.mock("../../components/AppText", () => ({ AppText: "Text", AppTextInput: "TextInput" }));
 vi.mock("../../components/AppSymbol", () => ({ SymbolView: "SymbolView" }));
+vi.mock("../../components/ThemedSwitch", () => ({ ThemedSwitch: "ThemedSwitch" }));
 vi.mock("../../components/EnvironmentMachineSymbol", () => ({
   EnvironmentMachineSymbol: "EnvironmentMachineSymbol",
 }));
