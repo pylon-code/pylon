@@ -233,24 +233,23 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
           version: initialized?.agentInfo?.version || draft.version,
           status: errorMessage ? "error" : authenticated ? "ready" : "warning",
           checkedAt: updatedAt,
-          usageLimits: freshUsageLimits
-            ? freshUsageLimits
-            : draft.usageLimits && draft.usageLimits.windows.length > 0
+          usageLimits:
+            (freshUsageLimits === undefined ||
+              freshUsageLimits.unavailable?.reason === "probeFailed") &&
+            draft.usageLimits?.windows.length
               ? {
                   ...draft.usageLimits,
-                  checkedAt: updatedAt,
                   unavailable: {
                     reason: "probeFailed" as const,
-                    message: "Antigravity usage limits could not be refreshed.",
+                    message: "Last reading; subscription limits could not be refreshed.",
                   },
                 }
-              : makeUnavailableUsageLimits({
+              : (freshUsageLimits ??
+                makeUnavailableUsageLimits({
                   checkedAt: updatedAt,
-                  reason: "unsupported",
-                  message: authenticated
-                    ? "Rate limits are currently unavailable."
-                    : SIGN_IN_MESSAGE,
-                }),
+                  reason: "probeFailed",
+                  message: "Subscription limits could not be refreshed.",
+                })),
           ...(missingInstallation
             ? {
                 models: [],
@@ -334,7 +333,23 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
           checkedAt: updatedAt,
           models: buildAntigravityModelsFromSession(started.sessionSetupResult),
           supportsTextGeneration,
-          ...(freshUsageLimits ? { usageLimits: freshUsageLimits } : {}),
+          usageLimits:
+            (freshUsageLimits === undefined ||
+              freshUsageLimits.unavailable?.reason === "probeFailed") &&
+            draft.usageLimits?.windows.length
+              ? {
+                  ...draft.usageLimits,
+                  unavailable: {
+                    reason: "probeFailed" as const,
+                    message: "Last reading; subscription limits could not be refreshed.",
+                  },
+                }
+              : (freshUsageLimits ??
+                makeUnavailableUsageLimits({
+                  checkedAt: updatedAt,
+                  reason: "probeFailed",
+                  message: "Subscription limits could not be refreshed.",
+                })),
           ...(cwd
             ? {
                 workspaceSnapshots: [

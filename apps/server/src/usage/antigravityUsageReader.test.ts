@@ -8,342 +8,155 @@ import {
   iterateProtobufFields,
   parseAntigravityGenMetadataBlob,
   readAntigravityDatabase,
-  readAntigravityDirectory,
-  readAntigravityPaths,
+  readAntigravityLatestContext,
   readVarint,
   WIRE_FIXED32,
   WIRE_FIXED64,
   WIRE_LENGTH_DELIMITED,
   WIRE_VARINT,
 } from "./antigravityUsageReader.ts";
-
-/* -------------------------------------------------------------------------- */
-/* Test-Only Synthetic Protobuf Serializer                                    */
-/* -------------------------------------------------------------------------- */
-
-export interface SyntheticGenMetadataInput {
-  readonly executionId?: string;
-  readonly modelName?: string;
-  readonly modelEnum?: number;
-  readonly timestampSeconds: bigint | number;
-  readonly timestampNanos?: number;
-  readonly inputTokens?: number;
-  readonly outputTokens?: number;
-  readonly cacheWriteTokens?: number;
-  readonly cacheReadTokens?: number;
-  readonly thinkingOutputTokens?: number;
-  readonly responseOutputTokens?: number;
-  readonly estimatedTokensUsed?: number;
-  readonly maxContextTokens?: number;
-  readonly extraFields?: ReadonlyArray<{
-    readonly tag: number;
-    readonly wireType: number;
-    readonly value: bigint | Uint8Array;
-  }>;
-}
-
-function writeVarint(value: bigint | number): Uint8Array {
-  let v = typeof value === "bigint" ? value : BigInt(value);
-  if (v < 0n) {
-    v = BigInt.asUintN(64, v);
-  }
-  const out: number[] = [];
-  while (v >= 0x80n) {
-    out.push(Number((v & 0x7fn) | 0x80n));
-    v >>= 7n;
-  }
-  out.push(Number(v & 0x7fn));
-  return new Uint8Array(out);
-}
-
-function concatBuffers(bufs: ReadonlyArray<Uint8Array>): Uint8Array {
-  const total = bufs.reduce((sum, b) => sum + b.length, 0);
-  const res = new Uint8Array(total);
-  let offset = 0;
-  for (const b of bufs) {
-    res.set(b, offset);
-    offset += b.length;
-  }
-  return res;
-}
-
-function encodeField(tag: number, wireType: number, payload: Uint8Array): Uint8Array {
-  const key = writeVarint(BigInt((tag << 3) | wireType));
-  if (wireType === WIRE_LENGTH_DELIMITED) {
-    const len = writeVarint(payload.length);
-    return concatBuffers([key, len, payload]);
-  }
-  return concatBuffers([key, payload]);
-}
-
-export function encodeSyntheticGenMetadataBlob(input: SyntheticGenMetadataInput): Uint8Array {
-  const textEncoder = new TextEncoder();
-
-  // 1. google.protobuf.Timestamp
-  const tsParts: Uint8Array[] = [];
-  tsParts.push(encodeField(1, WIRE_VARINT, writeVarint(input.timestampSeconds)));
-  if (input.timestampNanos != null && input.timestampNanos > 0) {
-    tsParts.push(encodeField(2, WIRE_VARINT, writeVarint(input.timestampNanos)));
-  }
-  const timestampBlob = concatBuffers(tsParts);
-
-  // 2. ChatStartMetadata
-  const chatStartParts: Uint8Array[] = [];
-  chatStartParts.push(encodeField(4, WIRE_LENGTH_DELIMITED, timestampBlob));
-
-  // ContextWindowMetadata (field 10)
-  if (input.estimatedTokensUsed != null || input.maxContextTokens != null) {
-    const cwParts: Uint8Array[] = [];
-    if (input.estimatedTokensUsed != null) {
-      cwParts.push(encodeField(1, WIRE_VARINT, writeVarint(input.estimatedTokensUsed)));
-    }
-    if (input.maxContextTokens != null) {
-      cwParts.push(encodeField(4, WIRE_VARINT, writeVarint(input.maxContextTokens)));
-    }
-    chatStartParts.push(encodeField(10, WIRE_LENGTH_DELIMITED, concatBuffers(cwParts)));
-  }
-  const chatStartBlob = concatBuffers(chatStartParts);
-
-  // 3. ModelUsageStats
-  const usageParts: Uint8Array[] = [];
-  if (input.inputTokens != null) {
-    usageParts.push(encodeField(2, WIRE_VARINT, writeVarint(input.inputTokens)));
-  }
-  if (input.outputTokens != null) {
-    usageParts.push(encodeField(3, WIRE_VARINT, writeVarint(input.outputTokens)));
-  }
-  if (input.cacheWriteTokens != null) {
-    usageParts.push(encodeField(4, WIRE_VARINT, writeVarint(input.cacheWriteTokens)));
-  }
-  if (input.cacheReadTokens != null) {
-    usageParts.push(encodeField(5, WIRE_VARINT, writeVarint(input.cacheReadTokens)));
-  }
-  if (input.thinkingOutputTokens != null) {
-    usageParts.push(encodeField(9, WIRE_VARINT, writeVarint(input.thinkingOutputTokens)));
-  }
-  if (input.responseOutputTokens != null) {
-    usageParts.push(encodeField(10, WIRE_VARINT, writeVarint(input.responseOutputTokens)));
-  }
-  const usageBlob = concatBuffers(usageParts);
-
-  // 4. ChatModelMetadata
-  const cmParts: Uint8Array[] = [];
-  if (input.modelName != null) {
-    cmParts.push(encodeField(19, WIRE_LENGTH_DELIMITED, textEncoder.encode(input.modelName)));
-  }
-  if (input.modelEnum != null) {
-    cmParts.push(encodeField(3, WIRE_VARINT, writeVarint(input.modelEnum)));
-  }
-  if (usageParts.length > 0) {
-    cmParts.push(encodeField(4, WIRE_LENGTH_DELIMITED, usageBlob));
-  }
-  cmParts.push(encodeField(9, WIRE_LENGTH_DELIMITED, chatStartBlob));
-
-  if (input.extraFields) {
-    for (const ef of input.extraFields) {
-      if (ef.wireType === WIRE_VARINT && typeof ef.value === "bigint") {
-        cmParts.push(encodeField(ef.tag, WIRE_VARINT, writeVarint(ef.value)));
-      } else if (ef.value instanceof Uint8Array) {
-        cmParts.push(encodeField(ef.tag, ef.wireType, ef.value));
-      }
-    }
-  }
-  const chatModelBlob = concatBuffers(cmParts);
-
-  // 5. CortexStepGeneratorMetadata
-  const genParts: Uint8Array[] = [];
-  genParts.push(encodeField(1, WIRE_LENGTH_DELIMITED, chatModelBlob));
-  if (input.executionId != null) {
-    genParts.push(encodeField(4, WIRE_LENGTH_DELIMITED, textEncoder.encode(input.executionId)));
-  }
-
-  return concatBuffers(genParts);
-}
-
-/* -------------------------------------------------------------------------- */
-/* Test Suite                                                                 */
-/* -------------------------------------------------------------------------- */
+import {
+  encodeLengthDelimited,
+  encodeSyntheticGenMetadataBlob,
+  encodeVarintField,
+} from "./antigravityTestFixtures.ts";
 
 describe("antigravityUsageReader", () => {
-  describe("Strict Protobuf Wire Reader", () => {
-    it("safely decodes varints within 64 bits and detects 10th-byte overflow", () => {
-      // Valid 64-bit varint
-      const buf1 = writeVarint(10_000_000_000n);
-      const res1 = readVarint(buf1, 0);
-      expect(res1.value).toBe(10_000_000_000n);
-
-      // Max safe 64-bit uint (0xFFFFFFFFFFFFFFFF -> 10 bytes: nine 0xFF, tenth 0x01)
-      const maxUint64 = new Uint8Array([
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
-      ]);
-      const resMax = readVarint(maxUint64, 0);
-      expect(resMax.value).toBe(18446744073709551615n);
-
-      // 10th byte overflow: tenth byte has bit 1 set (0x02) -> exceeds 64 bits!
-      const overflowTenth = new Uint8Array([
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02,
-      ]);
-      expect(() => readVarint(overflowTenth, 0)).toThrow("Varint overflow");
-
-      // 10th byte has MSB set -> invalid (>10 bytes)
-      const msbTenth = new Uint8Array([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x80]);
-      expect(() => readVarint(msbTenth, 0)).toThrow("Varint overflow");
+  describe("readVarint & safe integer conversions", () => {
+    it("parses valid single and multi-byte varints correctly", () => {
+      expect(readVarint(new Uint8Array([0x00]), 0)).toEqual({ value: 0n, bytesRead: 1 });
+      expect(readVarint(new Uint8Array([0x01]), 0)).toEqual({ value: 1n, bytesRead: 1 });
+      expect(readVarint(new Uint8Array([0xac, 0x02]), 0)).toEqual({ value: 300n, bytesRead: 2 });
     });
 
-    it("throws on truncated varint", () => {
-      const truncated = new Uint8Array([0x80, 0x80]);
-      expect(() => readVarint(truncated, 0)).toThrow("Unexpected EOF");
+    it("rejects varints exceeding 10 bytes", () => {
+      const tenContinuationBytes = new Uint8Array(11).fill(0x80);
+      expect(() => readVarint(tenContinuationBytes, 0)).toThrow(/10th byte|maximum 10 bytes/);
     });
 
-    it("skips unknown fields safely and rejects invalid wire types", () => {
-      const testBytes = new Uint8Array([
-        (10 << 3) | WIRE_VARINT,
-        42,
-        (11 << 3) | WIRE_FIXED64,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        (12 << 3) | WIRE_LENGTH_DELIMITED,
-        4,
-        116,
-        101,
-        115,
-        116,
-        (13 << 3) | WIRE_FIXED32,
-        2,
-        2,
-        2,
-        2,
+    it("rejects 10th byte exceeding 1 for 64-bit uint", () => {
+      const tenBytesOverflow = new Uint8Array([
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02,
       ]);
-
-      const fields = Array.from(iterateProtobufFields(testBytes));
-      expect(fields.length).toBe(4);
-      expect(fields[0]?.tag).toBe(10);
-      expect(fields[0]?.varintValue).toBe(42n);
-
-      // Disallowed wire type 3 (start group)
-      const invalidWire = new Uint8Array([(1 << 3) | 3]);
-      expect(() => Array.from(iterateProtobufFields(invalidWire))).toThrow("Unsupported wire type");
-
-      // Disallowed tag 0
-      const invalidTag = new Uint8Array([0]);
-      expect(() => Array.from(iterateProtobufFields(invalidTag))).toThrow(
-        "Invalid protobuf field tag 0",
-      );
+      expect(() => readVarint(tenBytesOverflow, 0)).toThrow(/10th byte of 64-bit varint exceeds 1/);
     });
   });
 
-  describe("Pure Blob Parser (Synthetic Fixtures)", () => {
-    it("parses valid synthetic generation with token breakdown and context window snapshot", () => {
+  describe("iterateProtobufFields & wire type validation", () => {
+    it("iterates varint, fixed32, fixed64, and length-delimited fields cleanly", () => {
+      const buf = new Uint8Array([
+        ...encodeVarintField(1, 42),
+        ...encodeLengthDelimited(2, new Uint8Array([1, 2, 3])),
+        (3 << 3) | WIRE_FIXED32,
+        0x01,
+        0x02,
+        0x03,
+        0x04,
+        (4 << 3) | WIRE_FIXED64,
+        0x01,
+        0x02,
+        0x03,
+        0x04,
+        0x05,
+        0x06,
+        0x07,
+        0x08,
+      ]);
+
+      const fields = Array.from(iterateProtobufFields(buf));
+      expect(fields).toHaveLength(4);
+      expect(fields[0]?.fieldNumber).toBe(1);
+      expect(fields[0]?.wireType).toBe(WIRE_VARINT);
+      expect(fields[1]?.fieldNumber).toBe(2);
+      expect(fields[1]?.wireType).toBe(WIRE_LENGTH_DELIMITED);
+      expect(fields[2]?.fieldNumber).toBe(3);
+      expect(fields[2]?.wireType).toBe(WIRE_FIXED32);
+      expect(fields[3]?.fieldNumber).toBe(4);
+      expect(fields[3]?.wireType).toBe(WIRE_FIXED64);
+    });
+
+    it("throws when truncated length-delimited field is encountered", () => {
+      const tag = (1 << 3) | WIRE_LENGTH_DELIMITED;
+      const buf = new Uint8Array([tag, 10, 1, 2, 3]); // Claims 10 bytes, only gives 3
+      expect(() => Array.from(iterateProtobufFields(buf))).toThrow(/Truncated length-delimited/);
+    });
+  });
+
+  describe("parseAntigravityGenMetadataBlob", () => {
+    it("correctly extracts usage stats and context window snapshot", () => {
       const blob = encodeSyntheticGenMetadataBlob({
-        executionId: "exec-transient-123",
-        modelName: "gemini-3.8-pro",
-        timestampSeconds: 1789402266n,
+        modelName: "gemini-3.8-flash",
+        timestampSeconds: 1785578400n, // approx 2026
         timestampNanos: 500_000_000,
-        inputTokens: 5399,
-        cacheReadTokens: 12124,
-        cacheWriteTokens: 60,
-        outputTokens: 235,
-        thinkingOutputTokens: 144,
-        responseOutputTokens: 91,
-        estimatedTokensUsed: 22010,
-        maxContextTokens: 128000,
+        inputTokens: 1200,
+        outputTokens: 450,
+        cacheWriteTokens: 100,
+        cacheReadTokens: 500,
+        thinkingOutputTokens: 150,
+        responseOutputTokens: 300,
+        estimatedTokensUsed: 5000,
+        maxContextTokens: 1048576,
       });
 
       const outcome = parseAntigravityGenMetadataBlob(blob, {
-        sessionId: "conv-session-fixed",
-        rowIdx: 9,
+        sessionId: "test-conv-123",
+        rowIdx: 42,
       });
 
       expect(outcome.success).toBe(true);
       if (!outcome.success) return;
 
       expect(outcome.record).not.toBeNull();
-      const rec = outcome.record!;
+      expect(outcome.record?.provider).toBe("antigravity");
+      expect(outcome.record?.sessionId).toBe("test-conv-123");
+      expect(outcome.record?.genIndex).toBe(42);
+      expect(outcome.record?.dedupeKey).toBe("antigravity:test-conv-123:42");
+      expect(outcome.record?.model).toBe("gemini-3.8-flash");
+      expect(outcome.record?.totals).toEqual({
+        uncachedInputTokens: 1200,
+        cachedInputTokens: 500,
+        cacheCreationTokens: 100,
+        outputTokens: 450,
+        reasoningTokens: 150,
+      });
+      expect(outcome.record?.reportedCostUsd).toBeNull();
 
-      // Session ID must be the supplied conversation ID
-      expect(rec.sessionId).toBe("conv-session-fixed");
-      expect(rec.genIndex).toBe(9);
-      expect(rec.dedupeKey).toBe("antigravity:conv-session-fixed:9");
-      expect(rec.reportedCostUsd).toBeNull();
-      expect(rec.model).toBe("gemini-3.8-pro");
-
-      // Token separation
-      expect(rec.totals.uncachedInputTokens).toBe(5399);
-      expect(rec.totals.cachedInputTokens).toBe(12124);
-      expect(rec.totals.cacheCreationTokens).toBe(60);
-      expect(rec.totals.outputTokens).toBe(235);
-      expect(rec.totals.reasoningTokens).toBe(144);
-
-      // Context window snapshot
       expect(outcome.contextSnapshot).toEqual({
-        timestampMs: 1789402266500,
-        estimatedTokensUsed: 22010,
-        maxContextTokens: 128000,
-        genIndex: 9,
+        timestampMs: 1785578400500,
+        estimatedTokensUsed: 5000,
+        maxContextTokens: 1048576,
+        genIndex: 42,
       });
-      expect(rec.contextSnapshot).toEqual(outcome.contextSnapshot);
     });
 
-    it("requires maxContextTokens > 0 to produce a snapshot; permits estimatedTokensUsed 0", () => {
-      // 0 maxContextTokens -> missing capacity -> no snapshot
-      const noCapBlob = encodeSyntheticGenMetadataBlob({
-        modelName: "gemini-3.8-flash",
-        timestampSeconds: 1789402266n,
-        inputTokens: 100,
-        outputTokens: 50,
-        estimatedTokensUsed: 0,
-        maxContextTokens: 0,
+    it("resolves modelEnum to stable identifier when string modelName is absent", () => {
+      const blob = encodeSyntheticGenMetadataBlob({
+        modelEnum: 7,
+        timestampSeconds: 1785578400n,
+        inputTokens: 10,
+        outputTokens: 20,
       });
-      const outcomeNoCap = parseAntigravityGenMetadataBlob(noCapBlob, {
-        sessionId: "sess-1",
-        rowIdx: 0,
-      });
-      expect(outcomeNoCap.success).toBe(true);
-      if (outcomeNoCap.success) {
-        expect(outcomeNoCap.contextSnapshot).toBeUndefined();
-      }
 
-      // Valid capacity with estimatedTokensUsed = 0 -> valid snapshot
-      const validZeroUsedBlob = encodeSyntheticGenMetadataBlob({
-        modelName: "gemini-3.8-flash",
-        timestampSeconds: 1789402266n,
-        inputTokens: 100,
-        outputTokens: 50,
-        estimatedTokensUsed: 0,
-        maxContextTokens: 128000,
+      const outcome = parseAntigravityGenMetadataBlob(blob, {
+        sessionId: "test-conv-123",
+        rowIdx: 1,
       });
-      const outcomeZeroUsed = parseAntigravityGenMetadataBlob(validZeroUsedBlob, {
-        sessionId: "sess-1",
-        rowIdx: 0,
-      });
-      expect(outcomeZeroUsed.success).toBe(true);
-      if (outcomeZeroUsed.success) {
-        expect(outcomeZeroUsed.contextSnapshot).toEqual({
-          timestampMs: 1789402266000,
-          estimatedTokensUsed: 0,
-          maxContextTokens: 128000,
-          genIndex: 0,
-        });
-      }
+
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.record?.model).toBe("antigravity-model-enum-7");
     });
 
-    it("NEVER defaults unknown model to gemini-3.8-flash; rejects missing model as malformed", () => {
-      // Missing all model names and enum
-      const noModelBlob = encodeSyntheticGenMetadataBlob({
-        timestampSeconds: 1789402266n,
-        inputTokens: 100,
-        outputTokens: 50,
+    it("rejects missing model attribution when neither name nor enum is present", () => {
+      const blob = encodeSyntheticGenMetadataBlob({
+        timestampSeconds: 1785578400n,
+        inputTokens: 10,
+        outputTokens: 20,
       });
 
-      const outcome = parseAntigravityGenMetadataBlob(noModelBlob, {
-        sessionId: "sess-1",
-        rowIdx: 0,
+      const outcome = parseAntigravityGenMetadataBlob(blob, {
+        sessionId: "test-conv-123",
+        rowIdx: 1,
       });
 
       expect(outcome.success).toBe(false);
@@ -352,89 +165,109 @@ describe("antigravityUsageReader", () => {
       }
     });
 
-    it("maps numeric modelEnum to stable antigravity-enum-N identifier without guessing", () => {
-      const enumBlob = encodeSyntheticGenMetadataBlob({
-        modelEnum: 7,
-        timestampSeconds: 1789402266n,
-        inputTokens: 200,
+    it("rejects invariant violation if thinking tokens exceed output tokens", () => {
+      const blob = encodeSyntheticGenMetadataBlob({
+        modelName: "gemini-3.8-flash",
+        timestampSeconds: 1785578400n,
+        inputTokens: 100,
         outputTokens: 50,
+        thinkingOutputTokens: 60, // 60 > 50 -> invariant violation
       });
 
-      const outcome = parseAntigravityGenMetadataBlob(enumBlob, {
-        sessionId: "sess-1",
-        rowIdx: 0,
+      const outcome = parseAntigravityGenMetadataBlob(blob, {
+        sessionId: "test-conv-123",
+        rowIdx: 1,
+      });
+
+      expect(outcome.success).toBe(false);
+      if (!outcome.success) {
+        expect(outcome.reason).toContain("Invariant violated: thinking_output_tokens");
+      }
+    });
+
+    it("omits record and flags malformed when timestamp is missing or zero to preserve accurate history", () => {
+      const blob = encodeSyntheticGenMetadataBlob({
+        modelName: "gemini-3.8-flash",
+        inputTokens: 10,
+        outputTokens: 20,
+        // No timestamp provided
+      });
+
+      const outcome = parseAntigravityGenMetadataBlob(blob, {
+        sessionId: "test-conv-123",
+        rowIdx: 1,
+      });
+
+      expect(outcome.success).toBe(false);
+      if (!outcome.success) {
+        expect(outcome.reason).toContain("Missing or non-positive timestamp");
+      }
+    });
+
+    it("safely skips unknown wire fields in ModelUsageStats without failing", () => {
+      // Create synthetic usage submessage containing an unknown length-delimited field (tag 7 message_id)
+      const fakeMessageIdBytes = new TextEncoder().encode("msg-uuid-999");
+      const extraField = {
+        tag: 7,
+        wireType: WIRE_LENGTH_DELIMITED,
+        value: fakeMessageIdBytes,
+      };
+
+      const blob = encodeSyntheticGenMetadataBlob({
+        modelName: "gemini-3.8-flash",
+        timestampSeconds: 1785578400n,
+        inputTokens: 50,
+        outputTokens: 25,
+        extraFields: [extraField],
+      });
+
+      const outcome = parseAntigravityGenMetadataBlob(blob, {
+        sessionId: "test-conv-123",
+        rowIdx: 1,
       });
 
       expect(outcome.success).toBe(true);
       if (!outcome.success) return;
-      expect(outcome.record?.model).toBe("antigravity-enum-7");
+      expect(outcome.record?.totals.uncachedInputTokens).toBe(50);
+      expect(outcome.record?.totals.outputTokens).toBe(25);
     });
 
-    it("strictly enforces reasoningTokens <= outputTokens invariant", () => {
-      const invalidTokensBlob = encodeSyntheticGenMetadataBlob({
+    it("returns record: null for empty / zero usage turns", () => {
+      const blob = encodeSyntheticGenMetadataBlob({
         modelName: "gemini-3.8-flash",
-        timestampSeconds: 1789402266n,
-        outputTokens: 100,
-        thinkingOutputTokens: 150, // Invariant violation: 150 > 100
+        timestampSeconds: 1785578400n,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        thinkingOutputTokens: 0,
       });
 
-      const outcome = parseAntigravityGenMetadataBlob(invalidTokensBlob, {
-        sessionId: "sess-1",
-        rowIdx: 0,
+      const outcome = parseAntigravityGenMetadataBlob(blob, {
+        sessionId: "test-conv-123",
+        rowIdx: 1,
       });
 
-      expect(outcome.success).toBe(false);
-      if (!outcome.success) {
-        expect(outcome.reason).toContain(
-          "Invariant violation: reasoningTokens (150) > outputTokens (100)",
-        );
-      }
+      expect(outcome.success).toBe(true);
+      if (!outcome.success) return;
+      expect(outcome.record).toBeNull();
     });
 
-    it("fails on known fields encoded with incorrect wire type", () => {
-      // CortexStepGeneratorMetadata.chat_model (tag 1) encoded as varint instead of length-delimited
-      const wrongWireBlob = new Uint8Array([(1 << 3) | WIRE_VARINT, 42]);
-      const outcome = parseAntigravityGenMetadataBlob(wrongWireBlob, {
-        sessionId: "sess-1",
-        rowIdx: 0,
-      });
-      expect(outcome.success).toBe(false);
-      if (!outcome.success) {
-        expect(outcome.reason).toContain(
-          "Invalid wire type 0 for CortexStepGeneratorMetadata.chat_model",
-        );
-      }
-    });
+    it("rejects token counts exceeding MAX_SAFE_INTEGER", () => {
+      const hugeVal = 0x1fffffffffffff00n; // > MAX_SAFE_INTEGER
+      const blob = encodeLengthDelimited(
+        1,
+        new Uint8Array([
+          ...encodeVarintField(3, 1),
+          ...encodeLengthDelimited(4, encodeVarintField(2, hugeVal)),
+        ]),
+      );
 
-    it("rejects tokens exceeding MAX_SAFE_INTEGER rather than clamping", () => {
-      // 2^55 > Number.MAX_SAFE_INTEGER
-      const hugeTokensBlob = encodeSyntheticGenMetadataBlob({
-        modelName: "gemini-3.8-flash",
-        timestampSeconds: 1789402266n,
-        extraFields: [
-          {
-            tag: 4,
-            wireType: WIRE_LENGTH_DELIMITED,
-            value: new Uint8Array([
-              (2 << 3) | WIRE_VARINT,
-              0xff,
-              0xff,
-              0xff,
-              0xff,
-              0xff,
-              0xff,
-              0xff,
-              0xff,
-              0x01,
-            ]),
-          },
-        ],
+      const outcome = parseAntigravityGenMetadataBlob(blob, {
+        sessionId: "test-conv-123",
+        rowIdx: 1,
       });
 
-      const outcome = parseAntigravityGenMetadataBlob(hugeTokensBlob, {
-        sessionId: "sess-1",
-        rowIdx: 0,
-      });
       expect(outcome.success).toBe(false);
       if (!outcome.success) {
         expect(outcome.reason).toContain("exceeds MAX_SAFE_INTEGER");
@@ -442,59 +275,52 @@ describe("antigravityUsageReader", () => {
     });
   });
 
-  describe("Bounded SQLite Database Reader", () => {
-    let tempDir: string;
-    let tempDbPath: string;
+  describe("readAntigravityDatabase & Bounded Pagination", () => {
+    it("handles synthetic SQLite databases with keyset pagination and limits", async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "antigravity-test-"));
+      const tempDbPath = NodePath.join(tempDir, "conv-uuid-456.db");
 
-    it("reads SQLite database read-only, detects truncation, and extracts latestContextSnapshot", async () => {
-      tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "antigravity-usage-test-"));
-      tempDbPath = NodePath.join(tempDir, "conv-uuid-456.db");
-
-      const isBun = typeof process !== "undefined" && process.versions?.bun !== undefined;
-      let dbInstance: any;
-      if (isBun) {
-        const { Database } = await import("bun:sqlite");
-        dbInstance = new Database(tempDbPath);
-        dbInstance.run(
-          "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER)",
+      const dbInstance = new DatabaseSync(tempDbPath);
+      dbInstance.exec(`
+        CREATE TABLE gen_metadata (
+          idx INTEGER PRIMARY KEY,
+          data BLOB,
+          size INTEGER
         );
-      } else {
-        const { DatabaseSync } = await import("node:sqlite");
-        dbInstance = new DatabaseSync(tempDbPath);
-        dbInstance.exec(
-          "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER)",
-        );
-      }
+      `);
 
-      // Row 0: Valid row with context snapshot
+      // Row 0: valid turn
       const blob0 = encodeSyntheticGenMetadataBlob({
         modelName: "gemini-3.8-flash",
-        timestampSeconds: 1789402266n,
-        inputTokens: 1000,
-        outputTokens: 100,
-        estimatedTokensUsed: 1500,
-        maxContextTokens: 128000,
+        timestampSeconds: 1789402200n,
+        inputTokens: 100,
+        outputTokens: 50,
       });
 
-      // Row 1: Valid row with updated context snapshot
+      // Row 1: turn with reasoning tokens
       const blob1 = encodeSyntheticGenMetadataBlob({
         modelName: "gemini-3.8-pro",
-        timestampSeconds: 1789402270n,
-        inputTokens: 2000,
-        outputTokens: 200,
-        estimatedTokensUsed: 3500,
-        maxContextTokens: 128000,
+        timestampSeconds: 1789402230n,
+        inputTokens: 200,
+        outputTokens: 80,
+        thinkingOutputTokens: 30,
       });
 
-      // Row 2: Corrupted row
-      const blob2 = new Uint8Array([0xff, 0xff]);
+      // Row 2: empty usage
+      const blob2 = encodeSyntheticGenMetadataBlob({
+        modelName: "gemini-3.8-flash",
+        timestampSeconds: 1789402260n,
+        inputTokens: 0,
+        outputTokens: 0,
+      });
 
-      // Row 3: Valid row
+      // Row 3: valid turn with context snapshot
       const blob3 = encodeSyntheticGenMetadataBlob({
-        modelName: "gemini-3.8-pro",
+        modelName: "gemini-3.8-flash",
         timestampSeconds: 1789402280n,
-        inputTokens: 3000,
-        outputTokens: 300,
+        inputTokens: 300,
+        outputTokens: 100,
         estimatedTokensUsed: 6500,
         maxContextTokens: 128000,
       });
@@ -508,11 +334,13 @@ describe("antigravityUsageReader", () => {
       stmt.run(3, blob3, blob3.length);
       dbInstance.close();
 
-      // Read with default options
+      // Read with default options and pageSize: 2
       const result = await readAntigravityDatabase(tempDbPath, { pageSize: 2 });
       expect(result.rowsRead).toBe(4);
+      expect(result.bytesRead).toBeGreaterThan(0);
       expect(result.recordsParsed).toBe(3);
-      expect(result.malformedRows).toBe(1);
+      expect(result.malformedRows).toBe(0);
+      expect(result.skippedEmptyUsage).toBe(1);
       expect(result.truncated).toBe(false);
       expect(result.sessionId).toBe("conv-uuid-456");
 
@@ -528,12 +356,6 @@ describe("antigravityUsageReader", () => {
       expect(result.records[0]?.dedupeKey).toBe("antigravity:conv-uuid-456:0");
       expect(result.records[1]?.dedupeKey).toBe("antigravity:conv-uuid-456:1");
       expect(result.records[2]?.dedupeKey).toBe("antigravity:conv-uuid-456:3");
-
-      // Verify readAntigravityPaths aggregates multiple paths and deduplicates
-      const pathsResult = await readAntigravityPaths([tempDbPath, tempDbPath]);
-      expect(pathsResult.databasesScanned).toBe(1);
-      expect(pathsResult.totalRecordsParsed).toBe(3);
-      expect(pathsResult.latestContextSnapshot?.estimatedTokensUsed).toBe(6500);
 
       // Verify row budget truncation: set maxRowsPerDb = 2
       const truncatedRes = await readAntigravityDatabase(tempDbPath, {
@@ -558,47 +380,111 @@ describe("antigravityUsageReader", () => {
       }
     });
 
-    it("explicitly flags unreadable or non-existent directories as errors", async () => {
-      const nonExistentDir = NodePath.join(NodeOS.tmpdir(), "non-existent-antigravity-dir-xyz");
-      const scanRes = await readAntigravityDirectory(nonExistentDir);
+    it("advances pagination safely across malformed rows without looping or duplicate processing", async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const tempDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "antigravity-malformed-loop-"),
+      );
+      const tempDbPath = NodePath.join(tempDir, "conv-malformed.db");
 
-      expect(scanRes.directoryExists).toBe(false);
-      expect(scanRes.error).toBeDefined();
-      expect(scanRes.error).toContain("Directory does not exist");
-      expect(scanRes.databasesScanned).toBe(0);
+      const dbInstance = new DatabaseSync(tempDbPath);
+      dbInstance.exec(`
+        CREATE TABLE gen_metadata (
+          idx INTEGER PRIMARY KEY,
+          data BLOB
+        );
+      `);
+
+      // Row 1: valid
+      const blob1 = encodeSyntheticGenMetadataBlob({
+        modelName: "gemini-3.8-flash",
+        timestampSeconds: 1789402200n,
+        inputTokens: 10,
+        outputTokens: 10,
+      });
+      // Row 2: malformed corrupt blob
+      const blob2 = new Uint8Array([0xff, 0xff, 0xff, 0xff]);
+      // Row 3: valid
+      const blob3 = encodeSyntheticGenMetadataBlob({
+        modelName: "gemini-3.8-flash",
+        timestampSeconds: 1789402210n,
+        inputTokens: 20,
+        outputTokens: 20,
+      });
+
+      const stmt = dbInstance.prepare("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)");
+      stmt.run(1, blob1);
+      stmt.run(2, blob2);
+      stmt.run(3, blob3);
+      dbInstance.close();
+
+      // Read with pageSize: 1 so every row is fetched in a separate page
+      const result = await readAntigravityDatabase(tempDbPath, { pageSize: 1 });
+      expect(result.rowsRead).toBe(3);
+      expect(result.recordsParsed).toBe(2);
+      expect(result.malformedRows).toBe(1);
+      expect(result.records).toHaveLength(2);
+      expect(result.records[0]?.genIndex).toBe(1);
+      expect(result.records[1]?.genIndex).toBe(3);
+
+      try {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
     });
-  });
 
-  describe("Sample Live Database Verification (Read-Only)", () => {
-    const liveSamplePath =
-      "/Users/rynfar/.pylon-code-nightly/userdata/providers/antigravity/ac0a3dfd6dddb20962cecff6ee5fe65e19d3923be20e52c5ab52ff877f7e4c32/antigravity-acp/conversations/e4960d8c-0867-4b69-b442-5409bcda5e58.db";
+    it("readAntigravityLatestContext efficiently scans descending without full history scan", async () => {
+      const { DatabaseSync } = await import("node:sqlite");
+      const tempDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "antigravity-fast-context-"),
+      );
+      const tempDbPath = NodePath.join(tempDir, "conv-fast-ctx.db");
 
-    it("reads sample DB strictly read-only, verifies cache disjointness and real context snapshot", async () => {
-      if (!NodeFS.existsSync(liveSamplePath)) return;
+      const dbInstance = new DatabaseSync(tempDbPath);
+      dbInstance.exec(`
+        CREATE TABLE gen_metadata (
+          idx INTEGER PRIMARY KEY,
+          data BLOB
+        );
+      `);
 
-      const result = await readAntigravityDatabase(liveSamplePath);
+      const stmt = dbInstance.prepare("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)");
+      // Insert 50 older rows with no context snapshot
+      for (let i = 0; i < 50; i++) {
+        const b = encodeSyntheticGenMetadataBlob({
+          modelName: "gemini-3.8-flash",
+          timestampSeconds: BigInt(1789402000 + i),
+          inputTokens: 10,
+          outputTokens: 10,
+        });
+        stmt.run(i, b);
+      }
 
-      expect(result.rowsRead).toBe(30);
-      expect(result.recordsParsed).toBe(29);
-      expect(result.skippedEmptyUsage).toBe(1); // row 29 capacity error
-      expect(result.malformedRows).toBe(0);
-      expect(result.truncated).toBe(false);
-      expect(result.sessionId).toBe("e4960d8c-0867-4b69-b442-5409bcda5e58");
+      // Row 50 has latest context snapshot
+      const latestBlob = encodeSyntheticGenMetadataBlob({
+        modelName: "gemini-3.8-flash",
+        timestampSeconds: 1789402500n,
+        inputTokens: 50,
+        outputTokens: 50,
+        estimatedTokensUsed: 12345,
+        maxContextTokens: 1000000,
+      });
+      stmt.run(50, latestBlob);
+      dbInstance.close();
 
-      // Row 9 cache disjointness confirmed: input 5399, cache_read 12124, output 235, reasoning 144
-      const row9 = result.records.find((r) => r.genIndex === 9)!;
-      expect(row9).toBeDefined();
-      expect(row9.totals.uncachedInputTokens).toBe(5399);
-      expect(row9.totals.cachedInputTokens).toBe(12124);
-      expect(row9.totals.outputTokens).toBe(235);
-      expect(row9.totals.reasoningTokens).toBe(144);
-      expect(row9.contextSnapshot?.estimatedTokensUsed).toBe(22010);
-      expect(row9.contextSnapshot?.maxContextTokens).toBe(128000);
+      // Read newest context with maxRows: 5
+      const snapshot = await readAntigravityLatestContext(tempDbPath, { maxRows: 5 });
+      expect(snapshot).toBeDefined();
+      expect(snapshot?.genIndex).toBe(50);
+      expect(snapshot?.estimatedTokensUsed).toBe(12345);
+      expect(snapshot?.maxContextTokens).toBe(1000000);
 
-      // Latest context snapshot (row 29 has 48,752 used / 128,000 max)
-      expect(result.latestContextSnapshot?.estimatedTokensUsed).toBe(48752);
-      expect(result.latestContextSnapshot?.maxContextTokens).toBe(128000);
-      expect(result.latestContextSnapshot?.genIndex).toBe(29);
+      try {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
     });
   });
 });

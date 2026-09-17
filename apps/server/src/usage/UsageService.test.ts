@@ -30,7 +30,7 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveAntigravityProfileDirectory } from "../provider/antigravityAuthSupport.ts";
-import { encodeSyntheticGenMetadataBlob } from "./antigravityUsageReader.test.ts";
+import { encodeSyntheticGenMetadataBlob } from "./antigravityTestFixtures.ts";
 import * as UsageService from "./UsageService.ts";
 
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -737,12 +737,9 @@ describe("UsageService", () => {
           thinkingOutputTokens: 5,
         });
         const db = new NodeSqlite.DatabaseSync(dbPath);
+        db.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;");
         db.prepare("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)").run(1, blob2);
-        db.close();
-
-        // Also touch companion WAL file to ensure effective mtime check detects WAL writes
-        const walPath = `${dbPath}-wal`;
-        yield* Effect.promise(() => NodeFSP.writeFile(walPath, Buffer.from("wal-active-write")));
+        yield* Effect.addFinalizer(() => Effect.sync(() => db.close()));
 
         const third = yield* service.readSummary(WINDOW);
         const agBucket3 = third.buckets.find(
@@ -863,6 +860,10 @@ describe("UsageService", () => {
         assert.strictEqual(agSource.malformedRecords, 1);
         assert.strictEqual(agSource.scannedFiles, 1);
         assert.isNotNull(agSource.message);
+        const warm = yield* service.readSummary(WINDOW);
+        const warmSource = warm.sources.find((s) => s.fingerprint.resolvedHomePath === convDir);
+        assert.strictEqual(warmSource?.status, "partial");
+        assert.strictEqual(warmSource?.malformedRecords, 1);
       }).pipe(
         Effect.provide(
           serviceLayers({

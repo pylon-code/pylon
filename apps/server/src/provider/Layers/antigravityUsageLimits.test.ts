@@ -1,248 +1,153 @@
-import * as FileSystem from "effect/FileSystem";
-import * as NodePath from "@effect/platform-node/NodePath";
-import * as Path from "effect/Path";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vite-plus/test";
-
+import * as FileSystem from "effect/FileSystem";
+import * as Schema from "effect/Schema";
+import * as Path from "effect/Path";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import {
-  parseAntigravityBucketToWindow,
-  parseAntigravityWindowDurationMins,
-  resolveAntigravityCliExecutable,
+  readAntigravityUsageLimits,
   usageLimitsFromAntigravityOutput,
 } from "./antigravityUsageLimits.ts";
 
-describe("antigravityUsageLimits", () => {
-  describe("parseAntigravityWindowDurationMins", () => {
-    it("parses named windows accurately without guessing", () => {
-      expect(parseAntigravityWindowDurationMins("weekly")).toBe(10_080);
-      expect(parseAntigravityWindowDurationMins("Weekly")).toBe(10_080);
-      expect(parseAntigravityWindowDurationMins("daily")).toBe(1_440);
-      expect(parseAntigravityWindowDurationMins("monthly")).toBe(43_200);
-    });
-
-    it("parses hour and minute duration formats", () => {
-      expect(parseAntigravityWindowDurationMins("5h")).toBe(300);
-      expect(parseAntigravityWindowDurationMins("5 hours")).toBe(300);
-      expect(parseAntigravityWindowDurationMins("12h")).toBe(720);
-      expect(parseAntigravityWindowDurationMins("30m")).toBe(30);
-      expect(parseAntigravityWindowDurationMins("2d")).toBe(2_880);
-    });
-
-    it("returns undefined for unknown or absent durations rather than guessing 5h", () => {
-      expect(parseAntigravityWindowDurationMins(undefined)).toBeUndefined();
-      expect(parseAntigravityWindowDurationMins("")).toBeUndefined();
-      expect(parseAntigravityWindowDurationMins("unknown_window")).toBeUndefined();
-    });
-  });
-
-  describe("parseAntigravityBucketToWindow", () => {
-    it("parses a Gemini 5h bucket correctly", () => {
-      const window = parseAntigravityBucketToWindow("Gemini Models", {
-        id: "gemini-5h",
-        name: "Five Hour Limit Remaining",
-        window: "5h",
-        remaining_fraction: 0.476,
-        reset_time: "2026-09-17T22:49:06Z",
-      });
-
-      expect(window).toEqual({
-        id: "gemini-5h",
-        label: "5-Hour (Gemini)",
-        usedPercent: 52, // 1 - 0.476 = 0.524 -> 52%
-        kind: "session",
-        windowDurationMins: 300,
-        resetsAt: "2026-09-17T22:49:06.000Z",
-      });
-    });
-
-    it("parses a 3p Weekly bucket correctly", () => {
-      const window = parseAntigravityBucketToWindow("Claude and GPT models", {
-        id: "3p-weekly",
-        name: "Weekly Limit Remaining",
-        window: "weekly",
-        remaining_fraction: 0.9,
-        reset_time: "2026-09-24T18:43:46Z",
-      });
-
-      expect(window).toEqual({
-        id: "3p-weekly",
-        label: "Weekly (Claude/GPT)",
-        usedPercent: 10,
-        kind: "weekly",
-        windowDurationMins: 10_080,
-        resetsAt: "2026-09-24T18:43:46.000Z",
-      });
-    });
-
-    it("bounds usedPercent strictly between 0 and 100", () => {
-      const negative = parseAntigravityBucketToWindow("Gemini Models", {
-        id: "gemini-5h",
-        remaining_fraction: 1.5,
-      });
-      expect(negative?.usedPercent).toBe(0);
-
-      const overflow = parseAntigravityBucketToWindow("Gemini Models", {
-        id: "gemini-5h",
-        remaining_fraction: -0.5,
-      });
-      expect(overflow?.usedPercent).toBe(100);
-    });
-
-    it("handles invalid reset_time without throwing", () => {
-      const window = parseAntigravityBucketToWindow("Gemini Models", {
-        id: "gemini-5h",
-        remaining_fraction: 0.5,
-        reset_time: "not-a-date",
-      });
-      expect(window?.resetsAt).toBeUndefined();
-      expect(window?.usedPercent).toBe(50);
-    });
-
-    it("returns undefined when remaining_fraction is missing or non-numeric", () => {
-      expect(
-        parseAntigravityBucketToWindow("Gemini Models", {
-          id: "gemini-5h",
-          window: "5h",
-        } as unknown as { remaining_fraction: number }),
-      ).toBeUndefined();
-    });
-  });
-
-  describe("usageLimitsFromAntigravityOutput", () => {
-    it("parses live CLI agy -p '/usage' --output-format json output structure", () => {
-      const liveJson = {
-        status: "SUCCESS",
-        command: {
-          name: "usage",
-          data: {
-            description: "Usage and quota limits",
-            groups: [
-              {
-                name: "Gemini Models",
-                description: "Models within this group: Gemini Flash, Gemini Pro",
-                buckets: [
-                  {
-                    id: "gemini-weekly",
-                    name: "Weekly Limit Remaining",
-                    window: "weekly",
-                    remaining_fraction: 0.942,
-                    reset_time: "2026-09-24T17:49:06Z",
-                  },
-                  {
-                    id: "gemini-5h",
-                    name: "Five Hour Limit Remaining",
-                    window: "5h",
-                    remaining_fraction: 0.476,
-                    reset_time: "2026-09-17T22:49:06Z",
-                  },
-                ],
-              },
-              {
-                name: "Claude and GPT models",
-                description: "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
-                buckets: [
-                  {
-                    id: "3p-weekly",
-                    name: "Weekly Limit Remaining",
-                    window: "weekly",
-                    remaining_fraction: 1.0,
-                    reset_time: "2026-09-24T18:43:46Z",
-                  },
-                  {
-                    id: "3p-5h",
-                    name: "Five Hour Limit Remaining",
-                    window: "5h",
-                    remaining_fraction: 1.0,
-                    reset_time: "2026-09-17T23:43:46Z",
-                  },
-                ],
-              },
-            ],
-          },
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const checkedAt = "2026-09-17T18:00:00.000Z";
+const summary = {
+  groups: [
+    {
+      displayName: "Gemini Models",
+      buckets: [
+        {
+          bucketId: "gemini-weekly",
+          window: "weekly",
+          remainingFraction: 0.75,
+          resetTime: "2026-09-20T18:00:00Z",
         },
-      };
-
-      const limits = usageLimitsFromAntigravityOutput(liveJson, "2026-09-17T18:00:00.000Z");
-      expect(limits).toBeDefined();
-      expect(limits?.source).toBe("antigravityCli");
-      expect(limits?.checkedAt).toBe("2026-09-17T18:00:00.000Z");
-      expect(limits?.windows).toHaveLength(4);
-      expect(limits?.windows[0]).toMatchObject({
-        id: "gemini-weekly",
-        label: "Weekly (Gemini)",
-        usedPercent: 6,
-      });
-      expect(limits?.windows[1]).toMatchObject({
-        id: "gemini-5h",
-        label: "5-Hour (Gemini)",
-        usedPercent: 52,
-      });
-      expect(limits?.windows[2]).toMatchObject({
-        id: "3p-weekly",
-        label: "Weekly (Claude/GPT)",
-        usedPercent: 0,
-      });
-      expect(limits?.windows[3]).toMatchObject({
-        id: "3p-5h",
-        label: "5-Hour (Claude/GPT)",
-        usedPercent: 0,
-      });
-    });
-
-    it("returns undefined for empty, malformed, or error payloads", () => {
-      expect(usageLimitsFromAntigravityOutput(null, "2026-09-17T18:00:00.000Z")).toBeUndefined();
-      expect(usageLimitsFromAntigravityOutput({}, "2026-09-17T18:00:00.000Z")).toBeUndefined();
-      expect(
-        usageLimitsFromAntigravityOutput({ status: "ERROR" }, "2026-09-17T18:00:00.000Z"),
-      ).toBeUndefined();
-      expect(
-        usageLimitsFromAntigravityOutput(
-          { status: "SUCCESS", command: { data: { groups: null } } },
-          "2026-09-17T18:00:00.000Z",
-        ),
-      ).toBeUndefined();
+        { bucketId: "gemini-5h", window: "5h", remainingFraction: 0.2 },
+      ],
+    },
+    {
+      displayName: "Claude and GPT models",
+      buckets: [{ bucketId: "3p-5h", window: "5h", remainingFraction: 0.6 }],
+    },
+  ],
+};
+describe("native Antigravity quota schema", () => {
+  it("maps actual CCPA groups without confusing remaining and used", () => {
+    expect(usageLimitsFromAntigravityOutput(summary, checkedAt)).toMatchObject({
+      source: "antigravityOAuth",
+      checkedAt,
+      windows: [
+        {
+          id: "gemini-weekly",
+          label: "Weekly (Gemini)",
+          usedPercent: 25,
+          windowDurationMins: 10080,
+          resetsAt: "2026-09-20T18:00:00.000Z",
+        },
+        { id: "gemini-5h", usedPercent: 80, windowDurationMins: 300 },
+        { id: "3p-5h", label: "5-Hour (Claude/GPT)", usedPercent: 40 },
+      ],
     });
   });
-
-  describe("resolveAntigravityCliExecutable", () => {
-    it("returns undefined when binary is not in PATH or search locations", async () => {
-      const mockFs = FileSystem.FileSystem.of({
-        ...({} as unknown as FileSystem.FileSystem),
-        exists: () => Effect.succeed(false),
-      });
-
-      const result = await Effect.runPromise(
-        resolveAntigravityCliExecutable({
-          baseEnv: { PATH: "/nonexistent/bin" },
-          userHome: "/home/user",
-        }).pipe(
-          Effect.provideService(FileSystem.FileSystem, mockFs),
-          Effect.provide(NodePath.layerPosix),
-        ),
-      );
-
-      expect(result).toBeUndefined();
-    });
-
-    it("finds binary when present in PATH", async () => {
-      const isWindows = process.platform === "win32";
-      const expectedBin = isWindows ? "C:\\bin\\agy.exe" : "/custom/bin/agy";
-      const mockFs = FileSystem.FileSystem.of({
-        ...({} as unknown as FileSystem.FileSystem),
-        exists: (p: string) => Effect.succeed(p === expectedBin),
-      });
-
-      const result = await Effect.runPromise(
-        resolveAntigravityCliExecutable({
-          baseEnv: { PATH: isWindows ? "C:\\bin" : "/custom/bin" },
-          userHome: isWindows ? "C:\\Users\\test" : "/home/user",
-        }).pipe(
-          Effect.provideService(FileSystem.FileSystem, mockFs),
-          Effect.provide(isWindows ? NodePath.layerWin32 : NodePath.layerPosix),
-        ),
-      );
-
-      expect(result).toBe(expectedBin);
-    });
+  it("fails closed for a CLI response or unknown schema", () => {
+    expect(
+      usageLimitsFromAntigravityOutput(
+        { status: "SUCCESS", command: { data: summary } },
+        checkedAt,
+      ),
+    ).toBeUndefined();
+    expect(
+      usageLimitsFromAntigravityOutput(
+        { groups: [{ buckets: [{ remainingFraction: NaN }] }] },
+        checkedAt,
+      ),
+    ).toBeUndefined();
   });
+});
+
+it.layer(NodeServices.layer)("ACP profile quota reads", (it) => {
+  for (const mode of [
+    "consumer",
+    "enterprise",
+    "missing",
+    "wrong-uri",
+    "http-error",
+    "oversize",
+    "account-change",
+    "api-key",
+  ] as const) {
+    it.effect(mode, () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped();
+        yield* fs.makeDirectory(path.join(root, "antigravity-acp"));
+        const tokenPath = path.join(root, "antigravity-acp", "acp_token.json");
+        const credential = encodeJson({
+          token_uri:
+            mode === "wrong-uri"
+              ? "https://example.invalid/token"
+              : "https://oauth2.googleapis.com/token",
+          client_id: "profile-client",
+          client_secret: "fixture-secret",
+          refresh_token: "profile-refresh",
+          project_id: "saved-project",
+        });
+        if (mode !== "missing") yield* fs.writeFileString(tokenPath, credential);
+        const urls: string[] = [];
+        const http = HttpClient.make((request) =>
+          Effect.gen(function* () {
+            urls.push(request.url);
+            if (request.url.endsWith("/token")) {
+              expect(request.body._tag).toBe("Uint8Array");
+              if (request.body._tag === "Uint8Array")
+                expect(new TextDecoder().decode(request.body.body)).toContain(
+                  "refresh_token=profile-refresh",
+                );
+              return HttpClientResponse.fromWeb(
+                request,
+                Response.json({ access_token: "fixture-access" }),
+              );
+            }
+            expect(request.headers.authorization).toBe("Bearer fixture-access");
+            expect(request.headers["user-agent"]).toContain("antigravity/acp/1.1.1 (aidev_client;");
+            if (request.url.endsWith("loadCodeAssist"))
+              return HttpClientResponse.fromWeb(
+                request,
+                Response.json({
+                  cloudaicompanionProject: "account-project",
+                  paidTier: { usesGcpTos: mode === "enterprise" },
+                }),
+              );
+            if (mode === "account-change")
+              yield* fs.writeFileString(tokenPath, credential + " ").pipe(Effect.orDie);
+            const body = mode === "oversize" ? " ".repeat(300_000) : encodeJson(summary);
+            return HttpClientResponse.fromWeb(
+              request,
+              new Response(body, { status: mode === "http-error" ? 403 : 200 }),
+            );
+          }),
+        );
+        const limits = yield* readAntigravityUsageLimits({
+          profileDirectory: root,
+          authMethod: mode === "api-key" ? "gemini-api-key" : "oauth-personal",
+          runtimeVersion: "1.1.1",
+        }).pipe(Effect.provideService(HttpClient.HttpClient, http));
+        if (mode === "consumer" || mode === "enterprise") {
+          expect(limits.windows).toHaveLength(3);
+          expect(urls[2]).toBe(
+            `https://${mode === "enterprise" ? "cloudcode-pa" : "daily-cloudcode-pa"}.googleapis.com/v1internal:retrieveUserQuotaSummary`,
+          );
+        } else {
+          expect(limits.windows).toEqual([]);
+          expect(limits.unavailable).toBeDefined();
+        }
+        if (mode === "missing" || mode === "wrong-uri" || mode === "api-key")
+          expect(urls).toEqual([]);
+        if (mode !== "missing" && mode !== "account-change")
+          expect(yield* fs.readFileString(tokenPath)).toBe(credential);
+      }),
+    );
+  }
 });

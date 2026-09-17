@@ -157,7 +157,10 @@ export function ProviderUsageSummary(props: { readonly usageLimits: ServerProvid
           <span className="tabular-nums text-muted-foreground">{item.usedPercent}%</span>
         </span>
       ))}
-      <span className="text-muted-foreground/60"> used</span>
+      <span className="text-muted-foreground/60">
+        {" "}
+        used{isProbeFailedWithWindows ? " · stale" : ""}
+      </span>
     </span>
   );
 }

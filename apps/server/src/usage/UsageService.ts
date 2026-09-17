@@ -1,4 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off
 /**
  * UsageService - scans provider transcripts and returns priced usage buckets.
  *
@@ -14,7 +13,6 @@
  *
  * @module UsageService
  */
-import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 
 import {
@@ -305,7 +303,7 @@ export const make = Effect.gen(function* () {
     const antigravityRoots = new Set<string>();
 
     for (const [instanceId, instanceConfig] of Object.entries(settings.providerInstances)) {
-      if (instanceConfig.driver === "antigravity" && instanceConfig.enabled !== false) {
+      if (instanceConfig.driver === "antigravity") {
         const profileDir = resolveAntigravityProfileDirectory(
           config.stateDir,
           ProviderInstanceId.make(instanceId),
@@ -466,6 +464,10 @@ export const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
     const scanned: ScannedDir[] = [];
+    // Bound native SQLite work across all instance roots, including warm-cache records.
+    let nativeFiles = 0;
+    let nativeBytes = 0;
+    let nativeRecords = 0;
     for (const { provider, dir, fileName } of dirs) {
       const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
       const exists = yield* fileSystem
@@ -477,10 +479,10 @@ export const make = Effect.gen(function* () {
       }
 
       if (provider === "antigravity") {
-        let dirents: NodeFS.Dirent[];
-        try {
-          dirents = NodeFS.readdirSync(dir, { withFileTypes: true });
-        } catch (err) {
+        const dirEntries = yield* fileSystem
+          .readDirectory(dir)
+          .pipe(Effect.catchCause(() => Effect.succeed<readonly string[] | null>(null)));
+        if (dirEntries === null) {
           scanned.push({
             provider,
             dir,
@@ -488,45 +490,94 @@ export const make = Effect.gen(function* () {
             files: [],
             status: "failed",
             malformedRecords: 0,
-            message: err instanceof Error ? err.message : String(err),
+            message: `Failed to read directory: ${dir}`,
           });
           continue;
         }
 
-        const dbFiles = dirents
-          .filter((ent) => (ent.isFile() || ent.isSymbolicLink()) && ent.name.endsWith(".db"))
-          .map((ent) => path.join(dir, ent.name))
-          .sort();
+        const dbFileNames = dirEntries.filter((name) => name.endsWith(".db")).sort();
+
+        const MAX_ANTIGRAVITY_FILES_PER_DIR = 500;
+        const MAX_ANTIGRAVITY_BYTES_PER_DIR = 256 * 1024 * 1024;
+        const MAX_ANTIGRAVITY_RECORDS_PER_DIR = 50_000;
 
         const parsedFiles: { path: string; records: readonly UsageRecord[] }[] = [];
         let dirMalformedRows = 0;
+        let dirTruncated = false;
         let hasPartialErrors = false;
+        let whollyFailedDbs = 0;
         const errorMessages: string[] = [];
 
-        for (const filePath of dbFiles) {
-          let dbStat: NodeFS.Stats;
-          try {
-            dbStat = NodeFS.statSync(filePath);
-          } catch {
+        for (const fileName of dbFileNames) {
+          const filePath = path.join(dir, fileName);
+
+          if (nativeFiles >= MAX_ANTIGRAVITY_FILES_PER_DIR) {
+            dirTruncated = true;
+            hasPartialErrors = true;
+            if (errorMessages.length < 5) {
+              errorMessages.push(
+                `Directory scan truncated: reached file limit of ${MAX_ANTIGRAVITY_FILES_PER_DIR}`,
+              );
+            }
+            break;
+          }
+
+          nativeFiles++;
+          const dbStatOpt = yield* fileSystem.stat(filePath).pipe(Effect.option);
+          if (Option.isNone(dbStatOpt)) {
+            hasPartialErrors = true;
+            whollyFailedDbs++;
+            if (errorMessages.length < 5) {
+              errorMessages.push(`Failed to stat database ${filePath}`);
+            }
             continue;
           }
 
-          // Check companion -wal file for active writes
-          const walPath = `${filePath}-wal`;
-          let walStat: NodeFS.Stats | null = null;
-          try {
-            walStat = NodeFS.statSync(walPath);
-          } catch {
-            // No WAL file
-          }
+          const dbInfo = dbStatOpt.value;
+          const dbMtime = Option.match(dbInfo.mtime, {
+            onNone: () => 0,
+            onSome: (d) => d.getTime(),
+          });
+          const dbSize = Number(dbInfo.size);
 
-          const effectiveMtimeMs = Math.max(dbStat.mtimeMs, walStat?.mtimeMs ?? 0);
-          const effectiveSize = dbStat.size + (walStat?.size ?? 0);
+          const walPath = `${filePath}-wal`;
+          const walStatOpt = yield* fileSystem.stat(walPath).pipe(Effect.option);
+          const walMtime = Option.match(walStatOpt, {
+            onNone: () => 0,
+            onSome: (info) =>
+              Option.match(info.mtime, {
+                onNone: () => 0,
+                onSome: (d) => d.getTime(),
+              }),
+          });
+          const walSize = Option.match(walStatOpt, {
+            onNone: () => 0,
+            onSome: (info) => Number(info.size),
+          });
+
+          const effectiveMtimeMs = Math.max(dbMtime, walMtime);
+          const effectiveSize = dbSize + walSize;
 
           if (effectiveMtimeMs < windowStartMs) {
             continue;
           }
 
+          if (nativeBytes + effectiveSize > MAX_ANTIGRAVITY_BYTES_PER_DIR) {
+            dirTruncated = true;
+            hasPartialErrors = true;
+            if (errorMessages.length < 5) {
+              errorMessages.push(
+                `Directory scan truncated: reached byte limit of ${MAX_ANTIGRAVITY_BYTES_PER_DIR}`,
+              );
+            }
+            break;
+          }
+
+          if (nativeRecords >= MAX_ANTIGRAVITY_RECORDS_PER_DIR) {
+            hasPartialErrors = true;
+            dirTruncated = true;
+            break;
+          }
           const cached = fileCache.get(filePath);
           if (
             cached !== undefined &&
@@ -534,40 +585,95 @@ export const make = Effect.gen(function* () {
             cached.size === effectiveSize &&
             cached.mtimeMs === effectiveMtimeMs
           ) {
+            if (nativeRecords + cached.records.length > MAX_ANTIGRAVITY_RECORDS_PER_DIR) {
+              dirTruncated = true;
+              hasPartialErrors = true;
+              if (errorMessages.length < 5) {
+                errorMessages.push(
+                  `Directory scan truncated: reached record limit of ${MAX_ANTIGRAVITY_RECORDS_PER_DIR}`,
+                );
+              }
+              break;
+            }
+            nativeBytes += effectiveSize;
+            nativeRecords += cached.records.length;
             parsedFiles.push({ path: filePath, records: cached.records });
             continue;
           }
 
-          const readResult = yield* Effect.promise(() => readAntigravityDatabase(filePath));
+          const readResult = yield* Effect.promise(() =>
+            readAntigravityDatabase(filePath, {
+              maxRowsPerDb: MAX_ANTIGRAVITY_RECORDS_PER_DIR - nativeRecords,
+            }),
+          );
+          nativeBytes += effectiveSize;
           dirMalformedRows += readResult.malformedRows;
+
+          if (
+            readResult.recordsParsed === 0 &&
+            (readResult.malformedRows > 0 || readResult.errors.length > 0)
+          ) {
+            whollyFailedDbs++;
+            fileCache.delete(filePath);
+            hasPartialErrors = true;
+            for (const err of readResult.errors) {
+              if (errorMessages.length < 5) errorMessages.push(err);
+            }
+            continue;
+          }
+
           if (
             readResult.errors.length > 0 ||
             readResult.truncated ||
             readResult.malformedRows > 0
           ) {
             hasPartialErrors = true;
+            if (readResult.truncated) dirTruncated = true;
             for (const err of readResult.errors) {
               if (errorMessages.length < 5) errorMessages.push(err);
             }
           }
 
-          const recordsWithTimestamp = readResult.records.map((r) =>
-            r.timestampMs > 0 ? r : { ...r, timestampMs: effectiveMtimeMs },
-          );
+          if (nativeRecords + readResult.records.length > MAX_ANTIGRAVITY_RECORDS_PER_DIR) {
+            dirTruncated = true;
+            hasPartialErrors = true;
+            if (errorMessages.length < 5) {
+              errorMessages.push(
+                `Directory scan truncated: reached record limit of ${MAX_ANTIGRAVITY_RECORDS_PER_DIR}`,
+              );
+            }
+            break;
+          }
 
-          fileCache.set(filePath, {
-            size: effectiveSize,
-            mtimeMs: effectiveMtimeMs,
-            provider: "antigravity",
-            records: recordsWithTimestamp,
-            tailRecords: [],
-            position: { resumeOffset: 0, guardLength: 0, guardHash: 0, codexState: null },
-          });
-          cacheDirty = true;
-          parsedFiles.push({ path: filePath, records: recordsWithTimestamp });
+          nativeRecords += readResult.records.length;
+          parsedFiles.push({ path: filePath, records: readResult.records });
+
+          fileCache.delete(filePath);
+          // Only cache when clean and not truncated/malformed/errored
+          if (
+            !readResult.truncated &&
+            readResult.malformedRows === 0 &&
+            readResult.errors.length === 0
+          ) {
+            fileCache.set(filePath, {
+              size: effectiveSize,
+              mtimeMs: effectiveMtimeMs,
+              provider: "antigravity",
+              records: readResult.records,
+              tailRecords: [],
+              position: { resumeOffset: 0, guardLength: 0, guardHash: 0, codexState: null },
+            });
+            cacheDirty = true;
+          }
         }
 
-        const status = hasPartialErrors ? "partial" : "ok";
+        let status: "ok" | "partial" | "failed" = "ok";
+        if (dbFileNames.length > 0 && whollyFailedDbs === dbFileNames.length) {
+          status = "failed";
+        } else if (hasPartialErrors || dirTruncated || dirMalformedRows > 0) {
+          status = "partial";
+        }
+
         const message = errorMessages.length > 0 ? errorMessages.join("; ") : null;
         scanned.push({
           provider,

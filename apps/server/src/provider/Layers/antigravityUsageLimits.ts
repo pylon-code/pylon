@@ -1,44 +1,34 @@
-/**
- * Rate limit and quota parser for Antigravity.
- *
- * Antigravity CLI provides structured quota telemetry via:
- *   `agy -p '/usage' --output-format json` (also `/quota`, `/credits`)
- *
- * This command executes locally in ~300ms, incurs zero LLM turns, spends zero
- * quota, and writes no conversation records. It returns structured bucket
- * groups for Gemini models and third-party models (Claude/GPT) with explicit
- * `remaining_fraction`, `reset_time`, and `window` identifiers.
- *
- * @module provider/Layers/antigravityUsageLimits
+/** Native ACP account quotas, verified against agy_acp_server_1.1.1's CCPA client.
+ * These private endpoints may change. Fail closed; never use a different CLI account.
  */
+import { HostProcessPlatform, HostProcessArchitecture } from "@t3tools/shared/hostProcess";
 import type { ServerProviderUsageLimits, ServerProviderUsageWindow } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-
+import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { makeUnavailableUsageLimits } from "../usageLimitsSnapshot.ts";
-import { spawnAndCollect } from "../providerSnapshot.ts";
 
 const DAY_MINS = 24 * 60;
 const WEEK_MINS = 7 * DAY_MINS;
 const MONTH_MINS = 30 * DAY_MINS;
 
 export const AntigravityBucketSchema = Schema.Struct({
-  id: Schema.optional(Schema.String),
-  name: Schema.optional(Schema.String),
+  bucketId: Schema.optional(Schema.String),
+  displayName: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   window: Schema.optional(Schema.String),
-  remaining_fraction: Schema.Number,
-  reset_time: Schema.optional(Schema.String),
+  remainingFraction: Schema.Finite,
+  resetTime: Schema.optional(Schema.String),
 });
 export type AntigravityBucket = typeof AntigravityBucketSchema.Type;
 
 export const AntigravityGroupSchema = Schema.Struct({
-  name: Schema.optional(Schema.String),
+  displayName: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   buckets: Schema.optional(Schema.Array(AntigravityBucketSchema)),
 });
@@ -49,18 +39,7 @@ export const AntigravityUsageDataSchema = Schema.Struct({
   groups: Schema.optional(Schema.Array(AntigravityGroupSchema)),
 });
 
-export const AntigravityUsageCommandSchema = Schema.Struct({
-  status: Schema.String,
-  command: Schema.optional(
-    Schema.Struct({
-      name: Schema.optional(Schema.String),
-      data: Schema.optional(AntigravityUsageDataSchema),
-    }),
-  ),
-});
-export type AntigravityUsageCommand = typeof AntigravityUsageCommandSchema.Type;
-
-const decodeUsageCommand = Schema.decodeUnknownOption(AntigravityUsageCommandSchema);
+const decodeUsage = Schema.decodeUnknownOption(AntigravityUsageDataSchema);
 
 /**
  * Parses window duration dynamically from the CLI window string.
@@ -107,7 +86,7 @@ function labelForBucket(groupName: string | undefined, bucket: AntigravityBucket
     windowLabel =
       windowDuration >= 60 ? `${Math.round(windowDuration / 60)}h` : `${windowDuration}m`;
   } else {
-    windowLabel = bucket.name?.replace(" Remaining", "").replace(" Limit", "") ?? "Limit";
+    windowLabel = bucket.displayName?.replace(" Remaining", "").replace(" Limit", "") ?? "Limit";
   }
 
   return tag ? `${windowLabel} (${tag})` : windowLabel;
@@ -117,20 +96,19 @@ export function parseAntigravityBucketToWindow(
   groupName: string | undefined,
   bucket: AntigravityBucket,
 ): ServerProviderUsageWindow | undefined {
-  if (
-    typeof bucket.remaining_fraction !== "number" ||
-    !Number.isFinite(bucket.remaining_fraction)
-  ) {
+  if (typeof bucket.remainingFraction !== "number" || !Number.isFinite(bucket.remainingFraction)) {
     return undefined;
   }
 
-  const fraction = Math.max(0, Math.min(1, bucket.remaining_fraction));
+  const fraction = Math.max(0, Math.min(1, bucket.remainingFraction));
   const usedPercent = Math.max(0, Math.min(100, Math.round((1 - fraction) * 100)));
   const windowDurationMins = parseAntigravityWindowDurationMins(bucket.window);
 
   let kind: ServerProviderUsageWindow["kind"] = undefined;
   if (windowDurationMins !== undefined) {
-    if (windowDurationMins >= WEEK_MINS) {
+    if (windowDurationMins >= MONTH_MINS) {
+      kind = "monthly";
+    } else if (windowDurationMins >= WEEK_MINS) {
       kind = "weekly";
     } else if (windowDurationMins <= DAY_MINS) {
       kind = "session";
@@ -138,8 +116,8 @@ export function parseAntigravityBucketToWindow(
   }
 
   let resetsAt: string | undefined = undefined;
-  if (bucket.reset_time && typeof bucket.reset_time === "string") {
-    const parsedDate = DateTime.make(bucket.reset_time);
+  if (bucket.resetTime && typeof bucket.resetTime === "string") {
+    const parsedDate = DateTime.make(bucket.resetTime);
     if (Option.isSome(parsedDate)) {
       resetsAt = DateTime.formatIso(parsedDate.value);
     }
@@ -148,7 +126,7 @@ export function parseAntigravityBucketToWindow(
   const label = labelForBucket(groupName, bucket);
 
   return {
-    ...(bucket.id ? { id: bucket.id } : {}),
+    ...(bucket.bucketId ? { id: bucket.bucketId } : {}),
     label,
     usedPercent,
     ...(kind ? { kind } : {}),
@@ -160,22 +138,19 @@ export function parseAntigravityBucketToWindow(
 export function usageLimitsFromAntigravityOutput(
   raw: unknown,
   checkedAt: string,
-  source = "antigravityCli",
+  source = "antigravityOAuth",
 ): ServerProviderUsageLimits | undefined {
-  const decodedOpt = decodeUsageCommand(raw);
+  const decodedOpt = decodeUsage(raw);
   if (Option.isNone(decodedOpt)) return undefined;
-  const commandOutput = decodedOpt.value;
-  if (commandOutput.status !== "SUCCESS") return undefined;
-
-  const data = commandOutput.command?.data;
-  if (!data || !Array.isArray(data.groups)) return undefined;
+  const data = decodedOpt.value;
+  if (!data.groups) return undefined;
 
   const windows: ServerProviderUsageWindow[] = [];
   for (const group of data.groups) {
     if (!group || !Array.isArray(group.buckets)) continue;
     for (const bucket of group.buckets) {
       if (!bucket) continue;
-      const window = parseAntigravityBucketToWindow(group.name, bucket);
+      const window = parseAntigravityBucketToWindow(group.displayName, bucket);
       if (window) windows.push(window);
     }
   }
@@ -189,125 +164,140 @@ export function usageLimitsFromAntigravityOutput(
   };
 }
 
-/**
- * Resolves the official `agy` CLI independently from PATH or standard install locations.
- *
- * NOTE: This resolves the user-facing `agy` CLI binary, NOT the managed
- * `agy_acp_server.par` self-extracting archive which runs the ACP protocol.
- */
-export function resolveAntigravityCliExecutable(input: {
-  readonly baseEnv: NodeJS.ProcessEnv;
-  readonly userHome: string;
-}): Effect.Effect<string | undefined, never, FileSystem.FileSystem | Path.Path> {
-  return Effect.gen(function* () {
+const TOKEN_URL = "https://oauth2.googleapis.com/token";
+const CCPA = "https://cloudcode-pa.googleapis.com";
+const DAILY_CCPA = "https://daily-cloudcode-pa.googleapis.com";
+const Credentials = Schema.fromJsonString(
+  Schema.Struct({
+    token_uri: Schema.Literal(TOKEN_URL),
+    client_id: Schema.NonEmptyString,
+    client_secret: Schema.NonEmptyString,
+    refresh_token: Schema.NonEmptyString,
+    project_id: Schema.optional(Schema.String),
+  }),
+);
+const AccessToken = Schema.Struct({ access_token: Schema.NonEmptyString });
+const Account = Schema.Struct({
+  cloudaicompanionProject: Schema.optional(Schema.String),
+  paidTier: Schema.optional(Schema.Struct({ usesGcpTos: Schema.optional(Schema.Boolean) })),
+});
+const decodeCredentials = Schema.decodeEffect(Credentials);
+const decodeAccessToken = Schema.decodeUnknownEffect(AccessToken);
+const decodeAccount = Schema.decodeUnknownEffect(Account);
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+class AntigravityQuotaError extends Schema.TaggedError<AntigravityQuotaError>()(
+  "AntigravityQuotaError",
+  { message: Schema.String },
+) {}
+
+export const readAntigravityUsageLimits = Effect.fn("readAntigravityUsageLimits")(
+  function* (input: {
+    readonly profileDirectory: string;
+    readonly authMethod: string;
+    readonly runtimeVersion: string;
+  }) {
+    const checkedAt = DateTime.formatIso(yield* DateTime.now);
+    const platform = yield* HostProcessPlatform;
+    const architecture = yield* HostProcessArchitecture;
+    const unavailable = (reason: "unsupported" | "probeFailed", message: string) =>
+      makeUnavailableUsageLimits({ checkedAt, source: "antigravityOAuth", reason, message });
+    if (input.authMethod !== "oauth-personal") {
+      return unavailable(
+        "unsupported",
+        "Subscription limits are available for Google-account sign-in only.",
+      );
+    }
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-
-    const isWindows = process.platform === "win32";
-    const binaryName = isWindows ? "agy.exe" : "agy";
-
-    // Check candidate directories from PATH
-    const pathEnv = input.baseEnv["PATH"] ?? process.env["PATH"] ?? "";
-    const pathDirs = pathEnv.split(isWindows ? ";" : ":").filter((p) => p.length > 0);
-
-    const standardDirs = isWindows
-      ? [
-          path.join(input.userHome, "AppData", "Local", "Programs", "agy"),
-          path.join(input.userHome, "bin"),
-        ]
-      : [
-          path.join(input.userHome, ".local", "bin"),
-          "/usr/local/bin",
-          "/opt/homebrew/bin",
-          "/usr/bin",
-        ];
-
-    const searchDirs = [...pathDirs, ...standardDirs];
-    const seen = new Set<string>();
-
-    for (const dir of searchDirs) {
-      const candidate = path.join(dir, binaryName);
-      if (seen.has(candidate)) continue;
-      seen.add(candidate);
-      const exists = yield* fs.exists(candidate).pipe(Effect.orElseSucceed(() => false));
-      if (exists) {
-        return candidate;
-      }
+    const http = yield* HttpClient.HttpClient;
+    const tokenPath = path.join(input.profileDirectory, "antigravity-acp", "acp_token.json");
+    if (!(yield* fs.exists(tokenPath).pipe(Effect.orElseSucceed(() => false)))) {
+      return unavailable("unsupported", "Sign in with Google to see subscription limits.");
     }
-
-    return undefined;
-  });
-}
-
-export function runAntigravityUsageProbe(input: {
-  readonly executablePath: string;
-  readonly env?: NodeJS.ProcessEnv;
-  readonly cwd?: string;
-}): Effect.Effect<ServerProviderUsageLimits, never, ChildProcessSpawner.ChildProcessSpawner> {
-  return Effect.gen(function* () {
-    const now = yield* DateTime.now;
-    const checkedAt = DateTime.formatIso(now);
-
-    const command = ChildProcess.make(
-      input.executablePath,
-      ["-p", "/usage", "--output-format", "json"],
-      {
-        env: input.env,
-        shell: false,
-        stdin: "ignore",
-        ...(input.cwd ? { cwd: input.cwd } : {}),
-      },
-    );
-
-    const result = yield* spawnAndCollect(input.executablePath, command).pipe(
-      Effect.orElseSucceed(() => undefined),
-    );
-
-    if (!result) {
-      return makeUnavailableUsageLimits({
-        checkedAt,
-        reason: "probeFailed",
-        message: "Antigravity usage probe process could not be started.",
-      });
-    }
-
-    if (result.code !== 0) {
-      const combinedOutput = `${result.stdout}\n${result.stderr}`.toLowerCase();
-      if (
-        combinedOutput.includes("authentication required") ||
-        combinedOutput.includes("authentication failed") ||
-        combinedOutput.includes("log in")
+    const read = Effect.gen(function* () {
+      const stat = yield* fs.stat(tokenPath);
+      if (Number(stat.size) > 64 * 1024)
+        return yield* new AntigravityQuotaError({ message: "Invalid credential file." });
+      const original = yield* fs.readFileString(tokenPath);
+      const credentials = yield* decodeCredentials(original);
+      // Google's native client uses this header to identify the Antigravity surface.
+      const version =
+        input.runtimeVersion.replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 64) || "unknown";
+      const userAgent = `antigravity/acp/${version} (aidev_client; os_type=${platform === "win32" ? "windows" : platform}; arch=${architecture === "x64" ? "x86_64" : architecture}; host_path=pylon/0.0.0; proxy_client=antigravity/sdk)`;
+      const requestJson = Effect.fn("antigravityQuota.request")(function* (
+        request: HttpClientRequest.HttpClientRequest,
       ) {
-        return makeUnavailableUsageLimits({
-          checkedAt,
-          reason: "unsupported",
-          message: "Antigravity CLI is not authenticated.",
-        });
-      }
-      return makeUnavailableUsageLimits({
-        checkedAt,
-        reason: "probeFailed",
-        message: `Antigravity usage probe failed with exit code ${result.code}.`,
+        const response = yield* http.execute(request);
+        if (response.status < 200 || response.status >= 300) {
+          return yield* new AntigravityQuotaError({ message: "Antigravity quota request failed." });
+        }
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        yield* Stream.runForEach(response.stream, (chunk) =>
+          Effect.gen(function* () {
+            size += chunk.byteLength;
+            if (size > 256 * 1024)
+              return yield* new AntigravityQuotaError({ message: "Quota response too large." });
+            chunks.push(chunk);
+          }),
+        );
+        const body = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          body.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        return yield* decodeJson(new TextDecoder().decode(body));
       });
-    }
-
-    try {
-      const parsed = JSON.parse(result.stdout);
-      const limits = usageLimitsFromAntigravityOutput(parsed, checkedAt);
-      if (!limits) {
-        return makeUnavailableUsageLimits({
-          checkedAt,
-          reason: "probeFailed",
-          message: "Antigravity usage limits could not be parsed.",
-        });
+      const tokenJson = yield* requestJson(
+        HttpClientRequest.post(TOKEN_URL).pipe(
+          HttpClientRequest.bodyUrlParams({
+            client_id: credentials.client_id,
+            client_secret: credentials.client_secret,
+            refresh_token: credentials.refresh_token,
+            grant_type: "refresh_token",
+          }),
+        ),
+      );
+      const token = yield* decodeAccessToken(tokenJson);
+      const accountRequest = (url: string, body: Record<string, unknown>) =>
+        HttpClientRequest.post(url).pipe(
+          HttpClientRequest.bearerToken(token.access_token),
+          HttpClientRequest.setHeader("user-agent", userAgent),
+          HttpClientRequest.bodyJsonUnsafe(body),
+        );
+      const accountJson = yield* requestJson(
+        accountRequest(`${CCPA}/v1internal:loadCodeAssist`, {
+          metadata: { ideType: "ANTIGRAVITY" },
+        }),
+      );
+      const account = yield* decodeAccount(accountJson);
+      const project = account.cloudaicompanionProject || credentials.project_id;
+      if (!project)
+        return yield* new AntigravityQuotaError({ message: "No existing account project." });
+      const endpoint = account.paidTier?.usesGcpTos ? CCPA : DAILY_CCPA;
+      const summary = yield* requestJson(
+        accountRequest(`${endpoint}/v1internal:retrieveUserQuotaSummary`, { project }),
+      );
+      const limits = usageLimitsFromAntigravityOutput(summary, checkedAt);
+      if (!limits)
+        return yield* new AntigravityQuotaError({ message: "Unrecognized quota response." });
+      // Sign-out/account replacement may race this read. Never publish the previous account's limits.
+      if ((yield* fs.readFileString(tokenPath)) !== original) {
+        return yield* new AntigravityQuotaError({ message: "Account changed during quota read." });
       }
       return limits;
-    } catch {
-      return makeUnavailableUsageLimits({
-        checkedAt,
-        reason: "probeFailed",
-        message: "Antigravity usage limits output is not valid JSON.",
-      });
-    }
-  });
-}
+    });
+    return yield* read.pipe(
+      Effect.timeoutOption("15 seconds"),
+      Effect.map(Option.getOrUndefined),
+      // HTTP/schema errors may contain credentials or response bodies: never log or retain them.
+      Effect.orElseSucceed(() => undefined),
+      Effect.map(
+        (limits) =>
+          limits ??
+          unavailable("probeFailed", "Antigravity subscription limits could not be refreshed."),
+      ),
+    );
+  },
+);

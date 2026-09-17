@@ -6,6 +6,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -42,12 +43,9 @@ import { removeAntigravitySessionFiles } from "../acp/AntigravitySessionFiles.ts
 import { ProviderDriverError } from "../Errors.ts";
 import { makeAntigravityAdapter } from "../Layers/AntigravityAdapter.ts";
 import { makeAntigravityProvider } from "../Layers/AntigravityProvider.ts";
-import {
-  resolveAntigravityCliExecutable,
-  runAntigravityUsageProbe,
-} from "../Layers/antigravityUsageLimits.ts";
-import { makeUnavailableUsageLimits } from "../usageLimitsSnapshot.ts";
-import * as DateTime from "effect/DateTime";
+import { readAntigravityUsageLimits } from "../Layers/antigravityUsageLimits.ts";
+import { readAntigravityLatestContext } from "../../usage/antigravityUsageReader.ts";
+import { HttpClient } from "effect/unstable/http";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import {
@@ -68,6 +66,7 @@ export type AntigravityDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
+  | HttpClient.HttpClient
   | ModelManifest.ModelManifest
   | Path.Path
   | ProviderEventLoggers
@@ -84,6 +83,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
     Effect.gen(function* () {
       const crypto = yield* Crypto.Crypto;
       const fileSystem = yield* FileSystem.FileSystem;
+      const httpClient = yield* HttpClient.HttpClient;
       const path = yield* Path.Path;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const serverConfig = yield* ServerConfig;
@@ -330,46 +330,21 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       });
 
       const probeUsageLimits = Effect.gen(function* () {
-        const now = yield* DateTime.now;
-        const checkedAt = DateTime.formatIso(now);
-
-        if (auth.authMethod !== "oauth-personal") {
-          return makeUnavailableUsageLimits({
-            checkedAt,
-            reason: "unsupported",
-            message: "Usage limits are only available for personal Google account authentication.",
-          });
-        }
-
-        const agyExecutable = yield* resolveAntigravityCliExecutable({
-          baseEnv: processEnvironment,
-          userHome,
+        const executable = yield* installation
+          .resolve(settings.binaryPath, processEnvironment)
+          .pipe(Effect.option);
+        return yield* readAntigravityUsageLimits({
+          profileDirectory,
+          authMethod: auth.authMethod,
+          runtimeVersion: Option.isSome(executable)
+            ? (executable.value.version ?? "unknown")
+            : "unknown",
         });
-        if (!agyExecutable) {
-          return makeUnavailableUsageLimits({
-            checkedAt,
-            reason: "unsupported",
-            message: "Antigravity CLI (agy) is not installed.",
-          });
-        }
-
-        const tokenPath = path.join(profileDirectory, "antigravity-acp", "acp_token.json");
-        const tokenExists = yield* fileSystem
-          .exists(tokenPath)
-          .pipe(Effect.orElseSucceed(() => false));
-        if (!tokenExists) {
-          return makeUnavailableUsageLimits({
-            checkedAt,
-            reason: "unsupported",
-            message: "Antigravity is not signed in.",
-          });
-        }
-
-        return yield* runAntigravityUsageProbe({
-          executablePath: agyExecutable,
-          env: processEnvironment,
-        });
-      });
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(HttpClient.HttpClient, httpClient),
+      );
 
       const provider = yield* makeAntigravityProvider(settings, {
         stampIdentity: classifyModels,
@@ -400,6 +375,23 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         makeRuntime,
         withProcess: authFlow.withProcess,
         defaultModel,
+        readNativeContext: (sessionId) => {
+          // Native UUIDs are filenames; reject paths and unrelated database names.
+          if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sessionId))
+            return Effect.succeed(undefined);
+          return Effect.tryPromise(() =>
+            readAntigravityLatestContext(
+              path.join(profileDirectory, "antigravity-acp", "conversations", `${sessionId}.db`),
+            ),
+          ).pipe(
+            Effect.map((snapshot) =>
+              snapshot
+                ? { usedTokens: snapshot.estimatedTokensUsed, maxTokens: snapshot.maxContextTokens }
+                : undefined,
+            ),
+            Effect.orElseSucceed(() => undefined),
+          );
+        },
         onSessionStarted: provider.onSessionStarted,
         onConfigOptionsUpdated: provider.onConfigOptionsUpdated,
         onAvailableCommands: provider.onAvailableCommands,

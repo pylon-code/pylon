@@ -670,7 +670,7 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
       Effect.scoped(
         Effect.gen(function* () {
           const testLimits: ServerProviderUsageLimits = {
-            source: "antigravityCli",
+            source: "antigravityOAuth",
             checkedAt: "2026-09-17T18:00:00.000Z",
             windows: [
               {
@@ -706,8 +706,10 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
           expect(refreshed.usageLimits?.windows[0]?.usedPercent).toBe(45);
           expect(refreshed.usageLimits?.unavailable).toEqual({
             reason: "probeFailed",
-            message: "Antigravity usage limits could not be refreshed.",
+            message: "Last reading; subscription limits could not be refreshed.",
           });
+
+          expect(refreshed.usageLimits?.checkedAt).toBe(testLimits.checkedAt);
 
           // Sign out resets usage limits
           yield* harness.provider.onSignedOut;

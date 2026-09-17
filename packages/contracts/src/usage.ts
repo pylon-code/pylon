@@ -36,7 +36,7 @@ export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok", "an
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
 /**
- * A calendar day in the reporting time zone, formatted `YYYY-MM-DD``.
+ * A calendar day in the reporting time zone, formatted `YYYY-MM-DD`.
  *
  * Days are bucketed server-side so that a turn always lands on the day the user
  * experienced it, not the UTC day.
