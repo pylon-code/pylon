@@ -265,8 +265,7 @@ render `turn.completed` state and `errorMessage`, and session `lastError`.
 green; add none unless behavior changes.
 
 Focused commands: `vp test run <files>` for the files above, `vp run -F t3
-typecheck`, `vp run -F @t3tools/effect-acp typecheck` (verify the package
-name before running), and lint on changed files.
+typecheck`, `vp run -F effect-acp typecheck`, and lint on changed files.
 
 ## Rollout
 
