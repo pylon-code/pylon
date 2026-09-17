@@ -1272,7 +1272,12 @@ describe("PrimeAgentDaemonAdapter", () => {
             ),
         });
         const subscription = yield* subscribe(adapter);
-        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId, model: "openai/current" },
+        });
         const turnFiber = yield* adapter
           .sendTurn({ threadId, input: "fast complete response" })
           .pipe(Effect.forkChild);
@@ -2098,7 +2103,7 @@ describe("PrimeAgentDaemonAdapter", () => {
   );
 
   it.effect(
-    "settles turn as cancelled when stopped while subagents run, rearms quiescence, and admits follow-up input after subagents stop and compaction resyncs",
+    "rearms quiescence across child stop, compaction, and resync, and admits follow-up input only after background barrier completes",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -2106,6 +2111,8 @@ describe("PrimeAgentDaemonAdapter", () => {
           captures.correlatedPromptLifecycleAvailable = true;
           captures.rlmQuiescenceAvailable = true;
           captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+          captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+          captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
           captures.backgroundQuiescenceCompleted = yield* Queue.unbounded<string>();
           const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
             instanceId,
@@ -2140,26 +2147,45 @@ describe("PrimeAgentDaemonAdapter", () => {
             _tag: "PromptLifecycleUpdated",
             lifecycle: lifecycleSnapshot(correlationId, "completed", 3),
           });
-          const completedTurn = yield* Fiber.join(turnFiber);
+          yield* Fiber.join(turnFiber);
 
-          const completionEvent = subscription.events.findLast(
-            (event) => event.turnId === completedTurn.turnId && event.type === "turn.completed",
-          );
-          expect(completionEvent).toMatchObject({
-            payload: {
-              state: "cancelled",
-            },
+          // Settle armed the background quiescence watch because inputAdmissionBusy was true
+          const settlementToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+          expect(settlementToken).toMatch(/^background:/);
+          expect(captures.inputAdmissionBusy).toBe(true);
+
+          // Follow-up with mismatched controls is rejected while background quiescence is pending
+          const rejectedSend = yield* adapter
+            .sendTurn({
+              threadId,
+              input: "premature input before subagent completes",
+              modelSelection: { instanceId, model: "openai/other" },
+            })
+            .pipe(Effect.flip);
+          expect(rejectedSend).toMatchObject({
+            _tag: "ProviderAdapterValidationError",
+            reason: "busy",
+            issue: "Prime Agent background work is still running. Try again after it finishes.",
           });
 
+          // Child cancellation rearms quiescence in idle state
           yield* offer(captures, {
             _tag: "ChildUpdated",
             child: { id: "child-agent-1", label: "research agent", status: "cancelled" },
           });
+          const childStopToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+          expect(childStopToken).toMatch(/^background:/);
 
-          const quiescenceToken = yield* Queue.take(captures.backgroundQuiescenceCompleted);
-          expect(quiescenceToken).toMatch(/^background:/);
-          expect(captures.inputAdmissionBusy).toBe(false);
+          // Compaction completion rearms quiescence in idle state
+          yield* offer(captures, {
+            _tag: "CompactionCompleted",
+            outcome: "completed",
+            willRetry: false,
+          });
+          const compactionToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+          expect(compactionToken).toMatch(/^background:/);
 
+          // SessionResynced rearms quiescence while inputAdmissionBusy remains true
           yield* offer(captures, {
             _tag: "SessionResynced",
             messages: [],
@@ -2171,9 +2197,22 @@ describe("PrimeAgentDaemonAdapter", () => {
             },
             children: [{ id: "child-agent-1", label: "research agent", status: "cancelled" }],
           });
+          const resyncToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+          expect(resyncToken).toMatch(/^background:/);
+          expect(captures.inputAdmissionBusy).toBe(true);
 
+          // Releasing the barrier completes quiescence and clears inputAdmissionBusy
+          yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+          yield* Queue.take(captures.backgroundQuiescenceCompleted);
+          expect(captures.inputAdmissionBusy).toBe(false);
+
+          // Follow-up turn with changed controls is now admitted
           const secondTurnFiber = yield* adapter
-            .sendTurn({ threadId, input: "follow-up input after stop" })
+            .sendTurn({
+              threadId,
+              input: "follow-up input after background quiescence",
+              modelSelection: { instanceId, model: "openai/other" },
+            })
             .pipe(Effect.forkChild);
           const secondCorrelationId = yield* Queue.take(captures.correlatedPromptObserved);
           expect(secondCorrelationId).toBeDefined();

@@ -2143,7 +2143,8 @@ export function makePrimeAgentDaemonAdapter(
 
         const effectiveOutcome: TurnOutcome =
           !options?.preserveOutcomeDuringTeardown &&
-          (context.stopRequested || (turn.cancellationRequested && outcome.state !== "failed"))
+          (context.stopRequested ||
+            (turn.correlationId === undefined && turn.cancellationRequested))
             ? { state: "cancelled" }
             : outcome;
         if (
@@ -2235,7 +2236,12 @@ export function makePrimeAgentDaemonAdapter(
           status: "ready",
           updatedAt: yield* nowIso,
         };
-        if (context.runtime.rlmQuiescenceAvailable && !context.stopped && !context.stopRequested) {
+        if (
+          context.runtime.rlmQuiescenceAvailable &&
+          context.runtime.inputAdmissionBusy &&
+          !context.stopped &&
+          !context.stopRequested
+        ) {
           yield* startBackgroundQuiescenceWatchLocked(context);
         }
         if (context.recoveryOwnerToken !== undefined && !context.stopRequested) {
@@ -2361,11 +2367,7 @@ export function makePrimeAgentDaemonAdapter(
               runtimeOperationError(context.threadId, "session/cancel-prompt", error),
             ),
           );
-        if (
-          result.status === "cancelled" ||
-          (result.status === "too_late" &&
-            (result.lifecycle.phase === "completed" || result.lifecycle.phase === "cancelled"))
-        ) {
+        if (result.status === "cancelled") {
           yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
         } else if (result.status === "expired" || result.status === "unknown") {
           yield* settleActiveTurnLocked(context, turn, {
