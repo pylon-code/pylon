@@ -168,7 +168,7 @@ function TaskSummary({
         ) : null}
         {/* The expanded list already shows every step; the bar would repeat it. */}
         {expanded ? null : (
-          <TaskProgressSegments fit className="hidden w-20 sm:flex" steps={steps} />
+          <TaskProgressSegments fit className="hidden w-20 @min-[560px]:flex" steps={steps} />
         )}
         <ComposerBanner.ToggleIcon expanded={expanded} />
       </ComposerBanner.Actions>
