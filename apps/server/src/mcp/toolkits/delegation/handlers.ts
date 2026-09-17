@@ -79,7 +79,7 @@ import {
 } from "./tools.ts";
 import { prepareChildWorktree, removeChildWorktree } from "./worktree.ts";
 
-const DEFAULT_RESULT_CHARS = 20_000;
+const DEFAULT_RESULT_CHARS = 4_000;
 const POLL_INTERVAL_MS = 1_000;
 const INITIAL_MESSAGE_KEY = "initial";
 
@@ -315,6 +315,16 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const { childId, shell } = yield* lookupChild(input.delegationKey);
       const initial = statusOf(shell);
+      // A settled child or an actionable blocker needs attention now, not a
+      // state transition. In particular, do not spend the entire wait budget
+      // on a child that finished before the caller checked it.
+      if (
+        !isLiveDelegatedState(initial.state) ||
+        initial.hasPendingApprovals ||
+        initial.hasPendingUserInput
+      ) {
+        return statusPayload(input.delegationKey, shell, 0, false);
+      }
       const startedAt = yield* Clock.currentTimeMillis;
       // Wall-clock bound: each poll's query time counts against the budget so
       // the call always returns inside the caller's tool timeout.

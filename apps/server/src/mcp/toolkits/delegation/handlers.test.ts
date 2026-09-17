@@ -541,6 +541,28 @@ describe("delegated_thread_status", () => {
     }),
   );
 
+  it.effect("returns settled and actionable children immediately even with a wait budget", () =>
+    Effect.gen(function* () {
+      for (const child of [
+        makeShell(CHILD_ID, { latestTurn: completedTurn() }),
+        makeShell(CHILD_ID, { latestTurn: completedTurn({ state: "error" }) }),
+        makeShell(CHILD_ID, { latestTurn: completedTurn({ state: "interrupted" }) }),
+        makeShell(CHILD_ID, { latestTurn: turn(), hasPendingApprovals: true }),
+        makeShell(CHILD_ID, { latestTurn: turn(), hasPendingUserInput: true }),
+        makeShell(CHILD_ID, { archivedAt: NOW }),
+      ]) {
+        const harness = yield* makeHarness({ shells: [makeShell(PARENT_ID), child] });
+        // No TestClock advancement: waiting would hang this test.
+        expect(
+          yield* harness.call("delegated_thread_status", {
+            delegationKey: "k1",
+            waitSeconds: 45,
+          }),
+        ).toMatchObject({ waitedSeconds: 0, changed: false });
+      }
+    }),
+  );
+
   it.effect("waits until the state changes, then returns early", () =>
     Effect.gen(function* () {
       const running = makeShell(CHILD_ID, { latestTurn: turn() });
@@ -622,6 +644,27 @@ describe("delegated_thread_result", () => {
         branch: "t3code/1",
       });
       expect(result.assistantMessage?.text).toHaveLength(1_000);
+    }),
+  );
+
+  it.effect("bounds the default result and lets the caller expand truncated output", () =>
+    Effect.gen(function* () {
+      const shell = makeShell(CHILD_ID, {
+        latestTurn: completedTurn({ assistantMessageId: MessageId.make("m1") }),
+      });
+      const text = "x".repeat(6_000);
+      const harness = yield* makeHarness({
+        shells: [makeShell(PARENT_ID), shell],
+        details: [detailOf(shell, { messages: [message("m1", { text })], checkpoints: [] })],
+      });
+      const compact = yield* harness.call("delegated_thread_result", { delegationKey: "k1" });
+      expect(compact.assistantMessage?.text).toHaveLength(4_000);
+      expect(compact.assistantMessage?.truncated).toBe(true);
+      const expanded = yield* harness.call("delegated_thread_result", {
+        delegationKey: "k1",
+        maxChars: 8_000,
+      });
+      expect(expanded.assistantMessage).toMatchObject({ text, truncated: false });
     }),
   );
 

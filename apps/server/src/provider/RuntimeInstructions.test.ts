@@ -48,6 +48,11 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("<pylon_delegation>");
     // When to choose delegation over built-in subagents.
     expect(instructions).toContain("prefer your own built-in subagents");
+    expect(instructions).toContain("only when the user explicitly asks");
+    expect(instructions).toContain("Never fall back to Pylon delegation");
+    expect(instructions).toContain("waitSeconds 45");
+    expect(instructions).not.toContain("waitSeconds 20");
+    expect(instructions).toContain("if truncated, request a larger maxChars");
     // Defaults apply only when the user names nothing, and are never guessed.
     expect(instructions).toContain("omit providerInstanceId and model");
     expect(instructions).toContain("never pick a provider yourself");

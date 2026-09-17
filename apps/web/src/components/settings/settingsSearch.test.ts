@@ -265,6 +265,8 @@ describe("searchSettings", () => {
     ["new threads", "new-threads", "/settings/general"],
     ["agent browser access", "agent-browser-access", "/settings/integrations"],
     ["agent delegation", "agent-delegation", "/settings/integrations"],
+    ["pylon delegation", "agent-delegation", "/settings/integrations"],
+    ["native subagents", "agent-delegation", "/settings/integrations"],
     ["default delegation model", "delegation-default-model", "/settings/integrations"],
     ["child permissions", "delegation-child-permissions", "/settings/integrations"],
     ["automatically pull", "automatic-pull", "/settings/source-control"],
