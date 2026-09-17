@@ -78,6 +78,7 @@ const makeHarness = Effect.fn("makeAntigravityAdapterHarness")(function* (option
   readonly holdCancel?: boolean;
   readonly holdClose?: boolean;
   readonly holdDispatch?: boolean;
+  readonly readNativeContext?: AntigravityAdapterOptions["readNativeContext"];
 }) {
   const runtimeEvents = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
   const canonicalEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
@@ -222,6 +223,7 @@ const makeHarness = Effect.fn("makeAntigravityAdapterHarness")(function* (option
     decodeSettings({ enabled: options?.enabled ?? true }),
     {
       instanceId,
+      ...(options?.readNativeContext ? { readNativeContext: options.readNativeContext } : {}),
       makeRuntime: (input) =>
         Effect.gen(function* () {
           launches.push(input);
@@ -306,6 +308,68 @@ const layer = ServerConfig.layerTest(process.cwd(), {
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
 it.layer(layer)("AntigravityAdapter", (it) => {
+  it.effect("publishes native context on resume and after a prompt without ACP usage", () =>
+    Effect.gen(function* () {
+      let usedTokens = 120;
+      const h = yield* makeHarness({
+        readNativeContext: (sessionId) =>
+          Effect.sync(() => {
+            expect(sessionId).toBe(nativeSessionId);
+            return { usedTokens, maxTokens: 128_000 };
+          }),
+      });
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: { schemaVersion: 1, sessionId: nativeSessionId },
+      });
+      const resumed = yield* h.waitForEvent((event) => event.type === "thread.token-usage.updated");
+      expect(resumed.payload.usage).toEqual({ usedTokens: 120, maxTokens: 128_000 });
+      const sent = yield* h.adapter.sendTurn({ threadId, input: "Continue" });
+      const prompt = yield* h.nextPrompt;
+      usedTokens = 450;
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      const updated = yield* h.waitForEvent((event) => event.type === "thread.token-usage.updated");
+      expect(updated.turnId).toBe(sent.turnId);
+      expect(updated.payload.usage).toEqual({ usedTokens: 450, maxTokens: 128_000 });
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+    }),
+  );
+
+  it.effect("discards native context read by a superseded steering generation", () =>
+    Effect.gen(function* () {
+      const reading = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let reads = 0;
+      const h = yield* makeHarness({
+        readNativeContext: () =>
+          Effect.gen(function* () {
+            const read = ++reads;
+            if (read === 1) return undefined;
+            if (read === 2) {
+              yield* Deferred.succeed(reading, undefined);
+              yield* Deferred.await(release);
+              return { usedTokens: 999, maxTokens: 128_000 };
+            }
+            return { usedTokens: 250, maxTokens: 128_000 };
+          }),
+      });
+      yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* h.adapter.sendTurn({ threadId, input: "First" });
+      const first = yield* h.nextPrompt;
+      yield* Deferred.succeed(first.result, { stopReason: "end_turn" });
+      yield* Deferred.await(reading);
+      yield* h.adapter.sendTurn({ threadId, input: "Steer" });
+      const second = yield* h.nextPrompt;
+      yield* Deferred.succeed(release, undefined);
+      yield* Deferred.succeed(second.result, { stopReason: "end_turn" });
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+      const updates = h.seen.filter((event) => event.type === "thread.token-usage.updated");
+      expect(updates.map((event) => event.payload.usage.usedTokens)).toEqual([250]);
+    }),
+  );
+
   it.effect(
     "runs native auth, resume, models, commands, and streaming through the ACP transport",
     () =>
