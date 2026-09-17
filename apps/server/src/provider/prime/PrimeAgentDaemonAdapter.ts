@@ -2143,8 +2143,7 @@ export function makePrimeAgentDaemonAdapter(
 
         const effectiveOutcome: TurnOutcome =
           !options?.preserveOutcomeDuringTeardown &&
-          (context.stopRequested ||
-            (turn.correlationId === undefined && turn.cancellationRequested))
+          (context.stopRequested || (turn.cancellationRequested && outcome.state !== "failed"))
             ? { state: "cancelled" }
             : outcome;
         if (
@@ -2236,6 +2235,9 @@ export function makePrimeAgentDaemonAdapter(
           status: "ready",
           updatedAt: yield* nowIso,
         };
+        if (context.runtime.rlmQuiescenceAvailable && !context.stopped && !context.stopRequested) {
+          yield* startBackgroundQuiescenceWatchLocked(context);
+        }
         if (context.recoveryOwnerToken !== undefined && !context.stopRequested) {
           const retainedForRollback =
             managedAbsoluteRollbackAvailable &&
@@ -2359,7 +2361,11 @@ export function makePrimeAgentDaemonAdapter(
               runtimeOperationError(context.threadId, "session/cancel-prompt", error),
             ),
           );
-        if (result.status === "cancelled") {
+        if (
+          result.status === "cancelled" ||
+          (result.status === "too_late" &&
+            (result.lifecycle.phase === "completed" || result.lifecycle.phase === "cancelled"))
+        ) {
           yield* settleActiveTurnLocked(context, turn, { state: "cancelled" });
         } else if (result.status === "expired" || result.status === "unknown") {
           yield* settleActiveTurnLocked(context, turn, {
@@ -2993,7 +2999,8 @@ export function makePrimeAgentDaemonAdapter(
                 context.nativeRunActive = snapshotEvent.state.isStreaming;
                 if (
                   context.activeTurn === undefined &&
-                  (snapshotEvent.state.isStreaming ||
+                  (context.runtime.inputAdmissionBusy ||
+                    snapshotEvent.state.isStreaming ||
                     snapshotEvent.state.isCompacting ||
                     snapshotEvent.state.isBashRunning ||
                     snapshotEvent.state.retryAttempt > 0 ||
@@ -3633,6 +3640,7 @@ export function makePrimeAgentDaemonAdapter(
                 status: "idle",
                 abortable: false,
               });
+              if (turn === undefined) yield* startBackgroundQuiescenceWatchLocked(context);
               if (turn !== undefined && pendingHandoff !== undefined) {
                 // Invalidate the timer created by agent_end and grant the native
                 // post-compaction continuation its own complete handoff window.
@@ -3701,8 +3709,7 @@ export function makePrimeAgentDaemonAdapter(
             }
             if (
               turn === undefined &&
-              ((event._tag === "ChildUpdated" &&
-                (event.child.status === "queued" || event.child.status === "running")) ||
+              (event._tag === "ChildUpdated" ||
                 event._tag === "BashStarted" ||
                 event._tag === "BashOutput" ||
                 event._tag === "RetryStarted" ||

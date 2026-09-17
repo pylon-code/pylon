@@ -2097,6 +2097,95 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect(
+    "settles turn as cancelled when stopped while subagents run, rearms quiescence, and admits follow-up input after subagents stop and compaction resyncs",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          captures.correlatedPromptLifecycleAvailable = true;
+          captures.rlmQuiescenceAvailable = true;
+          captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+          captures.backgroundQuiescenceCompleted = yield* Queue.unbounded<string>();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+
+          const turnFiber = yield* adapter
+            .sendTurn({ threadId, input: "run subagent task" })
+            .pipe(Effect.forkChild);
+          const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+          const delivered = lifecycleSnapshot(correlationId, "delivered", 2);
+          yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: delivered });
+
+          captures.inputAdmissionBusy = true;
+          yield* offer(captures, {
+            _tag: "ChildUpdated",
+            child: { id: "child-agent-1", label: "research agent", status: "running" },
+          });
+
+          captures.correlatedPromptCancellationResult = {
+            status: "too_late",
+            ownershipCrossed: true,
+            deliveryCrossed: true,
+            lifecycle: delivered,
+          };
+          yield* adapter.interruptTurn(threadId);
+
+          yield* offer(captures, {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: lifecycleSnapshot(correlationId, "completed", 3),
+          });
+          const completedTurn = yield* Fiber.join(turnFiber);
+
+          const completionEvent = subscription.events.findLast(
+            (event) => event.turnId === completedTurn.turnId && event.type === "turn.completed",
+          );
+          expect(completionEvent).toMatchObject({
+            payload: {
+              state: "cancelled",
+            },
+          });
+
+          yield* offer(captures, {
+            _tag: "ChildUpdated",
+            child: { id: "child-agent-1", label: "research agent", status: "cancelled" },
+          });
+
+          const quiescenceToken = yield* Queue.take(captures.backgroundQuiescenceCompleted);
+          expect(quiescenceToken).toMatch(/^background:/);
+          expect(captures.inputAdmissionBusy).toBe(false);
+
+          yield* offer(captures, {
+            _tag: "SessionResynced",
+            messages: [],
+            state: {
+              ...initialSnapshot().state,
+              isStreaming: false,
+              isCompacting: false,
+              isBashRunning: false,
+            },
+            children: [{ id: "child-agent-1", label: "research agent", status: "cancelled" }],
+          });
+
+          const secondTurnFiber = yield* adapter
+            .sendTurn({ threadId, input: "follow-up input after stop" })
+            .pipe(Effect.forkChild);
+          const secondCorrelationId = yield* Queue.take(captures.correlatedPromptObserved);
+          expect(secondCorrelationId).toBeDefined();
+          yield* offer(captures, {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: lifecycleSnapshot(secondCorrelationId, "completed", 2),
+          });
+          yield* Fiber.join(secondTurnFiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects interactions and approvals after too-late cancellation", () =>
     Effect.scoped(
       Effect.gen(function* () {
