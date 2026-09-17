@@ -56,6 +56,7 @@ import {
   selectAssistantMessage,
   truncateText,
 } from "./logic.ts";
+import { delegationSkill } from "./skill.ts";
 import {
   DelegatedMessageKeyConsumedError,
   DelegatedThreadArchivedError,
@@ -745,6 +746,8 @@ const make = Effect.gen(function* () {
     });
 
   return DelegationToolkit.of({
+    read_delegation_skill: () =>
+      McpInvocationContext.requireMcpCapability("delegation").pipe(Effect.as(delegationSkill)),
     delegate_thread,
     delegated_thread_status,
     delegated_thread_result,

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pylon Delegation"
+  short_description: "Choose and manage efficient Pylon delegation"
+  default_prompt: "Use $pylon-delegation to choose the right delegation route and manage any requested Pylon child threads."

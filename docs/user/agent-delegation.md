@@ -49,6 +49,14 @@ new setting to apply immediately; open a running child and stop it if you want t
 Native subagent controls belong to the provider’s harness; for example, Prime Agent’s **Harness →
 Subagent depth** controls its built-in agents separately.
 
+## Ask for delegation
+
+For example: “Use a separate Pylon thread to review the authentication changes. Keep the review
+read-only and report concrete bugs with file references.” The agent loads Pylon's delegation skill
+on demand, then follows its guidance for choosing the route, briefing the child, waiting, and
+reviewing the result. The skill is available in any project through Pylon's agent tools; no separate
+skill installation is needed. Enabling delegation alone does not start a child.
+
 ## What a child thread is
 
 Each delegated task becomes an ordinary thread, so you can open it, answer its questions, approve

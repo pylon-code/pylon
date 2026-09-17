@@ -438,7 +438,7 @@ project to override that default. This works in daemon-backed sessions and ACP
 compatibility mode. The scoped connection is removed when the provider session stops. Turning browser
 access off withholds both the tools and their instructions; it does not affect browser tabs you control.
 
-With **Agent delegation** enabled, a Full access Prime Agent thread can also start and manage child
+With **Pylon delegation** enabled, a Full access Prime Agent thread can also start and manage child
 threads on other providers, such as Antigravity. Supervised sessions deny those tools. See
 [agent delegation](./agent-delegation.md).
 

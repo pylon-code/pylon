@@ -464,12 +464,24 @@ const delegateInput = {
 };
 
 describe("delegation toolkit gate", () => {
+  it.effect("reads the skill without starting a child or touching git", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const skill = yield* harness.call("read_delegation_skill", {});
+      expect(skill).toContain("name: pylon-delegation");
+      expect(skill).toContain("## Choose the route");
+      expect(yield* harness.commandTypes).toEqual([]);
+      expect(yield* Ref.get(harness.gitCalls)).toEqual([]);
+    }),
+  );
+
   it.effect("refuses a credential without the delegation capability", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
       for (const [name, params] of [
         ["delegated_thread_status", { delegationKey: "k1" }],
         ["delegate_thread", delegateInput],
+        ["read_delegation_skill", {}],
       ] as const) {
         const error = yield* harness
           .call(name, params, invocation(PARENT_ID, ["pull-requests"]))

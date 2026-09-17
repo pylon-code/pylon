@@ -414,7 +414,7 @@ export type DelegationToolError = typeof DelegationToolError.Type;
 
 const DelegateThreadTool = Tool.make("delegate_thread", {
   description:
-    "Start a separate Pylon thread, visible to the user, on another provider in its own git worktree, then return immediately. Keep small or tightly coupled work local; prefer built-in subagents for worthwhile bounded parallel work. Use this tool only when the user explicitly asks for a separate Pylon thread or work on another provider, model, or account. Enabling it is not a request to use it; unavailable built-in subagents are not a reason to fall back to Pylon. Omit providerInstanceId, model, and runtimeMode unless the user asked for them: Pylon applies the user's defaults, and the result reports what was used. Assign one bounded task with acceptance criteria and a concise report. Do independent work before checking delegated_thread_status; when waiting is necessary use waitSeconds 45. Read delegated_thread_result at completion, expand it if truncated (at maxChars 60000, inspect the child thread or ask for a concise handoff), and review the completed diff and checks before relying on them. Send consolidated corrections instead of repeatedly inspecting unfinished work. Pylon does not automatically wake the parent. Reusing a delegationKey returns the existing child. Children cannot delegate further. Requires Pylon delegation in Settings → Integrations.",
+    "Start a separate Pylon thread in its own worktree and return immediately. Keep small or tightly coupled work local; prefer built-in subagents for independent work. Use only when the user explicitly requests a separate Pylon thread or another provider, model, or account. Enabling delegation or lacking built-in agents is not a reason to use it. First load read_delegation_skill once for the workflow, defaults, waiting, and review rules. Reusing a delegationKey returns the existing child. Requires Pylon delegation in Settings → Integrations.",
   parameters: DelegateThreadInput,
   success: DelegateThreadResult,
   failure: DelegationToolError,
@@ -482,7 +482,21 @@ const InterruptDelegatedThreadTool = Tool.make("interrupt_delegated_thread", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const ReadDelegationSkillTool = Tool.make("read_delegation_skill", {
+  description:
+    "Read the Pylon delegation skill: choose local work, built-in subagents, or explicitly requested Pylon child threads, then manage and review them efficiently. Load once before using Pylon delegation; no child is started. Requires the delegation capability.",
+  success: Schema.String,
+  failure: McpCapabilityUnavailableError,
+  dependencies: [McpInvocationContext.McpInvocationContext],
+})
+  .annotate(Tool.Title, "Read the Pylon delegation skill")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const DelegationToolkit = Toolkit.make(
+  ReadDelegationSkillTool,
   DelegateThreadTool,
   DelegatedThreadStatusTool,
   DelegatedThreadResultTool,

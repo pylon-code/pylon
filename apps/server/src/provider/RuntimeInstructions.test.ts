@@ -50,16 +50,8 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("prefer your own built-in subagents");
     expect(instructions).toContain("only when the user explicitly asks");
     expect(instructions).toContain("Never fall back to Pylon delegation");
-    expect(instructions).toContain("waitSeconds 45");
-    expect(instructions).not.toContain("waitSeconds 20");
-    expect(instructions).toContain("if truncated, request a larger maxChars");
-    // Defaults apply only when the user names nothing, and are never guessed.
-    expect(instructions).toContain("omit providerInstanceId and model");
-    expect(instructions).toContain("never pick a provider yourself");
-    // Permissions: never broaden, follow the user's child setting.
-    expect(instructions).toContain("Do not pass runtimeMode unless the user asks");
-    expect(instructions).toContain("never gets broader permissions than you");
-    // Review before relying on a child's work.
-    expect(instructions).toContain("delegated_thread_result");
+    expect(instructions).toContain("read_delegation_skill once");
+    // Load the workflow on demand instead of repeating it in every session.
+    expect(instructions).not.toContain("waitSeconds 45");
   });
 });
