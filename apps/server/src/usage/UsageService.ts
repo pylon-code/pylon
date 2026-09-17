@@ -1,9 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off
 /**
  * UsageService - scans provider transcripts and returns priced usage buckets.
  *
- * The scan reads the provider CLIs' own session files (Claude Code, Codex, and
- * Grok Build) rather than Pylon's orchestration projections, so usage covers
- * turns driven outside Pylon too. This is the approach `ccusage` takes.
+ * The scan reads the provider CLIs' own session files (Claude Code, Codex,
+ * Grok Build, and Antigravity) rather than Pylon's orchestration projections,
+ * so usage covers turns driven outside Pylon too. This is the approach `ccusage`
+ * takes.
  *
  * Transcripts are append-only, so parsed records are memoised per file by
  * `(size, mtime)`. A cold 30-day scan of ~1.4 GB lands around 2-3 seconds; warm
@@ -12,6 +14,7 @@
  *
  * @module UsageService
  */
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 
 import {
@@ -26,6 +29,7 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
   UsageReadError,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
@@ -47,6 +51,8 @@ import { expandHomePath, resolveProviderHomePath } from "../pathExpansion.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
+import { resolveAntigravityProfileDirectory } from "../provider/antigravityAuthSupport.ts";
+import { readAntigravityDatabase } from "./antigravityUsageReader.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import {
   countKnownModels,
@@ -295,6 +301,48 @@ export const make = Effect.gen(function* () {
         dirs.push({ provider, dir, ...(provider === "grok" ? { fileName: "updates.jsonl" } : {}) });
       }
     }
+    // Antigravity profile roots: resolve configured instances
+    const antigravityRoots = new Set<string>();
+
+    for (const [instanceId, instanceConfig] of Object.entries(settings.providerInstances)) {
+      if (instanceConfig.driver === "antigravity" && instanceConfig.enabled !== false) {
+        const profileDir = resolveAntigravityProfileDirectory(
+          config.stateDir,
+          ProviderInstanceId.make(instanceId),
+        );
+        antigravityRoots.add(path.join(profileDir, "antigravity-acp", "conversations"));
+      }
+    }
+
+    if (settings.providers.antigravity?.enabled) {
+      const defaultId = "antigravity";
+      if (!(defaultId in settings.providerInstances)) {
+        const profileDir = resolveAntigravityProfileDirectory(
+          config.stateDir,
+          ProviderInstanceId.make(defaultId),
+        );
+        antigravityRoots.add(path.join(profileDir, "antigravity-acp", "conversations"));
+      }
+    }
+
+    // Standalone ~/.gemini/antigravity-cli/conversations when present
+    const standaloneDir = path.join(
+      NodeOS.homedir(),
+      ".gemini",
+      "antigravity-cli",
+      "conversations",
+    );
+    const standaloneExists = yield* fileSystem
+      .exists(standaloneDir)
+      .pipe(Effect.catchCause(() => Effect.succeed(false)));
+    if (standaloneExists) {
+      antigravityRoots.add(standaloneDir);
+    }
+
+    for (const root of antigravityRoots) {
+      dirs.push({ provider: "antigravity" as const, dir: root });
+    }
+
     return dirs;
   });
 
@@ -403,6 +451,9 @@ export const make = Effect.gen(function* () {
     readonly files:
       | readonly { readonly path: string; readonly records: readonly UsageRecord[] }[]
       | null;
+    readonly status?: "ok" | "missing" | "partial" | "failed";
+    readonly malformedRecords?: number;
+    readonly message?: string | null;
   }
 
   const collectDirs = Effect.fn("UsageService.collectDirs")(function* (
@@ -424,6 +475,112 @@ export const make = Effect.gen(function* () {
         scanned.push({ provider, dir, volumeId, files: null });
         continue;
       }
+
+      if (provider === "antigravity") {
+        let dirents: NodeFS.Dirent[];
+        try {
+          dirents = NodeFS.readdirSync(dir, { withFileTypes: true });
+        } catch (err) {
+          scanned.push({
+            provider,
+            dir,
+            volumeId,
+            files: [],
+            status: "failed",
+            malformedRecords: 0,
+            message: err instanceof Error ? err.message : String(err),
+          });
+          continue;
+        }
+
+        const dbFiles = dirents
+          .filter((ent) => (ent.isFile() || ent.isSymbolicLink()) && ent.name.endsWith(".db"))
+          .map((ent) => path.join(dir, ent.name))
+          .sort();
+
+        const parsedFiles: { path: string; records: readonly UsageRecord[] }[] = [];
+        let dirMalformedRows = 0;
+        let hasPartialErrors = false;
+        const errorMessages: string[] = [];
+
+        for (const filePath of dbFiles) {
+          let dbStat: NodeFS.Stats;
+          try {
+            dbStat = NodeFS.statSync(filePath);
+          } catch {
+            continue;
+          }
+
+          // Check companion -wal file for active writes
+          const walPath = `${filePath}-wal`;
+          let walStat: NodeFS.Stats | null = null;
+          try {
+            walStat = NodeFS.statSync(walPath);
+          } catch {
+            // No WAL file
+          }
+
+          const effectiveMtimeMs = Math.max(dbStat.mtimeMs, walStat?.mtimeMs ?? 0);
+          const effectiveSize = dbStat.size + (walStat?.size ?? 0);
+
+          if (effectiveMtimeMs < windowStartMs) {
+            continue;
+          }
+
+          const cached = fileCache.get(filePath);
+          if (
+            cached !== undefined &&
+            cached.provider === "antigravity" &&
+            cached.size === effectiveSize &&
+            cached.mtimeMs === effectiveMtimeMs
+          ) {
+            parsedFiles.push({ path: filePath, records: cached.records });
+            continue;
+          }
+
+          const readResult = yield* Effect.promise(() => readAntigravityDatabase(filePath));
+          dirMalformedRows += readResult.malformedRows;
+          if (
+            readResult.errors.length > 0 ||
+            readResult.truncated ||
+            readResult.malformedRows > 0
+          ) {
+            hasPartialErrors = true;
+            for (const err of readResult.errors) {
+              if (errorMessages.length < 5) errorMessages.push(err);
+            }
+          }
+
+          const recordsWithTimestamp = readResult.records.map((r) =>
+            r.timestampMs > 0 ? r : { ...r, timestampMs: effectiveMtimeMs },
+          );
+
+          fileCache.set(filePath, {
+            size: effectiveSize,
+            mtimeMs: effectiveMtimeMs,
+            provider: "antigravity",
+            records: recordsWithTimestamp,
+            tailRecords: [],
+            position: { resumeOffset: 0, guardLength: 0, guardHash: 0, codexState: null },
+          });
+          cacheDirty = true;
+          parsedFiles.push({ path: filePath, records: recordsWithTimestamp });
+        }
+
+        const status = hasPartialErrors ? "partial" : "ok";
+        const message = errorMessages.length > 0 ? errorMessages.join("; ") : null;
+        scanned.push({
+          provider,
+          dir,
+          volumeId,
+          files: parsedFiles,
+          status,
+          malformedRecords: dirMalformedRows,
+          message,
+        });
+        continue;
+      }
+
       const files = yield* Effect.promise(() =>
         listTranscriptFiles(dir, windowStartMs, fileName === undefined ? undefined : { fileName }),
       );
@@ -508,7 +665,15 @@ export const make = Effect.gen(function* () {
     const livePaths = new Set<string>();
     const walkedRoots: string[] = [];
 
-    for (const { provider, dir, volumeId, files } of scannedDirs) {
+    for (const {
+      provider,
+      dir,
+      volumeId,
+      files,
+      status,
+      malformedRecords,
+      message,
+    } of scannedDirs) {
       if (files === null) {
         sources.push({
           fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
@@ -547,12 +712,12 @@ export const make = Effect.gen(function* () {
 
       sources.push({
         fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
-        status: "ok",
+        status: status ?? "ok",
         scannedFiles,
         skippedFiles,
-        malformedRecords: 0,
+        malformedRecords: malformedRecords ?? 0,
         distinctSessions: sessionIds.size,
-        message: null,
+        message: message ?? null,
       });
     }
 

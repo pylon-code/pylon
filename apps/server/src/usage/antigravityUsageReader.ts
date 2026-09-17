@@ -1,55 +1,88 @@
 // @effect-diagnostics nodeBuiltinImport:off
 /**
- * Bounded read-only reader for native Antigravity SQLite conversation histories.
+ * Bounded read-only reader for native Antigravity session history.
  *
- * Source provenance:
- *   - Pinned release: agy_acp_server_1.1.1
- *   - Installed binary: localharness_external
- *   - SHA256: fdfa915652cdb7ba8085cc8fffed072cbe009251aa2c951aabdda07a8c28a189
+ * Scans on-disk SQLite conversation databases (`*.db`) located under
+ * `<profileDirectory>/antigravity-acp/conversations/` and extracts model token
+ * usage and context window snapshots from `gen_metadata.data` protobuf blobs.
  *
- * Schema extracted via embedded FileDescriptorProto in localharness_external:
- *   - CortexStepGeneratorMetadata:
- *       field 1: chat_model (ChatModelMetadata)
- *       field 4: execution_id (string)
- *   - ChatModelMetadata:
- *       field 3: model (enum int32)
- *       field 4: usage (ModelUsageStats)
- *       field 5: model_cost (float32, unproven USD -> never reported as money)
- *       field 9: chat_start_metadata (ChatStartMetadata)
- *       field 19: response_model (string)
- *       field 21: model_display_name (string)
- *       field 22: response_model_full (string)
- *   - ChatStartMetadata:
- *       field 4: created_at (google.protobuf.Timestamp)
- *       field 10: context_window_metadata (ContextWindowMetadata)
- *   - ContextWindowMetadata:
- *       field 1: estimated_tokens_used (int32)
- *       field 4: max_context_tokens (int32)
- *   - ModelUsageStats:
- *       field 2: input_tokens (uint64, uncached prompt tokens, disjoint from cache)
- *       field 3: output_tokens (uint64, total output including reasoning)
- *       field 4: cache_write_tokens (uint64, cache creation)
- *       field 5: cache_read_tokens (uint64, cached input)
- *       field 9: thinking_output_tokens (uint64, reasoning subset of output)
- *       field 10: response_output_tokens (uint64, visible text subset of output)
+ * Pinned release archive: agy_acp_server_1.1.1
+ * Archive SHA256: fdfa915652cdb7ba8085cc8fffed072cbe009251aa2c951aabdda07a8c28a189
  *
- * Note on double-counting: only `gen_metadata` unique rows are read; `steps.metadata`
- * repeats `model_usage` field 9 and is intentionally not queried.
+ * Schema Provenance (from localharness_external protobuf descriptors):
+ *   table gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER)
+ *   data: CortexStepGeneratorMetadata
+ *     chat_model (field 1, message): ChatModelMetadata
+ *       model (field 3, enum): Model enum
+ *       model_name (field 19, string): e.g. "gemini-3.8-flash"
+ *       usage (field 4, message): ModelUsageStats
+ *         input_tokens (field 2, uint64)
+ *         output_tokens (field 3, uint64)
+ *         cache_write_tokens (field 4, uint64)
+ *         cache_read_tokens (field 5, uint64)
+ *         thinking_output_tokens (field 9, uint64)
+ *         response_output_tokens (field 10, uint64)
+ *       chat_start_metadata (field 9, message): ChatStartMetadata
+ *         timestamp (field 4, message): google.protobuf.Timestamp (seconds: 1, nanos: 2)
+ *         context_window_metadata (field 10, message): ContextWindowMetadata
+ *           estimated_tokens_used (field 1, int32)
+ *           max_context_tokens (field 4, int32)
  *
  * @module antigravityUsageReader
  */
 
 import * as NodeFS from "node:fs";
-import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
-import type { UsageTokenTotals } from "@t3tools/contracts";
-
 /* -------------------------------------------------------------------------- */
-/* Public Types and Interfaces                                                */
+/* Constants & Limits                                                         */
 /* -------------------------------------------------------------------------- */
 
-export type AntigravityUsageProvider = "antigravity";
+export const WIRE_VARINT = 0;
+export const WIRE_FIXED64 = 1;
+export const WIRE_LENGTH_DELIMITED = 2;
+export const WIRE_START_GROUP = 3;
+export const WIRE_END_GROUP = 4;
+export const WIRE_FIXED32 = 5;
+
+/** Maximum bytes permitted for a single gen_metadata row blob (default 512 KiB). */
+export const DEFAULT_MAX_BLOB_SIZE = 512 * 1024;
+
+/** Maximum rows to process per database to guarantee bounded execution. */
+export const DEFAULT_MAX_ROWS_PER_DB = 10_000;
+
+/** Maximum cumulative blob bytes processed per database (default 32 MiB). */
+export const DEFAULT_MAX_TOTAL_BYTES_PER_DB = 32 * 1024 * 1024;
+
+/** Keyset pagination batch size to prevent materializing large query buffers. */
+export const DEFAULT_PAGE_SIZE = 100;
+
+/** Maximum number of SQLite database files scanned per directory. */
+export const DEFAULT_MAX_FILES_PER_DIRECTORY = 500;
+
+/** Maximum global files scanned in a single multi-path request. */
+export const DEFAULT_MAX_TOTAL_FILES = 1_000;
+
+/** Maximum cumulative bytes read across an entire directory (default 256 MiB). */
+export const DEFAULT_MAX_DIRECTORY_TOTAL_BYTES = 256 * 1024 * 1024;
+
+/** Cap recorded error strings to prevent memory inflation. */
+export const MAX_RECORDED_ERRORS = 100;
+
+/** Maximum valid length for model identifier strings. */
+export const MAX_MODEL_NAME_LENGTH = 256;
+
+/* -------------------------------------------------------------------------- */
+/* Types & Interfaces                                                         */
+/* -------------------------------------------------------------------------- */
+
+export interface AntigravityTokenTotals {
+  readonly uncachedInputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly outputTokens: number;
+  readonly reasoningTokens: number;
+}
 
 export interface AntigravityContextSnapshot {
   readonly timestampMs: number;
@@ -59,68 +92,64 @@ export interface AntigravityContextSnapshot {
 }
 
 export interface AntigravityUsageRecord {
-  readonly provider: AntigravityUsageProvider;
+  readonly provider: "antigravity";
+  readonly sessionId: string;
+  readonly genIndex: number;
+  readonly dedupeKey: string;
   readonly timestampMs: number;
   readonly model: string;
-  readonly sessionId: string;
-  readonly totals: UsageTokenTotals;
+  readonly totals: AntigravityTokenTotals;
   readonly reportedCostUsd: null;
-  readonly dedupeKey: string;
-  readonly executionId: string | null;
-  readonly genIndex: number;
-  readonly contextSnapshot: AntigravityContextSnapshot | null;
-}
-
-export interface AntigravityReadOptions {
-  /** Filter out records before this UNIX timestamp in milliseconds. */
-  readonly sinceMs?: number;
-  /** Explicit conversation session ID (defaults to database basename without extension). */
-  readonly sessionId?: string;
-  /** Maximum rows to read per database (bounded resource guard). Default: 50,000. */
-  readonly maxRowsPerDb?: number;
-  /** Cumulative byte budget per database. Default: 100 MiB. */
-  readonly maxTotalBytesPerDb?: number;
-  /** Maximum allowed size for a single protobuf blob in bytes. Default: 10 MiB. */
-  readonly maxBlobSize?: number;
-  /** Maximum protobuf message nesting depth. Default: 10. */
-  readonly maxNestingDepth?: number;
-  /** Whether to include records where all token counts are 0. Default: false. */
-  readonly includeEmptyUsage?: boolean;
+  readonly contextSnapshot?: AntigravityContextSnapshot | undefined;
 }
 
 export interface AntigravityDatabaseReadResult {
-  readonly dbPath: string;
+  readonly databasePath: string;
   readonly sessionId: string;
-  readonly records: ReadonlyArray<AntigravityUsageRecord>;
-  readonly latestContextSnapshot: AntigravityContextSnapshot | null;
   readonly rowsRead: number;
   readonly recordsParsed: number;
   readonly skippedEmptyUsage: number;
   readonly malformedRows: number;
   readonly truncated: boolean;
-  readonly errors: ReadonlyArray<{ readonly rowIdx: number; readonly reason: string }>;
+  readonly records: readonly AntigravityUsageRecord[];
+  readonly latestContextSnapshot?: AntigravityContextSnapshot | undefined;
+  readonly errors: readonly string[];
 }
 
 export interface AntigravityScanResult {
-  readonly records: ReadonlyArray<AntigravityUsageRecord>;
+  readonly directoryPath: string;
+  readonly directoryExists: boolean;
   readonly databasesScanned: number;
   readonly totalRowsRead: number;
   readonly totalRecordsParsed: number;
-  readonly skippedEmptyUsage: number;
-  readonly malformedRows: number;
+  readonly totalMalformedRows: number;
   readonly truncated: boolean;
-  readonly directoryExists: boolean;
-  readonly error?: string;
-  readonly latestContextSnapshot: AntigravityContextSnapshot | null;
-  readonly databaseResults: ReadonlyArray<AntigravityDatabaseReadResult>;
+  readonly records: readonly AntigravityUsageRecord[];
+  readonly latestContextSnapshot?: AntigravityContextSnapshot | undefined;
+  readonly errors: readonly string[];
+  readonly error?: string | undefined;
 }
 
-export type ParseBlobOutcome =
+export interface AntigravityReaderOptions {
+  readonly maxBlobSize?: number;
+  readonly maxRowsPerDb?: number;
+  readonly maxTotalBytesPerDb?: number;
+  readonly pageSize?: number;
+  readonly maxFilesPerDirectory?: number;
+  readonly maxTotalFiles?: number;
+  readonly maxDirectoryTotalBytes?: number;
+}
+
+export interface AntigravityParserOptions {
+  readonly sessionId: string;
+  readonly rowIdx: number;
+}
+
+export type BlobParseOutcome =
   | {
       readonly success: true;
       readonly record: AntigravityUsageRecord | null;
-      readonly contextSnapshot: AntigravityContextSnapshot | null;
-      readonly isEmpty: boolean;
+      readonly contextSnapshot?: AntigravityContextSnapshot | undefined;
     }
   | {
       readonly success: false;
@@ -128,1077 +157,757 @@ export type ParseBlobOutcome =
     };
 
 /* -------------------------------------------------------------------------- */
-/* Constants & Safety Guards                                                  */
+/* Sanitization & Predicates                                                  */
 /* -------------------------------------------------------------------------- */
 
-export const DEFAULT_MAX_BLOB_SIZE = 10 * 1024 * 1024; // 10 MiB
-export const DEFAULT_MAX_TOTAL_BYTES_PER_DB = 100 * 1024 * 1024; // 100 MiB
-export const DEFAULT_MAX_NESTING_DEPTH = 10;
-export const DEFAULT_MAX_ROWS_PER_DATABASE = 50_000;
-const MAX_ALLOWED_ROWS_PER_DB = 200_000;
-const MAX_ALLOWED_BLOB_SIZE = 50 * 1024 * 1024; // 50 MiB
-const MAX_RECORDED_ERRORS = 100;
-
-export const WIRE_VARINT = 0;
-export const WIRE_FIXED64 = 1;
-export const WIRE_LENGTH_DELIMITED = 2;
-export const WIRE_FIXED32 = 5;
-
-const TEXT_DECODER = new TextDecoder("utf-8", { fatal: false });
-
-function normalizeBoundedInt(
-  value: number | undefined,
-  defaultValue: number,
-  minValue: number,
-  maxValue: number,
-): number {
-  if (value === undefined) return defaultValue;
-  if (
-    typeof value !== "number" ||
-    !Number.isFinite(value) ||
-    Number.isNaN(value) ||
-    value < minValue
-  ) {
-    return defaultValue;
+function normalizeBound(value: number | undefined, fallback: number): number {
+  if (value === undefined || Number.isNaN(value) || !Number.isFinite(value) || value <= 0) {
+    return fallback;
   }
-  return Math.min(Math.trunc(value), maxValue);
+  return Math.min(Math.trunc(value), Number.MAX_SAFE_INTEGER);
+}
+
+function strictSafeNonNegativeInteger(n: bigint | number, label: string): number {
+  const bi = typeof n === "bigint" ? n : BigInt(n);
+  if (bi < 0n) {
+    throw new Error(`${label} cannot be negative (got ${bi.toString()})`);
+  }
+  if (bi > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`${label} exceeds MAX_SAFE_INTEGER (got ${bi.toString()})`);
+  }
+  return Number(bi);
+}
+
+interface GenMetadataRow {
+  readonly idx: number;
+  readonly byte_len: number;
+  readonly data: Uint8Array | null;
+}
+
+function isGenMetadataRow(raw: unknown): raw is GenMetadataRow {
+  if (typeof raw !== "object" || raw === null) return false;
+  const r = raw as Record<string, unknown>;
+  const idx = r.idx;
+  const byteLen = r.byte_len;
+  if (typeof idx !== "number" && typeof idx !== "bigint") return false;
+  if (typeof byteLen !== "number" && typeof byteLen !== "bigint") return false;
+
+  const numIdx = Number(idx);
+  const numByteLen = Number(byteLen);
+  if (!Number.isSafeInteger(numIdx) || numIdx < 0) return false;
+  if (!Number.isSafeInteger(numByteLen) || numByteLen < 0) return false;
+
+  const data = r.data;
+  if (data === null || data === undefined) return true;
+  if (data instanceof Uint8Array) return true;
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(data)) return true;
+  return false;
+}
+
+function normalizeRowData(data: unknown): Uint8Array | null {
+  if (data === null || data === undefined) return null;
+  if (data instanceof Uint8Array) return data;
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  return null;
 }
 
 /* -------------------------------------------------------------------------- */
-/* Strict Bounded Protobuf Wire Reader                                        */
+/* Low-Level Protobuf Decoding Helpers                                        */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Decodes a 64-bit varint from a byte buffer with strict byte-length and
- * 10th-byte overflow validation. Rejects negative or >64-bit encodings.
- */
 export function readVarint(
   bytes: Uint8Array,
   offset: number,
 ): { readonly value: bigint; readonly nextOffset: number } {
-  let value = 0n;
+  let result = 0n;
   let shift = 0n;
   let current = offset;
-  let byteCount = 0;
+  let bytesRead = 0;
 
   while (current < bytes.length) {
+    if (bytesRead >= 10) {
+      throw new Error(`Varint overflow: exceeds 10 bytes at byte offset ${offset}`);
+    }
     const byte = bytes[current++];
     if (byte === undefined) {
-      throw new Error(`Unexpected EOF while reading varint at offset ${offset}`);
+      throw new Error(`Unexpected EOF reading varint at byte offset ${current - 1}`);
     }
-    byteCount++;
+    bytesRead++;
 
-    if (byteCount === 10) {
-      // For a 64-bit unsigned integer (9*7 = 63 bits previously read),
-      // the 10th byte can only hold bit 64. Thus, (byte & 0xfe) must be 0
-      // (MSB cannot be set, bits 1..6 cannot be set).
+    if (bytesRead === 10) {
       if ((byte & 0xfe) !== 0) {
         throw new Error(
-          `Varint overflow at offset ${offset}: 10th byte 0x${byte.toString(16)} exceeds 64-bit limit`,
+          `Varint overflow: 10th byte has invalid high bits 0x${byte.toString(16)} at offset ${current - 1}`,
         );
       }
-      value |= BigInt(byte & 0x01) << shift;
-      return { value, nextOffset: current };
+      result |= BigInt(byte & 0x01) << shift;
+      return { value: result, nextOffset: current };
     }
 
-    value |= BigInt(byte & 0x7f) << shift;
+    result |= BigInt(byte & 0x7f) << shift;
     if ((byte & 0x80) === 0) {
-      return { value, nextOffset: current };
+      return { value: result, nextOffset: current };
     }
     shift += 7n;
   }
 
-  throw new Error(`Unexpected EOF while reading varint at offset ${offset}`);
+  throw new Error(`Unexpected EOF reading varint at byte offset ${current}`);
 }
 
-export interface ProtobufRawField {
+export function* iterateProtobufFields(bytes: Uint8Array): Generator<{
   readonly tag: number;
   readonly wireType: number;
-  readonly varintValue: bigint | null;
-  readonly bytesValue: Uint8Array | null;
-  readonly offset: number;
-  readonly length: number;
-}
+  readonly varintValue?: bigint;
+  readonly bytesValue?: Uint8Array;
+}> {
+  let offset = 0;
+  const len = bytes.length;
 
-/**
- * Iterates top-level fields within a protobuf byte slice. Skips unknown tags of
- * valid wire types (0, 1, 2, 5) safely. Rejects tag 0 and invalid wire types.
- */
-export function* iterateProtobufFields(
-  bytes: Uint8Array,
-  start = 0,
-  end = bytes.length,
-): Generator<ProtobufRawField, void, unknown> {
-  let offset = start;
-  while (offset < end) {
-    const { value: key, nextOffset } = readVarint(bytes, offset);
-    offset = nextOffset;
-    const tag = Number(key >> 3n);
-    const wireType = Number(key & 7n);
+  while (offset < len) {
+    const keyResult = readVarint(bytes, offset);
+    offset = keyResult.nextOffset;
+    const tag = Number(keyResult.value >> 3n);
+    const wireType = Number(keyResult.value & 0x07n);
 
     if (tag <= 0) {
-      throw new Error(`Invalid protobuf field tag ${tag} at offset ${offset}`);
+      throw new Error(`Invalid protobuf field tag 0 at offset ${offset}`);
     }
 
-    if (wireType === WIRE_VARINT) {
-      const { value, nextOffset: endOffset } = readVarint(bytes, offset);
-      yield {
-        tag,
-        wireType,
-        varintValue: value,
-        bytesValue: null,
-        offset,
-        length: endOffset - offset,
-      };
-      offset = endOffset;
-    } else if (wireType === WIRE_FIXED64) {
-      if (offset + 8 > end) {
-        throw new Error(`Fixed64 field ${tag} truncated at offset ${offset}`);
-      }
-      yield {
-        tag,
-        wireType,
-        varintValue: null,
-        bytesValue: bytes.subarray(offset, offset + 8),
-        offset,
-        length: 8,
-      };
-      offset += 8;
-    } else if (wireType === WIRE_LENGTH_DELIMITED) {
-      const { value: lengthBig, nextOffset: payloadOffset } = readVarint(bytes, offset);
-      if (lengthBig < 0n || lengthBig > BigInt(Number.MAX_SAFE_INTEGER)) {
-        throw new Error(`Invalid length ${lengthBig} for field ${tag} at offset ${offset}`);
-      }
-      const length = Number(lengthBig);
-      if (payloadOffset + length > end) {
-        throw new Error(
-          `Length-delimited field ${tag} (length ${length}) exceeds boundary at offset ${offset}`,
-        );
-      }
-      yield {
-        tag,
-        wireType,
-        varintValue: null,
-        bytesValue: bytes.subarray(payloadOffset, payloadOffset + length),
-        offset: payloadOffset,
-        length,
-      };
-      offset = payloadOffset + length;
-    } else if (wireType === WIRE_FIXED32) {
-      if (offset + 4 > end) {
-        throw new Error(`Fixed32 field ${tag} truncated at offset ${offset}`);
-      }
-      yield {
-        tag,
-        wireType,
-        varintValue: null,
-        bytesValue: bytes.subarray(offset, offset + 4),
-        offset,
-        length: 4,
-      };
-      offset += 4;
-    } else {
-      throw new Error(`Unsupported wire type ${wireType} for tag ${tag} at offset ${offset}`);
-    }
-  }
-}
-
-/**
- * Validates non-negative safe integers without clamping. Rejects negatives,
- * NaNs, non-finites, and values > Number.MAX_SAFE_INTEGER.
- */
-function strictSafeNonNegativeInteger(
-  value: bigint | number | null | undefined,
-  fieldName: string,
-): number {
-  if (value == null) return 0;
-  if (typeof value === "bigint") {
-    if (value < 0n) {
-      throw new Error(`Field '${fieldName}' cannot be negative: ${value}`);
-    }
-    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new Error(`Field '${fieldName}' exceeds MAX_SAFE_INTEGER (${value})`);
-    }
-    return Number(value);
-  }
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || Number.isNaN(value) || value < 0) {
-      throw new Error(`Field '${fieldName}' is not a valid non-negative finite integer: ${value}`);
-    }
-    if (value > Number.MAX_SAFE_INTEGER) {
-      throw new Error(`Field '${fieldName}' exceeds MAX_SAFE_INTEGER (${value})`);
-    }
-    return Math.trunc(value);
-  }
-  throw new Error(`Field '${fieldName}' has invalid type ${typeof value}`);
-}
-
-/* -------------------------------------------------------------------------- */
-/* Protobuf Message Decoders                                                  */
-/* -------------------------------------------------------------------------- */
-
-interface DecodedTimestamp {
-  readonly seconds: bigint;
-  readonly nanos: number;
-}
-
-function decodeTimestamp(bytes: Uint8Array): DecodedTimestamp {
-  let seconds: bigint | null = null;
-  let nanos = 0;
-
-  for (const field of iterateProtobufFields(bytes)) {
-    if (field.tag === 1) {
-      if (field.wireType !== WIRE_VARINT || field.varintValue == null) {
-        throw new Error(
-          `Invalid wire type ${field.wireType} for Timestamp.seconds (expected varint)`,
-        );
-      }
-      seconds = BigInt.asIntN(64, field.varintValue);
-    } else if (field.tag === 2) {
-      if (field.wireType !== WIRE_VARINT || field.varintValue == null) {
-        throw new Error(
-          `Invalid wire type ${field.wireType} for Timestamp.nanos (expected varint)`,
-        );
-      }
-      nanos = Number(BigInt.asIntN(32, field.varintValue));
-    }
-  }
-
-  if (seconds === null) {
-    throw new Error("Missing required field 'seconds' in google.protobuf.Timestamp");
-  }
-  if (nanos < 0 || nanos > 999_999_999) {
-    throw new Error(`Invalid nanos ${nanos} in google.protobuf.Timestamp`);
-  }
-
-  return { seconds, nanos };
-}
-
-interface DecodedContextWindowMetadata {
-  readonly estimatedTokensUsed: number;
-  readonly maxContextTokens: number;
-}
-
-function decodeContextWindowMetadata(bytes: Uint8Array): DecodedContextWindowMetadata {
-  let estimatedTokensUsed = 0;
-  let maxContextTokens = 0;
-
-  for (const field of iterateProtobufFields(bytes)) {
-    if (field.tag === 1) {
-      if (field.wireType !== WIRE_VARINT || field.varintValue == null) {
-        throw new Error(
-          `Invalid wire type ${field.wireType} for ContextWindowMetadata.estimated_tokens_used`,
-        );
-      }
-      estimatedTokensUsed = strictSafeNonNegativeInteger(
-        field.varintValue,
-        "ContextWindowMetadata.estimated_tokens_used",
-      );
-    } else if (field.tag === 4) {
-      if (field.wireType !== WIRE_VARINT || field.varintValue == null) {
-        throw new Error(
-          `Invalid wire type ${field.wireType} for ContextWindowMetadata.max_context_tokens`,
-        );
-      }
-      maxContextTokens = strictSafeNonNegativeInteger(
-        field.varintValue,
-        "ContextWindowMetadata.max_context_tokens",
-      );
-    }
-  }
-
-  return { estimatedTokensUsed, maxContextTokens };
-}
-
-interface DecodedChatStartMetadata {
-  readonly createdAt: DecodedTimestamp | null;
-  readonly contextWindow: DecodedContextWindowMetadata | null;
-}
-
-function decodeChatStartMetadata(bytes: Uint8Array): DecodedChatStartMetadata {
-  let createdAt: DecodedTimestamp | null = null;
-  let contextWindow: DecodedContextWindowMetadata | null = null;
-
-  for (const field of iterateProtobufFields(bytes)) {
-    if (field.tag === 4) {
-      if (field.wireType !== WIRE_LENGTH_DELIMITED || !field.bytesValue) {
-        throw new Error(
-          `Invalid wire type ${field.wireType} for ChatStartMetadata.created_at (expected length-delimited)`,
-        );
-      }
-      createdAt = decodeTimestamp(field.bytesValue);
-    } else if (field.tag === 10) {
-      if (field.wireType !== WIRE_LENGTH_DELIMITED || !field.bytesValue) {
-        throw new Error(
-          `Invalid wire type ${field.wireType} for ChatStartMetadata.context_window_metadata (expected length-delimited)`,
-        );
-      }
-      contextWindow = decodeContextWindowMetadata(field.bytesValue);
-    }
-  }
-
-  return { createdAt, contextWindow };
-}
-
-interface DecodedModelUsageStats {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly cacheWriteTokens: number;
-  readonly cacheReadTokens: number;
-  readonly thinkingOutputTokens: number;
-  readonly responseOutputTokens: number;
-}
-
-function decodeModelUsageStats(bytes: Uint8Array): DecodedModelUsageStats {
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheWriteTokens = 0;
-  let cacheReadTokens = 0;
-  let thinkingOutputTokens = 0;
-  let responseOutputTokens = 0;
-
-  for (const field of iterateProtobufFields(bytes)) {
-    switch (field.tag) {
-      case 2:
-        if (field.wireType !== WIRE_VARINT || field.varintValue == null) {
-          throw new Error(`Invalid wire type ${field.wireType} for ModelUsageStats.input_tokens`);
-        }
-        inputTokens = strictSafeNonNegativeInteger(field.varintValue, "input_tokens");
+    switch (wireType) {
+      case WIRE_VARINT: {
+        const varintRes = readVarint(bytes, offset);
+        offset = varintRes.nextOffset;
+        yield { tag, wireType, varintValue: varintRes.value };
         break;
-      case 3:
-        if (field.wireType !== WIRE_VARINT || field.varintValue == null) {
-          throw new Error(`Invalid wire type ${field.wireType} for ModelUsageStats.output_tokens`);
-        }
-        outputTokens = strictSafeNonNegativeInteger(field.varintValue, "output_tokens");
+      }
+      case WIRE_FIXED64: {
+        if (offset + 8 > len) throw new Error("Unexpected EOF reading fixed64");
+        offset += 8;
+        yield { tag, wireType };
         break;
-      case 4:
-        if (field.wireType !== WIRE_VARINT || field.varintValue == null) {
+      }
+      case WIRE_LENGTH_DELIMITED: {
+        const lengthRes = readVarint(bytes, offset);
+        offset = lengthRes.nextOffset;
+        const fieldLength = strictSafeNonNegativeInteger(
+          lengthRes.value,
+          `Field length for tag ${tag}`,
+        );
+        if (offset + fieldLength > len) {
           throw new Error(
-            `Invalid wire type ${field.wireType} for ModelUsageStats.cache_write_tokens`,
+            `Unexpected EOF: length-delimited field tag ${tag} requires ${fieldLength} bytes, but only ${len - offset} remain`,
           );
         }
-        cacheWriteTokens = strictSafeNonNegativeInteger(field.varintValue, "cache_write_tokens");
+        const slice = bytes.subarray(offset, offset + fieldLength);
+        offset += fieldLength;
+        yield { tag, wireType, bytesValue: slice };
         break;
-      case 5:
-        if (field.wireType !== WIRE_VARINT || field.varintValue == null) {
-          throw new Error(
-            `Invalid wire type ${field.wireType} for ModelUsageStats.cache_read_tokens`,
-          );
-        }
-        cacheReadTokens = strictSafeNonNegativeInteger(field.varintValue, "cache_read_tokens");
+      }
+      case WIRE_FIXED32: {
+        if (offset + 4 > len) throw new Error("Unexpected EOF reading fixed32");
+        offset += 4;
+        yield { tag, wireType };
         break;
-      case 9:
-        if (field.wireType !== WIRE_VARINT || field.varintValue == null) {
-          throw new Error(
-            `Invalid wire type ${field.wireType} for ModelUsageStats.thinking_output_tokens`,
-          );
-        }
-        thinkingOutputTokens = strictSafeNonNegativeInteger(
-          field.varintValue,
-          "thinking_output_tokens",
-        );
-        break;
-      case 10:
-        if (field.wireType !== WIRE_VARINT || field.varintValue == null) {
-          throw new Error(
-            `Invalid wire type ${field.wireType} for ModelUsageStats.response_output_tokens`,
-          );
-        }
-        responseOutputTokens = strictSafeNonNegativeInteger(
-          field.varintValue,
-          "response_output_tokens",
-        );
-        break;
+      }
+      case WIRE_START_GROUP:
+      case WIRE_END_GROUP:
       default:
-        // Unknown or sensitive fields (e.g. tag 8 response_header) safely skipped
-        break;
+        throw new Error(
+          `Unsupported wire type ${wireType} for tag ${tag} at byte offset ${offset}`,
+        );
     }
   }
-
-  return {
-    inputTokens,
-    outputTokens,
-    cacheWriteTokens,
-    cacheReadTokens,
-    thinkingOutputTokens,
-    responseOutputTokens,
-  };
-}
-
-interface DecodedChatModelMetadata {
-  readonly modelName: string | null;
-  readonly usageStats: DecodedModelUsageStats | null;
-  readonly chatStart: DecodedChatStartMetadata | null;
-}
-
-function decodeChatModelMetadata(
-  bytes: Uint8Array,
-  depth: number,
-  maxDepth: number,
-): DecodedChatModelMetadata {
-  if (depth > maxDepth) {
-    throw new Error(`Max protobuf nesting depth ${maxDepth} exceeded in ChatModelMetadata`);
-  }
-
-  let responseModel: string | null = null;
-  let responseModelFull: string | null = null;
-  let modelDisplayName: string | null = null;
-  let modelEnum: number | null = null;
-  let usageStats: DecodedModelUsageStats | null = null;
-  let chatStart: DecodedChatStartMetadata | null = null;
-
-  for (const field of iterateProtobufFields(bytes)) {
-    switch (field.tag) {
-      case 3:
-        if (field.wireType !== WIRE_VARINT || field.varintValue == null) {
-          throw new Error(`Invalid wire type ${field.wireType} for ChatModelMetadata.model`);
-        }
-        modelEnum = Number(BigInt.asIntN(32, field.varintValue));
-        break;
-      case 4:
-        if (field.wireType !== WIRE_LENGTH_DELIMITED || !field.bytesValue) {
-          throw new Error(`Invalid wire type ${field.wireType} for ChatModelMetadata.usage`);
-        }
-        usageStats = decodeModelUsageStats(field.bytesValue);
-        break;
-      case 5:
-        // model_cost: fixed32 float. Provenance: not confirmed USD, intentionally unparsed.
-        if (field.wireType !== WIRE_FIXED32) {
-          throw new Error(`Invalid wire type ${field.wireType} for ChatModelMetadata.model_cost`);
-        }
-        break;
-      case 9:
-        if (field.wireType !== WIRE_LENGTH_DELIMITED || !field.bytesValue) {
-          throw new Error(
-            `Invalid wire type ${field.wireType} for ChatModelMetadata.chat_start_metadata`,
-          );
-        }
-        chatStart = decodeChatStartMetadata(field.bytesValue);
-        break;
-      case 19:
-        if (field.wireType !== WIRE_LENGTH_DELIMITED || !field.bytesValue) {
-          throw new Error(
-            `Invalid wire type ${field.wireType} for ChatModelMetadata.response_model`,
-          );
-        }
-        responseModel = TEXT_DECODER.decode(field.bytesValue).trim();
-        break;
-      case 21:
-        if (field.wireType !== WIRE_LENGTH_DELIMITED || !field.bytesValue) {
-          throw new Error(
-            `Invalid wire type ${field.wireType} for ChatModelMetadata.model_display_name`,
-          );
-        }
-        modelDisplayName = TEXT_DECODER.decode(field.bytesValue).trim();
-        break;
-      case 22:
-        if (field.wireType !== WIRE_LENGTH_DELIMITED || !field.bytesValue) {
-          throw new Error(
-            `Invalid wire type ${field.wireType} for ChatModelMetadata.response_model_full`,
-          );
-        }
-        responseModelFull = TEXT_DECODER.decode(field.bytesValue).trim();
-        break;
-      default:
-        // Skip prompts, messages, tool configs, etc.
-        break;
-    }
-  }
-
-  // Strictly identify model: NEVER guess or default to gemini-3.8-flash.
-  let modelName: string | null = null;
-  if (responseModel && responseModel.length > 0) {
-    modelName = responseModel;
-  } else if (responseModelFull && responseModelFull.length > 0) {
-    modelName = responseModelFull;
-  } else if (modelDisplayName && modelDisplayName.length > 0) {
-    modelName = modelDisplayName;
-  } else if (modelEnum != null && modelEnum >= 0) {
-    modelName = `antigravity-enum-${modelEnum}`;
-  }
-
-  return { modelName, usageStats, chatStart };
 }
 
 /* -------------------------------------------------------------------------- */
-/* Blob Parser Implementation                                                 */
+/* High-Level Protobuf Blob Parser                                            */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Pure parser for a single `gen_metadata.data` protobuf BLOB.
- *
- * Enforces strict limits, wire validation, non-negative bounds, and the
- * invariant: `reasoningTokens <= outputTokens`.
- */
 export function parseAntigravityGenMetadataBlob(
-  data: Uint8Array,
-  context: {
-    readonly sessionId: string;
-    readonly rowIdx: number;
-    readonly maxBlobSize?: number;
-    readonly maxNestingDepth?: number;
-    readonly includeEmptyUsage?: boolean;
-  },
-): ParseBlobOutcome {
-  const maxBlobSize = normalizeBoundedInt(
-    context.maxBlobSize,
-    DEFAULT_MAX_BLOB_SIZE,
-    1024,
-    MAX_ALLOWED_BLOB_SIZE,
-  );
-  const maxNestingDepth = normalizeBoundedInt(
-    context.maxNestingDepth,
-    DEFAULT_MAX_NESTING_DEPTH,
-    1,
-    50,
-  );
-  const rowIdx = context.rowIdx;
-
-  if (data.length > maxBlobSize) {
-    return {
-      success: false,
-      reason: `Payload size ${data.length} bytes exceeds maximum allowed ${maxBlobSize} bytes`,
-    };
-  }
-
+  blob: Uint8Array,
+  options: AntigravityParserOptions,
+): BlobParseOutcome {
   try {
-    let chatModelMetadata: DecodedChatModelMetadata | null = null;
-    let executionId: string | null = null;
+    let chatModelBytes: Uint8Array | null = null;
 
-    for (const field of iterateProtobufFields(data)) {
+    // 1. CortexStepGeneratorMetadata
+    for (const field of iterateProtobufFields(blob)) {
       if (field.tag === 1) {
         if (field.wireType !== WIRE_LENGTH_DELIMITED || !field.bytesValue) {
-          throw new Error(
-            `Invalid wire type ${field.wireType} for CortexStepGeneratorMetadata.chat_model`,
-          );
+          return {
+            success: false,
+            reason: `Invalid wire type ${field.wireType} for CortexStepGeneratorMetadata.chat_model (tag 1)`,
+          };
         }
-        chatModelMetadata = decodeChatModelMetadata(field.bytesValue, 1, maxNestingDepth);
+        chatModelBytes = field.bytesValue;
+      }
+    }
+
+    if (!chatModelBytes) {
+      return { success: true, record: null };
+    }
+
+    // 2. ChatModelMetadata
+    let modelName: string | null = null;
+    let modelEnum: number | null = null;
+    let usageBytes: Uint8Array | null = null;
+    let chatStartBytes: Uint8Array | null = null;
+
+    const textDecoder = new TextDecoder("utf-8", { fatal: true });
+
+    for (const field of iterateProtobufFields(chatModelBytes)) {
+      if (field.tag === 3) {
+        if (field.wireType !== WIRE_VARINT || field.varintValue === undefined) {
+          return {
+            success: false,
+            reason: `Invalid wire type ${field.wireType} for ChatModelMetadata.model (tag 3)`,
+          };
+        }
+        modelEnum = strictSafeNonNegativeInteger(field.varintValue, "ChatModelMetadata.model");
       } else if (field.tag === 4) {
         if (field.wireType !== WIRE_LENGTH_DELIMITED || !field.bytesValue) {
-          throw new Error(
-            `Invalid wire type ${field.wireType} for CortexStepGeneratorMetadata.execution_id`,
-          );
+          return {
+            success: false,
+            reason: `Invalid wire type ${field.wireType} for ChatModelMetadata.usage (tag 4)`,
+          };
         }
-        executionId = TEXT_DECODER.decode(field.bytesValue).trim();
+        usageBytes = field.bytesValue;
+      } else if (field.tag === 9) {
+        if (field.wireType !== WIRE_LENGTH_DELIMITED || !field.bytesValue) {
+          return {
+            success: false,
+            reason: `Invalid wire type ${field.wireType} for ChatModelMetadata.chat_start_metadata (tag 9)`,
+          };
+        }
+        chatStartBytes = field.bytesValue;
+      } else if (field.tag === 19) {
+        if (field.wireType !== WIRE_LENGTH_DELIMITED || !field.bytesValue) {
+          return {
+            success: false,
+            reason: `Invalid wire type ${field.wireType} for ChatModelMetadata.model_name (tag 19)`,
+          };
+        }
+        const decoded = textDecoder.decode(field.bytesValue).trim();
+        if (decoded.length > 0 && decoded.length <= MAX_MODEL_NAME_LENGTH) {
+          modelName = decoded;
+        }
       }
     }
 
-    if (!chatModelMetadata) {
-      return {
-        success: false,
-        reason: "Missing required chat_model field (tag 1) in CortexStepGeneratorMetadata",
-      };
+    // Determine model string
+    let resolvedModel: string | null = null;
+    if (modelName && modelName.length > 0) {
+      resolvedModel = modelName;
+    } else if (modelEnum !== null && modelEnum > 0) {
+      resolvedModel = `antigravity-enum-${modelEnum}`;
     }
 
-    if (!chatModelMetadata.modelName) {
-      return {
-        success: false,
-        reason: "Missing model identification in ChatModelMetadata (cannot attribute usage)",
-      };
-    }
+    // 3. ChatStartMetadata -> google.protobuf.Timestamp & ContextWindowMetadata
+    let timestampMs: number | null = null;
+    let estimatedTokensUsed: number | null = null;
+    let maxContextTokens: number | null = null;
 
-    const chatStart = chatModelMetadata.chatStart;
-    if (!chatStart?.createdAt) {
-      return {
-        success: false,
-        reason: "Missing created_at timestamp in chat_start_metadata",
-      };
-    }
-
-    const sec = chatStart.createdAt.seconds;
-    if (sec <= 0n || sec > 253402300799n) {
-      return {
-        success: false,
-        reason: `Timestamp seconds ${sec} outside safe positive range`,
-      };
-    }
-
-    const timestampMs = Math.trunc(Number(sec) * 1000 + chatStart.createdAt.nanos / 1_000_000);
-    if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
-      return {
-        success: false,
-        reason: `Computed timestampMs ${timestampMs} is not a valid positive safe integer`,
-      };
-    }
-
-    // Context window snapshot (real native provider estimate)
-    let contextSnapshot: AntigravityContextSnapshot | null = null;
-    if (chatStart.contextWindow) {
-      const { estimatedTokensUsed, maxContextTokens } = chatStart.contextWindow;
-      if (estimatedTokensUsed > 0 || maxContextTokens > 0) {
-        contextSnapshot = {
-          timestampMs,
-          estimatedTokensUsed,
-          maxContextTokens,
-          genIndex: rowIdx,
-        };
+    if (chatStartBytes) {
+      for (const field of iterateProtobufFields(chatStartBytes)) {
+        if (field.tag === 4 && field.bytesValue) {
+          let seconds = 0n;
+          let nanos = 0;
+          for (const tsField of iterateProtobufFields(field.bytesValue)) {
+            if (tsField.tag === 1 && tsField.varintValue !== undefined) {
+              seconds = tsField.varintValue;
+            } else if (tsField.tag === 2 && tsField.varintValue !== undefined) {
+              nanos = strictSafeNonNegativeInteger(tsField.varintValue, "Timestamp.nanos");
+            }
+          }
+          if (seconds > 0n) {
+            const secNum = strictSafeNonNegativeInteger(seconds, "Timestamp.seconds");
+            timestampMs = secNum * 1000 + Math.floor(nanos / 1_000_000);
+          }
+        } else if (field.tag === 10 && field.bytesValue) {
+          for (const cwField of iterateProtobufFields(field.bytesValue)) {
+            if (cwField.tag === 1 && cwField.varintValue !== undefined) {
+              estimatedTokensUsed = strictSafeNonNegativeInteger(
+                cwField.varintValue,
+                "ContextWindowMetadata.estimated_tokens_used",
+              );
+            } else if (cwField.tag === 4 && cwField.varintValue !== undefined) {
+              maxContextTokens = strictSafeNonNegativeInteger(
+                cwField.varintValue,
+                "ContextWindowMetadata.max_context_tokens",
+              );
+            }
+          }
+        }
       }
     }
 
-    const usage = chatModelMetadata.usageStats;
-    const totals: UsageTokenTotals = {
-      uncachedInputTokens: usage ? usage.inputTokens : 0,
-      cachedInputTokens: usage ? usage.cacheReadTokens : 0,
-      cacheCreationTokens: usage ? usage.cacheWriteTokens : 0,
-      outputTokens: usage ? usage.outputTokens : 0,
-      reasoningTokens: usage ? usage.thinkingOutputTokens : 0,
-    };
-
-    // Invariant: reasoning tokens are a subset of output tokens
-    if (totals.reasoningTokens > totals.outputTokens) {
-      return {
-        success: false,
-        reason: `Invariant violation: reasoningTokens (${totals.reasoningTokens}) > outputTokens (${totals.outputTokens})`,
+    // Construct context snapshot if valid capacity (> 0) is reported
+    let contextSnapshot: AntigravityContextSnapshot | undefined;
+    if (
+      timestampMs !== null &&
+      maxContextTokens !== null &&
+      maxContextTokens > 0 &&
+      estimatedTokensUsed !== null &&
+      estimatedTokensUsed >= 0
+    ) {
+      contextSnapshot = {
+        timestampMs,
+        estimatedTokensUsed,
+        maxContextTokens,
+        genIndex: options.rowIdx,
       };
     }
 
-    const isAllZero =
-      totals.uncachedInputTokens === 0 &&
-      totals.cachedInputTokens === 0 &&
-      totals.cacheCreationTokens === 0 &&
-      totals.outputTokens === 0 &&
-      totals.reasoningTokens === 0;
+    if (!usageBytes) {
+      return { success: true, record: null, contextSnapshot };
+    }
 
-    // Use supplied database/conversation session ID, NOT per-generation execution ID
-    const conversationSessionId = context.sessionId;
-    const dedupeKey = `antigravity:${conversationSessionId}:${rowIdx}`;
+    // 4. ModelUsageStats
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheWriteTokens = 0;
+    let cacheReadTokens = 0;
+    let thinkingOutputTokens = 0;
+    let responseOutputTokens = 0;
 
-    if (isAllZero && !context.includeEmptyUsage) {
+    for (const field of iterateProtobufFields(usageBytes)) {
+      switch (field.tag) {
+        case 2:
+        case 3:
+        case 4:
+        case 5:
+        case 9:
+        case 10: {
+          if (field.wireType !== WIRE_VARINT || field.varintValue === undefined) {
+            return {
+              success: false,
+              reason: `Invalid wire type ${field.wireType} for ModelUsageStats tag ${field.tag}`,
+            };
+          }
+          const val = strictSafeNonNegativeInteger(
+            field.varintValue,
+            `ModelUsageStats tag ${field.tag}`,
+          );
+          if (field.tag === 2) inputTokens = val;
+          else if (field.tag === 3) outputTokens = val;
+          else if (field.tag === 4) cacheWriteTokens = val;
+          else if (field.tag === 5) cacheReadTokens = val;
+          else if (field.tag === 9) thinkingOutputTokens = val;
+          else if (field.tag === 10) responseOutputTokens = val;
+          break;
+        }
+        default:
+          // Unknown or non-token fields (e.g. tag 7 message_id string) safely skipped
+          break;
+      }
+    }
+
+    // Invariant checks
+    if (thinkingOutputTokens > outputTokens) {
       return {
-        success: true,
-        record: null,
-        contextSnapshot,
-        isEmpty: true,
+        success: false,
+        reason: `Invariant violation: reasoningTokens (${thinkingOutputTokens}) > outputTokens (${outputTokens})`,
+      };
+    }
+
+    if (
+      inputTokens === 0 &&
+      outputTokens === 0 &&
+      cacheWriteTokens === 0 &&
+      cacheReadTokens === 0 &&
+      thinkingOutputTokens === 0 &&
+      responseOutputTokens === 0
+    ) {
+      return { success: true, record: null, contextSnapshot };
+    }
+
+    if (!resolvedModel) {
+      return {
+        success: false,
+        reason: `Missing model identification: neither model name nor valid enum present for row ${options.rowIdx}`,
       };
     }
 
     const record: AntigravityUsageRecord = {
       provider: "antigravity",
-      timestampMs,
-      model: chatModelMetadata.modelName,
-      sessionId: conversationSessionId,
-      totals,
+      sessionId: options.sessionId,
+      genIndex: options.rowIdx,
+      dedupeKey: `antigravity:${options.sessionId}:${options.rowIdx}`,
+      timestampMs: timestampMs ?? 0,
+      model: resolvedModel,
+      totals: {
+        uncachedInputTokens: inputTokens,
+        cachedInputTokens: cacheReadTokens,
+        cacheCreationTokens: cacheWriteTokens,
+        outputTokens,
+        reasoningTokens: thinkingOutputTokens,
+      },
       reportedCostUsd: null,
-      dedupeKey,
-      executionId: executionId && executionId.length > 0 ? executionId : null,
-      genIndex: rowIdx,
       contextSnapshot,
     };
 
-    return {
-      success: true,
-      record,
-      contextSnapshot,
-      isEmpty: isAllZero,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    return { success: true, record, contextSnapshot };
+  } catch (err) {
     return {
       success: false,
-      reason: `Protobuf decode error: ${message}`,
+      reason: err instanceof Error ? err.message : String(err),
     };
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/* Read-Only SQLite Abstraction (Bounded Memory & Safe Streaming)             */
+/* Database File Reader (Read-Only & Bounded Keyset Pagination)              */
 /* -------------------------------------------------------------------------- */
 
-interface SqliteRowStreamItem {
-  readonly idx: number;
-  readonly byteLen: number;
-  readonly data: Uint8Array | null;
-}
-
-interface SqliteReadOnlyDb {
-  iterateGenMetadata(maxBlobSize: number, queryLimit: number): Iterable<SqliteRowStreamItem>;
-  close(): void;
-}
-
-async function openReadOnlyDatabase(dbPath: string): Promise<SqliteReadOnlyDb> {
-  const isBun = typeof process !== "undefined" && process.versions?.bun !== undefined;
-
-  const sql = `
-    SELECT
-      idx,
-      COALESCE(length(data), 0) AS byte_len,
-      CASE WHEN length(data) <= ? THEN data ELSE NULL END AS data
-    FROM gen_metadata
-    ORDER BY idx ASC
-    LIMIT ?
-  `;
-
-  if (isBun) {
-    const { Database } = await import("bun:sqlite");
-    const db = new Database(dbPath, { readonly: true });
-    try {
-      db.run("PRAGMA busy_timeout = 3000;");
-    } catch {
-      // ignore pragma error
-    }
-    return {
-      iterateGenMetadata(maxBlobSize: number, queryLimit: number) {
-        const stmt = db.query(sql);
-        const rows = stmt.all(maxBlobSize, queryLimit) as Array<{
-          idx: number;
-          byte_len: number;
-          data: unknown;
-        }>;
-        return rows.map((r) => ({
-          idx: Number(r.idx),
-          byteLen: Number(r.byte_len),
-          data:
-            r.data == null
-              ? null
-              : r.data instanceof Uint8Array
-                ? r.data
-                : new Uint8Array(r.data as ArrayBuffer),
-        }));
-      },
-      close() {
-        db.close();
-      },
-    };
-  } else {
-    const { DatabaseSync } = await import("node:sqlite");
-    const db = new DatabaseSync(dbPath, { readOnly: true, open: true });
-    try {
-      db.exec("PRAGMA busy_timeout = 3000;");
-    } catch {
-      // ignore pragma error
-    }
-    return {
-      iterateGenMetadata(maxBlobSize: number, queryLimit: number) {
-        const stmt = db.prepare(sql);
-        if (typeof stmt.iterate === "function") {
-          const rawIter = stmt.iterate(maxBlobSize, queryLimit) as Iterable<{
-            idx: number;
-            byte_len: number;
-            data: unknown;
-          }>;
-          return {
-            *[Symbol.iterator]() {
-              for (const r of rawIter) {
-                yield {
-                  idx: Number(r.idx),
-                  byteLen: Number(r.byte_len),
-                  data:
-                    r.data == null
-                      ? null
-                      : r.data instanceof Uint8Array
-                        ? r.data
-                        : new Uint8Array(r.data as ArrayBuffer),
-                };
-              }
-            },
-          };
-        } else {
-          const rows = stmt.all(maxBlobSize, queryLimit) as Array<{
-            idx: number;
-            byte_len: number;
-            data: unknown;
-          }>;
-          return rows.map((r) => ({
-            idx: Number(r.idx),
-            byteLen: Number(r.byte_len),
-            data:
-              r.data == null
-                ? null
-                : r.data instanceof Uint8Array
-                  ? r.data
-                  : new Uint8Array(r.data as ArrayBuffer),
-          }));
-        }
-      },
-      close() {
-        db.close();
-      },
-    };
-  }
-}
-
-/* -------------------------------------------------------------------------- */
-/* High-Level Reader APIs                                                     */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Reads an Antigravity SQLite database strictly in read-only mode with bounded
- * memory, streaming row iteration, and SQL-level blob size guards.
- */
 export async function readAntigravityDatabase(
-  dbPath: string,
-  options: AntigravityReadOptions = {},
+  databasePath: string,
+  options?: AntigravityReaderOptions,
 ): Promise<AntigravityDatabaseReadResult> {
-  const maxRows = normalizeBoundedInt(
-    options.maxRowsPerDb,
-    DEFAULT_MAX_ROWS_PER_DATABASE,
-    1,
-    MAX_ALLOWED_ROWS_PER_DB,
-  );
-  const maxTotalBytes = normalizeBoundedInt(
-    options.maxTotalBytesPerDb,
-    DEFAULT_MAX_TOTAL_BYTES_PER_DB,
-    1024,
-    500 * 1024 * 1024,
-  );
-  const maxBlobSize = normalizeBoundedInt(
-    options.maxBlobSize,
-    DEFAULT_MAX_BLOB_SIZE,
-    1024,
-    MAX_ALLOWED_BLOB_SIZE,
-  );
-  const maxNestingDepth = normalizeBoundedInt(
-    options.maxNestingDepth,
-    DEFAULT_MAX_NESTING_DEPTH,
-    1,
-    50,
-  );
-  const sinceMs = options.sinceMs;
-  const includeEmptyUsage = options.includeEmptyUsage ?? false;
+  const maxBlobSize = normalizeBound(options?.maxBlobSize, DEFAULT_MAX_BLOB_SIZE);
+  const maxRowsPerDb = normalizeBound(options?.maxRowsPerDb, DEFAULT_MAX_ROWS_PER_DB);
+  const maxTotalBytes = normalizeBound(options?.maxTotalBytesPerDb, DEFAULT_MAX_TOTAL_BYTES_PER_DB);
+  const pageSize = normalizeBound(options?.pageSize, DEFAULT_PAGE_SIZE);
 
-  const resolvedSessionId =
-    options.sessionId?.trim() || NodePath.basename(dbPath).replace(/\.db$/, "");
-
-  let db: SqliteReadOnlyDb | null = null;
-  try {
-    db = await openReadOnlyDatabase(dbPath);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    return {
-      dbPath,
-      sessionId: resolvedSessionId,
-      records: [],
-      latestContextSnapshot: null,
-      rowsRead: 0,
-      recordsParsed: 0,
-      skippedEmptyUsage: 0,
-      malformedRows: 1,
-      truncated: false,
-      errors: [{ rowIdx: -1, reason: `Failed to open SQLite database read-only: ${reason}` }],
-    };
-  }
-
-  // Query maxRows + 1 to detect row budget truncation
-  const queryLimit = maxRows + 1;
-  let rowIterable: Iterable<SqliteRowStreamItem>;
-  try {
-    rowIterable = db.iterateGenMetadata(maxBlobSize, queryLimit);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    try {
-      db.close();
-    } catch {
-      // ignore close error
-    }
-    return {
-      dbPath,
-      sessionId: resolvedSessionId,
-      records: [],
-      latestContextSnapshot: null,
-      rowsRead: 0,
-      recordsParsed: 0,
-      skippedEmptyUsage: 0,
-      malformedRows: 0,
-      truncated: false,
-      errors: [
-        {
-          rowIdx: -1,
-          reason: `Failed to query gen_metadata (table missing or unreadable): ${reason}`,
-        },
-      ],
-    };
-  }
-
+  const sessionId = NodePath.basename(databasePath, ".db");
   const records: AntigravityUsageRecord[] = [];
-  let latestContextSnapshot: AntigravityContextSnapshot | null = null;
+  const errors: string[] = [];
+
   let rowsRead = 0;
+  let recordsParsed = 0;
   let skippedEmptyUsage = 0;
   let malformedRows = 0;
-  let truncated = false;
   let cumulativeBytes = 0;
-  const errors: Array<{ readonly rowIdx: number; readonly reason: string }> = [];
+  let truncated = false;
+  let latestContextSnapshot: AntigravityContextSnapshot | undefined;
 
-  function recordError(rowIdx: number, reason: string) {
-    malformedRows += 1;
-    if (errors.length < MAX_RECORDED_ERRORS) {
-      errors.push({ rowIdx, reason });
-    }
-  }
+  let db: any = null;
+  const isBun = typeof process !== "undefined" && process.versions?.bun !== undefined;
 
   try {
-    for (const row of rowIterable) {
-      rowsRead += 1;
+    if (isBun) {
+      const { Database } = await import("bun:sqlite");
+      db = new Database(databasePath, { readonly: true });
+      db.run("PRAGMA busy_timeout = 3000;");
+    } else {
+      const { DatabaseSync } = await import("node:sqlite");
+      db = new DatabaseSync(databasePath, { readOnly: true });
+      db.exec("PRAGMA busy_timeout = 3000;");
+    }
 
-      // Detect truncation if row count exceeds maxRows
-      if (rowsRead > maxRows) {
+    // Check if table exists
+    const checkStmt = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='gen_metadata' LIMIT 1;",
+    );
+    const tableExists = isBun ? checkStmt.get() : checkStmt.get();
+    if (!tableExists) {
+      return {
+        databasePath,
+        sessionId,
+        rowsRead: 0,
+        recordsParsed: 0,
+        skippedEmptyUsage: 0,
+        malformedRows: 0,
+        truncated: false,
+        records: [],
+        errors: [],
+      };
+    }
+
+    // Keyset pagination avoids materializing unbounded rows in memory
+    const pageStmt = db.prepare(`
+      SELECT
+        idx,
+        COALESCE(length(data), 0) AS byte_len,
+        CASE WHEN length(data) <= ? THEN data ELSE NULL END AS data
+      FROM gen_metadata
+      WHERE idx > ?
+      ORDER BY idx ASC
+      LIMIT ?;
+    `);
+
+    let lastIdx = -1;
+    let hasMore = true;
+
+    while (hasMore) {
+      if (rowsRead >= maxRowsPerDb) {
         truncated = true;
         break;
       }
 
-      cumulativeBytes += row.byteLen;
-      if (cumulativeBytes > maxTotalBytes) {
+      const limit = Math.min(pageSize, maxRowsPerDb - rowsRead + 1);
+      let rows: unknown[] = [];
+
+      try {
+        if (isBun) {
+          rows = pageStmt.all(maxBlobSize, lastIdx, limit);
+        } else {
+          rows = pageStmt.all(maxBlobSize, lastIdx, limit);
+        }
+      } catch (stepErr) {
+        if (errors.length < MAX_RECORDED_ERRORS) {
+          errors.push(
+            `Database step error at lastIdx ${lastIdx}: ${stepErr instanceof Error ? stepErr.message : String(stepErr)}`,
+          );
+        }
         truncated = true;
-        recordError(
-          row.idx,
-          `Cumulative byte budget ${maxTotalBytes} bytes exceeded at row ${row.idx}`,
-        );
         break;
       }
 
-      if (row.byteLen === 0) {
-        skippedEmptyUsage += 1;
-        continue;
+      if (rows.length === 0) {
+        hasMore = false;
+        break;
       }
 
-      // Check if blob exceeded maxBlobSize in SQL (returned NULL by CASE expression)
-      if (row.data === null && row.byteLen > maxBlobSize) {
-        recordError(
-          row.idx,
-          `Row blob size ${row.byteLen} bytes exceeds maxBlobSize ${maxBlobSize} bytes`,
-        );
-        continue;
-      }
-
-      if (!row.data) {
-        skippedEmptyUsage += 1;
-        continue;
-      }
-
-      const outcome = parseAntigravityGenMetadataBlob(row.data, {
-        sessionId: resolvedSessionId,
-        rowIdx: row.idx,
-        maxBlobSize,
-        maxNestingDepth,
-        includeEmptyUsage,
-      });
-
-      if (outcome.success) {
-        if (outcome.contextSnapshot) {
-          latestContextSnapshot = outcome.contextSnapshot;
+      for (const rawRow of rows) {
+        if (rowsRead >= maxRowsPerDb) {
+          truncated = true;
+          hasMore = false;
+          break;
         }
 
-        if (outcome.record) {
-          if (sinceMs == null || outcome.record.timestampMs >= sinceMs) {
-            records.push(outcome.record);
+        if (!isGenMetadataRow(rawRow)) {
+          malformedRows++;
+          rowsRead++;
+          continue;
+        }
+
+        const rowIdx = Number(rawRow.idx);
+        lastIdx = rowIdx;
+        rowsRead++;
+
+        const byteLen = Number(rawRow.byte_len);
+        cumulativeBytes += byteLen;
+        if (cumulativeBytes > maxTotalBytes) {
+          truncated = true;
+          hasMore = false;
+          break;
+        }
+
+        const blob = normalizeRowData(rawRow.data);
+        if (byteLen > maxBlobSize || blob === null) {
+          malformedRows++;
+          if (errors.length < MAX_RECORDED_ERRORS) {
+            errors.push(`Row ${rowIdx} exceeds maxBlobSize (${byteLen} > ${maxBlobSize})`);
           }
-        } else if (outcome.isEmpty) {
-          skippedEmptyUsage += 1;
+          continue;
         }
-      } else {
-        recordError(row.idx, outcome.reason);
+
+        const parseResult = parseAntigravityGenMetadataBlob(blob, { sessionId, rowIdx });
+
+        if (!parseResult.success) {
+          malformedRows++;
+          if (errors.length < MAX_RECORDED_ERRORS) {
+            errors.push(`Row ${rowIdx}: ${parseResult.reason}`);
+          }
+          continue;
+        }
+
+        if (parseResult.contextSnapshot) {
+          if (
+            !latestContextSnapshot ||
+            parseResult.contextSnapshot.timestampMs >= latestContextSnapshot.timestampMs
+          ) {
+            latestContextSnapshot = parseResult.contextSnapshot;
+          }
+        }
+
+        if (parseResult.record) {
+          records.push(parseResult.record);
+          recordsParsed++;
+        } else {
+          skippedEmptyUsage++;
+        }
+      }
+
+      if (rows.length < limit) {
+        hasMore = false;
       }
     }
+  } catch (dbErr) {
+    if (errors.length < MAX_RECORDED_ERRORS) {
+      errors.push(
+        `SQLite read error for ${databasePath}: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`,
+      );
+    }
+    truncated = true;
   } finally {
-    try {
-      db.close();
-    } catch {
-      // ignore close error
+    if (db) {
+      try {
+        db.close();
+      } catch {
+        // ignore close errors
+      }
     }
   }
 
   return {
-    dbPath,
-    sessionId: resolvedSessionId,
-    records,
-    latestContextSnapshot,
-    rowsRead: truncated && rowsRead > maxRows ? maxRows : rowsRead,
-    recordsParsed: records.length,
+    databasePath,
+    sessionId,
+    rowsRead,
+    recordsParsed,
     skippedEmptyUsage,
     malformedRows,
     truncated,
+    records,
+    latestContextSnapshot,
     errors,
   };
 }
 
-/**
- * Scans an explicit directory for `*.db` files. Explicitly returns `directoryExists: false`
- * and error details if the directory is unreadable or missing.
- */
-export async function readAntigravityDirectory(
-  dirPath: string,
-  options: AntigravityReadOptions = {},
+/* -------------------------------------------------------------------------- */
+/* Multi-Database Directory & Path Aggregator                                 */
+/* -------------------------------------------------------------------------- */
+
+export async function readAntigravityPaths(
+  databasePaths: readonly string[],
+  options?: AntigravityReaderOptions,
 ): Promise<AntigravityScanResult> {
-  let entries: NodeFS.Dirent[];
-  try {
-    entries = await NodeFSP.readdir(dirPath, { withFileTypes: true });
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    return {
-      records: [],
-      databasesScanned: 0,
-      totalRowsRead: 0,
-      totalRecordsParsed: 0,
-      skippedEmptyUsage: 0,
-      malformedRows: 0,
-      truncated: false,
-      directoryExists: false,
-      error: `Failed to read directory '${dirPath}': ${reason}`,
-      latestContextSnapshot: null,
-      databaseResults: [],
-    };
+  const maxFiles = normalizeBound(options?.maxTotalFiles, DEFAULT_MAX_TOTAL_FILES);
+  const maxDirBytes = normalizeBound(
+    options?.maxDirectoryTotalBytes,
+    DEFAULT_MAX_DIRECTORY_TOTAL_BYTES,
+  );
+
+  const records: AntigravityUsageRecord[] = [];
+  const errors: string[] = [];
+  let totalRowsRead = 0;
+  let totalRecordsParsed = 0;
+  let totalMalformedRows = 0;
+  let databasesScanned = 0;
+  let cumulativeBytesAcrossFiles = 0;
+  let truncated = false;
+  let latestContextSnapshot: AntigravityContextSnapshot | undefined;
+
+  const seenPaths = new Set<string>();
+
+  for (const dbPath of databasePaths) {
+    if (seenPaths.has(dbPath)) continue;
+    seenPaths.add(dbPath);
+
+    if (databasesScanned >= maxFiles) {
+      truncated = true;
+      break;
+    }
+
+    try {
+      const stat = NodeFS.statSync(dbPath);
+      cumulativeBytesAcrossFiles += stat.size;
+      if (cumulativeBytesAcrossFiles > maxDirBytes) {
+        truncated = true;
+        break;
+      }
+    } catch {
+      // File stat error, let readAntigravityDatabase handle it
+    }
+
+    const res = await readAntigravityDatabase(dbPath, options);
+    databasesScanned++;
+    totalRowsRead += res.rowsRead;
+    totalRecordsParsed += res.recordsParsed;
+    totalMalformedRows += res.malformedRows;
+    if (res.truncated) truncated = true;
+
+    for (const r of res.records) {
+      records.push(r);
+    }
+    for (const e of res.errors) {
+      if (errors.length < MAX_RECORDED_ERRORS) errors.push(e);
+    }
+
+    if (res.latestContextSnapshot) {
+      if (
+        !latestContextSnapshot ||
+        res.latestContextSnapshot.timestampMs >= latestContextSnapshot.timestampMs
+      ) {
+        latestContextSnapshot = res.latestContextSnapshot;
+      }
+    }
   }
 
-  const dbPaths = entries
-    .filter((e) => (e.isFile() || e.isSymbolicLink()) && e.name.endsWith(".db"))
-    .map((e) => NodePath.join(dirPath, e.name))
-    .sort();
-
-  const scanResult = await readAntigravityPaths(dbPaths, options);
   return {
-    ...scanResult,
+    directoryPath: "",
     directoryExists: true,
+    databasesScanned,
+    totalRowsRead,
+    totalRecordsParsed,
+    totalMalformedRows,
+    truncated,
+    records,
+    latestContextSnapshot,
+    errors,
   };
 }
 
-/**
- * Reads a list of explicit database paths, aggregating records, status counters,
- * and the latest valid context snapshot across databases.
- */
-export async function readAntigravityPaths(
-  paths: ReadonlyArray<string>,
-  options: AntigravityReadOptions = {},
+export async function readAntigravityDirectory(
+  directoryPath: string,
+  options?: AntigravityReaderOptions,
 ): Promise<AntigravityScanResult> {
-  const databaseResults: AntigravityDatabaseReadResult[] = [];
-  const allRecords: AntigravityUsageRecord[] = [];
-  let totalRowsRead = 0;
-  let totalRecordsParsed = 0;
-  let skippedEmptyUsage = 0;
-  let malformedRows = 0;
-  let anyTruncated = false;
-  let latestContextSnapshot: AntigravityContextSnapshot | null = null;
+  try {
+    if (!NodeFS.existsSync(directoryPath)) {
+      return {
+        directoryPath,
+        directoryExists: false,
+        databasesScanned: 0,
+        totalRowsRead: 0,
+        totalRecordsParsed: 0,
+        totalMalformedRows: 0,
+        truncated: false,
+        records: [],
+        errors: [],
+        error: `Directory does not exist: ${directoryPath}`,
+      };
+    }
 
-  for (const path of paths) {
-    const result = await readAntigravityDatabase(path, options);
-    databaseResults.push(result);
-    totalRowsRead += result.rowsRead;
-    totalRecordsParsed += result.recordsParsed;
-    skippedEmptyUsage += result.skippedEmptyUsage;
-    malformedRows += result.malformedRows;
-    if (result.truncated) {
-      anyTruncated = true;
+    const stat = NodeFS.statSync(directoryPath);
+    if (!stat.isDirectory()) {
+      return {
+        directoryPath,
+        directoryExists: false,
+        databasesScanned: 0,
+        totalRowsRead: 0,
+        totalRecordsParsed: 0,
+        totalMalformedRows: 0,
+        truncated: false,
+        records: [],
+        errors: [],
+        error: `Path is not a directory: ${directoryPath}`,
+      };
     }
-    if (
-      result.latestContextSnapshot &&
-      (!latestContextSnapshot ||
-        result.latestContextSnapshot.timestampMs >= latestContextSnapshot.timestampMs)
-    ) {
-      latestContextSnapshot = result.latestContextSnapshot;
+
+    const maxFiles = normalizeBound(options?.maxFilesPerDirectory, DEFAULT_MAX_FILES_PER_DIRECTORY);
+    const dirents = NodeFS.readdirSync(directoryPath, { withFileTypes: true });
+    const dbPaths: string[] = [];
+
+    for (const ent of dirents) {
+      if ((ent.isFile() || ent.isSymbolicLink()) && ent.name.endsWith(".db")) {
+        dbPaths.push(NodePath.join(directoryPath, ent.name));
+        if (dbPaths.length >= maxFiles) break;
+      }
     }
-    for (const record of result.records) {
-      allRecords.push(record);
-    }
+
+    dbPaths.sort();
+    const scanRes = await readAntigravityPaths(dbPaths, options);
+
+    return {
+      ...scanRes,
+      directoryPath,
+      directoryExists: true,
+      truncated: scanRes.truncated || dirents.length > maxFiles,
+    };
+  } catch (dirErr) {
+    return {
+      directoryPath,
+      directoryExists: false,
+      databasesScanned: 0,
+      totalRowsRead: 0,
+      totalRecordsParsed: 0,
+      totalMalformedRows: 0,
+      truncated: false,
+      records: [],
+      errors: [dirErr instanceof Error ? dirErr.message : String(dirErr)],
+      error: `Failed to read directory: ${dirErr instanceof Error ? dirErr.message : String(dirErr)}`,
+    };
   }
-
-  return {
-    records: allRecords,
-    databasesScanned: databaseResults.length,
-    totalRowsRead,
-    totalRecordsParsed,
-    skippedEmptyUsage,
-    malformedRows,
-    truncated: anyTruncated,
-    directoryExists: true,
-    latestContextSnapshot,
-    databaseResults,
-  };
 }

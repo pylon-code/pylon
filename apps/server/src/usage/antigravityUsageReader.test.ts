@@ -21,7 +21,7 @@ import {
 /* Test-Only Synthetic Protobuf Serializer                                    */
 /* -------------------------------------------------------------------------- */
 
-interface SyntheticGenMetadataInput {
+export interface SyntheticGenMetadataInput {
   readonly executionId?: string;
   readonly modelName?: string;
   readonly modelEnum?: number;
@@ -76,7 +76,7 @@ function encodeField(tag: number, wireType: number, payload: Uint8Array): Uint8A
   return concatBuffers([key, payload]);
 }
 
-function encodeSyntheticGenMetadataBlob(input: SyntheticGenMetadataInput): Uint8Array {
+export function encodeSyntheticGenMetadataBlob(input: SyntheticGenMetadataInput): Uint8Array {
   const textEncoder = new TextEncoder();
 
   // 1. google.protobuf.Timestamp
@@ -266,9 +266,8 @@ describe("antigravityUsageReader", () => {
       expect(outcome.record).not.toBeNull();
       const rec = outcome.record!;
 
-      // Session ID must be the supplied conversation ID, NOT the per-generation execution ID
+      // Session ID must be the supplied conversation ID
       expect(rec.sessionId).toBe("conv-session-fixed");
-      expect(rec.executionId).toBe("exec-transient-123");
       expect(rec.genIndex).toBe(9);
       expect(rec.dedupeKey).toBe("antigravity:conv-session-fixed:9");
       expect(rec.reportedCostUsd).toBeNull();
@@ -289,6 +288,49 @@ describe("antigravityUsageReader", () => {
         genIndex: 9,
       });
       expect(rec.contextSnapshot).toEqual(outcome.contextSnapshot);
+    });
+
+    it("requires maxContextTokens > 0 to produce a snapshot; permits estimatedTokensUsed 0", () => {
+      // 0 maxContextTokens -> missing capacity -> no snapshot
+      const noCapBlob = encodeSyntheticGenMetadataBlob({
+        modelName: "gemini-3.8-flash",
+        timestampSeconds: 1789402266n,
+        inputTokens: 100,
+        outputTokens: 50,
+        estimatedTokensUsed: 0,
+        maxContextTokens: 0,
+      });
+      const outcomeNoCap = parseAntigravityGenMetadataBlob(noCapBlob, {
+        sessionId: "sess-1",
+        rowIdx: 0,
+      });
+      expect(outcomeNoCap.success).toBe(true);
+      if (outcomeNoCap.success) {
+        expect(outcomeNoCap.contextSnapshot).toBeUndefined();
+      }
+
+      // Valid capacity with estimatedTokensUsed = 0 -> valid snapshot
+      const validZeroUsedBlob = encodeSyntheticGenMetadataBlob({
+        modelName: "gemini-3.8-flash",
+        timestampSeconds: 1789402266n,
+        inputTokens: 100,
+        outputTokens: 50,
+        estimatedTokensUsed: 0,
+        maxContextTokens: 128000,
+      });
+      const outcomeZeroUsed = parseAntigravityGenMetadataBlob(validZeroUsedBlob, {
+        sessionId: "sess-1",
+        rowIdx: 0,
+      });
+      expect(outcomeZeroUsed.success).toBe(true);
+      if (outcomeZeroUsed.success) {
+        expect(outcomeZeroUsed.contextSnapshot).toEqual({
+          timestampMs: 1789402266000,
+          estimatedTokensUsed: 0,
+          maxContextTokens: 128000,
+          genIndex: 0,
+        });
+      }
     });
 
     it("NEVER defaults unknown model to gemini-3.8-flash; rejects missing model as malformed", () => {
@@ -370,7 +412,6 @@ describe("antigravityUsageReader", () => {
         modelName: "gemini-3.8-flash",
         timestampSeconds: 1789402266n,
         extraFields: [
-          // Replace ModelUsageStats with invalid token count
           {
             tag: 4,
             wireType: WIRE_LENGTH_DELIMITED,
@@ -427,7 +468,6 @@ describe("antigravityUsageReader", () => {
 
       // Row 0: Valid row with context snapshot
       const blob0 = encodeSyntheticGenMetadataBlob({
-        executionId: "exec-000",
         modelName: "gemini-3.8-flash",
         timestampSeconds: 1789402266n,
         inputTokens: 1000,
@@ -438,7 +478,6 @@ describe("antigravityUsageReader", () => {
 
       // Row 1: Valid row with updated context snapshot
       const blob1 = encodeSyntheticGenMetadataBlob({
-        executionId: "exec-001",
         modelName: "gemini-3.8-pro",
         timestampSeconds: 1789402270n,
         inputTokens: 2000,
@@ -452,7 +491,6 @@ describe("antigravityUsageReader", () => {
 
       // Row 3: Valid row
       const blob3 = encodeSyntheticGenMetadataBlob({
-        executionId: "exec-002",
         modelName: "gemini-3.8-pro",
         timestampSeconds: 1789402280n,
         inputTokens: 3000,
@@ -471,7 +509,7 @@ describe("antigravityUsageReader", () => {
       dbInstance.close();
 
       // Read with default options
-      const result = await readAntigravityDatabase(tempDbPath);
+      const result = await readAntigravityDatabase(tempDbPath, { pageSize: 2 });
       expect(result.rowsRead).toBe(4);
       expect(result.recordsParsed).toBe(3);
       expect(result.malformedRows).toBe(1);
@@ -491,8 +529,8 @@ describe("antigravityUsageReader", () => {
       expect(result.records[1]?.dedupeKey).toBe("antigravity:conv-uuid-456:1");
       expect(result.records[2]?.dedupeKey).toBe("antigravity:conv-uuid-456:3");
 
-      // Verify readAntigravityPaths aggregates multiple paths
-      const pathsResult = await readAntigravityPaths([tempDbPath]);
+      // Verify readAntigravityPaths aggregates multiple paths and deduplicates
+      const pathsResult = await readAntigravityPaths([tempDbPath, tempDbPath]);
       expect(pathsResult.databasesScanned).toBe(1);
       expect(pathsResult.totalRecordsParsed).toBe(3);
       expect(pathsResult.latestContextSnapshot?.estimatedTokensUsed).toBe(6500);
@@ -526,7 +564,7 @@ describe("antigravityUsageReader", () => {
 
       expect(scanRes.directoryExists).toBe(false);
       expect(scanRes.error).toBeDefined();
-      expect(scanRes.error).toContain("Failed to read directory");
+      expect(scanRes.error).toContain("Directory does not exist");
       expect(scanRes.databasesScanned).toBe(0);
     });
   });
