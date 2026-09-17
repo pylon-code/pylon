@@ -234,6 +234,14 @@ const DEFAULT_SNAP_SHOT_SHORTCUT: SnapShotShortcut = {
   kind: "both-shift-keys",
 };
 
+export const NotificationMode = Schema.Literals([
+  "off",
+  "notifications",
+  "sound",
+  "notifications-and-sound",
+]);
+export type NotificationMode = typeof NotificationMode.Type;
+
 /**
  * A user-chosen font family (a single name or a comma-separated list). Empty
  * means "use the app default"; clients compose their own fallback stacks.
@@ -284,6 +292,10 @@ export const LoadBalancingWeights = Schema.Record(
 export const DiffColorScheme = Schema.Literals(["red-green", "blue-orange"]);
 
 export const ClientSettingsSchema = Schema.Struct({
+  notificationMode: NotificationMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed("off" as const)),
+  ),
+  inAppNotificationsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   diffColorScheme: DiffColorScheme.pipe(
     Schema.withDecodingDefault(Effect.succeed("red-green" as const)),
   ),
@@ -340,6 +352,20 @@ export const ClientSettingsSchema = Schema.Struct({
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   confirmThreadUnpin: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Desktop-only: native OS notifications for agent attention. Per device by
+  // design — a notification preference belongs to the machine the user sits
+  // at — so these are deliberately absent from SHARED_SERVER_SETTING_KEYS.
+  // Browser clients ignore them.
+  desktopNotificationsEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
+  desktopNotificationSoundEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  desktopNotifyOnApproval: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  desktopNotifyOnInput: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  desktopNotifyOnCompletion: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  desktopNotifyOnFailure: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -1667,6 +1693,8 @@ export class ServerSettingsUpdateConflictError extends Schema.TaggedError<Server
 }
 
 export const ClientSettingsPatch = Schema.Struct({
+  notificationMode: Schema.optionalKey(NotificationMode),
+  inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
   diffColorScheme: Schema.optionalKey(DiffColorScheme),
   loadBalancingEnabled: Schema.optionalKey(Schema.Boolean),
   loadBalancingWeights: Schema.optionalKey(LoadBalancingWeights),
@@ -1684,6 +1712,12 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   confirmThreadUnpin: Schema.optionalKey(Schema.Boolean),
+  desktopNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
+  desktopNotificationSoundEnabled: Schema.optionalKey(Schema.Boolean),
+  desktopNotifyOnApproval: Schema.optionalKey(Schema.Boolean),
+  desktopNotifyOnInput: Schema.optionalKey(Schema.Boolean),
+  desktopNotifyOnCompletion: Schema.optionalKey(Schema.Boolean),
+  desktopNotifyOnFailure: Schema.optionalKey(Schema.Boolean),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   diffLayout: Schema.optionalKey(DiffLayout),
   environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),

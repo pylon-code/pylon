@@ -157,3 +157,21 @@ These efforts may have no commit in the review range. Check due external-state t
 | WATCH-1 | [#114](https://github.com/pylon-code/pylon/issues/114) — Prime provider parity                                                                                | #8097 (PR, open and ready for review) — restore composer tasks after relaunch | 2026-08-29 | Rechecked 2026-09-06. Upstream #9653 fixes the OpenCode task gap tracked by closed issue #5760. Pylon adopted it with the approval/Stop dependency series in #283 and closed task-only #178 as superseded. #8097 remains open/unmerged and overlaps Pylon #137, which retains waiting steps. | Revisit only if #8097 merges and diverges from Pylon's approach: `gh pr view 8097 --repo pingdotgg/t3code --json state,mergedAt`. Review any migration against Pylon's current manifest; never reuse upstream numbering.                                                                      | Do not port #8097 wholesale. Consider a plan-activity index only if current query plans demonstrate a need. Review unrelated `turn.aborted` changes separately. |
 | WATCH-2 | [`#174`](https://github.com/pylon-code/pylon/issues/174) — cross-thread messaging design; context in [`#114`](https://github.com/pylon-code/pylon/issues/114) | `#6573` (PR) — authenticated cross-thread MCP tools                           | 2026-08-29 | **Premise gone.** Closed unmerged 2026-08-28 without adding permission splitting or bounded read-only tools. Nothing upstream to compare against today.                                                                                                                                      | A replacement lands. Check `git log --oneline <cursor>..t3code-upstream/main -- apps/server/src/mcp/toolkits/` and `gh pr list --repo pingdotgg/t3code --search 'mcp thread tools' --state merged`. Not before 2026-11-01 — upstream abandoned this once and a rewrite is not a weekly event. | Compare with Pylon's scoped read-only context/checkpoint MCP design before adoption. Do not revive `#6573` itself.                                              |
 | WATCH-3 | [`#177`](https://github.com/pylon-code/pylon/issues/177) — scheduled-run safety contract; context in [`#114`](https://github.com/pylon-code/pylon/issues/114) | `#7966` (issue) / `#7986` (PR) — server-side scheduled agent runs             | 2026-08-29 | **Premise gone.** Both closed 2026-08-28; `#7986` closed unmerged. The implementation Pylon declined to cherry-pick no longer exists upstream.                                                                                                                                               | A replacement scheduling implementation merges. Check `git log --oneline <cursor>..t3code-upstream/main -- apps/server/src/orchestration/Layers/TaskFireReactor.ts apps/server/src/orchestration/Layers/OrchestrationReactor.ts`. Not before 2026-11-01.                                      | Fresh review only. Pylon's own canonical scheduled-turn ownership question in `#114` is unblocked by upstream's retreat, not answered by it.                    |
+
+## Notification integration / bounded upstream `6d1d549441`
+
+The maintainer selected a combined implementation after comparing Pylon #424 and
+upstream notifications. ALGORITHM-0's ten original #424 commits retain their Git
+authorship and provide the native delivery layer, per-event preferences, settings,
+and tests. The integration adds upstream browser notifications, sounds, in-app
+notices, and badges while preserving Pylon completion semantics and desktop defaults.
+
+Sources: `0e0ddaeedf30698bec131caf040a8e8d7b2e3f37`,
+`42b6bcc6f59bd0369377746b0f2ef370c275b624`,
+`6e5e986f15b3cbec3588646ddf216f00b4301785`.
+[Implementation PR #583](https://github.com/pylon-code/pylon/pull/583) records verification and attribution. Intentional
+adaptations: native Electron transport on desktop, Pylon's default-on desktop
+categories, opt-in custom sound and browser/in-app delivery, foreground-turn
+completion semantics, live-snapshot fencing, bounded native lifetime and
+acknowledged renderer navigation. No mobile push or background daemon delivery.
+The review cursor stays unchanged; unrelated sources in this range remain unclassified.

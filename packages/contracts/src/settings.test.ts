@@ -1009,3 +1009,76 @@ describe("agent delegation access", () => {
     }
   });
 });
+
+describe("ClientSettings desktop notification preferences", () => {
+  it("defaults every desktop notification preference on", () => {
+    const settings = decodeClientSettings({});
+    expect(settings.desktopNotificationsEnabled).toBe(true);
+    expect(settings.desktopNotifyOnApproval).toBe(true);
+    expect(settings.desktopNotifyOnInput).toBe(true);
+    expect(settings.desktopNotifyOnCompletion).toBe(true);
+    expect(settings.desktopNotifyOnFailure).toBe(true);
+  });
+
+  it("decodes a settings payload written before the feature, new fields taking defaults", () => {
+    const settings = decodeClientSettings({ confirmQuit: false, wordWrap: false });
+    expect(settings.confirmQuit).toBe("direct");
+    expect(settings.wordWrap).toBe(false);
+    expect(settings.desktopNotificationsEnabled).toBe(true);
+  });
+
+  it("accepts desktop notification fields in a client settings patch", () => {
+    expect(decodeClientSettingsPatch({ desktopNotifyOnCompletion: false })).toEqual({
+      desktopNotifyOnCompletion: false,
+    });
+  });
+});
+
+describe("ClientSettings notifications", () => {
+  it("requires opt-in when existing settings omit notification preferences", () => {
+    expect(decodeClientSettings({}).notificationMode).toBe("off");
+    expect(decodeClientSettings({}).inAppNotificationsEnabled).toBe(false);
+    expect(decodeClientSettingsPatch({})).not.toHaveProperty("inAppNotificationsEnabled");
+    expect(decodeClientSettingsPatch({})).not.toHaveProperty("notificationMode");
+  });
+
+  it.each([true, false])(
+    "round-trips in-app notifications set to %s",
+    (inAppNotificationsEnabled) => {
+      const settings = decodeClientSettings({ inAppNotificationsEnabled });
+      expect(encodeClientSettings(settings).inAppNotificationsEnabled).toBe(
+        inAppNotificationsEnabled,
+      );
+      expect(
+        decodeClientSettingsPatch({ inAppNotificationsEnabled }).inAppNotificationsEnabled,
+      ).toBe(inAppNotificationsEnabled);
+    },
+  );
+
+  it.each(["true", 1, null])(
+    "rejects an invalid in-app notification preference %s",
+    (inAppNotificationsEnabled) => {
+      expect(() => decodeClientSettings({ inAppNotificationsEnabled })).toThrow();
+      expect(() => decodeClientSettingsPatch({ inAppNotificationsEnabled })).toThrow();
+    },
+  );
+
+  it.each(["off", "notifications", "sound", "notifications-and-sound"])(
+    "round-trips the %s mode",
+    (notificationMode) => {
+      const settings = decodeClientSettings({ notificationMode });
+      expect(encodeClientSettings(settings).notificationMode).toBe(notificationMode);
+      expect(decodeClientSettingsPatch({ notificationMode }).notificationMode).toBe(
+        notificationMode,
+      );
+    },
+  );
+
+  it.each(["always", true, null])(
+    "rejects unsupported notification mode %s",
+    (notificationMode) => {
+      expect(() => decodeClientSettings({ notificationMode })).toThrow();
+      expect(() => decodeClientSettingsPatch({ notificationMode })).toThrow();
+    },
+  );
+});
