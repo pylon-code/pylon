@@ -24,6 +24,17 @@ Linux to start a new thread and immediately open another draft. The next draft k
 mode and base branch you selected. With **New worktree**, each background submission creates its
 own worktree.
 
+### Follow worktree setup
+
+A new worktree shows its setup progress before the agent starts. Open the progress details to see
+checkout and setup script output. You can cancel while setup is running; cancellation waits for
+cleanup before the task can be retried. Setup history remains visible when you reopen the thread.
+If the server restarts during setup, the task is marked interrupted so you can retry it.
+
+Project setup scripts normally run in the background. Enable **Wait for it to finish before the agent starts** for a script
+when the agent needs its results before starting. A failed required script prevents the first turn
+from starting.
+
 ## Pin and arrange threads
 
 Pin a thread from its menu, or press `mod+shift+p` in the open thread, to keep it above your active

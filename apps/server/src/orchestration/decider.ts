@@ -1702,27 +1702,39 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const admissionDeadlineAt = DateTime.formatIso(
         DateTime.add(admissionObservedAt, { milliseconds: 60_000 }),
       );
-      const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
-        ...(yield* withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        })),
-        type: "thread.message-sent",
-        payload: {
-          threadId: command.threadId,
-          messageId: command.message.messageId,
-          role: "user",
-          text: command.message.text,
-          attachments: command.message.attachments,
-          ...(command.message.context !== undefined ? { context: command.message.context } : {}),
-          turnId: null,
-          streaming: false,
-          createdAt: command.createdAt,
-          updatedAt: command.createdAt,
-        },
-      };
+      // A worktree bootstrap persists the message ahead of the turn with
+      // `thread.message.user.append`; the turn then only references it.
+      const persistedUserMessage = targetThread.messages.find(
+        (message) =>
+          message.id === command.message.messageId &&
+          message.role === "user" &&
+          message.turnId === null,
+      );
+      const userMessageEvent: Omit<OrchestrationEvent, "sequence"> | null = persistedUserMessage
+        ? null
+        : {
+            ...(yield* withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            })),
+            type: "thread.message-sent",
+            payload: {
+              threadId: command.threadId,
+              messageId: command.message.messageId,
+              role: "user",
+              text: command.message.text,
+              attachments: command.message.attachments,
+              ...(command.message.context !== undefined
+                ? { context: command.message.context }
+                : {}),
+              turnId: null,
+              streaming: false,
+              createdAt: command.createdAt,
+              updatedAt: command.createdAt,
+            },
+          };
       // Steering needs an admitted turn to steer into. A session can sit in
       // "running" with no active turn (Claude reports system/status between
       // turns) or with a turn the provider opened on its own (Claude continuing
@@ -1757,7 +1769,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt: command.createdAt,
           commandId: command.commandId,
         })),
-        causationEventId: userMessageEvent.eventId,
+        ...(userMessageEvent ? { causationEventId: userMessageEvent.eventId } : {}),
         type: "thread.turn-start-requested",
         payload: {
           threadId: command.threadId,
@@ -1823,7 +1835,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       return [
         ...lifecycleResetEvents,
-        userMessageEvent,
+        ...(userMessageEvent ? [userMessageEvent] : []),
         ...admissionPendingEvents,
         turnStartRequestedEvent,
       ];
@@ -2202,6 +2214,48 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       return [...lifecycleResetEvents, userMessageEvent, requestedEvent];
+    }
+
+    case "thread.message.user.append": {
+      if (isImportedAgentSessionMessageId(command.message.messageId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Message id '${command.message.messageId}' uses the reserved imported-session namespace.`,
+        });
+      }
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.messages.some((message) => message.id === command.message.messageId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Message '${command.message.messageId}' already exists on thread '${command.threadId}'.`,
+        });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: { deferredTurn: true },
+        })),
+        type: "thread.message-sent",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.message.messageId,
+          role: "user",
+          text: command.message.text,
+          attachments: command.message.attachments,
+          ...(command.message.context !== undefined ? { context: command.message.context } : {}),
+          turnId: null,
+          streaming: false,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
     }
 
     case "thread.turn.interrupt": {

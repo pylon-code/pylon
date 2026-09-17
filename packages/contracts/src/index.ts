@@ -48,3 +48,4 @@ export * from "./rpc.ts";
 export * from "./threadHandoff.ts";
 
 export * from "./computerSetup.ts";
+export * from "./worktreeSetup.ts";

@@ -51,6 +51,7 @@ import {
   resolveEnvironmentMachineKind,
   RuntimeMode,
   TerminalOpenInput,
+  type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import { deriveReportedTurnCosts } from "@t3tools/client-runtime/state/turn-costs";
@@ -331,6 +332,7 @@ import {
   finalizePromotedDraftThreadByRef,
   flushComposerDraftStore,
   markPromotedDraftThreadByRef,
+  restoreFailedBackgroundDraftThread,
   useComposerDraftStore,
   useEffectiveComposerModelState,
   DraftId,
@@ -398,7 +400,7 @@ import {
   SessionPresentationArea,
   type SessionInteractionSubmissionState,
 } from "./chat/ComposerSessionInteractionPanel";
-import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
+import { resolveTimelineIsAtEnd, worktreeSetupAgentStarted } from "./chat/MessagesTimeline.logic";
 import { resolveComposerTimelineInset, resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
@@ -501,6 +503,8 @@ import {
   rememberCheckoutIsRepo,
   resolveBackgroundDraftWorkspaceOptions,
   resolveDraftHeroState,
+  findRecordedWorktreeSetup,
+  resolveVisibleWorktreeSetup,
   restorePlanFollowUpComposer,
   isPaintOnlyThreadTimeline,
   peekHeldThreadTimeline,
@@ -1771,6 +1775,22 @@ export default function ChatView(props: ChatViewProps) {
     return () => revokeBlobPreviewUrl(src);
   }, [expandedImage]);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
+  // Last live snapshot from the setup stream. The server drops a finished
+  // snapshot after a grace period and emits null; holding it here bridges the
+  // gap until the settled activity arrives on the thread projection.
+  const [heldWorktreeSetup, setHeldWorktreeSetup] = useState<WorktreeSetupSnapshot | null>(null);
+  // Set by "Work locally": the draft whose restored message should be resent
+  // once the cancelled dispatch has settled and the draft is in local mode.
+  // Keyed by draft id so a bootstrap rotating the thread id keeps it, while
+  // moving to another draft drops it without an effect.
+  const [workLocallyResendDraftId, setWorkLocallyResendDraftId] = useState<DraftId | null>(null);
+  // The draft route reuses this component across drafts, so a resend recorded
+  // for one draft must not fire when the user comes back to it later.
+  useEffect(() => {
+    if (workLocallyResendDraftId !== null && workLocallyResendDraftId !== draftId) {
+      setWorkLocallyResendDraftId(null);
+    }
+  }, [draftId, workLocallyResendDraftId]);
   const [feedbackSubmissionsByThreadKey, setFeedbackSubmissionsByThreadKey] = useState<
     Record<string, ReadonlyArray<CodexFeedbackSubmission>>
   >({});
@@ -3268,7 +3288,7 @@ export default function ChatView(props: ChatViewProps) {
     resetLocalDispatch,
     localDispatchStartedAt,
     latestUserMessageAt,
-    isPreparingWorktree,
+    isPreparingWorktree: isLocallyPreparingWorktree,
     isSendBusy,
     backgroundSubmissionPending,
   } = useLocalDispatchState({
@@ -3304,8 +3324,30 @@ export default function ChatView(props: ChatViewProps) {
     (isSendBusy || phase === "connecting" || phase === "running") &&
     compactRequestIsActive &&
     !compactionSettled;
+  // The server records a running worktree setup on the thread for the whole
+  // bootstrap window. That record, with no turn yet, is how a reload or another
+  // client sees a worktree still being prepared, so it counts as working like
+  // the local dispatch that started it. It settles on every failure path and
+  // on restart, so this cannot outlive the setup. The placeholder "starting"
+  // session is not used here: an ordinary first turn projects one too, and it
+  // already drives the connecting state on its own.
+  const recordedWorktreeSetup = useMemo(
+    () => findRecordedWorktreeSetup(activeThread?.activities ?? [], routeThreadRef.threadId),
+    [activeThread?.activities, routeThreadRef.threadId],
+  );
+  const awaitingBootstrapTurn =
+    activeServerThread !== null &&
+    activeServerThread.id === routeThreadRef.threadId &&
+    activeServerThread.latestTurn === null &&
+    recordedWorktreeSetup?.phase === "running";
   const isWorking =
-    phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint || isCompacting;
+    phase === "running" ||
+    isSendBusy ||
+    isConnecting ||
+    isRevertingCheckpoint ||
+    isCompacting ||
+    awaitingBootstrapTurn;
+  const isPreparingWorktree = isLocallyPreparingWorktree || awaitingBootstrapTurn;
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
     activeThread?.session ?? null,
@@ -3625,6 +3667,73 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadKey,
   );
   const displayedThreadRef = parseScopedThreadKey(displayedTimelineKey);
+  // Live stages of a bootstrap worktree setup. A worktree send creates the
+  // server thread under the route's thread id before anything else, so the
+  // stream is keyed by that id alone: no owner bookkeeping, and a remount,
+  // reload, or second client picks it up the same way. The subscription is
+  // held only while a snapshot can still change.
+  const routeThreadPreparesWorktree =
+    (isPreparingWorktree && activeThread?.id === routeThreadRef.threadId) ||
+    heldWorktreeSetup?.phase === "running";
+  const worktreeSetupQuery = useEnvironmentQuery(
+    routeThreadPreparesWorktree &&
+      environmentById.get(routeThreadRef.environmentId)?.serverConfig?.environment.capabilities
+        .worktreeSetupTracking === true
+      ? vcsEnvironment.worktreeSetup({
+          environmentId: routeThreadRef.environmentId,
+          input: { threadId: routeThreadRef.threadId },
+        })
+      : null,
+  );
+  const latestWorktreeSetup = worktreeSetupQuery.data;
+  useEffect(() => {
+    if (latestWorktreeSetup) setHeldWorktreeSetup(latestWorktreeSetup);
+  }, [latestWorktreeSetup]);
+  useEffect(() => {
+    setHeldWorktreeSetup(null);
+  }, [routeThreadKey]);
+  const liveWorktreeSetup =
+    heldWorktreeSetup?.threadId === routeThreadRef.threadId ? heldWorktreeSetup : null;
+  const worktreeSetup = resolveVisibleWorktreeSetup({
+    live: liveWorktreeSetup,
+    recorded: recordedWorktreeSetup,
+    turnStarted: activeThread?.latestTurn?.startedAt != null,
+    // Counts the optimistic send too, so the row retires the moment the
+    // follow-up is on screen rather than when the server echoes it back.
+    followUpSent: timelineMessages.filter((message) => message.role === "user").length > 1,
+  });
+  // Sends wait for the agent handoff, not for the setup script: an async
+  // script keeps the snapshot running while the agent already works, and a
+  // follow-up must not be held behind a slow install. Before the first
+  // snapshot arrives the starting session stands in for it.
+  const worktreeSetupBlocksSend =
+    worktreeSetup !== null
+      ? worktreeSetup.phase === "running" && !worktreeSetupAgentStarted(worktreeSetup)
+      : isServerThread &&
+        activeThreadShell?.session?.status === "starting" &&
+        activeThreadShell.latestTurn === null;
+  const cancelWorktreeSetup = useAtomCommand(vcsEnvironment.cancelWorktreeSetup, {
+    reportFailure: false,
+  });
+  const onCancelWorktreeSetup = useCallback(() => {
+    if (!worktreeSetup || worktreeSetup.phase !== "running") return;
+    void cancelWorktreeSetup({
+      environmentId: routeThreadRef.environmentId,
+      input: { threadId: worktreeSetup.threadId },
+    });
+  }, [cancelWorktreeSetup, routeThreadRef.environmentId, worktreeSetup]);
+  // The setup terminal belongs to the thread that was set up. A failed
+  // bootstrap deletes that thread and closes its terminals, so only offer the
+  // terminal while the setup thread is still the active one.
+  const onOpenWorktreeSetupTerminal = useMemo(() => {
+    if (!worktreeSetup || !activeThreadRef || worktreeSetup.threadId !== activeThreadRef.threadId) {
+      return null;
+    }
+    const setupThreadRef = activeThreadRef;
+    return (terminalId: string) => {
+      storeEnsureTerminal(setupThreadRef, terminalId, { open: true, active: true });
+    };
+  }, [activeThreadRef, storeEnsureTerminal, worktreeSetup]);
   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
   const draftHeroDockRequested =
     activeThreadKey !== null && dockedDraftHeroThreadKey === activeThreadKey;
@@ -3634,6 +3743,9 @@ export default function ChatView(props: ChatViewProps) {
     isWorking,
     draftHeroDockRequested,
     backgroundSubmissionPending,
+    // A cancelled or failed setup card stays on the draft's timeline; the
+    // hero headline would paint over it.
+    hasWorktreeSetupCard: worktreeSetup !== null,
   });
   const [
     attachDraftHeroTransitionGroupRef,
@@ -8066,6 +8178,7 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     let turnStartSucceeded = false;
+    let backgroundDraftOpened = false;
     if (failure === null && turnAttachmentsResult._tag === "Success") {
       const bootstrap =
         isLocalDraftThread || baseBranchForWorktree
@@ -8126,9 +8239,9 @@ export default function ChatView(props: ChatViewProps) {
                   records: context.records,
                 }),
               };
-      const startResult =
+      const startPromise =
         delivery === "follow-up"
-          ? await followUpThreadInputQueue({
+          ? followUpThreadInputQueue({
               environmentId,
               input: {
                 threadId: threadIdForSend,
@@ -8142,7 +8255,7 @@ export default function ChatView(props: ChatViewProps) {
                 createdAt: messageCreatedAt,
               },
             })
-          : await startThreadTurn({
+          : startThreadTurn({
               environmentId,
               input: {
                 threadId: threadIdForSend,
@@ -8162,10 +8275,32 @@ export default function ChatView(props: ChatViewProps) {
                 createdAt: messageCreatedAt,
               },
             });
-      if (startResult._tag === "Failure") {
-        if (backgroundThreadRef) {
+      if (backgroundThreadRef) {
+        markPromotedDraftThreadByRef(backgroundThreadRef);
+        try {
+          backgroundDraftOpened = Boolean(
+            await handleNewThread(
+              scopeProjectRef(activeProject.environmentId, activeProject.id),
+              resolveBackgroundDraftWorkspaceOptions({
+                envMode: sendEnvMode,
+                branch: activeThreadBranch,
+                startFromOrigin,
+              }),
+            ),
+          );
+        } catch (error) {
           clearBackgroundDraftSubmissionByRef(backgroundThreadRef);
+          toastManager.add(
+            stackedThreadToast({
+              type: "warning",
+              title: "Could not open a fresh composer",
+              description: error instanceof Error ? error.message : undefined,
+            }),
+          );
         }
+      }
+      const startResult = await startPromise;
+      if (startResult._tag === "Failure") {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
@@ -8174,48 +8309,26 @@ export default function ChatView(props: ChatViewProps) {
         }
         acknowledgeActiveThreadWoke();
         if (backgroundThreadRef) {
-          markPromotedDraftThreadByRef(backgroundThreadRef);
-          try {
-            const nextDraft = await handleNewThread(
-              scopeProjectRef(activeProject.environmentId, activeProject.id),
-              resolveBackgroundDraftWorkspaceOptions({
-                envMode: sendEnvMode,
-                branch: activeThreadBranch,
-                startFromOrigin,
-              }),
-            );
-            if (nextDraft) {
-              finalizePromotedDraftThreadByRef(backgroundThreadRef);
-              toastManager.add(
-                stackedThreadToast({
-                  type: "success",
-                  title: "Started in background",
-                  timeout: 5_000,
-                  actionProps: {
-                    children: "Open",
-                    onClick: () => {
-                      void navigate({
-                        to: "/$environmentId/$threadId",
-                        params: buildThreadRouteParams(backgroundThreadRef),
-                      });
-                    },
-                  },
-                }),
-              );
-            } else {
-              clearBackgroundDraftSubmissionByRef(backgroundThreadRef);
-            }
-          } catch (error) {
+          if (backgroundDraftOpened || currentRouteThreadKeyRef.current !== routeThreadKey) {
+            finalizePromotedDraftThreadByRef(backgroundThreadRef);
+          } else {
             clearBackgroundDraftSubmissionByRef(backgroundThreadRef);
-            resetLocalDispatch();
+          }
+          if (backgroundDraftOpened) {
             toastManager.add(
               stackedThreadToast({
-                type: "warning",
-                title: "Task started in the background",
-                description:
-                  error instanceof Error
-                    ? `Could not open a fresh composer: ${error.message}`
-                    : "Could not open a fresh composer.",
+                type: "success",
+                title: "Started in background",
+                timeout: 5_000,
+                actionProps: {
+                  children: "Open",
+                  onClick: () => {
+                    void navigate({
+                      to: "/$environmentId/$threadId",
+                      params: buildThreadRouteParams(backgroundThreadRef),
+                    });
+                  },
+                },
               }),
             );
           }
@@ -8224,6 +8337,16 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     if (failure !== null) {
+      if (resolvedSubmissionIntent === "background" && draftId && draftThread) {
+        restoreFailedBackgroundDraftThread(
+          draftId,
+          draftThread,
+          wasBootstrapThreadDeleted(squashAtomCommandFailure(failure))
+            ? newThreadId()
+            : threadIdForSend,
+        );
+        clearBackgroundDraftSubmissionByRef(scopeThreadRef(environmentId, threadIdForSend));
+      }
       const removeOptimisticMessage = () =>
         setOptimisticUserMessages((existing) => {
           const removed = existing.filter((message) => message.id === messageIdForSend);
@@ -8236,24 +8359,32 @@ export default function ChatView(props: ChatViewProps) {
       removeOptimisticMessage();
       const currentDraft =
         useComposerDraftStore.getState().getComposerDraft(composerDraftTarget) ?? null;
+      const recoveryOwnsComposer =
+        !backgroundDraftOpened && currentRouteThreadKeyRef.current === routeThreadKey;
       const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
       const mergedPromptAndImages = mergeFailedComposerSend({
         failedText: messageTextForSend,
-        currentText: promptRef.current,
+        currentText: recoveryOwnsComposer ? promptRef.current : (currentDraft?.prompt ?? ""),
         failedAttachments: retryComposerImages,
-        currentAttachments: composerImagesRef.current,
+        currentAttachments: recoveryOwnsComposer
+          ? composerImagesRef.current
+          : (currentDraft?.images ?? []),
       });
       const mergedFiles = mergeFailedComposerSend({
         failedText: "",
         currentText: "",
         failedAttachments: composerFilesSnapshot,
-        currentAttachments: composerFilesRef.current,
+        currentAttachments: recoveryOwnsComposer
+          ? composerFilesRef.current
+          : (currentDraft?.files ?? []),
       }).attachments;
       const mergedTerminalContexts = mergeFailedComposerSend({
         failedText: "",
         currentText: "",
         failedAttachments: composerTerminalContextsSnapshot,
-        currentAttachments: composerTerminalContextsRef.current,
+        currentAttachments: recoveryOwnsComposer
+          ? composerTerminalContextsRef.current
+          : (currentDraft?.terminalContexts ?? []),
       }).attachments;
       const mergedPreviewAnnotations = mergeFailedComposerSend({
         failedText: "",
@@ -8268,10 +8399,12 @@ export default function ChatView(props: ChatViewProps) {
         currentAttachments: currentDraft?.reviewComments ?? [],
       }).attachments;
       const mergedPrompt = mergedPromptAndImages.text;
-      promptRef.current = mergedPrompt;
-      composerImagesRef.current = mergedPromptAndImages.attachments;
-      composerFilesRef.current = mergedFiles;
-      composerTerminalContextsRef.current = mergedTerminalContexts;
+      if (recoveryOwnsComposer) {
+        promptRef.current = mergedPrompt;
+        composerImagesRef.current = mergedPromptAndImages.attachments;
+        composerFilesRef.current = mergedFiles;
+        composerTerminalContextsRef.current = mergedTerminalContexts;
+      }
       clearComposerDraftContent(composerDraftTarget);
       setComposerDraftPrompt(composerDraftTarget, mergedPrompt);
       addComposerDraftImages(composerDraftTarget, mergedPromptAndImages.attachments);
@@ -8279,14 +8412,21 @@ export default function ChatView(props: ChatViewProps) {
       setComposerDraftTerminalContexts(composerDraftTarget, mergedTerminalContexts);
       setComposerDraftPreviewAnnotations(composerDraftTarget, mergedPreviewAnnotations);
       setComposerDraftReviewComments(composerDraftTarget, mergedReviewComments);
-      composerRef.current?.resetCursorState({
-        cursor: collapseExpandedComposerCursor(mergedPrompt, mergedPrompt.length),
-        prompt: mergedPrompt,
-        detectTrigger: true,
-      });
+      if (recoveryOwnsComposer) {
+        composerRef.current?.resetCursorState({
+          cursor: collapseExpandedComposerCursor(mergedPrompt, mergedPrompt.length),
+          prompt: mergedPrompt,
+          detectTrigger: true,
+        });
+      }
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
-        if (isLocalDraftThread && draftId && wasBootstrapThreadDeleted(error)) {
+        if (
+          resolvedSubmissionIntent !== "background" &&
+          isLocalDraftThread &&
+          draftId &&
+          wasBootstrapThreadDeleted(error)
+        ) {
           const failedDraftSession = getDraftSession(draftId);
           if (failedDraftSession?.threadId === threadIdForSend) {
             setLogicalProjectDraftThreadId(
@@ -8298,6 +8438,9 @@ export default function ChatView(props: ChatViewProps) {
                 createdAt: new Date().toISOString(),
               },
             );
+            if (currentRouteThreadKeyRef.current === routeThreadKey) {
+              void navigate({ to: "/draft/$draftId", params: { draftId }, replace: true });
+            }
           }
         }
         setThreadError(
@@ -8308,6 +8451,21 @@ export default function ChatView(props: ChatViewProps) {
               ? "Failed to queue follow-up."
               : "Failed to send message.",
         );
+        if (backgroundDraftOpened && draftId) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Background task failed",
+              description: error instanceof Error ? error.message : "Failed to send message.",
+              actionProps: {
+                children: "Open draft",
+                onClick: () => {
+                  void navigate({ to: "/draft/$draftId", params: { draftId } });
+                },
+              },
+            }),
+          );
+        }
       }
     }
     if (turnStartSucceeded) {
@@ -9713,6 +9871,70 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
+  // "Work locally" on the setup card: cancel the bootstrap and remember the
+  // draft. The cancelled dispatch deletes the half-made thread and puts the
+  // message back in the composer; the effect below then flips the draft to
+  // local mode and resends. The draft is a server thread for the whole
+  // setup (the bootstrap created it), so this keys off the route, not
+  // `isLocalDraftThread`.
+  const onWorktreeSetupWorkLocally = useCallback(() => {
+    if (!worktreeSetup || worktreeSetup.phase !== "running" || !draftId) {
+      return;
+    }
+    const target = {
+      environmentId: routeThreadRef.environmentId,
+      input: { threadId: worktreeSetup.threadId },
+    };
+    void (async () => {
+      const result = await cancelWorktreeSetup(target);
+      if (result._tag !== "Success" || !result.value.cancelled) return;
+      setWorkLocallyResendDraftId(draftId);
+    })();
+  }, [cancelWorktreeSetup, draftId, routeThreadRef.environmentId, worktreeSetup]);
+  const onSendRef = useRef(onSend);
+  onSendRef.current = onSend;
+  // Resend once the cancelled dispatch has settled and the composer is free.
+  // Every state that makes `onSend` bail and wait is part of the readiness
+  // check, so the flag survives a reconnect, a reverting checkpoint, or a
+  // feedback upload in between. What remains inside `onSend` are the checks
+  // that need the user to change something, and those should not auto retry.
+  const workLocallyResendReady =
+    workLocallyResendDraftId !== null &&
+    workLocallyResendDraftId === draftId &&
+    isLocalDraftThread &&
+    !isSendBusy &&
+    !isConnecting &&
+    !isRevertingCheckpoint &&
+    !threadDetailLoading &&
+    clientSettingsHydrated &&
+    !needsLoadBalancing &&
+    !activeEnvironmentUnavailable &&
+    !activePendingProgress &&
+    !feedbackUploading;
+  useEffect(() => {
+    if (
+      !workLocallyResendReady ||
+      sendInFlightRef.current ||
+      feedbackUploadsInFlightRef.current.has(routeThreadKey)
+    ) {
+      return;
+    }
+    if (sendEnvMode !== "local") {
+      // The draft is back; switch it to the project checkout and let the next
+      // render resend.
+      setDraftThreadContext(composerDraftTarget, { envMode: "local", startFromOrigin: false });
+      return;
+    }
+    setWorkLocallyResendDraftId(null);
+    void onSendRef.current();
+  }, [
+    composerDraftTarget,
+    routeThreadKey,
+    sendEnvMode,
+    setDraftThreadContext,
+    workLocallyResendReady,
+  ]);
+
   const onStartFromOriginChange = (nextStartFromOrigin: boolean) => {
     if (canOverrideServerThreadEnvMode && activeThread) {
       setPendingServerThreadStartFromOriginByThreadId((current) =>
@@ -10193,6 +10415,10 @@ export default function ChatView(props: ChatViewProps) {
                 isPreparingWorktree={!paintOnlyDisplayedTimeline && isPreparingWorktree}
                 isCompacting={!paintOnlyDisplayedTimeline && isCompacting}
                 activeTurnStartedAt={paintOnlyDisplayedTimeline ? null : activeWorkStartedAt}
+                worktreeSetup={paintOnlyDisplayedTimeline ? null : worktreeSetup}
+                onCancelWorktreeSetup={onCancelWorktreeSetup}
+                {...(draftId ? { onWorktreeSetupWorkLocally } : {})}
+                {...(onOpenWorktreeSetupTerminal ? { onOpenWorktreeSetupTerminal } : {})}
                 listRef={legendListRef}
                 timelineEntries={displayedTimeline.entries}
                 latestTurn={paintOnlyDisplayedTimeline ? null : activeLatestTurn}
@@ -10381,11 +10607,13 @@ export default function ChatView(props: ChatViewProps) {
                                   ? "Sending feedback"
                                   : threadDetailLoading
                                     ? "Messages loading"
-                                    : projectCloneSendBlockReason
-                                      ? projectCloneSendBlockReason
-                                      : activeSessionInteraction
-                                        ? "Resolve the session request to continue"
-                                        : providerAdmissionDisabledReason
+                                    : worktreeSetupBlocksSend
+                                      ? "Preparing worktree"
+                                      : projectCloneSendBlockReason
+                                        ? projectCloneSendBlockReason
+                                        : activeSessionInteraction
+                                          ? "Resolve the session request to continue"
+                                          : providerAdmissionDisabledReason
                             }
                             isPreparingWorktree={isPreparingWorktree}
                             bannerItems={composerBannerItems}
