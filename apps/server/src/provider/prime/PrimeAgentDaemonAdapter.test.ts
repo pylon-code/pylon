@@ -1272,12 +1272,7 @@ describe("PrimeAgentDaemonAdapter", () => {
             ),
         });
         const subscription = yield* subscribe(adapter);
-        yield* adapter.startSession({
-          threadId,
-          cwd: process.cwd(),
-          runtimeMode: "full-access",
-          modelSelection: { instanceId, model: "openai/current" },
-        });
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
         const turnFiber = yield* adapter
           .sendTurn({ threadId, input: "fast complete response" })
           .pipe(Effect.forkChild);
@@ -2203,7 +2198,21 @@ describe("PrimeAgentDaemonAdapter", () => {
 
           // Releasing the barrier completes quiescence and clears inputAdmissionBusy
           yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
-          yield* Queue.take(captures.backgroundQuiescenceCompleted);
+          const completedTokens = [
+            yield* Queue.take(captures.backgroundQuiescenceCompleted),
+            yield* Queue.take(captures.backgroundQuiescenceCompleted),
+            yield* Queue.take(captures.backgroundQuiescenceCompleted),
+            yield* Queue.take(captures.backgroundQuiescenceCompleted),
+          ];
+          expect(new Set(completedTokens)).toEqual(
+            new Set([settlementToken, childStopToken, compactionToken, resyncToken]),
+          );
+          expect(captures.rlmQuiescenceSignals.map((signal) => signal.aborted)).toEqual([
+            true,
+            true,
+            true,
+            false,
+          ]);
           expect(captures.inputAdmissionBusy).toBe(false);
 
           // Follow-up turn with changed controls is now admitted
