@@ -1347,7 +1347,7 @@ describe("deriveMessagesTimelineRows", () => {
 
     // A failed setup never handed off, so the card stays under the send. The
     // rest of the timeline is untouched: a running send still gets its
-    // working and thinking rows, and queued follow-ups still trail.
+    // working and thinking rows.
     const withMessages = deriveMessagesTimelineRows({
       timelineEntries: [userEntry, assistantEntry],
       isWorking: true,
@@ -1355,7 +1355,6 @@ describe("deriveMessagesTimelineRows", () => {
       turnDiffSummaries: [],
       supportsConversationRollback: false,
       worktreeSetup: { ...snapshot, phase: "failed" },
-      queuedMessages: [queuedMessage("q1", "later")],
     });
     expect(withMessages.map((row) => row.kind)).toEqual([
       "message",
@@ -1363,23 +1362,16 @@ describe("deriveMessagesTimelineRows", () => {
       "working",
       "message",
       "thinking",
-      "queued-message",
     ]);
-    const runningWithQueue = deriveMessagesTimelineRows({
+    const runningSetup = deriveMessagesTimelineRows({
       timelineEntries: [userEntry],
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
       turnDiffSummaries: [],
       supportsConversationRollback: false,
       worktreeSetup: snapshot,
-      queuedMessages: [queuedMessage("q1", "later")],
     });
-    expect(runningWithQueue.map((row) => row.kind)).toEqual([
-      "message",
-      "working",
-      "worktree-setup",
-      "queued-message",
-    ]);
+    expect(runningSetup.map((row) => row.kind)).toEqual(["message", "working", "worktree-setup"]);
 
     // Once the agent stage is done and the turn is live, a still-running
     // script leaves the timeline; the working header surfaces it instead.

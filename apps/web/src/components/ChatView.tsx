@@ -3676,7 +3676,9 @@ export default function ChatView(props: ChatViewProps) {
     (isPreparingWorktree && activeThread?.id === routeThreadRef.threadId) ||
     heldWorktreeSetup?.phase === "running";
   const worktreeSetupQuery = useEnvironmentQuery(
-    routeThreadPreparesWorktree
+    routeThreadPreparesWorktree &&
+      environmentById.get(routeThreadRef.environmentId)?.serverConfig?.environment.capabilities
+        .worktreeSetupTracking === true
       ? vcsEnvironment.worktreeSetup({
           environmentId: routeThreadRef.environmentId,
           input: { threadId: routeThreadRef.threadId },
@@ -8357,24 +8359,32 @@ export default function ChatView(props: ChatViewProps) {
       removeOptimisticMessage();
       const currentDraft =
         useComposerDraftStore.getState().getComposerDraft(composerDraftTarget) ?? null;
+      const recoveryOwnsComposer =
+        !backgroundDraftOpened && currentRouteThreadKeyRef.current === routeThreadKey;
       const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
       const mergedPromptAndImages = mergeFailedComposerSend({
         failedText: messageTextForSend,
-        currentText: promptRef.current,
+        currentText: recoveryOwnsComposer ? promptRef.current : (currentDraft?.prompt ?? ""),
         failedAttachments: retryComposerImages,
-        currentAttachments: composerImagesRef.current,
+        currentAttachments: recoveryOwnsComposer
+          ? composerImagesRef.current
+          : (currentDraft?.images ?? []),
       });
       const mergedFiles = mergeFailedComposerSend({
         failedText: "",
         currentText: "",
         failedAttachments: composerFilesSnapshot,
-        currentAttachments: composerFilesRef.current,
+        currentAttachments: recoveryOwnsComposer
+          ? composerFilesRef.current
+          : (currentDraft?.files ?? []),
       }).attachments;
       const mergedTerminalContexts = mergeFailedComposerSend({
         failedText: "",
         currentText: "",
         failedAttachments: composerTerminalContextsSnapshot,
-        currentAttachments: composerTerminalContextsRef.current,
+        currentAttachments: recoveryOwnsComposer
+          ? composerTerminalContextsRef.current
+          : (currentDraft?.terminalContexts ?? []),
       }).attachments;
       const mergedPreviewAnnotations = mergeFailedComposerSend({
         failedText: "",
@@ -8389,10 +8399,12 @@ export default function ChatView(props: ChatViewProps) {
         currentAttachments: currentDraft?.reviewComments ?? [],
       }).attachments;
       const mergedPrompt = mergedPromptAndImages.text;
-      promptRef.current = mergedPrompt;
-      composerImagesRef.current = mergedPromptAndImages.attachments;
-      composerFilesRef.current = mergedFiles;
-      composerTerminalContextsRef.current = mergedTerminalContexts;
+      if (recoveryOwnsComposer) {
+        promptRef.current = mergedPrompt;
+        composerImagesRef.current = mergedPromptAndImages.attachments;
+        composerFilesRef.current = mergedFiles;
+        composerTerminalContextsRef.current = mergedTerminalContexts;
+      }
       clearComposerDraftContent(composerDraftTarget);
       setComposerDraftPrompt(composerDraftTarget, mergedPrompt);
       addComposerDraftImages(composerDraftTarget, mergedPromptAndImages.attachments);
@@ -8400,11 +8412,13 @@ export default function ChatView(props: ChatViewProps) {
       setComposerDraftTerminalContexts(composerDraftTarget, mergedTerminalContexts);
       setComposerDraftPreviewAnnotations(composerDraftTarget, mergedPreviewAnnotations);
       setComposerDraftReviewComments(composerDraftTarget, mergedReviewComments);
-      composerRef.current?.resetCursorState({
-        cursor: collapseExpandedComposerCursor(mergedPrompt, mergedPrompt.length),
-        prompt: mergedPrompt,
-        detectTrigger: true,
-      });
+      if (recoveryOwnsComposer) {
+        composerRef.current?.resetCursorState({
+          cursor: collapseExpandedComposerCursor(mergedPrompt, mergedPrompt.length),
+          prompt: mergedPrompt,
+          detectTrigger: true,
+        });
+      }
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         if (
@@ -8424,6 +8438,9 @@ export default function ChatView(props: ChatViewProps) {
                 createdAt: new Date().toISOString(),
               },
             );
+            if (currentRouteThreadKeyRef.current === routeThreadKey) {
+              void navigate({ to: "/draft/$draftId", params: { draftId }, replace: true });
+            }
           }
         }
         setThreadError(

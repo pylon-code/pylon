@@ -242,6 +242,7 @@ export const make = Effect.gen(function* () {
       browserProfiles: true,
       projectDefaults: true,
       projectCloneTracking: true,
+      worktreeSetupTracking: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate
         ? {

@@ -6,7 +6,15 @@ import {
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, AppState, Pressable, ScrollView, View } from "react-native";
+import { useIsFocused } from "@react-navigation/native";
+import {
+  AccessibilityInfo,
+  ActivityIndicator,
+  AppState,
+  Pressable,
+  ScrollView,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView, type AppSymbolName } from "../../components/AppSymbol";
@@ -39,6 +47,7 @@ const icons: Record<WorktreeSetupStage["status"], AppSymbolName> = {
 /** Setup stages collapse into the working header once the agent's turn is live. */
 export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
   const { snapshot, turnStarted, turnStartedAt, working } = props;
+  const motionActive = useSetupMotionActive();
   const handedOff = turnStarted && worktreeSetupAgentStarted(snapshot);
   const running = snapshot.phase === "running";
   const backgroundSetup = handedOff && running;
@@ -96,7 +105,7 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
                 : "flex-row items-center gap-1"
             }
           >
-            {backgroundSetup ? (
+            {backgroundSetup && motionActive ? (
               <ActivityIndicator
                 size="small"
                 colorClassName="accent-adaptive-neutral-500-400"
@@ -133,7 +142,7 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
                 scriptName={snapshot.setupScript?.name ?? null}
                 now={now}
                 compact
-                animate={!detailsOpen}
+                animate={!detailsOpen && motionActive}
               />
             ))}
         </View>
@@ -182,7 +191,33 @@ function HeaderLabel({
   );
 }
 
+function useSetupMotionActive() {
+  const focused = useIsFocused();
+  const [active, setActive] = useState(AppState.currentState === "active");
+  const [reducedMotion, setReducedMotion] = useState(true);
+  useEffect(() => {
+    const appSubscription = AppState.addEventListener("change", (state) =>
+      setActive(state === "active"),
+    );
+    let mounted = true;
+    void AccessibilityInfo.isReduceMotionEnabled().then((reduced) => {
+      if (mounted) setReducedMotion(reduced);
+    });
+    const motionSubscription = AccessibilityInfo.addEventListener(
+      "reduceMotionChanged",
+      setReducedMotion,
+    );
+    return () => {
+      mounted = false;
+      appSubscription.remove();
+      motionSubscription.remove();
+    };
+  }, []);
+  return focused && active && !reducedMotion;
+}
+
 function useSetupClock(active: boolean) {
+  const focused = useIsFocused();
   const [now, setNow] = useState(Date.now);
   const [appState, setAppState] = useState(AppState.currentState);
   useEffect(() => {
@@ -190,10 +225,10 @@ function useSetupClock(active: boolean) {
     return () => subscription.remove();
   }, []);
   useEffect(() => {
-    if (!active || appState !== "active") return;
+    if (!active || appState !== "active" || !focused) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [active, appState]);
+  }, [active, appState, focused]);
   return now;
 }
 
@@ -206,6 +241,7 @@ function SetupDetailsSheet({
   now,
 }: WorktreeSetupCardProps & { onClose: () => void; now: number }) {
   const insets = useSafeAreaInsets();
+  const motionActive = useSetupMotionActive();
   const [bodyHeight, setBodyHeight] = useState(0);
   const canCancel = snapshot.phase === "running" && !turnStarted;
   return (
@@ -224,7 +260,12 @@ function SetupDetailsSheet({
           .filter((stage) => stage.id !== "agent")
           .map((stage) => (
             <View key={stage.id}>
-              <StageRow stage={stage} scriptName={snapshot.setupScript?.name ?? null} now={now} />
+              <StageRow
+                stage={stage}
+                scriptName={snapshot.setupScript?.name ?? null}
+                now={now}
+                animate={motionActive}
+              />
               {stage.id === "setup-script" &&
               (stage.status === "running" || stage.status === "failed" || stage.tail.length > 0) ? (
                 <OutputTail lines={stage.tail} failed={stage.status === "failed"} />

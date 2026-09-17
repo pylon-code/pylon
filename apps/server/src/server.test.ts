@@ -11615,18 +11615,27 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       caseName: "async setup scripts let the turn start before the script exits",
       async: true,
       cancel: false,
+      interruptPreparing: false,
     },
     {
       caseName: "sync setup scripts hold the turn until the script exits",
       async: false,
       cancel: false,
+      interruptPreparing: false,
     },
     {
       caseName: "cancelling worktree setup publishes its outcome and cleans up the thread",
       async: false,
       cancel: true,
+      interruptPreparing: false,
     },
-  ])("$caseName", ({ async, cancel }) =>
+    {
+      caseName: "interrupted preparing receipt settles the session when rollback fails",
+      async: false,
+      cancel: false,
+      interruptPreparing: true,
+    },
+  ])("$caseName", ({ async, cancel, interruptPreparing }) =>
     Effect.gen(function* () {
       const dispatchedCommands: Array<OrchestrationCommand> = [];
       const scriptExit = yield* Deferred.make<void>();
@@ -11665,8 +11674,21 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
           orchestrationEngine: {
             dispatch: (command) =>
-              Effect.sync(() => {
+              Effect.gen(function* () {
                 dispatchedCommands.push(command);
+                if (
+                  interruptPreparing &&
+                  command.type === "thread.session.set" &&
+                  command.session.status === "starting"
+                ) {
+                  return yield* Effect.interrupt;
+                }
+                if (interruptPreparing && command.type === "thread.delete") {
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: command.type,
+                    detail: "Simulated rollback failure",
+                  });
+                }
                 return { sequence: dispatchedCommands.length };
               }),
             readEvents: () => Stream.empty,
@@ -11717,6 +11739,20 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           }),
         ),
       ).pipe(Effect.forkChild);
+
+      if (interruptPreparing) {
+        const result = yield* Fiber.join(dispatchFiber).pipe(Effect.result);
+        assertTrue(result._tag === "Failure");
+        assertTrue(
+          dispatchedCommands.some(
+            (command) =>
+              command.type === "thread.session.set" && command.session.status === "error",
+          ),
+        );
+        assert.isFalse(dispatchedCommands.some((command) => command.type === "thread.turn.start"));
+        assert.equal(runForThread.mock.calls.length, 0);
+        return;
+      }
 
       const turnStarted = () =>
         dispatchedCommands.some((command) => command.type === "thread.turn.start");

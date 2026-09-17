@@ -1403,25 +1403,32 @@ const makeWsRpcLayer = (
             }
 
             if (bootstrap?.createThread) {
-              const created = yield* dispatchFromClient({
-                type: "thread.create",
-                commandId: yield* serverCommandId("bootstrap-thread-create"),
-                threadId: command.threadId,
-                projectId: bootstrap.createThread.projectId,
-                title: bootstrap.createThread.title,
-                modelSelection: bootstrap.createThread.modelSelection,
-                runtimeMode: bootstrap.createThread.runtimeMode,
-                interactionMode: bootstrap.createThread.interactionMode,
-                branch: bootstrap.createThread.branch,
-                worktreePath: bootstrap.createThread.worktreePath,
-                createdAt: bootstrap.createThread.createdAt,
-              });
+              const created = yield* Effect.uninterruptible(
+                dispatchFromClient({
+                  type: "thread.create",
+                  commandId: yield* serverCommandId("bootstrap-thread-create"),
+                  threadId: command.threadId,
+                  projectId: bootstrap.createThread.projectId,
+                  title: bootstrap.createThread.title,
+                  modelSelection: bootstrap.createThread.modelSelection,
+                  runtimeMode: bootstrap.createThread.runtimeMode,
+                  interactionMode: bootstrap.createThread.interactionMode,
+                  branch: bootstrap.createThread.branch,
+                  worktreePath: bootstrap.createThread.worktreePath,
+                  createdAt: bootstrap.createThread.createdAt,
+                }).pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      createdThread = true;
+                    }),
+                  ),
+                ),
+              );
               // The successful create is a fence in the engine command queue:
               // every delete for the prior incarnation committed before it.
               // Drain through that event before setup or turn start can own
               // terminals and provider sessions under the reused thread id.
               yield* threadDeletionReactor.drainThrough(created.sequence);
-              createdThread = true;
               // Persist the send now rather than with the turn: the thread is
               // real from here on, so any client (or a reload) sees the message
               // while the worktree is still being prepared. The turn start
@@ -1449,8 +1456,8 @@ const makeWsRpcLayer = (
             if (prepareWorktree && shouldPrepareWorktree && worktreeBaseRef) {
               if (bootstrap?.createThread && createdThread) {
                 // The checkout and setup script can run for minutes before the
-                // turn starts, and the created thread carries no message or
-                // turn until then. Project a starting session now so every
+                // turn starts. The prompt is already durable, but no agent
+                // owns it yet. Project a starting session now so every
                 // client lists the thread as working and a reopened thread
                 // knows to follow the setup stream. A failed or cancelled setup
                 // deletes the thread, so nothing lingers.
@@ -1470,8 +1477,13 @@ const makeWsRpcLayer = (
                     updatedAt: preparingAt,
                   },
                   createdAt: preparingAt,
-                });
-                preparingSessionSet = true;
+                }).pipe(
+                  Effect.ensuring(
+                    Effect.sync(() => {
+                      preparingSessionSet = true;
+                    }),
+                  ),
+                );
               }
               yield* worktreeSetupTracker.stageStatus(threadId, "checkout", "running");
               let checkoutTotal: number | null = null;

@@ -14,6 +14,8 @@ import {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Scope from "effect/Scope";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
@@ -28,8 +30,8 @@ import * as Stream from "effect/Stream";
  * State is memory only. It exists from the first `begin` until the turn starts
  * or the setup fails, plus a short grace window so a client that subscribes
  * late still sees the final state. Nothing here is persisted or event-sourced:
- * the durable record of a setup is the thread's worktree path and the setup
- * script activities, both of which already exist.
+ * the durable record is written by the bootstrap flow as worktree setup
+ * activities, alongside the thread's worktree path and setup script activities.
  */
 export class WorktreeSetupTracker extends Context.Service<
   WorktreeSetupTracker,
@@ -118,6 +120,8 @@ function emptyStage(id: WorktreeSetupStageId): WorktreeSetupStage {
 }
 
 export const make = Effect.gen(function* () {
+  const retentionScope = yield* Scope.make("parallel");
+  yield* Effect.addFinalizer(() => Scope.close(retentionScope, Exit.void));
   const setups = yield* Ref.make(new Map<ThreadId, TrackedSetup>());
   const changes = yield* PubSub.unbounded<{
     readonly threadId: ThreadId;
@@ -290,7 +294,7 @@ export const make = Effect.gen(function* () {
             if (retentionFibers.get(threadId) === fiber) retentionFibers.delete(threadId);
           }),
         ),
-        Effect.forkDetach,
+        Effect.forkIn(retentionScope),
       );
       retentionFibers.set(threadId, fiber);
       return snapshot;

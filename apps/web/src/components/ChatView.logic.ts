@@ -983,6 +983,18 @@ export function threadHasStarted(thread: Thread | null | undefined): boolean {
   );
 }
 
+/** A preparing session and persisted prompt still need their retry draft. */
+export function canFinalizePromotedDraft(thread: Thread | null | undefined): boolean {
+  return (
+    threadHasStarted(thread) &&
+    !(
+      thread?.latestTurn === null &&
+      thread.session?.status === "starting" &&
+      thread.session.providerName === null
+    )
+  );
+}
+
 /**
  * Whether a thread ran at least one turn, judged from its shell alone.
  *

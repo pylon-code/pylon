@@ -15,7 +15,7 @@ The maintainer authorized compatible catch-up and routine adaptations that prese
 
 ## Active cycle
 
-[Upstream integration cycle #598](https://github.com/pylon-code/pylon/issues/598) owns the next five thread-reading and preview fixes within frozen head `6d1d549441be84f19696ab59ed7e2fbf305280d4`. Cycles #585, #591 and #594 are complete. Merge is authorized after review and green verification; the review cursor remains unchanged.
+[Upstream integration cycle #605](https://github.com/pylon-code/pylon/issues/605) owns worktree setup progress, cancellation and mobile handoff within frozen head `6d1d549441be84f19696ab59ed7e2fbf305280d4`. The [existing-port audit #604](https://github.com/pylon-code/pylon/issues/604) reconciles 22 sources already present and records the remaining range after cycle #598. Merge is authorized after review and green verification; the review cursor remains unchanged.
 
 ## Latest cycle
 

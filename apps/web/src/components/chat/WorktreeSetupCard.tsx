@@ -48,8 +48,24 @@ function useNowWhile(active: boolean): number {
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
     if (!active) return;
-    const id = setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => clearInterval(id);
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const update = () => {
+      if (timer !== undefined) clearInterval(timer);
+      timer = undefined;
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+      setNowMs(Date.now());
+      timer = setInterval(() => setNowMs(Date.now()), 1_000);
+    };
+    update();
+    document.addEventListener("visibilitychange", update);
+    window.addEventListener("focus", update);
+    window.addEventListener("blur", update);
+    return () => {
+      if (timer !== undefined) clearInterval(timer);
+      document.removeEventListener("visibilitychange", update);
+      window.removeEventListener("focus", update);
+      window.removeEventListener("blur", update);
+    };
   }, [active]);
   return nowMs;
 }

@@ -67,6 +67,7 @@ import {
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   threadShellHasStarted,
+  canFinalizePromotedDraft,
   resolveDraftHeroState,
   isPaintOnlyThreadTimeline,
   peekHeldThreadTimeline,
@@ -2731,5 +2732,17 @@ describe("worktree setup visibility", () => {
       ...settledDone,
       sequence: 9,
     });
+  });
+});
+
+describe("draft retention through worktree setup", () => {
+  it("retains the retry draft until the preparing session has an agent", () => {
+    const preparing = makeThread({
+      latestTurn: null,
+      session: { ...readySession, status: "starting", providerName: null },
+    });
+    expect(canFinalizePromotedDraft(preparing)).toBe(false);
+    expect(canFinalizePromotedDraft({ ...preparing, session: readySession })).toBe(true);
+    expect(canFinalizePromotedDraft({ ...preparing, latestTurn: completedTurn })).toBe(true);
   });
 });

@@ -4,7 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import ChatView from "./ChatView";
-import { resolveDraftPromotionNavigationTarget, threadHasStarted } from "./ChatView.logic";
+import { resolveDraftPromotionNavigationTarget, canFinalizePromotedDraft } from "./ChatView.logic";
 import { waitForDraftHeroTransition } from "./chat/draftHeroTransition";
 import { SidebarInset } from "./ui/sidebar";
 import {
@@ -120,7 +120,7 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
     shellExists: serverThreadShell !== null,
     status: serverThreadStatus,
   });
-  const serverThreadStarted = threadHasStarted(serverThreadDetail);
+  const serverThreadStarted = canFinalizePromotedDraft(serverThreadDetail);
   const environmentHasAnyThreads = environmentThreadRefs.length > 0 || environmentHasDraftThreads;
 
   useEffect(() => {
@@ -197,7 +197,7 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
   } else if (renderState === "ready" || (renderState === "loading" && serverThreadShell !== null)) {
     view = (
       <ChatView
-        {...(nextChatViewKey ? { key: nextChatViewKey.key } : {})}
+        key={nextChatViewKey?.key}
         environmentId={target.threadRef.environmentId}
         threadId={target.threadRef.threadId}
         routeKind="server"
