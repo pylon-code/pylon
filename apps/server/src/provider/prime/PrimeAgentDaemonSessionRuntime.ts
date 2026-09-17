@@ -4103,6 +4103,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             correlatedProofIngressEpoch,
             ordinaryIngressFence,
             providerRouteRetirement,
+            synthesizedDiagnosticReason,
           ),
         );
       }
