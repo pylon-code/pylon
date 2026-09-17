@@ -84,21 +84,22 @@ children as ordinary threads.
 
 ## Monitor delegated work
 
-The parent thread shows a persistent Pylon delegation summary and includes child threads in its
-**Agents** panel. Expand the summary for each child's provider/model, status, and available activity;
-choose **Open thread** to inspect its result, answer a question, approve an action, or stop it.
-Children remain visible after the parent's turn ends. “Completed” means the child's execution
-finished, not that its changes have been reviewed or merged. Native-agent token totals are labeled
-separately; Pylon children do not yet contribute to a combined usage total.
+Pylon children appear in the existing **Agents** panel alongside native agents, using the same
+status-row layout. Choose **Open thread** to inspect a result, answer a question, approve an action,
+or stop the child. The panel's active-agent count includes children even after the parent stops.
+“Completed” means execution finished, not that changes were reviewed or merged. Native-agent token
+totals remain separate; Pylon children do not yet contribute to a combined usage total.
 
-Recognized Pylon delegation calls also appear as expandable rows in the streaming work log, with
-access to the Agents panel and original tool details. A specific child is linked when the provider
-preserves its thread ID in the result; truncated results may only show the task title.
+Recognized delegation spawns use the same compact streaming entry as native subagents and remain
+visible when the parent's work log collapses. Select the entry to open Agents. Original tool details
+remain available. If the provider truncates the child ID, the entry cannot show that child's live
+status; use Agents for the authoritative roster. No child is matched by its title.
+
 “Waiting for delegated agent” requires an active parent turn and a recognized running status call
-with a positive wait budget. Codex and Claude expose this structured tool data. Providers that do
-not preserve it, including current Prime and OpenCode live events, still show child status in the
-summary and Agents panel without claiming the parent is waiting. This display does not automatically
-resume the parent when a child finishes. Mobile retains its existing child-thread sidebar display.
+with a positive wait budget. Codex and Claude expose this structured tool data. Providers without
+it, including current Prime and OpenCode live events, retain their generic tool logs and show child
+status through the existing Agents panel and active-agent count. This does not automatically resume
+the parent when a child finishes. Mobile retains its existing child-thread sidebar display.
 
 ## Things to know
 

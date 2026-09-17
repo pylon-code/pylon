@@ -2,6 +2,8 @@ import {
   ApprovalRequestId,
   CheckpointRef,
   EnvironmentId,
+  ThreadId,
+  ProviderInstanceId,
   MessageId,
   type ComposerContextRecord,
   TurnId,
@@ -1437,6 +1439,133 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Kicked off 1 subagent");
     expect(markup).toContain(">queued<");
     expect(markup).not.toContain(">waiting<");
+  });
+
+  it.each(["running", "needs-approval", "completed"] as const)(
+    "keeps a %s Pylon spawn in the native CTA position after its parent completes",
+    async (status) => {
+      const turnId = TurnId.make("pylon-spawn-turn");
+      const onOpenAgents = vi.fn();
+      let renderer: ReactTestRenderer | undefined;
+      await act(() => {
+        renderer = create(
+          <MessagesTimeline
+            {...buildProps()}
+            onOpenAgents={onOpenAgents}
+            delegatedThreads={[
+              {
+                threadId: ThreadId.make("delegated:test:child"),
+                environmentId: EnvironmentId.make("env"),
+                title: "Review bounded change",
+                status,
+                activity: null,
+                providerName: "Codex",
+                modelSelection: {
+                  instanceId: ProviderInstanceId.make("codex"),
+                  model: "test-model",
+                },
+              },
+            ]}
+            latestTurn={{
+              turnId,
+              state: "completed",
+              startedAt: MESSAGE_CREATED_AT,
+              completedAt: MESSAGE_CREATED_AT,
+            }}
+            timelineEntries={[
+              {
+                id: "pylon-spawn",
+                kind: "work",
+                createdAt: MESSAGE_CREATED_AT,
+                entry: {
+                  id: "pylon-spawn",
+                  createdAt: MESSAGE_CREATED_AT,
+                  turnId,
+                  label: "MCP tool call",
+                  tone: "tool",
+                  toolLifecycleStatus: "completed",
+                  toolData: {
+                    server: "t3-code",
+                    tool: "delegate_thread",
+                    arguments: { title: "Review bounded change" },
+                    result: { threadId: "delegated:test:child" },
+                  },
+                },
+              },
+              {
+                id: "parent-finished",
+                kind: "message",
+                createdAt: MESSAGE_CREATED_AT,
+                message: {
+                  id: MessageId.make("parent-finished"),
+                  role: "assistant",
+                  text: "Parent finished",
+                  turnId,
+                  createdAt: MESSAGE_CREATED_AT,
+                  updatedAt: MESSAGE_CREATED_AT,
+                  streaming: false,
+                },
+              },
+            ]}
+          />,
+        );
+      });
+      const markup = JSON.stringify(renderer!.toJSON());
+      expect(markup).toContain("Review bounded change");
+      expect(markup).toContain("Tool details");
+      expect(markup).toContain(status.replaceAll("-", " "));
+      expect(markup).not.toContain("Open thread");
+      expect(markup).not.toContain("Waiting for delegated agent");
+      const cta = renderer!.root.findAll(
+        (node) => node.type === "button" && node.props.onClick === onOpenAgents,
+      );
+      expect(cta).toHaveLength(1);
+      await act(() => cta[0]!.props.onClick());
+      expect(onOpenAgents).toHaveBeenCalledOnce();
+      await act(() => renderer?.unmount());
+    },
+  );
+
+  it("does not borrow another child's status when the spawn result is truncated", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        delegatedThreads={["running", "completed"].map((status, index) => ({
+          threadId: ThreadId.make(`delegated:parent:child-${index}`),
+          environmentId: EnvironmentId.make("env"),
+          title: `Unrelated child ${index}`,
+          status: status === "running" ? "running" : "completed",
+          activity: null,
+          providerName: "Codex",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test-model" },
+        }))}
+        timelineEntries={[
+          {
+            id: "truncated-spawn",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "truncated-spawn",
+              createdAt: MESSAGE_CREATED_AT,
+              label: "MCP call",
+              tone: "tool",
+              toolLifecycleStatus: "completed",
+              toolData: {
+                server: "t3-code",
+                tool: "delegate_thread",
+                arguments: { title: "Bounded task" },
+                result: { content: '{"threadId":"delegated:parent:' },
+              },
+            },
+          },
+        ]}
+      />,
+    );
+    expect(markup).toContain("Bounded task");
+    expect(markup).toContain(">recorded<");
+    expect(markup).not.toContain("Unrelated child");
+    expect(markup).not.toContain(">running<");
+    expect(markup).not.toContain(">completed<");
   });
 
   it.each([true, false])(

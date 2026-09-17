@@ -1,6 +1,4 @@
 import { delegatedThreadRows } from "@t3tools/client-runtime/state/delegated-threads";
-import { DelegationSummary } from "./DelegatedThreadList";
-import { delegationActivity } from "../delegationActivity";
 import { prepareRevertedMessageContext } from "../lib/composerRewindContext";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { resolveLoadBalancingStatus } from "@t3tools/client-runtime/load-balancing";
@@ -3005,15 +3003,11 @@ export default function ChatView(props: ChatViewProps) {
   const delegatedLiveCount = delegatedThreads.filter((row) =>
     ["starting", "running", "needs-approval", "needs-input"].includes(row.status),
   ).length;
+  const delegatedAttentionCount = delegatedThreads.filter(
+    (row) => row.status === "needs-approval" || row.status === "needs-input",
+  ).length;
   const delegationWaitingTurnId =
     activeThread?.session?.status === "running" ? activeThread.session.activeTurnId : null;
-  const waitingForDelegation =
-    delegationWaitingTurnId !== null &&
-    workLogEntries.some(
-      (entry) =>
-        entry.turnId === delegationWaitingTurnId && delegationActivity(entry)?.waiting === true,
-    );
-
   const agentPanelModel = useMemo(
     () => deriveAgentPanelModel({ agents: runtimeSubagents }),
     [runtimeSubagents],
@@ -9837,6 +9831,7 @@ export default function ChatView(props: ChatViewProps) {
           ? 0
           : agentPanelModel.liveCount + delegatedLiveCount
       }
+      attentionAgentCount={delegatedAttentionCount}
       onToggleTerminal={toggleTerminalVisibility}
       onToggleRightPanel={toggleRightPanel}
     />
@@ -10186,13 +10181,6 @@ export default function ChatView(props: ChatViewProps) {
             </div>
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col bg-background">
-              {!paintOnlyDisplayedTimeline ? (
-                <DelegationSummary
-                  rows={delegatedThreads}
-                  waiting={waitingForDelegation}
-                  onOpenAgents={addAgentsSurface}
-                />
-              ) : null}
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}

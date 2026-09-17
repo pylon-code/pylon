@@ -1,3 +1,4 @@
+import { AgentRosterRow } from "./AgentRosterRow";
 import { DelegatedThreadList, type DelegatedThreadRows } from "./DelegatedThreadList";
 /**
  * Agents right-panel surface: the fleet view over the native subagent fold,
@@ -221,7 +222,11 @@ function AgentRow({
   const liveActivityAvailable = liveActivityEligible && active;
 
   return (
-    <div className="grid h-[3.875rem] grid-cols-[0.375rem_minmax(0,1fr)_auto_auto_1.75rem_1.75rem] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
+    <AgentRosterRow
+      activity={activity ? `${statusLabel} · ${activity}` : statusLabel}
+      metadata={metadata.join(" · ")}
+      failed={agent.status === "failed"}
+    >
       <span className="col-start-1 row-start-1 flex items-center">
         <StatusDot status={agent.status} />
       </span>
@@ -287,18 +292,7 @@ function AgentRow({
           </button>
         ) : null}
       </span>
-      <span
-        className={cn(
-          "col-start-2 col-end-7 row-start-2 block truncate text-xs",
-          agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
-        )}
-      >
-        {activity ? `${statusLabel} · ${activity}` : statusLabel}
-      </span>
-      <span className="col-start-2 col-end-7 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
-        {metadata.join(" · ")}
-      </span>
-    </div>
+    </AgentRosterRow>
   );
 }
 
@@ -869,7 +863,7 @@ export function AgentsPanel({
         <div className="flex flex-col gap-2 p-2">
           {delegatedThreads.length > 0 ? (
             <section>
-              <div className="px-1.5 py-1 text-xs font-medium text-muted-foreground">
+              <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
                 Pylon threads
               </div>
               <DelegatedThreadList rows={delegatedThreads} />
