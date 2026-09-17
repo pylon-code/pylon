@@ -31,6 +31,17 @@ Pylon Connect renews access credentials without disconnecting a healthy conversa
 diffs and provider settings keep working after the previous credential expires; a failed renewal
 affects only that request.
 
+## Pause or retry a saved connection
+
+In **Settings → Connections**, switch a saved environment off to stop its connection and automatic
+retries. Its pairing credentials, configuration, and cached history stay saved. Switch it on when
+you want to reconnect. Removing an environment is a separate action.
+
+An incompatible server appears as **Client not supported** and cannot be switched on. Follow the
+explanation to update the app or server. Pylon Connect refreshes compatibility during discovery;
+for a saved direct server, choose **Check again** after updating. On mobile, expand the connection
+and use its reconnect control. A retry checks compatibility before opening the connection.
+
 ## Pair over a LAN or private network
 
 Use direct pairing when the other device can reach the host's network address.

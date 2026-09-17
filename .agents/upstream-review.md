@@ -15,7 +15,7 @@ The maintainer authorized compatible catch-up and routine adaptations that prese
 
 ## Active cycle
 
-[Upstream integration cycle #591](https://github.com/pylon-code/pylon/issues/591) owns checkpoint performance following completed reliability/client-recovery cycle #585 within frozen head `6d1d549441be84f19696ab59ed7e2fbf305280d4`. The review cursor remains unchanged.
+[Upstream integration cycle #594](https://github.com/pylon-code/pylon/issues/594) owns environment compatibility and its saved off-state dependency within frozen head `6d1d549441be84f19696ab59ed7e2fbf305280d4`. Cycles #585 and #591 are complete. The review cursor remains unchanged.
 
 ## Latest cycle
 
@@ -186,3 +186,5 @@ The review cursor stays unchanged; unrelated sources in this range remain unclas
 | Git burst limits and nonblocking provider diffs / `6d1d549441be84f19696ab59ed7e2fbf305280d4` | `5b377e2a047569ff928ccc6b07a900f698332496` (#11405), `901db896691da5ab7b7428ef8a5da52883f831dd` (#11970) | Adopted eight-permit short-command Git limit and separate diff repository-detection worker. Re-enter Pylon lifecycle/Stop/incarnation/runtime fences after async detection; verify the same workspace and a running turn before placeholder dispatch. Decider rejects missing placeholders over captured checkpoints. Long/unbounded Git commands retain existing limits. | Cycle #585; focused Git core, ingestion and decider regressions in implementation PR. |
 
 | Checkpoint index reuse and sparse capture / `6d1d549441be84f19696ab59ed7e2fbf305280d4` | `b12c92f695a6b12116fb2cda40d610bdbe2a9566` (#10792), `c1738f131d6f0d5c6dfabb3aad46755a25319663` (#12154) | Adopted with Pylon fsync publication retained: private index metadata reuse, conservative racy timestamps, complete streamed flag inspection and sparse-aware staging. Workspace index stays untouched. Unsafe non-cone index rebuild fails without publishing; Git without add --sparse keeps legacy behavior. Large changed/new files still need hashing; no timeout change. | Cycle #591; real Git capture/restore, byte-stream and ownership regressions plus scoped server checks in implementation PR. |
+
+| Environment compatibility and saved off-state / `6d1d549441be84f19696ab59ed7e2fbf305280d4` | `2587c8060c103245b4f970b925977008f2592d1d` (#11478), `2c16c1d264173d86fc354e9a4c0c78cd42e514b7` (#11974), `935c55b3778fdeae0e25b250ce2a9fa7e79c0327` (#11990), `c1b2ed6504bbd57440d03c6a5af2736f33be7c65` (#12026), `6ee03240bccd9287a8c2246e9547697aa5857998` (#12030) | Adopted with Pylon layouts, editing, WSL ownership and authentication retained. Persist off-state without deleting credentials/cache; reject incompatible descriptors before socket connection; neutral discovery rows retain machine icons. Explicit retry can recover upgraded direct servers and still rejects incompatible ones. No unrelated GitHub routing or connection-page redesign. | Cycle #594; implementation PR records focused cross-client tests, types and UI evidence. |
