@@ -475,7 +475,7 @@ it.layer(testLayer)("AntigravityDriver", (it) => {
   );
 
   it.effect.skipIf(windowsHost)(
-    "removes runtime temp directories left by a previous server on create",
+    "preserves runtime temp directories not owned by the new driver",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -503,7 +503,7 @@ it.layer(testLayer)("AntigravityDriver", (it) => {
             }),
           ),
         );
-        expect(yield* fs.exists(tempRoot)).toBe(false);
+        expect(yield* fs.readFileString(path.join(orphan, "payload.bin"))).toBe("stale");
       }).pipe(Effect.scoped),
   );
 
@@ -513,6 +513,12 @@ it.layer(testLayer)("AntigravityDriver", (it) => {
       const snapshot = yield* h.instance.snapshot.refresh;
       expect(snapshot.installed).toBe(true);
       expect(snapshot.version).toBe(h.first.version);
+      expect(h.launches).toEqual([]);
+      expect(h.acquisitions).toEqual([]);
+      h.controls.selected = h.second;
+      expect((yield* h.instance.snapshot.refresh).version).toBe(h.second.version);
+      h.controls.failResolution = true;
+      expect((yield* h.instance.snapshot.refresh).status).toBe("error");
       expect(h.launches).toEqual([]);
       expect(h.acquisitions).toEqual([]);
     }).pipe(Effect.scoped),

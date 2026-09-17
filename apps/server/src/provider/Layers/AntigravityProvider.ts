@@ -119,7 +119,7 @@ interface AntigravityProviderState {
 interface AntigravityProviderOptions {
   readonly stampIdentity: (snapshot: ServerProviderDraft) => Effect.Effect<ServerProvider>;
   readonly probe: Effect.Effect<
-    EffectAcpSchema.InitializeResponse,
+    Pick<EffectAcpSchema.InitializeResponse, "agentInfo">,
     EffectAcpErrors.AcpError | ProviderSetupError
   >;
   readonly supportsTextGeneration: Effect.Effect<boolean>;
@@ -128,7 +128,7 @@ interface AntigravityProviderOptions {
   readonly auth?: { readonly type: string; readonly label: string };
 }
 
-/** Health uses initialize only. Session callbacks supply account-specific metadata. */
+/** Health resolves installation metadata. Sessions supply account-specific metadata. */
 export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(function* (
   settings: AntigravitySettings,
   options: AntigravityProviderOptions,

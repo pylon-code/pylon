@@ -30,7 +30,6 @@ import {
   isAntigravitySignInRequiredError,
   prepareAntigravityProfile,
   resolveAntigravityProfileDirectory,
-  resolveAntigravityRuntimeTempDirectory,
   type AntigravityAuthConfig,
 } from "../antigravityAuthSupport.ts";
 import {
@@ -39,10 +38,7 @@ import {
 } from "../acp/AntigravityAcpSupport.ts";
 import type { AcpSessionRuntime, AcpSessionRuntimeStartResult } from "../acp/AcpSessionRuntime.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
-import {
-  removeAntigravityRuntimeTempDirs,
-  removeAntigravitySessionFiles,
-} from "../acp/AntigravitySessionFiles.ts";
+import { removeAntigravitySessionFiles } from "../acp/AntigravitySessionFiles.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeAntigravityAdapter } from "../Layers/AntigravityAdapter.ts";
 import { makeAntigravityProvider } from "../Layers/AntigravityProvider.ts";
@@ -102,11 +98,8 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         serverConfig.stateDir,
         instanceId,
       );
-      // No process of this instance exists yet, so every runtime temp
-      // directory left under the profile is an orphan from a killed server.
-      yield* removeAntigravityRuntimeTempDirs(
-        resolveAntigravityRuntimeTempDirectory(profileDirectory),
-      ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+      // Another driver or server can still own processes under this profile.
+      // Only remove directories acquired by this runtime, after its child exits.
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER,
         instanceId,
@@ -169,7 +162,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         // runtime scope, after the child is killed. A shared directory would
         // let one session's teardown delete files a sibling still reads.
         // Removal is best effort: a handle can outlive the kill on Windows,
-        // and the sweep on the next driver start reclaims what is left.
+        // so failed removals are retained rather than sweeping shared state.
         const runtimeTempDirectory = yield* Effect.acquireRelease(
           fileSystem.makeTempDirectory({ directory: profile.tempDirectory, prefix: "run-" }).pipe(
             Effect.mapError(
@@ -298,8 +291,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       // The probe must not spawn. The agent is a PyInstaller one-file bundle
       // that unpacks about 1 GB per launch, and the health check runs every
       // minute. Resolving the install on disk is enough to report installed
-      // and version. The response below is synthetic: only agentInfo.version
-      // is read from it. Sessions and manual refreshes still spawn.
+      // and version. Sessions and manual refreshes still spawn.
       const probe = Effect.gen(function* () {
         yield* modelManifest.refreshInBackground;
         if (authConfigIssue !== null) {
@@ -323,13 +315,6 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             ),
           );
         return {
-          protocolVersion: 1,
-          agentCapabilities: {
-            loadSession: true,
-            promptCapabilities: { image: true, audio: true, embeddedContext: true },
-            sessionCapabilities: { list: {}, resume: {} },
-          },
-          authMethods: [{ id: "oauth-personal", name: "Log in with Google" }],
           agentInfo: {
             name: "antigravity-acp",
             title: "Google Antigravity",

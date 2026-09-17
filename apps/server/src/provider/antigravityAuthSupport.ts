@@ -224,7 +224,7 @@ function antigravityEnvironment(
         : {};
   // The agent is a PyInstaller one-file bundle. It unpacks about 1 GB into
   // the system temp directory per launch and a force kill leaves that behind.
-  // Point it at a T3-owned directory so the driver can reclaim the space.
+  // Point it at a Pylon-owned directory so the driver can reclaim the space.
   const tempDirectory = runtimeTempDirectory ?? profile.tempDirectory;
   return {
     ...environment,

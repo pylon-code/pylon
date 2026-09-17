@@ -13,6 +13,10 @@ reviewed-through-date: "2026-09-14"
 
 The maintainer authorized compatible catch-up and routine adaptations that preserve Pylon's important behavior, and approved the revised workflow on 2026-09-07. Continue within that scope without per-commit approval. Ask for a concrete decision when a capability would be lost or a product tradeoff falls outside that approval. Whole-upstream merges and ancestry-baseline changes require a separate explicit decision.
 
+## Active cycle
+
+[Upstream integration cycle #585](https://github.com/pylon-code/pylon/issues/585) owns the approved reliability and client-recovery sequence within frozen head `6d1d549441be84f19696ab59ed7e2fbf305280d4`. The review cursor remains unchanged.
+
 ## Latest cycle
 
 [Upstream integration cycle #536](https://github.com/pylon-code/pylon/issues/536) accounts for the three upstream commits through `a43f9b45ae85caf37e0be8270ad3d27365ece2bd`: `18d8cbfd920d0a53e5b5206456585aea767e852c` (already adopted in PR #523), `5349522108bec896bb6a69ae76c6e1b8d419ae16` (covered: unused `.pnpm-store` cleanup, absent in Pylon), and `a43f9b45ae85caf37e0be8270ad3d27365ece2bd` (adopted snapshot preview grid span).
@@ -175,3 +179,5 @@ categories, opt-in custom sound and browser/in-app delivery, foreground-turn
 completion semantics, live-snapshot fencing, bounded native lifetime and
 acknowledged renderer navigation. No mobile push or background daemon delivery.
 The review cursor stays unchanged; unrelated sources in this range remain unclassified.
+
+| Antigravity non-spawning health and owned runtime temp / `6d1d549441be84f19696ab59ed7e2fbf305280d4` | `8c18b5bb21a5349fbadba8c77456ea34c41b7339` (#12008) | Adopted with Pylon adaptation: installation-only probes and per-process scoped temp directories. Intentionally exclude startup deletion of the shared temp root because other drivers/servers may still own its contents; failed cleanup or abrupt termination may leave directories. No system-temp cleanup. | Cycle #585; focused driver/environment regressions and server checks in implementation PR. |
