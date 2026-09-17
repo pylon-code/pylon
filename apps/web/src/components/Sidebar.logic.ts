@@ -146,10 +146,16 @@ export type SidebarDropTarget = {
   readonly activeOrder: readonly string[];
 };
 
+/**
+ * `nestingKeys` are the moved row's delegated children. Once the row lands in
+ * their section they render nested under it, so they leave that section's
+ * order: a drop must neither write their keys nor expect them as rows.
+ */
 export function resolveSidebarDropTarget(
   items: readonly SidebarListItem[],
   activeKey: string,
   overId: string,
+  nestingKeys?: ReadonlySet<string>,
 ): SidebarDropTarget | null {
   const activeIndex = items.findIndex((item) => sidebarListItemId(item) === activeKey);
   const overIndex = items.findIndex((item) => sidebarListItemId(item) === overId);
@@ -165,6 +171,8 @@ export function resolveSidebarDropTarget(
     if (item.kind === "marker") {
       if (item.marker === "pinned-divider") currentSection = "active";
       else if (item.marker === "snoozed-header" || item.marker === "settled-header") break;
+    } else if (item.key !== activeKey && currentSection === section && nestingKeys?.has(item.key)) {
+      continue;
     } else if (currentSection === "pinned") pinnedOrder.push(item.key);
     else activeOrder.push(item.key);
   }

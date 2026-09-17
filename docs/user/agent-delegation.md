@@ -42,8 +42,11 @@ depth** to 0 under **Harness**.
 
 ## What a child thread is
 
-Each delegated task becomes an ordinary thread in the sidebar, so you can open it, answer its
-questions, approve its actions, or stop it yourself.
+Each delegated task becomes an ordinary thread, so you can open it, answer its questions, approve
+its actions, or stop it yourself. In the sidebar it appears indented under its parent. Pinning, snoozing,
+or settling applies to one thread at a time, so when a child and its parent end up in different
+sections, the child shows as its own row. The legacy per-project sidebar and the mobile app list
+children as ordinary threads.
 
 - **Its own worktree.** Pylon creates a worktree on a temporary branch from the parent thread's
   branch. It follows the **Start from origin** setting, like other new worktrees. Nothing is merged
