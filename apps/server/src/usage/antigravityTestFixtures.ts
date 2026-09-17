@@ -28,7 +28,7 @@ export interface SyntheticGenMetadataInput {
   }>;
 }
 
-export function writeVarint(value: bigint | number): Uint8Array {
+function writeVarint(value: bigint | number): Uint8Array {
   let v = typeof value === "bigint" ? value : BigInt(value);
   if (v < 0n) {
     v = BigInt.asUintN(64, v);
@@ -42,7 +42,7 @@ export function writeVarint(value: bigint | number): Uint8Array {
   return new Uint8Array(out);
 }
 
-export function concatBuffers(bufs: ReadonlyArray<Uint8Array>): Uint8Array {
+function concatBuffers(bufs: ReadonlyArray<Uint8Array>): Uint8Array {
   const total = bufs.reduce((sum, b) => sum + b.length, 0);
   const out = new Uint8Array(total);
   let offset = 0;

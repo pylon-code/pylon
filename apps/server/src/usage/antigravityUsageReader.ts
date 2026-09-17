@@ -40,27 +40,25 @@ import * as NodePath from "node:path";
 export const WIRE_VARINT = 0;
 export const WIRE_FIXED64 = 1;
 export const WIRE_LENGTH_DELIMITED = 2;
-export const WIRE_START_GROUP = 3;
-export const WIRE_END_GROUP = 4;
 export const WIRE_FIXED32 = 5;
 
 /** Maximum bytes permitted for a single gen_metadata row blob (default 512 KiB). */
-export const DEFAULT_MAX_BLOB_SIZE = 512 * 1024;
+const DEFAULT_MAX_BLOB_SIZE = 512 * 1024;
 
 /** Maximum rows to process per database to guarantee bounded execution. */
-export const DEFAULT_MAX_ROWS_PER_DB = 10_000;
+const DEFAULT_MAX_ROWS_PER_DB = 10_000;
 
 /** Maximum cumulative blob bytes processed per database (default 32 MiB). */
-export const DEFAULT_MAX_TOTAL_BYTES_PER_DB = 32 * 1024 * 1024;
+const DEFAULT_MAX_TOTAL_BYTES_PER_DB = 32 * 1024 * 1024;
 
 /** Keyset pagination batch size to prevent materializing large query buffers. */
-export const DEFAULT_PAGE_SIZE = 100;
+const DEFAULT_PAGE_SIZE = 100;
 
 /** Cap recorded error strings to prevent memory inflation. */
-export const MAX_RECORDED_ERRORS = 100;
+const MAX_RECORDED_ERRORS = 100;
 
 /** Maximum valid length for model identifier strings. */
-export const MAX_MODEL_NAME_LENGTH = 256;
+const MAX_MODEL_NAME_LENGTH = 256;
 
 /* -------------------------------------------------------------------------- */
 /* Types & Interfaces                                                         */
@@ -188,7 +186,7 @@ async function openSqliteDatabase(databasePath: string): Promise<SqliteDbHandle>
 /* Sanitization & Predicates                                                  */
 /* -------------------------------------------------------------------------- */
 
-export function normalizeBound(value: unknown, fallback: number): number {
+function normalizeBound(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return fallback;
   }
@@ -200,7 +198,7 @@ export interface GenMetadataIndexRow {
   readonly byte_len: number;
 }
 
-export function parseGenMetadataIndexRow(raw: unknown): GenMetadataIndexRow | null {
+function parseGenMetadataIndexRow(raw: unknown): GenMetadataIndexRow | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
   const rawIdx = r.idx;
@@ -217,7 +215,7 @@ export function parseGenMetadataIndexRow(raw: unknown): GenMetadataIndexRow | nu
   return { idx, byte_len: byteLen };
 }
 
-export function extractRawIdx(raw: unknown): number | null {
+function extractRawIdx(raw: unknown): number | null {
   if (typeof raw === "object" && raw !== null && "idx" in raw) {
     const num = Number((raw as Record<string, unknown>).idx);
     if (Number.isSafeInteger(num) && num >= 0) {
@@ -227,7 +225,7 @@ export function extractRawIdx(raw: unknown): number | null {
   return null;
 }
 
-export function extractBlobData(rawRow: unknown): Uint8Array | null {
+function extractBlobData(rawRow: unknown): Uint8Array | null {
   if (typeof rawRow !== "object" || rawRow === null) return null;
   const data = (rawRow as Record<string, unknown>).data;
   if (data instanceof Uint8Array) {
@@ -281,7 +279,7 @@ export function readVarint(buf: Uint8Array, offset: number): VarintReadResult {
   throw new Error(`Unexpected EOF while reading varint at offset ${offset}`);
 }
 
-export function safeBigintToSafeNumber(val: bigint, fieldName: string): number {
+function safeBigintToSafeNumber(val: bigint, fieldName: string): number {
   if (val < 0n) {
     throw new Error(`Negative value ${val} rejected for token count ${fieldName}`);
   }
@@ -373,7 +371,7 @@ export interface ParsedModelUsageStats {
   readonly responseOutputTokens: number;
 }
 
-export function parseModelUsageStats(
+function parseModelUsageStats(
   buf: Uint8Array,
   start: number,
   length: number,
@@ -468,7 +466,7 @@ export interface ParsedChatStartMetadata {
   readonly contextSnapshot?: { estimatedTokensUsed: number; maxContextTokens: number };
 }
 
-export function parseChatStartMetadata(
+function parseChatStartMetadata(
   buf: Uint8Array,
   start: number,
   length: number,
@@ -533,7 +531,7 @@ export interface ParsedChatModelMetadata {
   readonly chatStartMetadata?: ParsedChatStartMetadata;
 }
 
-export function parseChatModelMetadata(
+function parseChatModelMetadata(
   buf: Uint8Array,
   start: number,
   length: number,

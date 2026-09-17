@@ -187,19 +187,19 @@ function primeAgentUsage(
   return { accounts, primary, backend: describe("assumed") };
 }
 
-export function isGeminiAntigravityModel(modelSlug?: string | null): boolean {
+function isGeminiAntigravityModel(modelSlug?: string | null): boolean {
   if (!modelSlug) return false;
   const lower = modelSlug.toLowerCase().trim();
   return lower.startsWith("gemini") || lower.includes("gemini");
 }
 
-export function isThirdPartyAntigravityModel(modelSlug?: string | null): boolean {
+function isThirdPartyAntigravityModel(modelSlug?: string | null): boolean {
   if (!modelSlug) return false;
   const lower = modelSlug.toLowerCase().trim();
   return lower.startsWith("claude") || lower.startsWith("gpt") || lower.includes("3p");
 }
 
-export function filterAntigravityWindowsForModel(
+function filterAntigravityWindowsForModel(
   windows: ReadonlyArray<ServerProviderUsageWindow>,
   modelSlug?: string | null,
 ): ReadonlyArray<ServerProviderUsageWindow> {

@@ -45,7 +45,7 @@ const decodeUsage = Schema.decodeUnknownOption(AntigravityUsageDataSchema);
  * Parses window duration dynamically from the CLI window string.
  * Never guesses 5h duration if the window specifies another timeframe.
  */
-export function parseAntigravityWindowDurationMins(windowStr?: string): number | undefined {
+function parseAntigravityWindowDurationMins(windowStr?: string): number | undefined {
   if (!windowStr) return undefined;
   const lower = windowStr.toLowerCase().trim();
   if (lower === "weekly") return WEEK_MINS;
@@ -92,7 +92,7 @@ function labelForBucket(groupName: string | undefined, bucket: AntigravityBucket
   return tag ? `${windowLabel} (${tag})` : windowLabel;
 }
 
-export function parseAntigravityBucketToWindow(
+function parseAntigravityBucketToWindow(
   groupName: string | undefined,
   bucket: AntigravityBucket,
 ): ServerProviderUsageWindow | undefined {
