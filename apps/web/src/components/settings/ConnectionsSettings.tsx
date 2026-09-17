@@ -1,3 +1,4 @@
+import { EnvironmentIconPicker } from "./EnvironmentIconPicker";
 import {
   ChevronsLeftRightEllipsisIcon,
   EllipsisIcon,
@@ -1413,6 +1414,7 @@ function NetworkAccessDescription({
 type SavedBackendListRowProps = {
   environment: EnvironmentPresentation;
   removingEnvironmentId: EnvironmentId | null;
+  onRetry: (environmentId: EnvironmentId) => void;
   onSetEnabled: (environmentId: EnvironmentId, enabled: boolean) => void;
   onRemove: (environment: EnvironmentPresentation) => void;
 };
@@ -1421,6 +1423,7 @@ function SavedBackendListRow({
   environment,
   removingEnvironmentId,
   onSetEnabled,
+  onRetry,
   onRemove,
 }: SavedBackendListRowProps) {
   const environmentId = environment.environmentId;
@@ -1572,7 +1575,9 @@ function SavedBackendListRow({
               )}
             >
               <span className="min-w-0 break-words">
-                {connectionStatusText(environment.connection)}
+                {unsupported
+                  ? environment.connection.error
+                  : connectionStatusText(environment.connection)}
               </span>
               {errorTraceId ? (
                 <button
@@ -1587,6 +1592,11 @@ function SavedBackendListRow({
           ) : null}
         </div>
         <div className="flex w-full shrink-0 items-center gap-1 sm:w-auto sm:justify-end">
+          {unsupported ? (
+            <Button size="xs" variant="outline" onClick={() => onRetry(environmentId)}>
+              Check again
+            </Button>
+          ) : null}
           {showUpdateAction ? (
             <ServerUpdateAction
               environmentId={environmentId}
@@ -1626,7 +1636,9 @@ function SavedBackendListRow({
                     />
                   }
                 />
-                <TooltipPopup side="top">{enabled ? "Switch off" : "Switch on"}</TooltipPopup>
+                <TooltipPopup side="top">
+                  {unsupported ? "Client not supported" : enabled ? "Switch off" : "Switch on"}
+                </TooltipPopup>
               </Tooltip>
               <Menu>
                 <MenuTrigger
@@ -1835,6 +1847,7 @@ export function ConnectionsSettings() {
   const connectSshEnvironment = useAtomCommand(connectSshEnvironmentAtom, {
     reportFailure: false,
   });
+  const retryEnvironment = useAtomCommand(environmentCatalog.retryNow);
   const removeEnvironment = useAtomCommand(environmentCatalog.remove, { reportFailure: false });
   const setEnvironmentEnabled = useAtomCommand(environmentCatalog.setEnabled, {
     reportFailure: false,
@@ -3724,6 +3737,9 @@ export function ConnectionsSettings() {
             key={environment.environmentId}
             environment={environment}
             removingEnvironmentId={removingSavedEnvironmentId}
+            onRetry={(environmentId) => {
+              void retryEnvironment(environmentId);
+            }}
             onSetEnabled={handleSetSavedBackendEnabled}
             onRemove={handleRemoveSavedBackend}
           />

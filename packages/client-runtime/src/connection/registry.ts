@@ -688,9 +688,22 @@ export const make = Effect.gen(function* () {
   );
 
   const retryNow = (environmentId: EnvironmentId) =>
-    acquireSupervisor(environmentId).pipe(
-      Effect.flatMap((supervisor) => supervisor.retryNow),
+    Effect.gen(function* () {
+      const entry = yield* getEntry(environmentId);
+      if (entry.unsupportedReason !== undefined) {
+        // Explicit retry rechecks the server after an upgrade. Resolver preflight
+        // still rejects incompatible wire versions before opening a socket.
+        yield* setCompatibility(environmentId, null);
+        yield* setEnabled(environmentId, true);
+        return;
+      }
+      const supervisor = yield* acquireSupervisor(environmentId);
+      yield* supervisor.retryNow;
+    }).pipe(
       Effect.catchTag("EnvironmentNotRegisteredError", () => Effect.void),
+      Effect.catch((error) =>
+        Effect.logWarning("Could not retry environment compatibility.", { environmentId, error }),
+      ),
       Effect.withSpan("EnvironmentRegistry.retryNow"),
     );
   const setEnabled = Effect.fn("EnvironmentRegistry.setEnabled")(function* (

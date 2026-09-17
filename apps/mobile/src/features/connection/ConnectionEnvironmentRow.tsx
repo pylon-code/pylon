@@ -17,7 +17,6 @@ import { Alert, Pressable, View } from "react-native";
 import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanimated";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
-import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
 import { ThemedSwitch } from "../../components/ThemedSwitch";
 import { cn } from "../../lib/cn";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
@@ -340,7 +339,8 @@ export function ConnectionEnvironmentRow(props: {
 
             <Pressable
               className="h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-input-border bg-input active:opacity-70 disabled:opacity-40"
-              disabled={!enabled}
+              disabled={!enabled && !unsupported}
+              accessibilityLabel={unsupported ? "Check compatibility again" : "Reconnect"}
               onPress={() => props.onReconnect(props.environment.environmentId)}
             >
               <SymbolView

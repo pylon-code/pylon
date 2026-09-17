@@ -858,6 +858,41 @@ describe("EnvironmentRegistry", () => {
     }),
   );
 
+  it.effect("explicit retry rechecks a blocked direct environment after an upgrade", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([BEARER_TARGET], [BEARER_PROFILE]);
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        yield* registry.start;
+        yield* awaitConnectionState(
+          registry,
+          BEARER_TARGET.environmentId,
+          (state) => state.phase === "connected",
+        );
+        yield* registry.setCompatibility(
+          BEARER_TARGET.environmentId,
+          new ConnectionBlockedError({ reason: "unsupported", detail: "Update the server." }),
+        );
+        expect(
+          (yield* SubscriptionRef.get(registry.entries)).get(BEARER_TARGET.environmentId)?.enabled,
+        ).toBe(false);
+        yield* registry.retryNow(BEARER_TARGET.environmentId);
+        yield* awaitConnectionState(
+          registry,
+          BEARER_TARGET.environmentId,
+          (state) => state.phase === "connected",
+        );
+        expect(
+          (yield* SubscriptionRef.get(registry.entries)).get(BEARER_TARGET.environmentId),
+        ).toMatchObject({ enabled: true });
+        expect(
+          (yield* SubscriptionRef.get(registry.entries)).get(BEARER_TARGET.environmentId)
+            ?.unsupportedReason,
+        ).toBeUndefined();
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("a socket preflight rejection persists the connection as switched off", () =>
     Effect.gen(function* () {
       const error = new ConnectionBlockedError({
@@ -878,6 +913,17 @@ describe("EnvironmentRegistry", () => {
           (yield* SubscriptionRef.get(registry.entries)).get(RELAY_TARGET.environmentId)
             ?.unsupportedReason,
         ).toBe(error.message);
+        expect(yield* Ref.get(harness.sessions)).toHaveLength(0);
+        yield* registry.retryNow(RELAY_TARGET.environmentId);
+        yield* SubscriptionRef.changes(registry.entries).pipe(
+          Stream.filter(
+            (entries) =>
+              entries.get(RELAY_TARGET.environmentId)?.unsupportedReason === error.message,
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+        );
+        expect((yield* Ref.get(harness.storedDisabled)).has(RELAY_TARGET.environmentId)).toBe(true);
         expect(yield* Ref.get(harness.sessions)).toHaveLength(0);
       }).pipe(Effect.provide(harness.layer));
     }),
