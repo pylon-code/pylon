@@ -3701,6 +3701,14 @@ export function makeOpenCodeAdapter(
                     input.threadId,
                     "delegation",
                   ),
+                  browserAvailable: McpProviderSession.hasMcpProviderCapability(
+                    input.threadId,
+                    "preview",
+                  ),
+                  deviceAvailable: McpProviderSession.hasMcpProviderCapability(
+                    input.threadId,
+                    "device",
+                  ),
                 }),
                 parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
               },

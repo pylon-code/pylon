@@ -1,3 +1,4 @@
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
@@ -25,6 +26,7 @@ import {
   ThreadId,
   type ThreadTokenUsageSnapshot,
   ProviderInstanceId,
+  EnvironmentId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, describe, it } from "@effect/vitest";
@@ -425,6 +427,45 @@ describe("ClaudeAdapterLive", () => {
       });
       assert.equal(createInput?.options.permissionMode, "bypassPermissions");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("includes browser and device instructions when mcp session grants them", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("environment-test"),
+        threadId: THREAD_ID,
+        providerSessionId: "provider-session-test",
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        endpoint: "http://127.0.0.1:4000/mcp",
+        authorizationHeader: "Bearer token",
+        capabilities: new Set(["preview", "device"]),
+      });
+      try {
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        const createInput = harness.getLastCreateQueryInput();
+        assert.deepEqual(createInput?.options.systemPrompt, {
+          type: "preset",
+          preset: "claude_code",
+          append: buildRuntimeInstructions({
+            harness: "Claude Code",
+            browserAvailable: true,
+            deviceAvailable: true,
+          }),
+        });
+      } finally {
+        McpProviderSession.clearMcpProviderSession(THREAD_ID);
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

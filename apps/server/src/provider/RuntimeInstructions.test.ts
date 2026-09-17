@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { buildRuntimeInstructions } from "./RuntimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
-  it.each(["Codex", "Claude Code", "Cursor", "Grok", "OpenCode"])(
+  it.each(["Codex", "Claude Code", "Cursor", "Grok", "OpenCode", "Antigravity"])(
     "identifies the %s harness and describes media embedding",
     (harness) => {
       const instructions = buildRuntimeInstructions({ harness });
@@ -51,5 +51,38 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("default is built-in subagents");
     expect(instructions).toContain("Explicit user instructions override");
     expect(instructions).not.toContain("waitSeconds 45");
+  });
+
+  it("describes the collaborative browser only when preview tools are available", () => {
+    expect(buildRuntimeInstructions({ harness: "Antigravity" })).not.toContain("<pylon_browser>");
+    expect(
+      buildRuntimeInstructions({ harness: "Claude Code", browserAvailable: false }),
+    ).not.toContain("preview_status");
+
+    const instructions = buildRuntimeInstructions({
+      harness: "Antigravity",
+      browserAvailable: true,
+    });
+    expect(instructions).toContain("<pylon_browser>");
+    expect(instructions).toContain("Pylon collaborative browser");
+    expect(instructions).toContain("preview_status");
+    expect(instructions).toContain("preview_open");
+    expect(instructions).toContain("Do not switch to global browser skills");
+  });
+
+  it("describes device tools only when device tools are available", () => {
+    expect(buildRuntimeInstructions({ harness: "Cursor" })).not.toContain("<pylon_devices>");
+    expect(buildRuntimeInstructions({ harness: "Cursor", deviceAvailable: false })).not.toContain(
+      "device_list",
+    );
+
+    const instructions = buildRuntimeInstructions({
+      harness: "Cursor",
+      deviceAvailable: true,
+    });
+    expect(instructions).toContain("<pylon_devices>");
+    expect(instructions).toContain("device_list");
+    expect(instructions).toContain("device_open");
+    expect(instructions).toContain("agent-device");
   });
 });
