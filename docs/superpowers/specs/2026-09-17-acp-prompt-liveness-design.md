@@ -112,7 +112,7 @@ The watchdog loops:
      method: "session/prompt",
      detail: `The agent sent nothing for ${minutes} minutes after its last message and never completed the prompt. Its process was stopped.${stderrTail}`,
      cause: undefined,
-   })
+   });
    ```
 
 The watchdog is interrupted in the prompt's release step alongside the prompt
@@ -164,11 +164,11 @@ Turn settlement then flows through the paths that already exist:
   calls `runtime.cancel` (`context.userCancelRequested = true`, cleared when the
   turn settles). `onInterrupt` computes:
 
-  | `disconnected` | `userCancelRequested` | state       | errorMessage        |
-  |----------------|-----------------------|-------------|---------------------|
-  | false          | any                   | `cancelled` | none                |
-  | true           | true                  | `cancelled` | `fatalError`        |
-  | true           | false                 | `failed`    | `fatalError`        |
+  | `disconnected` | `userCancelRequested` | state       | errorMessage |
+  | -------------- | --------------------- | ----------- | ------------ |
+  | false          | any                   | `cancelled` | none         |
+  | true           | true                  | `cancelled` | `fatalError` |
+  | true           | false                 | `failed`    | `fatalError` |
 
   `TurnCompletedPayload.errorMessage` is optional and independent of `state`,
   so a cancelled turn may carry the force-stop explanation.
