@@ -15,6 +15,7 @@ interface PanelLayoutControlsProps {
   rightPanelUnavailableLabel?: string;
   /** Running + waiting subagents in this thread; badges the right panel toggle. */
   liveAgentCount: number;
+  attentionAgentCount?: number;
   onToggleTerminal: () => void;
   onToggleRightPanel: () => void;
 }
@@ -29,9 +30,14 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   rightPanelShortcutLabel,
   rightPanelUnavailableLabel = "Right panel is unavailable",
   liveAgentCount,
+  attentionAgentCount = 0,
   onToggleTerminal,
   onToggleRightPanel,
 }: PanelLayoutControlsProps) {
+  const agentStatus =
+    attentionAgentCount > 0
+      ? `${attentionAgentCount} ${attentionAgentCount === 1 ? "agent needs" : "agents need"} attention`
+      : `${liveAgentCount} ${liveAgentCount === 1 ? "agent" : "agents"} active`;
   return (
     <div
       className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
@@ -66,9 +72,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
             pressed={rightPanelOpen}
             onPressedChange={onToggleRightPanel}
             aria-label={
-              liveAgentCount > 0
-                ? `Toggle right panel, ${liveAgentCount} ${liveAgentCount === 1 ? "agent" : "agents"} working`
-                : "Toggle right panel"
+              liveAgentCount > 0 ? `Toggle right panel, ${agentStatus}` : "Toggle right panel"
             }
             variant="ghost"
             size="sm"
@@ -88,9 +92,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
         <TooltipPopup side="bottom">
           {rightPanelAvailable
             ? `Toggle right panel${rightPanelShortcutLabel ? ` (${rightPanelShortcutLabel})` : ""}${
-                liveAgentCount > 0
-                  ? ` · ${liveAgentCount} ${liveAgentCount === 1 ? "agent" : "agents"} working`
-                  : ""
+                liveAgentCount > 0 ? ` · ${agentStatus}` : ""
               }`
             : rightPanelUnavailableLabel}
         </TooltipPopup>

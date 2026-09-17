@@ -1,4 +1,4 @@
-import { DelegatedThreadList, type DelegatedThreadRows } from "../DelegatedThreadList";
+import { type DelegatedThreadRows } from "../DelegatedThreadList";
 const EMPTY_DELEGATED_THREADS: DelegatedThreadRows = [];
 import { delegationActivity } from "../../delegationActivity";
 import { usePreparedConnection } from "~/state/session";
@@ -2056,7 +2056,12 @@ const WorkGroupSection = memo(function WorkGroupSection({
     [anchorKey, onToggleWorkEntry],
   );
   const nonEmptyEntries = useMemo(
-    () => groupedEntries.filter((entry) => workEntryIsVisibleInGroup(entry, isExpandedToolGroup)),
+    () =>
+      groupedEntries.filter(
+        (entry) =>
+          delegationActivity(entry)?.name === "delegate_thread" ||
+          workEntryIsVisibleInGroup(entry, isExpandedToolGroup),
+      ),
     [groupedEntries, isExpandedToolGroup],
   );
   const onlyToolEntries = nonEmptyEntries.every((entry) => workLogEntryIsToolLike(entry));
@@ -3690,6 +3695,46 @@ const stopRowToggleWhileSelectingText = (e: MouseEvent<HTMLElement>) => {
  * only roster. Freezes to past tense when every member settles. The circular
  * orbit is reserved for active orchestration; queued/waiting work uses ellipsis.
  */
+const AgentActivityCta = memo(function AgentActivityCta({
+  lead,
+  name,
+  status,
+  dotClass,
+  totalTokens = 0,
+  live,
+  onOpenAgents,
+}: {
+  lead: string;
+  name?: string | null | undefined;
+  status: string;
+  dotClass: string | undefined;
+  totalTokens?: number;
+  live: boolean;
+  onOpenAgents: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpenAgents}
+      className="flex w-full items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5 text-left text-[.8125rem] transition hover:bg-accent/50"
+    >
+      <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", dotClass)} />
+      <WorkEntryIcon name="bot" className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate">
+        <span className="font-medium">{lead}</span>
+        {name ? <span className="text-muted-foreground"> · {name}</span> : null}
+      </span>
+      <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[.7rem] text-muted-foreground">
+        <span>{status}</span>
+        {totalTokens > 0 ? (
+          <span className="tabular-nums">Σ {formatSubagentTokenCount(totalTokens)}</span>
+        ) : null}
+        <span className="text-info-foreground">{live ? "Open Agents ▸" : "View ▸"}</span>
+      </span>
+    </button>
+  );
+});
+
 const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: TimelineWorkEntry }) {
   const { workEntry } = props;
   const { agentPanelModel, onOpenAgents } = use(TimelineRowCtx);
@@ -3737,25 +3782,15 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
     live && livePhase ? `${livePhase.title} · ${livePhase.activeCount} working` : summary.status;
 
   return (
-    <button
-      type="button"
-      onClick={onOpenAgents}
-      className="flex w-full items-center gap-2 rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5 text-left text-[.8125rem] transition hover:bg-accent/50"
-    >
-      <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", dotClass)} />
-      <WorkEntryIcon name="bot" className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 truncate">
-        <span className="font-medium">{lead}</span>
-        {workflowName ? <span className="text-muted-foreground"> · {workflowName}</span> : null}
-      </span>
-      <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[.7rem] text-muted-foreground">
-        <span>{status}</span>
-        {totalTokens > 0 ? (
-          <span className="tabular-nums">Σ {formatSubagentTokenCount(totalTokens)}</span>
-        ) : null}
-        <span className="text-info-foreground">{live ? "Open Agents ▸" : "View ▸"}</span>
-      </span>
-    </button>
+    <AgentActivityCta
+      lead={lead}
+      name={workflowName}
+      status={status}
+      dotClass={dotClass}
+      totalTokens={totalTokens}
+      live={live}
+      onOpenAgents={onOpenAgents}
+    />
   );
 });
 
@@ -3783,28 +3818,46 @@ const PylonDelegationWorkRow = memo(function PylonDelegationWorkRow({
           ? "Starting Pylon delegation"
           : "Pylon delegation"
         : "Checked Pylon delegation";
+  const live =
+    pending ||
+    child?.status === "starting" ||
+    child?.status === "running" ||
+    child?.status === "needs-input" ||
+    child?.status === "needs-approval";
+  const status = failed
+    ? "failed"
+    : child
+      ? child.status.replaceAll("-", " ")
+      : pending
+        ? "working"
+        : "recorded";
+  const dotClass =
+    failed || child?.status === "error"
+      ? "bg-destructive"
+      : live
+        ? "bg-info"
+        : child?.status === "completed"
+          ? "bg-success"
+          : "bg-muted-foreground/50";
   return (
-    <details className="rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5 text-[.8125rem]">
-      <summary className="cursor-pointer">
-        {label}
-        {child || delegation?.title ? ` · ${child?.title ?? delegation?.title}` : ""}
-      </summary>
-      <div className="mt-2 grid gap-2">
-        {child ? <DelegatedThreadList rows={[child]} /> : null}
-        <button
-          type="button"
-          onClick={onOpenAgents}
-          className="text-left text-xs underline underline-offset-2"
-        >
-          Open Agents
-        </button>
+    <div>
+      <AgentActivityCta
+        lead={label}
+        name={child?.title ?? delegation?.title}
+        status={status}
+        dotClass={dotClass}
+        live={live}
+        onOpenAgents={onOpenAgents}
+      />
+      <details className="mt-1 text-xs text-muted-foreground">
+        <summary className="cursor-pointer">Tool details</summary>
         <PlainWorkEntryRow
           workEntry={workEntry}
           workspaceRoot={workspaceRoot}
           isExpandedToolGroupEntry
         />
-      </div>
-    </details>
+      </details>
+    </div>
   );
 });
 
