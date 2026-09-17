@@ -202,7 +202,7 @@ function quoteBrowserArgument(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function antigravityEnvironment(
+export function antigravityEnvironment(
   profile: AntigravityProfile,
   baseEnv: NodeJS.ProcessEnv,
   auth: AntigravityAuthConfig,

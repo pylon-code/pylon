@@ -5,6 +5,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSetupError,
+  type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -111,15 +112,23 @@ const testLayer = Layer.merge(
 type ProbeError = EffectAcpErrors.AcpError | ProviderSetupError;
 
 const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
-  options: { readonly enabled?: boolean; readonly safe?: boolean } = {},
+  options: {
+    readonly enabled?: boolean;
+    readonly safe?: boolean;
+    readonly initialUsageLimits?: ServerProviderUsageLimits;
+  } = {},
 ) {
   const initialProbe = yield* Deferred.make<EffectAcpSchema.InitializeResponse, ProbeError>();
   const probeCalls = yield* Ref.make(0);
   const safetyCalls = yield* Ref.make(0);
+  const probeUsageCalls = yield* Ref.make(0);
   const probe = yield* Ref.make<Effect.Effect<EffectAcpSchema.InitializeResponse, ProbeError>>(
     Deferred.await(initialProbe),
   );
   const safety = yield* Ref.make<Effect.Effect<boolean>>(Effect.succeed(options.safe ?? true));
+  const usageLimitsRef = yield* Ref.make<ServerProviderUsageLimits | undefined>(
+    options.initialUsageLimits,
+  );
   const provider = yield* makeAntigravityProvider(
     decodeSettings({ enabled: options.enabled ?? true, customModels: ["do-not-seed-me"] }),
     {
@@ -127,6 +136,9 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
       probe: Ref.update(probeCalls, (count) => count + 1).pipe(
         Effect.andThen(Ref.get(probe)),
         Effect.flatten,
+      ),
+      probeUsageLimits: Ref.update(probeUsageCalls, (count) => count + 1).pipe(
+        Effect.andThen(Ref.get(usageLimitsRef)),
       ),
       supportsTextGeneration: Ref.update(safetyCalls, (count) => count + 1).pipe(
         Effect.andThen(Ref.get(safety)),
@@ -149,6 +161,8 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
     probeCalls,
     safety,
     safetyCalls,
+    usageLimitsRef,
+    probeUsageCalls,
     initialProbe,
     initialUpdate,
     initialize,
@@ -227,6 +241,14 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
           showInteractionModeToggle: false,
           supportsConversationRollback: false,
           supportsTextGeneration: false,
+          reportsContextWindow: true,
+          usageLimits: {
+            source: "provider",
+            windows: [],
+            unavailable: {
+              reason: "unsupported",
+            },
+          },
         });
         expect(yield* Ref.get(harness.probeCalls)).toBe(0);
         expect(yield* Ref.get(harness.safetyCalls)).toBe(0);
@@ -640,5 +662,59 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
         expect(yield* Ref.get(harness.probeCalls)).toBe(1);
       }),
     ),
+  );
+
+  it.effect(
+    "updates usageLimits from probe and retains bars with probeFailed on subsequent failure",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const testLimits: ServerProviderUsageLimits = {
+            source: "antigravityCli",
+            checkedAt: "2026-09-17T18:00:00.000Z",
+            windows: [
+              {
+                id: "gemini-5h",
+                label: "5-Hour (Gemini)",
+                usedPercent: 45,
+                windowDurationMins: 300,
+              },
+              {
+                id: "gemini-weekly",
+                label: "Weekly (Gemini)",
+                usedPercent: 10,
+                windowDurationMins: 10080,
+              },
+            ],
+          };
+          const harness = yield* makeHarness({ initialUsageLimits: testLimits });
+          yield* harness.initialize;
+
+          // Session starts and receives usageLimits
+          yield* harness.provider.onSessionStarted(started);
+          let snapshot = yield* harness.provider.snapshot.getSnapshot;
+          expect(snapshot.usageLimits?.windows).toHaveLength(2);
+          expect(snapshot.usageLimits?.windows[0]?.label).toBe("5-Hour (Gemini)");
+          expect(snapshot.usageLimits?.unavailable).toBeUndefined();
+
+          // Now probe fails (e.g. returns undefined)
+          yield* Ref.set(harness.usageLimitsRef, undefined);
+          const refreshed = yield* harness.provider.snapshot.refresh;
+
+          // Retains bars while surfacing probeFailed
+          expect(refreshed.usageLimits?.windows).toHaveLength(2);
+          expect(refreshed.usageLimits?.windows[0]?.usedPercent).toBe(45);
+          expect(refreshed.usageLimits?.unavailable).toEqual({
+            reason: "probeFailed",
+            message: "Antigravity usage limits could not be refreshed.",
+          });
+
+          // Sign out resets usage limits
+          yield* harness.provider.onSignedOut;
+          snapshot = yield* harness.provider.snapshot.getSnapshot;
+          expect(snapshot.usageLimits?.windows).toEqual([]);
+          expect(snapshot.usageLimits?.unavailable?.reason).toBe("unsupported");
+        }),
+      ),
   );
 });

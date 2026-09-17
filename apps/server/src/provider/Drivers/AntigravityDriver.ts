@@ -42,6 +42,12 @@ import { removeAntigravitySessionFiles } from "../acp/AntigravitySessionFiles.ts
 import { ProviderDriverError } from "../Errors.ts";
 import { makeAntigravityAdapter } from "../Layers/AntigravityAdapter.ts";
 import { makeAntigravityProvider } from "../Layers/AntigravityProvider.ts";
+import {
+  resolveAntigravityCliExecutable,
+  runAntigravityUsageProbe,
+} from "../Layers/antigravityUsageLimits.ts";
+import { makeUnavailableUsageLimits } from "../usageLimitsSnapshot.ts";
+import * as DateTime from "effect/DateTime";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import {
@@ -323,9 +329,52 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         };
       });
 
+      const probeUsageLimits = Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const checkedAt = DateTime.formatIso(now);
+
+        if (auth.authMethod !== "oauth-personal") {
+          return makeUnavailableUsageLimits({
+            checkedAt,
+            reason: "unsupported",
+            message: "Usage limits are only available for personal Google account authentication.",
+          });
+        }
+
+        const agyExecutable = yield* resolveAntigravityCliExecutable({
+          baseEnv: processEnvironment,
+          userHome,
+        });
+        if (!agyExecutable) {
+          return makeUnavailableUsageLimits({
+            checkedAt,
+            reason: "unsupported",
+            message: "Antigravity CLI (agy) is not installed.",
+          });
+        }
+
+        const tokenPath = path.join(profileDirectory, "antigravity-acp", "acp_token.json");
+        const tokenExists = yield* fileSystem
+          .exists(tokenPath)
+          .pipe(Effect.orElseSucceed(() => false));
+        if (!tokenExists) {
+          return makeUnavailableUsageLimits({
+            checkedAt,
+            reason: "unsupported",
+            message: "Antigravity is not signed in.",
+          });
+        }
+
+        return yield* runAntigravityUsageProbe({
+          executablePath: agyExecutable,
+          env: processEnvironment,
+        });
+      });
+
       const provider = yield* makeAntigravityProvider(settings, {
         stampIdentity: classifyModels,
         probe,
+        probeUsageLimits,
         auth: { type: auth.authMethod, label: antigravityAuthLabel(auth.authMethod) },
         supportsTextGeneration: isAntigravityTextGenerationAvailable(profileDirectory).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
