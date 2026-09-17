@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   RuntimeSessionId,
   ThreadId,
+  EnvironmentId,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -488,7 +489,10 @@ it.layer(layer)("AntigravityAdapter", (it) => {
     Effect.gen(function* () {
       const h = yield* makeHarness();
       McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("environment-test"),
         threadId,
+        providerSessionId: "provider-session-test",
+        providerInstanceId: ProviderInstanceId.make("antigravity"),
         endpoint: "http://127.0.0.1:4000/mcp",
         authorizationHeader: "Bearer token",
         capabilities: new Set(["preview", "device"]),
