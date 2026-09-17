@@ -69,9 +69,7 @@ export default defineConfig({
       ],
       clean: false,
       deps: {
-        alwaysBundle: (id) => !id.startsWith("node:") && !isMainProcessExternal(id),
-        neverBundle: isMainProcessExternal,
-        onlyBundle: false,
+        alwaysBundle: (id) => id.startsWith("@t3tools/"),
       },
     },
     {
