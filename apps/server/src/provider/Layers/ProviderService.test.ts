@@ -739,6 +739,8 @@ const makeThreadProjectProjectionLayer = (
   projectionStatus: () => "found" | "missing" | "failed" = () => "found",
 ) =>
   Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+    getDelegationObservationActivities: () => Effect.succeed([]),
+    getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
     getPendingRequestActivities: () => Effect.die("unused"),
     getUserInputActivity: () => Effect.die("unused"),
     getCommandReadModel: () => Effect.die("unused"),

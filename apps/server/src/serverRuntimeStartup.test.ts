@@ -163,6 +163,8 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         autoBootstrapProjectFromCwd: true,
       } as never),
       Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+        getDelegationObservationActivities: () => Effect.succeed([]),
+        getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
         getPendingRequestActivities: () => Effect.succeed([]),
         getUserInputActivity: () => Effect.die("unused"),
         getCommandReadModel: () => Effect.die("unused"),
@@ -293,6 +295,8 @@ it.effect.each([
         autoBootstrapProjectFromCwd: true,
       } as never),
       Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+        getDelegationObservationActivities: () => Effect.succeed([]),
+        getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
         getPendingRequestActivities: () => Effect.succeed([]),
         getUserInputActivity: () => Effect.die("unused"),
         getCommandReadModel: () => Effect.die("unused"),
@@ -380,6 +384,8 @@ it.effect(
         } as never),
         Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
           getUserInputActivity: () => Effect.die("unused"),
+          getDelegationObservationActivities: () => Effect.succeed([]),
+          getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
           getPendingRequestActivities: () => Effect.die("unused"),
           getTurnStartMessage: () => Effect.die("unused"),
           getCommandReadModel: () => Effect.die("unused"),
@@ -443,6 +449,8 @@ it.effect("resolveAutoBootstrapWelcomeTargets preserves typed UUID generation fa
         autoBootstrapProjectFromCwd: true,
       } as never),
       Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+        getDelegationObservationActivities: () => Effect.succeed([]),
+        getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
         getPendingRequestActivities: () => Effect.succeed([]),
         getUserInputActivity: () => Effect.die("unused"),
         getCommandReadModel: () => Effect.die("unused"),

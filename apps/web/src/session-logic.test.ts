@@ -576,6 +576,27 @@ describe("workEntryIndicatesToolNeutralStatus", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("shows the automatic delegation limit and recovery instruction in the existing work log", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "delegation-paused",
+        kind: "delegation.follow-through.paused",
+        summary: "Automatic delegation follow-through paused",
+        tone: "info",
+        payload: {
+          detail:
+            "Three automatic follow-through turns have run. Send a message to continue; child statuses remain available in Agents.",
+        },
+        turnId: "turn-1",
+      }),
+    ]);
+    expect(entry).toMatchObject({
+      label: "Automatic delegation follow-through paused",
+      detail: expect.stringContaining("Send a message to continue"),
+      tone: "info",
+    });
+  });
+
   it.each([
     {
       outcome: "completed",

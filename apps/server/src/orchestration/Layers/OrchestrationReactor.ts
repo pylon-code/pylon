@@ -10,6 +10,7 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import * as ThreadSettlementReactor from "../ThreadSettlementReactor.ts";
+import * as DelegationFollowThroughReactor from "../DelegationFollowThroughReactor.ts";
 import * as PullRequestSyncReactor from "../PullRequestSyncReactor.ts";
 import * as ProjectSettingsReactor from "../ProjectSettingsReactor.ts";
 import * as ThreadPullRequestReactor from "../ThreadPullRequestReactor.ts";
@@ -20,6 +21,8 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const providerCommandReactor = yield* ProviderCommandReactor;
   const checkpointReactor = yield* CheckpointReactor;
   const threadDeletionReactor = yield* ThreadDeletionReactor;
+  const delegationFollowThrough =
+    yield* DelegationFollowThroughReactor.DelegationFollowThroughReactor;
   const threadSettlementReactor = yield* ThreadSettlementReactor.ThreadSettlementReactor;
   const pullRequestSyncReactor = yield* PullRequestSyncReactor.PullRequestSyncReactor;
   const threadPullRequestReactor = yield* ThreadPullRequestReactor.ThreadPullRequestReactor;
@@ -36,6 +39,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* threadSettlementReactor.start();
     yield* pullRequestSyncReactor.start();
     yield* agentAwarenessRelay.start();
+    yield* delegationFollowThrough.start();
   });
 
   return {

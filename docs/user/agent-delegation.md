@@ -98,8 +98,29 @@ status; use Agents for the authoritative roster. No child is matched by its titl
 “Waiting for delegated agent” requires an active parent turn and a recognized running status call
 with a positive wait budget. Codex and Claude expose this structured tool data. Providers without
 it, including current Prime and OpenCode live events, retain their generic tool logs and show child
-status through the existing Agents panel and active-agent count. This does not automatically resume
-the parent when a child finishes. Mobile retains its existing child-thread sidebar display.
+status through the existing Agents panel and active-agent count. Mobile retains its existing
+child-thread sidebar display.
+
+## Automatic parent follow-through
+
+While Pylon delegation is enabled, a child's completion, interruption, error, or request for
+approval/input queues a follow-through turn for its parent. A busy parent receives the latest
+updates together when it becomes eligible to run again. The parent is instructed to review results
+and inspect blockers; a completed child is not automatically treated as verified work.
+
+This applies only to separate Pylon child threads. Built-in subagents keep their provider's lifecycle
+behavior. Updates use ordinary parent turns and the existing work log; no separate monitoring panel
+is required. Follow-through runs on the server, including when using a remote or tunneled client.
+
+A stopped, errored, snoozed, settled, archived, or blocked parent does not automatically resume.
+Pylon does not approve a child's actions or blindly restart a stopped child. Turning delegation off
+prevents further automatic parent turns; children already running are unaffected. Historical completed
+children are not automatically revisited when the server starts.
+
+To limit unattended usage, Pylon allows three automatic follow-through turns after your latest
+ordinary message, then records **Automatic delegation follow-through paused** in the work log.
+Send another message to continue. This is a turn limit, not a token or billing budget; parent and
+child provider usage still applies.
 
 ## Things to know
 
@@ -108,8 +129,7 @@ the parent when a child finishes. Mobile retains its existing child-thread sideb
   briefing and review overhead; using them is not a guarantee of lower total usage.
 - When waiting is necessary, an agent checks for up to 45 seconds inside its current turn. Completed
   children and children waiting for an approval or answer return immediately.
-  Pylon does not wake the parent when a child finishes. If the parent's turn ends first, ask it to
-  check on its children in your next message.
+  The parent can also end its turn and rely on automatic follow-through below.
 - Result summaries are limited to 4,000 characters by default. The agent can request more and should
   expand a truncated result before accepting the work. If the 60,000-character limit is still too
   small, inspect the child thread or ask it for a concise handoff.
