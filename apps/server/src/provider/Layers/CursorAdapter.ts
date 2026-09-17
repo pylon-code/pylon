@@ -1103,6 +1103,14 @@ export function makeCursorAdapter(
                       input.threadId,
                       "delegation",
                     ),
+                    browserAvailable: McpProviderSession.hasMcpProviderCapability(
+                      input.threadId,
+                      "preview",
+                    ),
+                    deviceAvailable: McpProviderSession.hasMcpProviderCapability(
+                      input.threadId,
+                      "device",
+                    ),
                   }),
                 },
               ],

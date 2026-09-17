@@ -5218,6 +5218,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         append: buildRuntimeInstructions({
           harness: "Claude Code",
           delegationAvailable: mcpSession?.capabilities.has("delegation") === true,
+          browserAvailable: mcpSession?.capabilities.has("preview") === true,
+          deviceAvailable: mcpSession?.capabilities.has("device") === true,
         }),
       },
       settingSources: [...CLAUDE_SETTING_SOURCES],

@@ -1631,6 +1631,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   input.threadId,
                   "delegation",
                 ),
+                browserAvailable: McpProviderSession.hasMcpProviderCapability(
+                  input.threadId,
+                  "preview",
+                ),
+                deviceAvailable: McpProviderSession.hasMcpProviderCapability(
+                  input.threadId,
+                  "device",
+                ),
               });
               for (let yieldAttempt = 0; yieldAttempt < 8; yieldAttempt += 1) {
                 yield* Effect.yieldNow;

@@ -1,3 +1,4 @@
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -480,6 +481,39 @@ it.layer(layer)("AntigravityAdapter", (it) => {
         admissionRequestId,
         sessionIncarnationId,
       });
+    }),
+  );
+
+  it.effect("includes browser and device instructions when mcp session grants them", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      McpProviderSession.setMcpProviderSession({
+        threadId,
+        endpoint: "http://127.0.0.1:4000/mcp",
+        authorizationHeader: "Bearer token",
+        capabilities: new Set(["preview", "device"]),
+      });
+      try {
+        yield* h.adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Browse the web" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        const promptParts = prompt.content as ReadonlyArray<{ type: string; text?: string }>;
+        const lastPart = promptParts[promptParts.length - 1];
+        expect(lastPart?.text).toContain("<pylon_browser>");
+        expect(lastPart?.text).toContain("preview_status");
+        expect(lastPart?.text).toContain("<pylon_devices>");
+        expect(lastPart?.text).toContain("device_list");
+        yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+        yield* Fiber.join(sending);
+      } finally {
+        McpProviderSession.clearMcpProviderSession(threadId);
+      }
     }),
   );
 
