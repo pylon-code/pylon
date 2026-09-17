@@ -27,7 +27,7 @@ import {
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 import { normalizeAntigravitySessionUpdate } from "./AntigravityProtocol.ts";
 
-export function redactAntigravityStderrLine(line: string): string | undefined {
+function redactAntigravityStderrLine(line: string): string | undefined {
   if (
     line.startsWith(ANTIGRAVITY_AUTH_STDOUT_PREFIX) ||
     line.startsWith(ANTIGRAVITY_AUTH_BROWSER_MARKER)

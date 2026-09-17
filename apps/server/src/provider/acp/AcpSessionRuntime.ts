@@ -1157,6 +1157,9 @@ export const make = (
                   acp.agent.prompt(requestPayload),
                 ).pipe(Effect.forkIn(runtimeScope));
                 yield* Ref.set(lastAgentActivityRef, yield* Clock.currentTimeMillis);
+                // Register the prompt before forking the watchdog so the watchdog
+                // never observes an empty activePromptRef on its first iteration.
+                yield* Ref.set(activePromptRef, Option.some({ fiber, completed }));
                 const watchdogFiber =
                   promptInactivityTimeoutMillis !== undefined
                     ? yield* makePromptWatchdog(completed).pipe(Effect.forkIn(runtimeScope))
@@ -1177,14 +1180,30 @@ export const make = (
               Fiber.join(activePrompt.fiber).pipe(
                 Effect.catchCause((cause) =>
                   Effect.gen(function* () {
-                    const termination = yield* Ref.get(terminationErrorRef);
-                    if (Option.isSome(termination)) {
-                      return yield* termination.value;
-                    }
                     if (
-                      options.cancelBehavior !== "wait-for-prompt" &&
-                      Cause.hasInterruptsOnly(cause)
+                      options.cancelBehavior === "wait-for-prompt" ||
+                      promptInactivityTimeoutMillis !== undefined
                     ) {
+                      // Runtimes that retire hung processes (cancel timeout or the
+                      // inactivity watchdog) fail the prompt with the recorded
+                      // reason instead of a bare transport error or interrupt, so
+                      // the adapter can settle the turn with it. Runtimes that opt
+                      // into neither keep the original behavior below.
+                      const termination = yield* Ref.get(terminationErrorRef);
+                      if (Option.isSome(termination)) {
+                        return yield* termination.value;
+                      }
+                      if (
+                        options.cancelBehavior !== "wait-for-prompt" &&
+                        Cause.hasInterruptsOnly(cause)
+                      ) {
+                        return {
+                          stopReason: "cancelled",
+                        } satisfies EffectAcpSchema.PromptResponse;
+                      }
+                      return yield* Effect.failCause(cause);
+                    }
+                    if (Cause.hasInterruptsOnly(cause)) {
                       return {
                         stopReason: "cancelled",
                       } satisfies EffectAcpSchema.PromptResponse;

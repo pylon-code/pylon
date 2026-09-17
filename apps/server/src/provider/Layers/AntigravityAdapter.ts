@@ -1270,6 +1270,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           const steering = context.activeTurnId !== undefined;
           const turn: TurnIntent = { turnId, generation: ++context.generation, settled: false };
           intent = turn;
+          context.userCancelRequested = false;
           context.activeTurnId = turnId;
           if (!steering) {
             yield* emit(context, {
@@ -1285,6 +1286,9 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             });
           }
           if (context.promptFiber) {
+            // A steer supersedes the running prompt at the user's request, so a
+            // forced stop here settles the turn as cancelled, not failed.
+            context.userCancelRequested = true;
             yield* cancelRequests(context);
             yield* context.runtime.cancel;
             yield* Fiber.await(context.promptFiber);
@@ -1405,6 +1409,25 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           ? (options.onAuthRequired ?? Effect.void)
           : Effect.void,
       ),
+      Effect.tapError((cause) =>
+        Effect.sync(() => {
+          // A transport-class failure of the prompt means the process is gone.
+          // Record that here, before the ConnectionTerminated event is consumed,
+          // so settlement below does not race the event consumer.
+          if (!isAcpError(cause)) return;
+          if (cause._tag !== "AcpTransportError" && cause._tag !== "AcpInputStreamEndedError") {
+            return;
+          }
+          context.disconnected = true;
+          if (
+            context.fatalError === undefined &&
+            cause._tag === "AcpTransportError" &&
+            cause.detail
+          ) {
+            context.fatalError = cause.detail;
+          }
+        }),
+      ),
       Effect.mapError((cause) =>
         isAcpError(cause) ? mapAntigravityError(input.threadId, "session/prompt", cause) : cause,
       ),
@@ -1478,7 +1501,9 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
   const interruptTurn: Adapter["interruptTurn"] = (threadId) =>
     Effect.gen(function* () {
       const context = yield* requireSession(threadId);
-      context.userCancelRequested = true;
+      if (context.promptFiber !== undefined || context.activeTurnId !== undefined) {
+        context.userCancelRequested = true;
+      }
       yield* context.promptLock
         .withPermit(
           Effect.gen(function* () {
