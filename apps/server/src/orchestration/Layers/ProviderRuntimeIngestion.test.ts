@@ -48,6 +48,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { attachProviderRuntimeEventFence } from "../../provider/providerRuntimeFenceMetadata.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
@@ -5312,6 +5313,23 @@ describe("ProviderRuntimeIngestion", () => {
       // must neither settle the failed turn as completed nor move the
       // latest-turn pointer back to it.
       const nextTurnId = asTurnId("next-turn");
+      // Pylon requires a new user admission after a failed session.
+      yield* Effect.promise(() =>
+        harness.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-next-turn-after-failure"),
+          threadId: base.threadId,
+          message: {
+            messageId: asMessageId("msg-next-turn"),
+            role: "user",
+            text: "Continue",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: base.createdAt,
+        }),
+      );
       const nextTurnStarted = yield* harness.engine.streamDomainEvents.pipe(
         Stream.filter(
           (event) =>
@@ -5338,6 +5356,54 @@ describe("ProviderRuntimeIngestion", () => {
       });
       expect(yield* Effect.promise(() => harness.readTurn(base.turnId))).toMatchObject({
         state: "error",
+        checkpointRef: null,
+      });
+    }),
+  );
+
+  effectIt.effect("discards a diff when its runtime is retired during repository detection", () =>
+    Effect.gen(function* () {
+      const detectionStarted = yield* Deferred.make<void>();
+      const releaseDetection = yield* Deferred.make<boolean>();
+      let current = true;
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          isGitRepository: () =>
+            Deferred.succeed(detectionStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseDetection)),
+            ),
+        }),
+      );
+      yield* Effect.addFinalizer(() => Deferred.succeed(releaseDetection, true));
+      const base = {
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("retired-diff-turn"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      yield* Effect.promise(() =>
+        harness.emitAndDrain([
+          { ...base, type: "turn.started", eventId: asEventId("evt-retired-diff-start") },
+        ]),
+      );
+      harness.emit(
+        attachProviderRuntimeEventFence(
+          {
+            ...base,
+            type: "turn.diff.updated",
+            eventId: asEventId("evt-retired-diff"),
+            payload: { unifiedDiff: "diff --git a/file.ts b/file.ts\n+new\n" },
+          },
+          { generation: {}, isCurrent: Effect.sync(() => current) },
+        ),
+      );
+      yield* Deferred.await(detectionStarted);
+      current = false;
+      yield* Deferred.succeed(releaseDetection, true);
+      yield* Effect.promise(harness.drain);
+      expect((yield* Effect.promise(harness.readModel)).threads[0]?.checkpoints).toEqual([]);
+      expect(yield* Effect.promise(() => harness.readTurn(base.turnId))).toMatchObject({
+        state: "running",
         checkpointRef: null,
       });
     }),
