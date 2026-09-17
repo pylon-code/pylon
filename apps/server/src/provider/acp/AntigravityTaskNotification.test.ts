@@ -149,6 +149,82 @@ describe("Antigravity task notifications", () => {
       }
     });
 
+    it("preserves exact output whitespace without trimming meaningful indentation or line trailing spaces", () => {
+      const notice = `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-17T17:21:40Z sender=session/task-ws priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-ws" finished with result:\n\nThe command exited with code 0.\nOutput:\n  function calculate() {\n    const x = 42;   \n    return x;\n  }\n\nLog: file:///path/task-ws.log\n</SYSTEM_MESSAGE>`;
+      const parsed = parseAntigravityTaskNotification(notice);
+      expect(parsed).toBeDefined();
+      expect(parsed?.output).toBe(
+        "  function calculate() {\n    const x = 42;   \n    return x;\n  }\n",
+      );
+    });
+
+    it("parses valid complete empty-output notices with and without Output: label", () => {
+      const withOutputLabel = `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-17T17:21:40Z sender=session/task-empty priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-empty" finished with result:\n\nThe command exited with code 0.\nOutput:\nLog: file:///path/task-empty.log\n</SYSTEM_MESSAGE>`;
+      expect(parseAntigravityTaskNotification(withOutputLabel)).toEqual({
+        command: "session/task-empty",
+        taskId: "session/task-empty",
+        exitCode: 0,
+        output: "",
+      });
+
+      const withoutOutputLabel = `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-17T17:21:40Z sender=session/task-empty priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-empty" finished with result:\n\nThe command exited with code 0.\nLog: file:///path/task-empty.log\n</SYSTEM_MESSAGE>`;
+      expect(parseAntigravityTaskNotification(withoutOutputLabel)).toEqual({
+        command: "session/task-empty",
+        taskId: "session/task-empty",
+        exitCode: 0,
+        output: "",
+      });
+
+      const withAttachment = `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-17T17:21:40Z sender=session/task-empty priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-empty" finished with result:\n\nThe command exited with code 0.\n}\n<attachment>\nAttachment processed: empty.log\nDescription: Task Description: true\n</attachment>\n</SYSTEM_MESSAGE>`;
+      expect(parseAntigravityTaskNotification(withAttachment)).toEqual({
+        command: "true",
+        taskId: "session/task-empty",
+        exitCode: 0,
+        output: "",
+      });
+    });
+
+    it.each([
+      // Truncation immediately after exit code
+      `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-17T17:21:40Z sender=session/task-trunc priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-trunc" finished with result:\n\nThe command exited with code 0.`,
+      // Truncation after Output:
+      `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-17T17:21:40Z sender=session/task-trunc priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-trunc" finished with result:\n\nThe command exited with code 0.\nOutput:`,
+      // Truncation after inline Output:
+      `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-17T17:21:40Z sender=session/task-trunc priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-trunc" finished with result:\n\nThe command exited with code 0. Output:`,
+      // Truncation after Output newline
+      `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-17T17:21:40Z sender=session/task-trunc priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-trunc" finished with result:\n\nThe command exited with code 0.\nOutput:\n`,
+      // Truncation during output without terminal trailer
+      `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-17T17:21:40Z sender=session/task-trunc priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-trunc" finished with result:\n\nThe command exited with code 0.\nOutput:\n$ pnpm test\nrunning tests...`,
+    ])(
+      "rejects notices truncated before a terminal trailer and flushes text losslessly",
+      (text) => {
+        expect(parseAntigravityTaskNotification(text)).toBeUndefined();
+        const buffer = new AntigravityTaskNotificationBuffer();
+        const emitted = buffer.push(text);
+        const result = buffer.finish();
+        expect(emitted + result.text).toBe(text);
+        expect(result.notification).toBeUndefined();
+      },
+    );
+
+    it("rejects system messages with mismatched sender and task identity", () => {
+      const mismatchedNotice = `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-17T17:21:40Z sender=user priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-1" finished with result:\n\nThe command exited with code 0.\nLog: file:///path/task-1.log\n</SYSTEM_MESSAGE>`;
+      expect(parseAntigravityTaskNotification(mismatchedNotice)).toBeUndefined();
+
+      // Buffer immediately passes through when sender does not match taskId
+      const buffer = new AntigravityTaskNotificationBuffer();
+      expect(buffer.push(mismatchedNotice)).toBe(mismatchedNotice);
+      expect(buffer.finish()).toEqual({ text: "", notification: undefined });
+    });
+
+    it("rejects arbitrary prose containing task-looking phrases", () => {
+      const proseWithNewlines = `<SYSTEM_MESSAGE>\n[Message]\nI noticed that content=Task id "session/task-1" finished with result:\nThe command exited with code 0.\n</SYSTEM_MESSAGE>`;
+      expect(parseAntigravityTaskNotification(proseWithNewlines)).toBeUndefined();
+
+      const proseConversation = `The following is a <SYSTEM_MESSAGE> not actually sent by the user.\n\nTask id "session/task-1" finished with result: The command exited with code 0.`;
+      expect(parseAntigravityTaskNotification(proseConversation)).toBeUndefined();
+    });
+
     it("streams ordinary prose immediately even when starting with preamble prefix", () => {
       const buffer = new AntigravityTaskNotificationBuffer();
       // First chunk matches the beginning of "The following is a ..."

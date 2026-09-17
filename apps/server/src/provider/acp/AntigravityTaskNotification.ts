@@ -11,6 +11,23 @@ const SYSTEM_MESSAGE_PREAMBLE =
 const SYSTEM_MESSAGE_OPEN = "<SYSTEM_MESSAGE>";
 const MAX_BUFFER_LENGTH = 1024 * 1024;
 
+const HEADER_LINE_REGEX =
+  /^\[Message\][^\S\r\n]+timestamp=\S+[^\S\r\n]+sender=(\S+)[^\S\r\n]+priority=\S+[^\S\r\n]+content=Task id "([^"]+)" finished with result:[^\S\r\n]*(?:\r?\n|$)/;
+
+/**
+ * Known terminal trailer patterns for Antigravity system message task notices:
+ * 1. XML task log attachment:
+ *    }\n<attachment>\nAttachment processed: ...\nDescription: Task Description: <command>\n</attachment>\n</SYSTEM_MESSAGE>
+ * 2. Plain attachment processed transcription:
+ *    } Attachment processed: ...\nDescription: Task Description: <command>
+ * 3. Task log path trailer with terminal tag:
+ *    Log: file://<path>\n</SYSTEM_MESSAGE>
+ * 4. Standalone terminal tag:
+ *    </SYSTEM_MESSAGE>
+ */
+const TERMINAL_TRAILER_PATTERN =
+  /(?:\r?\n)?(?:\}?\s*<attachment>[\s\S]*?<\/attachment>(?:\s*<\/SYSTEM_MESSAGE>)?|\}?\s*Attachment processed:[^\r\n]*(?:\r?\n\s*Original path:[^\r\n]*)?(?:\r?\n\s*Description:[^\r\n]*)?(?:\s*<\/SYSTEM_MESSAGE>)?|[^\S\r\n]*Log:[^\S\r\n]*file:\/\/\S+[^\r\n]*(?:\s*<\/SYSTEM_MESSAGE>)?|[^\S\r\n]*<\/SYSTEM_MESSAGE>)\s*\}?\s*$/;
+
 export function parseAntigravityTaskNotification(
   text: string,
 ): AntigravityTaskNotification | undefined {
@@ -36,7 +53,14 @@ export function parseAntigravityTaskNotification(
     return undefined;
   }
   const body = candidate.slice(SYSTEM_MESSAGE_OPEN.length).trimStart();
-  if (!body.startsWith("[Message]")) {
+
+  const headerMatch = HEADER_LINE_REGEX.exec(body);
+  if (!headerMatch) {
+    return undefined;
+  }
+  const sender = headerMatch[1];
+  const taskId = headerMatch[2];
+  if (!sender || !taskId || sender !== taskId) {
     return undefined;
   }
 
@@ -50,37 +74,36 @@ export function parseAntigravityTaskNotification(
     }
   }
 
-  const bodyMatch =
-    /^\[Message\][\s\S]*?content=Task id "([^"]+)" finished with result:\s*The command exited with code (-?\d+)\.?(?:\s*(?:Output:|Stdout:)\s*\r?\n?([\s\S]*))?$/.exec(
-      body,
-    );
-  if (!bodyMatch) {
+  const bodyAfterHeader = body.slice(headerMatch[0].length).trimStart();
+  const exitMatch = /^The command exited with code (-?\d+)\.?(?:[^\S\r\n]*\r?\n)?([\s\S]*)$/.exec(
+    bodyAfterHeader,
+  );
+  if (!exitMatch || !exitMatch[1]) {
+    return undefined;
+  }
+  const exitCode = Number(exitMatch[1]);
+  if (!Number.isSafeInteger(exitCode)) {
     return undefined;
   }
 
-  const taskId = bodyMatch[1];
-  const exitCode = Number(bodyMatch[2]);
-  if (!taskId || !Number.isSafeInteger(exitCode)) {
-    return undefined;
+  let rest = exitMatch[2] ?? "";
+  const outputLabelMatch =
+    /^(?:[^\S\r\n]*\r?\n)?\s*(?:Output:|Stdout:)(?:[^\S\r\n]*\r?\n|[^\S\r\n])?/.exec(rest);
+  if (outputLabelMatch) {
+    rest = rest.slice(outputLabelMatch[0].length);
   }
 
-  const rawRest = bodyMatch[3] ?? "";
-  const trailerMatch =
-    /(?:\r?\n\}?\s*<attachment>[\s\S]*?<\/attachment>(?:\s*<\/SYSTEM_MESSAGE>)?|\r?\n\}?\s*Attachment processed:[^\r\n]*(?:\r?\n\s*Original path:[^\r\n]*)?(?:\r?\n\s*Description:[^\r\n]*)?(?:\s*<\/SYSTEM_MESSAGE>)?|\r?\n\s*Log:\s*file:\/\/\S+[^\r\n]*(?:\s*<\/SYSTEM_MESSAGE>)?|\r?\n\s*<\/SYSTEM_MESSAGE>|<\/SYSTEM_MESSAGE>)\s*\}?\s*$/.exec(
-      rawRest,
-    );
-
+  // A complete recognized terminal envelope/trailer is strictly required for all system notices
+  const trailerMatch = TERMINAL_TRAILER_PATTERN.exec(rest);
   if (!trailerMatch) {
-    if (rawRest.trim() !== "" && !rawRest.trim().endsWith("</SYSTEM_MESSAGE>")) {
-      return undefined;
-    }
+    return undefined;
   }
 
-  const trailer = trailerMatch ? rawRest.slice(trailerMatch.index) : "";
-  const outputRaw = trailerMatch ? rawRest.slice(0, trailerMatch.index) : rawRest;
+  const trailer = rest.slice(trailerMatch.index);
+  const outputRaw = rest.slice(0, trailerMatch.index);
 
   // If there was an attachment or description trailer without </SYSTEM_MESSAGE>, verify no prose after
-  if (closeIdx === -1 && trailerMatch) {
+  if (closeIdx === -1) {
     const attachClose = "</attachment>";
     const attachIdx = trailer.lastIndexOf(attachClose);
     if (attachIdx !== -1) {
@@ -113,10 +136,7 @@ export function parseAntigravityTaskNotification(
     }
   }
 
-  const isCrlf = outputRaw.includes("\r\n") || text.includes("\r\n");
-  const eol = isCrlf ? "\r\n" : "\n";
-  const output = outputRaw.trimEnd() ? outputRaw.trimEnd() + eol : "";
-  return { command, taskId, exitCode, output };
+  return { command, taskId, exitCode, output: outputRaw };
 }
 
 function isPotentialSystemNoticeBody(after: string): boolean {
@@ -126,17 +146,36 @@ function isPotentialSystemNoticeBody(after: string): boolean {
   if (!after.startsWith(MSG)) return false;
 
   const afterMsg = after.slice(MSG.length);
-  const contentIdx = afterMsg.indexOf("content=");
-  if (contentIdx === -1) {
-    return true;
+  if (afterMsg === "") return true;
+  // Must be followed by horizontal whitespace on the header line, not a newline
+  if (afterMsg.startsWith("\r") || afterMsg.startsWith("\n") || !/^\s/.test(afterMsg)) {
+    return false;
   }
 
-  const contentVal = afterMsg.slice(contentIdx + "content=".length).trimStart();
-  const TASK_ID_PREFIX = 'Task id "';
-  if (contentVal === "") return true;
-  if (TASK_ID_PREFIX.startsWith(contentVal)) return true;
-  if (!contentVal.startsWith(TASK_ID_PREFIX)) {
-    return false;
+  const firstLineEnd = afterMsg.search(/\r?\n/);
+  const firstLine = firstLineEnd === -1 ? afterMsg : afterMsg.slice(0, firstLineEnd);
+
+  const contentIdx = firstLine.indexOf("content=");
+  if (contentIdx !== -1) {
+    const contentVal = firstLine.slice(contentIdx + "content=".length).trimStart();
+    const TASK_ID_PREFIX = 'Task id "';
+    if (contentVal === "") return true;
+    if (TASK_ID_PREFIX.startsWith(contentVal)) return true;
+    if (!contentVal.startsWith(TASK_ID_PREFIX)) {
+      return false;
+    }
+  }
+
+  const senderMatch = /sender=(\S+)/.exec(firstLine);
+  if (senderMatch?.[1] && contentIdx !== -1) {
+    const sender = senderMatch[1];
+    const taskIdMatch = /content=Task id "([^"]*)"?/.exec(firstLine);
+    if (taskIdMatch?.[1]) {
+      const partialTaskId = taskIdMatch[1];
+      if (!sender.startsWith(partialTaskId) && !partialTaskId.startsWith(sender)) {
+        return false;
+      }
+    }
   }
 
   return true;
