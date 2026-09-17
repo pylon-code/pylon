@@ -1,3 +1,6 @@
+import { DelegatedThreadList, type DelegatedThreadRows } from "../DelegatedThreadList";
+const EMPTY_DELEGATED_THREADS: DelegatedThreadRows = [];
+import { delegationActivity } from "../../delegationActivity";
 import { usePreparedConnection } from "~/state/session";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
 import { PierreEntryIcon } from "./PierreEntryIcon";
@@ -271,6 +274,8 @@ interface TimelineRowSharedState {
   onToggleWorkEntry: (anchorKey: string, collapsed: boolean) => void;
   workGroupViewState: WorkGroupViewState;
   agentPanelModel: AgentPanelModel;
+  delegatedThreads: DelegatedThreadRows;
+  delegationWaitingTurnId: TurnId | null;
   onOpenAgents: () => void;
 }
 
@@ -362,6 +367,8 @@ interface MessagesTimelineProps {
     sourceAnchor: AssistantCitationSourceAnchor,
   ) => boolean;
   agentPanelModel?: AgentPanelModel;
+  delegatedThreads?: DelegatedThreadRows;
+  delegationWaitingTurnId?: TurnId | null;
   onOpenAgents?: () => void;
   isWorking: boolean;
   workingStepLabel?: string | null;
@@ -438,6 +445,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isCompacting = false,
   activeTurnStartedAt,
   agentPanelModel = EMPTY_AGENT_PANEL_MODEL,
+  delegatedThreads = EMPTY_DELEGATED_THREADS,
+  delegationWaitingTurnId = null,
   onOpenAgents = NOOP_OPEN_AGENTS,
   listRef,
   timelineEntries,
@@ -849,6 +858,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleWorkEntry: suspendEndScrollMaintenanceForDisclosure,
       workGroupViewState,
       agentPanelModel,
+      delegatedThreads,
+      delegationWaitingTurnId,
       onOpenAgents,
     }),
     [
@@ -874,6 +885,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       suspendEndScrollMaintenanceForDisclosure,
       workGroupViewState,
       agentPanelModel,
+      delegatedThreads,
+      delegationWaitingTurnId,
       onOpenAgents,
     ],
   );
@@ -3746,6 +3759,55 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
   );
 });
 
+const PylonDelegationWorkRow = memo(function PylonDelegationWorkRow({
+  workEntry,
+  workspaceRoot,
+}: {
+  workEntry: TimelineWorkEntry;
+  workspaceRoot: string | undefined;
+}) {
+  const { onOpenAgents, delegatedThreads, delegationWaitingTurnId } = use(TimelineRowCtx);
+  const delegation = delegationActivity(workEntry);
+  const child = delegatedThreads.find((row) => row.threadId === delegation?.threadId);
+  const pending =
+    workEntry.toolLifecycleStatus === "inProgress" &&
+    delegationWaitingTurnId !== null &&
+    workEntry.turnId === delegationWaitingTurnId;
+  const failed = workEntry.toolLifecycleStatus === "failed";
+  const label = failed
+    ? "Pylon delegation call failed"
+    : pending && delegation?.waiting
+      ? "Waiting for delegated agent"
+      : delegation?.name === "delegate_thread"
+        ? pending
+          ? "Starting Pylon delegation"
+          : "Pylon delegation"
+        : "Checked Pylon delegation";
+  return (
+    <details className="rounded-md border border-border/60 bg-card/50 px-2.5 py-1.5 text-[.8125rem]">
+      <summary className="cursor-pointer">
+        {label}
+        {child || delegation?.title ? ` · ${child?.title ?? delegation?.title}` : ""}
+      </summary>
+      <div className="mt-2 grid gap-2">
+        {child ? <DelegatedThreadList rows={[child]} /> : null}
+        <button
+          type="button"
+          onClick={onOpenAgents}
+          className="text-left text-xs underline underline-offset-2"
+        >
+          Open Agents
+        </button>
+        <PlainWorkEntryRow
+          workEntry={workEntry}
+          workspaceRoot={workspaceRoot}
+          isExpandedToolGroupEntry
+        />
+      </div>
+    </details>
+  );
+});
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
@@ -3755,6 +3817,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 }) {
   const { workEntry, workspaceRoot, isExpandedToolGroupEntry, displayLabel } = props;
   // Before any hooks: spawn CTA rows render their own component.
+  if (delegationActivity(workEntry)) {
+    return <PylonDelegationWorkRow workEntry={workEntry} workspaceRoot={workspaceRoot} />;
+  }
   if (workEntry.agentSpawn) {
     return <AgentSpawnCtaRow workEntry={workEntry} />;
   }

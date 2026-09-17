@@ -1439,6 +1439,69 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain(">waiting<");
   });
 
+  it.each([true, false])(
+    "shows a Pylon wait only while its parent turn is active: %s",
+    async (active) => {
+      const turnId = TurnId.make("delegation-turn");
+      let renderer: ReactTestRenderer | undefined;
+      await act(() => {
+        renderer = create(
+          <MessagesTimeline
+            {...buildProps()}
+            isWorking={active}
+            activeTurnInProgress={true}
+            delegationWaitingTurnId={active ? turnId : null}
+            latestTurn={{
+              turnId,
+              state: active ? "running" : "completed",
+              startedAt: MESSAGE_CREATED_AT,
+              completedAt: active ? null : MESSAGE_CREATED_AT,
+            }}
+            runningTurnId={active ? turnId : null}
+            timelineEntries={[
+              {
+                id: "delegation-entry",
+                kind: "work",
+                createdAt: MESSAGE_CREATED_AT,
+                entry: {
+                  id: "delegation-work",
+                  createdAt: MESSAGE_CREATED_AT,
+                  turnId,
+                  label: "MCP tool call",
+                  tone: "tool",
+                  toolLifecycleStatus: "inProgress",
+                  toolData: {
+                    server: "t3-code",
+                    tool: "delegated_thread_status",
+                    arguments: { waitSeconds: 45 },
+                  },
+                },
+              },
+            ]}
+          />,
+        );
+      });
+      // Completed turns add a turn disclosure around the tool-group disclosure.
+      for (
+        let level = 0;
+        level < 2 && !JSON.stringify(renderer!.toJSON()).includes("Open Agents");
+        level++
+      ) {
+        const groupToggle = renderer!.root.findAll(
+          (node) => node.type === "button" && node.props["aria-expanded"] === false,
+        )[0];
+        if (groupToggle) await act(() => groupToggle.props.onClick());
+      }
+      const markup = JSON.stringify(renderer!.toJSON());
+
+      if (active) {
+        expect(markup).toContain("Open Agents");
+        expect(markup).toContain("Waiting for delegated agent");
+      } else expect(markup).not.toContain("Waiting for delegated agent");
+      await act(() => renderer?.unmount());
+    },
+  );
+
   it("summarizes changed files in one line", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline

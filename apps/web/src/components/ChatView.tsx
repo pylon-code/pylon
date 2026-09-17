@@ -1,3 +1,6 @@
+import { delegatedThreadRows } from "@t3tools/client-runtime/state/delegated-threads";
+import { DelegationSummary } from "./DelegatedThreadList";
+import { delegationActivity } from "../delegationActivity";
 import { prepareRevertedMessageContext } from "../lib/composerRewindContext";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { resolveLoadBalancingStatus } from "@t3tools/client-runtime/load-balancing";
@@ -2994,6 +2997,23 @@ export default function ChatView(props: ChatViewProps) {
     () => foldSubagentActivities(threadActivities, { sessionLive: agentSessionLive }),
     [agentSessionLive, threadActivities],
   );
+  const allThreadShells = useThreadShells();
+  const delegatedThreads = useMemo(
+    () => (activeThreadRef ? delegatedThreadRows(allThreadShells, activeThreadRef) : []),
+    [allThreadShells, activeThreadRef],
+  );
+  const delegatedLiveCount = delegatedThreads.filter((row) =>
+    ["starting", "running", "needs-approval", "needs-input"].includes(row.status),
+  ).length;
+  const delegationWaitingTurnId =
+    activeThread?.session?.status === "running" ? activeThread.session.activeTurnId : null;
+  const waitingForDelegation =
+    delegationWaitingTurnId !== null &&
+    workLogEntries.some(
+      (entry) =>
+        entry.turnId === delegationWaitingTurnId && delegationActivity(entry)?.waiting === true,
+    );
+
   const agentPanelModel = useMemo(
     () => deriveAgentPanelModel({ agents: runtimeSubagents }),
     [runtimeSubagents],
@@ -6221,7 +6241,7 @@ export default function ChatView(props: ChatViewProps) {
   // Both ends of the seam, read from shells the client already holds. Keyed on
   // the two ids rather than the thread object so a streaming turn does not
   // rescan every shell on each token.
-  const allThreadShells = useThreadShells();
+
   const activeThreadContinuedFrom = activeThread?.continuedFromThreadId ?? null;
   const threadContinuationLinks = useMemo(
     () =>
@@ -9813,7 +9833,9 @@ export default function ChatView(props: ChatViewProps) {
       // Suppressed while the Agents surface is visible: the roster itself is
       // on screen, so the toggle badge would be pointing at nothing.
       liveAgentCount={
-        rightPanelOpen && activeRightPanelSurface?.kind === "agents" ? 0 : agentPanelModel.liveCount
+        rightPanelOpen && activeRightPanelSurface?.kind === "agents"
+          ? 0
+          : agentPanelModel.liveCount + delegatedLiveCount
       }
       onToggleTerminal={toggleTerminalVisibility}
       onToggleRightPanel={toggleRightPanel}
@@ -9962,6 +9984,7 @@ export default function ChatView(props: ChatViewProps) {
       <AgentsPanel
         key={`${activeThreadRef?.environmentId ?? "none"}:${activeThreadRef?.threadId ?? "none"}`}
         model={agentPanelModel}
+        delegatedThreads={delegatedThreads}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
         canCancelAgents={canCancelSessionAgents}
@@ -10163,6 +10186,13 @@ export default function ChatView(props: ChatViewProps) {
             </div>
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col bg-background">
+              {!paintOnlyDisplayedTimeline ? (
+                <DelegationSummary
+                  rows={delegatedThreads}
+                  waiting={waitingForDelegation}
+                  onOpenAgents={addAgentsSurface}
+                />
+              ) : null}
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
@@ -10171,6 +10201,8 @@ export default function ChatView(props: ChatViewProps) {
                   ? {
                       onCiteAssistantText: citeAssistantText,
                       agentPanelModel,
+                      delegatedThreads,
+                      delegationWaitingTurnId,
                       onOpenAgents: addAgentsSurface,
                       onUseArtifactTemplate: useArtifactTemplate,
                       reportedTurnCosts,
@@ -10673,7 +10705,7 @@ export default function ChatView(props: ChatViewProps) {
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
           agentsAvailable
           deviceAvailable={activeThreadRef !== null}
-          liveAgentCount={agentPanelModel.liveCount}
+          liveAgentCount={agentPanelModel.liveCount + delegatedLiveCount}
         >
           {rightPanelContent}
         </RightPanelTabs>
@@ -10731,7 +10763,7 @@ export default function ChatView(props: ChatViewProps) {
             pullRequestsAvailable={pullRequestsSurfaceAvailable}
             agentsAvailable
             deviceAvailable={activeThreadRef !== null}
-            liveAgentCount={agentPanelModel.liveCount}
+            liveAgentCount={agentPanelModel.liveCount + delegatedLiveCount}
           >
             {rightPanelContent}
           </RightPanelTabs>

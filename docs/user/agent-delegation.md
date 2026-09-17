@@ -82,6 +82,24 @@ children as ordinary threads.
 - **The provider's own usage.** Work in a child counts against that provider account, not the
   parent's.
 
+## Monitor delegated work
+
+The parent thread shows a persistent Pylon delegation summary and includes child threads in its
+**Agents** panel. Expand the summary for each child's provider/model, status, and available activity;
+choose **Open thread** to inspect its result, answer a question, approve an action, or stop it.
+Children remain visible after the parent's turn ends. “Completed” means the child's execution
+finished, not that its changes have been reviewed or merged. Native-agent token totals are labeled
+separately; Pylon children do not yet contribute to a combined usage total.
+
+Recognized Pylon delegation calls also appear as expandable rows in the streaming work log, with
+access to the Agents panel and original tool details. A specific child is linked when the provider
+preserves its thread ID in the result; truncated results may only show the task title.
+“Waiting for delegated agent” requires an active parent turn and a recognized running status call
+with a positive wait budget. Codex and Claude expose this structured tool data. Providers that do
+not preserve it, including current Prime and OpenCode live events, still show child status in the
+summary and Agents panel without claiming the parent is waiting. This display does not automatically
+resume the parent when a child finishes. Mobile retains its existing child-thread sidebar display.
+
 ## Things to know
 
 - Give a child one bounded task, relevant file references, acceptance criteria, and a concise report.

@@ -1,5 +1,6 @@
+import { EnvironmentId, ThreadId, ProviderInstanceId } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import type {
   AgentPanelModel,
@@ -8,6 +9,10 @@ import type {
 import type { ProviderSessionAgentActivitySnapshot } from "@t3tools/contracts";
 import { AgentLiveActivitySnapshot } from "./AgentLiveActivity";
 import { AgentsPanel } from "./AgentsPanel";
+
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
+}));
 
 function agent(id: string, title: string, status: RuntimeSubagent["status"]): RuntimeSubagent {
   return {
@@ -57,6 +62,33 @@ const model: AgentPanelModel = {
 };
 
 describe("AgentsPanel agent cancellation", () => {
+  it("shows Pylon-only children without native controls or misleading token totals", () => {
+    const markup = renderToStaticMarkup(
+      <AgentsPanel
+        model={{ ...model, directAgents: [], hasAgents: false, liveCount: 0 }}
+        canCancelAgents
+        canMessageAgents
+        delegatedThreads={[
+          {
+            threadId: ThreadId.make("child"),
+            environmentId: EnvironmentId.make("env"),
+            title: "Pylon reviewer",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+            providerName: "Codex",
+            status: "running",
+            activity: null,
+          },
+        ]}
+      />,
+    );
+    expect(markup).toContain("Pylon reviewer");
+    expect(markup).toContain("Open thread");
+    expect(markup).not.toContain("No agents yet");
+    expect(markup).not.toContain("Σ");
+    expect(markup).not.toContain("Stop Pylon reviewer");
+    expect(markup).not.toContain("Message Pylon reviewer");
+  });
+
   it("offers cancellation only for active agents when the capability is enabled", () => {
     const markup = renderToStaticMarkup(
       <AgentsPanel

@@ -1,8 +1,16 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  TurnId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   delegatedParentThreadId,
+  delegatedThreadRows,
   flattenNestedThreads,
   nestDelegatedThreads,
   nestedRowContainsThread,
@@ -106,5 +114,152 @@ describe("rendered nested rows", () => {
     expect(nestedRowContainsThread(parent, nested, `local:delegated:parent:${HASH}`)).toBe(true);
     expect(nestedRowContainsThread(parent, nested, "local:parent")).toBe(true);
     expect(nestedRowContainsThread(other, nested, `local:delegated:parent:${HASH}`)).toBe(false);
+  });
+});
+
+const parentRef = { environmentId: local, threadId: ThreadId.make("parent") };
+const childId = ThreadId.make(`delegated:parent:${HASH}`);
+const timestamp = "2026-09-17T12:00:00.000Z";
+function child(
+  overrides: Partial<import("./models.ts").EnvironmentThreadShell> = {},
+): import("./models.ts").EnvironmentThreadShell {
+  return {
+    environmentId: local,
+    id: childId,
+    projectId: ProjectId.make("project"),
+    title: "Inspect failure",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test-model" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    pullRequests: [],
+    latestTurn: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    session: null,
+    latestUserMessageAt: null,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    hasActionableProposedPlan: false,
+    ...overrides,
+  };
+}
+const completedTurn = {
+  turnId: TurnId.make("turn"),
+  state: "completed" as const,
+  requestedAt: timestamp,
+  startedAt: timestamp,
+  completedAt: timestamp,
+  assistantMessageId: null,
+};
+const readySession = {
+  threadId: childId,
+  status: "ready" as const,
+  providerName: "Codex",
+  runtimeMode: "full-access" as const,
+  activeTurnId: null,
+  lastError: null,
+  updatedAt: timestamp,
+};
+const statusOf = (overrides: Parameters<typeof child>[0]) =>
+  delegatedThreadRows([child(overrides)], parentRef)[0]?.status;
+
+describe("delegatedThreadRows", () => {
+  it("keeps live children without a parent and isolates environment and exact parent", () => {
+    const running = child({
+      latestTurn: { ...completedTurn, state: "running", completedAt: null },
+    });
+    const rows = delegatedThreadRows(
+      [
+        running,
+        child({ environmentId: remote }),
+        child({ id: ThreadId.make(`delegated:parent-other:${HASH}`) }),
+      ],
+      parentRef,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("running");
+    expect(
+      delegatedThreadRows(
+        [child({ id: parentRef.threadId, session: readySession }), running],
+        parentRef,
+      ),
+    ).toEqual(rows);
+  });
+
+  it("keeps creation order stable across updates with deterministic ties", () => {
+    const later = child({ id: ThreadId.make("delegated:parent:ffffffffffffffff") });
+    expect(delegatedThreadRows([later, child()], parentRef).map((row) => row.threadId)).toEqual([
+      childId,
+      later.id,
+    ]);
+    expect(
+      delegatedThreadRows([later, child({ updatedAt: "2026-09-18T12:00:00.000Z" })], parentRef).map(
+        (row) => row.threadId,
+      ),
+    ).toEqual([childId, later.id]);
+  });
+
+  it("surfaces blockers and terminal states", () => {
+    expect(statusOf({})).toBe("starting");
+    expect(statusOf({ hasPendingApprovals: true, hasPendingUserInput: true })).toBe(
+      "needs-approval",
+    );
+    expect(statusOf({ hasPendingUserInput: true })).toBe("needs-input");
+    expect(statusOf({ latestTurn: completedTurn })).toBe("completed");
+    expect(statusOf({ latestTurn: { ...completedTurn, state: "interrupted" } })).toBe(
+      "interrupted",
+    );
+    expect(
+      statusOf({ latestTurn: { ...completedTurn, state: "error" }, hasPendingApprovals: true }),
+    ).toBe("error");
+    expect(statusOf({ archivedAt: timestamp, hasPendingApprovals: true })).toBe("archived");
+    expect(statusOf({ session: readySession })).toBe("interrupted");
+  });
+
+  it("handles follow-up admission, failed admission, and native work after completion", () => {
+    expect(statusOf({ session: { ...readySession, status: "starting" } })).toBe("starting");
+    expect(
+      statusOf({ session: { ...readySession, status: "starting" }, latestTurn: completedTurn }),
+    ).toBe("running");
+    expect(
+      statusOf({
+        session: { ...readySession, failedTurnRequestId: CommandId.make("failed") },
+        latestTurn: completedTurn,
+      }),
+    ).toBe("error");
+    expect(
+      statusOf({ session: { ...readySession, pendingTurnRequestId: CommandId.make("stale") } }),
+    ).toBe("interrupted");
+    expect(statusOf({ latestTurn: completedTurn, backgroundLiveness: "working" })).toBe("running");
+    expect(statusOf({ latestTurn: completedTurn, backgroundLiveness: "monitoring" })).toBe(
+      "completed",
+    );
+  });
+
+  it("uses concise current shell activity and provider/model without leaking stale plans", () => {
+    const shell = child({
+      session: readySession,
+      latestTurn: { ...completedTurn, state: "running" },
+      planProgress: { step: "Check\n  lifecycle", completedSteps: 0, totalSteps: 1 },
+    });
+    expect(delegatedThreadRows([shell], parentRef)[0]).toMatchObject({
+      providerName: "Codex",
+      modelSelection: shell.modelSelection,
+      activity: "Check lifecycle",
+    });
+    expect(
+      delegatedThreadRows([{ ...shell, latestTurn: completedTurn }], parentRef)[0]?.activity,
+    ).toBeNull();
+    expect(
+      delegatedThreadRows(
+        [{ ...shell, session: { ...readySession, status: "error", lastError: "x".repeat(200) } }],
+        parentRef,
+      )[0]?.activity,
+    ).toHaveLength(160);
   });
 });

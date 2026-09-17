@@ -95,11 +95,10 @@ const orFail = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
 ): Effect.Effect<A, DelegationFailedError, R> =>
   effect.pipe(
-    Effect.catchCause(
-      (cause): Effect.Effect<never, DelegationFailedError> =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.failCause(cause as Cause.Cause<never>)
-          : Effect.fail(new DelegationFailedError({ cause })),
+    Effect.catchCause((cause): Effect.Effect<never, DelegationFailedError> =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.failCause(cause as Cause.Cause<never>)
+        : Effect.fail(new DelegationFailedError({ cause })),
     ),
   );
 
