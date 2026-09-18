@@ -1,12 +1,8 @@
-/**
- * The decisions behind the composer's pair control, kept pure so they are
- * tested without a composer: what a toggle does, when it has to wait, and
- * whether the lead's session must restart for the change to take effect.
- *
- * STUB: written by the lead so the tests compile. The executor replaces the
- * function bodies; exported names, types, and signatures must not change.
- */
-import type { PairExecutorCreateInput, PairState } from "@t3tools/client-runtime/state/pair";
+import {
+  pairExecutorCreateInput,
+  type PairExecutorCreateInput,
+  type PairState,
+} from "@t3tools/client-runtime/state/pair";
 import type {
   ModelSelection,
   OrchestrationSession,
@@ -36,19 +32,73 @@ export type PairToggleStep =
   | { readonly kind: "archive"; readonly threadId: ThreadId };
 
 /** Why the switch cannot change right now, or null when it can. */
-export function pairLockedReason(_lead: PairLead | null): string | null {
-  throw new Error("pairControl.logic.pairLockedReason is not implemented");
+export function pairLockedReason(lead: PairLead | null): string | null {
+  if (lead === null) {
+    return "Open a thread to pair it.";
+  }
+  if (lead.session?.status === "running" || lead.session?.status === "starting") {
+    return "Changes apply between turns.";
+  }
+  return null;
 }
 
 /** The step a toggle performs, or null when the toggle changes nothing or is not allowed. */
-export function pairToggleStep(_input: {
+export function pairToggleStep(input: {
   readonly on: boolean;
   readonly state: PairState;
   readonly lead: PairLead | null;
   readonly executorSelection: ModelSelection | null;
   readonly childRuntimeMode: "inherit" | "approval-required";
 }): PairToggleStep | null {
-  throw new Error("pairControl.logic.pairToggleStep is not implemented");
+  if (input.lead === null) {
+    return null;
+  }
+  if (pairLockedReason(input.lead) !== null) {
+    return null;
+  }
+  if (input.state.kind === "unsupported-lead") {
+    return null;
+  }
+  if (input.on && input.state.kind === "on") {
+    return null;
+  }
+  if (!input.on && input.state.kind === "off") {
+    return null;
+  }
+  if (input.on && input.executorSelection === null) {
+    return null;
+  }
+
+  if (input.on) {
+    if (input.executorSelection === null) {
+      return null;
+    }
+    return {
+      kind: "create",
+      input: pairExecutorCreateInput({
+        lead: input.lead,
+        executorSelection: input.executorSelection,
+        childRuntimeMode: input.childRuntimeMode,
+      }),
+    };
+  }
+
+  if (input.state.kind !== "on") {
+    return null;
+  }
+
+  switch (input.state.phase) {
+    case "idle":
+      return { kind: "delete", threadId: input.state.executorId };
+    case "completed":
+    case "interrupted":
+    case "error":
+      return { kind: "archive", threadId: input.state.executorId };
+    case "running":
+    case "needs-approval":
+    case "needs-input":
+      return null;
+  }
 }
 
 /**
@@ -56,15 +106,18 @@ export function pairToggleStep(_input: {
  * session is stopped so its next turn starts a new one, resumed from the same
  * conversation; a lead with no session, or one already stopped, needs nothing.
  */
-export function shouldRestartLeadSession(_lead: PairLead | null): boolean {
-  throw new Error("pairControl.logic.shouldRestartLeadSession is not implemented");
+export function shouldRestartLeadSession(lead: PairLead | null): boolean {
+  return lead?.session?.status === "ready" || lead?.session?.status === "idle";
 }
 
 /** The executor model to show: the executor's own when on, else the user's pick, else the default. */
-export function resolveExecutorSelection(_input: {
+export function resolveExecutorSelection(input: {
   readonly state: PairState;
   readonly picked: ModelSelection | null;
   readonly defaultSelection: ModelSelection | null;
 }): ModelSelection | null {
-  throw new Error("pairControl.logic.resolveExecutorSelection is not implemented");
+  if (input.state.kind === "on") {
+    return input.state.modelSelection;
+  }
+  return input.picked ?? input.defaultSelection;
 }
