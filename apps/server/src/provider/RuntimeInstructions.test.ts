@@ -76,12 +76,17 @@ describe("buildRuntimeInstructions", () => {
 
   it("states the rules a lead must not get wrong", () => {
     for (const rule of [
+      "Work test-first",
+      "fail for the right reason",
+      "without editing them",
+      "code only",
       "pair_handoff",
       "pair_await",
       "Never poll in a loop",
+      "confirm your tests are unchanged",
       "re-run the checks yourself",
       "not verification",
-      "Only you commit",
+      "Only you push and open pull requests",
       "never approve on their behalf",
     ]) {
       expect(PAIR_LEAD_PROTOCOL).toContain(rule);

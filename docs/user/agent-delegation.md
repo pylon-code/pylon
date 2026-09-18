@@ -137,7 +137,8 @@ unaffected; this takes effect the next time the lead's session starts. Antigravi
 executor but cannot lead a pair.
 
 The executor appears under its parent in the sidebar like any delegated thread. Archive it to turn
-the pair off for that thread. Pairing needs **Pylon delegation** turned on in **Settings →
+the pair off for that thread. Archiving, settling, or deleting the lead does the same to its
+executor. Rewinding the lead stops the executor first, because both work on the same files. Pairing needs **Pylon delegation** turned on in **Settings →
 Integrations**.
 
 ## Things to know
