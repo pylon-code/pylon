@@ -314,6 +314,7 @@ describe("CheckpointReactor", () => {
     readonly checkpointLookupFailure?: (
       cwd: string,
     ) => VcsProcessTimeoutError | VcsProcessSpawnError | undefined;
+    readonly workspaceRefresh?: (cwd: string) => Effect.Effect<void>;
     readonly hasSession?: boolean;
     readonly seedFilesystemCheckpoints?: boolean;
     readonly initializeGit?: boolean;
@@ -388,7 +389,9 @@ describe("CheckpointReactor", () => {
         }).pipe(Effect.andThen(options?.pullRequestRefresh ?? Effect.void), Effect.as(null)),
       streamStatus: () => Stream.empty,
     });
-    const workspaceRefresh = vi.fn((_cwd: string) => Effect.void);
+    const workspaceRefresh = vi.fn((cwd: string) =>
+      options?.workspaceRefresh ? options.workspaceRefresh(cwd) : Effect.void,
+    );
     const workspaceEntriesLayer = Layer.succeed(
       WorkspaceEntries.WorkspaceEntries,
       WorkspaceEntries.WorkspaceEntries.of({
@@ -779,6 +782,99 @@ describe("CheckpointReactor", () => {
         expect(
           model.threads[0]?.activities.some((a) => a.kind === "checkpoint.capture.failed"),
         ).toBe(false);
+      }),
+  );
+
+  effectIt.effect(
+    "finalizes checkpoints in both workspaces while entry refresh is blocked and coalesces later scans",
+    () =>
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const refreshCalls: string[] = [];
+        let secondCwd = "";
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            seedFilesystemCheckpoints: false,
+            secondThreadSharingWorktree: true,
+            secondThreadWorktreePath: () => {
+              secondCwd = createGitRepository();
+              tempDirs.push(secondCwd);
+              return secondCwd;
+            },
+            workspaceRefresh: (cwd) =>
+              Effect.gen(function* () {
+                refreshCalls.push(cwd);
+                if (refreshCalls.length === 1) {
+                  yield* Deferred.succeed(entered, undefined);
+                  yield* Deferred.await(release);
+                }
+              }),
+          }),
+        );
+        for (const [index, threadId] of [
+          "thread-1",
+          "thread-2",
+          "thread-1",
+          "thread-1",
+          "thread-1",
+        ].entries()) {
+          const turnId = asTurnId(`turn-refresh-${index}`);
+          const id = ThreadId.make(threadId);
+          harness.provider.emit({
+            type: "turn.started",
+            eventId: EventId.make(`evt-refresh-start-${index}`),
+            provider: ProviderDriverKind.make("codex"),
+            createdAt: "2026-01-01T00:00:00.000Z",
+            threadId: id,
+            turnId,
+          });
+          if (index < 2)
+            expect(yield* harness.nextReceipt).toMatchObject({
+              type: "checkpoint.baseline.captured",
+              threadId: id,
+            });
+          const cwd = threadId === "thread-1" ? harness.cwd : secondCwd;
+          NodeFS.writeFileSync(NodePath.join(cwd, "README.md"), `snapshot ${index}\n`);
+          harness.provider.emit({
+            type: "turn.completed",
+            eventId: EventId.make(`evt-refresh-complete-${index}`),
+            provider: ProviderDriverKind.make("codex"),
+            createdAt: "2026-01-01T00:00:01.000Z",
+            threadId: id,
+            turnId,
+            payload: { state: "completed" },
+          });
+          expect(yield* harness.nextReceipt).toMatchObject({
+            type: "checkpoint.diff.finalized",
+            threadId: id,
+            turnId,
+          });
+          expect(yield* harness.nextReceipt).toMatchObject({
+            type: "turn.processing.quiesced",
+            threadId: id,
+            turnId,
+          });
+          if (index === 0) yield* Deferred.await(entered);
+        }
+        expect(refreshCalls).toEqual([harness.cwd]);
+        expect(
+          gitShowFileAtRef(
+            harness.cwd,
+            checkpointRefForThreadTurn(ThreadId.make("thread-1"), 4),
+            "README.md",
+          ),
+        ).toBe("snapshot 4\n");
+        expect(
+          gitShowFileAtRef(
+            secondCwd,
+            checkpointRefForThreadTurn(ThreadId.make("thread-2"), 1),
+            "README.md",
+          ),
+        ).toBe("snapshot 1\n");
+        yield* Deferred.succeed(release, undefined);
+        yield* Effect.promise(harness.drain);
+        expect(refreshCalls).toEqual([harness.cwd, secondCwd, harness.cwd]);
       }),
   );
 

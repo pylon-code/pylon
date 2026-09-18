@@ -118,6 +118,24 @@ export const make = Effect.gen(function* () {
   const rollbackRunner = yield* Effect.serviceOption(RollbackSagaRunner);
   const rollbackWorkspace = yield* Effect.serviceOption(RollbackWorkspace);
   const pullRequests = yield* PullRequestService.PullRequestService;
+  const queuedEntryRefreshes = new Set<string>();
+  const entryRefreshWorker = yield* makeDrainableWorker((cwd: string) =>
+    Effect.sync(() => queuedEntryRefreshes.delete(cwd)).pipe(
+      Effect.andThen(workspaceEntries.refresh(cwd)),
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("failed to refresh checkpoint workspace entries", {
+              cwd,
+            }),
+      ),
+    ),
+  );
+  const refreshWorkspaceEntries = Effect.fn("refreshWorkspaceEntries")(function* (cwd: string) {
+    if (queuedEntryRefreshes.has(cwd)) return;
+    queuedEntryRefreshes.add(cwd);
+    yield* entryRefreshWorker.enqueue(cwd);
+  });
   const pending = new Set<ThreadId>();
 
   const appendRevertFailureActivity = (input: {
@@ -382,7 +400,7 @@ export const make = Effect.gen(function* () {
 
     // Refresh the workspace entry index so the @-mention file picker
     // reflects files created or deleted during this turn.
-    yield* workspaceEntries.refresh(input.cwd);
+    yield* refreshWorkspaceEntries(input.cwd);
 
     // Git may have been initialized during this turn, leaving no pre-turn
     // snapshot. Keep the completion checkpoint for future turns, but do not
@@ -1137,7 +1155,10 @@ export const make = Effect.gen(function* () {
 
   return {
     start,
-    drain: worker.drain.pipe(Effect.andThen(statusRefreshWorker.drain)),
+    drain: worker.drain.pipe(
+      Effect.andThen(statusRefreshWorker.drain),
+      Effect.andThen(entryRefreshWorker.drain),
+    ),
   } satisfies CheckpointReactorShape;
 });
 
