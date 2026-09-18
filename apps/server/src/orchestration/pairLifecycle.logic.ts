@@ -6,6 +6,7 @@
 import type { OrchestrationEvent, OrchestrationThreadShell, ThreadId } from "@t3tools/contracts";
 import { isDelegatedThreadId } from "../mcp/toolkits/delegation/logic.ts";
 import { derivePairExecutorState } from "../mcp/toolkits/pair/logic.ts";
+import { delegatedParentThreadId, isPairExecutorThreadId } from "@t3tools/shared/delegatedThreads";
 
 /**
  * - `archive`, `delete`, `settle`: the executor follows its lead.
@@ -75,11 +76,28 @@ export const ORPHAN_EXECUTOR_GRACE_MS = 24 * 60 * 60 * 1_000;
  * leaves that executor behind for good. Only an executor that never ran, whose
  * lead is unknown, and that is older than the grace period counts.
  */
-export function orphanedExecutorIds(_input: {
+export function orphanedExecutorIds(input: {
   readonly threads: ReadonlyArray<OrchestrationThreadShell>;
   /** Every thread id the server knows, archived ones included. */
   readonly knownThreadIds: ReadonlySet<string>;
   readonly nowMs: number;
 }): ReadonlyArray<ThreadId> {
-  return [];
+  const orphans: ThreadId[] = [];
+  for (const thread of input.threads) {
+    if (!isPairExecutorThreadId(thread.id)) {
+      continue;
+    }
+    const leadId = delegatedParentThreadId(thread.id);
+    if (leadId === null || input.knownThreadIds.has(leadId)) {
+      continue;
+    }
+    if (thread.latestTurn !== null || thread.session !== null) {
+      continue;
+    }
+    if (input.nowMs - Date.parse(thread.createdAt) <= ORPHAN_EXECUTOR_GRACE_MS) {
+      continue;
+    }
+    orphans.push(thread.id);
+  }
+  return orphans;
 }

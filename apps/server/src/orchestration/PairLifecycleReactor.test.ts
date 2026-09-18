@@ -18,6 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ServerActivation } from "../serverActivation.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
@@ -253,6 +254,8 @@ describe("PairLifecycleReactor", () => {
   it.effect("deletes executors left behind by abandoned drafts when the server starts", () =>
     Effect.scoped(
       Effect.gen(function* () {
+        // The test clock starts at the epoch, where nothing is a day old.
+        yield* TestClock.setTime(Date.parse(NOW));
         const longAgo = "2026-01-01T00:00:00.000Z";
         const abandoned = executorOf(ThreadId.make("abandoned-draft"));
         const archivedLead = ThreadId.make("archived-lead");
