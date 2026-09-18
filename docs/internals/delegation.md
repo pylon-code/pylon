@@ -108,7 +108,10 @@ tokens, up to a cap chosen by the lead's provider: long only where Pylon sets th
 tool timeout itself. The lead does not choose the length. A live Codex lead asked for 10 to 20
 seconds at a time and looped, which is polling with a model turn per call, so any request other than
 an explicit 0 waits the whole cap; the call still returns the moment the executor changes state, and
-0 reads the state without waiting. Its `filesChanged` covers the executor's latest turn only: one
+0 reads the state without waiting. Instant reads are rationed too: a lead may glance at a running
+executor twice in a row, and a third `maxSeconds: 0` waits the whole cap instead (`pairAwaitPlan`), so
+no argument turns the tool into a poll. Any wait, or finding the executor not running, clears the
+count, which lives in memory beside the protected-path record. Its `filesChanged` covers the executor's latest turn only: one
 executor serves every brief of a pair, so listing all of its checkpoints would hand the lead files it
 reviewed several briefs ago. `turnCount` still counts them all.
 
@@ -185,7 +188,8 @@ brief before anything moves, and a steer never moves a running executor.
 - The per-parent semaphore that serializes delegation is in memory, which is enough because one
   server process owns the orchestration engine.
 - Waiting is polling of the projection inside the tool call, bounded by wall-clock time to 45
-  seconds; already-settled children and pending approvals/input return immediately. Prime Agent's MCP client cancels any call after 60 seconds, measured in a live run.
+  seconds. `delegated_thread_status` does not let the caller pick a shorter wait either: omitted or 0
+  reads the state, any positive value waits the whole 45 seconds (`delegatedStatusWaitSeconds`); already-settled children and pending approvals/input return immediately. Prime Agent's MCP client cancels any call after 60 seconds, measured in a live run.
   Pylon disables Prime's autonomous continuation, so a parent cannot be woken when a child finishes.
 - The per-parent semaphores are never evicted; one small entry per thread that has delegated.
 - Sends and interrupts take the same per-parent gate as delegation, so an interrupt waits behind a

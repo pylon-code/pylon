@@ -22,6 +22,7 @@ import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.t
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../../../vcs/VcsStatusBroadcaster.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { MAX_STATUS_WAIT_SECONDS } from "./logic.ts";
 
 // Crypto is not listed: it reaches the handlers as a layer requirement of
 // `toLayer(make)`, the same way the pull request toolkit receives it.
@@ -37,9 +38,6 @@ const dependencies = [
 ];
 
 const MAX_TASK_CHARS = 32_000;
-// Prime Agent's MCP client cancels any call after 60 s, and each poll adds
-// query time, so the budget stays well inside that.
-const MAX_WAIT_SECONDS = 45;
 const MAX_TITLE_CHARS = 200;
 const MIN_RESULT_CHARS = 1_000;
 const MAX_RESULT_CHARS = 60_000;
@@ -120,9 +118,9 @@ export type DelegateThreadResult = typeof DelegateThreadResult.Type;
 export const DelegatedThreadStatusInput = Schema.Struct({
   delegationKey: DelegationKey,
   waitSeconds: Schema.optional(
-    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_WAIT_SECONDS })).annotate({
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_STATUS_WAIT_SECONDS })).annotate({
       description:
-        "Wait up to this many seconds (at most 45) for the child's state to change before answering. Use 45 when waiting is necessary; do independent work before checking again. Completed or blocked children return immediately.",
+        "Leave it out or pass 0 to read the state now; any positive value waits the full 45 seconds and returns the moment the child changes, so a shorter wait gains nothing; do not call it in a loop. Completed or blocked children return immediately.",
     }),
   ),
 });
@@ -448,7 +446,7 @@ const DelegateThreadTool = Tool.make("delegate_thread", {
 
 const DelegatedThreadStatusTool = Tool.make("delegated_thread_status", {
   description:
-    "Report a child thread's state (queued, running, completed, interrupted, error, archived) and whether it is waiting on an approval or a question. Pass waitSeconds to wait up to 45 seconds until something changes; use 45 when waiting is necessary. Completed children and children needing approval or input return immediately. Do independent work before checking again; avoid short polling and unchanged progress updates. While Pylon delegation is enabled, child lifecycle changes can queue automatic parent follow-through at an eligible idle boundary; see read_delegation_skill for limits.",
+    "Report a child thread's state (queued, running, completed, interrupted, error, archived) and whether it is waiting on an approval or a question. Leave it out or pass 0 to read the state now; any positive value waits the full 45 seconds and returns the moment the child changes, so a shorter wait gains nothing; do not call it in a loop. Completed children and children needing approval or input return immediately. Do independent work before checking again; avoid short polling and unchanged progress updates. While Pylon delegation is enabled, child lifecycle changes can queue automatic parent follow-through at an eligible idle boundary; see read_delegation_skill for limits.",
   parameters: DelegatedThreadStatusInput,
   success: DelegatedThreadStatusResult,
   failure: DelegationToolError,

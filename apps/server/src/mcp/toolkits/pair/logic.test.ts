@@ -17,6 +17,8 @@ import {
   derivePairExecutorState,
   isPairLeadSupported,
   latestTurnCheckpoints,
+  MAX_INSTANT_READS,
+  pairAwaitPlan,
   pairAwaitBudgetSeconds,
   normalizeProtectedPath,
   isPairExecutorThreadId,
@@ -253,5 +255,36 @@ describe("the files a lead is shown", () => {
     // A turn that changed nothing has no checkpoint, and shows no files.
     expect(latestTurnCheckpoints([first], "turn-2")).toEqual([]);
     expect(latestTurnCheckpoints([first], null)).toEqual([]);
+  });
+});
+
+describe("pair await plan", () => {
+  const cap = { capSeconds: 45 };
+  it("lets a lead glance at a running executor twice, then makes it wait", () => {
+    expect(MAX_INSTANT_READS).toBe(2);
+    expect(pairAwaitPlan({ ...cap, requestedSeconds: 0, running: true, instantReads: 0 })).toEqual({
+      budgetSeconds: 0,
+      instantReads: 1,
+    });
+    expect(pairAwaitPlan({ ...cap, requestedSeconds: 0, running: true, instantReads: 1 })).toEqual({
+      budgetSeconds: 0,
+      instantReads: 2,
+    });
+    expect(pairAwaitPlan({ ...cap, requestedSeconds: 0, running: true, instantReads: 2 })).toEqual({
+      budgetSeconds: 45,
+      instantReads: 0,
+    });
+  });
+
+  it("clears the count on any wait and whenever the executor is not running", () => {
+    expect(
+      pairAwaitPlan({ ...cap, requestedSeconds: undefined, running: true, instantReads: 2 }),
+    ).toEqual({ budgetSeconds: 45, instantReads: 0 });
+    expect(pairAwaitPlan({ ...cap, requestedSeconds: 10, running: true, instantReads: 1 })).toEqual(
+      { budgetSeconds: 45, instantReads: 0 },
+    );
+    expect(pairAwaitPlan({ ...cap, requestedSeconds: 0, running: false, instantReads: 2 })).toEqual(
+      { budgetSeconds: 0, instantReads: 0 },
+    );
   });
 });

@@ -51,6 +51,36 @@ export function derivePairExecutorState(shell: OrchestrationThreadShell): PairEx
   return state;
 }
 
+/** Instant reads of a running executor a lead may make in a row before one blocks. */
+export const MAX_INSTANT_READS = 2;
+
+/**
+ * What one `pair_await` call does, given how many instant reads of a running
+ * executor came straight before it. An instant read is `maxSeconds: 0`. The
+ * third in a row waits the whole cap instead, so a lead cannot poll; the call
+ * still returns the moment the executor changes. Any wait, and any call that
+ * finds the executor not running, clears the count.
+ */
+export function pairAwaitPlan(input: {
+  readonly requestedSeconds: number | undefined;
+  readonly capSeconds: number;
+  readonly running: boolean;
+  readonly instantReads: number;
+}): { readonly budgetSeconds: number; readonly instantReads: number } {
+  if (!input.running) {
+    return {
+      budgetSeconds: pairAwaitBudgetSeconds(input.requestedSeconds, input.capSeconds),
+      instantReads: 0,
+    };
+  }
+  if (input.requestedSeconds === 0) {
+    return input.instantReads < MAX_INSTANT_READS
+      ? { budgetSeconds: 0, instantReads: input.instantReads + 1 }
+      : { budgetSeconds: input.capSeconds, instantReads: 0 };
+  }
+  return { budgetSeconds: input.capSeconds, instantReads: 0 };
+}
+
 /**
  * The checkpoints of the executor's latest turn. One executor serves every
  * brief of a pair, so its checkpoints pile up; the lead is reviewing the brief

@@ -923,6 +923,21 @@ describe("pair_await", () => {
     }),
   );
 
+  it.effect("turns the third instant read of a running executor into a full wait", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ shells: [makeShell(LEAD_ID), runningExecutor()] });
+      const instant = { state: "running", waitedSeconds: 0 };
+      expect(yield* harness.call("pair_await", { maxSeconds: 0 })).toMatchObject(instant);
+      expect(yield* harness.call("pair_await", { maxSeconds: 0 })).toMatchObject(instant);
+      const third = yield* Effect.forkChild(harness.call("pair_await", { maxSeconds: 0 }));
+      yield* TestClock.adjust(`${MAX_PAIR_AWAIT_SECONDS} seconds`);
+      // The lead in this harness is not Codex, so its cap is 45 seconds.
+      expect(yield* Fiber.join(third)).toMatchObject({ state: "running", waitedSeconds: 45 });
+      // The blocked call cleared the count, so a glance works again.
+      expect(yield* harness.call("pair_await", { maxSeconds: 0 })).toMatchObject(instant);
+    }),
+  );
+
   it.effect("reads the state without waiting only when asked for zero seconds", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ shells: [makeShell(LEAD_ID), runningExecutor()] });

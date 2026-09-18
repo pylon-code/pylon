@@ -125,7 +125,7 @@ export const PairAwaitInput = Schema.Struct({
   maxSeconds: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_PAIR_AWAIT_SECONDS })).annotate({
       description:
-        "Leave this out. The call waits as long as your provider's tool timeout allows and returns the moment the executor stops or needs the user, so a blocked call costs no tokens and a shorter wait gains nothing: any value above 0 is raised to that full wait. Pass 0 only to read the state without waiting. If the executor is still running afterwards, end your turn: Pylon wakes you when it finishes or needs the user. Do not call this in a loop.",
+        "Leave this out. The call waits as long as your provider's tool timeout allows and returns the moment the executor stops or needs the user, so a blocked call costs no tokens and a shorter wait gains nothing: any value above 0 is raised to that full wait. Pass 0 only to read the state without waiting. A third instant read in a row of a running executor waits the full time instead. If the executor is still running afterwards, end your turn: Pylon wakes you when it finishes or needs the user. Do not call this in a loop.",
     }),
   ),
   maxChars: Schema.optional(
