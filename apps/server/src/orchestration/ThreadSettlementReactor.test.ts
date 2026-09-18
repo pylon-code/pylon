@@ -4,6 +4,7 @@ import {
   ProviderInstanceId,
   PullRequestOperationError,
   ThreadId,
+  TurnId,
   type OrchestrationCommand,
   type OrchestrationProjectShell,
   type OrchestrationShellSnapshot,
@@ -645,6 +646,57 @@ describe("ThreadSettlementReactor", () => {
             { projectId: LINKED_PROJECT_ID, repository: "owner/repository", number: 42 },
           ]);
           assert.deepStrictEqual(yield* Ref.get(fixture.summaryRecovery), [false]);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("keeps a parent active while one of its delegated children is still working", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const runningTurn = {
+          turnId: TurnId.make("turn-child"),
+          state: "running" as const,
+          requestedAt: "2026-08-20T00:00:00.000Z",
+          startedAt: "2026-08-20T00:00:00.000Z",
+          completedAt: null,
+          assistantMessageId: null,
+        };
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([
+            makeThread("lead", { branch: "lead-feature" }),
+            makeThread("delegated:lead:0123456789abcdef", {
+              branch: "lead-feature",
+              latestTurn: runningTurn,
+              session: {
+                threadId: ThreadId.make("delegated:lead:0123456789abcdef"),
+                status: "running",
+                providerName: "antigravity",
+                runtimeMode: "full-access",
+                activeTurnId: runningTurn.turnId,
+                lastError: null,
+                updatedAt: "2026-08-20T00:00:00.000Z",
+              },
+            }),
+            makeThread("unrelated", { branch: "unrelated-feature" }),
+          ]),
+          branchPullRequest: () => Effect.succeed(null),
+        });
+
+        yield* Effect.gen(function* () {
+          const reactor = yield* ThreadSettlementReactor.ThreadSettlementReactor;
+          yield* reactor.start();
+          yield* Deferred.succeed(fixture.activation, undefined);
+          yield* Queue.take(fixture.snapshotReads);
+          yield* reactor.drain;
+
+          // The lead is as inactive as the unrelated thread, but its executor
+          // is mid-turn: settling it would also stop it from being woken.
+          assert.deepStrictEqual(
+            (yield* Ref.get(fixture.commands)).map(({ threadId }) => threadId),
+            [ThreadId.make("unrelated")],
+          );
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),
