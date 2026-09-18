@@ -91,20 +91,43 @@ export interface ProtectedPathRecord {
 
 /**
  * A protected path as the lead may write it, reduced to a clean path relative
- * to the worktree, or null when it could reach outside it. STUB.
+ * to the worktree, or null when it could reach outside it.
  */
-export function normalizeProtectedPath(_path: string): string | null {
-  throw new Error("pair/logic.normalizeProtectedPath is not implemented");
+export function normalizeProtectedPath(path: string): string | null {
+  if (path.includes("\0")) return null;
+  const normalizedSlashes = path.replaceAll("\\", "/");
+  if (
+    normalizedSlashes.startsWith("/") ||
+    normalizedSlashes.startsWith("~") ||
+    /^[A-Za-z]:/.test(normalizedSlashes)
+  ) {
+    return null;
+  }
+  const rawSegments = normalizedSlashes.split("/");
+  const segments: string[] = [];
+  for (const segment of rawSegments) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") return null;
+    segments.push(segment);
+  }
+  if (segments.length === 0) return null;
+  return segments.join("/");
 }
 
 /**
  * Recorded paths whose current content differs or that no longer exist, in
  * recorded order. `current` maps a path to its digest, or null when the file
- * could not be read. STUB.
+ * could not be read.
  */
 export function changedProtectedPaths(
-  _recorded: ReadonlyArray<ProtectedPathRecord>,
-  _current: ReadonlyMap<string, string | null>,
+  recorded: ReadonlyArray<ProtectedPathRecord>,
+  current: ReadonlyMap<string, string | null>,
 ): ReadonlyArray<string> {
-  throw new Error("pair/logic.changedProtectedPaths is not implemented");
+  const changed: string[] = [];
+  for (const record of recorded) {
+    if (current.get(record.path) !== record.hash) {
+      changed.push(record.path);
+    }
+  }
+  return changed;
 }
