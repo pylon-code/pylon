@@ -125,7 +125,9 @@ export function PullRequestChip(props: {
       triggerClassName={props.className}
       chip={
         <>
-          <PullRequestGlyph.pullRequest className={cn(COMPOSER_INLINE_CHIP_ICON_CLASS_NAME, "size-3.5")} />
+          <PullRequestGlyph.pullRequest
+            className={cn(COMPOSER_INLINE_CHIP_ICON_CLASS_NAME, "size-3.5")}
+          />
           <span className={props.labelClassName}>{props.label}</span>
         </>
       }
