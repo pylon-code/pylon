@@ -25,10 +25,12 @@ export function PairStatusNotice(props: {
 
   return (
     <Pressable
+      accessible
+      testID="pair-status-notice"
       accessibilityRole="button"
       accessibilityLabel={`${line}. Open executor`}
       onPress={props.onOpenExecutor}
-      className="mb-2 gap-1 rounded-2xl border border-border bg-card px-3.5 py-3"
+      className="mx-4 mb-2 gap-1 rounded-2xl border border-border bg-card px-3.5 py-3"
     >
       <View className="gap-1">
         <Text className="text-sm font-t3-bold text-foreground">{line}</Text>
