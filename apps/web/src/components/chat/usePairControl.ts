@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { resolvePairState, type PairState } from "@t3tools/client-runtime/state/pair";
 import {
   isAtomCommandInterrupted,
@@ -46,15 +46,14 @@ export function usePairControl(input: {
   const defaultSelection = projectSettings.delegationDefaultModelSelection;
   const childRuntimeMode = projectSettings.delegationChildRuntimeMode;
 
-  const [picked, setPicked] = useState<ModelSelection | null>(null);
+  // Keyed by the lead so a model picked for one thread never follows the user
+  // to another, without an effect to reset it.
+  const [pick, setPick] = useState<{
+    readonly leadId: ThreadId | undefined;
+    readonly selection: ModelSelection;
+  } | null>(null);
   const leadId = input.lead?.id;
-  useEffect(() => {
-    if (leadId !== undefined) {
-      setPicked(null);
-    } else {
-      setPicked(null);
-    }
-  }, [leadId]);
+  const picked = pick !== null && pick.leadId === leadId ? pick.selection : null;
 
   const state = useMemo<PairState>(() => {
     if (input.lead === null) {
@@ -169,9 +168,12 @@ export function usePairControl(input: {
     ],
   );
 
-  const onExecutorChange = useCallback((instanceId: ProviderInstanceId, model: string) => {
-    setPicked({ instanceId, model });
-  }, []);
+  const onExecutorChange = useCallback(
+    (instanceId: ProviderInstanceId, model: string) => {
+      setPick({ leadId, selection: { instanceId, model } });
+    },
+    [leadId],
+  );
 
   const executorSelection = useMemo(
     () => resolveExecutorSelection({ state, picked, defaultSelection }),
