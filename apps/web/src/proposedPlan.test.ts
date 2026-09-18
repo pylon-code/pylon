@@ -122,3 +122,15 @@ describe("buildProposedPlanMarkdownFilename", () => {
     expect(buildProposedPlanMarkdownFilename("- step 1")).toBe("plan.md");
   });
 });
+
+describe("implementing a plan on a paired thread", () => {
+  it("reminds the lead to work through its executor, after the plan itself", () => {
+    const plain = buildPlanImplementationPrompt("# Plan\n\n1. Do it");
+    const paired = buildPlanImplementationPrompt("# Plan\n\n1. Do it", { paired: true });
+    expect(buildPlanImplementationPrompt("# Plan\n\n1. Do it", { paired: false })).toBe(plain);
+    expect(paired.startsWith(plain)).toBe(true);
+    expect(paired.slice(plain.length)).toBe(
+      "\n\nThis thread is paired. Write the contract and the failing tests yourself, then hand the plan to your executor one step at a time with pair_handoff, and verify each step before the next.",
+    );
+  });
+});

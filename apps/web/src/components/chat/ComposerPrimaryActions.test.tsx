@@ -159,6 +159,30 @@ function renderSendButton(
   );
 }
 
+function renderImplement(pairedImplement: boolean | undefined) {
+  return renderToStaticMarkup(
+    createElement(ComposerPrimaryActions, {
+      compact: true,
+      pendingAction: null,
+      isRunning: false,
+      canQueueFollowUp: false,
+      onQueueFollowUp: () => {},
+      showPlanFollowUpPrompt: true,
+      promptHasText: false,
+      isSendBusy: false,
+      sendDisabledReason: null,
+      isConnecting: false,
+      isEnvironmentUnavailable: false,
+      isPreparingWorktree: false,
+      hasSendableContent: false,
+      onPreviousPendingQuestion: () => {},
+      onInterrupt: () => {},
+      onImplementPlanInNewThread: () => {},
+      ...(pairedImplement === undefined ? {} : { pairedImplement }),
+    }),
+  );
+}
+
 afterEach(() => {
   stageArtworkState.mode = "none";
   stageArtworkState.variant = null;
@@ -274,5 +298,14 @@ describe("ComposerPrimaryActions", () => {
     expect(markup).toContain('aria-label="Queue follow-up"');
     expect(markup).toContain("disabled");
     expect(markup).not.toContain('aria-label="Send message"');
+  });
+});
+
+describe("implementing a plan on a paired thread", () => {
+  it("says the work goes through the executor, and only then", () => {
+    expect(renderImplement(true)).toContain(">Implement with executor<");
+    expect(renderImplement(false)).toContain(">Implement<");
+    expect(renderImplement(undefined)).toContain(">Implement<");
+    expect(renderImplement(false)).not.toContain("with executor");
   });
 });

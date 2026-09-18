@@ -157,6 +157,27 @@ describe("PairControlPanel", () => {
     expect(html).toContain("Working");
   });
 
+  it("offers to stop the executor only while it holds a turn", () => {
+    const stop = { onStopExecutor: () => undefined };
+    for (const phase of ["running", "needs-approval", "needs-input"] as const) {
+      const html = renderToStaticMarkup(
+        <PairControlPanel {...props({ state: on(phase), ...stop })} />,
+      );
+      expect(html, phase).toContain("data-pair-stop");
+      expect(html, phase).toContain("Stop executor");
+    }
+    for (const phase of ["idle", "completed", "interrupted", "error"] as const) {
+      const html = renderToStaticMarkup(
+        <PairControlPanel {...props({ state: on(phase), ...stop })} />,
+      );
+      expect(html, phase).not.toContain("data-pair-stop");
+    }
+    // Without a handler there is nothing to press.
+    expect(
+      renderToStaticMarkup(<PairControlPanel {...props({ state: on("running") })} />),
+    ).not.toContain("data-pair-stop");
+  });
+
   it("shows what the executor is doing and links to it when the pair is on", () => {
     const html = renderToStaticMarkup(
       <PairControlPanel {...props({ state: on("error", "quota exceeded today") })} />,

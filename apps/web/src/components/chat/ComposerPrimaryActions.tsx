@@ -38,6 +38,8 @@ interface ComposerPrimaryActionsProps {
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
+  /** The thread has a pair executor, so implementing a plan goes through it. */
+  pairedImplement?: boolean;
 }
 
 const formatPendingPrimaryActionLabel = (input: {
@@ -82,6 +84,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   onPreviousPendingQuestion,
   onInterrupt,
   onImplementPlanInNewThread,
+  pairedImplement,
 }: ComposerPrimaryActionsProps) {
   const pointerFocusProps = preserveComposerFocusOnPointerDown
     ? { onPointerDown: preventPointerFocus }
@@ -195,7 +198,11 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           {...pointerFocusProps}
           disabled={isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable}
         >
-          {isConnecting || isSendBusy ? "Sending..." : "Implement"}
+          {isConnecting || isSendBusy
+            ? "Sending..."
+            : pairedImplement
+              ? "Implement with executor"
+              : "Implement"}
         </Button>
         <Menu>
           <MenuTrigger
