@@ -46,7 +46,7 @@ import {
 } from "@t3tools/shared/projectScripts";
 import { Alert, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { pairRewindBlockedReason } from "@t3tools/client-runtime/state/pair";
+import { pairRewindBlockedReason, resolvePairState } from "@t3tools/client-runtime/state/pair";
 import { useThreadShells } from "../../state/entities";
 import { useWorkspaceState } from "../../state/workspace";
 import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
@@ -298,6 +298,31 @@ function ThreadRouteContent(
     "session agent depth update",
   );
   const navigation = useNavigation();
+  const pairState = useMemo(() => {
+    if (!selectedThread) {
+      return undefined;
+    }
+    return resolvePairState({
+      threads: threadShells,
+      lead: {
+        environmentId: selectedThread.environmentId,
+        threadId: selectedThread.id,
+        driverKind: null,
+      },
+    });
+  }, [threadShells, selectedThread]);
+  const pairExecutorLabel = pairState?.kind === "on" ? pairState.modelSelection.model : "";
+  const onOpenPairExecutor = useCallback(() => {
+    if (!selectedThread || pairState?.kind !== "on") {
+      return;
+    }
+    navigation.dispatch(
+      StackActions.push("Thread", {
+        environmentId: selectedThread.environmentId,
+        threadId: pairState.executorId,
+      }),
+    );
+  }, [navigation, pairState, selectedThread]);
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
@@ -1215,6 +1240,9 @@ function ThreadRouteContent(
         }
       >
         <ThreadDetailScreen
+          pairState={pairState}
+          pairExecutorLabel={pairExecutorLabel}
+          onOpenPairExecutor={onOpenPairExecutor}
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
           contentPresentation={contentPresentation}
           screenTone={connectionTone(routeConnectionState)}

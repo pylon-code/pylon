@@ -14,6 +14,8 @@ import {
   PAIR_UNSUPPORTED_LEAD_REASON,
   isPairLeadSupported,
   pairRewindBlockedReason,
+  pairPhaseLabel,
+  pairStatusLine,
   pairExecutorCreateInput,
   resolvePairState,
   withoutPairExecutors,
@@ -270,5 +272,31 @@ describe("pairRewindBlockedReason", () => {
     expect(ask([executor({ latestTurn: runningTurn, archivedAt: NOW })])).toBeNull();
     expect(ask([shell(FAN_OUT_CHILD, { latestTurn: runningTurn })])).toBeNull();
     expect(ask([executor({ latestTurn: runningTurn, environmentId: OTHER_ENV })])).toBeNull();
+  });
+});
+
+describe("pair status wording", () => {
+  it("names every phase the same way on every client", () => {
+    expect(pairPhaseLabel("idle")).toBe("Waiting for a brief");
+    expect(pairPhaseLabel("running")).toBe("Working");
+    expect(pairPhaseLabel("needs-approval")).toBe("Needs your approval");
+    expect(pairPhaseLabel("needs-input")).toBe("Has a question");
+    expect(pairPhaseLabel("completed")).toBe("Finished");
+    expect(pairPhaseLabel("interrupted")).toBe("Stopped");
+    expect(pairPhaseLabel("error")).toBe("Failed");
+  });
+
+  it("summarizes a pair in one line, and says nothing when there is none", () => {
+    const on = resolvePairState({
+      threads: [executor({ latestTurn: runningTurn, hasPendingApprovals: true })],
+      lead: lead(),
+    });
+    expect(pairStatusLine(on, "Gemini 3 Flash")).toBe(
+      "Paired with Gemini 3 Flash · Needs your approval",
+    );
+    expect(pairStatusLine(resolvePairState({ threads: [], lead: lead() }), "x")).toBeNull();
+    expect(
+      pairStatusLine(resolvePairState({ threads: [], lead: lead("antigravity") }), "x"),
+    ).toBeNull();
   });
 });
