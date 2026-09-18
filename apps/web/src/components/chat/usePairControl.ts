@@ -27,7 +27,7 @@ import {
   resolveExecutorSelection,
   shouldRestartLeadSession,
   type PairLead,
-} from "./pairControl.logic";
+} from "@t3tools/client-runtime/state/pair-control";
 
 export function usePairControl(input: {
   readonly environmentId: EnvironmentId;

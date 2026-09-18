@@ -1,8 +1,4 @@
-import {
-  pairExecutorCreateInput,
-  type PairExecutorCreateInput,
-  type PairState,
-} from "@t3tools/client-runtime/state/pair";
+import { pairExecutorCreateInput, type PairExecutorCreateInput, type PairState } from "./pair.ts";
 import type {
   ModelSelection,
   OrchestrationSession,
@@ -120,4 +116,20 @@ export function resolveExecutorSelection(input: {
     return input.state.modelSelection;
   }
   return input.picked ?? input.defaultSelection;
+}
+
+/**
+ * The phone's Pair switch. A phone has no executor picker: the executor is the
+ * project's default delegation model, so without one the switch explains where
+ * to set it. `detail` is the one line shown under the switch.
+ */
+export function pairSettingsRow(_input: {
+  readonly state: PairState;
+  readonly lockedReason: string | null;
+  /** The executor's own model while the pair is on; the project's default while it is off. */
+  readonly executorSelection: ModelSelection | null;
+  /** That model's display name, or "" when there is none. */
+  readonly executorLabel: string;
+}): { readonly value: boolean; readonly disabled: boolean; readonly detail: string | null } {
+  return { value: false, disabled: true, detail: null };
 }

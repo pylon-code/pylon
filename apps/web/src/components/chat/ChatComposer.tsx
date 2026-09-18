@@ -1086,7 +1086,7 @@ import { ProviderBindingConflictNotice } from "./ProviderBindingConflictNotice";
 import { QuickQuestionDialog } from "./QuickQuestionDialog";
 import { SessionResourcesDialog } from "./SessionResourcesDialog";
 import { PairControl } from "./PairControl";
-import type { PairLead } from "./pairControl.logic";
+import type { PairLead } from "@t3tools/client-runtime/state/pair-control";
 import { usePairControl } from "./usePairControl";
 
 const WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS = 10_000;
