@@ -7256,6 +7256,61 @@ describe("agent browser access", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  for (const stoppedBeforeProbe of [true, false]) {
+    it.effect(
+      `does not revive a stopped session for checkpoint capture (stopped before probe: ${stoppedBeforeProbe})`,
+      () =>
+        Effect.gen(function* () {
+          const threadId = asThreadId("thread-checkpoint-stopped");
+          const codex = makeFakeCodexAdapter();
+          const captureAnchor = vi.fn(() => Effect.succeed({ anchor: {}, digest: "checkpoint" }));
+          const adapter: ProviderAdapterShape<ProviderAdapterError> = {
+            ...codex.adapter,
+            capabilities: { ...codex.adapter.capabilities, conversationRollback: "absolute" },
+            absoluteConversationRollback: {
+              isAvailable: () => Effect.succeed(true),
+              captureAnchor,
+              inspectAnchor: () => Effect.succeed({ anchor: {}, digest: "checkpoint" }),
+              applyAnchor: () => Effect.void,
+              releaseAnchor: () => Effect.void,
+            },
+          };
+          yield* Effect.gen(function* () {
+            const provider = yield* ProviderService.ProviderService;
+            const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+            yield* provider.startSession(threadId, {
+              providerInstanceId: codexInstanceId,
+              threadId,
+              runtimeMode: "full-access",
+            });
+            const binding = yield* directory.getBinding(threadId);
+            if (stoppedBeforeProbe) yield* codex.stopSession(threadId);
+            assert.equal(
+              yield* provider.hasAbsoluteConversationRollback!(threadId),
+              !stoppedBeforeProbe,
+            );
+            if (!stoppedBeforeProbe) yield* codex.stopSession(threadId);
+            const result = yield* provider.captureConversationAnchor!({
+              threadId,
+              binding: {
+                kind: "checkpoint",
+                checkpointTurnCount: 1,
+                sourceRevision: 1,
+                checkpointRef: CheckpointRef.make("checkpoint-stopped"),
+                checkpointOid: "1".repeat(40),
+                turnId: TurnId.make("turn-stopped"),
+              },
+            }).pipe(Effect.exit);
+            assert.isTrue(Exit.isFailure(result));
+            assert.equal(captureAnchor.mock.calls.length, 0);
+            assert.equal(codex.startSession.mock.calls.length, 1);
+            assert.deepEqual(yield* provider.listSessions(), []);
+            assert.deepEqual(yield* directory.getBinding(threadId), binding);
+          }).pipe(Effect.provide(makeAgentBrowserProviderLayer(false, { ...codex, adapter }, {})));
+        }).pipe(Effect.provide(NodeServices.layer)),
+    );
+  }
+
   it.effect("does not overwrite a new turn with a delayed checkpoint cursor", () =>
     Effect.gen(function* () {
       const threadId = asThreadId("thread-checkpoint-cursor-race");
