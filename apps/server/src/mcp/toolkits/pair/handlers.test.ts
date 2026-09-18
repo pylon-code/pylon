@@ -269,6 +269,17 @@ const makeHarness = Effect.fn("makePairHarness")(function* (options: HarnessOpti
       );
     }
     if (command.type === "thread.turn.start") messageIds.add(command.message.messageId);
+    if (command.type === "thread.meta.update") {
+      const current = shells.get(command.threadId);
+      if (current) {
+        shells.set(command.threadId, {
+          ...current,
+          branch: command.branch === undefined ? current.branch : command.branch,
+          worktreePath:
+            command.worktreePath === undefined ? current.worktreePath : command.worktreePath,
+        });
+      }
+    }
   };
 
   // Mirrors the receipt store: an accepted command id replays without effect,
@@ -828,6 +839,99 @@ describe("pair_await", () => {
         state: "running",
         waitedSeconds: 0,
       });
+    }),
+  );
+});
+
+describe("the executor follows its lead's worktree", () => {
+  // A pair turned on from the composer creates the executor before the lead's
+  // first turn has set up its worktree, and a lead can move to another branch.
+  const strayExecutor = (overrides: Partial<OrchestrationThreadShell> = {}) =>
+    makeExecutor({ branch: null, worktreePath: null, ...overrides });
+  const brief = { messageKey: "m-1", text: "Implement step one" };
+
+  it.effect("moves an idle executor into the lead's worktree before briefing it", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ shells: [makeShell(LEAD_ID), strayExecutor()] });
+      yield* harness.call("pair_handoff", brief);
+      const recorded = yield* Ref.get(harness.commands);
+      expect(recorded.map((command) => command.type)).toEqual([
+        "thread.meta.update",
+        "thread.turn.start",
+      ]);
+      expect(recorded[0]).toEqual({
+        type: "thread.meta.update",
+        commandId: `server:mcp-pair-follow:${EXECUTOR_ID}:m-1`,
+        threadId: EXECUTOR_ID,
+        branch: "feat/work",
+        worktreePath: "/wt/repo/lead",
+      });
+    }),
+  );
+
+  it.effect("follows a lead that moved, and leaves a matching executor alone", () =>
+    Effect.gen(function* () {
+      const moved = yield* makeHarness({
+        shells: [
+          makeShell(LEAD_ID, { branch: "feat/other", worktreePath: "/wt/repo/other" }),
+          makeExecutor({ latestTurn: completedTurn() }),
+        ],
+      });
+      yield* moved.call("pair_handoff", brief);
+      expect((yield* Ref.get(moved.commands))[0]).toMatchObject({
+        type: "thread.meta.update",
+        branch: "feat/other",
+        worktreePath: "/wt/repo/other",
+      });
+
+      const same = yield* makeHarness({
+        shells: [makeShell(LEAD_ID), makeExecutor({ latestTurn: completedTurn() })],
+      });
+      yield* same.call("pair_handoff", brief);
+      expect(yield* same.commandTypes).toEqual(["thread.turn.start"]);
+    }),
+  );
+
+  it.effect("never moves a running executor: a steer leaves its location alone", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        shells: [makeShell(LEAD_ID), runningExecutor({ branch: null, worktreePath: null })],
+      });
+      yield* harness.call("pair_handoff", { ...brief, steer: true });
+      expect(yield* harness.commandTypes).toEqual(["thread.turn.start"]);
+    }),
+  );
+
+  it.effect("reads protected paths from the worktree the executor is moved into", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        shells: [makeShell(LEAD_ID), strayExecutor({ latestTurn: completedTurn() })],
+        files: { "/wt/repo/lead/src/a.test.ts": "a v1" },
+      });
+      yield* harness.call("pair_handoff", { ...brief, protectedPaths: ["src/a.test.ts"] });
+      expect(yield* harness.call("pair_await", {})).toMatchObject({
+        protectedPaths: { checked: 1, changed: [] },
+      });
+    }),
+  );
+
+  it.effect("does not move or brief anything when a protected path is refused", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ shells: [makeShell(LEAD_ID), strayExecutor()] });
+      expect(
+        yield* tagOf(
+          harness.call("pair_handoff", { ...brief, protectedPaths: ["src/missing.ts"] }),
+        ),
+      ).toBe("PairProtectedPathInvalidError");
+      expect(yield* harness.commandTypes).toEqual([]);
+    }),
+  );
+
+  it.effect("fails cleanly when the lead is gone", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ shells: [strayExecutor()] });
+      expect(yield* tagOf(harness.call("pair_handoff", brief))).toBe("PairLeadNotFoundError");
+      expect(yield* harness.commandTypes).toEqual([]);
     }),
   );
 });
