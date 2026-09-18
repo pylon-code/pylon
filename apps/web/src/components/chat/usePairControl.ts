@@ -22,7 +22,6 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import type { PairControlProps } from "./PairControl";
 import {
   pairLockedReason,
-  pairSetupReason,
   pairToggleStep,
   resolveExecutorSelection,
   shouldRestartLeadSession,
@@ -46,7 +45,6 @@ export function usePairControl(input: {
   );
   const defaultSelection = projectSettings.delegationDefaultModelSelection;
   const childRuntimeMode = projectSettings.delegationChildRuntimeMode;
-  const delegationEnabled = projectSettings.enableAgentDelegation;
 
   // Keyed by the lead so a model picked for one thread never follows the user
   // to another, without an effect to reset it.
@@ -93,7 +91,6 @@ export function usePairControl(input: {
         lead: input.lead,
         executorSelection,
         childRuntimeMode,
-        delegationEnabled,
       });
       if (step === null) {
         return;
@@ -161,7 +158,6 @@ export function usePairControl(input: {
       childRuntimeMode,
       createThread,
       defaultSelection,
-      delegationEnabled,
       deleteThread,
       input.environmentId,
       input.lead,
@@ -183,10 +179,7 @@ export function usePairControl(input: {
     () => resolveExecutorSelection({ state, picked, defaultSelection }),
     [defaultSelection, picked, state],
   );
-  const lockedReason = useMemo(
-    () => pairLockedReason(input.lead) ?? pairSetupReason({ delegationEnabled, state }),
-    [delegationEnabled, input.lead, state],
-  );
+  const lockedReason = useMemo(() => pairLockedReason(input.lead), [input.lead]);
 
   return useMemo(
     () => ({

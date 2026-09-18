@@ -7112,7 +7112,7 @@ describe("agent browser access", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("marks a session as paired only when delegation is on and its executor exists", () =>
+  it.effect("marks a session as paired whenever its executor exists and is not archived", () =>
     Effect.gen(function* () {
       const lead = asThreadId("thread-pair-lead");
       const executorOf = (threadId: ThreadId) =>
@@ -7127,7 +7127,18 @@ describe("agent browser access", () => {
         ["paired", lead, true, [executorOf(lead)], ["delegation", "pair", "pull-requests"], false],
         ["no executor", lead, true, [], ["delegation", "pull-requests"], false],
         ["only a fan-out child", lead, true, [otherChild], ["delegation", "pull-requests"], false],
-        ["delegation off", lead, false, [executorOf(lead)], ["pull-requests"], false],
+        // The user switched this pair on for this thread, so it does not need the
+        // setting that lets agents start threads on their own.
+        ["delegation off", lead, false, [executorOf(lead)], ["pair", "pull-requests"], false],
+        ["delegation off, no executor", lead, false, [], ["pull-requests"], false],
+        [
+          "delegation off, pair turned off",
+          lead,
+          false,
+          [executorOf(lead)],
+          ["pull-requests"],
+          true,
+        ],
         ["the executor itself", executorOf(lead), true, [], ["pull-requests"], false],
         // Turning a pair off archives an executor that has history. The lead
         // must get its own subagents back, not stay in paired mode.
