@@ -47,6 +47,7 @@ import * as ServerSettings from "../../../serverSettings.ts";
 import { PAIR_LEAD_PROTOCOL } from "../../../provider/RuntimeInstructions.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { PairToolkitHandlersLive } from "./handlers.ts";
+import { MAX_PAIR_AWAIT_SECONDS } from "./logic.ts";
 import { PairToolkit } from "./tools.ts";
 
 const NOW = "2026-09-18T12:00:00.000Z";
@@ -723,7 +724,8 @@ describe("pair_await", () => {
         const runningFiber = yield* Effect.forkChild(
           runningHarness.call("pair_await", { maxSeconds: 5 }),
         );
-        yield* TestClock.adjust("5 seconds");
+        // Any wait above zero runs to the lead's whole cap.
+        yield* TestClock.adjust(`${MAX_PAIR_AWAIT_SECONDS} seconds`);
         yield* Fiber.join(runningFiber);
         const runningCommands = yield* Ref.get(runningHarness.commands);
         expect(runningCommands).toHaveLength(0);
