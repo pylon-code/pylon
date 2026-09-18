@@ -251,6 +251,14 @@
       "types": "./src/state/delegatedThreads.ts",
       "default": "./src/state/delegatedThreads.ts"
     },
+    "./state/pair": {
+      "types": "./src/state/pair.ts",
+      "default": "./src/state/pair.ts"
+    },
+    "./state/delegation-notice": {
+      "types": "./src/state/delegationNotice.ts",
+      "default": "./src/state/delegationNotice.ts"
+    },
     "./state/thread-sort": {
       "types": "./src/state/threadSort.ts",
       "default": "./src/state/threadSort.ts"
