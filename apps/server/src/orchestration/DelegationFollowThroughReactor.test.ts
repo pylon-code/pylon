@@ -462,4 +462,29 @@ describe("DelegationFollowThroughReactor", () => {
       }),
     ),
   );
+  it.effect("baselines an observation whose key changed while the server was down", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // First run: the child is running, so it is armed (not baselined).
+        const first = yield* makeHarness([shell(PARENT), shell(CHILD, true)]);
+        yield* first.emit(CHILD);
+        assert.strictEqual(first.wakes().length, 0);
+        // Restart: the child now reads as completed. Nothing observed that live.
+        const restored = yield* makeHarness([shell(PARENT), shell(CHILD)], true, first.persisted);
+        assert.strictEqual(restored.wakes().length, 0);
+        // A later live event on the same terminal state still does not wake.
+        yield* restored.emit(CHILD);
+        assert.strictEqual(restored.wakes().length, 0);
+        // A genuinely new turn after the restart does wake.
+        restored.replace(shell(CHILD, true));
+        yield* restored.emit(CHILD);
+        restored.replace({
+          ...shell(CHILD),
+          latestTurn: { ...shell(CHILD).latestTurn!, turnId: TurnId.make("after-restart") },
+        });
+        yield* restored.emit(CHILD);
+        assert.strictEqual(restored.wakes().length, 1);
+      }),
+    ),
+  );
 });
