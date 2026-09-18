@@ -8679,6 +8679,413 @@ describe("ClaudeAdapterLive", () => {
     });
   }
 
+  describe("adversarial Claude rollback and rewind edge cases", () => {
+    it.effect("rejects a Claude fork that reorders retained turns in ancestry", () => {
+      let firstTurnId = "";
+      let secondTurnId = "";
+      let thirdTurnId = "";
+      const harness = makeHarness({
+        forkSession: async () => ({ sessionId: CLAUDE_FORK_SESSION_ID }),
+        getSessionMessages: async (sessionId) => {
+          if (sessionId === CLAUDE_FORK_SESSION_ID) {
+            return [
+              claudeHistoryMessage({
+                type: "user",
+                uuid: `fork-${secondTurnId}`,
+                sessionId,
+                content: "second",
+              }),
+              claudeHistoryMessage({
+                type: "assistant",
+                uuid: "fork-assistant-2",
+                sessionId,
+              }),
+              claudeHistoryMessage({
+                type: "user",
+                uuid: `fork-${firstTurnId}`,
+                sessionId,
+                content: "first",
+              }),
+              claudeHistoryMessage({
+                type: "assistant",
+                uuid: "fork-assistant-1",
+                sessionId,
+              }),
+            ];
+          }
+          return [
+            claudeHistoryMessage({ type: "user", uuid: firstTurnId, content: "first" }),
+            claudeHistoryMessage({ type: "assistant", uuid: "assistant-1" }),
+            claudeHistoryMessage({ type: "user", uuid: secondTurnId, content: "second" }),
+            claudeHistoryMessage({ type: "assistant", uuid: "assistant-2" }),
+            claudeHistoryMessage({ type: "user", uuid: thirdTurnId, content: "third" }),
+            claudeHistoryMessage({ type: "assistant", uuid: "assistant-3" }),
+          ];
+        },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        firstTurnId = (yield* sendCompletedClaudeTurn(adapter, harness, session.threadId, "first"))
+          .turnId;
+        secondTurnId = (yield* sendCompletedClaudeTurn(
+          adapter,
+          harness,
+          session.threadId,
+          "second",
+        )).turnId;
+        thirdTurnId = (yield* sendCompletedClaudeTurn(adapter, harness, session.threadId, "third"))
+          .turnId;
+
+        const error = yield* adapter.rollbackThread(session.threadId, 1).pipe(Effect.flip);
+        assert.match(error.message, /did not preserve the retained turn boundaries/);
+        assert.equal(harness.queries.at(-1)?.closeCalls, 0);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("rewinds Claude history when the fork inserts interleaved system notices", () => {
+      let firstTurnId = "";
+      let secondTurnId = "";
+      const harness = makeHarness({
+        forkSession: async () => ({ sessionId: CLAUDE_FORK_SESSION_ID }),
+        getSessionMessages: async (sessionId) => {
+          if (sessionId === CLAUDE_FORK_SESSION_ID) {
+            return [
+              claudeHistoryMessage({ type: "system", uuid: "sys-0", sessionId }),
+              claudeHistoryMessage({
+                type: "user",
+                uuid: `fork-${firstTurnId}`,
+                sessionId,
+                content: "first",
+              }),
+              claudeHistoryMessage({ type: "system", uuid: "sys-1", sessionId }),
+              claudeHistoryMessage({
+                type: "assistant",
+                uuid: "fork-assistant-1",
+                sessionId,
+              }),
+              claudeHistoryMessage({ type: "system", uuid: "sys-2", sessionId }),
+            ];
+          }
+          return [
+            claudeHistoryMessage({ type: "user", uuid: firstTurnId, content: "first" }),
+            claudeHistoryMessage({ type: "assistant", uuid: "assistant-1" }),
+            claudeHistoryMessage({ type: "user", uuid: secondTurnId, content: "second" }),
+            claudeHistoryMessage({ type: "assistant", uuid: "assistant-2" }),
+          ];
+        },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        firstTurnId = (yield* sendCompletedClaudeTurn(adapter, harness, session.threadId, "first"))
+          .turnId;
+        secondTurnId = (yield* sendCompletedClaudeTurn(
+          adapter,
+          harness,
+          session.threadId,
+          "second",
+        )).turnId;
+
+        const snapshot = yield* adapter.rollbackThread(session.threadId, 1);
+        assert.equal(snapshot.turns.length, 1);
+        assert.deepEqual((yield* adapter.listSessions())[0]?.resumeCursor, {
+          threadId: session.threadId,
+          resume: CLAUDE_FORK_SESSION_ID,
+          turnCount: 1,
+          turnStartMessageIds: [`fork-${firstTurnId}`],
+        });
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect(
+      "rejects a Claude fork that has fewer conversation messages than retained turns",
+      () => {
+        let firstTurnId = "";
+        let secondTurnId = "";
+        const harness = makeHarness({
+          forkSession: async () => ({ sessionId: CLAUDE_FORK_SESSION_ID }),
+          getSessionMessages: async (sessionId) => {
+            if (sessionId === CLAUDE_FORK_SESSION_ID) {
+              return [
+                claudeHistoryMessage({
+                  type: "user",
+                  uuid: `fork-${firstTurnId}`,
+                  sessionId,
+                  content: "first",
+                }),
+              ];
+            }
+            return [
+              claudeHistoryMessage({ type: "user", uuid: firstTurnId, content: "first" }),
+              claudeHistoryMessage({ type: "assistant", uuid: "assistant-1" }),
+              claudeHistoryMessage({ type: "user", uuid: secondTurnId, content: "second" }),
+              claudeHistoryMessage({ type: "assistant", uuid: "assistant-2" }),
+            ];
+          },
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const session = yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: ProviderDriverKind.make("claudeAgent"),
+            runtimeMode: "full-access",
+          });
+          firstTurnId = (yield* sendCompletedClaudeTurn(
+            adapter,
+            harness,
+            session.threadId,
+            "first",
+          )).turnId;
+          secondTurnId = (yield* sendCompletedClaudeTurn(
+            adapter,
+            harness,
+            session.threadId,
+            "second",
+          )).turnId;
+
+          const error = yield* adapter.rollbackThread(session.threadId, 1).pipe(Effect.flip);
+          assert.match(error.message, /did not preserve the retained turn boundaries/);
+          assert.equal(harness.queries.at(-1)?.closeCalls, 0);
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+
+    it.effect("validates numTurns is an integer greater than or equal to 1", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        const zeroError = yield* adapter.rollbackThread(THREAD_ID, 0).pipe(Effect.flip);
+        assert.match(zeroError.message, /numTurns must be an integer >= 1/);
+
+        const negativeError = yield* adapter.rollbackThread(THREAD_ID, -1).pipe(Effect.flip);
+        assert.match(negativeError.message, /numTurns must be an integer >= 1/);
+
+        const floatError = yield* adapter.rollbackThread(THREAD_ID, 2.5).pipe(Effect.flip);
+        assert.match(floatError.message, /numTurns must be an integer >= 1/);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("rejects rollback when session history is empty", () => {
+      const harness = makeHarness({
+        getSessionMessages: async () => [],
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          resumeCursor: {
+            resume: CLAUDE_ORIGINAL_SESSION_ID,
+            turnCount: 2,
+            turnStartMessageIds: ["user-1", "user-2"],
+          },
+        });
+
+        const error = yield* adapter.rollbackThread(THREAD_ID, 1).pipe(Effect.flip);
+        assert.match(error.message, /session history is unavailable/);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("rejects rollback when recorded turn boundary cannot be found in messages", () => {
+      const harness = makeHarness({
+        getSessionMessages: async () => [
+          claudeHistoryMessage({ type: "user", uuid: "user-1", content: "first" }),
+          claudeHistoryMessage({ type: "assistant", uuid: "assistant-1" }),
+        ],
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          resumeCursor: {
+            resume: CLAUDE_ORIGINAL_SESSION_ID,
+            turnCount: 2,
+            turnStartMessageIds: ["user-1", "nonexistent-user-2"],
+          },
+        });
+
+        const error = yield* adapter.rollbackThread(THREAD_ID, 1).pipe(Effect.flip);
+        assert.match(error.message, /exact Claude turn boundary is unavailable/);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect(
+      "preserves Pylon session ownership and leaves original session untouched when fork remapping fails",
+      () => {
+        let firstTurnId = "";
+        let secondTurnId = "";
+        const harness = makeHarness({
+          forkSession: async () => ({ sessionId: CLAUDE_FORK_SESSION_ID }),
+          getSessionMessages: async (sessionId) => {
+            if (sessionId === CLAUDE_FORK_SESSION_ID) {
+              return [
+                claudeHistoryMessage({
+                  type: "user",
+                  uuid: `fork-${firstTurnId}`,
+                  sessionId,
+                  content: "first",
+                }),
+                claudeHistoryMessage({
+                  type: "assistant",
+                  uuid: "fork-assistant-1",
+                  sessionId,
+                  content: "divergent content in assistant message",
+                }),
+              ];
+            }
+            return [
+              claudeHistoryMessage({ type: "user", uuid: firstTurnId, content: "first" }),
+              claudeHistoryMessage({
+                type: "assistant",
+                uuid: "assistant-1",
+                content: "expected content",
+              }),
+              claudeHistoryMessage({ type: "user", uuid: secondTurnId, content: "second" }),
+              claudeHistoryMessage({ type: "assistant", uuid: "assistant-2" }),
+            ];
+          },
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const session = yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: ProviderDriverKind.make("claudeAgent"),
+            runtimeMode: "full-access",
+          });
+          firstTurnId = (yield* sendCompletedClaudeTurn(
+            adapter,
+            harness,
+            session.threadId,
+            "first",
+          )).turnId;
+          secondTurnId = (yield* sendCompletedClaudeTurn(
+            adapter,
+            harness,
+            session.threadId,
+            "second",
+          )).turnId;
+
+          const sessionsBefore = yield* adapter.listSessions();
+          const originalIncarnation = sessionsBefore[0]?.sessionIncarnationId;
+          const originalCursor = sessionsBefore[0]?.resumeCursor;
+
+          const error = yield* adapter.rollbackThread(session.threadId, 1).pipe(Effect.flip);
+          assert.match(error.message, /did not preserve the retained turn boundaries/);
+
+          const sessionsAfter = yield* adapter.listSessions();
+          assert.equal(sessionsAfter.length, 1);
+          assert.equal(sessionsAfter[0]?.sessionIncarnationId, originalIncarnation);
+          assert.deepEqual(sessionsAfter[0]?.resumeCursor, originalCursor);
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+
+    it.effect(
+      "fences stale session rollback when session is stopped during fork history read",
+      () => {
+        const entered = Promise.withResolvers<void>();
+        const released = Promise.withResolvers<void>();
+        const harness = makeHarness({
+          forkSession: async () => ({ sessionId: CLAUDE_FORK_SESSION_ID }),
+          getSessionMessages: async (sessionId) => {
+            if (sessionId === CLAUDE_FORK_SESSION_ID) {
+              entered.resolve();
+              await released.promise;
+              return [
+                claudeHistoryMessage({
+                  type: "user",
+                  uuid: "fork-user-1",
+                  sessionId,
+                  content: "first",
+                }),
+                claudeHistoryMessage({
+                  type: "assistant",
+                  uuid: "fork-assistant-1",
+                  sessionId,
+                }),
+              ];
+            }
+            return [
+              claudeHistoryMessage({ type: "user", uuid: "user-1", content: "first" }),
+              claudeHistoryMessage({ type: "assistant", uuid: "assistant-1" }),
+              claudeHistoryMessage({ type: "user", uuid: "user-2", content: "second" }),
+              claudeHistoryMessage({ type: "assistant", uuid: "assistant-2" }),
+            ];
+          },
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: ProviderDriverKind.make("claudeAgent"),
+            runtimeMode: "full-access",
+            resumeCursor: {
+              resume: CLAUDE_ORIGINAL_SESSION_ID,
+              turnCount: 2,
+              turnStartMessageIds: ["user-1", "user-2"],
+            },
+          });
+
+          const rollbackFiber = yield* adapter
+            .rollbackThread(THREAD_ID, 1)
+            .pipe(Effect.result, Effect.forkChild);
+          yield* Effect.promise(() => entered.promise);
+
+          yield* adapter.stopSession(THREAD_ID);
+          released.resolve();
+
+          const result = yield* Fiber.join(rollbackFiber);
+          assert.equal(result._tag, "Failure");
+          if (result._tag === "Failure") {
+            assert.match(result.failure.message, /stopped or replaced/);
+          }
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+  });
+
   it.effect("updates model on sendTurn when model override is provided", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
