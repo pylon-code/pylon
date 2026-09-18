@@ -1103,6 +1103,7 @@ export function makeCursorAdapter(
                       input.threadId,
                       "delegation",
                     ),
+                    pairActive: McpProviderSession.hasMcpProviderCapability(input.threadId, "pair"),
                     browserAvailable: McpProviderSession.hasMcpProviderCapability(
                       input.threadId,
                       "preview",

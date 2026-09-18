@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { buildRuntimeInstructions } from "./RuntimeInstructions.ts";
+import { PAIR_LEAD_PROTOCOL, buildRuntimeInstructions } from "./RuntimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
   it.each(["Codex", "Claude Code", "Cursor", "Grok", "OpenCode", "Antigravity"])(
@@ -51,6 +51,41 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("default is built-in subagents");
     expect(instructions).toContain("Explicit user instructions override");
     expect(instructions).not.toContain("waitSeconds 45");
+  });
+
+  it("gives a paired lead the pair protocol instead of the delegation block", () => {
+    const paired = buildRuntimeInstructions({
+      harness: "Claude Code",
+      delegationAvailable: true,
+      pairActive: true,
+    });
+    expect(paired).toContain("<pylon_pair>");
+    expect(paired).toContain(PAIR_LEAD_PROTOCOL);
+    expect(paired).not.toContain("<pylon_delegation>");
+
+    const unpaired = buildRuntimeInstructions({
+      harness: "Claude Code",
+      delegationAvailable: true,
+      pairActive: false,
+    });
+    expect(unpaired).not.toContain("<pylon_pair>");
+    expect(unpaired).toContain("<pylon_delegation>");
+    // Nothing of the pair exists for a thread that is not paired.
+    expect(buildRuntimeInstructions({ harness: "Codex" })).not.toContain("pair_");
+  });
+
+  it("states the rules a lead must not get wrong", () => {
+    for (const rule of [
+      "pair_handoff",
+      "pair_await",
+      "Never poll in a loop",
+      "re-run the checks yourself",
+      "not verification",
+      "Only you commit",
+      "never approve on their behalf",
+    ]) {
+      expect(PAIR_LEAD_PROTOCOL).toContain(rule);
+    }
   });
 
   it("describes the collaborative browser only when preview tools are available", () => {

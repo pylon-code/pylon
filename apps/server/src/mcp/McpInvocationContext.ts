@@ -8,7 +8,19 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
-export type McpCapability = "preview" | "device" | "computer" | "pull-requests" | "delegation";
+/**
+ * `pair` marks a session whose thread had a pair executor when the session was
+ * prepared. No tool requires it: the pair tools check the executor live. It
+ * tells adapters to hold the provider's own subagents and swap the instruction
+ * block, and only ever accompanies `delegation`.
+ */
+export type McpCapability =
+  | "preview"
+  | "device"
+  | "computer"
+  | "pull-requests"
+  | "delegation"
+  | "pair";
 
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;

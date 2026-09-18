@@ -2335,6 +2335,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                   'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
                   "-c",
                   `mcp_servers.t3-code.tool_timeout_sec=${(McpProviderSession.MCP_PROVIDER_TOOL_TIMEOUT_MS / 1000).toFixed(1)}`,
+                  // This overrides the feature for this app-server process only; the user's config.toml is untouched.
+                  ...(mcpSession.capabilities.has("pair")
+                    ? ["-c", "features.multi_agent=false"]
+                    : []),
                 ],
                 mcpCapabilities: mcpSession.capabilities,
               }

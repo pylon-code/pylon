@@ -14,6 +14,7 @@ import { delegatedThreadId } from "../delegation/logic.ts";
 import {
   PAIR_DELEGATION_KEY,
   derivePairExecutorState,
+  isPairLeadSupported,
   isPairExecutorThreadId,
   pairAwaitCapSeconds,
   pairExecutorThreadId,
@@ -163,5 +164,14 @@ describe("pair message ids and title", () => {
   it("titles the executor after its lead within the 200 character limit", () => {
     expect(pairExecutorTitle("Fix the parser")).toBe("Executor · Fix the parser");
     expect(pairExecutorTitle("x".repeat(400))).toHaveLength(200);
+  });
+});
+
+describe("pair lead support", () => {
+  it("refuses only the provider whose subagents Pylon cannot hold per session", () => {
+    expect(isPairLeadSupported("antigravity")).toBe(false);
+    for (const driver of ["claudeAgent", "codex", "primeAgent", "cursor", "opencode", undefined]) {
+      expect(isPairLeadSupported(driver)).toBe(true);
+    }
   });
 });

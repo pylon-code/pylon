@@ -1,3 +1,5 @@
+import * as NodeCrypto from "node:crypto";
+
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -737,6 +739,8 @@ const makeThreadProjectProjectionLayer = (
   threadId: ThreadId,
   projectId: ProjectId,
   projectionStatus: () => "found" | "missing" | "failed" = () => "found",
+  /** Delegated threads that exist besides `threadId`, such as its pair executor. */
+  delegatedThreads: ReadonlyArray<ThreadId> = [],
 ) =>
   Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
     getDelegationObservationActivities: () => Effect.succeed([]),
@@ -762,6 +766,29 @@ const makeThreadProjectProjectionLayer = (
     getTurnStartMessage: () => Effect.die("unused"),
     getThreadShellById: (requestedThreadId) =>
       Effect.gen(function* () {
+        // The pair capability looks up the thread's executor, a delegated id.
+        if (requestedThreadId !== threadId && requestedThreadId.startsWith("delegated:")) {
+          if (!delegatedThreads.includes(requestedThreadId)) return Option.none();
+          return Option.some(
+            yield* decodeProjectSettingsThreadShell({
+              id: requestedThreadId,
+              projectId,
+              title: "Executor",
+              modelSelection: createModelSelection(codexInstanceId, "gpt-5.4"),
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              latestTurn: null,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              session: null,
+              latestUserMessageAt: null,
+              hasPendingApprovals: false,
+              hasPendingUserInput: false,
+              hasActionableProposedPlan: false,
+            }).pipe(Effect.orDie),
+          );
+        }
         assert.equal(requestedThreadId, threadId);
         const status = projectionStatus();
         if (status === "missing") return Option.none();
@@ -6848,7 +6875,8 @@ describe("agent browser access", () => {
   const makeBrowserAccessProjectionLayer = (
     threadId: ThreadId,
     status: "found" | "missing" | "failed" = "found",
-  ) => makeThreadProjectProjectionLayer(threadId, projectId, () => status);
+    delegatedThreads: ReadonlyArray<ThreadId> = [],
+  ) => makeThreadProjectProjectionLayer(threadId, projectId, () => status, delegatedThreads);
 
   const makeAgentBrowserProviderLayer = (
     enableAgentBrowserAccess: boolean,
@@ -6867,6 +6895,8 @@ describe("agent browser access", () => {
       /** False leaves the projection query to the surrounding runtime composition. */
       readonly provideProjection?: boolean;
       readonly projectionStatus?: "found" | "missing" | "failed";
+      /** Delegated threads the projection knows besides `threadId`. */
+      readonly delegatedThreads?: ReadonlyArray<ThreadId>;
     },
     enableAgentDeviceAccess = false,
     enableAgentComputerAccess = false,
@@ -6886,7 +6916,11 @@ describe("agent browser access", () => {
       Layer.provideMerge(directoryLayer),
       Layer.provide(
         project && project.provideProjection !== false
-          ? makeBrowserAccessProjectionLayer(project.threadId, project.projectionStatus)
+          ? makeBrowserAccessProjectionLayer(
+              project.threadId,
+              project.projectionStatus,
+              project.delegatedThreads,
+            )
           : Layer.empty,
       ),
       Layer.provide(
@@ -7059,6 +7093,55 @@ describe("agent browser access", () => {
           });
         }).pipe(Effect.provide(layer));
         assert.deepEqual(issued, [[...expected]]);
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("marks a session as paired only when delegation is on and its executor exists", () =>
+    Effect.gen(function* () {
+      const lead = asThreadId("thread-pair-lead");
+      const executorOf = (threadId: ThreadId) =>
+        asThreadId(
+          `delegated:${threadId}:${NodeCrypto.createHash("sha256")
+            .update(`${threadId}\npair`)
+            .digest("hex")
+            .slice(0, 16)}`,
+        );
+      const otherChild = asThreadId(`delegated:${lead}:0123456789abcdef`);
+      for (const [label, threadId, delegation, delegatedThreads, expected] of [
+        ["paired", lead, true, [executorOf(lead)], ["delegation", "pair", "pull-requests"]],
+        ["no executor", lead, true, [], ["delegation", "pull-requests"]],
+        ["only a fan-out child", lead, true, [otherChild], ["delegation", "pull-requests"]],
+        ["delegation off", lead, false, [executorOf(lead)], ["pull-requests"]],
+        ["the executor itself", executorOf(lead), true, [], ["pull-requests"]],
+      ] as const) {
+        const issued: string[][] = [];
+        const codex = makeFakeCodexAdapter();
+        const layer = makeAgentBrowserProviderLayer(
+          false,
+          codex,
+          {
+            issueMcpCredential: (request) =>
+              Effect.sync(() => {
+                issued.push([...request.capabilities].sort());
+                return undefined;
+              }),
+          },
+          { threadId, delegatedThreads },
+          false,
+          false,
+          delegation,
+        );
+        yield* Effect.gen(function* () {
+          const provider = yield* ProviderService.ProviderService;
+          yield* provider.startSession(threadId, {
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            threadId,
+            runtimeMode: "full-access",
+          });
+        }).pipe(Effect.provide(layer));
+        assert.deepEqual(issued, [[...expected]], label);
       }
     }).pipe(Effect.provide(NodeServices.layer)),
   );

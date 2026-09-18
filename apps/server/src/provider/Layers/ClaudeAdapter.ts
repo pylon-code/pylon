@@ -5299,6 +5299,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const queryOptions: ClaudeQueryOptions = {
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(apiModelId ? { model: apiModelId } : {}),
+      // The Agent tool was named Task in older Claude Code, and this is per query, nothing is written to a settings file.
+      ...(mcpSession?.capabilities.has("pair") === true
+        ? { disallowedTools: ["Agent", "Task"] }
+        : {}),
       pathToClaudeCodeExecutable: claudeBinaryPath,
       systemPrompt: {
         type: "preset",
@@ -5307,6 +5311,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         append: buildRuntimeInstructions({
           harness: "Claude Code",
           delegationAvailable: mcpSession?.capabilities.has("delegation") === true,
+          pairActive: mcpSession?.capabilities.has("pair") === true,
           browserAvailable: mcpSession?.capabilities.has("preview") === true,
           deviceAvailable: mcpSession?.capabilities.has("device") === true,
         }),

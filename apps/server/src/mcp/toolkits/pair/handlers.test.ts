@@ -42,6 +42,7 @@ import {
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import { PAIR_LEAD_PROTOCOL } from "../../../provider/RuntimeInstructions.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { PairToolkitHandlersLive } from "./handlers.ts";
 import { PairToolkit } from "./tools.ts";
@@ -406,6 +407,7 @@ describe("pair_start", () => {
         runtimeMode: "full-access",
         worktreePath: "/wt/repo/lead",
         branch: "feat/work",
+        protocol: PAIR_LEAD_PROTOCOL,
       });
       const recorded = yield* Ref.get(harness.commands);
       // No worktree, no meta update, and no first turn: the executor waits for a brief.
@@ -437,8 +439,23 @@ describe("pair_start", () => {
         state: "completed",
         providerInstanceId: "antigravity",
         model: "gemini-3-flash",
+        protocol: PAIR_LEAD_PROTOCOL,
       });
       expect(yield* harness.commandTypes).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses a lead on a provider whose subagents Pylon cannot hold", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      expect(
+        yield* harness
+          .call("pair_start", {}, invocation({ providerInstanceId: ANTIGRAVITY }))
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "PairLeadUnsupportedError", providerInstanceId: "antigravity" });
+      expect(yield* harness.commandTypes).toEqual([]);
+      // An unknown lead provider is not refused: only a known unsupported driver is.
+      expect(yield* harness.call("pair_start", {})).toMatchObject({ created: true });
     }),
   );
 

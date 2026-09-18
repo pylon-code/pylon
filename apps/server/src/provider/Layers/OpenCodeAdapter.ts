@@ -3701,6 +3701,7 @@ export function makeOpenCodeAdapter(
                     input.threadId,
                     "delegation",
                   ),
+                  pairActive: McpProviderSession.hasMcpProviderCapability(input.threadId, "pair"),
                   browserAvailable: McpProviderSession.hasMcpProviderCapability(
                     input.threadId,
                     "preview",

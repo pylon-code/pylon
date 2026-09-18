@@ -523,6 +523,78 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("holds its own subagents and carries the pair protocol only while paired", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("environment-test"),
+        threadId: THREAD_ID,
+        providerSessionId: "provider-session-test",
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        endpoint: "http://127.0.0.1:4000/mcp",
+        authorizationHeader: "Bearer token",
+        capabilities: new Set(["delegation", "pair"]),
+      });
+      try {
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        const createInput = harness.getLastCreateQueryInput();
+        // Session-scoped: the Agent tool (named Task in older Claude Code) is
+        // denied for this query only. Nothing is written to settings files.
+        assert.deepEqual(createInput?.options.disallowedTools, ["Agent", "Task"]);
+        assert.deepEqual(createInput?.options.systemPrompt, {
+          type: "preset",
+          preset: "claude_code",
+          append: buildRuntimeInstructions({
+            harness: "Claude Code",
+            delegationAvailable: true,
+            pairActive: true,
+          }),
+        });
+      } finally {
+        McpProviderSession.clearMcpProviderSession(THREAD_ID);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("leaves Claude's own subagents alone when the thread is not paired", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("environment-test"),
+        threadId: THREAD_ID,
+        providerSessionId: "provider-session-test",
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        endpoint: "http://127.0.0.1:4000/mcp",
+        authorizationHeader: "Bearer token",
+        capabilities: new Set(["delegation"]),
+      });
+      try {
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+        const createInput = harness.getLastCreateQueryInput();
+        assert.equal(createInput?.options.disallowedTools, undefined);
+      } finally {
+        McpProviderSession.clearMcpProviderSession(THREAD_ID);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("derives auto permission mode from auto runtime policy without skip flag", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

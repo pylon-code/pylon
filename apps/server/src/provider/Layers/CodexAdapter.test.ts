@@ -311,6 +311,44 @@ validationLayer("CodexAdapterLive validation", (it) => {
       });
     }),
   );
+  it.effect("turns off Codex's own multi-agent feature only while the thread is paired", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const adapter = yield* CodexAdapter;
+        for (const [name, capabilities, expected] of [
+          ["thread-paired", ["delegation", "pair"], true],
+          ["thread-unpaired", ["delegation"], false],
+        ] as const) {
+          validationRuntimeFactory.factory.mockClear();
+          const threadId = asThreadId(name);
+          yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              McpProviderSession.setMcpProviderSession({
+                providerSessionId: `provider-session-${name}`,
+                threadId,
+                environmentId: EnvironmentId.make("environment-pair"),
+                providerInstanceId: ProviderInstanceId.make("codex"),
+                endpoint: "http://127.0.0.1:4321/mcp",
+                authorizationHeader: "Bearer test-token",
+                capabilities: new Set(capabilities),
+              }),
+            ),
+            () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+          );
+          yield* adapter.startSession({
+            provider: ProviderDriverKind.make("codex"),
+            threadId,
+            runtimeMode: "full-access",
+          });
+          const appServerArgs =
+            validationRuntimeFactory.factory.mock.calls[0]?.[0].appServerArgs ?? [];
+          // A `-c` override for this app-server process only; the user's config.toml is untouched.
+          NodeAssert.strictEqual(appServerArgs.includes("features.multi_agent=false"), expected);
+        }
+      }),
+    ),
+  );
+
   it.effect("gives Pylon's MCP tools longer than the slowest tool's budget", () =>
     Effect.scoped(
       Effect.gen(function* () {

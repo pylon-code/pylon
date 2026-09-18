@@ -13,7 +13,14 @@ import {
 import { delegatedParentThreadId } from "@t3tools/shared/delegatedThreads";
 
 import { delegatedThreadId, deriveDelegatedThreadState } from "../delegation/logic.ts";
-import { MAX_PAIR_AWAIT_SECONDS, type PairExecutorState } from "./tools.ts";
+import type { PairExecutorState } from "./tools.ts";
+
+/**
+ * The longest `pair_await` any provider is allowed. Defined here, not in
+ * `tools.ts`, so this module stays free of service imports: the provider
+ * service reads pair identity from it while preparing a session.
+ */
+export const MAX_PAIR_AWAIT_SECONDS = 150;
 
 /** The reserved delegation key. The fan-out tools must refuse it. */
 export const PAIR_DELEGATION_KEY = "pair";
@@ -65,4 +72,13 @@ export function pairSteerMessageId(executorId: ThreadId, turnId: TurnId): Messag
 
 export function pairExecutorTitle(leadTitle: string): string {
   return `Executor · ${leadTitle}`.slice(0, EXECUTOR_TITLE_MAX_CHARS);
+}
+
+/**
+ * Whether a provider can lead a pair.
+ * Antigravity has no per-session control over its own subagents, so it can
+ * only be the executor.
+ */
+export function isPairLeadSupported(leadDriver: string | undefined): boolean {
+  return leadDriver !== "antigravity";
 }

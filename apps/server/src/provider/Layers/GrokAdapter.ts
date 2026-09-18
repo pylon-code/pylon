@@ -1631,6 +1631,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   input.threadId,
                   "delegation",
                 ),
+                pairActive: McpProviderSession.hasMcpProviderCapability(input.threadId, "pair"),
                 browserAvailable: McpProviderSession.hasMcpProviderCapability(
                   input.threadId,
                   "preview",
