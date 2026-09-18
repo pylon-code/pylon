@@ -89,6 +89,10 @@ merge. Reviews open as tabs in the right panel, and your filters, search, and so
 you return. Command-click (Control-click on Windows and Linux) a pull request number in the sidebar
 to open it in your browser instead. GitLab calls these merge requests.
 
+Press Command+Enter (Control+Enter on Windows and Linux) to submit a pull request comment.
+Long comments start as previews. Bot reports and resolved or dismissed discussions are grouped
+separately; expand a group and load older comments to read its history.
+
 You can edit review titles and descriptions and your own comments where the host allows it, add a
 comment when closing or reopening a review, and change labels on GitHub with triage access. GitHub,
 GitLab, and Azure DevOps support auto-merge while checks are outstanding. GitHub also supports
