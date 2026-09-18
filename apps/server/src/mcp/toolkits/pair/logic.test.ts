@@ -16,6 +16,7 @@ import {
   changedProtectedPaths,
   derivePairExecutorState,
   isPairLeadSupported,
+  latestTurnCheckpoints,
   pairAwaitBudgetSeconds,
   normalizeProtectedPath,
   isPairExecutorThreadId,
@@ -237,5 +238,20 @@ describe("pair await budget", () => {
     expect(pairAwaitBudgetSeconds(20, 150)).toBe(150);
     expect(pairAwaitBudgetSeconds(150, 45)).toBe(45);
     expect(pairAwaitBudgetSeconds(0, 45)).toBe(0);
+  });
+});
+
+describe("the files a lead is shown", () => {
+  it("come from the executor's latest turn only", () => {
+    const first = { turnId: "turn-1", files: ["a.ts"] };
+    const second = { turnId: "turn-2", files: ["b.ts"] };
+    const secondAgain = { turnId: "turn-2", files: ["c.ts"] };
+    expect(latestTurnCheckpoints([first, second, secondAgain], "turn-2")).toEqual([
+      second,
+      secondAgain,
+    ]);
+    // A turn that changed nothing has no checkpoint, and shows no files.
+    expect(latestTurnCheckpoints([first], "turn-2")).toEqual([]);
+    expect(latestTurnCheckpoints([first], null)).toEqual([]);
   });
 });

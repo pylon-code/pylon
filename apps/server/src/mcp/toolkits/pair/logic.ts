@@ -52,6 +52,20 @@ export function derivePairExecutorState(shell: OrchestrationThreadShell): PairEx
 }
 
 /**
+ * The checkpoints of the executor's latest turn. One executor serves every
+ * brief of a pair, so its checkpoints pile up; the lead is reviewing the brief
+ * it just sent and has already read the earlier ones.
+ */
+export function latestTurnCheckpoints<T extends { readonly turnId: string }>(
+  checkpoints: ReadonlyArray<T>,
+  latestTurnId: string | null,
+): ReadonlyArray<T> {
+  return latestTurnId === null
+    ? []
+    : checkpoints.filter((checkpoint) => checkpoint.turnId === latestTurnId);
+}
+
+/**
  * How long one `pair_await` call waits. Only an explicit 0 reads the state and
  * returns; any other request waits the lead's whole cap, because a short wait
  * repeated in a loop costs a model turn each time and the call already returns

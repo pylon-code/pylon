@@ -108,7 +108,9 @@ tokens, up to a cap chosen by the lead's provider: long only where Pylon sets th
 tool timeout itself. The lead does not choose the length. A live Codex lead asked for 10 to 20
 seconds at a time and looped, which is polling with a model turn per call, so any request other than
 an explicit 0 waits the whole cap; the call still returns the moment the executor changes state, and
-0 reads the state without waiting.
+0 reads the state without waiting. Its `filesChanged` covers the executor's latest turn only: one
+executor serves every brief of a pair, so listing all of its checkpoints would hand the lead files it
+reviewed several briefs ago. `turnCount` still counts them all.
 
 Pairing is session-scoped. When a provider session is prepared, `ProviderService` adds a `pair`
 capability if the thread's executor exists and is not archived. The `enableAgentDelegation` setting

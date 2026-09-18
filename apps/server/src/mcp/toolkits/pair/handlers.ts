@@ -52,6 +52,7 @@ import {
   derivePairExecutorState,
   isPairLeadSupported,
   normalizeProtectedPath,
+  latestTurnCheckpoints,
   pairAwaitBudgetSeconds,
   pairAwaitCapSeconds,
   pairExecutorThreadId,
@@ -562,7 +563,9 @@ const make = Effect.gen(function* () {
               createdAt: message.createdAt,
             };
           }
-          filesChanged = aggregateFilesChanged(detail.checkpoints);
+          filesChanged = aggregateFilesChanged(
+            latestTurnCheckpoints(detail.checkpoints, current.latestTurn?.turnId ?? null),
+          );
           turnCount = detail.checkpoints.length;
         }
 

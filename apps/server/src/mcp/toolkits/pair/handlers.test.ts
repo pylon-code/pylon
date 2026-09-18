@@ -816,6 +816,41 @@ describe("pair_await", () => {
     }),
   );
 
+  it.effect("lists only the files of the executor's latest turn", () =>
+    Effect.gen(function* () {
+      // A pair keeps one executor across briefs, so its checkpoints accumulate.
+      const second = makeExecutor({
+        latestTurn: completedTurn({
+          turnId: TurnId.make("turn-2"),
+          assistantMessageId: MessageId.make("a-2"),
+        }),
+      });
+      const checkpoint = (turnId: string, count: number, path: string) => ({
+        turnId: TurnId.make(turnId),
+        checkpointTurnCount: count,
+        checkpointRef: CheckpointRef.make(`ref-${count}`),
+        status: "ready" as const,
+        files: [{ path, kind: "modified", additions: 1, deletions: 0 }],
+        assistantMessageId: null,
+        completedAt: NOW,
+      });
+      const harness = yield* makeHarness({
+        shells: [makeShell(LEAD_ID), second],
+        details: [
+          detailOf(second, {
+            messages: [message("a-2", { text: "Second brief done." })],
+            checkpoints: [checkpoint("turn-1", 1, "src/a.ts"), checkpoint("turn-2", 2, "src/b.ts")],
+          }),
+        ],
+      });
+      expect(yield* harness.call("pair_await", { maxSeconds: 0 })).toMatchObject({
+        state: "completed",
+        filesChanged: [{ path: "src/b.ts", kind: "modified", additions: 1, deletions: 0 }],
+        turnCount: 2,
+      });
+    }),
+  );
+
   it.effect("returns at once when the executor needs the user", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({
