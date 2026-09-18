@@ -88,6 +88,7 @@ import * as ServerConfig from "../../config.ts";
 import * as DeviceService from "../../device/DeviceService.ts";
 import { ensureAgentDeviceShim } from "../../device/AgentDeviceShim.ts";
 import type * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
+import { pairExecutorThreadId } from "../../mcp/toolkits/pair/logic.ts";
 import {
   increment,
   providerMetricAttributes,
@@ -1214,7 +1215,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     if (access.device) capabilities.add("device");
     if (access.computer) capabilities.add("computer");
     // A delegated child never receives delegation; its id carries the prefix.
-    if (access.delegation && !threadId.startsWith("delegated:")) capabilities.add("delegation");
+    if (access.delegation && !threadId.startsWith("delegated:")) {
+      capabilities.add("delegation");
+      if (Option.isSome(projectionQuery)) {
+        const executorId = pairExecutorThreadId(threadId, (input) =>
+          NodeCrypto.createHash("sha256").update(input).digest("hex"),
+        );
+        const executor = yield* projectionQuery.value
+          .getThreadShellById(executorId)
+          .pipe(Effect.orElseSucceed(() => Option.none()));
+        if (Option.isSome(executor)) {
+          capabilities.add("pair");
+        }
+      }
+    }
     return capabilities;
   });
 
