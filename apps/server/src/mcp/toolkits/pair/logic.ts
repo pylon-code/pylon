@@ -61,13 +61,24 @@ export const MAX_INSTANT_READS = 2;
  * still returns the moment the executor changes. Any wait, and any call that
  * finds the executor not running, clears the count.
  */
-export function pairAwaitPlan(_input: {
+export function pairAwaitPlan(input: {
   readonly requestedSeconds: number | undefined;
   readonly capSeconds: number;
   readonly running: boolean;
   readonly instantReads: number;
 }): { readonly budgetSeconds: number; readonly instantReads: number } {
-  return { budgetSeconds: 0, instantReads: 0 };
+  if (!input.running) {
+    return {
+      budgetSeconds: pairAwaitBudgetSeconds(input.requestedSeconds, input.capSeconds),
+      instantReads: 0,
+    };
+  }
+  if (input.requestedSeconds === 0) {
+    return input.instantReads < MAX_INSTANT_READS
+      ? { budgetSeconds: 0, instantReads: input.instantReads + 1 }
+      : { budgetSeconds: input.capSeconds, instantReads: 0 };
+  }
+  return { budgetSeconds: input.capSeconds, instantReads: 0 };
 }
 
 /**

@@ -126,8 +126,8 @@ export const MAX_STATUS_WAIT_SECONDS = 45;
  * repeated in a loop is polling with a model turn per call, and the call
  * already returns the moment the child changes.
  */
-export function delegatedStatusWaitSeconds(_requested: number | undefined): number {
-  return _requested ?? 0;
+export function delegatedStatusWaitSeconds(requested: number | undefined): number {
+  return requested !== undefined && requested > 0 ? MAX_STATUS_WAIT_SECONDS : 0;
 }
 
 export function aggregateFilesChanged(

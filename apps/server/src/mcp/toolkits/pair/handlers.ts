@@ -53,7 +53,7 @@ import {
   isPairLeadSupported,
   normalizeProtectedPath,
   latestTurnCheckpoints,
-  pairAwaitBudgetSeconds,
+  pairAwaitPlan,
   pairAwaitCapSeconds,
   pairExecutorThreadId,
   pairExecutorTitle,
@@ -136,6 +136,7 @@ const make = Effect.gen(function* () {
   // In memory on purpose, lost on restart, and pair_await then reports null
   // rather than guessing.
   const protectedRecords = new Map<ThreadId, ReadonlyArray<ProtectedPathRecord>>();
+  const instantReadCounts = new Map<ThreadId, number>();
 
   // One permit per lead: tool calls may run concurrently, and executor lookups
   // and busy checks are check-then-act.
@@ -514,7 +515,14 @@ const make = Effect.gen(function* () {
       const leadProvider = providerList.find((p) => p.instanceId === scope.providerInstanceId);
       const driver = leadProvider?.driver;
       const cap = pairAwaitCapSeconds(driver);
-      const waitBudget = pairAwaitBudgetSeconds(input.maxSeconds, cap);
+      const plan = pairAwaitPlan({
+        requestedSeconds: input.maxSeconds,
+        capSeconds: cap,
+        running: state === "running",
+        instantReads: instantReadCounts.get(executorId) ?? 0,
+      });
+      instantReadCounts.set(executorId, plan.instantReads);
+      const waitBudget = plan.budgetSeconds;
 
       const startedAt = yield* Clock.currentTimeMillis;
       const deadline = startedAt + waitBudget * 1_000;

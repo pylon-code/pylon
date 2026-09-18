@@ -46,6 +46,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
   aggregateFilesChanged,
   defaultTitleFor,
+  delegatedStatusWaitSeconds,
   delegatedThreadId,
   deriveDelegatedThreadState,
   isChildOfParent,
@@ -347,7 +348,7 @@ const make = Effect.gen(function* () {
       const startedAt = yield* Clock.currentTimeMillis;
       // Wall-clock bound: each poll's query time counts against the budget so
       // the call always returns inside the caller's tool timeout.
-      const deadline = startedAt + (input.waitSeconds ?? 0) * 1_000;
+      const deadline = startedAt + delegatedStatusWaitSeconds(input.waitSeconds) * 1_000;
       const elapsedSeconds = (now: number) => Math.round((now - startedAt) / 1_000);
       let current = shell;
       let now = startedAt;
