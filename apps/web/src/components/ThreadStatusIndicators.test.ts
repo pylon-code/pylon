@@ -11,7 +11,6 @@ import {
   resolveDisplayedThreadPr,
   resolveDisplayedThreadPrProvider,
   resolveThreadPr,
-  settledPrHoverColorClass,
   threadChangeRequestSnapshotsEqual,
   threadChangeRequestSnapshotsAtom,
   type ThreadChangeRequestSnapshot,
