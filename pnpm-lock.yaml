@@ -99,6 +99,8 @@ patchedDependencies:
   '@react-native-ai/apple@0.12.0': 2d09870c2848d185cb05b53ed823a46e12dba519324d8dd8e584e28731990f9d
   '@react-native-menu/menu@2.0.0': f63d256bf6a97a873b5e628eb595bd6ef0075ddd5bdd890fc920f7a6024290dd
   '@react-navigation/native-stack@7.17.6': e667c3cef8c78bb9ff4882ee5bd23a432247b843060a9499eb5f07e9e2295552
+  '@sigstore/core@3.2.1': 106b2f2b40b5dca2a71554805712695f63e3ccd796f23885a9b67e56cd0f8375
+  '@tufjs/models@4.1.0': 31c75353a4125a82f7cfe7f359fee135aee69e98f771ec512545129974c30290
   app-builder-lib@26.15.6: 0fc9a327982b3fdd5d9f4946e17bd8bf8d3d5c9b3753f77f0b18f7c0f0bdb4db
   dbus-next@0.10.2: cfff57561b0ee59b5addb3b2e6c6f20906e967507a530ab67e8db8108e520ba4
   effect@4.0.0-rc.112: 8bef799f35729cf3465eb428196f617b434a7c9f658d56acb2874d74b21b98b2
@@ -529,7 +531,7 @@ importers:
         version: 4.0.0
       '@sigstore/core':
         specifier: 3.2.1
-        version: 3.2.1
+        version: 3.2.1(patch_hash=106b2f2b40b5dca2a71554805712695f63e3ccd796f23885a9b67e56cd0f8375)
       '@sigstore/tuf':
         specifier: 4.0.0
         version: 4.0.0
@@ -15732,7 +15734,7 @@ snapshots:
     dependencies:
       '@sigstore/protobuf-specs': 0.5.2
 
-  '@sigstore/core@3.2.1': {}
+  '@sigstore/core@3.2.1(patch_hash=106b2f2b40b5dca2a71554805712695f63e3ccd796f23885a9b67e56cd0f8375)': {}
 
   '@sigstore/protobuf-specs@0.5.2': {}
 
@@ -15746,7 +15748,7 @@ snapshots:
   '@sigstore/verify@3.0.0':
     dependencies:
       '@sigstore/bundle': 4.0.0
-      '@sigstore/core': 3.2.1
+      '@sigstore/core': 3.2.1(patch_hash=106b2f2b40b5dca2a71554805712695f63e3ccd796f23885a9b67e56cd0f8375)
       '@sigstore/protobuf-specs': 0.5.2
 
   '@sinclair/typebox@0.27.10': {}
@@ -16042,7 +16044,7 @@ snapshots:
 
   '@tufjs/canonical-json@2.0.0': {}
 
-  '@tufjs/models@4.1.0':
+  '@tufjs/models@4.1.0(patch_hash=31c75353a4125a82f7cfe7f359fee135aee69e98f771ec512545129974c30290)':
     dependencies:
       '@tufjs/canonical-json': 2.0.0
       minimatch: 10.2.5
@@ -22509,7 +22511,7 @@ snapshots:
 
   tuf-js@4.1.0:
     dependencies:
-      '@tufjs/models': 4.1.0
+      '@tufjs/models': 4.1.0(patch_hash=31c75353a4125a82f7cfe7f359fee135aee69e98f771ec512545129974c30290)
       debug: 4.4.3
       make-fetch-happen: 15.0.6
     transitivePeerDependencies:
