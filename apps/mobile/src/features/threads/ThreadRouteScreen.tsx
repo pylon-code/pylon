@@ -99,6 +99,8 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useSelectedThreadGitActions } from "../../state/use-selected-thread-git-actions";
 import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-state";
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
+import { resolvePairState } from "@t3tools/client-runtime/state/pair";
+import { useThreadShells } from "../../state/entities";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { threadEnvironment } from "../../state/threads";
@@ -298,6 +300,32 @@ function ThreadRouteContent(
     "session agent depth update",
   );
   const navigation = useNavigation();
+  const threadShells = useThreadShells();
+  const pairState = useMemo(() => {
+    if (!selectedThread) {
+      return undefined;
+    }
+    return resolvePairState({
+      threads: threadShells,
+      lead: {
+        environmentId: selectedThread.environmentId,
+        threadId: selectedThread.id,
+        driverKind: null,
+      },
+    });
+  }, [threadShells, selectedThread]);
+  const pairExecutorLabel = pairState?.kind === "on" ? pairState.modelSelection.model : "";
+  const onOpenPairExecutor = useCallback(() => {
+    if (!selectedThread || pairState?.kind !== "on") {
+      return;
+    }
+    navigation.dispatch(
+      StackActions.push("Thread", {
+        environmentId: selectedThread.environmentId,
+        threadId: pairState.executorId,
+      }),
+    );
+  }, [navigation, pairState, selectedThread]);
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
@@ -1215,6 +1243,9 @@ function ThreadRouteContent(
         }
       >
         <ThreadDetailScreen
+          pairState={pairState}
+          pairExecutorLabel={pairExecutorLabel}
+          onOpenPairExecutor={onOpenPairExecutor}
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
           contentPresentation={contentPresentation}
           screenTone={connectionTone(routeConnectionState)}

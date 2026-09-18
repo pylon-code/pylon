@@ -1,4 +1,4 @@
-import type { PairExecutorPhase, PairState } from "@t3tools/client-runtime/state/pair";
+import { pairPhaseLabel, type PairState } from "@t3tools/client-runtime/state/pair";
 import type { EnvironmentId, ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { UsersIcon } from "lucide-react";
@@ -46,25 +46,6 @@ export function initialExecutorInstanceId(
   return (withModels ?? entries[0])?.instanceId;
 }
 
-/** What the executor is doing, in the words the panel and the trigger's label use. */
-export function pairPhaseLabel(phase: PairExecutorPhase): string {
-  switch (phase) {
-    case "idle":
-      return "Waiting for a brief";
-    case "running":
-      return "Working";
-    case "needs-approval":
-      return "Needs your approval";
-    case "needs-input":
-      return "Has a question";
-    case "completed":
-      return "Finished";
-    case "interrupted":
-      return "Stopped";
-    case "error":
-      return "Failed";
-  }
-}
 
 function executorLabel(
   props: Pick<PairControlProps, "executorSelection" | "modelOptionsByInstance">,

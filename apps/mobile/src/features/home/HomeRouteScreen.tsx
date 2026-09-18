@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Platform, useWindowDimensions } from "react-native";
 
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
+import { withoutPairExecutors } from "@t3tools/client-runtime/state/pair";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useWorkspaceState } from "../../state/workspace";
@@ -29,7 +30,8 @@ export function HomeRouteScreen() {
   const { width: windowWidth } = useWindowDimensions();
   const { layout } = useAdaptiveWorkspaceLayout();
   const projects = useProjects();
-  const threads = useThreadShells();
+  const threadShells = useThreadShells();
+  const threads = useMemo(() => withoutPairExecutors(threadShells), [threadShells]);
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const navigation = useNavigation();

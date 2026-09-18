@@ -165,14 +165,32 @@ export function pairRewindBlockedReason(input: {
     ? "Stop the executor before rewinding. It works in this thread's worktree and would write over the restored files."
     : null;
 /** What the executor is doing, in the words every client uses. */
-export function pairPhaseLabel(_phase: PairExecutorPhase): string {
-  return "";
+export function pairPhaseLabel(phase: PairExecutorPhase): string {
+  switch (phase) {
+    case "idle":
+      return "Waiting for a brief";
+    case "running":
+      return "Working";
+    case "needs-approval":
+      return "Needs your approval";
+    case "needs-input":
+      return "Has a question";
+    case "completed":
+      return "Finished";
+    case "interrupted":
+      return "Stopped";
+    case "error":
+      return "Failed";
+  }
 }
 
 /**
  * One line for a lead's thread screen: who it is paired with and what that
  * executor is doing. Null while the pair is off or cannot exist.
  */
-export function pairStatusLine(_state: PairState, _executorLabel: string): string | null {
-  return null;
+export function pairStatusLine(state: PairState, executorLabel: string): string | null {
+  if (state.kind !== "on") {
+    return null;
+  }
+  return `Paired with ${executorLabel} · ${pairPhaseLabel(state.phase)}`;
 }
