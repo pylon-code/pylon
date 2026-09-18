@@ -117,6 +117,19 @@ export interface DelegatedFileChange {
   readonly deletions: number;
 }
 
+/** The longest one `delegated_thread_status` call may wait. Prime Agent cancels MCP calls at 60 s. */
+export const MAX_STATUS_WAIT_SECONDS = 45;
+
+/**
+ * How long one `delegated_thread_status` call waits. Omitted or 0 reads the
+ * state and returns. Any positive request waits the whole cap: a short wait
+ * repeated in a loop is polling with a model turn per call, and the call
+ * already returns the moment the child changes.
+ */
+export function delegatedStatusWaitSeconds(_requested: number | undefined): number {
+  return _requested ?? 0;
+}
+
 export function aggregateFilesChanged(
   checkpoints: ReadonlyArray<Pick<OrchestrationCheckpointSummary, "files">>,
 ): ReadonlyArray<DelegatedFileChange> {

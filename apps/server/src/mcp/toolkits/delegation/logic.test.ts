@@ -20,6 +20,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   aggregateFilesChanged,
+  delegatedStatusWaitSeconds,
+  MAX_STATUS_WAIT_SECONDS,
   defaultTitleFor,
   delegatedChildPrefix,
   delegatedThreadId,
@@ -437,5 +439,15 @@ describe("resolveDelegationTarget", () => {
     expect(resolveDelegationTarget({ defaultSelection: null, requestedInstanceId: codex })).toEqual(
       { ok: true, instanceId: codex, defaultApplied: "none" },
     );
+  });
+});
+
+describe("delegated status wait", () => {
+  it("reads at once for zero or nothing, and waits the whole cap for anything else", () => {
+    expect(MAX_STATUS_WAIT_SECONDS).toBe(45);
+    expect(delegatedStatusWaitSeconds(undefined)).toBe(0);
+    expect(delegatedStatusWaitSeconds(0)).toBe(0);
+    expect(delegatedStatusWaitSeconds(5)).toBe(45);
+    expect(delegatedStatusWaitSeconds(45)).toBe(45);
   });
 });

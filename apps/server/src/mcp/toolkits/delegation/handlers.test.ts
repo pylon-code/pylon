@@ -705,11 +705,12 @@ describe("delegated_thread_status", () => {
       const fiber = yield* Effect.forkChild(
         harness.call("delegated_thread_status", { delegationKey: "k1", waitSeconds: 5 }),
       );
-      yield* TestClock.adjust("5 seconds");
+      // A short request is not honored: it waits the whole cap.
+      yield* TestClock.adjust("45 seconds");
       expect(yield* Fiber.join(fiber)).toMatchObject({
         state: "queued",
         changed: false,
-        waitedSeconds: 5,
+        waitedSeconds: 45,
       });
     }),
   );
@@ -746,7 +747,7 @@ describe("delegated_thread_status", () => {
         const runningFiber = yield* Effect.forkChild(
           runningHarness.call("delegated_thread_status", { delegationKey: "k1", waitSeconds: 5 }),
         );
-        yield* TestClock.adjust("5 seconds");
+        yield* TestClock.adjust("45 seconds");
         yield* Fiber.join(runningFiber);
         const runningCommands = yield* Ref.get(runningHarness.commands);
         expect(runningCommands).toHaveLength(0);
