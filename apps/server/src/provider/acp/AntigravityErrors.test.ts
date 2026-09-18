@@ -87,7 +87,7 @@ describe("AntigravityErrors", () => {
       expect(
         formatAntigravityErrorMessage("agent executor error: could not find doneCh for checkpoint"),
       ).toBe(
-        "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.",
+        "Antigravity agent executor encountered an internal checkpoint error. If retrying fails again, start a new thread and carry over your task context; existing files are preserved.",
       );
     });
 
