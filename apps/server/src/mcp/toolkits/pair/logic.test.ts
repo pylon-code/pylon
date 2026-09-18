@@ -16,6 +16,7 @@ import {
   changedProtectedPaths,
   derivePairExecutorState,
   isPairLeadSupported,
+  pairAwaitBudgetSeconds,
   normalizeProtectedPath,
   isPairExecutorThreadId,
   pairAwaitCapSeconds,
@@ -225,5 +226,17 @@ describe("protected paths", () => {
     // A path with no current reading counts as changed: it could not be verified.
     expect(changedProtectedPaths(recorded.slice(0, 1), new Map())).toEqual(["b.test.ts"]);
     expect(changedProtectedPaths([], new Map([["a.test.ts", "aaa"]]))).toEqual([]);
+  });
+});
+
+describe("pair await budget", () => {
+  it("waits the whole cap unless the lead asks for an instant read", () => {
+    // A lead that asks for ten seconds at a time is polling: every return is a
+    // model turn. The wait ends early on any change anyway, so a long one is free.
+    expect(pairAwaitBudgetSeconds(undefined, 45)).toBe(45);
+    expect(pairAwaitBudgetSeconds(10, 45)).toBe(45);
+    expect(pairAwaitBudgetSeconds(20, 150)).toBe(150);
+    expect(pairAwaitBudgetSeconds(150, 45)).toBe(45);
+    expect(pairAwaitBudgetSeconds(0, 45)).toBe(0);
   });
 });

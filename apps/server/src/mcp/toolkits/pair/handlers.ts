@@ -52,6 +52,7 @@ import {
   derivePairExecutorState,
   isPairLeadSupported,
   normalizeProtectedPath,
+  pairAwaitBudgetSeconds,
   pairAwaitCapSeconds,
   pairExecutorThreadId,
   pairExecutorTitle,
@@ -508,7 +509,7 @@ const make = Effect.gen(function* () {
       const leadProvider = providerList.find((p) => p.instanceId === scope.providerInstanceId);
       const driver = leadProvider?.driver;
       const cap = pairAwaitCapSeconds(driver);
-      const waitBudget = Math.min(input.maxSeconds ?? 0, cap);
+      const waitBudget = pairAwaitBudgetSeconds(input.maxSeconds, cap);
 
       const startedAt = yield* Clock.currentTimeMillis;
       const deadline = startedAt + waitBudget * 1_000;

@@ -52,6 +52,16 @@ export function derivePairExecutorState(shell: OrchestrationThreadShell): PairEx
 }
 
 /**
+ * How long one `pair_await` call waits. Only an explicit 0 reads the state and
+ * returns; any other request waits the lead's whole cap, because a short wait
+ * repeated in a loop costs a model turn each time and the call already returns
+ * the moment the executor changes.
+ */
+export function pairAwaitBudgetSeconds(requested: number | undefined, capSeconds: number): number {
+  return requested === 0 ? 0 : capSeconds;
+}
+
+/**
  * Wait budget cap for pair_await.
  * Codex gets 150 seconds because Pylon sets Codex's MCP tool_timeout_sec to 180
  * in CodexAdapter.ts. Everything else (including undefined and Prime Agent, which
