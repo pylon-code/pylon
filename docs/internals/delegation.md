@@ -128,8 +128,12 @@ Claude Code), a paired Codex app-server starts with `features.multi_agent=false`
 protocol in place of the delegation block. Nothing is
 written to a provider's own settings, so a thread that is not paired behaves exactly as the provider
 ships. A pair started mid-session reaches the lead through the `pair_start` result, which carries the
-same protocol text; the tool denial applies from the next session start. Prime Agent's own subagent
-depth is not yet held while paired.
+same protocol text; the tool denial applies from the next session start. Prime Agent has no tool
+to deny, but it lets Pylon set one session's subagent depth, so `ProviderService` sets it to 0 right
+after a paired session starts (`holdPairedAgentDepth`). That is the session's own value and leaves
+Prime's global setting alone; a session adopted after a server restart keeps whatever it had, because
+the depth can only change while a session is idle. A failure only logs, since the protocol already
+tells the lead not to use its own subagents.
 
 Antigravity cannot lead and is refused by `pair_start` and by the clients, though it works as the
 executor: it offers no per-session control over its own subagents and receives no Pylon
