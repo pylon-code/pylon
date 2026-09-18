@@ -2781,6 +2781,18 @@ export function makePrimeAgentDaemonAdapter(
                       missingMessages[0]?.role === "harnessDigest"
                         ? 1
                         : 0;
+                    const submittedAnswer = missingMessages[submittedUserIndex + 1];
+                    // A fast prompt may finish before either message event arrives.
+                    // Only its exact submitted boundary and one terminal answer can
+                    // be recovered under the same completed, delivered lifecycle.
+                    const snapshotHasSubmittedAnswer =
+                      missingMessages.length === submittedUserIndex + 2 &&
+                      submittedAnswer?.role === "assistant" &&
+                      submittedAnswer.stopReason === "stop" &&
+                      submittedAnswer.toolCalls.length === 0 &&
+                      lifecycle?.phase === "completed" &&
+                      snapshotEvent.state.isStreaming === false &&
+                      snapshotEvent.streamingMessage === undefined;
                     const snapshotRecoversSubmittedUser =
                       activeTurn !== undefined &&
                       snapshotEvent.connectionGeneration !== undefined &&
@@ -2789,7 +2801,8 @@ export function makePrimeAgentDaemonAdapter(
                       (context.nativeTranscriptMessageCount ===
                         activeTurn.nativeTranscriptBaselineMessageCount ||
                         firstHarnessDigestObserved) &&
-                      missingMessages.length === submittedUserIndex + 1 &&
+                      (missingMessages.length === submittedUserIndex + 1 ||
+                        snapshotHasSubmittedAnswer) &&
                       missingMessages[submittedUserIndex] !== undefined &&
                       matchesSubmittedUserMessage(
                         activeTurn,
@@ -2798,8 +2811,8 @@ export function makePrimeAgentDaemonAdapter(
                       currentLifecycle?.kind === "model_prompt" &&
                       currentLifecycle.phase === "delivered" &&
                       currentLifecycle.deliveryCrossed &&
-                      lifecycle?.phase === "delivered" &&
-                      lifecycle.deliveryCrossed &&
+                      (lifecycle?.phase === "delivered" || snapshotHasSubmittedAnswer) &&
+                      lifecycle?.deliveryCrossed === true &&
                       (primeAgentPromptLifecycleIsSame(currentLifecycle, lifecycle) ||
                         primeAgentPromptLifecycleCanAdvance(currentLifecycle, lifecycle));
                     // Completed tool cycles can reach the durable snapshot before their
