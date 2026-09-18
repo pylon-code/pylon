@@ -80,12 +80,20 @@ export const PLAN_IMPLEMENTATION_PROMPT_PREFIX = "PLEASE IMPLEMENT THIS PLAN:\n"
  */
 export function buildPlanImplementationPrompt(
   planMarkdown: string,
-  _options: { readonly paired?: boolean } = {},
+  options: { readonly paired?: boolean } = {},
 ): string {
-  return `${PLAN_IMPLEMENTATION_PROMPT_PREFIX}${planMarkdown.trim()}`;
+  const base = `${PLAN_IMPLEMENTATION_PROMPT_PREFIX}${planMarkdown.trim()}`;
+  if (options.paired === true) {
+    return `${base}\n\nThis thread is paired. Write the contract and the failing tests yourself, then hand the plan to your executor one step at a time with pair_handoff, and verify each step before the next.`;
+  }
+  return base;
 }
 
-export function resolvePlanFollowUpSubmission(input: { draftText: string; planMarkdown: string }): {
+export function resolvePlanFollowUpSubmission(input: {
+  draftText: string;
+  planMarkdown: string;
+  options?: { readonly paired?: boolean };
+}): {
   text: string;
   interactionMode: "default" | "plan";
 } {
@@ -98,7 +106,7 @@ export function resolvePlanFollowUpSubmission(input: { draftText: string; planMa
   }
 
   return {
-    text: buildPlanImplementationPrompt(input.planMarkdown),
+    text: buildPlanImplementationPrompt(input.planMarkdown, input.options),
     interactionMode: "default",
   };
 }

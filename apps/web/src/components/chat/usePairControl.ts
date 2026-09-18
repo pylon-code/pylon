@@ -18,6 +18,7 @@ import { useEnvironmentSettings } from "~/hooks/useSettings";
 import { useThreadShells } from "~/state/entities";
 import { threadEnvironment } from "~/state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { buildThreadTurnInterruptInput } from "../ChatView.logic";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import type { PairControlProps } from "./PairControl";
 import {
@@ -35,7 +36,12 @@ export function usePairControl(input: {
   readonly projectId: ProjectId | null;
 }): Pick<
   PairControlProps,
-  "state" | "executorSelection" | "lockedReason" | "onToggle" | "onExecutorChange"
+  | "state"
+  | "executorSelection"
+  | "lockedReason"
+  | "onToggle"
+  | "onExecutorChange"
+  | "onStopExecutor"
 > {
   const threads = useThreadShells();
   const settings = useEnvironmentSettings(input.environmentId);
@@ -77,6 +83,7 @@ export function usePairControl(input: {
   const archiveThread = useAtomCommand(threadEnvironment.archive, { reportFailure: false });
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
   const stopSession = useAtomCommand(threadEnvironment.stopSession, { reportFailure: false });
+  const interruptTurn = useAtomCommand(threadEnvironment.interruptTurn, { reportFailure: false });
 
   const onToggle = useCallback(
     async (on: boolean) => {
@@ -175,6 +182,35 @@ export function usePairControl(input: {
     [leadId],
   );
 
+  const onStopExecutor = useCallback(async () => {
+    if (state.kind !== "on") {
+      return;
+    }
+    const executorShell = threads.find(
+      (thread) => thread.environmentId === input.environmentId && thread.id === state.executorId,
+    );
+    if (!executorShell) {
+      return;
+    }
+    const result = await interruptTurn({
+      environmentId: input.environmentId,
+      input: buildThreadTurnInterruptInput(executorShell),
+    });
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not stop the executor",
+          description:
+            error instanceof Error
+              ? error.message
+              : "An error occurred while stopping the executor.",
+        }),
+      );
+    }
+  }, [input.environmentId, interruptTurn, state, threads]);
+
   const executorSelection = useMemo(
     () => resolveExecutorSelection({ state, picked, defaultSelection }),
     [defaultSelection, picked, state],
@@ -188,7 +224,8 @@ export function usePairControl(input: {
       lockedReason,
       onToggle,
       onExecutorChange,
+      onStopExecutor,
     }),
-    [executorSelection, lockedReason, onExecutorChange, onToggle, state],
+    [executorSelection, lockedReason, onExecutorChange, onStopExecutor, onToggle, state],
   );
 }

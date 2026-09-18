@@ -1,3 +1,4 @@
+import { resolvePairState } from "@t3tools/client-runtime/state/pair";
 import { delegatedThreadRows } from "@t3tools/client-runtime/state/delegated-threads";
 import { prepareRevertedMessageContext } from "../lib/composerRewindContext";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
@@ -3027,6 +3028,16 @@ export default function ChatView(props: ChatViewProps) {
     [agentSessionLive, threadActivities],
   );
   const allThreadShells = useThreadShells();
+  const activeThreadPaired = useMemo(
+    () =>
+      activeThread
+        ? resolvePairState({
+            threads: allThreadShells,
+            lead: { environmentId, threadId: activeThread.id, driverKind: null },
+          }).kind === "on"
+        : false,
+    [activeThread, allThreadShells, environmentId],
+  );
   const delegatedThreads = useMemo(
     () => (activeThreadRef ? delegatedThreadRows(allThreadShells, activeThreadRef) : []),
     [allThreadShells, activeThreadRef],
@@ -7788,6 +7799,7 @@ export default function ChatView(props: ChatViewProps) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: promptForSend,
         planMarkdown: activeProposedPlan.planMarkdown,
+        options: { paired: activeThreadPaired },
       });
       const outgoingFollowUpText = formatOutgoingPrompt({
         provider: ctxSelectedProvider,
@@ -10666,6 +10678,7 @@ export default function ChatView(props: ChatViewProps) {
                             respondingRequestIds={respondingRequestIds}
                             showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                             activeProposedPlan={activeProposedPlan}
+                            pairedImplement={activeThreadPaired}
                             activeTasksProgress={activeComposerTasksProgress}
                             activeTaskSteps={activeComposerTaskSteps}
                             activeDelegatedWork={activeComposerDelegatedWork}

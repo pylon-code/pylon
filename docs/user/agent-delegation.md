@@ -133,14 +133,17 @@ faster, cheaper model that stays linked for as long as the first thread lives. T
 the brief, and checks the result; the executor does the implementation in the same worktree, so there
 is nothing to merge back.
 
-In the web composer, **Pair** sits beside the model picker. Open it, choose the executor's model, and
-turn the switch on. The executor starts from your **Default delegation model** when you have one, and
-follows **Child permissions**. While the pair is on, the control shows the executor's model and what
-it is doing, and **Open executor** takes you to its thread. The switch waits while the lead is
-mid-turn, because a change applies between turns. Turning the pair off deletes an executor that was
-never briefed and archives one that has history; turning it on again brings an archived executor
+In the web composer, **Pair** sits beside the model picker. Open it, choose the executor's model,
+and turn the switch on. The executor starts from your **Default delegation model** when you have
+one, and follows **Child permissions**. While the pair is on, the control shows the executor's model
+and what it is doing, and **Open executor** takes you to its thread. The switch waits while the lead
+is mid-turn, because a change applies between turns. Turning the pair off deletes an executor that
+was never briefed and archives one that has history; turning it on again brings an archived executor
 back. To change the executor's model, turn the pair off first. With **Pylon delegation** on, you can
-also ask for a pair in your message, for example “Pair with Antigravity for this.”
+also ask for a pair in your message, for example “Pair with Antigravity for this.” While the
+executor is working, the same panel has **Stop executor**. When you approve a plan on a paired
+thread, the button reads **Implement with executor** and the lead is reminded to write the tests
+itself and hand the plan over one step at a time.
 
 While a thread is paired, the lead's own subagents are paused for that thread only, so
 implementation goes to the executor. Pylon's own delegation is paused there too: a paired lead cannot

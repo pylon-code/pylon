@@ -189,6 +189,19 @@ export function PairControlPanel(props: PairControlProps) {
               {props.state.activity}
             </p>
           )}
+          {props.onStopExecutor !== undefined &&
+            (props.state.phase === "running" ||
+              props.state.phase === "needs-approval" ||
+              props.state.phase === "needs-input") && (
+              <button
+                type="button"
+                data-pair-stop
+                onClick={props.onStopExecutor}
+                className="self-start font-medium text-destructive text-xs hover:underline"
+              >
+                Stop executor
+              </button>
+            )}
         </div>
       )}
     </div>
