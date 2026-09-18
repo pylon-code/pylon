@@ -38,6 +38,8 @@ interface ComposerPrimaryActionsProps {
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
+  /** The thread has a pair executor, so implementing a plan goes through it. */
+  pairedImplement?: boolean;
 }
 
 const formatPendingPrimaryActionLabel = (input: {

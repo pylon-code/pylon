@@ -27,6 +27,8 @@ export interface PairControlProps {
   readonly lockedReason?: string | null;
   readonly onToggle: (on: boolean) => void;
   readonly onExecutorChange: (instanceId: ProviderInstanceId, model: string) => void;
+  /** Stops the executor's running turn. The button shows only while it holds one. */
+  readonly onStopExecutor?: () => void;
 }
 
 /**

@@ -73,7 +73,15 @@ function sanitizePlanFileSegment(input: string): string {
 /** Prefix of the message the app sends when the user approves a plan. */
 export const PLAN_IMPLEMENTATION_PROMPT_PREFIX = "PLEASE IMPLEMENT THIS PLAN:\n";
 
-export function buildPlanImplementationPrompt(planMarkdown: string): string {
+/**
+ * The message sent when the user approves a plan. On a paired thread it ends
+ * with a reminder of how a pair implements, at the moment the lead decides how
+ * to start; the prefix stays first because other code recognizes it.
+ */
+export function buildPlanImplementationPrompt(
+  planMarkdown: string,
+  _options: { readonly paired?: boolean } = {},
+): string {
   return `${PLAN_IMPLEMENTATION_PROMPT_PREFIX}${planMarkdown.trim()}`;
 }
 
