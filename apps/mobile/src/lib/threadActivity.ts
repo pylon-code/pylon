@@ -443,7 +443,10 @@ function deriveWorkLogEntries(
       activity.kind === "session.resources.updated" ||
       activity.kind === "session.agent-depth.updated" ||
       activity.kind === "session.input-queue.updated" ||
-      activity.kind === "turn.cost"
+      activity.kind === "turn.cost" ||
+      // Reactor bookkeeping for Pylon children; the Agents panel is the roster.
+      activity.kind === "delegation.child-state" ||
+      activity.kind === "delegation.follow-through.delivered"
     ) {
       continue;
     }
