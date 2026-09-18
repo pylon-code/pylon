@@ -113,9 +113,11 @@ Two providers cannot lead and are refused by `pair_start` and by the clients, th
 executor. Antigravity offers no per-session control over its own subagents. Codex has the two flags
 above, but Codex 0.153.4 keeps all six `collaboration.*` tools with both off (checked with
 `codex exec -c features.multi_agent=false -c features.multi_agent_v2=false`), and in four live runs a
-paired Codex lead spawned its own subagent on its own model and never called a pair tool. It also
-reported seeing neither the pair protocol nor the `t3-code` tools, although the provider log shows
-the server ready and the protocol sent in the turn's developer instructions; why is not yet known.
+paired Codex lead spawned its own subagent on its own model and never called a pair tool. Part of
+the cause was that Pylon's instructions did not reach Codex at all (see the Codex protocol traps in
+[providers](providers.md)); its `t3-code` tools are deferred behind tool discovery, so a lead that is
+never told about them does not find them. Codex stays refused until a paired run on a fresh thread
+shows it briefing the executor with its collaboration tools still present.
 A Claude lead was verified end to end: `pair_handoff`, `pair_await`, the executor's own session
 writing the file, and the lead checking it.
 

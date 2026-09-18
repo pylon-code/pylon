@@ -85,6 +85,16 @@ no pending RPC response to send. Blocking questions still use the request/respon
 [decider](../../apps/server/src/orchestration/decider.ts) records an async answer and its user
 message together.
 
+Codex takes Pylon's instructions twice. `thread/start` and `thread/resume` carry them as
+`developerInstructions` ([`buildCodexThreadInstructions`](../../apps/server/src/provider/CodexDeveloperInstructions.ts)),
+and each `turn/start` still carries them inside the collaboration mode's `developer_instructions`
+together with Codex's own mode template. Only the first reaches the model on Codex 0.153.4, which
+lists `collaboration_modes` as a removed feature: asked where it was running, a fresh thread answered
+"the Codex application" without the thread-level copy and "Pylon through the Codex harness" with it.
+The per-turn copy stays for older Codex versions. Whether `thread/resume` applies new instructions
+to an existing conversation is not verified. Do not test delivery by asking a model to quote its
+instructions; it answers "none" either way. Ask something only the instructions could tell it.
+
 An async question can outlive the turn or a server restart. The engine reads that request's
 durable activity before resolving it because the in-memory command snapshot omits old activities.
 Do not infer that a request has disappeared merely because it is outside the recent window.

@@ -1035,6 +1035,64 @@ describe("openCodexThread", () => {
     }),
   );
 
+  it.effect("sends Pylon's instructions when a thread is resumed and when it is started", () =>
+    Effect.gen(function* () {
+      // Codex 0.153 ignores developer instructions carried inside a turn's
+      // collaboration mode, so without these the model never learns it runs in Pylon.
+      const payloads: Array<{ method: string; developerInstructions: unknown }> = [];
+      const record = (method: string, payload: object) =>
+        payloads.push({
+          method,
+          developerInstructions:
+            "developerInstructions" in payload ? payload.developerInstructions : undefined,
+        });
+      const client = {
+        raw: {
+          request: (
+            method: "thread/resume",
+            payload: CodexRpc.ClientRequestParamsByMethod["thread/resume"],
+          ) => {
+            record(method, payload);
+            return Effect.fail(
+              new CodexErrors.CodexAppServerRequestError({
+                code: -32603,
+                errorMessage: "thread not found",
+              }),
+            );
+          },
+        },
+        request: (
+          method: "thread/start",
+          payload: CodexRpc.ClientRequestParamsByMethod["thread/start"],
+        ) => {
+          record(method, payload);
+          return Effect.succeed(makeThreadOpenResponse("fresh-thread"));
+        },
+      };
+      const open = (developerInstructions: string | undefined) =>
+        openCodexThread({
+          client,
+          threadId: ThreadId.make("thread-1"),
+          runtimeMode: "full-access",
+          cwd: "/tmp/project",
+          requestedModel: "gpt-5.3-codex",
+          serviceTier: undefined,
+          resumeThreadId: "stale-thread",
+          developerInstructions,
+        });
+
+      yield* open("<runtime_info>Pylon</runtime_info>");
+      yield* open(undefined);
+
+      NodeAssert.deepStrictEqual(payloads, [
+        { method: "thread/resume", developerInstructions: "<runtime_info>Pylon</runtime_info>" },
+        { method: "thread/start", developerInstructions: "<runtime_info>Pylon</runtime_info>" },
+        { method: "thread/resume", developerInstructions: undefined },
+        { method: "thread/start", developerInstructions: undefined },
+      ]);
+    }),
+  );
+
   it.effect("propagates non-recoverable resume failures", () =>
     Effect.gen(function* () {
       const client = {

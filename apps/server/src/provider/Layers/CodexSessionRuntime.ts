@@ -51,6 +51,7 @@ import { resolveProviderHomePath } from "../../pathExpansion.ts";
 import {
   buildCodexDeveloperInstructions,
   type T3CodeToolAvailability,
+  buildCodexThreadInstructions,
 } from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
@@ -583,10 +584,12 @@ function buildThreadStartParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly developerInstructions?: string | undefined;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
     cwd: input.cwd,
+    ...(input.developerInstructions ? { developerInstructions: input.developerInstructions } : {}),
     approvalPolicy: config.approvalPolicy,
     sandbox: config.sandbox,
     approvalsReviewer: config.approvalsReviewer,
@@ -761,6 +764,7 @@ export const openCodexThread = (input: {
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
   readonly strictResume?: boolean;
+  readonly developerInstructions?: string | undefined;
 }): Effect.Effect<typeof CodexThreadResumeMetadata.Type, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -768,6 +772,7 @@ export const openCodexThread = (input: {
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
+    developerInstructions: input.developerInstructions,
   });
 
   if (resumeThreadId === undefined) {
@@ -2644,6 +2649,9 @@ export const makeCodexSessionRuntime = (
         serviceTier: options.serviceTier,
         resumeThreadId,
         ...(options.strictResume ? { strictResume: true } : {}),
+        developerInstructions: buildCodexThreadInstructions(
+          configuredMcpToolAvailability(options.appServerArgs, options.mcpCapabilities),
+        ),
       });
       if (
         options.strictResume &&
