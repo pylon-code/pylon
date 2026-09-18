@@ -1,5 +1,6 @@
 import {
   USAGE_CONTRACT_VERSION,
+  USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
   type UsageBucket,
   type UsageDay,
@@ -158,7 +159,7 @@ describe("mergeUsage", () => {
           summary(
             [bucket()],
             [{ provider: "claude", hostId: "linux", homePath: "/b" }],
-            USAGE_CONTRACT_VERSION - 2,
+            USAGE_MERGE_COMPATIBLE_SINCE - 1,
           ),
         ),
       ],
@@ -369,5 +370,36 @@ describe("mergeUsage", () => {
     ]);
     expect(merged.daily).toHaveLength(1);
     expect(merged.daily[0]?.costUsd).toBe(10);
+  });
+
+  it("merges across mixed contract versions compatible back to v4", () => {
+    const v4Summary = summary(
+      [bucket({ provider: "claude", model: "claude-3-5-sonnet", costUsd: 4 })],
+      [{ provider: "claude", hostId: "host-v4", homePath: "/v4/.claude" }],
+      4,
+    );
+    const v5Summary = summary(
+      [bucket({ provider: "codex", model: "codex-preview", costUsd: 5 })],
+      [{ provider: "codex", hostId: "host-v5", homePath: "/v5/.codex" }],
+      5,
+    );
+    const v6Summary = summary(
+      [bucket({ provider: "antigravity", model: "gemini-3.8-flash", costUsd: 6 })],
+      [{ provider: "antigravity", hostId: "host-v6", homePath: "/v6/antigravity" }],
+      6,
+    );
+
+    const merged = mergeUsage(
+      [
+        environment("env-v4", v4Summary),
+        environment("env-v5", v5Summary),
+        environment("env-v6", v6Summary),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(15);
+    expect(merged.staleEnvironments).toEqual([]);
+    expect(merged.contributingEnvironments).toEqual(["env-v4", "env-v5", "env-v6"]);
   });
 });

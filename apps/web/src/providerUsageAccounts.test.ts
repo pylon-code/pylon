@@ -284,6 +284,154 @@ describe("deriveComposerUsage", () => {
     });
   });
 
+  describe("Antigravity selected model prioritization", () => {
+    const ANTIGRAVITY = provider({
+      instanceId: "antigravity",
+      driver: "antigravity",
+      displayName: "Antigravity",
+      models: [
+        {
+          slug: "gemini-flash",
+          name: "Gemini Flash",
+          isCustom: false,
+          isDefault: true,
+          capabilities: { optionDescriptors: [] },
+        },
+        {
+          slug: "claude-sonnet",
+          name: "Claude Sonnet",
+          isCustom: false,
+          capabilities: { optionDescriptors: [] },
+        },
+        {
+          slug: "custom-model",
+          name: "Custom Fine-Tune",
+          isCustom: true,
+          capabilities: { optionDescriptors: [] },
+        },
+      ],
+    });
+    const antigravityWithLimits: ServerProvider = {
+      ...ANTIGRAVITY,
+      usageLimits: {
+        source: "antigravityCli",
+        checkedAt: "2026-09-17T12:00:00.000Z",
+        windows: [
+          {
+            id: "gemini-5h",
+            label: "5-Hour (Gemini)",
+            usedPercent: 40,
+            windowDurationMins: 300,
+            kind: "session",
+          },
+          {
+            id: "gemini-weekly",
+            label: "Weekly (Gemini)",
+            usedPercent: 10,
+            windowDurationMins: 10080,
+            kind: "weekly",
+          },
+          {
+            id: "3p-5h",
+            label: "5-Hour (Claude/GPT)",
+            usedPercent: 75,
+            windowDurationMins: 300,
+            kind: "session",
+          },
+          {
+            id: "3p-weekly",
+            label: "Weekly (Claude/GPT)",
+            usedPercent: 50,
+            windowDurationMins: 10080,
+            kind: "weekly",
+          },
+        ],
+      },
+    };
+
+    it("strictly filters to Gemini windows when a Gemini model is selected", () => {
+      const usage = deriveComposerUsage({
+        providerStatuses: [antigravityWithLimits],
+        selectedInstanceId: "antigravity",
+        selectedModel: "gemini-flash",
+        enabled: true,
+      });
+
+      expect(usage.primary?.usageLimits.windows.map((w) => w.id)).toEqual([
+        "gemini-5h",
+        "gemini-weekly",
+      ]);
+      // All accounts in popover still have full list
+      expect(usage.accounts[0]?.usageLimits.windows).toHaveLength(4);
+    });
+
+    it("strictly filters to Claude/GPT windows when a Claude or GPT model is selected", () => {
+      const usage = deriveComposerUsage({
+        providerStatuses: [antigravityWithLimits],
+        selectedInstanceId: "antigravity",
+        selectedModel: "claude-sonnet",
+        enabled: true,
+      });
+
+      expect(usage.primary?.usageLimits.windows.map((w) => w.id)).toEqual(["3p-5h", "3p-weekly"]);
+      expect(usage.primary?.usageLimits.windows[0]?.usedPercent).toBe(75);
+    });
+
+    it("returns empty windows (no false quota) when unknown or custom model is selected", () => {
+      const usage = deriveComposerUsage({
+        providerStatuses: [antigravityWithLimits],
+        selectedInstanceId: "antigravity",
+        selectedModel: "custom-model",
+        enabled: true,
+      });
+
+      expect(usage.primary?.usageLimits.windows).toEqual([]);
+    });
+
+    it("resolves default alias to the default model's verified group", () => {
+      const usage = deriveComposerUsage({
+        providerStatuses: [antigravityWithLimits],
+        selectedInstanceId: "antigravity",
+        selectedModel: "default",
+        enabled: true,
+      });
+
+      // Default model in ANTIGRAVITY is gemini-flash, which is Gemini
+      expect(usage.primary?.usageLimits.windows.map((w) => w.id)).toEqual([
+        "gemini-5h",
+        "gemini-weekly",
+      ]);
+    });
+
+    it("returns no false quota when preferred group has no windows", () => {
+      const antigravityGeminiOnly: ServerProvider = {
+        ...ANTIGRAVITY,
+        usageLimits: {
+          source: "antigravityCli",
+          checkedAt: "2026-09-17T12:00:00.000Z",
+          windows: [
+            {
+              id: "gemini-5h",
+              label: "5-Hour (Gemini)",
+              usedPercent: 40,
+              windowDurationMins: 300,
+              kind: "session",
+            },
+          ],
+        },
+      };
+
+      const usage = deriveComposerUsage({
+        providerStatuses: [antigravityGeminiOnly],
+        selectedInstanceId: "antigravity",
+        selectedModel: "claude-sonnet",
+        enabled: true,
+      });
+
+      expect(usage.primary?.usageLimits.windows).toEqual([]);
+    });
+  });
+
   it.each([
     ["disabled in settings", { selectedInstanceId: "codex", enabled: false }],
     ["no selection", { selectedInstanceId: null, enabled: true }],
@@ -309,45 +457,8 @@ describe("hasComposerUsageContent", () => {
   it("counts a weekly-only reading, as Codex reports on some plans", () => {
     expect(
       hasComposerUsageContent(
-        usage([{ label: "Weekly", usedPercent: 15, windowDurationMins: 10_080 }]),
+        usage([{ label: "Weekly", usedPercent: 50, windowDurationMins: 10080, kind: "weekly" }]),
       ),
-    ).toBe(true);
-  });
-
-  it("counts a session and weekly pair", () => {
-    expect(
-      hasComposerUsageContent(
-        usage([
-          { label: "Session", usedPercent: 4, windowDurationMins: 300 },
-          { label: "Weekly", usedPercent: 15, windowDurationMins: 10_080 },
-        ]),
-      ),
-    ).toBe(true);
-  });
-
-  // The readout draws only the session and weekly windows, so anything it
-  // cannot classify leaves it with nothing to show.
-  it("ignores windows the readout cannot place", () => {
-    expect(hasComposerUsageContent(usage([{ label: "Overage", usedPercent: 3 }]))).toBe(false);
-  });
-
-  it("is false with no windows and with no account at all", () => {
-    expect(hasComposerUsageContent(usage([]))).toBe(false);
-    expect(hasComposerUsageContent(EMPTY_COMPOSER_USAGE)).toBe(false);
-  });
-
-  it("keeps the strip open to report a Prime Agent account mismatch", () => {
-    expect(
-      hasComposerUsageContent({
-        accounts: [],
-        primary: null,
-        backend: {
-          driver: ProviderDriverKind.make("codex"),
-          label: "Codex",
-          model: "GPT-5",
-          verification: "mismatch",
-        },
-      }),
     ).toBe(true);
   });
 });

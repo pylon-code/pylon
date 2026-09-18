@@ -3,6 +3,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -28,6 +29,8 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { resolveAntigravityProfileDirectory } from "../provider/antigravityAuthSupport.ts";
+import { encodeSyntheticGenMetadataBlob } from "./antigravityTestFixtures.ts";
 import * as UsageService from "./UsageService.ts";
 
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -44,6 +47,19 @@ function claudeLine(id: number, outputTokens: number, model = "claude-fable-5"):
       usage: { input_tokens: 10, output_tokens: outputTokens },
     },
   })}\n`;
+}
+
+function seedAntigravityDb(
+  dbPath: string,
+  entries: ReadonlyArray<{ idx: number; blob: Uint8Array }>,
+) {
+  const db = new NodeSqlite.DatabaseSync(dbPath);
+  db.exec("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)");
+  const stmt = db.prepare("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)");
+  for (const e of entries) {
+    stmt.run(e.idx, e.blob);
+  }
+  db.close();
 }
 
 const WINDOW: UsageSummaryInput = {
@@ -657,5 +673,214 @@ describe("UsageService", () => {
         `interruption left the next matching request pending at scheduler check ${orphanedAt}`,
       );
     }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "aggregates usage from configured Antigravity instances and supports warm scanning and WAL updates",
+    () =>
+      Effect.gen(function* () {
+        yield* setup;
+        const config = yield* ServerConfig.ServerConfig;
+        const instanceId = ProviderInstanceId.make("antigravity-inst-1");
+        const profileDir = resolveAntigravityProfileDirectory(config.stateDir, instanceId);
+        const convDir = NodePath.join(profileDir, "antigravity-acp", "conversations");
+        yield* Effect.promise(() => NodeFSP.mkdir(convDir, { recursive: true }));
+
+        const dbPath = NodePath.join(convDir, "conv-001.db");
+        // August 1, 2026 10:00:00 UTC = 1785578400
+        const blob1 = encodeSyntheticGenMetadataBlob({
+          modelName: "gemini-2.5-pro",
+          timestampSeconds: 1785578400n,
+          inputTokens: 100,
+          outputTokens: 40,
+          thinkingOutputTokens: 10,
+        });
+        seedAntigravityDb(dbPath, [{ idx: 0, blob: blob1 }]);
+
+        const service = yield* UsageService.make;
+        const first = yield* service.readSummary(WINDOW);
+
+        const agBucket = first.buckets.find(
+          (b) => b.provider === "antigravity" && b.model === "gemini-2.5-pro",
+        );
+        assert.isDefined(agBucket, "antigravity bucket should exist");
+        assert.strictEqual(agBucket.totals.uncachedInputTokens, 100);
+        assert.strictEqual(agBucket.totals.outputTokens, 40);
+        assert.strictEqual(agBucket.totals.reasoningTokens, 10);
+        assert.strictEqual(agBucket.costUsd, 0);
+        assert.strictEqual(agBucket.costSource, "unpriced");
+        assert.strictEqual(agBucket.unpricedRecords, 1);
+        assert.strictEqual(agBucket.sessions, 1);
+
+        const agSource = first.sources.find(
+          (s) =>
+            s.fingerprint.provider === "antigravity" && s.fingerprint.resolvedHomePath === convDir,
+        );
+        assert.isDefined(agSource, "antigravity source should exist");
+        assert.strictEqual(agSource.status, "ok");
+        assert.strictEqual(agSource.scannedFiles, 1);
+        assert.strictEqual(agSource.skippedFiles, 0);
+        assert.strictEqual(agSource.malformedRecords, 0);
+        assert.strictEqual(agSource.distinctSessions, 1);
+
+        // Warm rescan with no changes returns identical aggregation
+        const second = yield* service.readSummary(WINDOW);
+        const agBucket2 = second.buckets.find((b) => b.provider === "antigravity");
+        assert.deepStrictEqual(agBucket2?.totals, agBucket.totals);
+
+        // WAL mutation: appending to the DB updates effective mtime and size, triggering rescan
+        const blob2 = encodeSyntheticGenMetadataBlob({
+          modelName: "gemini-2.5-pro",
+          timestampSeconds: 1785578500n,
+          inputTokens: 50,
+          outputTokens: 20,
+          thinkingOutputTokens: 5,
+        });
+        const db = new NodeSqlite.DatabaseSync(dbPath);
+        db.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;");
+        db.prepare("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)").run(1, blob2);
+        yield* Effect.addFinalizer(() => Effect.sync(() => db.close()));
+
+        const third = yield* service.readSummary(WINDOW);
+        const agBucket3 = third.buckets.find(
+          (b) => b.provider === "antigravity" && b.model === "gemini-2.5-pro",
+        );
+        assert.isDefined(agBucket3);
+        assert.strictEqual(agBucket3.totals.uncachedInputTokens, 150);
+        assert.strictEqual(agBucket3.totals.outputTokens, 60);
+        assert.strictEqual(agBucket3.totals.reasoningTokens, 15);
+      }).pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-antigravity-test",
+            home: "",
+            settings: {
+              providers: {},
+              providerInstances: {
+                [ProviderInstanceId.make("antigravity-inst-1")]: {
+                  driver: "antigravity",
+                  enabled: true,
+                },
+              },
+            },
+          }),
+        ),
+        Effect.scoped,
+      ),
+  );
+
+  it.live(
+    "reports honest missing status when configured Antigravity instance has no conversations dir on disk",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const instanceId = ProviderInstanceId.make("antigravity-missing");
+        const profileDir = resolveAntigravityProfileDirectory(config.stateDir, instanceId);
+        const expectedConvDir = NodePath.join(profileDir, "antigravity-acp", "conversations");
+
+        const service = yield* UsageService.make;
+        const summary = yield* service.readSummary(WINDOW);
+
+        const agSource = summary.sources.find(
+          (s) =>
+            s.fingerprint.provider === "antigravity" &&
+            s.fingerprint.resolvedHomePath === expectedConvDir,
+        );
+        assert.isDefined(agSource, "source for configured instance must be present");
+        assert.strictEqual(agSource.status, "missing");
+        assert.strictEqual(agSource.message, "No transcript directory on this environment.");
+        assert.strictEqual(agSource.scannedFiles, 0);
+        assert.strictEqual(agSource.distinctSessions, 0);
+
+        // Verify no unrelated generic ~/.gemini placeholder is emitted
+        const genericPlaceholder = summary.sources.find(
+          (s) =>
+            s.fingerprint.provider === "antigravity" &&
+            s.fingerprint.resolvedHomePath === NodePath.join(NodeOS.homedir(), ".gemini"),
+        );
+        assert.isUndefined(
+          genericPlaceholder,
+          "must not emit unrelated generic ~/.gemini placeholder",
+        );
+      }).pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-antigravity-missing-test",
+            home: "",
+            settings: {
+              providers: {},
+              providerInstances: {
+                [ProviderInstanceId.make("antigravity-missing")]: {
+                  driver: "antigravity",
+                  enabled: true,
+                },
+              },
+            },
+          }),
+        ),
+        Effect.scoped,
+      ),
+  );
+
+  it.live(
+    "reports honest partial status and malformed counter when an Antigravity database contains corrupt rows",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const instanceId = ProviderInstanceId.make("antigravity-partial");
+        const profileDir = resolveAntigravityProfileDirectory(config.stateDir, instanceId);
+        const convDir = NodePath.join(profileDir, "antigravity-acp", "conversations");
+        yield* Effect.promise(() => NodeFSP.mkdir(convDir, { recursive: true }));
+
+        const dbPath = NodePath.join(convDir, "corrupt.db");
+        // Valid row
+        const validBlob = encodeSyntheticGenMetadataBlob({
+          modelName: "gemini-2.5-flash",
+          timestampSeconds: 1785578400n,
+          inputTokens: 10,
+          outputTokens: 20,
+        });
+        // Corrupt row (invalid protobuf bytes)
+        const corruptBlob = new Uint8Array([0xff, 0xff, 0xff, 0xff]);
+
+        seedAntigravityDb(dbPath, [
+          { idx: 0, blob: validBlob },
+          { idx: 1, blob: corruptBlob },
+        ]);
+
+        const service = yield* UsageService.make;
+        const summary = yield* service.readSummary(WINDOW);
+
+        const agSource = summary.sources.find(
+          (s) =>
+            s.fingerprint.provider === "antigravity" && s.fingerprint.resolvedHomePath === convDir,
+        );
+        assert.isDefined(agSource);
+        assert.strictEqual(agSource.status, "partial");
+        assert.strictEqual(agSource.malformedRecords, 1);
+        assert.strictEqual(agSource.scannedFiles, 1);
+        assert.isNotNull(agSource.message);
+        const warm = yield* service.readSummary(WINDOW);
+        const warmSource = warm.sources.find((s) => s.fingerprint.resolvedHomePath === convDir);
+        assert.strictEqual(warmSource?.status, "partial");
+        assert.strictEqual(warmSource?.malformedRecords, 1);
+      }).pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-antigravity-partial-test",
+            home: "",
+            settings: {
+              providers: {},
+              providerInstances: {
+                [ProviderInstanceId.make("antigravity-partial")]: {
+                  driver: "antigravity",
+                  enabled: true,
+                },
+              },
+            },
+          }),
+        ),
+        Effect.scoped,
+      ),
   );
 });

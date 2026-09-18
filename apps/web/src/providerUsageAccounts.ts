@@ -19,6 +19,7 @@ import {
   ProviderDriverKind,
   type ServerProvider,
   type ServerProviderModel,
+  type ServerProviderUsageWindow,
 } from "@t3tools/contracts";
 
 import { formatProviderDisplayName } from "./lib/contextWindow";
@@ -186,6 +187,45 @@ function primeAgentUsage(
   return { accounts, primary, backend: describe("assumed") };
 }
 
+function isGeminiAntigravityModel(modelSlug?: string | null): boolean {
+  if (!modelSlug) return false;
+  const lower = modelSlug.toLowerCase().trim();
+  return lower.startsWith("gemini") || lower.includes("gemini");
+}
+
+function isThirdPartyAntigravityModel(modelSlug?: string | null): boolean {
+  if (!modelSlug) return false;
+  const lower = modelSlug.toLowerCase().trim();
+  return lower.startsWith("claude") || lower.startsWith("gpt") || lower.includes("3p");
+}
+
+function filterAntigravityWindowsForModel(
+  windows: ReadonlyArray<ServerProviderUsageWindow>,
+  modelSlug?: string | null,
+): ReadonlyArray<ServerProviderUsageWindow> {
+  const isGemini = isGeminiAntigravityModel(modelSlug);
+  const is3p = isThirdPartyAntigravityModel(modelSlug);
+
+  // Unknown or custom models must not default to Gemini without verified evidence
+  if (!isGemini && !is3p) {
+    return [];
+  }
+
+  const is3pWindow = (w: ServerProviderUsageWindow) =>
+    (w.id !== undefined && w.id.startsWith("3p")) ||
+    w.label.toLowerCase().includes("claude") ||
+    w.label.toLowerCase().includes("gpt");
+
+  const isGeminiWindow = (w: ServerProviderUsageWindow) =>
+    (w.id !== undefined && w.id.startsWith("gemini")) || w.label.toLowerCase().includes("gemini");
+
+  if (is3p) {
+    return windows.filter(is3pWindow);
+  }
+
+  return windows.filter(isGeminiWindow);
+}
+
 export function deriveComposerUsage(input: {
   readonly providerStatuses: ReadonlyArray<ServerProvider>;
   /** The instance the composer resolved as its target. */
@@ -222,9 +262,39 @@ export function deriveComposerUsage(input: {
   }
 
   const accounts = accountsForDriver(input.providerStatuses, selected.driver, selected.instanceId);
+  const activeAccount = accounts.find((account) => account.isActive) ?? null;
+
+  if (
+    selected.driver === "antigravity" &&
+    activeAccount &&
+    activeAccount.usageLimits.windows.length > 0
+  ) {
+    let effectiveModel = input.selectedModel;
+    if (!effectiveModel || effectiveModel === "default") {
+      const defaultModel = selected.models.find((m) => m.isDefault);
+      effectiveModel = defaultModel?.slug ?? null;
+    }
+    const filteredWindows = filterAntigravityWindowsForModel(
+      activeAccount.usageLimits.windows,
+      effectiveModel,
+    );
+    const primary: ProviderUsageAccount = {
+      ...activeAccount,
+      usageLimits: {
+        ...activeAccount.usageLimits,
+        windows: filteredWindows,
+      },
+    };
+    return {
+      accounts,
+      primary,
+      backend: null,
+    };
+  }
+
   return {
     accounts,
-    primary: accounts.find((account) => account.isActive) ?? null,
+    primary: activeAccount,
     backend: null,
   };
 }

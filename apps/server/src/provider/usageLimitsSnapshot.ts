@@ -21,9 +21,10 @@ export function makeUnavailableUsageLimits(input: {
   readonly reason: "unsupported" | "probeFailed";
   readonly message?: string;
   readonly source?: string;
+  readonly windows?: Iterable<ServerProviderUsageWindow>;
 }): ServerProviderUsageLimits {
   return {
-    ...makeUsageLimits({ ...input, windows: [] }),
+    ...makeUsageLimits({ ...input, windows: input.windows ?? [] }),
     unavailable: { reason: input.reason, ...(input.message ? { message: input.message } : {}) },
   };
 }

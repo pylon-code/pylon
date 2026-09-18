@@ -117,6 +117,18 @@ subagents, and an idle batch does not confirm that every child succeeded. See
 
 ## Accounts and removal
 
+### Usage and limits
+
+For Google-account sign-in, provider settings and **Usage → Limits** show the account's remaining
+quotas and reset times. A failed refresh keeps the last reading marked as stale. Other sign-in methods
+do not currently report subscription limits.
+
+**Usage** includes token history from saved native conversations. In a thread, the context indicator
+uses Antigravity's saved context estimate, refreshed when the session opens and after a prompt ends.
+It is not a live token counter. See [Usage and limits](./usage.md) for pricing and account views.
+
+### Manage accounts
+
 Add an Antigravity provider instance for each Google account in **Settings → Providers** on web or
 desktop. Each has its own sign-in; downloaded runtimes are shared on the environment.
 
@@ -149,8 +161,8 @@ no model is chosen, its models have not loaded, or the thread's saved model is n
 
 If Google reports `SUBSCRIPTION_REQUIRED`, an account restriction, or a usage limit, follow the
 provider's message and any retry time. A finished turn can contain an upstream error instead of
-completed work. Pylon does not report your plan tier or remaining quota, and does not switch to an API
-key to get past a limit. See [Google's account plans][plans] for eligibility.
+completed work. Pylon does not switch to an API key to get past a limit. See
+[Google's account plans][plans] for eligibility.
 
 [registry]: https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json
 [plans]: https://antigravity.google/docs/plans

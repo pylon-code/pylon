@@ -29,6 +29,8 @@ import {
   isCommandMissingCause,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import type { ServerProviderUsageLimits } from "@t3tools/contracts";
+import { makeUnavailableUsageLimits } from "../usageLimitsSnapshot.ts";
 
 const EMPTY_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
 const MAX_WORKSPACE_SNAPSHOTS = 32;
@@ -122,6 +124,7 @@ interface AntigravityProviderOptions {
     Pick<EffectAcpSchema.InitializeResponse, "agentInfo">,
     EffectAcpErrors.AcpError | ProviderSetupError
   >;
+  readonly probeUsageLimits?: Effect.Effect<ServerProviderUsageLimits | undefined>;
   readonly supportsTextGeneration: Effect.Effect<boolean>;
   readonly maintenanceCapabilities?: ProviderMaintenanceCapabilities;
   /** Auth type and label published once a session authenticates. */
@@ -140,6 +143,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
         displayName: "Antigravity",
         showInteractionModeToggle: false,
         supportsConversationRollback: false,
+        reportsContextWindow: true,
       },
       enabled: settings.enabled,
       checkedAt,
@@ -151,6 +155,11 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
         // The configured method rides along so the registry can tell a saved
         // account for this method from one left by a previous configuration.
         auth: { status: "unknown", ...(options.auth ? { type: options.auth.type } : {}) },
+        usageLimits: makeUnavailableUsageLimits({
+          checkedAt,
+          reason: "unsupported",
+          message: SIGN_IN_MESSAGE,
+        }),
         message: settings.enabled
           ? "Checking Antigravity availability."
           : "Antigravity is disabled in Pylon settings.",
@@ -196,6 +205,14 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
               : `Antigravity did not respond to its local health check within ${HEALTH_CHECK_TIMEOUT}.`;
     const supportsTextGeneration =
       initialized !== undefined ? yield* options.supportsTextGeneration : false;
+    const probeUsageLimitsEffect = options.probeUsageLimits
+      ? options.probeUsageLimits.pipe(
+          Effect.timeoutOption(HEALTH_CHECK_TIMEOUT),
+          Effect.map(Option.getOrUndefined),
+          Effect.orElseSucceed(() => undefined),
+        )
+      : Effect.succeed(undefined);
+    const freshUsageLimits = yield* probeUsageLimitsEffect;
     const updatedAt = DateTime.formatIso(yield* DateTime.now);
     const next = yield* SubscriptionRef.updateAndGet(metadata, (state) => {
       if (state.authRevision !== before.authRevision) return state;
@@ -216,6 +233,23 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
           version: initialized?.agentInfo?.version || draft.version,
           status: errorMessage ? "error" : authenticated ? "ready" : "warning",
           checkedAt: updatedAt,
+          usageLimits:
+            (freshUsageLimits === undefined ||
+              freshUsageLimits.unavailable?.reason === "probeFailed") &&
+            draft.usageLimits?.windows.length
+              ? {
+                  ...draft.usageLimits,
+                  unavailable: {
+                    reason: "probeFailed" as const,
+                    message: "Last reading; subscription limits could not be refreshed.",
+                  },
+                }
+              : (freshUsageLimits ??
+                makeUnavailableUsageLimits({
+                  checkedAt: updatedAt,
+                  reason: "probeFailed",
+                  message: "Subscription limits could not be refreshed.",
+                })),
           ...(missingInstallation
             ? {
                 models: [],
@@ -265,6 +299,14 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
   ) {
     const before = yield* SubscriptionRef.get(metadata);
     const supportsTextGeneration = yield* options.supportsTextGeneration;
+    const probeUsageLimitsEffect = options.probeUsageLimits
+      ? options.probeUsageLimits.pipe(
+          Effect.timeoutOption(HEALTH_CHECK_TIMEOUT),
+          Effect.map(Option.getOrUndefined),
+          Effect.orElseSucceed(() => undefined),
+        )
+      : Effect.succeed(undefined);
+    const freshUsageLimits = yield* probeUsageLimitsEffect;
     const updatedAt = DateTime.formatIso(yield* DateTime.now);
     yield* SubscriptionRef.update(metadata, (state) => {
       if (
@@ -291,6 +333,23 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
           checkedAt: updatedAt,
           models: buildAntigravityModelsFromSession(started.sessionSetupResult),
           supportsTextGeneration,
+          usageLimits:
+            (freshUsageLimits === undefined ||
+              freshUsageLimits.unavailable?.reason === "probeFailed") &&
+            draft.usageLimits?.windows.length
+              ? {
+                  ...draft.usageLimits,
+                  unavailable: {
+                    reason: "probeFailed" as const,
+                    message: "Last reading; subscription limits could not be refreshed.",
+                  },
+                }
+              : (freshUsageLimits ??
+                makeUnavailableUsageLimits({
+                  checkedAt: updatedAt,
+                  reason: "probeFailed",
+                  message: "Subscription limits could not be refreshed.",
+                })),
           ...(cwd
             ? {
                 workspaceSnapshots: [
@@ -366,6 +425,11 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
             status: settings.enabled ? "warning" : "disabled",
             message: SIGN_IN_MESSAGE,
             checkedAt: updatedAt,
+            usageLimits: makeUnavailableUsageLimits({
+              checkedAt: updatedAt,
+              reason: "unsupported",
+              message: SIGN_IN_MESSAGE,
+            }),
             models: [],
             slashCommands: [],
             skills: [],

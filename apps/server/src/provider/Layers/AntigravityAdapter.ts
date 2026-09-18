@@ -15,6 +15,7 @@ import {
   type ProviderUserInputAnswers,
   type RuntimeTaskStatus,
   type ThreadId,
+  type ThreadTokenUsageSnapshot,
   type TurnCompletedPayload,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -160,6 +161,10 @@ export interface AntigravityAdapterOptions {
   readonly onAuthRequired?: Effect.Effect<void>;
   /** Model the provider default alias selects, when the account offers it. */
   readonly defaultModel?: Effect.Effect<string | undefined>;
+  /** The pinned ACP bridge omits usage; its native conversation DB retains context estimates. */
+  readonly readNativeContext?: (
+    nativeSessionId: string,
+  ) => Effect.Effect<ThreadTokenUsageSnapshot | undefined>;
   readonly nativeEventLogger?: EventNdjsonLogger;
 }
 
@@ -1138,6 +1143,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                   threadId: input.threadId,
                 });
               }
+              yield* refreshNativeContext(running, 0);
               transferred = true;
               return session;
             }),
@@ -1186,6 +1192,35 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         }
       }),
     );
+
+  const refreshNativeContext = Effect.fn("AntigravityAdapter.refreshNativeContext")(function* (
+    context: SessionContext,
+    generation: number,
+    turnId?: TurnId,
+  ) {
+    if (!options.readNativeContext || context.stopped || context.generation !== generation) return;
+    const usage = yield* options.readNativeContext(context.nativeSessionId);
+    if (!usage) return;
+    yield* context.promptLock.withPermit(
+      Effect.gen(function* () {
+        // A read may finish after Stop, a replacement session, or a steering prompt.
+        if (
+          context.stopped ||
+          context.generation !== generation ||
+          sessions.get(context.threadId) !== context
+        )
+          return;
+        yield* emit(context, {
+          type: "thread.token-usage.updated",
+          ...(yield* stamp),
+          provider: PROVIDER,
+          threadId: context.threadId,
+          ...(turnId ? { turnId } : {}),
+          payload: { usage },
+        });
+      }),
+    );
+  });
 
   const sendTurn: Adapter["sendTurn"] = Effect.fn("AntigravityAdapter.sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
@@ -1357,6 +1392,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       });
       const result = yield* Fiber.await(launch.fiber).pipe(Effect.flatMap((exit) => exit));
       yield* context.runtime.drainEvents;
+      yield* refreshNativeContext(context, launch.turn.generation, launch.turn.turnId);
       if (context.stopped) {
         return yield* new ProviderAdapterSessionClosedError({
           provider: PROVIDER,
