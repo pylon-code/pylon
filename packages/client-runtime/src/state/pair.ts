@@ -2,9 +2,6 @@
  * What a client needs to show and control a pair: whether this lead can have
  * one, whether it is on, what its executor is doing, and the command inputs
  * that turn it on and off. Pure, shared by web and mobile.
- *
- * STUB: written by the lead so the tests compile. The executor replaces the
- * function bodies; exported names, types, and signatures must not change.
  */
 import type {
   EnvironmentId,
@@ -13,7 +10,9 @@ import type {
   RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
+import { isPairExecutorThreadId, pairExecutorThreadId } from "@t3tools/shared/delegatedThreads";
 
+import { delegatedThreadStatus } from "./delegatedThreads.ts";
 import type { EnvironmentThreadShell } from "./models.ts";
 
 /** Shown wherever the pair control is disabled for the selected lead provider. */
@@ -42,11 +41,11 @@ export type PairState =
     };
 
 /** Antigravity cannot lead: Pylon cannot hold its own subagents for one session. */
-export function isPairLeadSupported(_driverKind: string | null | undefined): boolean {
-  throw new Error("state/pair.isPairLeadSupported is not implemented");
+export function isPairLeadSupported(driverKind: string | null | undefined): boolean {
+  return driverKind !== "antigravity";
 }
 
-export function resolvePairState(_input: {
+export function resolvePairState(input: {
   readonly threads: readonly EnvironmentThreadShell[];
   readonly lead: {
     readonly environmentId: EnvironmentId;
@@ -54,14 +53,57 @@ export function resolvePairState(_input: {
     readonly driverKind: string | null | undefined;
   };
 }): PairState {
-  throw new Error("state/pair.resolvePairState is not implemented");
+  if (!isPairLeadSupported(input.lead.driverKind)) {
+    return { kind: "unsupported-lead", reason: PAIR_UNSUPPORTED_LEAD_REASON };
+  }
+
+  const executorId = pairExecutorThreadId(input.lead.threadId);
+  const executor = input.threads.find(
+    (thread) =>
+      thread.id === executorId &&
+      thread.environmentId === input.lead.environmentId &&
+      thread.archivedAt === null,
+  );
+  if (executor === undefined) {
+    return { kind: "off", executorId };
+  }
+
+  let phase: PairExecutorPhase;
+  if (executor.session === null && executor.latestTurn === null) {
+    phase = "idle";
+  } else {
+    const status = delegatedThreadStatus(executor);
+    if (status === "starting") {
+      phase = "running";
+    } else if (status !== "archived") {
+      phase = status;
+    } else {
+      phase = "idle";
+    }
+  }
+
+  const rawActivity =
+    phase === "error"
+      ? executor.session?.lastError
+      : phase === "running"
+        ? executor.planProgress?.step
+        : null;
+  const activity = rawActivity?.replace(/\s+/g, " ").trim().slice(0, 160) || null;
+
+  return {
+    kind: "on",
+    executorId,
+    phase,
+    modelSelection: executor.modelSelection,
+    activity,
+  };
 }
 
 /** Threads a list should show: an executor is reached through its lead, not the list. */
 export function withoutPairExecutors<T extends { readonly id: ThreadId }>(
-  _threads: readonly T[],
+  threads: readonly T[],
 ): readonly T[] {
-  throw new Error("state/pair.withoutPairExecutors is not implemented");
+  return threads.filter((thread) => !isPairExecutorThreadId(thread.id));
 }
 
 export interface PairExecutorCreateInput {
@@ -76,7 +118,7 @@ export interface PairExecutorCreateInput {
 }
 
 /** The `thread.create` fields that turn a pair on for a lead. */
-export function pairExecutorCreateInput(_input: {
+export function pairExecutorCreateInput(input: {
   readonly lead: Pick<
     EnvironmentThreadShell,
     "id" | "projectId" | "title" | "runtimeMode" | "branch" | "worktreePath"
@@ -85,5 +127,15 @@ export function pairExecutorCreateInput(_input: {
   /** The user's Child permissions setting. */
   readonly childRuntimeMode: "inherit" | "approval-required";
 }): PairExecutorCreateInput {
-  throw new Error("state/pair.pairExecutorCreateInput is not implemented");
+  return {
+    threadId: pairExecutorThreadId(input.lead.id),
+    projectId: input.lead.projectId,
+    title: `Executor · ${input.lead.title}`.slice(0, 200),
+    modelSelection: input.executorSelection,
+    runtimeMode:
+      input.childRuntimeMode === "approval-required" ? "approval-required" : input.lead.runtimeMode,
+    interactionMode: "default",
+    branch: input.lead.branch,
+    worktreePath: input.lead.worktreePath,
+  };
 }

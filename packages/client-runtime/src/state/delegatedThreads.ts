@@ -103,7 +103,7 @@ export function nestedRowContainsThread<T extends ScopedThread>(
 }
 
 /** Shell-only lifecycle; keep admission/terminal precedence aligned with server delegation. */
-function delegatedThreadStatus(shell: EnvironmentThreadShell) {
+export function delegatedThreadStatus(shell: EnvironmentThreadShell) {
   if (shell.archivedAt !== null) return "archived";
   const { session, latestTurn: turn } = shell;
   if (session?.status === "error" || turn?.state === "error") return "error";
@@ -128,6 +128,8 @@ function delegatedThreadStatus(shell: EnvironmentThreadShell) {
     return "completed";
   return "running";
 }
+
+export type DelegatedThreadStatus = ReturnType<typeof delegatedThreadStatus>;
 
 /**
  * Compact delegated children from the existing environment shell subscription.
