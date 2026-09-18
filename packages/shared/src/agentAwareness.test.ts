@@ -45,8 +45,6 @@ function thread(
 
 describe("projectThreadAwareness", () => {
   it.each([
-    { hasPendingApprovals: true },
-    { hasPendingUserInput: true },
     {
       latestTurn: {
         turnId: "turn-1" as TurnId,
@@ -81,6 +79,25 @@ describe("projectThreadAwareness", () => {
           },
         }),
       ).toBeNull();
+    },
+  );
+
+  it.each([
+    { hasPendingApprovals: true },
+    { hasPendingUserInput: true },
+  ] satisfies Partial<OrchestrationThreadShell>[])(
+    "still alerts for a delegated child blocked on %j",
+    (overrides) => {
+      const state = projectThreadAwareness({
+        environmentId: "env-1" as EnvironmentId,
+        project,
+        thread: {
+          ...thread(overrides),
+          id: "delegated:parent:with:colons:0123456789abcdef" as ThreadId,
+        },
+      });
+      expect(state).not.toBeNull();
+      expect(state?.threadId).toBe("delegated:parent:with:colons:0123456789abcdef");
     },
   );
 
