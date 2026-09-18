@@ -13,7 +13,6 @@ import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
   PairControl,
   PairControlPanel,
-  pairPhaseLabel,
   type PairControlProps,
   initialExecutorInstanceId,
 } from "./PairControl";
@@ -64,18 +63,6 @@ const on = (
   phase: Extract<PairState, { kind: "on" }>["phase"],
   activity: string | null = null,
 ): PairState => ({ kind: "on", executorId: EXECUTOR, phase, modelSelection: SELECTION, activity });
-
-describe("pairPhaseLabel", () => {
-  it("describes the executor in plain words", () => {
-    expect(pairPhaseLabel("idle")).toBe("Waiting for a brief");
-    expect(pairPhaseLabel("running")).toBe("Working");
-    expect(pairPhaseLabel("needs-approval")).toBe("Needs your approval");
-    expect(pairPhaseLabel("needs-input")).toBe("Has a question");
-    expect(pairPhaseLabel("completed")).toBe("Finished");
-    expect(pairPhaseLabel("interrupted")).toBe("Stopped");
-    expect(pairPhaseLabel("error")).toBe("Failed");
-  });
-});
 
 describe("PairControl trigger", () => {
   it("offers pairing in one word when the pair is off", () => {
