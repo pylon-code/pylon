@@ -109,6 +109,18 @@ same protocol text; the tool denial applies from the next session start. Antigra
 because it offers no per-session control over its own subagents, but it can be the executor. Prime
 Agent's own subagent depth is not yet held while paired.
 
+The executor follows its lead. `PairLifecycleReactor` watches domain events and dispatches existing
+commands: archiving, settling, or deleting a lead does the same to its executor, including an
+executor that was archived when the pair was turned off. An executor's own lifecycle never echoes
+back, because archiving it is how a user turns the pair off, and unarchiving a lead does not turn a
+pair back on. A rewind of the lead is not blocked, since that would mean changing rewind admission in
+the decider. Instead the reactor interrupts a running executor the moment the rewind is requested: the
+two threads share one worktree, and an executor that kept editing would write over the restored
+files. It may still write for a moment before the interrupt lands. The idle-session reaper skips an
+executor while its lead's session is starting or running, so it is not restarted between briefs. The
+reactor reads no settings: following a lead is cleanup and keeps working after delegation is turned
+off.
+
 ## Accepted limits
 
 - A follow-up is refused while the child is running, but a user message can arrive between the
