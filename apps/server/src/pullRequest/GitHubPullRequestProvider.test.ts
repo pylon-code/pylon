@@ -188,6 +188,11 @@ describe("gitHubViewerPermissions", () => {
         number: 7,
       });
 
+      expect(detail.author).toEqual({
+        login: "octocat",
+        name: "The Octocat",
+        avatarUrl: "https://github.com/octocat.png?size=80",
+      });
       expect(detail.viewerPermissions).toEqual({
         actions: ["ready", "draft", "close", "reopen"],
         comment: true,
@@ -212,7 +217,7 @@ describe("gitHubViewerPermissions", () => {
               number: 7,
               title: "Pull request 7",
               url: "https://github.com/acme/web/pull/7",
-              author: null,
+              author: { login: "octocat", name: "The Octocat", avatarUrl: null },
               isCrossRepository: true,
               headRepositoryOwner: null,
               headBranch: "feat/page",
