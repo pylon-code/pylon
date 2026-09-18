@@ -99,6 +99,11 @@ export interface PrimeManagedToolStoreDependencies {
     instanceId: string,
     expected: PrimeManagedBinding,
   ) => Promise<PrimeManagedReservationResult>;
+  /** Called only with a receipt-verified managed target, before the normal quiescence fence. */
+  readonly recoverLegacyOwnership?: (
+    instanceId: string,
+    verifiedBinaryPath: string,
+  ) => Promise<void>;
   /** Compare-and-set the complete expected binding while the quiescence fence is held. */
   readonly commitBinding: (input: {
     readonly instanceId: string;
@@ -1170,6 +1175,9 @@ export class PrimeAgentManagedToolStore {
       message: "Waiting for exact provider-instance quiescence before changing its binary.",
     });
     state = await this.#readState();
+    if (input.buildId !== null) {
+      await this.#dependencies.recoverLegacyOwnership?.(receipt.instanceId, input.targetBinaryPath);
+    }
     const reservation = await this.#dependencies.reserveQuiescentBinding(
       receipt.instanceId,
       input.expected,

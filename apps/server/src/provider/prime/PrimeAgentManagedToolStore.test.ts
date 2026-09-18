@@ -376,6 +376,7 @@ async function makeHarness(
     readonly installMode?: "seam" | "production";
     readonly crashAfterCommitOnce?: boolean;
     readonly installationBarrier?: () => Promise<void>;
+    readonly recoverLegacyOwnership?: PrimeManagedToolStoreDependencies["recoverLegacyOwnership"];
     readonly loadMetadata?: PrimeManagedToolStoreDependencies["loadLatestVerifiedPublicationMetadata"];
   } = {},
 ) {
@@ -404,6 +405,9 @@ async function makeHarness(
       if (loaderError) throw loaderError;
       return currentBundle;
     }),
+    ...(input.recoverLegacyOwnership === undefined
+      ? {}
+      : { recoverLegacyOwnership: input.recoverLegacyOwnership }),
     readBinding: async () => binding,
     listBindings: async () => [{ instanceId: "primeAgent", binding }],
     listOwnedRuntimeBuildReferences: async () => ownedRuntimeBuildReferences,
@@ -498,6 +502,44 @@ function commandId(prefix: string): string {
 }
 
 describe("Pylon-managed Prime tool store", () => {
+  it("observes legacy settlement on verified staged bytes before reserving and switching", async () => {
+    const recover = vi.fn(async (_instanceId: string, binaryPath: string) => {
+      expect(harness.binding.binaryPath).toBe(harness.stock);
+      expect(await NodeFSP.realpath(binaryPath)).toContain(
+        "node_modules/prime-agent/dist/bundle/cli.js",
+      );
+    });
+    const harness = await makeHarness({ recoverLegacyOwnership: recover });
+    const result = await harness.store.command({
+      commandId: commandId("recover"),
+      instanceId: "primeAgent",
+      action: "install",
+      channel: "stable",
+      scheduleIfBusy: false,
+    });
+    expect(result.status).toBe("succeeded");
+    expect(recover).toHaveBeenCalledOnce();
+    expect(recover).toHaveBeenCalledWith("primeAgent", harness.binding.binaryPath);
+  });
+
+  it("preserves the configured runtime when legacy settlement remains unproved", async () => {
+    const harness = await makeHarness({
+      recoverLegacyOwnership: async () => {
+        throw new Error("quarantined");
+      },
+    });
+    const result = await harness.store.command({
+      commandId: commandId("unproved"),
+      instanceId: "primeAgent",
+      action: "install",
+      channel: "stable",
+      scheduleIfBusy: false,
+    });
+    expect(result).toMatchObject({ status: "failed", message: "quarantined" });
+    expect(harness.binding.binaryPath).toBe(harness.stock);
+    expect((await harness.store.status("primeAgent")).selectedBuildId).toBeNull();
+  });
+
   it.each(["absent", "failed"] as const)(
     "reports %s publications without loading an install archive",
     async (outcome) => {
