@@ -14,6 +14,7 @@ import {
   MessageId,
   getServerProviderSupportedRuntimeModes,
   isProviderAvailable,
+  type OrchestrationThreadShell,
   type ProviderInstanceId,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -23,6 +24,7 @@ import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 
@@ -45,13 +47,16 @@ import {
 } from "../delegation/logic.ts";
 import {
   PAIR_DELEGATION_KEY,
+  changedProtectedPaths,
   derivePairExecutorState,
   isPairLeadSupported,
+  normalizeProtectedPath,
   pairAwaitCapSeconds,
   pairExecutorThreadId,
   pairExecutorTitle,
   pairMessageId,
   pairSteerMessageId,
+  type ProtectedPathRecord,
 } from "./logic.ts";
 import {
   PairArchivedError,
@@ -65,6 +70,7 @@ import {
   PairMessageKeyConsumedError,
   PairModelUnavailableError,
   PairNotActiveError,
+  PairProtectedPathInvalidError,
   PairProviderUnavailableError,
   PairRuntimeModeUnsupportedError,
   PairSteerLimitError,
@@ -118,6 +124,11 @@ const make = Effect.gen(function* () {
   const providers = yield* ProviderRegistry.ProviderRegistry;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
+  const fileSystem = yield* FileSystem.FileSystem;
+
+  // In memory on purpose, lost on restart, and pair_await then reports null
+  // rather than guessing.
+  const protectedRecords = new Map<ThreadId, ReadonlyArray<ProtectedPathRecord>>();
 
   // One permit per lead: tool calls may run concurrently, and executor lookups
   // and busy checks are check-then-act.
@@ -143,6 +154,27 @@ const make = Effect.gen(function* () {
     const hex = bytesToHex(digest);
     return pairExecutorThreadId(leadId, () => hex);
   });
+
+  const resolveWorktreeRoot = (shell: OrchestrationThreadShell) =>
+    Effect.gen(function* () {
+      if (shell.worktreePath !== null) return shell.worktreePath;
+      const projectOpt = yield* snapshots
+        .getProjectShellById(shell.projectId)
+        .pipe(Effect.orElseSucceed(() => Option.none()));
+      if (Option.isSome(projectOpt)) {
+        return projectOpt.value.workspaceRoot;
+      }
+      return null;
+    });
+
+  const hashFile = (root: string | null, relativePath: string): Effect.Effect<string | null> => {
+    if (root === null) return Effect.succeed(null);
+    return fileSystem.readFile(`${root}/${relativePath}`).pipe(
+      Effect.flatMap((bytes) => crypto.digest("SHA-256", bytes)),
+      Effect.map(bytesToHex),
+      Effect.orElseSucceed(() => null),
+    );
+  };
 
   /** Active first, then archived; None when neither knows the id. */
   const findExecutor = (executorId: ThreadId) =>
@@ -305,6 +337,7 @@ const make = Effect.gen(function* () {
   const pair_handoff = (input: {
     readonly messageKey: string;
     readonly text: string;
+    readonly protectedPaths?: ReadonlyArray<string> | undefined;
     readonly steer?: boolean | undefined;
   }) =>
     Effect.gen(function* () {
@@ -328,6 +361,7 @@ const make = Effect.gen(function* () {
           const state = derivePairExecutorState(shell);
           let messageId: MessageId;
           let steered: boolean;
+          let nextProtectedRecords: ReadonlyArray<ProtectedPathRecord> | null = null;
 
           if (state === "running") {
             if (input.steer !== true) {
@@ -360,6 +394,57 @@ const make = Effect.gen(function* () {
               };
               return acceptedResult;
             }
+
+            // A pair turned on from the composer creates the executor before the lead's
+            // first turn has set up its worktree, and a lead can move to another branch,
+            // so the executor's location is corrected at the moment it is about to be used
+            // rather than chased through events.
+            const leadOpt = yield* orFail(snapshots.getThreadShellById(scope.threadId));
+            if (Option.isNone(leadOpt)) {
+              return yield* new PairLeadNotFoundError({ threadId: scope.threadId });
+            }
+            const lead = leadOpt.value;
+
+            const needsMove =
+              shell.branch !== lead.branch || shell.worktreePath !== lead.worktreePath;
+
+            if (input.protectedPaths !== undefined && input.protectedPaths.length > 0) {
+              const root = yield* resolveWorktreeRoot(
+                needsMove ? { ...shell, worktreePath: lead.worktreePath } : shell,
+              );
+              const records: ProtectedPathRecord[] = [];
+              const seenPaths = new Set<string>();
+              for (const entry of input.protectedPaths) {
+                const normalized = normalizeProtectedPath(entry);
+                if (normalized === null) {
+                  return yield* new PairProtectedPathInvalidError({ path: entry });
+                }
+                if (seenPaths.has(normalized)) {
+                  continue;
+                }
+                seenPaths.add(normalized);
+                const hash = yield* hashFile(root, normalized);
+                if (hash === null) {
+                  return yield* new PairProtectedPathInvalidError({ path: entry });
+                }
+                records.push({ path: normalized, hash });
+              }
+              nextProtectedRecords = records;
+            }
+
+            if (needsMove) {
+              yield* engine
+                .dispatch({
+                  type: "thread.meta.update",
+                  commandId: CommandId.make(
+                    `server:mcp-pair-follow:${executorId}:${input.messageKey}`,
+                  ),
+                  threadId: executorId,
+                  branch: lead.branch,
+                  worktreePath: lead.worktreePath,
+                })
+                .pipe(mapDispatch(() => undefined));
+            }
           }
 
           yield* engine
@@ -383,6 +468,14 @@ const make = Effect.gen(function* () {
                     : undefined,
               ),
             );
+
+          if (!steered) {
+            if (nextProtectedRecords === null) {
+              protectedRecords.delete(executorId);
+            } else {
+              protectedRecords.set(executorId, nextProtectedRecords);
+            }
+          }
 
           const result: PairHandoffResult = {
             threadId: executorId,
@@ -447,6 +540,7 @@ const make = Effect.gen(function* () {
       let assistantMessage: PairAwaitResult["assistantMessage"] = null;
       let filesChanged: PairAwaitResult["filesChanged"] = [];
       let turnCount = 0;
+      let protectedPaths: PairAwaitResult["protectedPaths"] = null;
 
       if (state !== "running" && state !== "archived") {
         const detailOpt = yield* orFail(snapshots.getThreadDetailById(executorId));
@@ -465,6 +559,20 @@ const make = Effect.gen(function* () {
           filesChanged = aggregateFilesChanged(detail.checkpoints);
           turnCount = detail.checkpoints.length;
         }
+
+        const records = protectedRecords.get(executorId);
+        if (records !== undefined) {
+          const root = yield* resolveWorktreeRoot(current);
+          const currentHashes = new Map<string, string | null>();
+          for (const record of records) {
+            const hash = yield* hashFile(root, record.path);
+            currentHashes.set(record.path, hash);
+          }
+          protectedPaths = {
+            checked: records.length,
+            changed: [...changedProtectedPaths(records, currentHashes)],
+          };
+        }
       }
 
       const result: PairAwaitResult = {
@@ -477,6 +585,7 @@ const make = Effect.gen(function* () {
         assistantMessage,
         filesChanged,
         turnCount,
+        protectedPaths,
       };
       return result;
     });

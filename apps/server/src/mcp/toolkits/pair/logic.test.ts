@@ -13,8 +13,10 @@ import { describe, expect, it } from "vite-plus/test";
 import { delegatedThreadId } from "../delegation/logic.ts";
 import {
   PAIR_DELEGATION_KEY,
+  changedProtectedPaths,
   derivePairExecutorState,
   isPairLeadSupported,
+  normalizeProtectedPath,
   isPairExecutorThreadId,
   pairAwaitCapSeconds,
   pairExecutorThreadId,
@@ -173,5 +175,52 @@ describe("pair lead support", () => {
     for (const driver of ["claudeAgent", "codex", "primeAgent", "cursor", "opencode", undefined]) {
       expect(isPairLeadSupported(driver)).toBe(true);
     }
+  });
+});
+
+describe("protected paths", () => {
+  it("reduces a path to a clean one relative to the worktree", () => {
+    expect(normalizeProtectedPath("src/a.test.ts")).toBe("src/a.test.ts");
+    expect(normalizeProtectedPath("./src//a.test.ts")).toBe("src/a.test.ts");
+    expect(normalizeProtectedPath("src\\win\\a.test.ts")).toBe("src/win/a.test.ts");
+    expect(normalizeProtectedPath("src/./nested/a.ts")).toBe("src/nested/a.ts");
+  });
+
+  it("refuses anything that could reach outside the worktree", () => {
+    for (const path of [
+      "/etc/passwd",
+      "../secrets.env",
+      "src/../../secrets.env",
+      "C:\\Users\\me\\file.ts",
+      "\\\\server\\share\\file.ts",
+      "~/file.ts",
+      "",
+      ".",
+      "src/\0evil",
+    ]) {
+      expect(normalizeProtectedPath(path)).toBeNull();
+    }
+  });
+
+  it("reports changed and missing files in recorded order and nothing else", () => {
+    const recorded = [
+      { path: "b.test.ts", hash: "bbb" },
+      { path: "a.test.ts", hash: "aaa" },
+      { path: "c.test.ts", hash: "ccc" },
+    ];
+    expect(
+      changedProtectedPaths(
+        recorded,
+        new Map([
+          ["a.test.ts", "aaa"],
+          ["b.test.ts", "edited"],
+          ["c.test.ts", null],
+          ["unrelated.ts", "zzz"],
+        ]),
+      ),
+    ).toEqual(["b.test.ts", "c.test.ts"]);
+    // A path with no current reading counts as changed: it could not be verified.
+    expect(changedProtectedPaths(recorded.slice(0, 1), new Map())).toEqual(["b.test.ts"]);
+    expect(changedProtectedPaths([], new Map([["a.test.ts", "aaa"]]))).toEqual([]);
   });
 });

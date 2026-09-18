@@ -78,6 +78,7 @@ describe("buildRuntimeInstructions", () => {
     for (const rule of [
       "Work test-first",
       "fail for the right reason",
+      "protectedPaths",
       "without editing them",
       "code only",
       "pair_handoff",
