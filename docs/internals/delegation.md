@@ -78,25 +78,6 @@ routing time avoids freezing a preference in provider session instructions. Expl
 override the preference; neither availability nor preference means every task should be delegated.
 Provider/model defaults are still resolved at child creation and reported in `defaultApplied`.
 
-## Accepted limits
-
-- A follow-up is refused while the child is running, but a user message can arrive between the
-  check and the dispatch; the follow-up then steers that turn, as any turn start on a running turn
-  does. Not guarded.
-- The per-parent semaphore that serializes delegation is in memory, which is enough because one
-  server process owns the orchestration engine.
-- Waiting is polling of the projection inside the tool call, bounded by wall-clock time to 45
-  seconds; already-settled children and pending approvals/input return immediately. Prime Agent's MCP client cancels any call after 60 seconds, measured in a live run.
-  Pylon disables Prime's autonomous continuation, so a parent cannot be woken when a child finishes.
-- The per-parent semaphores are never evicted; one small entry per thread that has delegated.
-- Sends and interrupts take the same per-parent gate as delegation, so an interrupt waits behind a
-  delegation in progress, including its git fetch. Status and result reads do not take the gate.
-- Interrupts use a unique command id per call rather than a deterministic one. Every deterministic
-  key tried (per turn, per admission) let a later interrupt replay an earlier receipt and dispatch
-  nothing; a duplicate interrupt on a live child is harmless.
-- Worktree creation mirrors the websocket bootstrap sequence without sharing code with `ws.ts`, and
-  does not run project setup scripts. Changes to how clients create worktrees must be checked here.
-
 ## The pair executor
 
 The pair toolkit ([`apps/server/src/mcp/toolkits/pair`](../../apps/server/src/mcp/toolkits/pair))
@@ -117,6 +98,17 @@ the turn id, so the limit survives restarts. `pair_await` blocks inside the tool
 tokens, up to a cap chosen by the lead's provider: long only where Pylon sets that provider's MCP
 tool timeout itself.
 
+Pairing is session-scoped. When a provider session is prepared, `ProviderService` adds a `pair`
+capability if delegation is on and the thread's executor exists and is not archived. No tool requires
+that capability; adapters read it. A paired Claude query denies the Agent tool (named Task in older
+Claude Code), a paired Codex app-server starts with `features.multi_agent=false`, and every harness
+that receives Pylon instructions gets the pair protocol in place of the delegation block. Nothing is
+written to a provider's own settings, so a thread that is not paired behaves exactly as the provider
+ships. A pair started mid-session reaches the lead through the `pair_start` result, which carries the
+same protocol text; the tool denial applies from the next session start. Antigravity cannot lead,
+because it offers no per-session control over its own subagents, but it can be the executor. Prime
+Agent's own subagent depth is not yet held while paired.
+
 ## Accepted limits
 
 - A follow-up is refused while the child is running, but a user message can arrive between the
@@ -135,31 +127,3 @@ tool timeout itself.
   nothing; a duplicate interrupt on a live child is harmless.
 - Worktree creation mirrors the websocket bootstrap sequence without sharing code with `ws.ts`, and
   does not run project setup scripts. Changes to how clients create worktrees must be checked here.
-
-## The pair executor
-
-The pair toolkit ([\`apps/server/src/mcp/toolkits/pair\`](../../apps/server/src/mcp/toolkits/pair))
-provides a dedicated four-tool surface (`pair_start`, `pair_handoff`, `pair_await`, `pair_stop`)
-designed for lead/executor workflows. It wraps the same underlying primitives as fan-out
-delegation while enforcing pair-specific constraints:
-
-- **Exactly one executor per lead thread.** A lead thread may only have a single pair executor
-  active at a time.
-- **Reserved key format.** The executor thread is tied to the deterministic key
-  `lead:<leadThreadId>:pair`. Fan-out delegation tools refuse this reserved key with
-  `DelegationKeyReservedError`.
-- **Shared worktree.** Unlike fan-out delegation, which allocates isolated worktrees on temporary
-  branches, the pair executor operates directly within the lead thread's worktree. File changes and
-  git status are shared immediately.
-- **No provider-level concurrency limits.** The pair executor is exempt from the per-provider
-  delegation concurrency caps that throttle fan-out child threads.
-
-### State transitions
-
-- `pair_start`: Creates or attaches to the pair executor thread for the calling lead. If an
-  active executor already exists, it is reused.
-- `pair_handoff`: Delivers a task prompt and starts a turn on the executor thread. Returns the
-  turn id and thread status.
-- `pair_await`: Waits for the executor turn to finish or reach an action-required state (approval
-  or user question), polling up to a caller-specified timeout (default 60s, max 300s).
-- `pair_stop`: Cancels any running turn on the executor and archives the executor thread.
