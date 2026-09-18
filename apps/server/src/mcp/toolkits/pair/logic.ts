@@ -75,10 +75,10 @@ export function pairExecutorTitle(leadTitle: string): string {
 }
 
 /**
- * Whether a provider can lead a pair. STUB: the executor implements this.
+ * Whether a provider can lead a pair.
  * Antigravity has no per-session control over its own subagents, so it can
  * only be the executor.
  */
-export function isPairLeadSupported(_leadDriver: string | undefined): boolean {
-  throw new Error("pair/logic.isPairLeadSupported is not implemented");
+export function isPairLeadSupported(leadDriver: string | undefined): boolean {
+  return leadDriver !== "antigravity";
 }
