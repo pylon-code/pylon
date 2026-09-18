@@ -130,6 +130,13 @@ replaces it, and a replayed `messageKey` cannot reset the baseline. The record l
 brief-to-await cycle rarely spans a restart, and after one `pair_await` reports `null` rather than
 guessing. Persisting it would have meant activity rows that both clients would then have to hide.
 
+`pair_handoff` also corrects the executor's location. A pair turned on from the composer creates
+the executor before the lead's first turn has set up its worktree, and a lead can move to another
+branch. Rather than chase that through events, an ordinary brief compares the executor's `branch`
+and `worktreePath` with the lead's and dispatches one `thread.meta.update` first when they differ.
+Protected paths are hashed against the root the executor is about to have, a refused path stops the
+brief before anything moves, and a steer never moves a running executor.
+
 ## Accepted limits
 
 - A follow-up is refused while the child is running, but a user message can arrive between the
