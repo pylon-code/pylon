@@ -17,7 +17,7 @@ import type { EnvironmentThreadShell } from "./models.ts";
 
 /** Shown wherever the pair control is disabled for the selected lead provider. */
 export const PAIR_UNSUPPORTED_LEAD_REASON =
-  "Pair needs a lead that can hold its own subagents. Antigravity works as the executor.";
+  "This provider cannot lead a pair yet, because Pylon cannot pause its own subagents. It works as the executor.";
 
 export type PairExecutorPhase =
   | "idle"
@@ -40,9 +40,12 @@ export type PairState =
       readonly activity: string | null;
     };
 
-/** Antigravity cannot lead: Pylon cannot hold its own subagents for one session. */
+/**
+ * Mirrors the server's rule. Antigravity offers no control over its own
+ * subagents, and Codex keeps its collaboration tools whatever Pylon passes it.
+ */
 export function isPairLeadSupported(driverKind: string | null | undefined): boolean {
-  return driverKind !== "antigravity";
+  return driverKind !== "antigravity" && driverKind !== "codex";
 }
 
 export function resolvePairState(input: {

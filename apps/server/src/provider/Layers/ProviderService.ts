@@ -1224,7 +1224,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         const executor = yield* projectionQuery.value
           .getThreadShellById(executorId)
           .pipe(Effect.orElseSucceed(() => Option.none()));
-        if (Option.isSome(executor)) {
+        // An archived executor is a pair that was turned off; the lead gets its
+        // own subagents and the delegation instructions back.
+        if (Option.isSome(executor) && executor.value.archivedAt === null) {
           capabilities.add("pair");
         }
       }

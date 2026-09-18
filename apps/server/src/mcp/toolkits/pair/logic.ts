@@ -76,11 +76,13 @@ export function pairExecutorTitle(leadTitle: string): string {
 
 /**
  * Whether a provider can lead a pair.
- * Antigravity has no per-session control over its own subagents, so it can
- * only be the executor.
+ * Antigravity has no per-session control over its own subagents. Codex has
+ * feature flags for them, but 0.153 keeps its `collaboration.*` tools with both
+ * flags off, and a paired Codex lead briefed its own subagent every time it was
+ * tried. Both still work as the executor.
  */
 export function isPairLeadSupported(leadDriver: string | undefined): boolean {
-  return leadDriver !== "antigravity";
+  return leadDriver !== "antigravity" && leadDriver !== "codex";
 }
 
 export interface ProtectedPathRecord {

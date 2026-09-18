@@ -82,24 +82,17 @@ const session = (overrides: Partial<OrchestrationSession> = {}): OrchestrationSe
 const executor = (overrides: Partial<EnvironmentThreadShell> = {}) =>
   shell(EXECUTOR, { modelSelection: EXECUTOR_SELECTION, ...overrides });
 
-const lead = (driverKind: string | null | undefined = "codex") => ({
+const lead = (driverKind: string | null | undefined = "claudeAgent") => ({
   environmentId: ENV,
   threadId: LEAD,
   driverKind,
 });
 
 describe("isPairLeadSupported", () => {
-  it("refuses only Antigravity", () => {
+  it("refuses the providers the server refuses", () => {
     expect(isPairLeadSupported("antigravity")).toBe(false);
-    for (const driver of [
-      "codex",
-      "claudeAgent",
-      "primeAgent",
-      "cursor",
-      "opencode",
-      null,
-      undefined,
-    ])
+    expect(isPairLeadSupported("codex")).toBe(false);
+    for (const driver of ["claudeAgent", "primeAgent", "cursor", "opencode", null, undefined])
       expect(isPairLeadSupported(driver)).toBe(true);
   });
 });

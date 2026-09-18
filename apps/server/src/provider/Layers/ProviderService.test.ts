@@ -741,6 +741,8 @@ const makeThreadProjectProjectionLayer = (
   projectionStatus: () => "found" | "missing" | "failed" = () => "found",
   /** Delegated threads that exist besides `threadId`, such as its pair executor. */
   delegatedThreads: ReadonlyArray<ThreadId> = [],
+  /** The ones among them that are archived, as an executor is once its pair is turned off. */
+  archivedThreads: ReadonlyArray<ThreadId> = [],
 ) =>
   Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
     getDelegationObservationActivities: () => Effect.succeed([]),
@@ -781,6 +783,9 @@ const makeThreadProjectProjectionLayer = (
               latestTurn: null,
               createdAt: "2026-01-01T00:00:00.000Z",
               updatedAt: "2026-01-01T00:00:00.000Z",
+              archivedAt: archivedThreads.includes(requestedThreadId)
+                ? "2026-01-02T00:00:00.000Z"
+                : null,
               session: null,
               latestUserMessageAt: null,
               hasPendingApprovals: false,
@@ -6876,7 +6881,15 @@ describe("agent browser access", () => {
     threadId: ThreadId,
     status: "found" | "missing" | "failed" = "found",
     delegatedThreads: ReadonlyArray<ThreadId> = [],
-  ) => makeThreadProjectProjectionLayer(threadId, projectId, () => status, delegatedThreads);
+    archivedThreads: ReadonlyArray<ThreadId> = [],
+  ) =>
+    makeThreadProjectProjectionLayer(
+      threadId,
+      projectId,
+      () => status,
+      delegatedThreads,
+      archivedThreads,
+    );
 
   const makeAgentBrowserProviderLayer = (
     enableAgentBrowserAccess: boolean,
@@ -6897,6 +6910,7 @@ describe("agent browser access", () => {
       readonly projectionStatus?: "found" | "missing" | "failed";
       /** Delegated threads the projection knows besides `threadId`. */
       readonly delegatedThreads?: ReadonlyArray<ThreadId>;
+      readonly archivedThreads?: ReadonlyArray<ThreadId>;
     },
     enableAgentDeviceAccess = false,
     enableAgentComputerAccess = false,
@@ -6920,6 +6934,7 @@ describe("agent browser access", () => {
               project.threadId,
               project.projectionStatus,
               project.delegatedThreads,
+              project.archivedThreads,
             )
           : Layer.empty,
       ),
@@ -7108,12 +7123,15 @@ describe("agent browser access", () => {
             .slice(0, 16)}`,
         );
       const otherChild = asThreadId(`delegated:${lead}:0123456789abcdef`);
-      for (const [label, threadId, delegation, delegatedThreads, expected] of [
-        ["paired", lead, true, [executorOf(lead)], ["delegation", "pair", "pull-requests"]],
-        ["no executor", lead, true, [], ["delegation", "pull-requests"]],
-        ["only a fan-out child", lead, true, [otherChild], ["delegation", "pull-requests"]],
-        ["delegation off", lead, false, [executorOf(lead)], ["pull-requests"]],
-        ["the executor itself", executorOf(lead), true, [], ["pull-requests"]],
+      for (const [label, threadId, delegation, delegatedThreads, expected, archived] of [
+        ["paired", lead, true, [executorOf(lead)], ["delegation", "pair", "pull-requests"], false],
+        ["no executor", lead, true, [], ["delegation", "pull-requests"], false],
+        ["only a fan-out child", lead, true, [otherChild], ["delegation", "pull-requests"], false],
+        ["delegation off", lead, false, [executorOf(lead)], ["pull-requests"], false],
+        ["the executor itself", executorOf(lead), true, [], ["pull-requests"], false],
+        // Turning a pair off archives an executor that has history. The lead
+        // must get its own subagents back, not stay in paired mode.
+        ["pair turned off", lead, true, [executorOf(lead)], ["delegation", "pull-requests"], true],
       ] as const) {
         const issued: string[][] = [];
         const codex = makeFakeCodexAdapter();
@@ -7127,7 +7145,7 @@ describe("agent browser access", () => {
                 return undefined;
               }),
           },
-          { threadId, delegatedThreads },
+          { threadId, delegatedThreads, archivedThreads: archived ? delegatedThreads : [] },
           false,
           false,
           delegation,
