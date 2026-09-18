@@ -716,6 +716,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
       it.effect.each([
         "codex",
         "/Applications/Custom App.app/Contents/Resources/codex",
+        "/path with spaces/codex",
         "C:\\Tools\\codex.exe",
       ])("explains how to configure a Codex executable that cannot start: %s", (binaryPath) =>
         Effect.gen(function* () {
@@ -743,6 +744,28 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           );
           assert.strictEqual(settings.binaryPath, binaryPath);
         }),
+      );
+
+      it.effect(
+        "distinguishes app-server probe failure from missing executable when codex binary was started",
+        () =>
+          Effect.gen(function* () {
+            const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+              Effect.fail(
+                CodexErrors.CodexAppServerRequestError.internalError(
+                  "handshake rejected by app-server",
+                ),
+              ),
+            );
+            assert.strictEqual(status.status, "error");
+            assert.strictEqual(status.installed, true);
+            assert.strictEqual(status.auth.status, "unknown");
+            assert.strictEqual(
+              status.message,
+              "Codex app-server provider probe failed: handshake rejected by app-server.",
+            );
+            assert.strictEqual(status.message?.includes("Settings → Providers"), false);
+          }),
       );
 
       it.effect("closes the app-server probe scope when provider status times out", () =>
@@ -2663,6 +2686,29 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             assert.strictEqual(codexPersonal?.installed, false);
             assert.include(codexPersonal?.message, missingBinary);
             assert.include(codexPersonal?.message, "Settings → Providers → Codex → Binary path");
+            assert.include(
+              codexPersonal?.message,
+              "Make sure the configured executable exists and can be run.",
+            );
+            assert.strictEqual(
+              codexPersonal?.message?.includes("Installing ChatGPT or Codex desktop"),
+              false,
+            );
+            const currentSettings = yield* serverSettings.getSettings;
+            assert.strictEqual(
+              (
+                (
+                  currentSettings.providerInstances as
+                    | Record<string, { readonly config?: unknown }>
+                    | undefined
+                )?.["codex_personal"]?.config as
+                  | {
+                      readonly binaryPath?: string;
+                    }
+                  | undefined
+              )?.binaryPath,
+              missingBinary,
+            );
           }).pipe(Effect.provide(runtimeServices));
         }),
       );
