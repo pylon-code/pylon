@@ -77,8 +77,17 @@ export const DELEGATION_OBSERVED_ACTIVITY_KIND = "delegation.child-state";
  * a child that needs the user keeps its wake, and so does one still running.
  */
 export function consumedDelegationObservation(
-  _shell: OrchestrationThreadShell,
+  shell: OrchestrationThreadShell,
 ): DelegationObservation | null {
+  const observation = observeDelegatedChild(shell);
+  if (observation === null) return null;
+  if (
+    observation.phase === "completed" ||
+    observation.phase === "error" ||
+    observation.phase === "interrupted"
+  ) {
+    return observation;
+  }
   return null;
 }
 
@@ -88,7 +97,7 @@ export function consumedDelegationObservation(
  * needs no wake for this notice. `noticeDigest` is the hex SHA-256 of the
  * observation's `noticeKey`.
  */
-export function delegationObservationReceipt(_input: {
+export function delegationObservationReceipt(input: {
   readonly observation: DelegationObservation;
   readonly noticeDigest: string;
   readonly baseline: boolean;
@@ -101,7 +110,15 @@ export function delegationObservationReceipt(_input: {
     readonly baseline: boolean;
   };
 } {
-  throw new Error("not implemented");
+  return {
+    activityId: `delegation-observation:${input.observation.childThreadId}`,
+    payload: {
+      childThreadId: input.observation.childThreadId,
+      noticeKey: input.observation.noticeKey,
+      notificationId: `delegation-notice:${input.noticeDigest}`,
+      baseline: input.baseline,
+    },
+  };
 }
 
 /** No new turn should bypass deliberate stops, user blockers, or owned transitions. */

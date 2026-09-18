@@ -34,6 +34,7 @@ import { ServerConfig } from "../../../config.ts";
 import * as GitWorkflowService from "../../../git/GitWorkflowService.ts";
 import type { OrchestrationDispatchError } from "../../../orchestration/Errors.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
+import { markDelegationObservationConsumed } from "../../../orchestration/delegationObservationConsumed.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ThreadDeletionReactor from "../../../orchestration/Services/ThreadDeletionReactor.ts";
 import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
@@ -321,7 +322,7 @@ const make = Effect.gen(function* () {
     readonly waitSeconds?: number | undefined;
   }) =>
     Effect.gen(function* () {
-      const { childId, shell } = yield* lookupChild(input.delegationKey);
+      const { scope, childId, shell } = yield* lookupChild(input.delegationKey);
       const initial = statusOf(shell);
       // A settled child or an actionable blocker needs attention now, not a
       // state transition. In particular, do not spend the entire wait budget
@@ -331,6 +332,7 @@ const make = Effect.gen(function* () {
         initial.hasPendingApprovals ||
         initial.hasPendingUserInput
       ) {
+        yield* markDelegationObservationConsumed({ parentId: scope.threadId, child: shell });
         return statusPayload(input.delegationKey, shell, 0, false);
       }
       const startedAt = yield* Clock.currentTimeMillis;
@@ -354,9 +356,11 @@ const make = Effect.gen(function* () {
           latest.hasPendingApprovals !== initial.hasPendingApprovals ||
           latest.hasPendingUserInput !== initial.hasPendingUserInput
         ) {
+          yield* markDelegationObservationConsumed({ parentId: scope.threadId, child: current });
           return statusPayload(input.delegationKey, current, elapsedSeconds(now), true);
         }
       }
+      yield* markDelegationObservationConsumed({ parentId: scope.threadId, child: current });
       return statusPayload(input.delegationKey, current, elapsedSeconds(now), false);
     });
 
@@ -365,8 +369,9 @@ const make = Effect.gen(function* () {
     readonly maxChars?: number | undefined;
   }) =>
     Effect.gen(function* () {
-      const { childId, shell } = yield* lookupChild(input.delegationKey);
+      const { scope, childId, shell } = yield* lookupChild(input.delegationKey);
       const state = deriveDelegatedThreadState(shell);
+      yield* markDelegationObservationConsumed({ parentId: scope.threadId, child: shell });
       // The detail query serves active threads only, so an archived child has no body here.
       const detail =
         state === "archived"

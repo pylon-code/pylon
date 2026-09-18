@@ -24,13 +24,13 @@ import { isChildOfParent } from "../mcp/toolkits/delegation/logic.ts";
 import * as OrchestrationEngine from "./Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts";
 import {
+  DELEGATION_OBSERVED_ACTIVITY_KIND,
+  delegationObservationReceipt,
   observeDelegatedChild,
   isActionableDelegationObservation,
   isDelegationParentEligible,
   formatDelegationFollowThroughPrompt,
 } from "./delegationFollowThrough.logic.ts";
-
-const OBSERVED = "delegation.child-state";
 const DELIVERED = "delegation.follow-through.delivered";
 const PAUSED = "delegation.follow-through.paused";
 const MESSAGE_PREFIX = "delegation-follow-through:";
@@ -124,7 +124,7 @@ export const make = Effect.gen(function* () {
     const children = snapshot.threads.filter((child) => isChildOfParent(child.id, parent.id));
     if (children.length === 0) return;
     const detailOption = yield* snapshots.getThreadDetailById(parent.id, {
-      activityKinds: [OBSERVED, DELIVERED, PAUSED],
+      activityKinds: [DELEGATION_OBSERVED_ACTIVITY_KIND, DELIVERED, PAUSED],
     });
     if (Option.isNone(detailOption)) return;
     const detail = detailOption.value;
@@ -135,7 +135,7 @@ export const make = Effect.gen(function* () {
       childThreadIds: children.map((child) => child.id),
     });
     for (const activity of [...detail.activities, ...observations]) {
-      if (activity.kind === OBSERVED) {
+      if (activity.kind === DELEGATION_OBSERVED_ACTIVITY_KIND) {
         const decoded = decodeObservation(activity.payload);
         if (Option.isSome(decoded)) previous.set(decoded.value.childThreadId, decoded.value);
       } else if (activity.kind === DELIVERED) {
@@ -177,9 +177,13 @@ export const make = Effect.gen(function* () {
           : (startupPass || !old) &&
             work.liveChildId !== child.id &&
             isActionableDelegationObservation(observation);
-      const notificationId = EventId.make(
-        `delegation-notice:${yield* digest(observation.noticeKey)}`,
-      );
+      const noticeDigest = yield* digest(observation.noticeKey);
+      const receipt = delegationObservationReceipt({
+        observation,
+        noticeDigest,
+        baseline,
+      });
+      const notificationId = EventId.make(receipt.payload.notificationId);
       if (old?.noticeKey !== observation.noticeKey) {
         yield* engine.dispatch({
           type: "thread.activity.append",
@@ -188,16 +192,11 @@ export const make = Effect.gen(function* () {
           ),
           threadId: parent.id,
           activity: {
-            id: EventId.make(`delegation-observation:${child.id}`),
-            kind: OBSERVED,
+            id: EventId.make(receipt.activityId),
+            kind: DELEGATION_OBSERVED_ACTIVITY_KIND,
             tone: "info",
             summary: `Pylon child ${observation.phase}`,
-            payload: {
-              childThreadId: child.id,
-              noticeKey: observation.noticeKey,
-              notificationId,
-              baseline,
-            },
+            payload: receipt.payload,
             turnId: null,
             createdAt: now,
           },

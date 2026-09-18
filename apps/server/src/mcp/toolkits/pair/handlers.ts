@@ -30,6 +30,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import type { OrchestrationDispatchError } from "../../../orchestration/Errors.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
+import { markDelegationObservationConsumed } from "../../../orchestration/delegationObservationConsumed.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
 import { PAIR_LEAD_PROTOCOL } from "../../../provider/RuntimeInstructions.ts";
@@ -573,6 +574,13 @@ const make = Effect.gen(function* () {
             changed: [...changedProtectedPaths(records, currentHashes)],
           };
         }
+      }
+
+      if (state !== "running") {
+        yield* markDelegationObservationConsumed({
+          parentId: scope.threadId,
+          child: current,
+        });
       }
 
       const result: PairAwaitResult = {
