@@ -230,7 +230,6 @@ interface SessionContext {
       buffer: AntigravityTaskNotificationBuffer;
       turnId: TurnId | undefined;
       started: boolean;
-      accumulatedText: string;
     }
   >;
   /** Keep only IDs after settlement or MCP exclusion so merged late updates cannot change identity. */
@@ -388,7 +387,6 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       buffer: new AntigravityTaskNotificationBuffer(),
       turnId: context.activeTurnId,
       started: false,
-      accumulatedText: "",
     };
     context.assistantMessages.set(itemId, message);
     return message;
@@ -402,13 +400,9 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
   ) {
     if (context.fatalError) return;
     const message = assistantMessage(context, itemId);
-    message.accumulatedText += text;
-    if (isAntigravityCorruptedSessionError(message.accumulatedText)) {
-      context.fatalError = formatAntigravityErrorMessage(message.accumulatedText);
-      return;
-    }
-    const formatted = formatAntigravityErrorMessage(text);
-    if (!formatted) return;
+    // ACP content is model-authored data, including quoted logs and errors.
+    // Session failure must come from the provider protocol, not this text.
+    if (!text) return;
     if (itemId && !message.started) {
       yield* emit(
         context,
@@ -431,7 +425,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         threadId: context.threadId,
         turnId: message.turnId,
         ...(itemId ? { itemId } : {}),
-        text: formatted,
+        text,
         rawPayload,
       }),
     );
@@ -807,31 +801,8 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           Effect.gen(function* () {
             if (context.fatalError) return;
             const toolCall = normalizeAntigravityToolCall(event.toolCall);
-            if (toolCall.status === "failed") {
-              const rawOutput = event.toolCall.data?.rawOutput;
-              const combinedOutput = (rawOutput as { combinedOutput?: unknown } | undefined)
-                ?.combinedOutput;
-              const errorCandidate =
-                (typeof rawOutput === "string" && isAntigravityCorruptedSessionError(rawOutput)
-                  ? rawOutput
-                  : undefined) ??
-                (typeof toolCall.data?.rawOutput === "string" &&
-                isAntigravityCorruptedSessionError(toolCall.data.rawOutput)
-                  ? toolCall.data.rawOutput
-                  : undefined) ??
-                (typeof combinedOutput === "string" &&
-                isAntigravityCorruptedSessionError(combinedOutput)
-                  ? combinedOutput
-                  : undefined) ??
-                (isAntigravityCorruptedSessionError(event.toolCall.detail)
-                  ? event.toolCall.detail
-                  : undefined) ??
-                (isAntigravityCorruptedSessionError(toolCall.detail) ? toolCall.detail : undefined);
-
-              if (errorCandidate) {
-                context.fatalError = formatAntigravityErrorMessage(errorCandidate);
-              }
-            }
+            // A failed tool may contain arbitrary command output. It does not
+            // establish that the provider session itself has failed.
             const tracked = context.subagents.get(toolCall.toolCallId);
             if (tracked === "finished") return;
             const kind = classifyAntigravitySubagentToolCall(toolCall, event.rawPayload);
@@ -1403,12 +1374,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       if (record) record.items.push(result);
       else context.turns.push({ id: launch.turn.turnId, items: [result] });
       const fatalError =
-        context.fatalError ??
-        (context.disconnected
-          ? "Antigravity process stopped."
-          : isAntigravityCorruptedSessionError(result.stopReason)
-            ? formatAntigravityErrorMessage(result.stopReason)
-            : undefined);
+        context.fatalError ?? (context.disconnected ? "Antigravity process stopped." : undefined);
       if (fatalError) {
         context.session = {
           ...context.session,

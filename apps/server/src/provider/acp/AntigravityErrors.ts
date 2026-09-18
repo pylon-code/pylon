@@ -11,6 +11,7 @@ export function extractAntigravityModelName(text: string): string | undefined {
   return match?.[1];
 }
 
+/** Use only for provider request failures, never generated content. */
 export function isAntigravityCorruptedSessionError(text?: string | null): boolean {
   if (!text || typeof text !== "string") return false;
   return (
@@ -18,18 +19,6 @@ export function isAntigravityCorruptedSessionError(text?: string | null): boolea
     /reached terminal step type\. Exiting/i.test(text) ||
     /agent executor error:\s*could not find doneCh/i.test(text) ||
     /Antigravity agent executor encountered an internal checkpoint error/i.test(text)
-  );
-}
-
-export function isAntigravityInternalErrorEnvelope(text?: string | null): boolean {
-  if (!text || typeof text !== "string") return false;
-  return (
-    /^Encountered retryable error from model provider:/i.test(text) ||
-    /^Agent execution (?:terminated due to error|error):/i.test(text) ||
-    /could not find doneCh for checkpoint/i.test(text) ||
-    /reached terminal step type\. Exiting/i.test(text) ||
-    /MODEL_CAPACITY_EXHAUSTED/i.test(text) ||
-    /No capacity available for model/i.test(text)
   );
 }
 
@@ -61,7 +50,7 @@ export function formatAntigravityErrorMessage(raw: string): string {
   }
 
   if (isAntigravityCorruptedSessionError(raw)) {
-    return "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.";
+    return "Antigravity agent executor encountered an internal checkpoint error. If retrying fails again, start a new thread and carry over your task context; existing files are preserved.";
   }
 
   if (/model unreachable/i.test(raw)) {

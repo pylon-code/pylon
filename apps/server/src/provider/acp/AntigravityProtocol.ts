@@ -11,10 +11,6 @@ import * as Schema from "effect/Schema";
 import * as EffectAcpSchema from "effect-acp/schema";
 
 import type { AcpToolCallState } from "./AcpRuntimeModel.ts";
-import {
-  formatAntigravityErrorMessage,
-  isAntigravityInternalErrorEnvelope,
-} from "./AntigravityErrors.ts";
 
 const TOOL_TEXT_LIMIT = 8_000;
 const TOOL_TEXT_TRUNCATED = "[Earlier output truncated]\n\n";
@@ -319,13 +315,6 @@ export function normalizeAntigravityToolCall(toolCall: AcpToolCallState): AcpToo
   const imagePath = localImagePath(output?.imagePath);
   const sanitizedData = sanitizeAntigravityToolPayload(toolCall.data);
   const data: Record<string, unknown> = Predicate.isObject(sanitizedData) ? sanitizedData : {};
-  if (
-    toolCall.status === "failed" &&
-    typeof data.rawOutput === "string" &&
-    isAntigravityInternalErrorEnvelope(data.rawOutput)
-  ) {
-    data.rawOutput = formatAntigravityErrorMessage(data.rawOutput);
-  }
   const kind = toolCall.kind ?? (command !== undefined ? "execute" : undefined);
   if (kind !== undefined) data.kind = kind;
   if (command !== undefined) data.command = command;
@@ -349,10 +338,7 @@ export function normalizeAntigravityToolCall(toolCall: AcpToolCallState): AcpToo
       ? { detail: command }
       : toolCall.detail !== undefined
         ? {
-            detail:
-              toolCall.status === "failed" && isAntigravityInternalErrorEnvelope(toolCall.detail)
-                ? boundText(formatAntigravityErrorMessage(toolCall.detail))
-                : boundText(toolCall.detail),
+            detail: boundText(toolCall.detail),
           }
         : {}),
     data,
