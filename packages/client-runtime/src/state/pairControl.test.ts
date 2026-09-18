@@ -1,15 +1,16 @@
-import { PAIR_UNSUPPORTED_LEAD_REASON, type PairState } from "@t3tools/client-runtime/state/pair";
+import { PAIR_UNSUPPORTED_LEAD_REASON, type PairState } from "./pair.ts";
 import { ProjectId, ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
 import { pairExecutorThreadId } from "@t3tools/shared/delegatedThreads";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   pairLockedReason,
+  pairSettingsRow,
   pairToggleStep,
   resolveExecutorSelection,
   shouldRestartLeadSession,
   type PairLead,
-} from "./pairControl.logic";
+} from "./pairControl.ts";
 
 const LEAD_ID = ThreadId.make("lead-1");
 const EXECUTOR = pairExecutorThreadId(LEAD_ID);
@@ -162,5 +163,53 @@ describe("resolveExecutorSelection", () => {
     expect(
       resolveExecutorSelection({ state: off, picked: null, defaultSelection: null }),
     ).toBeNull();
+  });
+});
+
+describe("pairSettingsRow", () => {
+  const row = (overrides: Partial<Parameters<typeof pairSettingsRow>[0]> = {}) =>
+    pairSettingsRow({
+      state: off,
+      lockedReason: null,
+      executorSelection: SELECTION,
+      executorLabel: "Gemini 3 Flash",
+      ...overrides,
+    });
+
+  it("offers the switch when a default executor model exists, naming it", () => {
+    expect(row()).toEqual({
+      value: false,
+      disabled: false,
+      detail: "Pairs this thread with Gemini 3 Flash.",
+    });
+  });
+
+  it("shows the pair and what the executor is doing while it is on", () => {
+    expect(row({ state: on("running") })).toEqual({
+      value: true,
+      disabled: false,
+      detail: "Paired with Gemini 3 Flash · Working",
+    });
+  });
+
+  it("explains itself whenever the switch cannot be used", () => {
+    expect(row({ executorSelection: null, executorLabel: "" })).toEqual({
+      value: false,
+      disabled: true,
+      detail: "Set a default delegation model in the project's settings to pair from here.",
+    });
+    expect(row({ lockedReason: "Changes apply between turns." })).toEqual({
+      value: false,
+      disabled: true,
+      detail: "Changes apply between turns.",
+    });
+    expect(row({ state: on("running"), lockedReason: "Changes apply between turns." })).toEqual({
+      value: true,
+      disabled: true,
+      detail: "Changes apply between turns.",
+    });
+    expect(
+      row({ state: { kind: "unsupported-lead", reason: PAIR_UNSUPPORTED_LEAD_REASON } }),
+    ).toEqual({ value: false, disabled: true, detail: PAIR_UNSUPPORTED_LEAD_REASON });
   });
 });

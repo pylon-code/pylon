@@ -255,6 +255,10 @@
       "types": "./src/state/pair.ts",
       "default": "./src/state/pair.ts"
     },
+    "./state/pair-control": {
+      "types": "./src/state/pairControl.ts",
+      "default": "./src/state/pairControl.ts"
+    },
     "./state/delegation-notice": {
       "types": "./src/state/delegationNotice.ts",
       "default": "./src/state/delegationNotice.ts"

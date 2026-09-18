@@ -1068,6 +1068,15 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onScrollToEnd={handleScrollToEnd}
               />
               <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
+                {props.pairState !== undefined &&
+                props.pairExecutorLabel !== undefined &&
+                props.onOpenPairExecutor !== undefined ? (
+                  <PairStatusNotice
+                    state={props.pairState}
+                    executorLabel={props.pairExecutorLabel}
+                    onOpenExecutor={props.onOpenPairExecutor}
+                  />
+                ) : null}
                 {props.feedbackSubmissions.map((submission) => (
                   <ComposerFeedback
                     key={submission.id}
@@ -1193,15 +1202,6 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     : undefined
                 }
               >
-                {props.pairState !== undefined &&
-                props.pairExecutorLabel !== undefined &&
-                props.onOpenPairExecutor !== undefined ? (
-                  <PairStatusNotice
-                    state={props.pairState}
-                    executorLabel={props.pairExecutorLabel}
-                    onOpenExecutor={props.onOpenPairExecutor}
-                  />
-                ) : null}
                 <GlassBlurTargetContext value={feedBlurTarget}>
                   <ThreadComposer
                     editorRef={composerEditorRef}
