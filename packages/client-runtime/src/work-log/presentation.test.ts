@@ -659,6 +659,24 @@ describe("delegation tool presentation", () => {
   });
 });
 
+describe("pair tool presentation", () => {
+  it.each([
+    ["pair_start", "Started a pair executor", "Starting a pair executor"],
+    ["pair_handoff", "Handed off to the pair executor", "Handing off to the pair executor"],
+    ["pair_await", "Awaited the pair executor", "Awaiting the pair executor"],
+    ["pair_stop", "Stopped the pair executor", "Stopping the pair executor"],
+  ])("labels %s with the Pylon tool icon", (tool, completed, running) => {
+    for (const label of [`mcp__t3-code__${tool}`, `t3-code · ${tool}`, tool]) {
+      expect(resolveWorkEntryToolPresentation({ label, toolLifecycleStatus: "completed" })).toEqual(
+        { displayName: completed, icon: "t3-code" },
+      );
+      expect(
+        resolveWorkEntryToolPresentation({ label, toolLifecycleStatus: "inProgress" }),
+      ).toEqual({ displayName: running, icon: "t3-code" });
+    }
+  });
+});
+
 describe("pull request tool presentation", () => {
   it.each([
     "mcp__t3-code__link_pull_request",
