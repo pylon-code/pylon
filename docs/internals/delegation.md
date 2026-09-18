@@ -1,12 +1,14 @@
 # Delegated threads
 
 The delegation MCP toolkit ([`apps/server/src/mcp/toolkits/delegation`](../../apps/server/src/mcp/toolkits/delegation))
-lets an agent start and manage child threads on other provider instances. It is a sidecar: it
-dispatches only existing commands (`thread.create`, `thread.meta.update`, `thread.turn.start`,
-`thread.turn.interrupt`, `thread.delete`) and reads only existing projections. It adds no events,
-decider branches, projectors, or migrations, so it can be removed or remapped if Pylon adopts
-upstream's orchestrator rewrite. It deliberately does not reuse upstream's reserved
-`delegate_task`, `task_status`, or `task_cancel` tool names.
+lets an agent start and manage child threads on other provider instances. The toolkit itself is a
+sidecar: it dispatches only existing commands (`thread.create`, `thread.meta.update`,
+`thread.turn.start`, `thread.turn.interrupt`, `thread.delete`) and reads only existing projections.
+Automatic parent follow-through (PR #603) is not: it adds the internal
+`thread.delegation.follow-through` command to the contracts, a decider branch that admits it, and
+two projection queries. Removing delegation therefore means deleting the toolkit directory, the
+reactor, and those three core touches together. The toolkit deliberately does not reuse upstream's
+reserved `delegate_task`, `task_status`, or `task_cancel` tool names.
 
 ## The child id carries the parent
 
@@ -51,10 +53,11 @@ The pending admission id alone is not used: interrupt recovery before the provid
 session but leaves that id set until the next turn start replaces it. A first turn stopped before admission leaves a
 session but no turn and is reported as interrupted, not queued forever.
 
-When observing a delegated child's status, terminal turn states (`completed`, `interrupted`, `error`)
-take precedence over a post-turn stopped session, because a child session naturally stops after each
-turn finishes. An explicit pending stop request (`pendingStopRequestId !== null`) or a stopped session
-_without_ a terminal turn still reports `interrupted`.
+The follow-through reactor observes children with `observeDelegatedChild`, which must agree with
+`deriveDelegatedThreadState` on completed children: a turn's own terminal state wins over a session
+that was stopped afterwards by a restart or the idle reaper. At startup, any child whose observation
+differs from the persisted one is baselined rather than delivered, because children only run inside
+the server process and nothing could have observed that change live.
 
 ## Defaults and agent guidance
 
