@@ -109,7 +109,7 @@ import {
   type SelectableMarkdownSkill,
 } from "../../native/SelectableMarkdownText";
 
-import { AppText, AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/AppText";
 import {
   delegationNoticeHeadline,
   delegationNoticeSummary,
@@ -1532,14 +1532,12 @@ function renderFeedEntry(
                 accessibilityRole="button"
                 className="py-1 active:opacity-70"
               >
-                <AppText className="font-t3-medium text-sm">
-                  {delegationNoticeHeadline(update)}
-                </AppText>
-                <AppText className="text-xs text-foreground-muted" numberOfLines={1}>
+                <Text className="font-t3-medium text-sm">{delegationNoticeHeadline(update)}</Text>
+                <Text className="text-xs text-foreground-muted" numberOfLines={1}>
                   {update.title}
-                </AppText>
+                </Text>
                 {update.reason !== null && (
-                  <AppText className="text-xs text-danger-foreground">{update.reason}</AppText>
+                  <Text className="text-xs text-danger-foreground">{update.reason}</Text>
                 )}
               </Pressable>
             ))}

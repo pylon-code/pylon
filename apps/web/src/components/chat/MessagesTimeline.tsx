@@ -1664,12 +1664,23 @@ function ContextCompactionTimelineRow({
   );
 }
 
+/**
+ * The automatic wake message Pylon sends a parent is not something the user
+ * said, so it renders as a notice and offers none of a message's actions. The
+ * split keeps every hook of the message row unconditional.
+ */
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const notice = parseDelegationNotice(row.message);
-  if (notice !== null) {
-    return <DelegationNoticeRow notice={notice} environmentId={ctx.activeThreadEnvironmentId} />;
-  }
+  return notice === null ? (
+    <UserMessageTimelineRow row={row} />
+  ) : (
+    <DelegationNoticeRow notice={notice} environmentId={ctx.activeThreadEnvironmentId} />
+  );
+}
+
+function UserMessageTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const ctx = use(TimelineRowCtx);
   const { onImageExpand, onFileOpen } = ctx;
   const resources = useMemo(
     () => selectMessageImageResources(row.message.attachments),
