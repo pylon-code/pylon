@@ -258,6 +258,15 @@ export class DelegationKeyInvalidError extends Schema.TaggedError<DelegationKeyI
   }
 }
 
+export class DelegationKeyReservedError extends Schema.TaggedError<DelegationKeyReservedError>()(
+  "DelegationKeyReservedError",
+  { delegationKey: Schema.String },
+) {
+  override get message(): string {
+    return `delegationKey ${this.delegationKey} is reserved for the pair executor. Use the pair tools, or choose another key.`;
+  }
+}
+
 export class DelegationProviderUnavailableError extends Schema.TaggedError<DelegationProviderUnavailableError>()(
   "DelegationProviderUnavailableError",
   { providerInstanceId: Schema.String },
@@ -391,6 +400,7 @@ export const DelegationToolError = Schema.Union([
   DelegatingThreadNotFoundError,
   DelegationDepthExceededError,
   DelegationKeyInvalidError,
+  DelegationKeyReservedError,
   DelegationProviderUnavailableError,
   DelegationModelUnavailableError,
   DelegationDefaultMissingError,

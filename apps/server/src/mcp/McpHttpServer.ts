@@ -43,6 +43,8 @@ import {
 
 import { DelegationToolkitHandlersLive } from "./toolkits/delegation/handlers.ts";
 import { DelegationToolkit } from "./toolkits/delegation/tools.ts";
+import { PairToolkitHandlersLive } from "./toolkits/pair/handlers.ts";
+import { PairToolkit } from "./toolkits/pair/tools.ts";
 import { PullRequestsToolkitHandlersLive } from "./toolkits/pullRequests/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 
@@ -638,6 +640,10 @@ export const DelegationToolkitRegistrationLive = McpServer.toolkit(DelegationToo
   Layer.provide(DelegationToolkitHandlersLive),
 );
 
+export const PairToolkitRegistrationLive = McpServer.toolkit(PairToolkit).pipe(
+  Layer.provide(PairToolkitHandlersLive),
+);
+
 const McpTransportLive = McpServer.layerHttp({
   name: "Pylon",
   version: packageJson.version,
@@ -651,4 +657,5 @@ export const layer = Layer.mergeAll(
   DeviceToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DelegationToolkitRegistrationLive,
+  PairToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

@@ -138,3 +138,50 @@ child provider usage still applies.
 - Archiving a child hides its result from the parent agent. Unarchive it to let the parent read it
   again.
 - Deleting a child thread does not undo work the parent already merged.
+
+## Pair with an executor
+
+Instead of handing out many separate tasks, an agent can pair with one executor: a second thread on a
+faster, cheaper model that stays linked for as long as the first thread lives. Ask for it in your
+message, for example “Pair with Antigravity for this.” The lead plans, writes the brief, and checks
+the result; the executor does the implementation in the same worktree, so there is nothing to merge
+back. The executor uses your **Default delegation model** unless you name a provider, and follows
+**Child permissions**.
+
+The executor appears under its parent in the sidebar like any delegated thread. Archive it to turn
+the pair off for that thread. Pairing needs **Pylon delegation** turned on in **Settings →
+Integrations**.
+
+## Things to know
+
+- Give a child one bounded task, relevant file references, acceptance criteria, and a concise report.
+  Review its completed changes and checks, then send consolidated corrections. Separate threads add
+  briefing and review overhead; using them is not a guarantee of lower total usage.
+- When waiting is necessary, an agent checks for up to 45 seconds inside its current turn. Completed
+  children and children waiting for an approval or answer return immediately.
+  The parent can also end its turn and rely on automatic follow-through below.
+- Result summaries are limited to 4,000 characters by default. The agent can request more and should
+  expand a truncated result before accepting the work. If the 60,000-character limit is still too
+  small, inspect the child thread or ask it for a concise handoff.
+- A child that sits idle for thirty minutes has its provider session stopped. Its next message
+  starts a fresh session, which may not keep the provider's own conversation memory.
+- Archiving a child hides its result from the parent agent. Unarchive it to let the parent read it
+  again.
+- Deleting a child thread does not undo work the parent already merged.
+
+## Pair programming with an executor
+
+In addition to fan-out delegation, Pylon supports a tightly coupled lead/executor pair workflow.
+A lead agent plans, coordinates, and reviews work while driving a dedicated executor agent that
+carries out the implementation tasks:
+
+- **Directly shared workspace.** Unlike independent child threads that run in separate git worktrees,
+  the pair executor works in the exact same directory and git worktree as the lead agent. Changes
+  made by the executor are visible to the lead immediately without branch switching or merging.
+- **Lead/executor iteration.** The lead agent uses the pair toolkit to start the executor, hand off
+  concise, step-by-step instructions, await the executor's completion or questions, and stop the
+  executor when finished.
+- **Configuring the executor model.** You can configure the model used by the pair executor in
+  **Settings → Integrations** under the delegation defaults, or specify the desired model when
+  prompting the lead agent. If unspecified, the executor falls back to your configured delegation
+  default model.

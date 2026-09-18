@@ -87,6 +87,19 @@ const DelegationTestLayer = McpHttpServer.DelegationToolkitRegistrationLive.pipe
   ),
 );
 
+const PairTestLayer = McpHttpServer.PairToolkitRegistrationLive.pipe(
+  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provide(
+    Layer.mergeAll(
+      Layer.mock(ProjectionSnapshotQuery)({}),
+      Layer.mock(OrchestrationEngineService)({}),
+      Layer.mock(ProviderRegistry)({}),
+      ServerSettings.layerTest(),
+      NodeServices.layer,
+    ),
+  ),
+);
+
 const snapshotResult = {
   url: "http://example.test/",
   title: "Example",
@@ -837,4 +850,29 @@ it.effect(
         { type: "text", text: "MCP credential does not grant the delegation capability." },
       ]);
     }).pipe(Effect.provide(DelegationTestLayer)),
+);
+
+it.effect("registers the pair toolkit and surfaces a missing capability as a tool error", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const names = server.tools.map(({ tool }) => tool.name);
+    expect(names).toEqual(
+      expect.arrayContaining(["pair_start", "pair_handoff", "pair_await", "pair_stop"]),
+    );
+    const start = server.tools.find(({ tool }) => tool.name === "pair_start");
+    expect(start?.tool.annotations?.idempotentHint).toBe(true);
+    expect(start?.tool.annotations?.destructiveHint).toBe(false);
+    expect(start?.tool.annotations?.openWorldHint).toBe(false);
+
+    const denied = yield* server
+      .callTool({ name: "pair_await", arguments: {} })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(denied.isError).toBe(true);
+    expect(denied.content).toEqual([
+      { type: "text", text: "MCP credential does not grant the delegation capability." },
+    ]);
+  }).pipe(Effect.provide(PairTestLayer)),
 );

@@ -96,3 +96,70 @@ Provider/model defaults are still resolved at child creation and reported in `de
   nothing; a duplicate interrupt on a live child is harmless.
 - Worktree creation mirrors the websocket bootstrap sequence without sharing code with `ws.ts`, and
   does not run project setup scripts. Changes to how clients create worktrees must be checked here.
+
+## The pair executor
+
+The pair toolkit ([`apps/server/src/mcp/toolkits/pair`](../../apps/server/src/mcp/toolkits/pair))
+links a lead thread to one persistent executor. The executor's id is the delegated child id for the
+reserved key `pair`, so every client and the server can compute it from the lead's id and nothing
+records the link. The fan-out tools refuse that key. A pair is on when that thread exists and is not
+archived.
+
+The executor is created with the lead's `branch` and `worktreePath`: it works in the lead's checkout,
+so the lead reviews its own tree and no worktree is created or cleaned up. Two threads on one
+checkout is already how local-mode threads behave. The executor is always created in the default
+interaction mode, because a lead in plan mode plans and its executor implements.
+
+An executor that never ran reads as `idle`, where the fan-out derivation says `queued`: it is
+created without a first message and waits for a brief. A brief to a running executor is refused
+unless the lead asks to steer, and a turn can be steered once: the steer message id is derived from
+the turn id, so the limit survives restarts. `pair_await` blocks inside the tool call, which costs no
+tokens, up to a cap chosen by the lead's provider: long only where Pylon sets that provider's MCP
+tool timeout itself.
+
+## Accepted limits
+
+- A follow-up is refused while the child is running, but a user message can arrive between the
+  check and the dispatch; the follow-up then steers that turn, as any turn start on a running turn
+  does. Not guarded.
+- The per-parent semaphore that serializes delegation is in memory, which is enough because one
+  server process owns the orchestration engine.
+- Waiting is polling of the projection inside the tool call, bounded by wall-clock time to 45
+  seconds; already-settled children and pending approvals/input return immediately. Prime Agent's MCP client cancels any call after 60 seconds, measured in a live run.
+  Pylon disables Prime's autonomous continuation, so a parent cannot be woken when a child finishes.
+- The per-parent semaphores are never evicted; one small entry per thread that has delegated.
+- Sends and interrupts take the same per-parent gate as delegation, so an interrupt waits behind a
+  delegation in progress, including its git fetch. Status and result reads do not take the gate.
+- Interrupts use a unique command id per call rather than a deterministic one. Every deterministic
+  key tried (per turn, per admission) let a later interrupt replay an earlier receipt and dispatch
+  nothing; a duplicate interrupt on a live child is harmless.
+- Worktree creation mirrors the websocket bootstrap sequence without sharing code with `ws.ts`, and
+  does not run project setup scripts. Changes to how clients create worktrees must be checked here.
+
+## The pair executor
+
+The pair toolkit ([\`apps/server/src/mcp/toolkits/pair\`](../../apps/server/src/mcp/toolkits/pair))
+provides a dedicated four-tool surface (`pair_start`, `pair_handoff`, `pair_await`, `pair_stop`)
+designed for lead/executor workflows. It wraps the same underlying primitives as fan-out
+delegation while enforcing pair-specific constraints:
+
+- **Exactly one executor per lead thread.** A lead thread may only have a single pair executor
+  active at a time.
+- **Reserved key format.** The executor thread is tied to the deterministic key
+  `lead:<leadThreadId>:pair`. Fan-out delegation tools refuse this reserved key with
+  `DelegationKeyReservedError`.
+- **Shared worktree.** Unlike fan-out delegation, which allocates isolated worktrees on temporary
+  branches, the pair executor operates directly within the lead thread's worktree. File changes and
+  git status are shared immediately.
+- **No provider-level concurrency limits.** The pair executor is exempt from the per-provider
+  delegation concurrency caps that throttle fan-out child threads.
+
+### State transitions
+
+- `pair_start`: Creates or attaches to the pair executor thread for the calling lead. If an
+  active executor already exists, it is reused.
+- `pair_handoff`: Delivers a task prompt and starts a turn on the executor thread. Returns the
+  turn id and thread status.
+- `pair_await`: Waits for the executor turn to finish or reach an action-required state (approval
+  or user question), polling up to a caller-specified timeout (default 60s, max 300s).
+- `pair_stop`: Cancels any running turn on the executor and archives the executor thread.

@@ -523,6 +523,39 @@ describe("delegation toolkit gate", () => {
     }),
   );
 
+  it.effect("refuses the key reserved for the pair executor on every tool", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const reserved = { _tag: "DelegationKeyReservedError", delegationKey: "pair" };
+      expect(
+        yield* harness
+          .call("delegate_thread", { ...delegateInput, delegationKey: "pair" })
+          .pipe(Effect.flip),
+      ).toMatchObject(reserved);
+      expect(
+        yield* harness.call("delegated_thread_status", { delegationKey: "pair" }).pipe(Effect.flip),
+      ).toMatchObject(reserved);
+      expect(
+        yield* harness.call("delegated_thread_result", { delegationKey: "pair" }).pipe(Effect.flip),
+      ).toMatchObject(reserved);
+      expect(
+        yield* harness
+          .call("send_to_delegated_thread", {
+            delegationKey: "pair",
+            messageKey: "m-1",
+            text: "hello",
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject(reserved);
+      expect(
+        yield* harness
+          .call("interrupt_delegated_thread", { delegationKey: "pair" })
+          .pipe(Effect.flip),
+      ).toMatchObject(reserved);
+      expect(yield* harness.commandTypes).toEqual([]);
+    }),
+  );
+
   it.effect("rejects invalid keys before any lookup or dispatch", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
