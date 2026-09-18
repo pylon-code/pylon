@@ -151,9 +151,13 @@ cannot be switched off, so it is told to leave them alone rather than prevented 
 
 The executor appears under its parent in the sidebar like any delegated thread. Archive it to turn
 the pair off for that thread. Archiving, settling, or deleting the lead does the same to its
-executor. Rewinding the lead stops the executor first, because both work on the same files. Pairing
-needs **Pylon delegation** turned on in **Settings → Integrations**; until it is, the switch stays
-off and says so. The Pair control is on the web and desktop apps; the mobile app does not have it yet.
+executor. Rewinding the lead stops the executor first, because both work on the same files. The Pair
+control is on the web and desktop apps; the mobile app does not have it yet.
+
+Pairing does not need **Pylon delegation** turned on. That setting decides whether agents may start
+other threads on their own; a pair is something you switch on yourself, for one thread. With the
+setting off, a paired lead still briefs its executor and is still told when it finishes, and an agent
+that is merely asked to "pair with" another provider cannot start one by itself.
 
 ## Things to know
 
