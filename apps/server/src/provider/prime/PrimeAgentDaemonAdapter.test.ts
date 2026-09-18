@@ -2831,14 +2831,17 @@ describe("PrimeAgentDaemonAdapter", () => {
     );
   }
 
-  for (const { withImage, hidden } of [
+  for (const { withImage, hidden, terminal } of [
     { withImage: false, hidden: "none" },
     { withImage: true, hidden: "none" },
     { withImage: false, hidden: "snapshot" },
     { withImage: false, hidden: "observed" },
-  ] as const) {
+  ].flatMap((variant) => [
+    { ...variant, terminal: false },
+    { ...variant, terminal: true },
+  ])) {
     it.effect(
-      `reconciles the delivered submitted user from the first complete resync (image: ${withImage}, hidden: ${hidden})`,
+      `reconciles the delivered submitted user from the first complete resync (image: ${withImage}, hidden: ${hidden}, terminal: ${terminal})`,
       () =>
         Effect.scoped(
           Effect.gen(function* () {
@@ -2896,19 +2899,33 @@ describe("PrimeAgentDaemonAdapter", () => {
                 attribution: { scope: "prompt", correlationId },
               });
             }
-            const messages = hidden === "none" ? [prompt] : [digest, prompt];
+            const answer = assistantMessage(
+              "The directory contains README.md. It describes the fixture.",
+            );
+            const messages = [
+              ...(hidden === "none" ? [] : [digest]),
+              prompt,
+              ...(terminal ? [answer] : []),
+            ];
             const resync = {
               ...initialSnapshot(),
               state: {
                 ...initialSnapshot().state,
                 messageCount: messages.length,
-                isStreaming: true,
+                isStreaming: !terminal,
               },
               messages,
               replayContinuity: "complete",
               connectionGeneration: 0,
               correlatedProofEpoch: 0,
-              promptLifecycles: { records: [delivered], expired: [] },
+              promptLifecycles: {
+                records: [
+                  terminal
+                    ? lifecycleSnapshot(correlationId, "completed", 3, { usage })
+                    : delivered,
+                ],
+                expired: [],
+              },
             } satisfies PrimeDaemonEvent;
             yield* offer(captures, { ...resync, connectionGeneration: -1 });
             yield* offer(captures, { ...resync, correlatedProofEpoch: -1 });
@@ -2916,7 +2933,7 @@ describe("PrimeAgentDaemonAdapter", () => {
             expect(yield* Effect.promise(() => resolutionObserved)).toMatchObject({
               reconciled: true,
             });
-            expect(turnFiber.pollUnsafe()).toBeUndefined();
+            if (!terminal) expect(turnFiber.pollUnsafe()).toBeUndefined();
             expect(captures.reconnectResolutions).toHaveLength(1);
             yield* offer(captures, resync);
             yield* offer(captures, {
@@ -2924,9 +2941,6 @@ describe("PrimeAgentDaemonAdapter", () => {
               message: prompt,
               attribution: { scope: "prompt", correlationId },
             });
-            const answer = assistantMessage(
-              "The directory contains README.md. It describes the fixture.",
-            );
             yield* offer(captures, {
               _tag: "MessageCompleted",
               message: answer,
@@ -2957,7 +2971,7 @@ describe("PrimeAgentDaemonAdapter", () => {
     );
   }
 
-  for (const rejection of [
+  for (const { rejection, terminal } of [
     "hidden unknown replay",
     "hidden unavailable replay",
     "hidden changed observed digest",
@@ -2986,8 +3000,17 @@ describe("PrimeAgentDaemonAdapter", () => {
     "repeated user boundary",
     "changed observed transcript",
     "missing observed transcript",
-  ] as const) {
-    it.effect(`rejects submitted-user resync with ${rejection}`, () =>
+    "unfinished tool answer",
+    "terminal still streaming",
+  ].flatMap((rejection) =>
+    rejection === "unfinished tool answer" || rejection === "terminal still streaming"
+      ? [{ rejection, terminal: true }]
+      : [
+          { rejection, terminal: false },
+          { rejection, terminal: true },
+        ],
+  )) {
+    it.effect(`rejects submitted-user resync with ${rejection} (terminal: ${terminal})`, () =>
       Effect.scoped(
         Effect.gen(function* () {
           const recovering =
@@ -3093,11 +3116,17 @@ describe("PrimeAgentDaemonAdapter", () => {
           if (rejection === "changed observed transcript")
             messages.unshift({ ...prompt, text: "changed prior user" });
           if (rejection === "missing observed transcript") messages.length = 0;
+          if (terminal) {
+            messages.push({
+              ...assistantMessage("completed answer"),
+              ...(rejection === "unfinished tool answer" ? { stopReason: "toolUse" as const } : {}),
+            });
+          }
           if (recovering) {
             yield* offer(captures, { _tag: "ConnectionStatus", status: "reconnecting" });
           }
           const lifecycle = {
-            ...delivered,
+            ...(terminal ? lifecycleSnapshot(correlationId, "completed", 3, { usage }) : delivered),
             ...(rejection === "different owner" ? { correlationId: "another-owner" } : {}),
             ...(rejection === "undelivered snapshot"
               ? { phase: "owned" as const, deliveryCrossed: false }
@@ -3110,7 +3139,7 @@ describe("PrimeAgentDaemonAdapter", () => {
             state: {
               ...initialSnapshot().state,
               messageCount: messages.length + (rejection === "hidden count mismatch" ? 1 : 0),
-              isStreaming: true,
+              isStreaming: !terminal || rejection === "terminal still streaming",
             },
             messages,
             replayContinuity:
@@ -10402,6 +10431,24 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(status).toMatchObject({
           payload: { presentation: { kind: "status", key: "build", text: "Running" } },
         });
+
+        for (const message of ["Starting Python kernel...", undefined, ""]) {
+          yield* offer(captures, {
+            _tag: "ExtensionRequest",
+            request: { id: "native-working-message", method: "setWorkingMessage", message },
+          });
+          const working = yield* awaitObservedType(
+            subscription.observed,
+            "session-presentation.updated",
+          );
+          expect(working.payload).toEqual({
+            presentation: {
+              kind: "status",
+              key: "prime-working-message",
+              ...(message ? { text: message } : {}),
+            },
+          });
+        }
 
         yield* offer(captures, {
           _tag: "ExtensionRequest",

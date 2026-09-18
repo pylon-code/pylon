@@ -607,6 +607,7 @@ const extensionMethod = Schema.Literals([
   "editor",
   "notify",
   "setStatus",
+  "setWorkingMessage",
   "setWidget",
 ]);
 
