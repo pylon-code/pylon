@@ -189,6 +189,18 @@ export const PairStopResult = Schema.Struct({
 });
 export type PairStopResult = typeof PairStopResult.Type;
 
+// ---- pair_reset ----
+
+export const PairResetResult = Schema.Struct({
+  threadId: Schema.String,
+  /** False when there was nothing to clear: the executor had never run. */
+  reset: Schema.Boolean,
+  state: PairExecutorState,
+  providerInstanceId: Schema.String,
+  model: Schema.String,
+});
+export type PairResetResult = typeof PairResetResult.Type;
+
 // ---- Errors ----
 
 export class PairLeadNotFoundError extends Schema.TaggedError<PairLeadNotFoundError>()(
@@ -401,6 +413,19 @@ const PairAwaitTool = Tool.make("pair_await", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const PairResetTool = Tool.make("pair_reset", {
+  description:
+    "Start the executor over with an empty context, on the same model, in your current worktree. Use it when the executor's context is nearly full or it has lost the thread of the work. Its transcript is deleted; the files it changed are untouched. Refused while it is running: stop it first. The next brief must stand on its own, because the executor remembers nothing.",
+  success: PairResetResult,
+  failure: PairToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Reset the pair executor")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
 const PairStopTool = Tool.make("pair_stop", {
   description:
     "Request an interrupt of the executor's running turn. interrupted=true means the request was accepted; confirm with pair_await.",
@@ -419,4 +444,5 @@ export const PairToolkit = Toolkit.make(
   PairHandoffTool,
   PairAwaitTool,
   PairStopTool,
+  PairResetTool,
 );

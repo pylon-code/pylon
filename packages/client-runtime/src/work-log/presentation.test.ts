@@ -665,6 +665,7 @@ describe("pair tool presentation", () => {
     ["pair_handoff", "Handed off to the pair executor", "Handing off to the pair executor"],
     ["pair_await", "Awaited the pair executor", "Awaiting the pair executor"],
     ["pair_stop", "Stopped the pair executor", "Stopping the pair executor"],
+    ["pair_reset", "Reset the pair executor", "Resetting the pair executor"],
   ])("labels %s with the Pylon tool icon", (tool, completed, running) => {
     for (const label of [`mcp__t3-code__${tool}`, `t3-code · ${tool}`, tool]) {
       expect(resolveWorkEntryToolPresentation({ label, toolLifecycleStatus: "completed" })).toEqual(

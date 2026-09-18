@@ -661,6 +661,8 @@ const make = Effect.gen(function* () {
     pair_handoff,
     pair_await,
     pair_stop,
+    // Contract stub: the executor implements this.
+    pair_reset: () => Effect.fail(new PairNotActiveError()),
   });
 });
 
