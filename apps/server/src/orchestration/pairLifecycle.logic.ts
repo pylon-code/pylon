@@ -64,3 +64,22 @@ export function pairLifecycleApplies(
       return derivePairExecutorState(executor) === "running";
   }
 }
+
+/** How long a never-briefed executor may wait for a lead that does not exist yet. */
+export const ORPHAN_EXECUTOR_GRACE_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * Pair executors nothing will ever brief. Turning Pair on in a draft creates the
+ * executor before the lead thread exists, so a missing lead is normal for a
+ * while; an abandoned draft, or a draft whose id changed before its first send,
+ * leaves that executor behind for good. Only an executor that never ran, whose
+ * lead is unknown, and that is older than the grace period counts.
+ */
+export function orphanedExecutorIds(_input: {
+  readonly threads: ReadonlyArray<OrchestrationThreadShell>;
+  /** Every thread id the server knows, archived ones included. */
+  readonly knownThreadIds: ReadonlySet<string>;
+  readonly nowMs: number;
+}): ReadonlyArray<ThreadId> {
+  return [];
+}

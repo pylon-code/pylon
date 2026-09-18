@@ -9,7 +9,13 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { pairLifecycleApplies, pairLifecycleIntent } from "./pairLifecycle.logic.ts";
+import { pairExecutorThreadId } from "@t3tools/shared/delegatedThreads";
+import {
+  ORPHAN_EXECUTOR_GRACE_MS,
+  orphanedExecutorIds,
+  pairLifecycleApplies,
+  pairLifecycleIntent,
+} from "./pairLifecycle.logic.ts";
 
 const NOW = "2026-09-18T00:00:00.000Z";
 const LEAD = ThreadId.make("lead:with:colons");
@@ -152,5 +158,53 @@ describe("pairLifecycleApplies", () => {
       false,
     );
     expect(pairLifecycleApplies("interrupt", { ...running, archivedAt: NOW })).toBe(false);
+  });
+});
+
+describe("orphaned pair executors", () => {
+  const nowMs = Date.parse(NOW);
+  // One second past the grace period before NOW.
+  const old = "2026-09-16T23:59:59.000Z";
+  const gone = ThreadId.make("abandoned-draft");
+  const orphan = executor({ id: pairExecutorThreadId(gone), createdAt: old, latestTurn: null });
+
+  it("finds a never-briefed executor whose lead never came to exist", () => {
+    expect(
+      orphanedExecutorIds({ threads: [orphan], knownThreadIds: new Set([orphan.id]), nowMs }),
+    ).toEqual([orphan.id]);
+  });
+
+  it("leaves alone anything a person could still be using", () => {
+    const known = new Set<string>([orphan.id]);
+    const cases: ReadonlyArray<readonly [string, OrchestrationThreadShell, ReadonlySet<string>]> = [
+      ["a lead that exists", orphan, new Set([orphan.id, gone])],
+      ["a draft paired a moment ago", { ...orphan, createdAt: NOW }, known],
+      ["an executor that ran", { ...orphan, latestTurn: turn }, known],
+      [
+        "an executor with a session",
+        {
+          ...orphan,
+          session: {
+            threadId: orphan.id,
+            status: "ready",
+            providerName: "antigravity",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: NOW,
+          },
+        },
+        known,
+      ],
+      [
+        "a fan-out child",
+        { ...orphan, id: ThreadId.make(`delegated:${gone}:0123456789abcdef`) },
+        known,
+      ],
+      ["an ordinary thread", { ...orphan, id: ThreadId.make("plain") }, known],
+    ];
+    for (const [label, thread, knownThreadIds] of cases) {
+      expect(orphanedExecutorIds({ threads: [thread], knownThreadIds, nowMs }), label).toEqual([]);
+    }
   });
 });

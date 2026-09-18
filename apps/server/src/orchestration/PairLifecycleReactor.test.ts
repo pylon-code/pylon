@@ -140,6 +140,8 @@ const makeHarness = Effect.fn(function* (input: {
         Effect.succeed(Option.fromNullishOr(active.find((thread) => thread.id === id))),
       getArchivedShellSnapshot: () =>
         Effect.succeed({ snapshotSequence: 1, projects: [], threads: archived, updatedAt: NOW }),
+      getShellSnapshot: () =>
+        Effect.succeed({ snapshotSequence: 1, projects: [], threads: active, updatedAt: NOW }),
     }),
     Layer.mock(OrchestrationEngineService)({
       subscribeDomainEvents: PubSub.subscribe(events).pipe(Effect.map(Stream.fromSubscription)),
@@ -243,6 +245,30 @@ describe("PairLifecycleReactor", () => {
         assert.deepStrictEqual(
           h.commands.map((command) => ({ type: command.type, threadId: targetOf(command) })),
           [{ type: "thread.delete", threadId: EXECUTOR }],
+        );
+      }),
+    ),
+  );
+
+  it.effect("deletes executors left behind by abandoned drafts when the server starts", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const longAgo = "2026-01-01T00:00:00.000Z";
+        const abandoned = executorOf(ThreadId.make("abandoned-draft"));
+        const archivedLead = ThreadId.make("archived-lead");
+        const h = yield* makeHarness({
+          active: [
+            shell(LEAD),
+            shell(EXECUTOR, { createdAt: longAgo }),
+            shell(abandoned, { createdAt: longAgo }),
+            // Its lead is archived, not missing: a known thread.
+            shell(executorOf(archivedLead), { createdAt: longAgo }),
+          ],
+          archived: [shell(archivedLead, { archivedAt: NOW })],
+        });
+        assert.deepStrictEqual(
+          h.commands.map((command) => [command.type, "threadId" in command && command.threadId]),
+          [["thread.delete", abandoned]],
         );
       }),
     ),
