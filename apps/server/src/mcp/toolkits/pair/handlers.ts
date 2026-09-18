@@ -30,6 +30,7 @@ import type { OrchestrationDispatchError } from "../../../orchestration/Errors.t
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
+import { PAIR_LEAD_PROTOCOL } from "../../../provider/RuntimeInstructions.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
@@ -45,6 +46,7 @@ import {
 import {
   PAIR_DELEGATION_KEY,
   derivePairExecutorState,
+  isPairLeadSupported,
   pairAwaitCapSeconds,
   pairExecutorThreadId,
   pairExecutorTitle,
@@ -59,6 +61,7 @@ import {
   PairFailedError,
   PairKeyInvalidError,
   PairLeadNotFoundError,
+  PairLeadUnsupportedError,
   PairMessageKeyConsumedError,
   PairModelUnavailableError,
   PairNotActiveError,
@@ -168,6 +171,13 @@ const make = Effect.gen(function* () {
       if (isDelegatedThreadId(scope.threadId)) {
         return yield* new PairDepthExceededError({ threadId: scope.threadId });
       }
+      const providerList = yield* providers.getProviders;
+      const leadSnapshot = providerList.find((p) => p.instanceId === scope.providerInstanceId);
+      if (leadSnapshot !== undefined && !isPairLeadSupported(leadSnapshot.driver)) {
+        return yield* new PairLeadUnsupportedError({
+          providerInstanceId: scope.providerInstanceId,
+        });
+      }
       const executorId = yield* executorIdFor(scope.threadId);
 
       return yield* withLeadGate(scope.threadId)(
@@ -187,6 +197,7 @@ const make = Effect.gen(function* () {
               runtimeMode: shell.runtimeMode,
               worktreePath: shell.worktreePath,
               branch: shell.branch,
+              protocol: PAIR_LEAD_PROTOCOL,
             };
             return result;
           }
@@ -284,6 +295,7 @@ const make = Effect.gen(function* () {
             runtimeMode: mode.mode,
             worktreePath: lead.worktreePath,
             branch: lead.branch,
+            protocol: PAIR_LEAD_PROTOCOL,
           };
           return result;
         }),
