@@ -92,6 +92,7 @@ function configuredMcpToolAvailability(
     browser: mcpCapabilities.has("preview"),
     device: mcpCapabilities.has("device"),
     delegation: mcpCapabilities.has("delegation"),
+    pair: mcpCapabilities.has("pair"),
   };
 }
 

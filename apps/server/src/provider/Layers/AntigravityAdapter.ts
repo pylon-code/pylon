@@ -1328,6 +1328,10 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                         input.threadId,
                         "delegation",
                       ),
+                      pairActive: McpProviderSession.hasMcpProviderCapability(
+                        input.threadId,
+                        "pair",
+                      ),
                       browserAvailable: McpProviderSession.hasMcpProviderCapability(
                         input.threadId,
                         "preview",
