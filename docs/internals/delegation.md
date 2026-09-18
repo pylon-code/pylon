@@ -121,6 +121,15 @@ executor while its lead's session is starting or running, so it is not restarted
 reactor reads no settings: following a lead is cleanup and keeps working after delegation is turned
 off.
 
+A brief can name the files its lead owns, normally its tests and contract, as `protectedPaths`.
+The handlers hash each file when the brief is accepted and `pair_await` reports the ones whose
+content changed or that disappeared, once the executor is no longer running. This is what makes
+"make these tests pass without editing them" checkable. A path that is absolute, contains `..`, or
+cannot be read refuses the brief before a turn starts. A steer keeps the record, each new brief
+replaces it, and a replayed `messageKey` cannot reset the baseline. The record lives in memory: a
+brief-to-await cycle rarely spans a restart, and after one `pair_await` reports `null` rather than
+guessing. Persisting it would have meant activity rows that both clients would then have to hide.
+
 ## Accepted limits
 
 - A follow-up is refused while the child is running, but a user message can arrive between the
