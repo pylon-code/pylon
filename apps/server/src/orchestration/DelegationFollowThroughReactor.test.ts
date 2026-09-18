@@ -1,3 +1,4 @@
+import { pairExecutorThreadId } from "@t3tools/shared/delegatedThreads";
 import {
   DEFAULT_SERVER_SETTINGS,
   EventId,
@@ -444,6 +445,28 @@ describe("DelegationFollowThroughReactor", () => {
         h.replace(shell(CHILD));
         yield* h.emit(CHILD);
         assert.strictEqual(h.commands.length, 0);
+      }),
+    ),
+  );
+  it.effect("still wakes a lead for its pair executor when delegation is disabled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = pairExecutorThreadId(PARENT);
+        const h = yield* makeHarness(
+          [shell(PARENT), shell(executor, true), shell(CHILD, true)],
+          false,
+        );
+        // A fan-out child finishing stays silent: that is what the setting is for.
+        h.replace(shell(CHILD));
+        yield* h.emit(CHILD);
+        assert.strictEqual(h.wakes().length, 0);
+        h.replace(shell(executor));
+        yield* h.emit(executor);
+        assert.strictEqual(h.wakes().length, 1);
+        assert.deepStrictEqual(
+          h.wakes()[0]!.children.map((child) => child.threadId),
+          [executor],
+        );
       }),
     ),
   );

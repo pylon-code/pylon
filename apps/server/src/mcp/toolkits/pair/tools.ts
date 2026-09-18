@@ -2,8 +2,8 @@
  * Pair toolkit declaration: one lead thread and one persistent executor thread
  * that works in the lead's worktree. The executor's id is the delegated child
  * id for the reserved key `pair`, so no contract field or table records the
- * link. Every tool requires the `delegation` capability, which keeps
- * `enableAgentDelegation` as the single kill switch.
+ * link. Starting a pair requires the `delegation` capability; driving an
+ * existing pair accepts either the `pair` or `delegation` capability.
  *
  * @module mcp/toolkits/pair/tools
  */

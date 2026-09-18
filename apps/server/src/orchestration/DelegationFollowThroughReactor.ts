@@ -7,6 +7,7 @@ import {
   type OrchestrationEvent,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { pairExecutorThreadId } from "@t3tools/shared/delegatedThreads";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -26,6 +27,7 @@ import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts"
 import {
   DELEGATION_OBSERVED_ACTIVITY_KIND,
   delegationObservationReceipt,
+  followThroughChildren,
   observeDelegatedChild,
   isActionableDelegationObservation,
   isDelegationParentEligible,
@@ -119,9 +121,13 @@ export const make = Effect.gen(function* () {
       yield* settingsService.getSettings,
       parent.projectId,
     ).settings;
-    if (!settings.enableAgentDelegation) return;
     const snapshot = yield* snapshots.getShellSnapshot();
-    const children = snapshot.threads.filter((child) => isChildOfParent(child.id, parent.id));
+    const pairExecutorId = pairExecutorThreadId(parent.id);
+    const children = followThroughChildren({
+      delegationEnabled: settings.enableAgentDelegation,
+      pairExecutorId,
+      children: snapshot.threads.filter((child) => isChildOfParent(child.id, parent.id)),
+    });
     if (children.length === 0) return;
     const detailOption = yield* snapshots.getThreadDetailById(parent.id, {
       activityKinds: [DELEGATION_OBSERVED_ACTIVITY_KIND, DELIVERED, PAUSED],

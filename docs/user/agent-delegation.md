@@ -139,8 +139,8 @@ follows **Child permissions**. While the pair is on, the control shows the execu
 it is doing, and **Open executor** takes you to its thread. The switch waits while the lead is
 mid-turn, because a change applies between turns. Turning the pair off deletes an executor that was
 never briefed and archives one that has history; turning it on again brings an archived executor
-back. To change the executor's model, turn the pair off first. You can also ask for a pair in your
-message, for example “Pair with Antigravity for this.”
+back. To change the executor's model, turn the pair off first. With **Pylon delegation** on, you can
+also ask for a pair in your message, for example “Pair with Antigravity for this.”
 
 While a thread is paired, the lead's own subagents are paused for that thread only, so
 implementation goes to the executor. Your provider's settings are not changed and other threads are
@@ -151,9 +151,13 @@ cannot be switched off, so it is told to leave them alone rather than prevented 
 
 The executor appears under its parent in the sidebar like any delegated thread. Archive it to turn
 the pair off for that thread. Archiving, settling, or deleting the lead does the same to its
-executor. Rewinding the lead stops the executor first, because both work on the same files. Pairing
-needs **Pylon delegation** turned on in **Settings → Integrations**; until it is, the switch stays
-off and says so. The Pair control is on the web and desktop apps; the mobile app does not have it yet.
+executor. Rewinding the lead stops the executor first, because both work on the same files. The Pair
+control is on the web and desktop apps; the mobile app does not have it yet.
+
+Pairing does not need **Pylon delegation** turned on. That setting decides whether agents may start
+other threads on their own; a pair is something you switch on yourself, for one thread. With the
+setting off, a paired lead still briefs its executor and is still told when it finishes, and an agent
+that is merely asked to "pair with" another provider cannot start one by itself.
 
 ## Things to know
 

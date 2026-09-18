@@ -68,6 +68,37 @@ export function isActionableDelegationObservation(observation: DelegationObserva
   return observation.phase !== "running";
 }
 
+/**
+ * The children whose updates may wake this parent. The Pylon delegation setting
+ * covers what an agent starts on its own. A pair is switched on per thread by
+ * the user, so its executor wakes the lead whether or not that setting is on.
+ */
+export function followThroughChildren<T extends { readonly id: string }>(input: {
+  readonly delegationEnabled: boolean;
+  readonly pairExecutorId: string;
+  readonly children: ReadonlyArray<T>;
+}): ReadonlyArray<T> {
+  if (input.delegationEnabled) {
+    return input.children;
+  }
+  return input.children.filter((child) => child.id === input.pairExecutorId);
+}
+
+/** Whether a follow-through wake naming these children may be admitted. */
+export function isFollowThroughAdmitted(input: {
+  readonly delegationEnabled: boolean;
+  readonly pairExecutorId: string;
+  readonly childThreadIds: ReadonlyArray<string>;
+}): boolean {
+  if (input.delegationEnabled) {
+    return true;
+  }
+  return (
+    input.childThreadIds.length > 0 &&
+    input.childThreadIds.every((id) => id === input.pairExecutorId)
+  );
+}
+
 /** The activity kind that records what the follow-through reactor last saw of a child. */
 export const DELEGATION_OBSERVED_ACTIVITY_KIND = "delegation.child-state";
 

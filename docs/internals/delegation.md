@@ -111,8 +111,13 @@ an explicit 0 waits the whole cap; the call still returns the moment the executo
 0 reads the state without waiting.
 
 Pairing is session-scoped. When a provider session is prepared, `ProviderService` adds a `pair`
-capability if delegation is on and the thread's executor exists and is not archived. No tool requires
-that capability; adapters read it. A paired Claude query denies the Agent tool (named Task in older
+capability if the thread's executor exists and is not archived. The `enableAgentDelegation` setting
+is not consulted: it covers what an agent starts on its own, and a pair is switched on by the user
+for one thread. So `pair_start` still requires the `delegation` capability, while `pair_handoff`,
+`pair_await` and `pair_stop` accept either one, and the follow-through reactor and the engine's
+admission of its wake let a pair executor through with the setting off (`followThroughChildren`,
+`isFollowThroughAdmitted`). Fan-out children stay silent in that case. Adapters read the `pair`
+capability too. A paired Claude query denies the Agent tool (named Task in older
 Claude Code), a paired Codex app-server starts with `features.multi_agent=false` and
 `features.multi_agent_v2=false`, and every harness that receives Pylon instructions gets the pair
 protocol in place of the delegation block. Nothing is
@@ -130,7 +135,9 @@ tools are deferred behind tool discovery, so a Codex lead that is not told about
 spawns its own subagent on its own model instead. That happened in every run until Pylon's
 instructions reached Codex (see the Codex protocol traps in [providers](providers.md)). With them, a
 fresh Codex lead made one `pair_handoff` and one `pair_await`, a Claude executor did the work, and no
-collaboration tool was called. A Claude lead was verified the same way.
+collaboration tool was called. Claude and Prime Agent leads were verified the same way, Prime on its
+native daemon with an OpenAI Codex model; its log does not name tools, so the evidence is the
+`pair-message:` brief on the executor and the consumed receipt on the lead.
 
 The executor follows its lead. `PairLifecycleReactor` watches domain events and dispatches existing
 commands: archiving, settling, or deleting a lead does the same to its executor, including an

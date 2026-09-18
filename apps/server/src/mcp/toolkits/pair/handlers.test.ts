@@ -392,6 +392,25 @@ const tagOf = <A, E extends { readonly _tag: string }>(effect: Effect.Effect<A, 
   );
 
 describe("pair toolkit gate", () => {
+  it.effect("lets a paired lead brief, await and stop with Pylon delegation off", () =>
+    Effect.gen(function* () {
+      // A session is paired because the user switched the pair on for this thread.
+      // Only an agent starting a pair by itself still needs the delegation setting.
+      const harness = yield* makeHarness({ shells: [makeShell(LEAD_ID), makeExecutor()] });
+      const paired = invocation({ capabilities: ["pair", "pull-requests"] });
+      expect(
+        yield* harness.call("pair_handoff", { messageKey: "m-1", text: "Step one" }, paired),
+      ).toMatchObject({ accepted: true });
+      expect(yield* harness.call("pair_await", { maxSeconds: 0 }, paired)).toMatchObject({
+        threadId: EXECUTOR_ID,
+      });
+      expect(yield* harness.call("pair_start", {}, paired).pipe(Effect.flip)).toMatchObject({
+        _tag: "McpCapabilityUnavailableError",
+        capability: "delegation",
+      });
+    }),
+  );
+
   it.effect("requires the delegation capability for every tool", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ shells: [makeShell(LEAD_ID), makeExecutor()] });

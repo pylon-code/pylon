@@ -5,7 +5,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   pairLockedReason,
-  pairSetupReason,
   pairToggleStep,
   resolveExecutorSelection,
   shouldRestartLeadSession,
@@ -38,11 +37,7 @@ const on = (phase: Extract<PairState, { kind: "on" }>["phase"]): PairState => ({
   modelSelection: SELECTION,
   activity: null,
 });
-const base = {
-  executorSelection: SELECTION,
-  childRuntimeMode: "inherit" as const,
-  delegationEnabled: true,
-};
+const base = { executorSelection: SELECTION, childRuntimeMode: "inherit" as const };
 
 describe("pairLockedReason", () => {
   it("makes a change wait while the lead is mid-turn, and only then", () => {
@@ -56,32 +51,7 @@ describe("pairLockedReason", () => {
   });
 });
 
-describe("pairSetupReason", () => {
-  it("asks for Pylon delegation before a pair can start, and never blocks turning one off", () => {
-    expect(pairSetupReason({ delegationEnabled: false, state: off })).toBe(
-      "Turn on Pylon delegation in Settings → Integrations to pair.",
-    );
-    expect(pairSetupReason({ delegationEnabled: true, state: off })).toBeNull();
-    expect(pairSetupReason({ delegationEnabled: false, state: on("idle") })).toBeNull();
-  });
-});
-
 describe("pairToggleStep", () => {
-  it("does not start a pair the server would not honor", () => {
-    expect(
-      pairToggleStep({ ...base, delegationEnabled: false, on: true, state: off, lead: lead() }),
-    ).toBeNull();
-    expect(
-      pairToggleStep({
-        ...base,
-        delegationEnabled: false,
-        on: false,
-        state: on("idle"),
-        lead: lead(),
-      }),
-    ).toEqual({ kind: "delete", threadId: EXECUTOR });
-  });
-
   it("creates the executor in the lead's location when turned on", () => {
     expect(pairToggleStep({ ...base, on: true, state: off, lead: lead() })).toEqual({
       kind: "create",

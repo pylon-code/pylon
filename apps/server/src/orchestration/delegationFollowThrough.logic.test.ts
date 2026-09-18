@@ -11,6 +11,8 @@ import { deriveDelegatedThreadState } from "../mcp/toolkits/delegation/logic.ts"
 import {
   DELEGATION_OBSERVED_ACTIVITY_KIND,
   consumedDelegationObservation,
+  followThroughChildren,
+  isFollowThroughAdmitted,
   delegationObservationReceipt,
   observeDelegatedChild,
   isActionableDelegationObservation,
@@ -254,5 +256,47 @@ describe("an observation a parent read in-turn", () => {
         baseline: true,
       },
     });
+  });
+});
+
+describe("who may wake a parent when Pylon delegation is off", () => {
+  const executor = { id: "delegated:parent:pairpairpairpair" };
+  const fanOut = { id: "delegated:parent:0123456789abcdef" };
+
+  it("keeps every child while delegation is on, and only the pair executor while it is off", () => {
+    const children = [executor, fanOut];
+    expect(
+      followThroughChildren({ delegationEnabled: true, pairExecutorId: executor.id, children }),
+    ).toEqual(children);
+    expect(
+      followThroughChildren({ delegationEnabled: false, pairExecutorId: executor.id, children }),
+    ).toEqual([executor]);
+    expect(
+      followThroughChildren({
+        delegationEnabled: false,
+        pairExecutorId: executor.id,
+        children: [fanOut],
+      }),
+    ).toEqual([]);
+  });
+
+  it("admits a wake with delegation off only when every child named is the pair executor", () => {
+    const base = { pairExecutorId: executor.id };
+    expect(
+      isFollowThroughAdmitted({ ...base, delegationEnabled: true, childThreadIds: [fanOut.id] }),
+    ).toBe(true);
+    expect(
+      isFollowThroughAdmitted({ ...base, delegationEnabled: false, childThreadIds: [executor.id] }),
+    ).toBe(true);
+    expect(
+      isFollowThroughAdmitted({
+        ...base,
+        delegationEnabled: false,
+        childThreadIds: [executor.id, fanOut.id],
+      }),
+    ).toBe(false);
+    expect(isFollowThroughAdmitted({ ...base, delegationEnabled: false, childThreadIds: [] })).toBe(
+      false,
+    );
   });
 });

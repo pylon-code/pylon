@@ -42,22 +42,6 @@ export function pairLockedReason(lead: PairLead | null): string | null {
   return null;
 }
 
-/**
- * What has to be set up before a pair can start, or null when nothing does. The
- * server only gives a lead its pair tools while Pylon delegation is on, so a pair
- * started without it would create an executor nothing could brief. Turning a pair
- * off is never blocked by this.
- */
-export function pairSetupReason(input: {
-  readonly delegationEnabled: boolean;
-  readonly state: PairState;
-}): string | null {
-  if (input.state.kind === "off" && !input.delegationEnabled) {
-    return "Turn on Pylon delegation in Settings → Integrations to pair.";
-  }
-  return null;
-}
-
 /** The step a toggle performs, or null when the toggle changes nothing or is not allowed. */
 export function pairToggleStep(input: {
   readonly on: boolean;
@@ -65,7 +49,6 @@ export function pairToggleStep(input: {
   readonly lead: PairLead | null;
   readonly executorSelection: ModelSelection | null;
   readonly childRuntimeMode: "inherit" | "approval-required";
-  readonly delegationEnabled: boolean;
 }): PairToggleStep | null {
   if (input.lead === null) {
     return null;
@@ -74,9 +57,6 @@ export function pairToggleStep(input: {
     return null;
   }
   if (input.state.kind === "unsupported-lead") {
-    return null;
-  }
-  if (input.on && pairSetupReason(input) !== null) {
     return null;
   }
   if (input.on && input.state.kind === "on") {
