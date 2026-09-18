@@ -1,15 +1,26 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
+import * as Exit from "effect/Exit";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { assert, it } from "@effect/vitest";
 
-import { CheckpointRef, GitCommandError } from "@t3tools/contracts";
+import { CheckpointRef, GitCommandError, VcsProcessExitError } from "@t3tools/contracts";
 import * as ServerConfig from "../config.ts";
+import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import type * as VcsDriver from "./VcsDriver.ts";
+import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 import { runVcsDriverContractSuite } from "./testing/VcsDriverContractHarness.ts";
 
@@ -20,6 +31,10 @@ const GitContractLayer = Layer.mergeAll(GitVcsDriver.vcsLayer, GitVcsDriver.laye
   Layer.provide(ServerConfigLayer),
   Layer.provideMerge(VcsProcess.layer),
   Layer.provideMerge(NodeServices.layer),
+);
+const GitCaptureContractLayer = Layer.merge(
+  GitContractLayer,
+  ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer)),
 );
 
 const runGit = (cwd: string, args: ReadonlyArray<string>) =>
@@ -85,6 +100,125 @@ const makeCheckpointFixture = Effect.fn("makeCheckpointFixture")(function* (
   yield* fileSystem.writeFileString(path.join(cwd, "file.txt"), "unstaged\n");
   return { git, checkpointRef };
 });
+
+const makeCaptureStore = Effect.fn("test.makeCaptureStore")(function* (
+  driver: VcsDriver.VcsDriver["Service"],
+  cwd: string,
+) {
+  const repository = yield* driver.detectRepository(cwd);
+  if (repository === null) return yield* Effect.die("Expected a test Git repository");
+  const handle = { kind: repository.kind, repository, driver };
+  return yield* CheckpointStore.make.pipe(
+    Effect.provideService(VcsDriverRegistry.VcsDriverRegistry, {
+      get: () => Effect.succeed(driver),
+      detect: () => Effect.succeed(handle),
+      resolve: () => Effect.succeed(handle),
+    }),
+  );
+});
+
+it.effect.each([
+  { phase: "add", nestedRecovery: false, expireRecovery: false },
+  { phase: "update-ref", nestedRecovery: false, expireRecovery: false },
+])(
+  "checkpoint handles a $phase lock with nestedRecovery=$nestedRecovery, expireRecovery=$expireRecovery",
+  ({ phase, nestedRecovery, expireRecovery }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const liveRunner = yield* ProcessRunner.ProcessRunner;
+      const driver = yield* GitVcsDriver.makeVcsDriverShape();
+      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-ref-race-" });
+      const { git, checkpointRef } = yield* makeCheckpointFixture(driver, cwd);
+      if (nestedRecovery) yield* git(["init", "empty"]);
+      const originalIndex = yield* fs.readFile(path.join(cwd, ".git", "index"));
+      const refLockPath = path.join(cwd, ".git", `${checkpointRef}.lock`);
+      const failed = yield* Deferred.make<void>();
+      const retryReached = yield* Deferred.make<void>();
+      const allowRetry = yield* Deferred.make<void>();
+      const clock = yield* Clock.Clock;
+      const privateIndexes = new Set<string>();
+      let racedAttempts = 0;
+      let discoveries = 0;
+      let stageError: VcsProcessExitError | undefined;
+      const captureProcess = yield* VcsProcess.make.pipe(
+        Effect.provideService(ProcessRunner.ProcessRunner, {
+          run: (input) => {
+            if (input.args.includes("--others")) discoveries += 1;
+            if (input.env?.GIT_INDEX_FILE) privateIndexes.add(input.env.GIT_INDEX_FILE);
+            const initialStage =
+              phase === "add" &&
+              nestedRecovery &&
+              !input.args.some((arg) => arg.startsWith(":(exclude,literal)"));
+            if (!input.args.includes(phase) || initialStage || ++racedAttempts !== 1) {
+              return liveRunner.run(input);
+            }
+            const lockPath = phase === "add" ? `${input.env!.GIT_INDEX_FILE!}.lock` : refLockPath;
+            return Effect.gen(function* () {
+              yield* fs
+                .makeDirectory(path.dirname(lockPath), { recursive: true })
+                .pipe(Effect.orDie);
+              yield* fs.writeFileString(lockPath, "concurrent ref writer").pipe(Effect.orDie);
+              return yield* liveRunner.run(input).pipe(
+                Effect.ensuring(fs.remove(lockPath).pipe(Effect.orDie)),
+                Effect.tap(() => Deferred.succeed(failed, undefined)),
+              );
+            });
+          },
+        }),
+      );
+      const captureDriver = yield* GitVcsDriver.makeVcsDriverShape().pipe(
+        Effect.provideService(VcsProcess.VcsProcess, {
+          run: (input) =>
+            captureProcess.run(input).pipe(
+              Effect.tapError((error) => {
+                if (input.args.includes("add") && error._tag === "VcsProcessExitError")
+                  stageError = error;
+                return Effect.void;
+              }),
+            ),
+        }),
+      );
+      const captureStore = yield* makeCaptureStore(captureDriver, cwd);
+      const fiber = yield* captureStore.captureCheckpoint({ cwd, checkpointRef }).pipe(
+        Effect.provideService(Clock.Clock, {
+          ...clock,
+          sleep: (duration) =>
+            Duration.toMillis(duration) === 75
+              ? Deferred.succeed(retryReached, undefined).pipe(
+                  Effect.andThen(Deferred.await(allowRetry)),
+                )
+              : clock.sleep(duration),
+        }),
+        Effect.exit,
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(failed);
+      yield* Deferred.await(retryReached);
+      if (expireRecovery) yield* TestClock.adjust("5 seconds");
+      else yield* Deferred.succeed(allowRetry, undefined);
+      const result = yield* Fiber.join(fiber);
+      if (expireRecovery) {
+        if (Exit.isSuccess(result))
+          return yield* Effect.die("Expected the recovery deadline to expire");
+        const error = Cause.findErrorOption(result.cause);
+        assert.isTrue(error._tag === "Some");
+        if (error._tag === "Some") assert.strictEqual(error.value, stageError);
+      } else assert.isTrue(Exit.isSuccess(result));
+      assert.strictEqual(racedAttempts, expireRecovery ? 1 : 2);
+      assert.strictEqual(discoveries, nestedRecovery ? 1 : 0);
+      assert.strictEqual(privateIndexes.size, 1);
+      assert.strictEqual(
+        yield* driver.checkpoints.hasCheckpointRef({ cwd, checkpointRef }),
+        !expireRecovery,
+      );
+      for (const index of privateIndexes) {
+        assert.isFalse(yield* fs.exists(index));
+        assert.isFalse(yield* fs.exists(`${index}.lock`));
+      }
+      assert.deepEqual(yield* fs.readFile(path.join(cwd, ".git", "index")), originalIndex);
+    }).pipe(Effect.scoped, Effect.provide(GitCaptureContractLayer)),
+);
 
 it.effect("checkpoint capture does not rerun clean filters for unchanged indexed files", () =>
   Effect.gen(function* () {
