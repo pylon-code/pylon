@@ -164,9 +164,11 @@ the pair off for that thread. Archiving, settling, or deleting the lead does the
 executor. A lead cannot be rewound while its executor is working, because both use the same files:
 stop the executor first, then rewind.
 
-You turn a pair on and off from the web and desktop apps. On a phone, a paired thread shows who it
-is paired with and what the executor is doing above the composer, with one tap to open the executor;
-executors stay out of the phone's thread lists, since you reach them from their lead.
+On a phone, a paired thread shows who it is paired with and what the executor is doing above the
+composer, with one tap to open the executor; executors stay out of the phone's thread lists, since
+you reach them from their lead. To turn a pair on or off there, open the thread's settings and use
+**Pair with an executor**. The phone has no executor picker: it pairs with the project's **Default
+delegation model**, and the switch says so when none is set.
 
 Pairing does not need **Pylon delegation** turned on. That setting decides whether agents may start
 other threads on their own; a pair is something you switch on yourself, for one thread. With the

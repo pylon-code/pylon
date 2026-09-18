@@ -1,4 +1,9 @@
-import { pairExecutorCreateInput, type PairExecutorCreateInput, type PairState } from "./pair.ts";
+import {
+  pairExecutorCreateInput,
+  pairStatusLine,
+  type PairExecutorCreateInput,
+  type PairState,
+} from "./pair.ts";
 import type {
   ModelSelection,
   OrchestrationSession,
@@ -123,7 +128,7 @@ export function resolveExecutorSelection(input: {
  * project's default delegation model, so without one the switch explains where
  * to set it. `detail` is the one line shown under the switch.
  */
-export function pairSettingsRow(_input: {
+export function pairSettingsRow(input: {
   readonly state: PairState;
   readonly lockedReason: string | null;
   /** The executor's own model while the pair is on; the project's default while it is off. */
@@ -131,5 +136,30 @@ export function pairSettingsRow(_input: {
   /** That model's display name, or "" when there is none. */
   readonly executorLabel: string;
 }): { readonly value: boolean; readonly disabled: boolean; readonly detail: string | null } {
-  return { value: false, disabled: true, detail: null };
+  if (input.state.kind === "unsupported-lead") {
+    return { value: false, disabled: true, detail: input.state.reason };
+  }
+  const value = input.state.kind === "on";
+  if (input.lockedReason !== null && input.lockedReason.length > 0) {
+    return { value, disabled: true, detail: input.lockedReason };
+  }
+  if (input.state.kind === "on") {
+    return {
+      value: true,
+      disabled: false,
+      detail: pairStatusLine(input.state, input.executorLabel),
+    };
+  }
+  if (input.executorSelection === null) {
+    return {
+      value: false,
+      disabled: true,
+      detail: "Set a default delegation model in the project's settings to pair from here.",
+    };
+  }
+  return {
+    value: false,
+    disabled: false,
+    detail: `Pairs this thread with ${input.executorLabel}.`,
+  };
 }
