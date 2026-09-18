@@ -526,23 +526,32 @@ describe("delegation toolkit gate", () => {
   it.effect("refuses the key reserved for the pair executor on every tool", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
-      const calls = [
-        harness.call("delegate_thread", { ...delegateInput, delegationKey: "pair" }),
-        harness.call("delegated_thread_status", { delegationKey: "pair" }),
-        harness.call("delegated_thread_result", { delegationKey: "pair" }),
-        harness.call("send_to_delegated_thread", {
-          delegationKey: "pair",
-          messageKey: "m-1",
-          text: "hello",
-        }),
-        harness.call("interrupt_delegated_thread", { delegationKey: "pair" }),
-      ];
-      for (const call of calls) {
-        expect(yield* call.pipe(Effect.flip)).toMatchObject({
-          _tag: "DelegationKeyReservedError",
-          delegationKey: "pair",
-        });
-      }
+      const reserved = { _tag: "DelegationKeyReservedError", delegationKey: "pair" };
+      expect(
+        yield* harness
+          .call("delegate_thread", { ...delegateInput, delegationKey: "pair" })
+          .pipe(Effect.flip),
+      ).toMatchObject(reserved);
+      expect(
+        yield* harness.call("delegated_thread_status", { delegationKey: "pair" }).pipe(Effect.flip),
+      ).toMatchObject(reserved);
+      expect(
+        yield* harness.call("delegated_thread_result", { delegationKey: "pair" }).pipe(Effect.flip),
+      ).toMatchObject(reserved);
+      expect(
+        yield* harness
+          .call("send_to_delegated_thread", {
+            delegationKey: "pair",
+            messageKey: "m-1",
+            text: "hello",
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject(reserved);
+      expect(
+        yield* harness
+          .call("interrupt_delegated_thread", { delegationKey: "pair" })
+          .pipe(Effect.flip),
+      ).toMatchObject(reserved);
       expect(yield* harness.commandTypes).toEqual([]);
     }),
   );
