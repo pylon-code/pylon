@@ -7,7 +7,9 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { CommandId, OrchestrationCommand } from "@t3tools/contracts";
+import { pairExecutorThreadId } from "@t3tools/shared/delegatedThreads";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { isFollowThroughAdmitted } from "../delegationFollowThrough.logic.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -413,8 +415,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 return {
                   enabled:
                     parent !== undefined &&
-                    resolveProjectSettings(settings, parent.projectId).settings
-                      .enableAgentDelegation,
+                    isFollowThroughAdmitted({
+                      delegationEnabled: resolveProjectSettings(settings, parent.projectId).settings
+                        .enableAgentDelegation,
+                      pairExecutorId: pairExecutorThreadId(command.threadId),
+                      childThreadIds: command.children.map((c) => c.threadId),
+                    }),
                   messageExists: Option.isSome(message),
                   deliveredNotificationIds,
                 };

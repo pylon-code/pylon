@@ -120,6 +120,10 @@ const mapDispatch =
       }),
     );
 
+const requirePairCapability = McpInvocationContext.requireMcpCapability("pair").pipe(
+  Effect.catch(() => McpInvocationContext.requireMcpCapability("delegation")),
+);
+
 const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
@@ -343,7 +347,7 @@ const make = Effect.gen(function* () {
     readonly steer?: boolean | undefined;
   }) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireMcpCapability("delegation");
+      const scope = yield* requirePairCapability;
       if (!isValidDelegationKey(input.messageKey)) {
         return yield* new PairKeyInvalidError();
       }
@@ -495,7 +499,7 @@ const make = Effect.gen(function* () {
     readonly maxChars?: number | undefined;
   }) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireMcpCapability("delegation");
+      const scope = yield* requirePairCapability;
       const executorId = yield* executorIdFor(scope.threadId);
       const existing = yield* findExecutor(executorId);
       if (Option.isNone(existing)) {
@@ -601,7 +605,7 @@ const make = Effect.gen(function* () {
 
   const pair_stop = () =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireMcpCapability("delegation");
+      const scope = yield* requirePairCapability;
       const executorId = yield* executorIdFor(scope.threadId);
 
       return yield* withLeadGate(scope.threadId)(

@@ -1217,18 +1217,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     // A delegated child never receives delegation; its id carries the prefix.
     if (access.delegation && !threadId.startsWith("delegated:")) {
       capabilities.add("delegation");
-      if (Option.isSome(projectionQuery)) {
-        const executorId = pairExecutorThreadId(threadId, (input) =>
-          NodeCrypto.createHash("sha256").update(input).digest("hex"),
-        );
-        const executor = yield* projectionQuery.value
-          .getThreadShellById(executorId)
-          .pipe(Effect.orElseSucceed(() => Option.none()));
-        // An archived executor is a pair that was turned off; the lead gets its
-        // own subagents and the delegation instructions back.
-        if (Option.isSome(executor) && executor.value.archivedAt === null) {
-          capabilities.add("pair");
-        }
+    }
+    if (!threadId.startsWith("delegated:") && Option.isSome(projectionQuery)) {
+      const executorId = pairExecutorThreadId(threadId, (input) =>
+        NodeCrypto.createHash("sha256").update(input).digest("hex"),
+      );
+      const executor = yield* projectionQuery.value
+        .getThreadShellById(executorId)
+        .pipe(Effect.orElseSucceed(() => Option.none()));
+      // An archived executor is a pair that was turned off; the lead gets its
+      // own subagents and the delegation instructions back.
+      if (Option.isSome(executor) && executor.value.archivedAt === null) {
+        capabilities.add("pair");
       }
     }
     return capabilities;
