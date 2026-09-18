@@ -1234,6 +1234,32 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return capabilities;
   });
 
+  /**
+   * A paired lead hands work to its executor, so its own subagents are held for
+   * this session wherever the provider lets Pylon set their depth; Prime Agent is
+   * the one that does today. The change is the session's own and never touches
+   * the provider's global setting, and a failure only logs: the pair protocol
+   * already tells the lead not to use them.
+   */
+  const holdPairedAgentDepth = Effect.fn("ProviderService.holdPairedAgentDepth")(function* (
+    threadId: ThreadId,
+    adapter: ProviderAdapterShape<ProviderAdapterError>,
+  ) {
+    const setDepth = adapter.setSessionAgentDepth;
+    if (setDepth === undefined) return;
+    const capabilities = yield* agentAccessCapabilities(threadId);
+    if (!capabilities.has("pair")) return;
+    yield* setDepth(threadId, 0).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider.session.pair-agent-depth-failed", {
+          threadId,
+          provider: adapter.provider,
+          cause,
+        }),
+      ),
+    );
+  });
+
   /** Install only the local CLI here. device_open supplies a separate config for each host. */
   const hostPlatform = yield* HostProcessPlatform;
   const devices = yield* Effect.serviceOption(DeviceService.DeviceService);
@@ -1906,6 +1932,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             ),
           ),
         );
+      yield* holdPairedAgentDepth(input.binding.threadId, adapter);
       yield* requireAdapterGenerationCurrent(adapter, input.operation).pipe(
         Effect.onError(() =>
           adapter
@@ -2215,6 +2242,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                 `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
               );
             }
+            yield* holdPairedAgentDepth(threadId, adapter);
             const sessionWithInstance = {
               ...session,
               providerInstanceId: resolvedInstanceId,

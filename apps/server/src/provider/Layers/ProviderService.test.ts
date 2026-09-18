@@ -7171,6 +7171,13 @@ describe("agent browser access", () => {
           });
         }).pipe(Effect.provide(layer));
         assert.deepEqual(issued, [[...expected]], label);
+        // A paired lead's own subagents are held for that session only, on any
+        // provider that lets Pylon set the depth: Prime Agent is the one today.
+        assert.deepEqual(
+          codex.setSessionAgentDepth.mock.calls,
+          expected.some((capability) => capability === "pair") ? [[threadId, 0]] : [],
+          `${label}: agent depth`,
+        );
       }
     }).pipe(Effect.provide(NodeServices.layer)),
   );
