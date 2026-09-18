@@ -11,6 +11,7 @@ import type {
   ApprovalRequestId,
   CheckpointRef,
   CommandId,
+  EventId,
   IsoDateTime,
   MessageId,
   OrchestrationCheckpointSummary,
@@ -101,6 +102,15 @@ export interface ProjectionSnapshotQueryShape {
     readonly threadId: ThreadId;
     readonly requestId: ApprovalRequestId;
   }) => Effect.Effect<Option.Option<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * Read every activity of one kind across active (not deleted, not archived)
+   * threads, without hydrating the threads. Used at startup to find state a
+   * crashed process left behind.
+   */
+  readonly listActivitiesByKind: (
+    kind: string,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
 
   /**
    * Read the lightweight command snapshot used to bootstrap the in-memory
@@ -246,6 +256,17 @@ export interface ProjectionSnapshotQueryShape {
    * Read one requested message and whether another user message exists.
    * Newer queued messages count too, preserving first-turn title eligibility.
    */
+  readonly getDelegationObservationActivities: (input: {
+    readonly threadId: ThreadId;
+    readonly childThreadIds: ReadonlyArray<ThreadId>;
+  }) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /** Durable delivery receipts, independent of the bounded activity window. */
+  readonly getDeliveredDelegationNotificationIds: (input: {
+    readonly threadId: ThreadId;
+    readonly notificationIds: ReadonlyArray<EventId>;
+  }) => Effect.Effect<ReadonlyArray<EventId>, ProjectionRepositoryError>;
+
   readonly getTurnStartMessage: (input: {
     readonly threadId: ThreadId;
     readonly messageId: MessageId;

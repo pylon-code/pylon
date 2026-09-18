@@ -412,6 +412,18 @@ describe("shouldRecedeSidebarThread", () => {
     expect(shouldRecedeSidebarThread({ ...input, isActive: true })).toBe(false);
     expect(shouldRecedeSidebarThread({ ...input, isSelected: true })).toBe(false);
   });
+
+  it.each([false, true])("keeps input-required threads prominent with unread=%s", (isUnread) => {
+    expect(
+      shouldRecedeSidebarThread({
+        status: "input",
+        isUnread,
+        isWoke: false,
+        isActive: false,
+        isSelected: false,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("createThreadJumpHintVisibilityController", () => {
@@ -841,8 +853,8 @@ describe("resolveSidebarThreadStatus", () => {
     });
     expect(resolveSidebarThreadActivityVisual("monitoring", false)).toEqual({
       label: "Monitoring",
-      icon: null,
-      className: "text-sky-600 dark:text-sky-400",
+      icon: "monitoring",
+      className: "text-foreground dark:text-white",
     });
   });
 
@@ -1136,6 +1148,20 @@ describe("resolveSidebarDropTarget", () => {
   ];
   const resolve = (activeKey: string, overId: string) =>
     resolveSidebarDropTarget(items, activeKey, overId);
+
+  it("drops the moved row's children from the destination order only", () => {
+    const children = new Set(["a2", "p2"]);
+    expect(resolveSidebarDropTarget(items, "p1", "a1", children)).toMatchObject({
+      section: "active",
+      pinnedOrder: ["p2"],
+      activeOrder: ["a1", "p1"],
+    });
+    expect(resolveSidebarDropTarget(items, "a1", "p1", children)).toMatchObject({
+      section: "pinned",
+      pinnedOrder: ["a1", "p1"],
+      activeOrder: ["a2"],
+    });
+  });
 
   it("keeps marker-like scoped thread keys draggable", () => {
     const key = "marker:pinned-header";
@@ -1970,6 +1996,17 @@ describe("resolveWorkingStartedAt", () => {
         session,
       }),
     ).toBe("2026-03-09T10:00:00.000Z");
+  });
+
+  it("does not restart a delegation timer after unrelated parent responses", () => {
+    for (const updatedAt of ["2026-03-09T10:03:00.000Z", "2026-03-09T10:04:00.000Z"]) {
+      expect(
+        resolveWorkingStartedAt({
+          latestTurn: makeLatestTurn(),
+          session: { ...session, status: "ready", activeTurnId: null, updatedAt },
+        }),
+      ).toBeNull();
+    }
   });
 
   it("returns null with neither a running turn nor a session", () => {

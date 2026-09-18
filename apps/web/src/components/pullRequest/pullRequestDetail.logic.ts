@@ -1,8 +1,8 @@
 import * as Schema from "effect/Schema";
-import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 
 import {
   PullRequestDetail,
+  pullRequestHostOf,
   type PullRequestAction,
   type PullRequestActor,
   type PullRequestBaseComparison,
@@ -15,6 +15,8 @@ import {
   type PullRequestMergeability,
   type PullRequestMergeMethod,
   type PullRequestReaction,
+  type PullRequestRef,
+  type RepositoryIdentity,
   type PullRequestReviewThread,
   type PullRequestState,
   type PullRequestUpdateMethod,
@@ -1095,6 +1097,15 @@ export function pullRequestActionNeedsHostRefresh(action: PullRequestAction): bo
 
 type SnapshotStorage = Pick<Storage, "getItem" | "setItem">;
 
+export function resolvePullRequestReferenceHost(
+  reference: PullRequestRef,
+  identity: RepositoryIdentity | null | undefined,
+): PullRequestRef {
+  // Other providers may resolve an SSH remote to a different web authority on the server.
+  if (reference.host !== undefined || identity?.provider !== "github") return reference;
+  return { ...reference, host: pullRequestHostOf(identity, "github") };
+}
+
 export interface PullRequestDetailSnapshotRef {
   readonly host?: string | undefined;
   readonly projectId: string;
@@ -1125,7 +1136,13 @@ export function readPullRequestDetailSnapshot(
 ): PullRequestDetail | null {
   try {
     const target = storage ?? (typeof window === "undefined" ? undefined : window.localStorage);
-    const raw = target?.getItem(pullRequestDetailSnapshotKey(environmentId, reference));
+    const raw =
+      target?.getItem(pullRequestDetailSnapshotKey(environmentId, reference)) ??
+      (reference.host === undefined
+        ? null
+        : target?.getItem(
+            pullRequestDetailSnapshotKey(environmentId, { ...reference, host: undefined }),
+          ));
     if (!raw) return null;
     const decoded = decodeDetailSnapshot(JSON.parse(raw));
     return decoded._tag === "Some"
@@ -1165,15 +1182,21 @@ export function resolveDisplayedPullRequestDetail(input: {
 }): PullRequestDetail | null {
   if (input.live !== null) return input.live;
   if (
-    input.cached.environmentId === input.environmentId &&
-    input.cached.detail !== null &&
-    input.cached.detail.projectId === input.reference.projectId &&
-    input.cached.detail.repository.toLowerCase() === input.reference.repository.toLowerCase() &&
-    input.cached.detail.number === input.reference.number &&
-    (input.reference.host === undefined ||
-      parseChangeRequestUrl(input.cached.detail.url)?.host === input.reference.host.toLowerCase())
-  ) {
-    return input.cached.detail;
+    input.cached.environmentId !== input.environmentId ||
+    input.cached.detail === null ||
+    input.cached.detail.projectId !== input.reference.projectId ||
+    input.cached.detail.repository.toLowerCase() !== input.reference.repository.toLowerCase() ||
+    input.cached.detail.number !== input.reference.number
+  )
+    return null;
+  if (input.reference.host === undefined) return input.cached.detail;
+  try {
+    const url = new URL(input.cached.detail.url);
+    return (url.protocol === "https:" || url.protocol === "http:") &&
+      url.hostname.toLowerCase() === input.reference.host.toLowerCase()
+      ? input.cached.detail
+      : null;
+  } catch {
+    return null;
   }
-  return null;
 }

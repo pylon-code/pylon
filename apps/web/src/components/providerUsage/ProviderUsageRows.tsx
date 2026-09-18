@@ -1,9 +1,8 @@
-import type { ServerProviderUsageLimits } from "@t3tools/contracts";
+import type { ServerProviderUsageLimits, TimestampFormat } from "@t3tools/contracts";
 
 import { cn } from "~/lib/utils";
-import { usageBarClassName, usageEmphasisClassName, usageValueClassName } from "./usageEmphasis";
 import { getTimestampFormatOptions, parseTimestampDate } from "~/timestampFormat";
-import type { TimestampFormat } from "@t3tools/contracts/settings";
+import { usageBarClassName, usageEmphasisClassName, usageValueClassName } from "./usageEmphasis";
 
 function formatResetTimestamp(resetsAt: string, timestampFormat: TimestampFormat): string {
   const date = parseTimestampDate(resetsAt);
@@ -30,6 +29,24 @@ export function ProviderUsageRows(props: {
   readonly compact?: boolean;
 }) {
   const compact = props.compact ?? false;
+
+  const hasWindows = props.usageLimits.windows.length > 0;
+  const isProbeFailedWithWindows =
+    props.usageLimits.unavailable?.reason === "probeFailed" && hasWindows;
+
+  if (props.usageLimits.unavailable && !isProbeFailedWithWindows) {
+    const message =
+      props.usageLimits.unavailable.message ??
+      (props.usageLimits.unavailable.reason === "unsupported"
+        ? "Rate limits are not available for this provider."
+        : "Rate limits could not be loaded.");
+    return (
+      <div className={cn("text-xs text-muted-foreground", compact ? "py-1.5" : "py-1")}>
+        {message}
+      </div>
+    );
+  }
+
   return (
     <div className={cn("grid", compact ? undefined : "gap-3")}>
       {props.usageLimits.windows.map((window) => {
@@ -100,11 +117,28 @@ export function ProviderUsageRows(props: {
           </div>
         );
       })}
+      {isProbeFailedWithWindows ? (
+        <div className={cn("text-[11px] text-muted-foreground", compact ? "pt-1" : "pt-0.5")}>
+          {props.usageLimits.unavailable?.message ?? "Rate limits could not be refreshed."}
+        </div>
+      ) : null}
     </div>
   );
 }
 
 export function ProviderUsageSummary(props: { readonly usageLimits: ServerProviderUsageLimits }) {
+  const hasWindows = props.usageLimits.windows.length > 0;
+  const isProbeFailedWithWindows =
+    props.usageLimits.unavailable?.reason === "probeFailed" && hasWindows;
+
+  if (props.usageLimits.unavailable && !isProbeFailedWithWindows) {
+    return (
+      <span className="block min-w-0 truncate text-[11px] text-muted-foreground/80">
+        {props.usageLimits.unavailable.message ?? "Usage unavailable"}
+      </span>
+    );
+  }
+
   const summaryItems = props.usageLimits.windows.map((window) => ({
     key: `${window.label}:${window.windowDurationMins ?? "unknown"}:${window.resetsAt ?? "unknown"}`,
     label: window.label,
@@ -123,7 +157,10 @@ export function ProviderUsageSummary(props: { readonly usageLimits: ServerProvid
           <span className="tabular-nums text-muted-foreground">{item.usedPercent}%</span>
         </span>
       ))}
-      <span className="text-muted-foreground/60"> used</span>
+      <span className="text-muted-foreground/60">
+        {" "}
+        used{isProbeFailedWithWindows ? " · stale" : ""}
+      </span>
     </span>
   );
 }

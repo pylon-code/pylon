@@ -234,6 +234,14 @@ const DEFAULT_SNAP_SHOT_SHORTCUT: SnapShotShortcut = {
   kind: "both-shift-keys",
 };
 
+export const NotificationMode = Schema.Literals([
+  "off",
+  "notifications",
+  "sound",
+  "notifications-and-sound",
+]);
+export type NotificationMode = typeof NotificationMode.Type;
+
 /**
  * A user-chosen font family (a single name or a comma-separated list). Empty
  * means "use the app default"; clients compose their own fallback stacks.
@@ -284,6 +292,10 @@ export const LoadBalancingWeights = Schema.Record(
 export const DiffColorScheme = Schema.Literals(["red-green", "blue-orange"]);
 
 export const ClientSettingsSchema = Schema.Struct({
+  notificationMode: NotificationMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed("off" as const)),
+  ),
+  inAppNotificationsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   diffColorScheme: DiffColorScheme.pipe(
     Schema.withDecodingDefault(Effect.succeed("red-green" as const)),
   ),
@@ -340,9 +352,24 @@ export const ClientSettingsSchema = Schema.Struct({
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   confirmThreadUnpin: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Desktop-only: native OS notifications for agent attention. Per device by
+  // design — a notification preference belongs to the machine the user sits
+  // at — so these are deliberately absent from SHARED_SERVER_SETTING_KEYS.
+  // Browser clients ignore them.
+  desktopNotificationsEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
+  desktopNotificationSoundEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  desktopNotifyOnApproval: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  desktopNotifyOnInput: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  desktopNotifyOnCompletion: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  desktopNotifyOnFailure: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  diffFilesCollapsed: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffIgnoreWhitespace: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffLayout: DiffLayout.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_DIFF_LAYOUT))),
   environmentIdentificationMode: EnvironmentIdentificationMode.pipe(
@@ -1069,6 +1096,13 @@ export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
  * background activity, theme. UI, search and the write planner derive
  * eligibility from this list, so adding a key here is the whole opt-in.
  */
+/** How a delegated child's permission mode is chosen when the agent does not ask for one. */
+export const DelegationChildRuntimeMode = Schema.Literals(["inherit", "approval-required"]);
+export type DelegationChildRuntimeMode = typeof DelegationChildRuntimeMode.Type;
+
+export const DelegationPreference = Schema.Literals(["built-in", "pylon"]);
+export type DelegationPreference = typeof DelegationPreference.Type;
+
 export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "defaultModelSelection",
   "defaultRuntimeMode",
@@ -1078,6 +1112,10 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "defaultProjectScripts",
   "enableAgentBrowserAccess",
   "enableAgentDeviceAccess",
+  "enableAgentDelegation",
+  "delegationPreference",
+  "delegationDefaultModelSelection",
+  "delegationChildRuntimeMode",
   "textGenerationModelSelection",
   "sourceControlWriterModelSelection",
   "sourceControlWritingStyle",
@@ -1103,6 +1141,10 @@ export const ProjectSettingsOverrides = Schema.Struct({
   defaultProjectScripts: Schema.optionalKey(Schema.Array(ProjectScript)),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
+  enableAgentDelegation: Schema.optionalKey(Schema.Boolean),
+  delegationPreference: Schema.optionalKey(DelegationPreference),
+  delegationDefaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  delegationChildRuntimeMode: Schema.optionalKey(DelegationChildRuntimeMode),
   textGenerationModelSelection: Schema.optionalKey(ModelSelection),
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   sourceControlWritingStyle: Schema.optionalKey(SourceControlWritingStyleSettings),
@@ -1173,6 +1215,34 @@ export const ServerSettings = Schema.Struct({
    * unaffected.
    */
   enableAgentDeviceAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Whether agents may start and manage child threads on other provider
+   * instances through the delegation MCP tools. Server-authoritative, applied
+   * when the provider session is prepared, and never granted to a thread that
+   * is itself a delegated child.
+   */
+  enableAgentDelegation: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Preferred method when delegation is worthwhile; inactive while Pylon delegation is off. */
+  delegationPreference: DelegationPreference.pipe(
+    Schema.withDecodingDefault(Effect.succeed("built-in" as const)),
+  ),
+  /**
+   * Provider instance and model a delegated child uses when the agent names
+   * none. Null means no default: the agent must name a provider. It is only a
+   * fallback; an explicit provider or model in the tool call always wins, and
+   * an unavailable default fails instead of falling back to something else.
+   */
+  delegationDefaultModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /**
+   * Permission mode for delegated children when the agent does not ask for
+   * one: the parent's own mode, or Supervised (approval-required). A child
+   * never gets broader permissions than its parent either way.
+   */
+  delegationChildRuntimeMode: DelegationChildRuntimeMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed("inherit" as const)),
+  ),
   /**
    * Whether this server may install and run T3's device helper processes.
    * Kept separate from agent access so enabling the user's Device panel does
@@ -1506,6 +1576,10 @@ export const ServerSettingsPatch = Schema.Struct({
   allowAgentComputerForeground: Schema.optionalKey(Schema.Boolean),
   computerUseBinaryPath: Schema.optionalKey(Schema.String),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
+  enableAgentDelegation: Schema.optionalKey(Schema.Boolean),
+  delegationPreference: Schema.optionalKey(DelegationPreference),
+  delegationDefaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  delegationChildRuntimeMode: Schema.optionalKey(DelegationChildRuntimeMode),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),
@@ -1630,6 +1704,8 @@ export class ServerSettingsUpdateConflictError extends Schema.TaggedError<Server
 }
 
 export const ClientSettingsPatch = Schema.Struct({
+  notificationMode: Schema.optionalKey(NotificationMode),
+  inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
   diffColorScheme: Schema.optionalKey(DiffColorScheme),
   loadBalancingEnabled: Schema.optionalKey(Schema.Boolean),
   loadBalancingWeights: Schema.optionalKey(LoadBalancingWeights),
@@ -1647,6 +1723,13 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   confirmThreadUnpin: Schema.optionalKey(Schema.Boolean),
+  desktopNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
+  desktopNotificationSoundEnabled: Schema.optionalKey(Schema.Boolean),
+  desktopNotifyOnApproval: Schema.optionalKey(Schema.Boolean),
+  desktopNotifyOnInput: Schema.optionalKey(Schema.Boolean),
+  desktopNotifyOnCompletion: Schema.optionalKey(Schema.Boolean),
+  desktopNotifyOnFailure: Schema.optionalKey(Schema.Boolean),
+  diffFilesCollapsed: Schema.optionalKey(Schema.Boolean),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   diffLayout: Schema.optionalKey(DiffLayout),
   environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),

@@ -1,4 +1,5 @@
 export const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
+export const SET_NOTIFICATION_BADGE_CHANNEL = "desktop:set-notification-badge";
 export const PICK_PROJECT_FAVICON_CHANNEL = "desktop:pick-project-favicon";
 export const PICK_THEME_FILES_CHANNEL = "desktop:pick-theme-files";
 export const SET_THEME_CHANNEL = "desktop:set-theme";
@@ -108,3 +109,11 @@ export const PREVIEW_POINTER_EVENT_CHANNEL = "desktop:preview-pointer-event";
 export const MAC_PERMISSION_HELPER_CHANNEL = "desktop:mac-permission-helper";
 
 export const CHECK_SYSTEM_PERMISSION_CHANNEL = "desktop:check-system-permission";
+export const NOTIFICATION_NAVIGATE_CHANNEL = "desktop:notification-navigate";
+
+export const NOTIFY_AGENT_AWARENESS_CHANNEL = "desktop:notify-agent-awareness";
+export const SEND_TEST_NOTIFICATION_CHANNEL = "desktop:send-test-notification";
+
+export const DISMISS_AGENT_NOTIFICATION_CHANNEL = "desktop:dismiss-agent-notification";
+export const GET_NOTIFICATION_NAVIGATION_CHANNEL = "desktop:get-notification-navigation";
+export const COMPLETE_NOTIFICATION_NAVIGATION_CHANNEL = "desktop:complete-notification-navigation";

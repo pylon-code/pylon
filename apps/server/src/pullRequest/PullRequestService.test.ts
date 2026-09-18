@@ -1,6 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore";
-import * as Persistence from "effect/unstable/persistence/Persistence";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -202,7 +201,6 @@ function makeService(input: {
         }),
         SourceControlRateLimit.layer,
         Layer.effect(PullRequestReadCache.PullRequestReadCache, PullRequestReadCache.make).pipe(
-          Layer.provide(Persistence.layerKvs),
           Layer.provide(KeyValueStore.layerMemory),
           Layer.provide(NodeServices.layer),
         ),
@@ -2958,6 +2956,107 @@ it.effect("a listing narrowed to some projects is its own cache entry", () =>
   }),
 );
 
+it.effect("keeps unrelated PRs warm after a mutation, explicit refresh, and project turn", () =>
+  Effect.gen(function* () {
+    const calls: string[] = [];
+    const service = yield* makeService({
+      projects: [
+        project({ id: "p1", title: "web", workspaceRoot: "/a", repository: "acme/web" }),
+        project({ id: "p2", title: "docs", workspaceRoot: "/b", repository: "acme/docs" }),
+      ],
+      providers: [
+        fakeProvider("github", {
+          getChangeRequest: (input) =>
+            Effect.sync(() => {
+              calls.push(`${input.repository}/${input.number}`);
+              return { ...hostedChangeRequest("body"), number: input.number };
+            }),
+        }),
+      ],
+    });
+    const refs = [
+      { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 },
+      { projectId: "p1" as ProjectId, repository: "acme/web", number: 2 },
+      { projectId: "p2" as ProjectId, repository: "acme/docs", number: 3 },
+    ];
+    const readAll = Effect.forEach(refs, (ref) => service.summary(ref));
+    yield* readAll;
+    yield* service.invalidate({ reference: { ...refs[0]!, host: "github.com" } });
+    yield* readAll;
+    assert.deepStrictEqual(calls, ["acme/web/1", "acme/web/2", "acme/docs/3", "acme/web/1"]);
+    yield* service.comment({ ...refs[0]!, body: "hello" });
+    yield* readAll;
+    assert.deepStrictEqual(calls.slice(4), ["acme/web/1"]);
+    yield* service.refreshAfterTurn("p1" as ProjectId);
+    yield* readAll;
+    assert.deepStrictEqual(calls.slice(5), ["acme/web/1", "acme/web/2"]);
+  }),
+);
+
+it.effect(
+  "keeps matching PR numbers on different hosts separate and refreshes the serving project",
+  () =>
+    Effect.gen(function* () {
+      const hosts: string[] = [];
+      const service = yield* makeService({
+        projects: [
+          project({ id: "p1", title: "public", workspaceRoot: "/a", repository: "acme/web" }),
+          project({
+            id: "p2",
+            title: "enterprise",
+            workspaceRoot: "/b",
+            repository: "acme/web",
+            host: "enterprise.test",
+          }),
+        ],
+        providers: [
+          fakeProvider("github", {
+            getChangeRequest: (input) =>
+              Effect.sync(() => {
+                hosts.push(input.host);
+                return hostedChangeRequest("body");
+              }),
+          }),
+        ],
+      });
+      const own = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+      const other = { ...own, host: "enterprise.test" };
+      const readBoth = Effect.all([service.summary(own), service.summary(other)]);
+      yield* readBoth;
+      yield* service.invalidate({ reference: { ...own, host: "github.com" } });
+      yield* readBoth;
+      assert.deepStrictEqual(hosts, ["github.com", "enterprise.test", "github.com"]);
+      yield* service.invalidate({ reference: own });
+      yield* readBoth;
+      assert.deepStrictEqual(hosts.slice(3), ["github.com"]);
+      yield* service.refreshAfterTurn("p2" as ProjectId);
+      yield* readBoth;
+      assert.deepStrictEqual(hosts.slice(4), ["enterprise.test"]);
+    }),
+);
+
+it.effect("does not revive old summaries when project epochs are evicted", () =>
+  Effect.gen(function* () {
+    let title = "old";
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/a", repository: "acme/web" })],
+      providers: [
+        fakeProvider("github", {
+          getChangeRequest: () => Effect.succeed({ ...hostedChangeRequest("body"), title }),
+        }),
+      ],
+    });
+    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    assert.strictEqual((yield* service.summary(ref))?.title, "old");
+    title = "new";
+    yield* service.refreshAfterTurn(ref.projectId);
+    assert.strictEqual((yield* service.summary(ref))?.title, "new");
+    for (let index = 0; index < 2048; index++)
+      yield* service.refreshAfterTurn(`project-${index}` as ProjectId);
+    assert.strictEqual((yield* service.summary(ref))?.title, "new");
+  }),
+);
+
 it.effect("explicit and turn invalidations make the next listing ask the host again", () =>
   Effect.gen(function* () {
     let hostCalls = 0;
@@ -2989,7 +3088,7 @@ it.effect("explicit and turn invalidations make the next listing ask the host ag
     yield* service.invalidate({ reference });
     yield* service.list({ state: "open" });
     assert.strictEqual(hostCalls, 2);
-    yield* service.refreshAfterTurn;
+    yield* service.refreshAfterTurn("p1" as ProjectId);
     const refresh = Option.getOrThrow(yield* Stream.runHead(service.subscribeRefreshes));
     yield* service.list({ state: "open" });
     assert.isAbove(refresh, 0);
@@ -3392,7 +3491,7 @@ it.effect(
       yield* service.listStats({ refs: [ref(1), ref(2), ref(3)] });
       assert.deepStrictEqual(asked, [[1, 2], [3], [2], [1, 2, 3]]);
 
-      yield* service.refreshAfterTurn;
+      yield* service.refreshAfterTurn("p1" as ProjectId);
       yield* service.listStats({ refs: [ref(1)] });
       assert.deepStrictEqual(asked, [[1, 2], [3], [2], [1, 2, 3], [1]]);
 
@@ -4080,90 +4179,104 @@ it.effect('resolves an author filter of "me" to the viewer before narrowing a ho
   }),
 );
 
-it.effect("authorizes stack rebases independently of whether the selected layer is behind", () =>
-  Effect.gen(function* () {
-    let taken = 0;
-    let summaryReads = 0;
-    let mutationFails = false;
-    let stackRebase = true;
-    let stackActions = true;
-    const capabilities = {
-      diff: true,
-      comment: true,
-      actions: ["update-branch"] as const,
-      mergeMethods: ["merge"] as const,
-      updateMethods: ["rebase"] as const,
-      get stackActions() {
-        return stackActions;
-      },
-      search: true,
-      reactions: true,
-      review: FULL_REVIEW,
-      reviewers: FULL_REVIEWERS,
-    };
-    const service = yield* makeService({
-      projects: [project({ id: "p1", title: "web", workspaceRoot: "/a", repository: "acme/web" })],
-      providers: [
-        fakeProvider("github", {
-          capabilities,
-          getViewerPermissions: () =>
-            Effect.succeed({
-              actions: [],
-              stackRebase,
-              comment: true,
-              resolve: false,
-              verdicts: [],
-              requestReviewers: false,
+for (const crossHost of [false, true]) {
+  it.effect(
+    `authorizes stack rebases and refreshes sibling layers (cross-host: ${crossHost})`,
+    () =>
+      Effect.gen(function* () {
+        let taken = 0;
+        let summaryReads = 0;
+        let mutationFails = false;
+        let stackRebase = true;
+        let stackActions = true;
+        const capabilities = {
+          diff: true,
+          comment: true,
+          actions: ["update-branch"] as const,
+          mergeMethods: ["merge"] as const,
+          updateMethods: ["rebase"] as const,
+          get stackActions() {
+            return stackActions;
+          },
+          search: true,
+          reactions: true,
+          review: FULL_REVIEW,
+          reviewers: FULL_REVIEWERS,
+        };
+        const service = yield* makeService({
+          projects: [
+            project({ id: "p1", title: "web", workspaceRoot: "/a", repository: "acme/web" }),
+            project({
+              id: "p2",
+              title: "enterprise",
+              workspaceRoot: "/b",
+              repository: "acme/web",
+              host: "enterprise.test",
             }),
-          getChangeRequestSummary: () =>
-            Effect.sync(() => {
-              summaryReads++;
-              return changeRequest(8, "2026-07-01T00:00:00Z");
+          ],
+          providers: [
+            fakeProvider("github", {
+              capabilities,
+              getViewerPermissions: () =>
+                Effect.succeed({
+                  actions: [],
+                  stackRebase,
+                  comment: true,
+                  resolve: false,
+                  verdicts: [],
+                  requestReviewers: false,
+                }),
+              getChangeRequestSummary: () =>
+                Effect.sync(() => {
+                  summaryReads++;
+                  return changeRequest(8, "2026-07-01T00:00:00Z");
+                }),
+              runAction: () =>
+                Effect.gen(function* () {
+                  taken++;
+                  if (mutationFails) return yield* requestFailed;
+                }),
             }),
-          runAction: () =>
-            Effect.gen(function* () {
-              taken++;
-              if (mutationFails) return yield* requestFailed;
-            }),
-        }),
-      ],
-    });
-    const input = {
-      projectId: "p1" as ProjectId,
-      repository: "acme/web",
-      number: 3,
-      action: "update-branch" as const,
-      updateMethod: "rebase" as const,
-      stackNumber: 50,
-      expectedStackHeads: [{ number: 3, headSha: "ccc" }],
-    };
-    yield* service.runAction(input);
-    assert.strictEqual(taken, 1);
-    const unrelated = { ...input, number: 8 };
-    yield* service.summary(unrelated);
-    assert.strictEqual(summaryReads, 1);
-    stackRebase = false;
-    assert.strictEqual(
-      (yield* Effect.flip(service.runAction(input)))._tag,
-      "PullRequestOperationError",
-    );
-    stackRebase = true;
-    stackActions = false;
-    assert.strictEqual(
-      (yield* Effect.flip(service.runAction(input)))._tag,
-      "PullRequestOperationError",
-    );
-    assert.strictEqual(taken, 1);
-    yield* service.summary(unrelated);
-    assert.strictEqual(summaryReads, 1);
-    stackActions = true;
-    mutationFails = true;
-    yield* Effect.flip(service.runAction(input));
-    assert.strictEqual(taken, 2);
-    yield* service.summary(unrelated);
-    assert.strictEqual(summaryReads, 2);
-  }),
-);
+          ],
+        });
+        const input = {
+          ...(crossHost ? { host: "enterprise.test" } : {}),
+          projectId: "p1" as ProjectId,
+          repository: "acme/web",
+          number: 3,
+          action: "update-branch" as const,
+          updateMethod: "rebase" as const,
+          stackNumber: 50,
+          expectedStackHeads: [{ number: 3, headSha: "ccc" }],
+        };
+        yield* service.runAction(input);
+        assert.strictEqual(taken, 1);
+        const unrelated = { ...input, number: 8 };
+        yield* service.summary(unrelated);
+        assert.strictEqual(summaryReads, 1);
+        stackRebase = false;
+        assert.strictEqual(
+          (yield* Effect.flip(service.runAction(input)))._tag,
+          "PullRequestOperationError",
+        );
+        stackRebase = true;
+        stackActions = false;
+        assert.strictEqual(
+          (yield* Effect.flip(service.runAction(input)))._tag,
+          "PullRequestOperationError",
+        );
+        assert.strictEqual(taken, 1);
+        yield* service.summary(unrelated);
+        assert.strictEqual(summaryReads, 1);
+        stackActions = true;
+        mutationFails = true;
+        yield* Effect.flip(service.runAction(input));
+        assert.strictEqual(taken, 2);
+        yield* service.summary(unrelated);
+        assert.strictEqual(summaryReads, 2);
+      }),
+  );
+}
 
 it.effect("refuses a way of updating a branch that the host or the viewer does not allow", () =>
   Effect.gen(function* () {
@@ -4499,7 +4612,7 @@ it.effect("forgets the cached detail after a rewrite or terminal turn", () =>
     yield* service.detail(reference);
     assert.strictEqual(coreCalls, 2);
 
-    yield* service.refreshAfterTurn;
+    yield* service.refreshAfterTurn("p1" as ProjectId);
     yield* service.detail(reference);
     assert.strictEqual(coreCalls, 3);
   }),

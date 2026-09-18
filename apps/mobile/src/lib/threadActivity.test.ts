@@ -957,6 +957,26 @@ describe("buildThreadFeed", () => {
     }
   });
 
+  it("leaves failed setup snapshots to the setup card", () => {
+    const feed = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-setup-failed"),
+        projectId: ProjectId.make("project-1"),
+        title: "Failed setup",
+        activities: [
+          makeActivity({
+            id: EventId.make("worktree-failed"),
+            kind: "worktree-setup",
+            summary: "Worktree setup failed",
+            createdAt: "2026-08-30T00:00:00.000Z",
+            tone: "error",
+          }),
+        ],
+      }),
+    );
+    expect(feed).toEqual([]);
+  });
+
   it.each(["setup-script.requested", "setup-script.started"])(
     "keeps error-toned %s notices visible",
     (kind) => {
@@ -3799,7 +3819,8 @@ it("accepts ready attachment-only answers while preserving selected options", ()
   ).toBeNull();
 });
 
-it("makes attachment-only question answers expandable in the mobile feed", () => {
+it("keeps attachment-only question answers expandable outside mobile work groups and turn folds", () => {
+  const turnId = TurnId.make("turn-answer");
   const answer = {
     requestId: ApprovalRequestId.make("question-request"),
     answers: { q: "" },
@@ -3820,17 +3841,46 @@ it("makes attachment-only question answers expandable in the mobile feed", () =>
     id: ThreadId.make("thread-answer"),
     projectId: ProjectId.make("project-answer"),
     title: "Answer history",
+    latestTurn: {
+      turnId,
+      state: "completed",
+      requestedAt: "2026-09-08T00:00:00.000Z",
+      startedAt: "2026-09-08T00:00:00.000Z",
+      completedAt: "2026-09-08T00:00:04.000Z",
+      assistantMessageId: null,
+    },
     activities: [
       makeActivity({
+        id: EventId.make("tool-before-answer"),
+        createdAt: "2026-09-08T00:00:01.000Z",
+        kind: "tool.completed",
+        tone: "tool",
+        summary: "Read files",
+        turnId,
+        payload: { itemType: "command_execution", status: "completed" },
+      }),
+      makeActivity({
         id: EventId.make("answer-submitted"),
-        createdAt: "2026-09-08T00:00:00.000Z",
+        createdAt: "2026-09-08T00:00:02.000Z",
         kind: "user-input.answer-submitted",
         summary: "Answered questions",
+        turnId,
         payload: answer,
+      }),
+      makeActivity({
+        id: EventId.make("tool-after-answer"),
+        createdAt: "2026-09-08T00:00:03.000Z",
+        kind: "tool.completed",
+        tone: "tool",
+        summary: "Read files",
+        turnId,
+        payload: { itemType: "command_execution", status: "completed" },
       }),
     ],
   });
-  const [group] = buildThreadFeed(thread);
+  const feed = buildThreadFeed(thread);
+  expect(feed).toHaveLength(3);
+  const group = feed[1];
   expect(group?.type).toBe("activity-group");
   if (group?.type !== "activity-group") return;
   expect(group.activities[0]).toMatchObject({
@@ -3838,4 +3888,60 @@ it("makes attachment-only question answers expandable in the mobile feed", () =>
     workEntry: { questionAnswer: answer },
   });
   expect(group.activities[0]?.getFullDetail()).toBeNull();
+  const collapsed = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
+  expect(collapsed.map((entry) => entry.type)).toEqual(["turn-fold", "activity-group"]);
+  expect(collapsed[1]).toBe(group);
+  const expanded = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set([turnId]));
+  expect(expanded.map((entry) => entry.type)).toEqual([
+    "turn-fold",
+    "work-toggle",
+    "activity-group",
+    "work-toggle",
+  ]);
+  expect(expanded[2]).toBe(group);
+  const running = deriveThreadFeedPresentation(
+    feed,
+    { ...thread.latestTurn!, state: "running", completedAt: null },
+    new Set(),
+    new Set(),
+    "2026-09-08T00:00:00.000Z",
+  );
+  expect(running[0]?.type).toBe("work-toggle");
+  expect(running[1]).toBe(group);
+  expect(running[2]?.type).toBe("work-toggle");
+});
+
+describe("buildThreadFeed delegation bookkeeping", () => {
+  it("hides child-state observations and delivery receipts but keeps the pause notice", () => {
+    const feed = buildThreadFeed({
+      messages: [],
+      activities: [
+        makeActivity({
+          id: EventId.make("obs-1"),
+          kind: "delegation.child-state",
+          summary: "Pylon child completed",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          payload: { childThreadId: "delegated:parent:0123456789abcdef" },
+        }),
+        makeActivity({
+          id: EventId.make("delivered-1"),
+          kind: "delegation.follow-through.delivered",
+          summary: "Delegated child update delivered to parent",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          payload: { notificationIds: [], messageId: "delegation-follow-through:abc" },
+        }),
+        makeActivity({
+          id: EventId.make("paused-1"),
+          kind: "delegation.follow-through.paused",
+          summary: "Automatic delegation follow-through paused",
+          createdAt: "2026-04-01T00:00:03.000Z",
+          payload: { detail: "Three automatic follow-through turns have run." },
+        }),
+      ],
+    });
+    const summaries = feed.flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities.map((item) => item.summary) : [],
+    );
+    expect(summaries).toEqual(["Automatic delegation follow-through paused"]);
+  });
 });

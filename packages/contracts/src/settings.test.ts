@@ -9,6 +9,8 @@ import {
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   decodeStoredClientSettings,
+  PROJECT_SCOPED_SERVER_SETTING_KEYS,
+  ProjectSettingsOverrides,
   encodeStoredClientSettings,
   resolveProviderInstanceEnabled,
   retainUnreadClientSettings,
@@ -23,6 +25,7 @@ const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+const decodeProjectSettingsOverrides = Schema.decodeUnknownSync(ProjectSettingsOverrides);
 
 describe("ServerSettings default permissions", () => {
   it("keeps full access for settings saved before a default was configured", () => {
@@ -196,6 +199,19 @@ describe("ClientSettings retired status motion", () => {
   });
 });
 
+describe("ClientSettings default diff file state", () => {
+  it("keeps files collapsed when existing settings omit the preference", () => {
+    expect(decodeClientSettings({}).diffFilesCollapsed).toBe(true);
+  });
+
+  it.each([true, false])("preserves a saved collapsed preference of %s", (diffFilesCollapsed) => {
+    const settings = decodeClientSettings({ diffFilesCollapsed });
+    expect(encodeClientSettings(settings).diffFilesCollapsed).toBe(diffFilesCollapsed);
+    expect(decodeClientSettingsPatch({ diffFilesCollapsed }).diffFilesCollapsed).toBe(
+      diffFilesCollapsed,
+    );
+  });
+});
 describe("ClientSettings quit confirmation", () => {
   it("defaults to hold", () => {
     expect(decodeClientSettings({}).confirmQuit).toBe("hold");
@@ -966,4 +982,128 @@ describe("optional computer access", () => {
       );
     }
   });
+});
+
+describe("agent delegation access", () => {
+  it("defaults to built-in and supports a scoped delegation preference", () => {
+    expect(decodeServerSettings({}).delegationPreference).toBe("built-in");
+    expect(decodeServerSettingsPatch({ delegationPreference: "pylon" })).toEqual({
+      delegationPreference: "pylon",
+    });
+    expect(decodeProjectSettingsOverrides({ delegationPreference: "built-in" })).toEqual({
+      delegationPreference: "built-in",
+    });
+    expect(() => decodeServerSettingsPatch({ delegationPreference: "always" })).toThrow();
+    expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain("delegationPreference");
+  });
+
+  it("defaults off, patches, and accepts a project override", () => {
+    expect(decodeServerSettings({}).enableAgentDelegation).toBe(false);
+    expect(DEFAULT_SERVER_SETTINGS.enableAgentDelegation).toBe(false);
+    expect(decodeServerSettingsPatch({ enableAgentDelegation: true })).toEqual({
+      enableAgentDelegation: true,
+    });
+    expect(decodeProjectSettingsOverrides({ enableAgentDelegation: true })).toEqual({
+      enableAgentDelegation: true,
+    });
+    expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain("enableAgentDelegation");
+  });
+
+  it("defaults to no delegation model and children in the parent's permission mode", () => {
+    const decoded = decodeServerSettings({});
+    expect(decoded.delegationDefaultModelSelection).toBeNull();
+    expect(decoded.delegationChildRuntimeMode).toBe("inherit");
+    const selection = { instanceId: "antigravity", model: "gemini-3.8-flash-medium" };
+    expect(
+      decodeServerSettingsPatch({
+        delegationDefaultModelSelection: selection,
+        delegationChildRuntimeMode: "approval-required",
+      }),
+    ).toMatchObject({
+      delegationDefaultModelSelection: selection,
+      delegationChildRuntimeMode: "approval-required",
+    });
+    expect(decodeProjectSettingsOverrides({ delegationDefaultModelSelection: null })).toEqual({
+      delegationDefaultModelSelection: null,
+    });
+    expect(() =>
+      decodeServerSettingsPatch({ delegationChildRuntimeMode: "full-access" }),
+    ).toThrow();
+    for (const key of ["delegationDefaultModelSelection", "delegationChildRuntimeMode"] as const) {
+      expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain(key);
+    }
+  });
+});
+
+describe("ClientSettings desktop notification preferences", () => {
+  it("defaults every desktop notification preference on", () => {
+    const settings = decodeClientSettings({});
+    expect(settings.desktopNotificationsEnabled).toBe(true);
+    expect(settings.desktopNotifyOnApproval).toBe(true);
+    expect(settings.desktopNotifyOnInput).toBe(true);
+    expect(settings.desktopNotifyOnCompletion).toBe(true);
+    expect(settings.desktopNotifyOnFailure).toBe(true);
+  });
+
+  it("decodes a settings payload written before the feature, new fields taking defaults", () => {
+    const settings = decodeClientSettings({ confirmQuit: false, wordWrap: false });
+    expect(settings.confirmQuit).toBe("direct");
+    expect(settings.wordWrap).toBe(false);
+    expect(settings.desktopNotificationsEnabled).toBe(true);
+  });
+
+  it("accepts desktop notification fields in a client settings patch", () => {
+    expect(decodeClientSettingsPatch({ desktopNotifyOnCompletion: false })).toEqual({
+      desktopNotifyOnCompletion: false,
+    });
+  });
+});
+
+describe("ClientSettings notifications", () => {
+  it("requires opt-in when existing settings omit notification preferences", () => {
+    expect(decodeClientSettings({}).notificationMode).toBe("off");
+    expect(decodeClientSettings({}).inAppNotificationsEnabled).toBe(false);
+    expect(decodeClientSettingsPatch({})).not.toHaveProperty("inAppNotificationsEnabled");
+    expect(decodeClientSettingsPatch({})).not.toHaveProperty("notificationMode");
+  });
+
+  it.each([true, false])(
+    "round-trips in-app notifications set to %s",
+    (inAppNotificationsEnabled) => {
+      const settings = decodeClientSettings({ inAppNotificationsEnabled });
+      expect(encodeClientSettings(settings).inAppNotificationsEnabled).toBe(
+        inAppNotificationsEnabled,
+      );
+      expect(
+        decodeClientSettingsPatch({ inAppNotificationsEnabled }).inAppNotificationsEnabled,
+      ).toBe(inAppNotificationsEnabled);
+    },
+  );
+
+  it.each(["true", 1, null])(
+    "rejects an invalid in-app notification preference %s",
+    (inAppNotificationsEnabled) => {
+      expect(() => decodeClientSettings({ inAppNotificationsEnabled })).toThrow();
+      expect(() => decodeClientSettingsPatch({ inAppNotificationsEnabled })).toThrow();
+    },
+  );
+
+  it.each(["off", "notifications", "sound", "notifications-and-sound"])(
+    "round-trips the %s mode",
+    (notificationMode) => {
+      const settings = decodeClientSettings({ notificationMode });
+      expect(encodeClientSettings(settings).notificationMode).toBe(notificationMode);
+      expect(decodeClientSettingsPatch({ notificationMode }).notificationMode).toBe(
+        notificationMode,
+      );
+    },
+  );
+
+  it.each(["always", true, null])(
+    "rejects unsupported notification mode %s",
+    (notificationMode) => {
+      expect(() => decodeClientSettings({ notificationMode })).toThrow();
+      expect(() => decodeClientSettingsPatch({ notificationMode })).toThrow();
+    },
+  );
 });

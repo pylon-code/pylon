@@ -188,6 +188,11 @@ describe("gitHubViewerPermissions", () => {
         number: 7,
       });
 
+      expect(detail.author).toEqual({
+        login: "octocat",
+        name: "The Octocat",
+        avatarUrl: "https://github.com/octocat.png?size=80",
+      });
       expect(detail.viewerPermissions).toEqual({
         actions: ["ready", "draft", "close", "reopen"],
         comment: true,
@@ -212,7 +217,7 @@ describe("gitHubViewerPermissions", () => {
               number: 7,
               title: "Pull request 7",
               url: "https://github.com/acme/web/pull/7",
-              author: null,
+              author: { login: "octocat", name: "The Octocat", avatarUrl: null },
               isCrossRepository: true,
               headRepositoryOwner: null,
               headBranch: "feat/page",
@@ -637,6 +642,7 @@ describe("getChangeRequest commits", () => {
     reactionsById: new Map<string, ReadonlyArray<PullRequestReaction>>(),
     reviewers: [],
     avatarsByLogin: new Map<string, string>(),
+    botLogins: new Set<string>(),
     commitStats: new Map<string, { readonly additions: number; readonly deletions: number }>(),
     viewer: { canUpdate: true, didAuthor: false },
   };
@@ -703,7 +709,7 @@ describe("getChangeRequestActivity dismissed reviews", () => {
   const dismissedReview = (body: string) => ({
     id: "PRR_1",
     kind: "review" as const,
-    author: null,
+    author: { login: "macroscopeapp", name: null, avatarUrl: null },
     body,
     createdAt: "2026-07-03T00:00:00Z",
     url: null,
@@ -720,6 +726,7 @@ describe("getChangeRequestActivity dismissed reviews", () => {
     reactionsById: new Map(),
     reviewers: [],
     avatarsByLogin: new Map(),
+    botLogins: new Set(["macroscopeapp"]),
     commitStats: new Map(),
     commits: [],
     viewer: { canUpdate: true, didAuthor: false },
@@ -746,6 +753,7 @@ describe("getChangeRequestActivity dismissed reviews", () => {
     readActivity.pipe(
       Effect.map((activity) => {
         expect(activity.comments[0]?.body).toBe("Dismissing prior approval to re-evaluate 9b66581");
+        expect(activity.comments[0]?.author?.isBot).toBe(true);
       }),
       Effect.provide(layerFor("<!-- Macroscope (Approvability) review body marker -->")),
     ),

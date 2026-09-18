@@ -2,6 +2,8 @@ import {
   ApprovalRequestId,
   CheckpointRef,
   EnvironmentId,
+  ThreadId,
+  ProviderInstanceId,
   MessageId,
   type ComposerContextRecord,
   TurnId,
@@ -409,8 +411,6 @@ describe("MessagesTimeline", () => {
             />,
           );
         });
-        const toggle = renderer!.root.findByProps({ "aria-expanded": false });
-        await act(() => toggle.props.onClick());
         const questionToggle = renderer!.root.find(
           (node) =>
             node.props["aria-label"]?.startsWith("Question answer submitted:") &&
@@ -1439,6 +1439,196 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain(">waiting<");
   });
 
+  it.each(["running", "needs-approval", "completed"] as const)(
+    "keeps a %s Pylon spawn in the native CTA position after its parent completes",
+    async (status) => {
+      const turnId = TurnId.make("pylon-spawn-turn");
+      const onOpenAgents = vi.fn();
+      let renderer: ReactTestRenderer | undefined;
+      await act(() => {
+        renderer = create(
+          <MessagesTimeline
+            {...buildProps()}
+            onOpenAgents={onOpenAgents}
+            delegatedThreads={[
+              {
+                threadId: ThreadId.make("delegated:test:child"),
+                environmentId: EnvironmentId.make("env"),
+                title: "Review bounded change",
+                status,
+                activity: null,
+                providerName: "Codex",
+                modelSelection: {
+                  instanceId: ProviderInstanceId.make("codex"),
+                  model: "test-model",
+                },
+              },
+            ]}
+            latestTurn={{
+              turnId,
+              state: "completed",
+              startedAt: MESSAGE_CREATED_AT,
+              completedAt: MESSAGE_CREATED_AT,
+            }}
+            timelineEntries={[
+              {
+                id: "pylon-spawn",
+                kind: "work",
+                createdAt: MESSAGE_CREATED_AT,
+                entry: {
+                  id: "pylon-spawn",
+                  createdAt: MESSAGE_CREATED_AT,
+                  turnId,
+                  label: "MCP tool call",
+                  tone: "tool",
+                  toolLifecycleStatus: "completed",
+                  toolData: {
+                    server: "t3-code",
+                    tool: "delegate_thread",
+                    arguments: { title: "Review bounded change" },
+                    result: { threadId: "delegated:test:child" },
+                  },
+                },
+              },
+              {
+                id: "parent-finished",
+                kind: "message",
+                createdAt: MESSAGE_CREATED_AT,
+                message: {
+                  id: MessageId.make("parent-finished"),
+                  role: "assistant",
+                  text: "Parent finished",
+                  turnId,
+                  createdAt: MESSAGE_CREATED_AT,
+                  updatedAt: MESSAGE_CREATED_AT,
+                  streaming: false,
+                },
+              },
+            ]}
+          />,
+        );
+      });
+      const markup = JSON.stringify(renderer!.toJSON());
+      expect(markup).toContain("Review bounded change");
+      expect(markup).toContain("Tool details");
+      expect(markup).toContain(status.replaceAll("-", " "));
+      expect(markup).not.toContain("Open thread");
+      expect(markup).not.toContain("Waiting for delegated agent");
+      const cta = renderer!.root.findAll(
+        (node) => node.type === "button" && node.props.onClick === onOpenAgents,
+      );
+      expect(cta).toHaveLength(1);
+      await act(() => cta[0]!.props.onClick());
+      expect(onOpenAgents).toHaveBeenCalledOnce();
+      await act(() => renderer?.unmount());
+    },
+  );
+
+  it("does not borrow another child's status when the spawn result is truncated", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        delegatedThreads={["running", "completed"].map((status, index) => ({
+          threadId: ThreadId.make(`delegated:parent:child-${index}`),
+          environmentId: EnvironmentId.make("env"),
+          title: `Unrelated child ${index}`,
+          status: status === "running" ? "running" : "completed",
+          activity: null,
+          providerName: "Codex",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test-model" },
+        }))}
+        timelineEntries={[
+          {
+            id: "truncated-spawn",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "truncated-spawn",
+              createdAt: MESSAGE_CREATED_AT,
+              label: "MCP call",
+              tone: "tool",
+              toolLifecycleStatus: "completed",
+              toolData: {
+                server: "t3-code",
+                tool: "delegate_thread",
+                arguments: { title: "Bounded task" },
+                result: { content: '{"threadId":"delegated:parent:' },
+              },
+            },
+          },
+        ]}
+      />,
+    );
+    expect(markup).toContain("Bounded task");
+    expect(markup).toContain(">recorded<");
+    expect(markup).not.toContain("Unrelated child");
+    expect(markup).not.toContain(">running<");
+    expect(markup).not.toContain(">completed<");
+  });
+
+  it.each([true, false])(
+    "shows a Pylon wait only while its parent turn is active: %s",
+    async (active) => {
+      const turnId = TurnId.make("delegation-turn");
+      let renderer: ReactTestRenderer | undefined;
+      await act(() => {
+        renderer = create(
+          <MessagesTimeline
+            {...buildProps()}
+            isWorking={active}
+            activeTurnInProgress={true}
+            delegationWaitingTurnId={active ? turnId : null}
+            latestTurn={{
+              turnId,
+              state: active ? "running" : "completed",
+              startedAt: MESSAGE_CREATED_AT,
+              completedAt: active ? null : MESSAGE_CREATED_AT,
+            }}
+            runningTurnId={active ? turnId : null}
+            timelineEntries={[
+              {
+                id: "delegation-entry",
+                kind: "work",
+                createdAt: MESSAGE_CREATED_AT,
+                entry: {
+                  id: "delegation-work",
+                  createdAt: MESSAGE_CREATED_AT,
+                  turnId,
+                  label: "MCP tool call",
+                  tone: "tool",
+                  toolLifecycleStatus: "inProgress",
+                  toolData: {
+                    server: "t3-code",
+                    tool: "delegated_thread_status",
+                    arguments: { waitSeconds: 45 },
+                  },
+                },
+              },
+            ]}
+          />,
+        );
+      });
+      // Completed turns add a turn disclosure around the tool-group disclosure.
+      for (
+        let level = 0;
+        level < 2 && !JSON.stringify(renderer!.toJSON()).includes("Open Agents");
+        level++
+      ) {
+        const groupToggle = renderer!.root.findAll(
+          (node) => node.type === "button" && node.props["aria-expanded"] === false,
+        )[0];
+        if (groupToggle) await act(() => groupToggle.props.onClick());
+      }
+      const markup = JSON.stringify(renderer!.toJSON());
+
+      if (active) {
+        expect(markup).toContain("Open Agents");
+        expect(markup).toContain("Waiting for delegated agent");
+      } else expect(markup).not.toContain("Waiting for delegated agent");
+      await act(() => renderer?.unmount());
+    },
+  );
+
   it("summarizes changed files in one line", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -1900,7 +2090,7 @@ describe("MessagesTimeline", () => {
     // pins it to h-6 so swapping between "Working for" and the worktree-setup
     // label cannot change the row's height.
     expect(markup).toContain(
-      'class="flex h-6 min-w-0 items-baseline px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
+      'class="flex h-6 min-w-0 items-baseline gap-2 px-1 text-sm leading-relaxed text-muted-foreground tabular-nums"',
     );
     expect(markup).not.toContain('class="pt-0.5 pb-5 pl-1.5"');
     expect(markup).not.toContain('data-slot="dot-matrix"');
@@ -1924,7 +2114,7 @@ describe("MessagesTimeline", () => {
     // matching the working row's h-6, which is what this asserts.
     expect(markup).toContain("gap-1.5 py-0.5 px-0.5");
     expect(markup).toContain("flex size-6 shrink-0 items-center justify-center");
-    expect(markup).toContain("flex h-6 min-w-0 items-baseline px-1");
+    expect(markup).toContain("flex h-6 min-w-0 items-baseline gap-2 px-1");
   });
 
   it("renders review comment contexts as structured cards instead of raw tags", () => {

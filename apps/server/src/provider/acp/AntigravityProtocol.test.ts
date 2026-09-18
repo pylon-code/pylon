@@ -482,4 +482,19 @@ describe("Antigravity tool results", () => {
     );
     expect(isAntigravityOpenCommand(completed)).toBe(false);
   });
+  it("preserves diagnostic strings in failed tool output and detail", () => {
+    const rawError =
+      'Encountered retryable error from model provider: Agent execution terminated due to error. ("request failed (code 503): No capacity available for model gemini-3.8-flash-high on the server")';
+    const normalized = normalizeAntigravityToolCall({
+      toolCallId: "call_123",
+      kind: "read",
+      status: "failed",
+      detail: rawError,
+      data: {
+        rawOutput: rawError,
+      },
+    });
+    expect(normalized.data.rawOutput).toBe(rawError);
+    expect(normalized.detail).toBe(rawError);
+  });
 });

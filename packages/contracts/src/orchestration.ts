@@ -414,6 +414,12 @@ export const ProjectScript = Schema.Struct({
   icon: ProjectScriptIcon,
   runOnWorktreeCreate: Schema.Boolean,
   /**
+   * For `runOnWorktreeCreate` scripts: when false, the agent's first turn waits
+   * for the script to exit. Absent or true starts the agent right away and
+   * lets the script finish in the background.
+   */
+  async: Schema.optional(Schema.Boolean),
+  /**
    * URL to open in the in-app browser preview when this script runs (or
    * when the user explicitly requests a preview). Optional; only honored on
    * the desktop build.
@@ -1771,6 +1777,24 @@ const ThreadHistoryImportCommand = Schema.Struct({
   ).check(Schema.isNonEmpty()),
 });
 
+/**
+ * Persists a user message without starting a turn. Used by worktree bootstraps
+ * so the send is durable while the worktree is still being prepared; the
+ * turn that follows references the same message id.
+ */
+const ThreadMessageUserAppendCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.user.append"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  message: Schema.Struct({
+    messageId: MessageId,
+    text: Schema.String,
+    attachments: Schema.Array(ChatAttachment),
+    context: Schema.optional(OrchestrationMessageContext),
+  }),
+  createdAt: IsoDateTime,
+});
+
 const ThreadProposedPlanUpsertCommand = Schema.Struct({
   type: Schema.Literal("thread.proposed-plan.upsert"),
   commandId: CommandId,
@@ -1909,7 +1933,27 @@ const ThreadCompactionQueueSentCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** Server-only, compare-and-set admission for a delegated child lifecycle notice. */
+const ThreadDelegationFollowThroughCommand = Schema.Struct({
+  type: Schema.Literal("thread.delegation.follow-through"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  expectedParentUpdatedAt: IsoDateTime,
+  expectedSourceEpoch: NonNegativeInt,
+  children: Schema.Array(Schema.Struct({ threadId: ThreadId, updatedAt: IsoDateTime })),
+  messageId: MessageId,
+  text: TrimmedNonEmptyString,
+  notificationIds: Schema.Array(EventId),
+  createdAt: IsoDateTime,
+});
+
+export const DelegationFollowThroughDeliveredPayload = Schema.Struct({
+  notificationIds: Schema.Array(EventId),
+  messageId: MessageId,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadDelegationFollowThroughCommand,
   ThreadCompactionCompleteCommand,
   ThreadCompactionQueueResumeCommand,
   ThreadCompactionQueueSentCommand,
@@ -1922,6 +1966,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadHistoryImportCommand,
+  ThreadMessageUserAppendCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
@@ -2322,6 +2367,12 @@ export const OrchestrationEventMetadata = Schema.Struct({
   requestId: Schema.optional(ApprovalRequestId),
   ingestedAt: Schema.optional(IsoDateTime),
   historyImport: Schema.optional(Schema.Boolean),
+  /**
+   * The user message was persisted ahead of its turn (worktree bootstrap).
+   * Reactors that key off a user message as "turn is starting" wait for the
+   * turn-start event instead.
+   */
+  deferredTurn: Schema.optional(Schema.Boolean),
   origin: Schema.optional(OrchestrationClientOrigin),
 });
 export type OrchestrationEventMetadata = typeof OrchestrationEventMetadata.Type;

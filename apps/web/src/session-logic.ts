@@ -559,7 +559,11 @@ export function deriveWorkLogEntries(
     ) {
       continue;
     }
-    if (activity.tone !== "error" && isWorktreeSetupActivity(activity.kind)) continue;
+    if (
+      isWorktreeSetupActivity(activity.kind) &&
+      (activity.tone !== "error" || activity.kind === "worktree-setup")
+    )
+      continue;
     if (activity.kind === "tool.started") continue;
     // Agent task.started rows are CTA seeds: they carry the true spawn turn,
     // which is the batch key (completions of background subagents arrive
@@ -575,7 +579,10 @@ export function deriveWorkLogEntries(
       activity.kind === "session.agent-depth.updated" ||
       activity.kind === "session.input-queue.updated" ||
       activity.kind === "turn.cost" ||
-      activity.kind === "turn.plan.updated"
+      activity.kind === "turn.plan.updated" ||
+      // Reactor bookkeeping for Pylon children; the Agents panel is the roster.
+      activity.kind === "delegation.child-state" ||
+      activity.kind === "delegation.follow-through.delivered"
     ) {
       continue;
     }

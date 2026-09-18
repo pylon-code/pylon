@@ -272,6 +272,10 @@ const turnFoldRowsCache = new WeakMap<
 >();
 let cachedThinkingRow: Extract<ThreadFeedEntry, { readonly type: "thinking" }> | null = null;
 
+function isUserInputActivityGroup(entry: ThreadFeedActivityGroup): boolean {
+  return entry.activities.some((activity) => activity.workEntry.questionAnswer !== undefined);
+}
+
 function normalizeDraftAnswer(value: string | undefined): string | null {
   if (typeof value !== "string") {
     return null;
@@ -416,7 +420,12 @@ function deriveWorkLogEntries(
   const ordered = Arr.sort(activities, activityOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of foldUserInputActivities(ordered)) {
-    if (activity.tone !== "error" && isWorktreeSetupActivity(activity.kind)) continue;
+    // The setup card owns its snapshot, including failed and cancelled outcomes.
+    if (
+      isWorktreeSetupActivity(activity.kind) &&
+      (activity.tone !== "error" || activity.kind === "worktree-setup")
+    )
+      continue;
     if (activity.kind === "tool.started") continue;
     // Like web: an agent's task.started row anchors its batch. It has a fixed
     // id and timestamp, unlike progress ticks, whose stable per-task id is
@@ -434,7 +443,10 @@ function deriveWorkLogEntries(
       activity.kind === "session.resources.updated" ||
       activity.kind === "session.agent-depth.updated" ||
       activity.kind === "session.input-queue.updated" ||
-      activity.kind === "turn.cost"
+      activity.kind === "turn.cost" ||
+      // Reactor bookkeeping for Pylon children; the Agents panel is the roster.
+      activity.kind === "delegation.child-state" ||
+      activity.kind === "delegation.follow-through.delivered"
     ) {
       continue;
     }
@@ -1585,11 +1597,11 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
       continue;
     }
 
-    // Terminal response notices and context compaction each own their card, so
-    // neither joins the surrounding tool group.
+    // Terminal notices, compaction and user answers own their cards.
     const isStandalone =
       entry.activity.terminalResponseNotice === true ||
-      entry.activity.workEntry.sourceActivityKind === "context-compaction";
+      entry.activity.workEntry.sourceActivityKind === "context-compaction" ||
+      entry.activity.workEntry.questionAnswer !== undefined;
     if (isStandalone || firstActivityEntry?.turnId !== entry.turnId) {
       flushGroup();
     }
@@ -1705,7 +1717,8 @@ function deriveThreadFeedTurnFolds(
             entry.id !== terminalAssistantMessageId &&
             !(
               entry.type === "activity-group" &&
-              entry.activities.some((activity) => activity.terminalResponseNotice === true)
+              (isUserInputActivityGroup(entry) ||
+                entry.activities.some((activity) => activity.terminalResponseNotice === true))
             ),
         )
         .map((entry) => entry.id),
@@ -1887,7 +1900,7 @@ function appendPresentedFeedEntry(
     result.push(entry);
     return;
   }
-  if (isContextCompactionActivityGroup(entry)) {
+  if (isContextCompactionActivityGroup(entry) || isUserInputActivityGroup(entry)) {
     result.push(entry);
     return;
   }

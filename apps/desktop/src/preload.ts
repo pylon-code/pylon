@@ -1,3 +1,4 @@
+import { subscribeNotificationNavigation } from "./notifications/notificationNavigation.ts";
 import type {
   DesktopBridge,
   DesktopPreviewPointerEvent,
@@ -46,12 +47,38 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 }
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  notifyAgentAwareness: (candidates) =>
+    ipcRenderer.invoke(IpcChannels.NOTIFY_AGENT_AWARENESS_CHANNEL, candidates),
+  sendTestNotification: () =>
+    ipcRenderer.invoke(IpcChannels.SEND_TEST_NOTIFICATION_CHANNEL, undefined),
+  dismissAgentNotification: (key) =>
+    ipcRenderer.invoke(IpcChannels.DISMISS_AGENT_NOTIFICATION_CHANNEL, key),
+  onNotificationNavigate: (navigate) =>
+    subscribeNotificationNavigation({
+      read: () => ipcRenderer.invoke(IpcChannels.GET_NOTIFICATION_NAVIGATION_CHANNEL),
+      complete: (id) =>
+        ipcRenderer.invoke(IpcChannels.COMPLETE_NOTIFICATION_NAVIGATION_CHANNEL, id),
+      listen: (signal) => {
+        ipcRenderer.on(IpcChannels.NOTIFICATION_NAVIGATE_CHANNEL, signal);
+        return () => ipcRenderer.removeListener(IpcChannels.NOTIFICATION_NAVIGATE_CHANNEL, signal);
+      },
+      navigate,
+    }),
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
     if (typeof result !== "object" || result === null) {
       return null;
     }
     return result as ReturnType<DesktopBridge["getAppBranding"]>;
+  },
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- The sandboxed Electron preload exposes the client platform, not the server platform.
+  getClientPlatform: () => process.platform,
+  setNotificationBadge: (badge) =>
+    ipcRenderer.invoke(IpcChannels.SET_NOTIFICATION_BADGE_CHANNEL, badge),
+  onNotificationBadgeClear: (listener) => {
+    const handler = () => listener();
+    ipcRenderer.on(IpcChannels.SET_NOTIFICATION_BADGE_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(IpcChannels.SET_NOTIFICATION_BADGE_CHANNEL, handler);
   },
   getSystemLocale: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_SYSTEM_LOCALE_CHANNEL);

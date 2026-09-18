@@ -49,4 +49,85 @@ describe("ProviderUsageRows", () => {
     expect(markup).toContain("used");
     expect(markup).toContain("·");
   });
+
+  it("renders unavailable usage limits message cleanly when unsupported or empty", () => {
+    const rows = renderToStaticMarkup(
+      <ProviderUsageRows
+        timestampFormat="24-hour"
+        usageLimits={{
+          source: "provider",
+          checkedAt: "2026-07-22T12:00:00.000Z",
+          windows: [],
+          unavailable: {
+            reason: "unsupported",
+            message: "Rate limits are not available for this account.",
+          },
+        }}
+      />,
+    );
+    expect(rows).toContain("Rate limits are not available for this account.");
+
+    const summary = renderToStaticMarkup(
+      <ProviderUsageSummary
+        usageLimits={{
+          source: "provider",
+          checkedAt: "2026-07-22T12:00:00.000Z",
+          windows: [],
+          unavailable: {
+            reason: "unsupported",
+            message: "Rate limits are not available for this account.",
+          },
+        }}
+      />,
+    );
+    expect(summary).toContain("Rate limits are not available for this account.");
+  });
+
+  it("retains last known valid bars when probeFailed", () => {
+    const rows = renderToStaticMarkup(
+      <ProviderUsageRows
+        timestampFormat="24-hour"
+        usageLimits={{
+          source: "provider",
+          checkedAt: "2026-07-22T12:00:00.000Z",
+          windows: [
+            { label: "5-Hour (Gemini)", usedPercent: 50 },
+            { label: "Weekly (Gemini)", usedPercent: 10 },
+          ],
+          unavailable: {
+            reason: "probeFailed",
+            message: "Antigravity usage limits could not be refreshed.",
+          },
+        }}
+      />,
+    );
+    // Bars are still rendered
+    expect(rows).toContain("5-Hour (Gemini)");
+    expect(rows).toContain("50% used");
+    expect(rows).toContain("Weekly (Gemini)");
+    expect(rows).toContain("10% used");
+    // And error message is surfaced
+    expect(rows).toContain("Antigravity usage limits could not be refreshed.");
+
+    const summary = renderToStaticMarkup(
+      <ProviderUsageSummary
+        usageLimits={{
+          source: "provider",
+          checkedAt: "2026-07-22T12:00:00.000Z",
+          windows: [
+            { label: "5-Hour (Gemini)", usedPercent: 50 },
+            { label: "Weekly (Gemini)", usedPercent: 10 },
+          ],
+          unavailable: {
+            reason: "probeFailed",
+            message: "Antigravity usage limits could not be refreshed.",
+          },
+        }}
+      />,
+    );
+    expect(summary).toContain("5-Hour (Gemini)");
+    expect(summary).toContain("50%");
+    expect(summary).toContain("Weekly (Gemini)");
+    expect(summary).toContain("10%");
+  });
 });

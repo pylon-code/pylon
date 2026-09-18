@@ -146,10 +146,16 @@ export type SidebarDropTarget = {
   readonly activeOrder: readonly string[];
 };
 
+/**
+ * `nestingKeys` are the moved row's delegated children. Once the row lands in
+ * their section they render nested under it, so they leave that section's
+ * order: a drop must neither write their keys nor expect them as rows.
+ */
 export function resolveSidebarDropTarget(
   items: readonly SidebarListItem[],
   activeKey: string,
   overId: string,
+  nestingKeys?: ReadonlySet<string>,
 ): SidebarDropTarget | null {
   const activeIndex = items.findIndex((item) => sidebarListItemId(item) === activeKey);
   const overIndex = items.findIndex((item) => sidebarListItemId(item) === overId);
@@ -165,6 +171,8 @@ export function resolveSidebarDropTarget(
     if (item.kind === "marker") {
       if (item.marker === "pinned-divider") currentSection = "active";
       else if (item.marker === "snoozed-header" || item.marker === "settled-header") break;
+    } else if (item.key !== activeKey && currentSection === section && nestingKeys?.has(item.key)) {
+      continue;
     } else if (currentSection === "pinned") pinnedOrder.push(item.key);
     else activeOrder.push(item.key);
   }
@@ -819,7 +827,7 @@ export function shouldRecedeSidebarThread(input: {
 
 export interface SidebarThreadActivityVisual {
   readonly label: "Working" | "Delegating" | "Monitoring";
-  readonly icon: "working" | "delegating" | null;
+  readonly icon: "working" | "delegating" | "monitoring";
   readonly className: string;
 }
 
@@ -844,8 +852,8 @@ export function resolveSidebarThreadActivityVisual(
     case "monitoring":
       return {
         label: "Monitoring",
-        icon: null,
-        className: "text-sky-600 dark:text-sky-400",
+        icon: "monitoring",
+        className: "text-foreground dark:text-white",
       };
     default:
       return null;
@@ -1006,6 +1014,13 @@ export function sortSettledThreadsForSidebar<
 export function resolveWorkingStartedAt(
   thread: Pick<SidebarThreadSummary, "latestTurn" | "session">,
 ): string | null {
+  // Background agents have their own lifetimes. A settled parent's latest
+  // transition must not restart a duration for their independent work.
+  if (
+    thread.session?.status !== "starting" &&
+    !(thread.session?.status === "running" && thread.session.activeTurnId !== null)
+  )
+    return null;
   const turn = thread.latestTurn;
   if (turn && turn.completedAt === null) {
     return firstValidTimestamp(turn.startedAt, turn.requestedAt, thread.session?.updatedAt);

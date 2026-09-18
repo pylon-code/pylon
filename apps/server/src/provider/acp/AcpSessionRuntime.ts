@@ -121,6 +121,10 @@ export interface AcpSessionRuntimeOptions {
   readonly observeSessionUpdate?: (
     notification: EffectAcpSchema.SessionNotification,
   ) => Effect.Effect<void, never>;
+  /** Disconnects the session when the agent produces no activity within this duration during a prompt. */
+  readonly promptInactivityTimeout?: Duration.Input;
+  /** Redacts or drops a line before it is added to the stderr ring buffer. Returning undefined drops the line. */
+  readonly redactStderrLine?: (line: string) => string | undefined;
 }
 
 export interface AcpSessionRequestLogEvent {
@@ -329,6 +333,7 @@ interface EnsureActiveAssistantSegmentResult {
 interface AcpActivePrompt {
   readonly fiber: Fiber.Fiber<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
   readonly completed: Deferred.Deferred<void>;
+  readonly watchdogFiber?: Fiber.Fiber<void, unknown> | undefined;
 }
 
 export const make = (
@@ -371,6 +376,55 @@ export const make = (
     const promptDispatchSemaphore = yield* Semaphore.make(1);
     const activePromptRef = yield* Ref.make<Option.Option<AcpActivePrompt>>(Option.none());
     const sessionLoadGateRef = yield* Ref.make<Option.Option<SessionLoadGate>>(Option.none());
+
+    const promptInactivityTimeout = options.promptInactivityTimeout
+      ? Duration.fromInputUnsafe(options.promptInactivityTimeout)
+      : undefined;
+    const promptInactivityTimeoutMillis = promptInactivityTimeout
+      ? Duration.toMillis(promptInactivityTimeout)
+      : undefined;
+
+    const lastAgentActivityRef = yield* Ref.make<number>(yield* Clock.currentTimeMillis);
+    const inflightClientRequestsRef = yield* Ref.make<number>(0);
+
+    const maxStderrRingLines = 20;
+    const maxStderrLineLength = 400;
+    const stderrRing: Array<string> = [];
+    let stderrPending = "";
+
+    const appendStderrLine = (rawLine: string) => {
+      const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+      const redacted = options.redactStderrLine ? options.redactStderrLine(line) : line;
+      if (redacted === undefined) return;
+      if (stderrRing.length >= maxStderrRingLines) {
+        stderrRing.shift();
+      }
+      stderrRing.push(redacted.slice(0, maxStderrLineLength));
+    };
+
+    const appendStderrChunk = (chunk: string) => {
+      const text = `${stderrPending}${chunk}`;
+      const lines = text.split("\n");
+      stderrPending = lines.pop() ?? "";
+      for (const line of lines) {
+        appendStderrLine(line);
+      }
+    };
+
+    const renderStderrTail = (): string => {
+      const lines = [...stderrRing];
+      if (stderrPending.length > 0) {
+        const line = stderrPending.endsWith("\r") ? stderrPending.slice(0, -1) : stderrPending;
+        const redacted = options.redactStderrLine ? options.redactStderrLine(line) : line;
+        if (redacted !== undefined) {
+          lines.push(redacted.slice(0, maxStderrLineLength));
+          if (lines.length > maxStderrRingLines) {
+            lines.shift();
+          }
+        }
+      }
+      return lines.length > 0 ? ` Last stderr: ${lines.join(" | ")}` : "";
+    };
 
     const startupRpcTimeout = Duration.fromInputUnsafe(
       options.startupRpcTimeout ?? defaultStartupRpcTimeout,
@@ -489,10 +543,10 @@ export const make = (
 
     yield* child.stderr.pipe(
       Stream.decodeText(),
-      Stream.runForEach((chunk) =>
-        (options.onStderr
-          ? options.onStderr(chunk.slice(-maxStderrChunkLength))
-          : Effect.void
+      Stream.runForEach((chunk) => {
+        appendStderrChunk(chunk);
+        return (
+          options.onStderr ? options.onStderr(chunk.slice(-maxStderrChunkLength)) : Effect.void
         ).pipe(
           Effect.catch((error) =>
             Effect.gen(function* () {
@@ -501,8 +555,8 @@ export const make = (
               yield* child.kill({ forceKillAfter: "1 second" }).pipe(Effect.ignore);
             }),
           ),
-        ),
-      ),
+        );
+      }),
       Effect.ignore,
       Effect.forkIn(runtimeScope),
     );
@@ -546,6 +600,7 @@ export const make = (
           if (options.shouldDiscardSessionUpdate?.(notification) === true) {
             return;
           }
+          yield* Ref.set(lastAgentActivityRef, yield* Clock.currentTimeMillis);
           const gate = yield* Ref.get(sessionLoadGateRef);
           if (
             Option.isSome(gate) &&
@@ -962,6 +1017,54 @@ export const make = (
       yield* child.kill({ forceKillAfter: "1 second" }).pipe(Effect.ignore);
     });
 
+    const wrapClientRequestHandler = <A, E, R>(
+      effect: Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E, R> =>
+      Effect.gen(function* () {
+        yield* Ref.set(lastAgentActivityRef, yield* Clock.currentTimeMillis);
+        yield* Ref.update(inflightClientRequestsRef, (count) => count + 1);
+        return yield* effect;
+      }).pipe(
+        Effect.ensuring(Ref.update(inflightClientRequestsRef, (count) => Math.max(0, count - 1))),
+      );
+
+    const makePromptWatchdog = (completed: Deferred.Deferred<void>) =>
+      Effect.gen(function* () {
+        if (promptInactivityTimeoutMillis === undefined) return;
+        while (true) {
+          const activePrompt = yield* Ref.get(activePromptRef);
+          if (Option.isNone(activePrompt)) return;
+          const isDone = yield* Deferred.isDone(completed);
+          if (isDone) return;
+
+          const now = yield* Clock.currentTimeMillis;
+          const last = yield* Ref.get(lastAgentActivityRef);
+          const deadline = last + promptInactivityTimeoutMillis;
+
+          if (now < deadline) {
+            yield* Effect.sleep(Duration.millis(deadline - now));
+            continue;
+          }
+
+          const toolCalls = yield* Ref.get(toolCallsRef);
+          const inflight = yield* Ref.get(inflightClientRequestsRef);
+          if (toolCalls.size > 0 || inflight > 0) {
+            yield* Ref.set(lastAgentActivityRef, now);
+            continue;
+          }
+
+          const minutes = Math.max(1, Math.round(promptInactivityTimeoutMillis / 60_000));
+          const error = new EffectAcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/prompt",
+            detail: `The agent sent nothing for ${minutes} minutes after its last message and never completed the prompt. Its process was stopped.${renderStderrTail()}`,
+            cause: undefined,
+          });
+          yield* retireRuntime(error);
+          return;
+        }
+      });
+
     const cancel = Effect.gen(function* () {
       const started = yield* getStartedState;
       const activePrompt = yield* Ref.get(activePromptRef);
@@ -990,11 +1093,11 @@ export const make = (
         const error = new EffectAcpErrors.AcpTransportError({
           operation: "call-rpc",
           method: "session/cancel",
-          detail: "The ACP agent did not finish cancellation. Its process was stopped.",
+          detail: `The ACP agent did not finish cancellation. Its process was stopped.${renderStderrTail()}`,
           cause: undefined,
         });
         yield* retireRuntime(error);
-        return yield* error;
+        return;
       }
       if (Exit.isFailure(completed.value)) {
         return yield* Effect.failCause(completed.value.cause);
@@ -1002,20 +1105,33 @@ export const make = (
     });
 
     return {
-      handleRequestPermission: acp.handleRequestPermission,
-      handleElicitation: acp.handleElicitation,
-      handleReadTextFile: acp.handleReadTextFile,
-      handleWriteTextFile: acp.handleWriteTextFile,
-      handleCreateTerminal: acp.handleCreateTerminal,
-      handleTerminalOutput: acp.handleTerminalOutput,
-      handleTerminalWaitForExit: acp.handleTerminalWaitForExit,
-      handleTerminalKill: acp.handleTerminalKill,
-      handleTerminalRelease: acp.handleTerminalRelease,
+      handleRequestPermission: (handler) =>
+        acp.handleRequestPermission((request) => wrapClientRequestHandler(handler(request))),
+      handleElicitation: (handler) =>
+        acp.handleElicitation((request) => wrapClientRequestHandler(handler(request))),
+      handleReadTextFile: (handler) =>
+        acp.handleReadTextFile((request) => wrapClientRequestHandler(handler(request))),
+      handleWriteTextFile: (handler) =>
+        acp.handleWriteTextFile((request) => wrapClientRequestHandler(handler(request))),
+      handleCreateTerminal: (handler) =>
+        acp.handleCreateTerminal((request) => wrapClientRequestHandler(handler(request))),
+      handleTerminalOutput: (handler) =>
+        acp.handleTerminalOutput((request) => wrapClientRequestHandler(handler(request))),
+      handleTerminalWaitForExit: (handler) =>
+        acp.handleTerminalWaitForExit((request) => wrapClientRequestHandler(handler(request))),
+      handleTerminalKill: (handler) =>
+        acp.handleTerminalKill((request) => wrapClientRequestHandler(handler(request))),
+      handleTerminalRelease: (handler) =>
+        acp.handleTerminalRelease((request) => wrapClientRequestHandler(handler(request))),
       handleSessionUpdate: acp.handleSessionUpdate,
       handleElicitationComplete: acp.handleElicitationComplete,
-      handleUnknownExtRequest: acp.handleUnknownExtRequest,
+      handleUnknownExtRequest: (handler) =>
+        acp.handleUnknownExtRequest((method, params) =>
+          wrapClientRequestHandler(handler(method, params)),
+        ),
       handleUnknownExtNotification: acp.handleUnknownExtNotification,
-      handleExtRequest: acp.handleExtRequest,
+      handleExtRequest: (method, payload, handler) =>
+        acp.handleExtRequest(method, payload, (data) => wrapClientRequestHandler(handler(data))),
       handleExtNotification: acp.handleExtNotification,
       initialize: () => ensureConnected.pipe(Effect.andThen(sendInitialize)),
       start: () => start,
@@ -1040,7 +1156,19 @@ export const make = (
                   requestPayload,
                   acp.agent.prompt(requestPayload),
                 ).pipe(Effect.forkIn(runtimeScope));
-                const active = { fiber, completed } satisfies AcpActivePrompt;
+                yield* Ref.set(lastAgentActivityRef, yield* Clock.currentTimeMillis);
+                // Register the prompt before forking the watchdog so the watchdog
+                // never observes an empty activePromptRef on its first iteration.
+                yield* Ref.set(activePromptRef, Option.some({ fiber, completed }));
+                const watchdogFiber =
+                  promptInactivityTimeoutMillis !== undefined
+                    ? yield* makePromptWatchdog(completed).pipe(Effect.forkIn(runtimeScope))
+                    : undefined;
+                const active: AcpActivePrompt = {
+                  fiber,
+                  completed,
+                  ...(watchdogFiber ? { watchdogFiber } : {}),
+                };
                 yield* Ref.set(activePromptRef, Option.some(active));
                 if (promptOptions?.dispatched) {
                   yield* Deferred.succeed(promptOptions.dispatched, undefined);
@@ -1051,11 +1179,37 @@ export const make = (
             (activePrompt) =>
               Fiber.join(activePrompt.fiber).pipe(
                 Effect.catchCause((cause) =>
-                  options.cancelBehavior !== "wait-for-prompt" && Cause.hasInterruptsOnly(cause)
-                    ? Effect.succeed({
+                  Effect.gen(function* () {
+                    if (
+                      options.cancelBehavior === "wait-for-prompt" ||
+                      promptInactivityTimeoutMillis !== undefined
+                    ) {
+                      // Runtimes that retire hung processes (cancel timeout or the
+                      // inactivity watchdog) fail the prompt with the recorded
+                      // reason instead of a bare transport error or interrupt, so
+                      // the adapter can settle the turn with it. Runtimes that opt
+                      // into neither keep the original behavior below.
+                      const termination = yield* Ref.get(terminationErrorRef);
+                      if (Option.isSome(termination)) {
+                        return yield* termination.value;
+                      }
+                      if (
+                        options.cancelBehavior !== "wait-for-prompt" &&
+                        Cause.hasInterruptsOnly(cause)
+                      ) {
+                        return {
+                          stopReason: "cancelled",
+                        } satisfies EffectAcpSchema.PromptResponse;
+                      }
+                      return yield* Effect.failCause(cause);
+                    }
+                    if (Cause.hasInterruptsOnly(cause)) {
+                      return {
                         stopReason: "cancelled",
-                      } satisfies EffectAcpSchema.PromptResponse)
-                    : Effect.failCause(cause),
+                      } satisfies EffectAcpSchema.PromptResponse;
+                    }
+                    return yield* Effect.failCause(cause);
+                  }),
                 ),
                 Effect.tap(() =>
                   closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef }),
@@ -1063,6 +1217,9 @@ export const make = (
               ),
             (activePrompt, result) =>
               Effect.gen(function* () {
+                if (activePrompt.watchdogFiber) {
+                  yield* Fiber.interrupt(activePrompt.watchdogFiber).pipe(Effect.ignore);
+                }
                 if (
                   options.cancelBehavior === "wait-for-prompt" &&
                   Exit.isFailure(result) &&

@@ -1,3 +1,4 @@
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -7,6 +8,7 @@ import {
   ProviderInstanceId,
   RuntimeSessionId,
   ThreadId,
+  EnvironmentId,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -76,6 +78,7 @@ const makeHarness = Effect.fn("makeAntigravityAdapterHarness")(function* (option
   readonly holdCancel?: boolean;
   readonly holdClose?: boolean;
   readonly holdDispatch?: boolean;
+  readonly readNativeContext?: AntigravityAdapterOptions["readNativeContext"];
 }) {
   const runtimeEvents = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
   const canonicalEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
@@ -210,7 +213,7 @@ const makeHarness = Effect.fn("makeAntigravityAdapterHarness")(function* (option
       yield* Queue.offer(cancellations, prompt.index);
       if (options?.holdCancel) yield* Deferred.await(cancelRelease);
       yield* Deferred.succeed(prompt.result, { stopReason: "cancelled" });
-      yield* Deferred.await(prompt.result);
+      yield* Effect.ignore(Deferred.await(prompt.result));
       yield* drainEvents;
       calls.push(`drained:${prompt.index}`);
     }),
@@ -220,6 +223,7 @@ const makeHarness = Effect.fn("makeAntigravityAdapterHarness")(function* (option
     decodeSettings({ enabled: options?.enabled ?? true }),
     {
       instanceId,
+      ...(options?.readNativeContext ? { readNativeContext: options.readNativeContext } : {}),
       makeRuntime: (input) =>
         Effect.gen(function* () {
           launches.push(input);
@@ -304,6 +308,68 @@ const layer = ServerConfig.layerTest(process.cwd(), {
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
 it.layer(layer)("AntigravityAdapter", (it) => {
+  it.effect("publishes native context on resume and after a prompt without ACP usage", () =>
+    Effect.gen(function* () {
+      let usedTokens = 120;
+      const h = yield* makeHarness({
+        readNativeContext: (sessionId) =>
+          Effect.sync(() => {
+            expect(sessionId).toBe(nativeSessionId);
+            return { usedTokens, maxTokens: 128_000 };
+          }),
+      });
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: { schemaVersion: 1, sessionId: nativeSessionId },
+      });
+      const resumed = yield* h.waitForEvent((event) => event.type === "thread.token-usage.updated");
+      expect(resumed.payload.usage).toEqual({ usedTokens: 120, maxTokens: 128_000 });
+      const sent = yield* h.adapter.sendTurn({ threadId, input: "Continue" });
+      const prompt = yield* h.nextPrompt;
+      usedTokens = 450;
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      const updated = yield* h.waitForEvent((event) => event.type === "thread.token-usage.updated");
+      expect(updated.turnId).toBe(sent.turnId);
+      expect(updated.payload.usage).toEqual({ usedTokens: 450, maxTokens: 128_000 });
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+    }),
+  );
+
+  it.effect("discards native context read by a superseded steering generation", () =>
+    Effect.gen(function* () {
+      const reading = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let reads = 0;
+      const h = yield* makeHarness({
+        readNativeContext: () =>
+          Effect.gen(function* () {
+            const read = ++reads;
+            if (read === 1) return undefined;
+            if (read === 2) {
+              yield* Deferred.succeed(reading, undefined);
+              yield* Deferred.await(release);
+              return { usedTokens: 999, maxTokens: 128_000 };
+            }
+            return { usedTokens: 250, maxTokens: 128_000 };
+          }),
+      });
+      yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* h.adapter.sendTurn({ threadId, input: "First" });
+      const first = yield* h.nextPrompt;
+      yield* Deferred.succeed(first.result, { stopReason: "end_turn" });
+      yield* Deferred.await(reading);
+      yield* h.adapter.sendTurn({ threadId, input: "Steer" });
+      const second = yield* h.nextPrompt;
+      yield* Deferred.succeed(release, undefined);
+      yield* Deferred.succeed(second.result, { stopReason: "end_turn" });
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+      const updates = h.seen.filter((event) => event.type === "thread.token-usage.updated");
+      expect(updates.map((event) => event.payload.usage.usedTokens)).toEqual([250]);
+    }),
+  );
+
   it.effect(
     "runs native auth, resume, models, commands, and streaming through the ACP transport",
     () =>
@@ -483,6 +549,42 @@ it.layer(layer)("AntigravityAdapter", (it) => {
     }),
   );
 
+  it.effect("includes browser and device instructions when mcp session grants them", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("environment-test"),
+        threadId,
+        providerSessionId: "provider-session-test",
+        providerInstanceId: ProviderInstanceId.make("antigravity"),
+        endpoint: "http://127.0.0.1:4000/mcp",
+        authorizationHeader: "Bearer token",
+        capabilities: new Set(["preview", "device"]),
+      });
+      try {
+        yield* h.adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Browse the web" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        const promptParts = prompt.content as ReadonlyArray<{ type: string; text?: string }>;
+        const lastPart = promptParts[promptParts.length - 1];
+        expect(lastPart?.text).toContain("<pylon_browser>");
+        expect(lastPart?.text).toContain("preview_status");
+        expect(lastPart?.text).toContain("<pylon_devices>");
+        expect(lastPart?.text).toContain("device_list");
+        yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+        yield* Fiber.join(sending);
+      } finally {
+        McpProviderSession.clearMcpProviderSession(threadId);
+      }
+    }),
+  );
+
   it.effect("keeps thoughts, native command results, and replies on the active turn", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
@@ -577,6 +679,70 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       }),
   );
 
+  it.effect(
+    "renders chunked system message task notices as command results without assistant-message shells",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Run tests" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        for (const [index, exitCode] of [0, 8].entries()) {
+          const itemId = "sys-notice-" + index;
+          yield* h.emitNative({ _tag: "AssistantItemStarted", itemId });
+          const notice =
+            "The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n" +
+            "<SYSTEM_MESSAGE> [Message] timestamp=2026-09-17T17:21:40Z sender=session/task-" +
+            index +
+            ' priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-' +
+            index +
+            '" finished with result:\n\n' +
+            "The command exited with code " +
+            exitCode +
+            ". Output: $ vp test run\nresult " +
+            index +
+            "\n\n" +
+            "}\n<attachment>\nAttachment processed: No MIME type detected.\nOriginal path: /path/to/tasks/task-" +
+            index +
+            ".log\nDescription: Task Description: pnpm --filter t3 test\n</attachment>";
+          for (const text of [notice.slice(0, 25), notice.slice(25, 90), notice.slice(90)]) {
+            yield* h.emitNative({ _tag: "ContentDelta", itemId, text, rawPayload: {} });
+          }
+          yield* h.emitNative({ _tag: "AssistantItemCompleted", itemId });
+        }
+        yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+        const result = yield* Fiber.join(sending);
+        yield* h.waitForEvent((event) => event.type === "turn.completed");
+        expect(h.seen.filter((event) => event.type === "content.delta")).toEqual([]);
+        expect(
+          h.seen.filter(
+            (event) =>
+              (event.type === "item.started" || event.type === "item.completed") &&
+              event.payload.itemType === "assistant_message",
+          ),
+        ).toEqual([]);
+        const tools = h.seen.filter((event) => event.type === "item.completed");
+        expect(tools).toHaveLength(2);
+        expect(tools.map((event) => event.itemId)).toEqual([
+          "antigravity-task:session/task-0",
+          "antigravity-task:session/task-1",
+        ]);
+        expect(tools.map((event) => event.payload.status)).toEqual(["completed", "failed"]);
+        expect(tools.every((event) => event.turnId === result.turnId)).toBe(true);
+        expect(tools[1]?.payload.data).toMatchObject({
+          command: "pnpm --filter t3 test",
+          taskId: "session/task-1",
+          item: {
+            command: "pnpm --filter t3 test",
+            aggregatedOutput: "$ vp test run\nresult 1\n",
+            exitCode: 8,
+          },
+        });
+      }),
+  );
+
   it.effect("preserves normal streaming, malformed notices, and interrupted message buffers", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
@@ -595,6 +761,18 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       const streamed = yield* h.waitForEvent((event) => event.type === "content.delta");
       expect(streamed.payload.delta).toBe("Testing now.");
       yield* h.emitNative({ _tag: "AssistantItemCompleted", itemId: "prose" });
+      yield* h.emitNative({ _tag: "AssistantItemStarted", itemId: "system-prose" });
+      const peerMsg =
+        "<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-14T23:22:20Z sender=reviewer priority=NORMAL content=### Adversarial Review: PR";
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "system-prose",
+        text: peerMsg,
+        rawPayload: {},
+      });
+      const peerStreamed = yield* h.waitForEvent((event) => event.type === "content.delta");
+      expect(peerStreamed.payload.delta).toBe(peerMsg);
+      yield* h.emitNative({ _tag: "AssistantItemCompleted", itemId: "system-prose" });
       yield* h.emitNative({ _tag: "AssistantItemStarted", itemId: "partial" });
       yield* h.emitNative({
         _tag: "ContentDelta",
@@ -609,10 +787,10 @@ it.layer(layer)("AntigravityAdapter", (it) => {
         h.seen
           .filter((event) => event.type === "content.delta")
           .map((event) => event.payload.delta),
-      ).toEqual(["Testing now.", "<task_notification>\npartial"]);
+      ).toEqual(["Testing now.", peerMsg, "<task_notification>\npartial"]);
       expect(
         h.seen.filter((event) => event.type === "item.completed").map((event) => event.itemId),
-      ).toEqual(["prose", "partial"]);
+      ).toEqual(["prose", "system-prose", "partial"]);
     }),
   );
 
@@ -1498,6 +1676,532 @@ it.layer(layer)("AntigravityAdapter", (it) => {
         .pipe(Effect.exit);
       expect(Exit.isFailure(stale)).toBe(true);
       expect(active.launches).toHaveLength(0);
+    }),
+  );
+  it.effect("sanitizes 503 capacity errors when a prompt fails", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Hello" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      const rawError =
+        "Agent execution error: model unreachable: Error 503, Message: No capacity available for model gemini-3.8-flash-high on the server, Status: UNAVAILABLE, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:cloudcode-pa.googleapis.com metadata:map[OVERLOADED_TOO_MANY_RETRIES_PER_REQUEST:true error_number:2010 model:gemini-3.8-flash-high] reason:MODEL_CAPACITY_EXHAUSTED]] request failed (code 503): No capacity available for model gemini-3.8-flash-high on the server";
+      yield* Deferred.fail(
+        prompt.result,
+        new AcpErrors.AcpRequestError({ code: -32603, errorMessage: rawError }),
+      );
+      yield* Fiber.join(sending);
+      const ended = yield* h.waitForEvent((event) => event.type === "turn.completed");
+      expect(ended.payload.state).toBe("failed");
+      expect(ended.payload.errorMessage).toBe(
+        "Google Antigravity model capacity exhausted for gemini-3.8-flash-high (503 UNAVAILABLE). The Gemini server is temporarily overloaded; please try again in a moment or switch models.",
+      );
+      expect((yield* h.adapter.listSessions())[0]).toMatchObject({
+        status: "error",
+        lastError:
+          "Google Antigravity model capacity exhausted for gemini-3.8-flash-high (503 UNAVAILABLE). The Gemini server is temporarily overloaded; please try again in a moment or switch models.",
+      });
+    }),
+  );
+
+  it.effect("preserves capacity diagnostics emitted as assistant content", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Hello" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      const rawError =
+        "Agent execution error: model unreachable: Error 503, Message: No capacity available for model gemini-3.8-flash-high on the server, Status: UNAVAILABLE, Details: [map[@type:type.googleapis.com/google.rpc.ErrorInfo domain:cloudcode-pa.googleapis.com metadata:map[OVERLOADED_TOO_MANY_RETRIES_PER_REQUEST:true error_number:2010 model:gemini-3.8-flash-high] reason:MODEL_CAPACITY_EXHAUSTED]]";
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        text: rawError,
+        rawPayload: {},
+      });
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* Fiber.join(sending);
+      const delta = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "content.delta" }> =>
+          event.type === "content.delta",
+      );
+      expect(delta.payload.delta).toBe(rawError);
+    }),
+  );
+  for (const text of [
+    "Agent execution error: could not find doneCh for checkpoint",
+    "The diagnostic was:\n```\nagent executor error: could not find doneCh for checkpoint\n```",
+    "reached terminal step type. Exiting.",
+    "MODEL_CAPACITY_EXHAUSTED and RESOURCE_EXHAUSTED are error codes.",
+  ]) {
+    it.effect(`preserves quoted provider diagnostics and permits follow-up: ${text}`, () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        yield* h.adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Explain this diagnostic" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        // Exercise every chunk boundary, including tokens that themselves look like runtime errors.
+        for (const character of text) {
+          yield* h.emitNative({
+            _tag: "ContentDelta",
+            itemId: "quoted-error",
+            text: character,
+            rawPayload: {},
+          });
+        }
+        yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+        yield* Fiber.join(sending);
+        const ended = yield* h.waitForEvent((event) => event.type === "turn.completed");
+        const deltas = h.seen.filter((event) => event.type === "content.delta");
+        expect(deltas.map((event) => event.payload.delta).join("")).toBe(text);
+        expect(ended.payload.state).toBe("completed");
+        expect(yield* h.adapter.hasSession(threadId)).toBe(true);
+        expect(h.seen.some((event) => event.type === "session.exited")).toBe(false);
+        const followup = yield* h.adapter
+          .sendTurn({ threadId, input: "Continue" })
+          .pipe(Effect.forkChild);
+        const next = yield* h.nextPrompt;
+        yield* Deferred.succeed(next.result, { stopReason: "end_turn" });
+        yield* Fiber.join(followup);
+        yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed" && event.turnId !== ended.turnId,
+        );
+        expect(
+          h.seen
+            .filter((event) => event.type === "turn.completed")
+            .map((event) => event.payload.state),
+        ).toEqual(["completed", "completed"]);
+      }),
+    );
+  }
+
+  for (const status of ["failed", "completed"] as const) {
+    for (const kind of ["execute", "read"] as const) {
+      it.effect(`does not fail the session for diagnostic text in a ${status} ${kind} tool`, () =>
+        Effect.gen(function* () {
+          const h = yield* makeHarness();
+          yield* h.adapter.startSession({
+            threadId,
+            cwd: process.cwd(),
+            runtimeMode: "approval-required",
+          });
+          const sending = yield* h.adapter
+            .sendTurn({ threadId, input: "Inspect the error log" })
+            .pipe(Effect.forkChild);
+          const prompt = yield* h.nextPrompt;
+          yield* h.emitNative(
+            nativeToolUpdate({
+              sessionUpdate: "tool_call",
+              toolCallId: "diagnostic-tool",
+              title: "Inspect error log",
+              kind,
+              status,
+              rawOutput:
+                'Agent execution terminated due to error. ("agent executor error: could not find doneCh for checkpoint")',
+            }),
+          );
+          yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+          yield* Fiber.join(sending);
+          const ended = yield* h.waitForEvent((event) => event.type === "turn.completed");
+          expect(ended.payload.state).toBe("completed");
+          expect(yield* h.adapter.hasSession(threadId)).toBe(true);
+          expect(h.seen.some((event) => event.type === "session.exited")).toBe(false);
+        }),
+      );
+    }
+  }
+  it.effect("terminates session when prompt fails with internal checkpoint error", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Execute prompt" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      const checkpointError = "Agent execution error: could not find doneCh for checkpoint";
+      yield* Deferred.fail(
+        prompt.result,
+        new AcpErrors.AcpRequestError({ code: -32603, errorMessage: checkpointError }),
+      );
+      yield* Fiber.join(sending);
+
+      const ended = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      expect(ended.payload.state).toBe("failed");
+      expect(ended.payload.errorMessage).toBe(
+        "Antigravity agent executor encountered an internal checkpoint error. If retrying fails again, start a new thread and carry over your task context; existing files are preserved.",
+      );
+
+      const exited = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "session.exited" }> =>
+          event.type === "session.exited",
+      );
+      expect(exited.payload.exitKind).toBe("error");
+      expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+      // Genuine request failure still permits an explicit fresh session.
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const fresh = yield* h.adapter
+        .sendTurn({ threadId, input: "Continue with a fresh session" })
+        .pipe(Effect.forkChild);
+      const next = yield* h.nextPrompt;
+      yield* Deferred.succeed(next.result, { stopReason: "end_turn" });
+      yield* Fiber.join(fresh);
+      const recovered = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed" && event.turnId !== ended.turnId,
+      );
+      expect(recovered.payload.state).toBe("completed");
+    }),
+  );
+  it.effect("does not mutate normal bash 503 or terminate session on ordinary tool output", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Run curl test" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      yield* h.emitNative(
+        nativeToolUpdate({
+          sessionUpdate: "tool_call",
+          toolCallId: "call_bash_503",
+          title: "curl test",
+          kind: "execute",
+          status: "completed",
+          rawOutput: "HTTP/1.1 503 Service Unavailable\nBackend server overloaded",
+        }),
+      );
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* Fiber.join(sending);
+
+      const ended = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      expect(ended.payload.state).toBe("completed");
+      expect(yield* h.adapter.hasSession(threadId)).toBe(true);
+
+      const toolEvent = h.seen.find(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+          event.type === "item.completed" && event.itemId === "call_bash_503",
+      );
+      expect(toolEvent).toBeDefined();
+      expect((toolEvent?.payload.data as any)?.rawOutput).toBe(
+        "HTTP/1.1 503 Service Unavailable\nBackend server overloaded",
+      );
+    }),
+  );
+
+  it.effect(
+    "settles turn cancelled with fatalError when user cancel requested and connection terminated",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness({ holdCancel: true });
+        yield* h.adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Cancel me with forced stop" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        const interrupting = yield* h.adapter.interruptTurn(threadId).pipe(Effect.forkChild);
+        yield* h.nextCancellation;
+        const cancelDetail = "The ACP agent did not finish cancellation. Its process was stopped.";
+        yield* h.emitNative({
+          _tag: "ConnectionTerminated",
+          error: new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/cancel",
+            detail: cancelDetail,
+            cause: undefined,
+          }),
+        });
+        yield* h.drainEvents;
+        yield* Deferred.fail(
+          prompt.result,
+          new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/prompt",
+            detail: cancelDetail,
+            cause: undefined,
+          }),
+        );
+        yield* Deferred.succeed(h.cancelRelease, undefined);
+        yield* Fiber.join(interrupting);
+        yield* Fiber.await(sending);
+
+        const ended = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed",
+        );
+        expect(ended.payload.state).toBe("cancelled");
+        expect(ended.payload.errorMessage).toBe(cancelDetail);
+
+        const exited = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "session.exited" }> =>
+            event.type === "session.exited",
+        );
+        expect(exited.payload.exitKind).toBe("error");
+        expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "settles turn failed with stall explanation when connection terminated without user cancel",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        yield* h.adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Stall out" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        const stallDetail =
+          "The agent sent nothing for 5 minutes after its last message and never completed the prompt. Its process was stopped.";
+        yield* h.emitNative({
+          _tag: "ConnectionTerminated",
+          error: new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/prompt",
+            detail: stallDetail,
+            cause: undefined,
+          }),
+        });
+        yield* h.drainEvents;
+        yield* Deferred.fail(
+          prompt.result,
+          new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/prompt",
+            detail: stallDetail,
+            cause: undefined,
+          }),
+        );
+        yield* Fiber.await(sending);
+
+        const ended = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed",
+        );
+        expect(ended.payload.state).toBe("failed");
+        expect(ended.payload.errorMessage).toBe(stallDetail);
+
+        const exited = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "session.exited" }> =>
+            event.type === "session.exited",
+        );
+        expect(exited.payload.exitKind).toBe("error");
+        expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "settles turn cancelled with detail when the prompt fails before ConnectionTerminated is consumed",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness({ holdCancel: true });
+        yield* h.adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Race the termination event" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        const interrupting = yield* h.adapter.interruptTurn(threadId).pipe(Effect.forkChild);
+        yield* h.nextCancellation;
+        const cancelDetail = "The ACP agent did not finish cancellation. Its process was stopped.";
+        // The prompt failure lands first; the runtime event is still queued.
+        yield* Deferred.fail(
+          prompt.result,
+          new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/prompt",
+            detail: cancelDetail,
+            cause: undefined,
+          }),
+        );
+        yield* Deferred.succeed(h.cancelRelease, undefined);
+        yield* Fiber.join(interrupting);
+        yield* Fiber.await(sending);
+
+        const ended = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed",
+        );
+        expect(ended.payload.state).toBe("cancelled");
+        expect(ended.payload.errorMessage).toBe(cancelDetail);
+
+        yield* h.emitNative({
+          _tag: "ConnectionTerminated",
+          error: new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/cancel",
+            detail: cancelDetail,
+            cause: undefined,
+          }),
+        });
+        const exited = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "session.exited" }> =>
+            event.type === "session.exited",
+        );
+        expect(exited.payload.exitKind).toBe("error");
+        expect(exited.payload.reason).toBe(cancelDetail);
+        expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "settles a steered turn cancelled with detail when the forced stop retires the process",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness({ holdCancel: true });
+        yield* h.adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const first = yield* h.adapter
+          .sendTurn({ threadId, input: "Hang after the final message" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        const steering = yield* h.adapter
+          .sendTurn({ threadId, input: "Are you done yet?" })
+          .pipe(Effect.forkChild);
+        yield* h.nextCancellation;
+        const cancelDetail = "The ACP agent did not finish cancellation. Its process was stopped.";
+        yield* h.emitNative({
+          _tag: "ConnectionTerminated",
+          error: new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/cancel",
+            detail: cancelDetail,
+            cause: undefined,
+          }),
+        });
+        yield* Deferred.fail(
+          prompt.result,
+          new AcpErrors.AcpTransportError({
+            operation: "call-rpc",
+            method: "session/prompt",
+            detail: cancelDetail,
+            cause: undefined,
+          }),
+        );
+        yield* Deferred.succeed(h.cancelRelease, undefined);
+        yield* Fiber.await(first);
+        yield* Fiber.await(steering);
+
+        const ended = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed",
+        );
+        expect(ended.payload.state).toBe("cancelled");
+        expect(ended.payload.errorMessage).toBe(cancelDetail);
+        const completions = h.seen.filter((event) => event.type === "turn.completed");
+        expect(completions).toHaveLength(1);
+        expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+      }),
+  );
+
+  it.effect("settles turn cancelled without errorMessage on clean cancel", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Clean cancel" })
+        .pipe(Effect.forkChild);
+      yield* h.nextPrompt;
+      yield* h.adapter.interruptTurn(threadId);
+      yield* Fiber.await(sending);
+
+      const ended = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      expect(ended.payload.state).toBe("cancelled");
+      expect(ended.payload.errorMessage).toBeUndefined();
+      expect(yield* h.adapter.hasSession(threadId)).toBe(true);
+    }),
+  );
+
+  it.effect("does not terminate session on legitimate prose mentioning checkpoints", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Explain checkpointing" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "msg_prose_1",
+        text: "We can use internal checkpoint mechanisms to save state safely.",
+        rawPayload: {},
+      });
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* Fiber.join(sending);
+
+      const delta = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "content.delta" }> =>
+          event.type === "content.delta",
+      );
+      expect((delta.payload as any).delta).toBe(
+        "We can use internal checkpoint mechanisms to save state safely.",
+      );
+
+      const ended = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed",
+      );
+      expect(ended.payload.state).toBe("completed");
+      expect(yield* h.adapter.hasSession(threadId)).toBe(true);
     }),
   );
 });

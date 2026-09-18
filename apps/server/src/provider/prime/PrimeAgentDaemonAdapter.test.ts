@@ -28,6 +28,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -46,6 +47,7 @@ import type { ProviderAdapterError } from "../Errors.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderEventLoggers from "../Layers/ProviderEventLoggers.ts";
+import { type EventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 import { makeProviderServiceLive } from "../Layers/ProviderService.ts";
 import { ProviderSessionDirectoryLive } from "../Layers/ProviderSessionDirectory.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
@@ -2096,6 +2098,143 @@ describe("PrimeAgentDaemonAdapter", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect(
+    "rearms quiescence across child stop, compaction, and resync, and admits follow-up input only after background barrier completes",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const captures = makeCaptures();
+          captures.correlatedPromptLifecycleAvailable = true;
+          captures.rlmQuiescenceAvailable = true;
+          captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+          captures.rlmQuiescenceObserved = yield* Queue.unbounded<string>();
+          captures.rlmQuiescenceRelease = yield* Deferred.make<void>();
+          captures.backgroundQuiescenceCompleted = yield* Queue.unbounded<string>();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+
+          const turnFiber = yield* adapter
+            .sendTurn({ threadId, input: "run subagent task" })
+            .pipe(Effect.forkChild);
+          const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+          const delivered = lifecycleSnapshot(correlationId, "delivered", 2);
+          yield* offer(captures, { _tag: "PromptLifecycleUpdated", lifecycle: delivered });
+
+          captures.inputAdmissionBusy = true;
+          yield* offer(captures, {
+            _tag: "ChildUpdated",
+            child: { id: "child-agent-1", label: "research agent", status: "running" },
+          });
+
+          captures.correlatedPromptCancellationResult = {
+            status: "too_late",
+            ownershipCrossed: true,
+            deliveryCrossed: true,
+            lifecycle: delivered,
+          };
+          yield* adapter.interruptTurn(threadId);
+
+          yield* offer(captures, {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: lifecycleSnapshot(correlationId, "completed", 3),
+          });
+          yield* Fiber.join(turnFiber);
+
+          // Settle armed the background quiescence watch because inputAdmissionBusy was true
+          const settlementToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+          expect(settlementToken).toMatch(/^background:/);
+          expect(captures.inputAdmissionBusy).toBe(true);
+
+          // Follow-up with mismatched controls is rejected while background quiescence is pending
+          const rejectedSend = yield* adapter
+            .sendTurn({
+              threadId,
+              input: "premature input before subagent completes",
+              modelSelection: { instanceId, model: "openai/other" },
+            })
+            .pipe(Effect.flip);
+          expect(rejectedSend).toMatchObject({
+            _tag: "ProviderAdapterValidationError",
+            reason: "busy",
+            issue: "Prime Agent background work is still running. Try again after it finishes.",
+          });
+
+          // Child cancellation rearms quiescence in idle state
+          yield* offer(captures, {
+            _tag: "ChildUpdated",
+            child: { id: "child-agent-1", label: "research agent", status: "cancelled" },
+          });
+          const childStopToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+          expect(childStopToken).toMatch(/^background:/);
+
+          // Compaction completion rearms quiescence in idle state
+          yield* offer(captures, {
+            _tag: "CompactionCompleted",
+            outcome: "completed",
+            willRetry: false,
+          });
+          const compactionToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+          expect(compactionToken).toMatch(/^background:/);
+
+          // SessionResynced rearms quiescence while inputAdmissionBusy remains true
+          yield* offer(captures, {
+            _tag: "SessionResynced",
+            messages: [],
+            state: {
+              ...initialSnapshot().state,
+              isStreaming: false,
+              isCompacting: false,
+              isBashRunning: false,
+            },
+            children: [{ id: "child-agent-1", label: "research agent", status: "cancelled" }],
+          });
+          const resyncToken = yield* Queue.take(captures.rlmQuiescenceObserved);
+          expect(resyncToken).toMatch(/^background:/);
+          expect(captures.inputAdmissionBusy).toBe(true);
+
+          // Releasing the barrier completes quiescence and clears inputAdmissionBusy
+          yield* Deferred.succeed(captures.rlmQuiescenceRelease, undefined);
+          const completedTokens = [
+            yield* Queue.take(captures.backgroundQuiescenceCompleted),
+            yield* Queue.take(captures.backgroundQuiescenceCompleted),
+            yield* Queue.take(captures.backgroundQuiescenceCompleted),
+            yield* Queue.take(captures.backgroundQuiescenceCompleted),
+          ];
+          expect(new Set(completedTokens)).toEqual(
+            new Set([settlementToken, childStopToken, compactionToken, resyncToken]),
+          );
+          expect(captures.rlmQuiescenceSignals.map((signal) => signal.aborted)).toEqual([
+            true,
+            true,
+            true,
+            false,
+          ]);
+          expect(captures.inputAdmissionBusy).toBe(false);
+
+          // Follow-up turn with changed controls is now admitted
+          const secondTurnFiber = yield* adapter
+            .sendTurn({
+              threadId,
+              input: "follow-up input after background quiescence",
+              modelSelection: { instanceId, model: "openai/other" },
+            })
+            .pipe(Effect.forkChild);
+          const secondCorrelationId = yield* Queue.take(captures.correlatedPromptObserved);
+          expect(secondCorrelationId).toBeDefined();
+          yield* offer(captures, {
+            _tag: "PromptLifecycleUpdated",
+            lifecycle: lifecycleSnapshot(secondCorrelationId, "completed", 2),
+          });
+          yield* Fiber.join(secondTurnFiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects interactions and approvals after too-late cancellation", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -2276,6 +2415,105 @@ describe("PrimeAgentDaemonAdapter", () => {
       }),
     ).pipe(Effect.provide(testLayer)),
   );
+
+  for (const changedContent of [false, true]) {
+    it.effect(
+      `reconciles historical usage updates while rejecting content changes (${changedContent})`,
+      () => {
+        const logs: Array<unknown> = [];
+        const logger = Logger.make(({ message }) => {
+          logs.push(message);
+        });
+        return Effect.scoped(
+          Effect.gen(function* () {
+            const captures = makeCaptures();
+            captures.correlatedPromptLifecycleAvailable = true;
+            captures.correlatedPromptObserved = yield* Queue.unbounded<string>();
+            const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+              instanceId,
+              runtimeFactory: fakeRuntimeFactory(captures),
+            });
+            const subscription = yield* subscribe(adapter);
+            yield* adapter.startSession({
+              threadId,
+              cwd: process.cwd(),
+              runtimeMode: "full-access",
+            });
+            const running = yield* adapter
+              .sendTurn({ threadId, input: "account for child usage" })
+              .pipe(Effect.forkChild);
+            const correlationId = yield* Queue.take(captures.correlatedPromptObserved);
+            yield* awaitObservedType(subscription.observed, "turn.started");
+            yield* offer(captures, {
+              _tag: "PromptLifecycleUpdated",
+              lifecycle: lifecycleSnapshot(correlationId, "delivered", 2),
+            });
+            const original = assistantMessage("PRIVATE original answer");
+            yield* offer(captures, {
+              _tag: "MessageCompleted",
+              message: original,
+              attribution: { scope: "prompt", correlationId },
+            });
+            const updated = {
+              ...original,
+              text: changedContent ? "PRIVATE changed answer" : original.text,
+              usage: { ...usage, totalTokens: 999, totalCostUsd: 5 },
+            };
+            yield* offer(captures, {
+              ...initialSnapshot(),
+              state: { ...initialSnapshot().state, messageCount: 1 },
+              messages: [updated],
+              replayContinuity: "complete",
+              connectionGeneration: 0,
+              correlatedProofEpoch: 1,
+              promptLifecycles: {
+                records: [
+                  lifecycleSnapshot(correlationId, "completed", 3, { usage: updated.usage }),
+                ],
+                expired: [],
+              },
+            });
+            const result = yield* Fiber.join(running);
+            const completed = subscription.events.findLast(
+              (event) => event.turnId === result.turnId && event.type === "turn.completed",
+            );
+            expect(completed).toMatchObject({
+              payload: { state: changedContent ? "failed" : "completed" },
+            });
+            if (changedContent) {
+              expect(logs).toContainEqual([
+                "Prime Agent transcript continuity verification failed.",
+                expect.objectContaining({
+                  threadId,
+                  reason: "transcript-tail-mismatch",
+                  mismatchIndex: 0,
+                  changedFields: ["text"],
+                  observedCount: 1,
+                  snapshotCount: 1,
+                }),
+              ]);
+              expect(encodeUnknownJson(logs)).not.toContain("PRIVATE");
+            } else {
+              expect(completed).toMatchObject({
+                payload: { usage: { totalTokens: 999 }, totalCostUsd: 5 },
+              });
+              expect(subscription.events.filter((event) => event.type === "runtime.error")).toEqual(
+                [],
+              );
+              expect(logs).not.toContainEqual(
+                expect.arrayContaining(["Prime Agent transcript continuity verification failed."]),
+              );
+            }
+            yield* Fiber.interrupt(subscription.fiber);
+          }),
+        ).pipe(
+          Effect.provide(
+            Layer.merge(testLayer, Logger.layer([logger], { mergeWithExisting: false })),
+          ),
+        );
+      },
+    );
+  }
 
   it.effect("fails closed on a capable reconnect transcript delta", () =>
     Effect.scoped(
@@ -11346,5 +11584,93 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(adapter.absoluteConversationRollback).toBeUndefined();
       }),
     ).pipe(Effect.provide(testLayer)),
+  );
+  it.effect(
+    "records bounded diagnostic classification and suppresses arbitrary private errors from native and canonical logs on SessionClosed",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const loggedNativeEntries: unknown[] = [];
+          const mockNativeLogger: EventNdjsonLogger = {
+            filePath: "/mock/native.ndjson",
+            write: (entry) =>
+              Effect.sync(() => {
+                loggedNativeEntries.push(entry);
+              }),
+            close: () => Effect.void,
+          };
+          const captures = makeCaptures();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+            nativeEventLogger: mockNativeLogger,
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+
+          yield* offer(captures, {
+            _tag: "SessionClosed",
+            error: "PRIVATE_SECRET_DO_NOT_LOG /private/server/credentials.key",
+            diagnostic: {
+              reason: "ingress-capacity",
+              connectionGeneration: 2,
+              proofEpoch: 1,
+            },
+          });
+          const exited = yield* awaitObservedType(subscription.observed, "session.exited");
+
+          expect(exited).toMatchObject({
+            payload: {
+              exitKind: "error",
+              reason: "Prime Agent session closed unexpectedly.",
+            },
+          });
+
+          // Verify diagnostic classification is recorded in native logger
+          const closedEntry = loggedNativeEntries.find(
+            (entry) =>
+              typeof entry === "object" &&
+              entry !== null &&
+              "event" in entry &&
+              typeof (entry as { event: unknown }).event === "object" &&
+              (entry as { event: unknown }).event !== null &&
+              "method" in (entry as { event: { method: unknown } }).event &&
+              (entry as { event: { method: unknown } }).event.method === "SessionClosed",
+          ) as
+            | {
+                readonly event: {
+                  readonly kind: string;
+                  readonly provider: string;
+                  readonly threadId: ThreadId;
+                  readonly method: string;
+                  readonly diagnostic?: unknown;
+                };
+              }
+            | undefined;
+          expect(closedEntry).toBeDefined();
+          expect(closedEntry?.event).toMatchObject({
+            kind: "notification",
+            provider: "primeAgent",
+            threadId,
+            method: "SessionClosed",
+            diagnostic: {
+              reason: "ingress-capacity",
+              connectionGeneration: 2,
+              proofEpoch: 1,
+            },
+          });
+
+          // Verify arbitrary private error strings remain strictly absent from both native and canonical logs
+          const serializedNative = encodeUnknownJson(loggedNativeEntries);
+          const serializedCanonical = encodeUnknownJson(subscription.events);
+          expect(serializedNative).not.toContain("PRIVATE_SECRET_DO_NOT_LOG");
+          expect(serializedNative).not.toContain("/private/server/credentials.key");
+          expect(serializedCanonical).not.toContain("PRIVATE_SECRET_DO_NOT_LOG");
+          expect(serializedCanonical).not.toContain("/private/server/credentials.key");
+
+          yield* Fiber.interrupt(subscription.fiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
   );
 });

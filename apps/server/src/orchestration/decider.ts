@@ -313,9 +313,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   readModel,
   userInputActivity,
   pendingRequestActivities,
+  delegationAdmission,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
+  readonly delegationAdmission?: {
+    readonly enabled: boolean;
+    readonly messageExists: boolean;
+    readonly deliveredNotificationIds: ReadonlyArray<EventId>;
+  };
   readonly userInputActivity?: OrchestrationThreadActivity;
   readonly pendingRequestActivities?: ReadonlyArray<OrchestrationThreadActivity>;
 }): Effect.fn.Return<
@@ -1420,6 +1426,100 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.delegation.follow-through": {
+      if (
+        delegationAdmission &&
+        (!delegationAdmission.enabled ||
+          delegationAdmission.messageExists ||
+          command.notificationIds.some((id) =>
+            delegationAdmission.deliveredNotificationIds.includes(id),
+          ))
+      )
+        return [];
+      const parent = readModel.threads.find((thread) => thread.id === command.threadId);
+      if (parent?.messages.some((message) => message.id === command.messageId)) return [];
+      const session = parent?.session;
+      // A stale notice must never steer a user turn or restart an explicitly stopped parent.
+      if (
+        !parent ||
+        parent.deletedAt !== null ||
+        parent.archivedAt !== null ||
+        parent.updatedAt !== command.expectedParentUpdatedAt ||
+        (parent.sourceEpoch ?? 0) !== command.expectedSourceEpoch ||
+        parent.settledOverride === "settled" ||
+        parent.snoozedUntil != null ||
+        !session ||
+        session.status !== "ready" ||
+        session.activeTurnId !== null ||
+        session.pendingTurnRequestId !== undefined ||
+        session.failedTurnRequestId !== undefined ||
+        session.pendingStopRequestId !== undefined ||
+        session.compactionQueue !== undefined ||
+        parent.latestTurn?.state === "running" ||
+        parent.latestTurn?.state === "interrupted" ||
+        parent.latestTurn?.state === "error" ||
+        parent.rollbackStatus?.state === "pending" ||
+        parent.rollbackStatus?.state === "recovering" ||
+        parent.rollbackStatus?.state === "manual-recovery" ||
+        openRequests({ activities: pendingRequestActivities ?? parent.activities }).size > 0 ||
+        command.children.length === 0 ||
+        command.notificationIds.length === 0
+      )
+        return [];
+      const prefix = `delegated:${parent.id}:`;
+      if (
+        command.children.some((expected) => {
+          const child = readModel.threads.find((thread) => thread.id === expected.threadId);
+          return (
+            !child ||
+            child.archivedAt !== null ||
+            child.deletedAt !== null ||
+            !child.id.startsWith(prefix) ||
+            !/^[0-9a-f]{16}$/.test(child.id.slice(prefix.length)) ||
+            child.updatedAt !== expected.updatedAt ||
+            child.projectId !== parent.projectId
+          );
+        })
+      )
+        return [];
+      return yield* decideCommandSequence({
+        readModel,
+        commands: [
+          {
+            type: "thread.turn.start",
+            commandId: command.commandId,
+            threadId: parent.id,
+            message: {
+              messageId: command.messageId,
+              role: "user",
+              text: command.text,
+              attachments: [],
+            },
+            modelSelection: parent.modelSelection,
+            runtimeMode: parent.runtimeMode,
+            interactionMode: parent.interactionMode,
+            sourceEpoch: command.expectedSourceEpoch,
+            createdAt: command.createdAt,
+          },
+          {
+            type: "thread.activity.append",
+            commandId: command.commandId,
+            threadId: parent.id,
+            createdAt: command.createdAt,
+            activity: {
+              id: EventId.make(`delegation-delivered:${command.messageId}`),
+              kind: "delegation.follow-through.delivered",
+              tone: "info",
+              summary: "Delegated child update delivered to parent",
+              payload: { notificationIds: command.notificationIds, messageId: command.messageId },
+              turnId: null,
+              createdAt: command.createdAt,
+            },
+          },
+        ],
+      });
+    }
+
     case "thread.turn.start": {
       if (isImportedAgentSessionMessageId(command.message.messageId)) {
         return yield* new OrchestrationCommandInvariantError({
@@ -1602,27 +1702,39 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const admissionDeadlineAt = DateTime.formatIso(
         DateTime.add(admissionObservedAt, { milliseconds: 60_000 }),
       );
-      const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
-        ...(yield* withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
-        })),
-        type: "thread.message-sent",
-        payload: {
-          threadId: command.threadId,
-          messageId: command.message.messageId,
-          role: "user",
-          text: command.message.text,
-          attachments: command.message.attachments,
-          ...(command.message.context !== undefined ? { context: command.message.context } : {}),
-          turnId: null,
-          streaming: false,
-          createdAt: command.createdAt,
-          updatedAt: command.createdAt,
-        },
-      };
+      // A worktree bootstrap persists the message ahead of the turn with
+      // `thread.message.user.append`; the turn then only references it.
+      const persistedUserMessage = targetThread.messages.find(
+        (message) =>
+          message.id === command.message.messageId &&
+          message.role === "user" &&
+          message.turnId === null,
+      );
+      const userMessageEvent: Omit<OrchestrationEvent, "sequence"> | null = persistedUserMessage
+        ? null
+        : {
+            ...(yield* withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            })),
+            type: "thread.message-sent",
+            payload: {
+              threadId: command.threadId,
+              messageId: command.message.messageId,
+              role: "user",
+              text: command.message.text,
+              attachments: command.message.attachments,
+              ...(command.message.context !== undefined
+                ? { context: command.message.context }
+                : {}),
+              turnId: null,
+              streaming: false,
+              createdAt: command.createdAt,
+              updatedAt: command.createdAt,
+            },
+          };
       // Steering needs an admitted turn to steer into. A session can sit in
       // "running" with no active turn (Claude reports system/status between
       // turns) or with a turn the provider opened on its own (Claude continuing
@@ -1657,7 +1769,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt: command.createdAt,
           commandId: command.commandId,
         })),
-        causationEventId: userMessageEvent.eventId,
+        ...(userMessageEvent ? { causationEventId: userMessageEvent.eventId } : {}),
         type: "thread.turn-start-requested",
         payload: {
           threadId: command.threadId,
@@ -1723,7 +1835,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       return [
         ...lifecycleResetEvents,
-        userMessageEvent,
+        ...(userMessageEvent ? [userMessageEvent] : []),
         ...admissionPendingEvents,
         turnStartRequestedEvent,
       ];
@@ -2102,6 +2214,48 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       return [...lifecycleResetEvents, userMessageEvent, requestedEvent];
+    }
+
+    case "thread.message.user.append": {
+      if (isImportedAgentSessionMessageId(command.message.messageId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Message id '${command.message.messageId}' uses the reserved imported-session namespace.`,
+        });
+      }
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.messages.some((message) => message.id === command.message.messageId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Message '${command.message.messageId}' already exists on thread '${command.threadId}'.`,
+        });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: { deferredTurn: true },
+        })),
+        type: "thread.message-sent",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.message.messageId,
+          role: "user",
+          text: command.message.text,
+          attachments: command.message.attachments,
+          ...(command.message.context !== undefined ? { context: command.message.context } : {}),
+          turnId: null,
+          streaming: false,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
     }
 
     case "thread.turn.interrupt": {
@@ -2888,11 +3042,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.diff.complete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      // A placeholder (status "missing") must never replace a checkpoint that
+      // was already captured with a real git ref. Provider diff ingestion
+      // checks this before dispatching, but CheckpointReactor can commit the
+      // real capture in between; the decider runs under the engine's command
+      // lock, so rejecting here closes that window.
+      const existingCheckpoint = thread.checkpoints.find(
+        (checkpoint) => checkpoint.turnId === command.turnId,
+      );
+      if (
+        command.status === "missing" &&
+        existingCheckpoint !== undefined &&
+        existingCheckpoint.status !== "missing"
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `turn ${command.turnId} already has a captured checkpoint`,
+        });
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",

@@ -3,11 +3,18 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
-import { UsageDay, type UsageSummaryInput } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ServerProviderInstancesMutationId,
+  UsageDay,
+  type UsageSummaryInput,
+} from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -16,12 +23,17 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Scheduler from "effect/Scheduler";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { resolveAntigravityProfileDirectory } from "../provider/antigravityAuthSupport.ts";
+import { encodeSyntheticGenMetadataBlob } from "./antigravityTestFixtures.ts";
 import * as UsageService from "./UsageService.ts";
+
+const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 function claudeLine(id: number, outputTokens: number, model = "claude-fable-5"): string {
   return `${JSON.stringify({
@@ -35,6 +47,19 @@ function claudeLine(id: number, outputTokens: number, model = "claude-fable-5"):
       usage: { input_tokens: 10, output_tokens: outputTokens },
     },
   })}\n`;
+}
+
+function seedAntigravityDb(
+  dbPath: string,
+  entries: ReadonlyArray<{ idx: number; blob: Uint8Array }>,
+) {
+  const db = new NodeSqlite.DatabaseSync(dbPath);
+  db.exec("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)");
+  const stmt = db.prepare("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)");
+  for (const e of entries) {
+    stmt.run(e.idx, e.blob);
+  }
+  db.close();
 }
 
 const WINDOW: UsageSummaryInput = {
@@ -71,6 +96,7 @@ const serviceLayers = (input: {
   readonly onRatesFetch?: () => void;
   /** Defaults to an unparsable document so every scan retries the fetch. */
   readonly ratesDocument?: unknown;
+  readonly environment?: NodeJS.ProcessEnv;
 }) =>
   ServerConfig.layerTest(process.cwd(), { prefix: input.prefix }).pipe(
     Layer.provideMerge(NodeServices.layer),
@@ -89,7 +115,10 @@ const serviceLayers = (input: {
       ),
     ),
     Layer.provideMerge(
-      Layer.succeed(HostProcessEnvironment, { GROK_HOME: NodePath.join(input.home, "grok") }),
+      Layer.succeed(HostProcessEnvironment, {
+        GROK_HOME: NodePath.join(input.home, "grok"),
+        ...input.environment,
+      }),
     ),
   );
 
@@ -98,6 +127,276 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live("reads configured and disabled accounts once across shared and aliased homes", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      const codexHome = NodePath.join(home, "codex-account");
+      const alias = NodePath.join(home, "codex-alias");
+      const claudeHome = NodePath.join(home, "claude-account");
+      const grokHome = NodePath.join(home, "grok-account");
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+        await NodeFSP.mkdir(NodePath.join(claudeHome, "projects"), { recursive: true });
+        await NodeFSP.writeFile(
+          NodePath.join(claudeHome, "projects", "session.jsonl"),
+          claudeLine(2, 7),
+        );
+        await NodeFSP.mkdir(NodePath.join(codexHome, "sessions"), { recursive: true });
+        await NodeFSP.symlink(codexHome, alias, "junction");
+        await NodeFSP.writeFile(
+          NodePath.join(codexHome, "sessions", "rollout.jsonl"),
+          [
+            { type: "session_meta", payload: { id: "codex-account-session" } },
+            { type: "turn_context", payload: { model: "gpt-5.6-sol" } },
+            {
+              type: "event_msg",
+              timestamp: "2026-08-01T10:00:00Z",
+              payload: {
+                type: "token_count",
+                info: { last_token_usage: { input_tokens: 10, output_tokens: 11 } },
+              },
+            },
+          ]
+            .map((line) => encodeUnknownJsonString(line))
+            .join("\n") + "\n",
+        );
+        await NodeFSP.mkdir(NodePath.join(grokHome, "sessions", "session"), { recursive: true });
+        await NodeFSP.writeFile(
+          NodePath.join(grokHome, "sessions", "session", "updates.jsonl"),
+          encodeUnknownJsonString({
+            timestamp: Date.parse("2026-08-01T10:00:00Z") / 1000,
+            method: "_x.ai/session/update",
+            params: {
+              sessionId: "grok-account-session",
+              update: {
+                sessionUpdate: "turn_completed",
+                prompt_id: "prompt-1",
+                usage: { inputTokens: 10, outputTokens: 13 },
+              },
+            },
+          }) + "\n",
+        );
+      });
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-accounts-test",
+            home,
+            settings: {
+              ...settings,
+              providerInstances: {
+                [ProviderInstanceId.make("claude-work")]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  enabled: false,
+                  environment: [{ name: "CLAUDE_CONFIG_DIR", value: claudeHome, sensitive: false }],
+                },
+                [ProviderInstanceId.make("codex-work")]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  environment: [{ name: "CODEX_HOME", value: codexHome, sensitive: false }],
+                },
+                [ProviderInstanceId.make("codex-alias")]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  config: { homePath: alias },
+                },
+                [ProviderInstanceId.make("codex-shadow")]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  config: { homePath: codexHome, shadowHomePath: NodePath.join(home, "shadow") },
+                  environment: [
+                    { name: "CODEX_HOME", value: NodePath.join(home, "ignored"), sensitive: false },
+                  ],
+                },
+                [ProviderInstanceId.make("grok-work")]: {
+                  driver: ProviderDriverKind.make("grok"),
+                  environment: [{ name: "GROK_HOME", value: grokHome, sensitive: false }],
+                },
+              },
+            },
+          }),
+        ),
+      );
+      const summary = yield* service.readSummary(WINDOW);
+      assert.strictEqual(totalOutputTokens(summary), 36);
+      const sources = summary.sources.filter((source) => source.status === "ok");
+      assert.strictEqual(sources.length, 4);
+      assert.strictEqual(
+        sources.reduce((sum, source) => sum + source.scannedFiles, 0),
+        4,
+      );
+      assert.strictEqual(
+        sources.filter((source) => source.fingerprint.provider === "codex").length,
+        1,
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "uses explicit account settings before environment and legacy homes, then refreshes them",
+    () =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        const configured = NodePath.join(home, "configured");
+        const environmentHome = NodePath.join(home, "environment");
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(transcript, claudeLine(1, 100));
+          for (const [index, root] of [configured, environmentHome].entries()) {
+            await NodeFSP.mkdir(NodePath.join(root, "projects"), { recursive: true });
+            await NodeFSP.writeFile(
+              NodePath.join(root, "projects", "session.jsonl"),
+              claudeLine(index + 2, index + 7),
+            );
+          }
+          await NodeFSP.mkdir(NodePath.join(configured, ".claude", "projects"), {
+            recursive: true,
+          });
+          await NodeFSP.writeFile(
+            NodePath.join(configured, ".claude", "projects", "wrong.jsonl"),
+            claudeLine(4, 1000),
+          );
+        });
+        yield* Effect.gen(function* () {
+          const settingsService = yield* ServerSettings.ServerSettingsService;
+          const service = yield* UsageService.make;
+          const first = yield* service.readSummary(WINDOW);
+          assert.strictEqual(totalOutputTokens(first), 7);
+          assert.include(
+            first.sources.map((source) => source.fingerprint.resolvedHomePath),
+            yield* Effect.promise(() => NodeFSP.realpath(NodePath.join(configured, "projects"))),
+          );
+          const initial = yield* settingsService.getSettings;
+          yield* settingsService.mutateProviderInstances({
+            mutationId: ServerProviderInstancesMutationId.make("update-claude-account"),
+            expectedProviderInstances: initial.providerInstances,
+            patch: {
+              providerInstances: {
+                [ProviderInstanceId.make("claudeAgent")]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  config: { homePath: "" },
+                  environment: [
+                    { name: "CLAUDE_CONFIG_DIR", value: environmentHome, sensitive: false },
+                  ],
+                },
+              },
+            },
+          });
+          const second = yield* service.readSummary(WINDOW);
+          assert.strictEqual(totalOutputTokens(second), 8);
+          assert.include(
+            second.sources.map((source) => source.fingerprint.resolvedHomePath),
+            yield* Effect.promise(() =>
+              NodeFSP.realpath(NodePath.join(environmentHome, "projects")),
+            ),
+          );
+        }).pipe(
+          Effect.provide(
+            serviceLayers({
+              prefix: "usage-service-home-refresh-test",
+              home,
+              environment: { CLAUDE_CONFIG_DIR: NodePath.join(home, "host-ignored") },
+              settings: {
+                ...settings,
+                providerInstances: {
+                  [ProviderInstanceId.make("claudeAgent")]: {
+                    driver: ProviderDriverKind.make("claudeAgent"),
+                    config: { homePath: configured },
+                    environment: [
+                      { name: "CLAUDE_CONFIG_DIR", value: environmentHome, sensitive: false },
+                    ],
+                  },
+                },
+              },
+            }),
+          ),
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "uses inherited home variables when explicit default accounts have no home settings",
+    () =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+        const service = yield* UsageService.make.pipe(
+          Effect.provide(
+            serviceLayers({
+              prefix: "usage-service-inherited-homes-test",
+              home,
+              environment: {
+                CODEX_HOME: NodePath.join(home, "inherited-codex"),
+                CLAUDE_CONFIG_DIR: NodePath.join(home, "claude"),
+              },
+              settings: {
+                ...settings,
+                providerInstances: {
+                  [ProviderInstanceId.make("codex")]: {
+                    driver: ProviderDriverKind.make("codex"),
+                    config: {},
+                  },
+                  [ProviderInstanceId.make("claudeAgent")]: {
+                    driver: ProviderDriverKind.make("claudeAgent"),
+                    config: {},
+                  },
+                },
+              },
+            }),
+          ),
+        );
+        const summary = yield* service.readSummary(WINDOW);
+        assert.strictEqual(totalOutputTokens(summary), 5);
+        assert.strictEqual(
+          summary.sources.find((source) => source.fingerprint.provider === "codex")?.fingerprint
+            .resolvedHomePath,
+          NodePath.join(home, "inherited-codex", "sessions"),
+        );
+        assert.strictEqual(
+          summary.sources.find((source) => source.fingerprint.provider === "grok")?.fingerprint
+            .resolvedHomePath,
+          NodePath.join(home, "grok", "sessions"),
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("anchors relative configured Claude homePath to OS homedir without writing to disk", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const relativeHome = ".claude-relative-test-home";
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-relative-claude-test",
+            home,
+            settings: {
+              ...settings,
+              providerInstances: {
+                [ProviderInstanceId.make("claude-relative")]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  config: { homePath: relativeHome },
+                },
+              },
+            },
+          }),
+        ),
+      );
+
+      const summary = yield* service.readSummary(WINDOW);
+      const claudeSource = summary.sources.find(
+        (source) =>
+          source.fingerprint.provider === "claude" &&
+          source.fingerprint.resolvedHomePath.includes(relativeHome),
+      );
+      assert.isDefined(claudeSource);
+      assert.strictEqual(claudeSource?.status, "missing");
+      assert.strictEqual(
+        claudeSource?.fingerprint.resolvedHomePath,
+        NodePath.join(NodeOS.homedir(), relativeHome, "projects"),
+      );
+      assert.notStrictEqual(
+        claudeSource?.fingerprint.resolvedHomePath,
+        NodePath.resolve(relativeHome, "projects"),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.live("reprices unchanged transcripts when custom prices are added, edited, or removed", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
@@ -167,6 +466,9 @@ describe("UsageService", () => {
       yield* Effect.gen(function* () {
         const settingsService = yield* ServerSettings.ServerSettingsService;
         const fileSystem = yield* FileSystem.FileSystem;
+        const claudeProjects = yield* fileSystem.realPath(
+          NodePath.join(home, "claude", "projects"),
+        );
         const firstScanStarted = yield* Deferred.make<void>();
         const secondScanStarted = yield* Deferred.make<void>();
         const releaseRates = yield* Deferred.make<void>();
@@ -177,8 +479,7 @@ describe("UsageService", () => {
             exists: (path) =>
               fileSystem.exists(path).pipe(
                 Effect.tap(() => {
-                  if (path !== NodePath.join(home, "claude", ".claude", "projects"))
-                    return Effect.void;
+                  if (path !== claudeProjects) return Effect.void;
                   homeProbes += 1;
                   return Deferred.succeed(
                     homeProbes === 1 ? firstScanStarted : secondScanStarted,
@@ -372,5 +673,214 @@ describe("UsageService", () => {
         `interruption left the next matching request pending at scheduler check ${orphanedAt}`,
       );
     }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "aggregates usage from configured Antigravity instances and supports warm scanning and WAL updates",
+    () =>
+      Effect.gen(function* () {
+        yield* setup;
+        const config = yield* ServerConfig.ServerConfig;
+        const instanceId = ProviderInstanceId.make("antigravity-inst-1");
+        const profileDir = resolveAntigravityProfileDirectory(config.stateDir, instanceId);
+        const convDir = NodePath.join(profileDir, "antigravity-acp", "conversations");
+        yield* Effect.promise(() => NodeFSP.mkdir(convDir, { recursive: true }));
+
+        const dbPath = NodePath.join(convDir, "conv-001.db");
+        // August 1, 2026 10:00:00 UTC = 1785578400
+        const blob1 = encodeSyntheticGenMetadataBlob({
+          modelName: "gemini-2.5-pro",
+          timestampSeconds: 1785578400n,
+          inputTokens: 100,
+          outputTokens: 40,
+          thinkingOutputTokens: 10,
+        });
+        seedAntigravityDb(dbPath, [{ idx: 0, blob: blob1 }]);
+
+        const service = yield* UsageService.make;
+        const first = yield* service.readSummary(WINDOW);
+
+        const agBucket = first.buckets.find(
+          (b) => b.provider === "antigravity" && b.model === "gemini-2.5-pro",
+        );
+        assert.isDefined(agBucket, "antigravity bucket should exist");
+        assert.strictEqual(agBucket.totals.uncachedInputTokens, 100);
+        assert.strictEqual(agBucket.totals.outputTokens, 40);
+        assert.strictEqual(agBucket.totals.reasoningTokens, 10);
+        assert.strictEqual(agBucket.costUsd, 0);
+        assert.strictEqual(agBucket.costSource, "unpriced");
+        assert.strictEqual(agBucket.unpricedRecords, 1);
+        assert.strictEqual(agBucket.sessions, 1);
+
+        const agSource = first.sources.find(
+          (s) =>
+            s.fingerprint.provider === "antigravity" && s.fingerprint.resolvedHomePath === convDir,
+        );
+        assert.isDefined(agSource, "antigravity source should exist");
+        assert.strictEqual(agSource.status, "ok");
+        assert.strictEqual(agSource.scannedFiles, 1);
+        assert.strictEqual(agSource.skippedFiles, 0);
+        assert.strictEqual(agSource.malformedRecords, 0);
+        assert.strictEqual(agSource.distinctSessions, 1);
+
+        // Warm rescan with no changes returns identical aggregation
+        const second = yield* service.readSummary(WINDOW);
+        const agBucket2 = second.buckets.find((b) => b.provider === "antigravity");
+        assert.deepStrictEqual(agBucket2?.totals, agBucket.totals);
+
+        // WAL mutation: appending to the DB updates effective mtime and size, triggering rescan
+        const blob2 = encodeSyntheticGenMetadataBlob({
+          modelName: "gemini-2.5-pro",
+          timestampSeconds: 1785578500n,
+          inputTokens: 50,
+          outputTokens: 20,
+          thinkingOutputTokens: 5,
+        });
+        const db = new NodeSqlite.DatabaseSync(dbPath);
+        db.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;");
+        db.prepare("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)").run(1, blob2);
+        yield* Effect.addFinalizer(() => Effect.sync(() => db.close()));
+
+        const third = yield* service.readSummary(WINDOW);
+        const agBucket3 = third.buckets.find(
+          (b) => b.provider === "antigravity" && b.model === "gemini-2.5-pro",
+        );
+        assert.isDefined(agBucket3);
+        assert.strictEqual(agBucket3.totals.uncachedInputTokens, 150);
+        assert.strictEqual(agBucket3.totals.outputTokens, 60);
+        assert.strictEqual(agBucket3.totals.reasoningTokens, 15);
+      }).pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-antigravity-test",
+            home: "",
+            settings: {
+              providers: {},
+              providerInstances: {
+                [ProviderInstanceId.make("antigravity-inst-1")]: {
+                  driver: "antigravity",
+                  enabled: true,
+                },
+              },
+            },
+          }),
+        ),
+        Effect.scoped,
+      ),
+  );
+
+  it.live(
+    "reports honest missing status when configured Antigravity instance has no conversations dir on disk",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const instanceId = ProviderInstanceId.make("antigravity-missing");
+        const profileDir = resolveAntigravityProfileDirectory(config.stateDir, instanceId);
+        const expectedConvDir = NodePath.join(profileDir, "antigravity-acp", "conversations");
+
+        const service = yield* UsageService.make;
+        const summary = yield* service.readSummary(WINDOW);
+
+        const agSource = summary.sources.find(
+          (s) =>
+            s.fingerprint.provider === "antigravity" &&
+            s.fingerprint.resolvedHomePath === expectedConvDir,
+        );
+        assert.isDefined(agSource, "source for configured instance must be present");
+        assert.strictEqual(agSource.status, "missing");
+        assert.strictEqual(agSource.message, "No transcript directory on this environment.");
+        assert.strictEqual(agSource.scannedFiles, 0);
+        assert.strictEqual(agSource.distinctSessions, 0);
+
+        // Verify no unrelated generic ~/.gemini placeholder is emitted
+        const genericPlaceholder = summary.sources.find(
+          (s) =>
+            s.fingerprint.provider === "antigravity" &&
+            s.fingerprint.resolvedHomePath === NodePath.join(NodeOS.homedir(), ".gemini"),
+        );
+        assert.isUndefined(
+          genericPlaceholder,
+          "must not emit unrelated generic ~/.gemini placeholder",
+        );
+      }).pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-antigravity-missing-test",
+            home: "",
+            settings: {
+              providers: {},
+              providerInstances: {
+                [ProviderInstanceId.make("antigravity-missing")]: {
+                  driver: "antigravity",
+                  enabled: true,
+                },
+              },
+            },
+          }),
+        ),
+        Effect.scoped,
+      ),
+  );
+
+  it.live(
+    "reports honest partial status and malformed counter when an Antigravity database contains corrupt rows",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const instanceId = ProviderInstanceId.make("antigravity-partial");
+        const profileDir = resolveAntigravityProfileDirectory(config.stateDir, instanceId);
+        const convDir = NodePath.join(profileDir, "antigravity-acp", "conversations");
+        yield* Effect.promise(() => NodeFSP.mkdir(convDir, { recursive: true }));
+
+        const dbPath = NodePath.join(convDir, "corrupt.db");
+        // Valid row
+        const validBlob = encodeSyntheticGenMetadataBlob({
+          modelName: "gemini-2.5-flash",
+          timestampSeconds: 1785578400n,
+          inputTokens: 10,
+          outputTokens: 20,
+        });
+        // Corrupt row (invalid protobuf bytes)
+        const corruptBlob = new Uint8Array([0xff, 0xff, 0xff, 0xff]);
+
+        seedAntigravityDb(dbPath, [
+          { idx: 0, blob: validBlob },
+          { idx: 1, blob: corruptBlob },
+        ]);
+
+        const service = yield* UsageService.make;
+        const summary = yield* service.readSummary(WINDOW);
+
+        const agSource = summary.sources.find(
+          (s) =>
+            s.fingerprint.provider === "antigravity" && s.fingerprint.resolvedHomePath === convDir,
+        );
+        assert.isDefined(agSource);
+        assert.strictEqual(agSource.status, "partial");
+        assert.strictEqual(agSource.malformedRecords, 1);
+        assert.strictEqual(agSource.scannedFiles, 1);
+        assert.isNotNull(agSource.message);
+        const warm = yield* service.readSummary(WINDOW);
+        const warmSource = warm.sources.find((s) => s.fingerprint.resolvedHomePath === convDir);
+        assert.strictEqual(warmSource?.status, "partial");
+        assert.strictEqual(warmSource?.malformedRecords, 1);
+      }).pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-antigravity-partial-test",
+            home: "",
+            settings: {
+              providers: {},
+              providerInstances: {
+                [ProviderInstanceId.make("antigravity-partial")]: {
+                  driver: "antigravity",
+                  enabled: true,
+                },
+              },
+            },
+          }),
+        ),
+        Effect.scoped,
+      ),
   );
 });

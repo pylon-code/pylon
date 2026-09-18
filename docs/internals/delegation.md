@@ -1,0 +1,165 @@
+# Delegated threads
+
+The delegation MCP toolkit ([`apps/server/src/mcp/toolkits/delegation`](../../apps/server/src/mcp/toolkits/delegation))
+lets an agent start and manage child threads on other provider instances. The toolkit itself is a
+sidecar: it dispatches only existing commands (`thread.create`, `thread.meta.update`,
+`thread.turn.start`, `thread.turn.interrupt`, `thread.delete`) and reads only existing projections.
+Automatic parent follow-through (PR #603) is not: it adds the internal
+`thread.delegation.follow-through` command to the contracts, a decider branch that admits it, and
+two projection queries. Removing delegation therefore means deleting the toolkit directory, the
+reactor, and those three core touches together. The toolkit deliberately does not reuse upstream's
+reserved `delegate_task`, `task_status`, or `task_cancel` tool names.
+
+## The child id carries the parent
+
+A child's thread id is `delegated:<parentThreadId>:<first 16 hex of sha256(parent + "\n" + key)>`.
+Ownership (a parent only ever computes ids under its own prefix), depth (the capability is never
+minted for a `delegated:` thread, and the handler refuses one), and the live-children count are all
+derived from that prefix. They survive restarts without a contract field or a table.
+`continuedFromThreadId` shows what a field costs instead: contracts, decider, projector, a
+migration, and every client.
+
+Thread ids are otherwise opaque. The one exception was the mobile composer draft key
+`${environmentId}:${threadId}`: both halves may contain colons, so the parser now takes the
+environment ids its caller already knows instead of splitting on a fixed colon.
+
+Caveat: a client acting for the same user could create a thread with a delegated id first. If that
+thread has a session, a turn, or a rollback, the toolkit treats it as an existing child; if it has
+none of those, it looks like a crash-orphaned attempt and is deleted. Nothing crosses a user boundary.
+
+## Idempotency and cleanup
+
+Every create, meta update, and turn command has a deterministic id, so the receipt store absorbs
+retries. Discards use a unique delete id instead, because a deterministic one would replay as success
+without deleting if the same child id were ever created again.
+
+A child counts as a crash-orphaned attempt only when it has no initial message, no session, no turn,
+and a source epoch of zero. The initial message alone is not proof: rewinding a child's first message
+removes it too, but leaves a session and a later source epoch behind. The next call with an orphan's key
+discards it. Any failure or interruption after `thread.create` also removes the child's worktree and
+deletes the thread. The worktree path and the created flag are recorded inside the uninterruptible
+steps that create them, so cleanup cannot miss a resource that exists. Forced worktree removal is
+limited to paths under the server's managed worktrees directory, since a thread can record any path.
+After cleanup the key is consumed for good.
+
+Thread deletion itself never removes worktrees (the web client does that), which is why the toolkit
+removes them explicitly.
+
+## Child state
+
+A turn start waiting for provider admission changes the session to `starting`, not `latestTurn`. The
+state rules therefore check `starting` first, or a follow-up would read as the previous completed turn.
+The pending admission id alone is not used: interrupt recovery before the provider binds stops the
+session but leaves that id set until the next turn start replaces it. A first turn stopped before admission leaves a
+session but no turn and is reported as interrupted, not queued forever.
+
+The follow-through reactor observes children with `observeDelegatedChild`, which must agree with
+`deriveDelegatedThreadState` on completed children: a turn's own terminal state wins over a session
+that was stopped afterwards by a restart or the idle reaper. At startup, any child whose observation
+differs from the persisted one is baselined rather than delivered, because children only run inside
+the server process and nothing could have observed that change live.
+
+## Defaults and agent guidance
+
+`delegationDefaultModelSelection` and `delegationChildRuntimeMode` are project-scoped settings resolved
+from the parent's project when `delegate_thread` runs. An explicit provider in the call ignores the
+default entirely. An explicit model without a provider keeps the default's provider but drops its model
+options. With neither and no default, the call fails rather than choosing a provider. A default is
+validated exactly like an explicit choice, and an unavailable one fails. The new keys are deliberately
+not in `resolveProjectSettings`' disabled-provider fallback, which would otherwise swap a project's
+default for the environment's without saying so.
+
+Provider runtime instructions and MCP tool descriptions route agents to `read_delegation_skill`.
+Prime Agent uses the tool description because it does not receive Pylon runtime instructions.
+The canonical repo skill is embedded in the server bundle so installed servers need no source checkout.
+The read resolves the current parent project's `delegationPreference`, defaulting to built-in agents
+and treating a saved Pylon preference as inactive while delegation is disabled. Reading at task
+routing time avoids freezing a preference in provider session instructions. Explicit user instructions
+override the preference; neither availability nor preference means every task should be delegated.
+Provider/model defaults are still resolved at child creation and reported in `defaultApplied`.
+
+## Accepted limits
+
+- A follow-up is refused while the child is running, but a user message can arrive between the
+  check and the dispatch; the follow-up then steers that turn, as any turn start on a running turn
+  does. Not guarded.
+- The per-parent semaphore that serializes delegation is in memory, which is enough because one
+  server process owns the orchestration engine.
+- Waiting is polling of the projection inside the tool call, bounded by wall-clock time to 45
+  seconds; already-settled children and pending approvals/input return immediately. Prime Agent's MCP client cancels any call after 60 seconds, measured in a live run.
+  Pylon disables Prime's autonomous continuation, so a parent cannot be woken when a child finishes.
+- The per-parent semaphores are never evicted; one small entry per thread that has delegated.
+- Sends and interrupts take the same per-parent gate as delegation, so an interrupt waits behind a
+  delegation in progress, including its git fetch. Status and result reads do not take the gate.
+- Interrupts use a unique command id per call rather than a deterministic one. Every deterministic
+  key tried (per turn, per admission) let a later interrupt replay an earlier receipt and dispatch
+  nothing; a duplicate interrupt on a live child is harmless.
+- Worktree creation mirrors the websocket bootstrap sequence without sharing code with `ws.ts`, and
+  does not run project setup scripts. Changes to how clients create worktrees must be checked here.
+
+## The pair executor
+
+The pair toolkit ([`apps/server/src/mcp/toolkits/pair`](../../apps/server/src/mcp/toolkits/pair))
+links a lead thread to one persistent executor. The executor's id is the delegated child id for the
+reserved key `pair`, so every client and the server can compute it from the lead's id and nothing
+records the link. The fan-out tools refuse that key. A pair is on when that thread exists and is not
+archived.
+
+The executor is created with the lead's `branch` and `worktreePath`: it works in the lead's checkout,
+so the lead reviews its own tree and no worktree is created or cleaned up. Two threads on one
+checkout is already how local-mode threads behave. The executor is always created in the default
+interaction mode, because a lead in plan mode plans and its executor implements.
+
+An executor that never ran reads as `idle`, where the fan-out derivation says `queued`: it is
+created without a first message and waits for a brief. A brief to a running executor is refused
+unless the lead asks to steer, and a turn can be steered once: the steer message id is derived from
+the turn id, so the limit survives restarts. `pair_await` blocks inside the tool call, which costs no
+tokens, up to a cap chosen by the lead's provider: long only where Pylon sets that provider's MCP
+tool timeout itself.
+
+## Accepted limits
+
+- A follow-up is refused while the child is running, but a user message can arrive between the
+  check and the dispatch; the follow-up then steers that turn, as any turn start on a running turn
+  does. Not guarded.
+- The per-parent semaphore that serializes delegation is in memory, which is enough because one
+  server process owns the orchestration engine.
+- Waiting is polling of the projection inside the tool call, bounded by wall-clock time to 45
+  seconds; already-settled children and pending approvals/input return immediately. Prime Agent's MCP client cancels any call after 60 seconds, measured in a live run.
+  Pylon disables Prime's autonomous continuation, so a parent cannot be woken when a child finishes.
+- The per-parent semaphores are never evicted; one small entry per thread that has delegated.
+- Sends and interrupts take the same per-parent gate as delegation, so an interrupt waits behind a
+  delegation in progress, including its git fetch. Status and result reads do not take the gate.
+- Interrupts use a unique command id per call rather than a deterministic one. Every deterministic
+  key tried (per turn, per admission) let a later interrupt replay an earlier receipt and dispatch
+  nothing; a duplicate interrupt on a live child is harmless.
+- Worktree creation mirrors the websocket bootstrap sequence without sharing code with `ws.ts`, and
+  does not run project setup scripts. Changes to how clients create worktrees must be checked here.
+
+## The pair executor
+
+The pair toolkit ([\`apps/server/src/mcp/toolkits/pair\`](../../apps/server/src/mcp/toolkits/pair))
+provides a dedicated four-tool surface (`pair_start`, `pair_handoff`, `pair_await`, `pair_stop`)
+designed for lead/executor workflows. It wraps the same underlying primitives as fan-out
+delegation while enforcing pair-specific constraints:
+
+- **Exactly one executor per lead thread.** A lead thread may only have a single pair executor
+  active at a time.
+- **Reserved key format.** The executor thread is tied to the deterministic key
+  `lead:<leadThreadId>:pair`. Fan-out delegation tools refuse this reserved key with
+  `DelegationKeyReservedError`.
+- **Shared worktree.** Unlike fan-out delegation, which allocates isolated worktrees on temporary
+  branches, the pair executor operates directly within the lead thread's worktree. File changes and
+  git status are shared immediately.
+- **No provider-level concurrency limits.** The pair executor is exempt from the per-provider
+  delegation concurrency caps that throttle fan-out child threads.
+
+### State transitions
+
+- `pair_start`: Creates or attaches to the pair executor thread for the calling lead. If an
+  active executor already exists, it is reused.
+- `pair_handoff`: Delivers a task prompt and starts a turn on the executor thread. Returns the
+  turn id and thread status.
+- `pair_await`: Waits for the executor turn to finish or reach an action-required state (approval
+  or user question), polling up to a caller-specified timeout (default 60s, max 300s).
+- `pair_stop`: Cancels any running turn on the executor and archives the executor thread.

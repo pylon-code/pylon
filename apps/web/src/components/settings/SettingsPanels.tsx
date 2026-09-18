@@ -1,5 +1,6 @@
 import { ProjectActionsSettings } from "./ProjectActionsSettings";
 import { Spinner } from "~/components/ui/spinner";
+import { NotificationSettings } from "./NotificationSettings";
 import { ArchiveIcon, ArchiveX, ChevronRightIcon, SettingsIcon } from "lucide-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { CSSProperties, ReactNode } from "react";
@@ -502,6 +503,22 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
+      ...(settings.desktopNotificationsEnabled !==
+        DEFAULT_UNIFIED_SETTINGS.desktopNotificationsEnabled ||
+      settings.desktopNotifyOnApproval !== DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnApproval ||
+      settings.desktopNotifyOnInput !== DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnInput ||
+      settings.desktopNotifyOnCompletion !== DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnCompletion ||
+      settings.desktopNotifyOnFailure !== DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnFailure ||
+      settings.desktopNotificationSoundEnabled !==
+        DEFAULT_UNIFIED_SETTINGS.desktopNotificationSoundEnabled
+        ? ["Desktop notification preferences"]
+        : []),
+      ...(settings.notificationMode !== DEFAULT_UNIFIED_SETTINGS.notificationMode
+        ? ["Thread notifications"]
+        : []),
+      ...(settings.inAppNotificationsEnabled !== DEFAULT_UNIFIED_SETTINGS.inAppNotificationsEnabled
+        ? ["In-app notifications"]
+        : []),
       ...(settings.sidebarThreadPreviewCount !== DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount
         ? ["Visible threads"]
         : []),
@@ -522,6 +539,9 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Provider usage in chat"]
         : []),
       ...getChangedTypographySettingLabels(settings),
+      ...(settings.diffFilesCollapsed !== DEFAULT_UNIFIED_SETTINGS.diffFilesCollapsed
+        ? ["Default diff file state"]
+        : []),
       ...(settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace
         ? ["Diff whitespace changes"]
         : []),
@@ -601,6 +621,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
+      settings.diffFilesCollapsed,
       settings.diffIgnoreWhitespace,
       settings.diffLayout,
       settings.proactivePanelsEnabled,
@@ -627,6 +648,14 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.showSkillsInSlashMenu,
       settings.timestampFormat,
       settings.showProviderUsageInContextPopover,
+      settings.desktopNotificationsEnabled,
+      settings.desktopNotifyOnApproval,
+      settings.desktopNotifyOnInput,
+      settings.desktopNotifyOnCompletion,
+      settings.desktopNotifyOnFailure,
+      settings.desktopNotificationSoundEnabled,
+      settings.notificationMode,
+      settings.inAppNotificationsEnabled,
       settings.wordWrap,
       followSystem,
       theme,
@@ -700,8 +729,17 @@ export function useSettingsRestore(onRestored?: () => void) {
       appearanceContrast: DEFAULT_UNIFIED_SETTINGS.appearanceContrast,
       diffColorScheme: DEFAULT_UNIFIED_SETTINGS.diffColorScheme,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
+      desktopNotificationsEnabled: DEFAULT_UNIFIED_SETTINGS.desktopNotificationsEnabled,
+      desktopNotifyOnApproval: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnApproval,
+      desktopNotifyOnInput: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnInput,
+      desktopNotifyOnCompletion: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnCompletion,
+      desktopNotifyOnFailure: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnFailure,
+      desktopNotificationSoundEnabled: DEFAULT_UNIFIED_SETTINGS.desktopNotificationSoundEnabled,
+      notificationMode: DEFAULT_UNIFIED_SETTINGS.notificationMode,
+      inAppNotificationsEnabled: DEFAULT_UNIFIED_SETTINGS.inAppNotificationsEnabled,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
       showProviderUsageInContextPopover: DEFAULT_UNIFIED_SETTINGS.showProviderUsageInContextPopover,
+      diffFilesCollapsed: DEFAULT_UNIFIED_SETTINGS.diffFilesCollapsed,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       diffLayout: DEFAULT_UNIFIED_SETTINGS.diffLayout,
       proactivePanelsEnabled: DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled,
@@ -2234,6 +2272,18 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection id="behavior" title="Behavior">
+        {!isElectron ? <NotificationSettings /> : null}
+        <SettingsRow
+          {...searchableSetting("in-app-notifications")}
+          description="Show a toast when another thread finishes, fails, or needs input or approval while this app has focus."
+          control={
+            <Switch
+              checked={settings.inAppNotificationsEnabled}
+              onCheckedChange={(checked) => updateSettings({ inAppNotificationsEnabled: checked })}
+              aria-label="In-app notifications"
+            />
+          }
+        />
         <SettingsRow
           {...searchableSetting("time-format")}
           description="System default follows your browser or OS clock preference."
@@ -2301,6 +2351,48 @@ export function GeneralSettingsPanel() {
           }
         />
         <SettingsRow
+          {...searchableSetting("default-diff-file-state")}
+          description="Start with files expanded or collapsed when opening diffs or a pull request's Code tab."
+          resetAction={
+            settings.diffFilesCollapsed !== DEFAULT_UNIFIED_SETTINGS.diffFilesCollapsed ? (
+              <SettingResetButton
+                label="default diff file state"
+                onClick={() =>
+                  updateSettings({
+                    diffFilesCollapsed: DEFAULT_UNIFIED_SETTINGS.diffFilesCollapsed,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.diffFilesCollapsed ? "collapsed" : "expanded"}
+              onValueChange={(value) => {
+                if (value === "expanded" || value === "collapsed") {
+                  updateSettings({ diffFilesCollapsed: value === "collapsed" });
+                }
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-40"
+                aria-label="Default diff file state"
+              >
+                <SelectValue>{settings.diffFilesCollapsed ? "Collapsed" : "Expanded"}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="expanded">
+                  Expanded
+                </SelectItem>
+                <SelectItem hideIndicator value="collapsed">
+                  Collapsed
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
           {...searchableSetting("diff-layout")}
           description="Show diffs stacked or side by side. The toggle in the diff toolbar changes this too."
           resetAction={
@@ -2337,7 +2429,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           {...searchableSetting("proactive-panels")}
-          description="Open linked pull requests when found and turn diffs when work changes files. Manual panel choices take priority."
+          description="Open linked pull requests first. Otherwise, open the working tree diff for changes to at least 3 files or 50 lines. Manual panel choices take priority."
           resetAction={
             settings.proactivePanelsEnabled !== DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled ? (
               <SettingResetButton
@@ -2816,6 +2908,192 @@ export function GeneralSettingsPanel() {
           />
         ) : null}
       </SettingsSection>
+
+      {isElectron ? (
+        <SettingsSection id="notifications" title="Notifications">
+          <SettingsRow
+            {...searchableSetting("desktop-notifications")}
+            description="Show a system notification when an agent needs you and no Pylon window is focused."
+            resetAction={
+              settings.desktopNotificationsEnabled !==
+              DEFAULT_UNIFIED_SETTINGS.desktopNotificationsEnabled ? (
+                <SettingResetButton
+                  label="desktop notifications"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotificationsEnabled:
+                        DEFAULT_UNIFIED_SETTINGS.desktopNotificationsEnabled,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotificationsEnabled: Boolean(checked) })
+                }
+                aria-label="Desktop notifications"
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("desktop-notifications-approval")}
+            description="An agent is waiting for you to approve an action."
+            resetAction={
+              settings.desktopNotifyOnApproval !==
+              DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnApproval ? (
+                <SettingResetButton
+                  label="notify when approval is needed"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotifyOnApproval: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnApproval,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotifyOnApproval}
+                disabled={!settings.desktopNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotifyOnApproval: Boolean(checked) })
+                }
+                aria-label="Notify when approval is needed"
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("desktop-notifications-input")}
+            description="An agent asked a question and is waiting for your answer."
+            resetAction={
+              settings.desktopNotifyOnInput !== DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnInput ? (
+                <SettingResetButton
+                  label="notify when input is needed"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotifyOnInput: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnInput,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotifyOnInput}
+                disabled={!settings.desktopNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotifyOnInput: Boolean(checked) })
+                }
+                aria-label="Notify when input is needed"
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("desktop-notifications-completion")}
+            description="An agent finished its work and is idle."
+            resetAction={
+              settings.desktopNotifyOnCompletion !==
+              DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnCompletion ? (
+                <SettingResetButton
+                  label="notify when an agent finishes"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotifyOnCompletion: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnCompletion,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotifyOnCompletion}
+                disabled={!settings.desktopNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotifyOnCompletion: Boolean(checked) })
+                }
+                aria-label="Notify when an agent finishes"
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("desktop-notifications-failure")}
+            description="An agent or its session hit an error."
+            resetAction={
+              settings.desktopNotifyOnFailure !==
+              DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnFailure ? (
+                <SettingResetButton
+                  label="notify when an agent fails"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotifyOnFailure: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnFailure,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotifyOnFailure}
+                disabled={!settings.desktopNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotifyOnFailure: Boolean(checked) })
+                }
+                aria-label="Notify when an agent fails"
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("desktop-notification-sound")}
+            description="Play a sound when an enabled notification event occurs."
+            control={
+              <Switch
+                checked={settings.desktopNotificationSoundEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotificationSoundEnabled: checked })
+                }
+                aria-label="Notification sounds"
+              />
+            }
+          />
+          <SettingsRow
+            {...searchableSetting("desktop-notifications-test")}
+            description="Check that system notifications can reach you."
+            control={
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!window.desktopBridge?.sendTestNotification}
+                onClick={() => {
+                  void window.desktopBridge
+                    ?.sendTestNotification?.()
+                    .then((supported) => {
+                      if (supported === false) {
+                        toastManager.add({
+                          type: "warning",
+                          title: "Notifications unavailable",
+                          description:
+                            "The system reports no notification support. On Linux, check that a notification daemon is running.",
+                        });
+                      }
+                    })
+                    .catch(() => {
+                      toastManager.add({
+                        type: "error",
+                        title: "Could not send test notification",
+                        description: "Try again and check your system notification settings.",
+                      });
+                    });
+                }}
+              >
+                Send test notification
+              </Button>
+            }
+          />
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection id="text-generation" title="Text generation">
         <SettingsRow

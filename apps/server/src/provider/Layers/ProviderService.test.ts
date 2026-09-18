@@ -739,8 +739,11 @@ const makeThreadProjectProjectionLayer = (
   projectionStatus: () => "found" | "missing" | "failed" = () => "found",
 ) =>
   Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+    getDelegationObservationActivities: () => Effect.succeed([]),
+    getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
     getPendingRequestActivities: () => Effect.die("unused"),
     getUserInputActivity: () => Effect.die("unused"),
+    listActivitiesByKind: () => Effect.die("unused"),
     getCommandReadModel: () => Effect.die("unused"),
     getSnapshot: () => Effect.die("unused"),
     getShellSnapshot: () => Effect.die("unused"),
@@ -6855,7 +6858,11 @@ describe("agent browser access", () => {
       readonly threadId: ThreadId;
       readonly override?:
         | boolean
-        | { readonly browser?: boolean; readonly device?: boolean }
+        | {
+            readonly browser?: boolean;
+            readonly device?: boolean;
+            readonly delegation?: boolean;
+          }
         | undefined;
       /** False leaves the projection query to the surrounding runtime composition. */
       readonly provideProjection?: boolean;
@@ -6863,6 +6870,7 @@ describe("agent browser access", () => {
     },
     enableAgentDeviceAccess = false,
     enableAgentComputerAccess = false,
+    enableAgentDelegation = false,
   ) => {
     const providerAdapterLayer = Layer.succeed(
       ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -6886,6 +6894,7 @@ describe("agent browser access", () => {
           enableAgentBrowserAccess,
           enableAgentDeviceAccess,
           enableAgentComputerAccess,
+          enableAgentDelegation,
           projectSettingsOverrides:
             projectOverride === undefined
               ? {}
@@ -6899,6 +6908,9 @@ describe("agent browser access", () => {
                             : {}),
                           ...(projectOverride.device !== undefined
                             ? { enableAgentDeviceAccess: projectOverride.device }
+                            : {}),
+                          ...(projectOverride.delegation !== undefined
+                            ? { enableAgentDelegation: projectOverride.delegation }
                             : {}),
                         },
                 },
@@ -6990,6 +7002,52 @@ describe("agent browser access", () => {
           undefined,
           device,
           computer,
+        );
+        yield* Effect.gen(function* () {
+          const provider = yield* ProviderService.ProviderService;
+          yield* provider.startSession(threadId, {
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            threadId,
+            runtimeMode: "full-access",
+          });
+        }).pipe(Effect.provide(layer));
+        assert.deepEqual(issued, [[...expected]]);
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("grants delegation only when enabled and never to a delegated child thread", () =>
+    Effect.gen(function* () {
+      for (const [threadName, delegation, override, expected] of [
+        ["thread-delegation-off", false, undefined, ["pull-requests"]],
+        ["thread-delegation-on", true, undefined, ["delegation", "pull-requests"]],
+        ["delegated:thread-delegation-on:0123456789abcdef", true, undefined, ["pull-requests"]],
+        [
+          "thread-delegation-project-on",
+          false,
+          { delegation: true },
+          ["delegation", "pull-requests"],
+        ],
+        ["thread-delegation-project-off", true, { delegation: false }, ["pull-requests"]],
+      ] as const) {
+        const threadId = asThreadId(threadName);
+        const issued: string[][] = [];
+        const codex = makeFakeCodexAdapter();
+        const layer = makeAgentBrowserProviderLayer(
+          false,
+          codex,
+          {
+            issueMcpCredential: (request) =>
+              Effect.sync(() => {
+                issued.push([...request.capabilities].sort());
+                return undefined;
+              }),
+          },
+          override === undefined ? undefined : { threadId, override },
+          false,
+          false,
+          delegation,
         );
         yield* Effect.gen(function* () {
           const provider = yield* ProviderService.ProviderService;
@@ -7197,6 +7255,61 @@ describe("agent browser access", () => {
       }).pipe(Effect.provide(providerLayer));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  for (const stoppedBeforeProbe of [true, false]) {
+    it.effect(
+      `does not revive a stopped session for checkpoint capture (stopped before probe: ${stoppedBeforeProbe})`,
+      () =>
+        Effect.gen(function* () {
+          const threadId = asThreadId("thread-checkpoint-stopped");
+          const codex = makeFakeCodexAdapter();
+          const captureAnchor = vi.fn(() => Effect.succeed({ anchor: {}, digest: "checkpoint" }));
+          const adapter: ProviderAdapterShape<ProviderAdapterError> = {
+            ...codex.adapter,
+            capabilities: { ...codex.adapter.capabilities, conversationRollback: "absolute" },
+            absoluteConversationRollback: {
+              isAvailable: () => Effect.succeed(true),
+              captureAnchor,
+              inspectAnchor: () => Effect.succeed({ anchor: {}, digest: "checkpoint" }),
+              applyAnchor: () => Effect.void,
+              releaseAnchor: () => Effect.void,
+            },
+          };
+          yield* Effect.gen(function* () {
+            const provider = yield* ProviderService.ProviderService;
+            const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+            yield* provider.startSession(threadId, {
+              providerInstanceId: codexInstanceId,
+              threadId,
+              runtimeMode: "full-access",
+            });
+            const binding = yield* directory.getBinding(threadId);
+            if (stoppedBeforeProbe) yield* codex.stopSession(threadId);
+            assert.equal(
+              yield* provider.hasAbsoluteConversationRollback!(threadId),
+              !stoppedBeforeProbe,
+            );
+            if (!stoppedBeforeProbe) yield* codex.stopSession(threadId);
+            const result = yield* provider.captureConversationAnchor!({
+              threadId,
+              binding: {
+                kind: "checkpoint",
+                checkpointTurnCount: 1,
+                sourceRevision: 1,
+                checkpointRef: CheckpointRef.make("checkpoint-stopped"),
+                checkpointOid: "1".repeat(40),
+                turnId: TurnId.make("turn-stopped"),
+              },
+            }).pipe(Effect.exit);
+            assert.isTrue(Exit.isFailure(result));
+            assert.equal(captureAnchor.mock.calls.length, 0);
+            assert.equal(codex.startSession.mock.calls.length, 1);
+            assert.deepEqual(yield* provider.listSessions(), []);
+            assert.deepEqual(yield* directory.getBinding(threadId), binding);
+          }).pipe(Effect.provide(makeAgentBrowserProviderLayer(false, { ...codex, adapter }, {})));
+        }).pipe(Effect.provide(NodeServices.layer)),
+    );
+  }
 
   it.effect("does not overwrite a new turn with a delayed checkpoint cursor", () =>
     Effect.gen(function* () {

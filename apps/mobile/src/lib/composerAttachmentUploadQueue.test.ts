@@ -242,6 +242,29 @@ describe("draft upload scope and offline submission", () => {
       }
     }
   });
+  it("prefers a known environment id when the thread id contains colons", () => {
+    const delegated = "environment-1:delegated:thread-1:0123456789abcdef";
+    expect(composerDraftEnvironmentId(delegated, [], undefined, [environmentId])).toBe(
+      environmentId,
+    );
+    const imported = "environment-1:import:codex:session-9";
+    expect(composerDraftEnvironmentId(imported, [], undefined, [environmentId])).toBe(
+      environmentId,
+    );
+    const colonEnvironment = EnvironmentId.make("a:vcs-status:b");
+    const shorter = EnvironmentId.make("a");
+    expect(
+      composerDraftEnvironmentId(`${colonEnvironment}:delegated:x:y`, [], undefined, [
+        shorter,
+        environmentId,
+        colonEnvironment,
+      ]),
+    ).toBe(colonEnvironment);
+    // Without a known match the legacy split still applies.
+    expect(composerDraftEnvironmentId(delegated, [], undefined, [])).toBe(
+      EnvironmentId.make("environment-1:delegated:thread-1"),
+    );
+  });
   it("resolves thread, new-task, and queued-task drafts without crossing environments", () => {
     expect(composerDraftEnvironmentId("environment-1:thread", [])).toBe(environmentId);
     expect(composerDraftEnvironmentId("new-task:environment-1:project", [])).toBe(environmentId);

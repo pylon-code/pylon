@@ -192,6 +192,15 @@ describe("scoped settings targets", () => {
 });
 
 describe("scoped settings writes", () => {
+  it("stores delegation preference per project without enabling delegation", () => {
+    const plan = planScopedSettingsPatch(checkout, [server], { delegationPreference: "pylon" });
+    expect(plan.serverWrites[0]?.patch).toEqual({
+      projectSettingsOverrides: { [projectId]: { delegationPreference: "pylon" } },
+    });
+    expect(server.serverConfig?.settings.delegationPreference).toBe("built-in");
+    expect(server.serverConfig?.settings.enableAgentDelegation).toBe(false);
+  });
+
   it("stores project device permission without changing the environment's permission", () => {
     const plan = planScopedSettingsPatch(checkout, [server], { enableAgentDeviceAccess: true });
     expect(plan.serverWrites[0]?.patch).toEqual({
@@ -224,6 +233,31 @@ describe("scoped settings writes", () => {
     expect(result.failedEnvironments).toEqual(plan.skippedEnvironments);
     expect(persistServer).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["defaultModelSelection", "delegationDefaultModelSelection"] as const)(
+    "replaces a project %s override without keeping the previous model's options",
+    (key) => {
+      const withOptions = environment("Server", {
+        settings: {
+          projectSettingsOverrides: {
+            [projectId]: {
+              [key]: createModelSelection(ProviderInstanceId.make("antigravity"), "gemini-flash", [
+                { id: "thinking", value: "low" },
+              ]),
+            },
+          },
+        },
+      });
+      const plan = planScopedSettingsPatch(checkout, [withOptions], {
+        [key]: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-luna"),
+      });
+      expect(plan.serverWrites[0]?.patch).toEqual({
+        projectSettingsOverrides: {
+          [projectId]: { [key]: { instanceId: "codex", model: "gpt-5.6-luna" } },
+        },
+      });
+    },
+  );
 
   it("gates generic overrides independently of legacy project-default support", () => {
     const legacy = environment("Server", { projectOverrides: false });

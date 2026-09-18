@@ -1,3 +1,4 @@
+import { delegatedParentThreadId } from "./delegatedThreads.ts";
 import type {
   EnvironmentId,
   OrchestrationProjectShell,
@@ -54,6 +55,16 @@ export function projectThreadAwareness(
   input: ProjectThreadAwarenessInput,
 ): AgentAwarenessState | null {
   const { environmentId, project, thread } = input;
+  // Delegations report back to their parent; individual child alerts flood users.
+  // A child blocked on an approval or a question is the exception: only the user
+  // can unblock it, and nothing else tells them. This projection feeds both
+  // desktop notifications and the mobile relay.
+  if (
+    delegatedParentThreadId(thread.id) !== null &&
+    !thread.hasPendingApprovals &&
+    !thread.hasPendingUserInput
+  )
+    return null;
   const phase = resolveThreadAwarenessPhase(thread);
   if (!phase) {
     return null;

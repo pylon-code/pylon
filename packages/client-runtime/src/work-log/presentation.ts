@@ -11,8 +11,17 @@ import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 
+/**
+ * Activities the worktree setup card already represents. The settled record
+ * is rendered by the card on web and mobile, never as a
+ * worklog entry, so it is hidden from the activity feed even when it failed.
+ */
 export function isWorktreeSetupActivity(kind: string): boolean {
-  return kind === "setup-script.requested" || kind === "setup-script.started";
+  return (
+    kind === "setup-script.requested" ||
+    kind === "setup-script.started" ||
+    kind === "worktree-setup"
+  );
 }
 
 export type WorkLogToolLifecycleStatus = RuntimeItemStatus | "stopped";
@@ -69,6 +78,15 @@ const T3_MCP_TOOL_LABELS: Record<
   link_pull_request: ["Link", "Linking", "Linked", "a pull request"],
   unlink_pull_request: ["Unlink", "Unlinking", "Unlinked", "a pull request"],
   list_thread_pull_requests: ["Check", "Checking", "Checked", "linked pull requests"],
+  delegate_thread: ["Delegate", "Delegating", "Delegated", "a task to a child thread"],
+  delegated_thread_status: ["Check", "Checking", "Checked", "a child thread"],
+  delegated_thread_result: ["Read", "Reading", "Read", "a child thread's result"],
+  send_to_delegated_thread: ["Message", "Messaging", "Messaged", "a child thread"],
+  interrupt_delegated_thread: ["Interrupt", "Interrupting", "Interrupted", "a child thread"],
+  pair_start: ["Start", "Starting", "Started", "a pair executor"],
+  pair_handoff: ["Hand off", "Handing off", "Handed off", "to the pair executor"],
+  pair_await: ["Await", "Awaiting", "Awaited", "the pair executor"],
+  pair_stop: ["Stop", "Stopping", "Stopped", "the pair executor"],
   orchestrator_capabilities: ["Get", "Getting", "Got", "orchestration capabilities"],
   delegate_task: ["Delegate", "Delegating", "Delegated", "a child task"],
   task_status: ["Get", "Getting", "Got", "delegated task status"],

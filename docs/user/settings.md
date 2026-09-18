@@ -7,3 +7,8 @@ Providers shows an instance list beside the selected instance’s settings on wi
 Model settings group favorites first and hidden models last. Large catalogs have a filter. Custom models stay visible in the picker; remove a custom entry to stop offering it. Reorder controls apply within a visible group and are unavailable while filtering.
 
 An update indicator beside a provider can copy its update command. Read-only connections still let you inspect settings and status, but cannot change configuration or run updates.
+
+On desktop, **General → Notifications** controls system notifications for agent
+approval requests, input requests, completion, and failure. Each device has its own
+preferences. See [Desktop notifications](desktop-notifications.md) for delivery
+requirements and troubleshooting.

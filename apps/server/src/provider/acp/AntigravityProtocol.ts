@@ -337,7 +337,9 @@ export function normalizeAntigravityToolCall(toolCall: AcpToolCallState): AcpToo
     ...(command !== undefined
       ? { detail: command }
       : toolCall.detail !== undefined
-        ? { detail: boundText(toolCall.detail) }
+        ? {
+            detail: boundText(toolCall.detail),
+          }
         : {}),
     data,
   };

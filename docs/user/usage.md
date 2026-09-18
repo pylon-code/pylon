@@ -2,12 +2,22 @@
 
 ## Understand your usage
 
-**Usage** combines Codex, Claude Code, and Grok Build session history from your connected
+**Usage** combines Codex, Claude Code, Grok Build, and Antigravity session history from your connected
 environments. It shows token use, cache savings, provider shares, model breakdowns, and estimated
 API-equivalent cost. These estimates are not your subscription bill.
 
 Totals depend on the history available on each server. Grok turns without a saved completed-turn
 record are missing from the totals.
+
+Usage includes each configured account's history, including disabled accounts. Custom homes follow
+the account's home setting or its `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `GROK_HOME` environment
+variable. Use absolute paths in the account's environment settings; relative
+environment paths depend on each project's working directory and cannot be reliably discovered
+by Usage. Accounts sharing a history directory count once.
+
+Antigravity totals come from saved native conversations, including standalone CLI history when
+available. Models without known prices still contribute tokens; set a custom model price to include
+their estimated cost.
 
 **Past 24h** shows an hourly chart of the rolling 24-hour period; **7 days**, **30 days**, and
 **90 days** use daily resolution. The environment filter applies to both Usage and Limits. On web and
@@ -46,6 +56,10 @@ not report that window. Refresh to update the readings.
 During native Claude sessions, account-wide quota reports update immediately. Model-specific weekly
 limits reconcile with the signed-in account after about a minute; provider throttling can delay them.
 Pylon keeps the last reading when it cannot verify the account.
+
+Antigravity Google-account limits belong to the account signed in to that Pylon provider instance.
+Settings and Limits show the model groups reported by Google. The thread composer selects the group
+for its chosen model. Other Antigravity sign-in methods do not currently report subscription limits.
 
 API-key accounts may not report subscription limits. This also applies to Claude connections using a
 proxy through `ANTHROPIC_AUTH_TOKEN`.

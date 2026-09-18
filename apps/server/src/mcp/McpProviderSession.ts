@@ -21,7 +21,7 @@ export interface McpProviderSessionConfig {
   readonly providerInstanceId: ProviderInstanceId;
   readonly endpoint: string;
   readonly authorizationHeader: string;
-  /** Capabilities the credential grants ("preview", "device", "pull-requests"). */
+  /** Capabilities the credential grants ("preview", "device", "computer", "pull-requests", "delegation"). */
   readonly capabilities: ReadonlySet<string>;
   /**
    * Set when the session may drive devices. Adapters spread this into the
@@ -62,6 +62,11 @@ export function setMcpProviderSession(
 
 export function readMcpProviderSession(threadId: ThreadId): McpProviderSessionConfig | undefined {
   return sessionsByThread.get(threadId);
+}
+
+/** Whether the thread's live provider MCP session was granted a capability. */
+export function hasMcpProviderCapability(threadId: ThreadId, capability: string): boolean {
+  return readMcpProviderSession(threadId)?.capabilities.has(capability) === true;
 }
 
 export function isMcpProviderSessionOwnedByGeneration(

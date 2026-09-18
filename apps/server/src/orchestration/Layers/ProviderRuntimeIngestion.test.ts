@@ -48,7 +48,10 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { attachProviderRuntimeEventFence } from "../../provider/providerRuntimeFenceMetadata.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -450,6 +453,7 @@ describe("ProviderRuntimeIngestion", () => {
     serverSettings?: Partial<ServerSettings>;
     threadTitle?: string;
     workspaceSubdirectory?: string;
+    isGitRepository?: CheckpointStore.CheckpointStore["Service"]["isGitRepository"];
   }) {
     const repositoryRoot = makeTempDir("t3-provider-project-");
     NodeChildProcess.execFileSync("git", ["init", "--initial-branch=main"], {
@@ -495,7 +499,15 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(providerRegistry.layer),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
-      Layer.provideMerge(CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer))),
+      Layer.provideMerge(
+        Layer.effect(
+          CheckpointStore.CheckpointStore,
+          Effect.map(CheckpointStore.CheckpointStore, (store) => ({
+            ...store,
+            isGitRepository: options?.isGitRepository ?? store.isGitRepository,
+          })),
+        ).pipe(Layer.provide(CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer)))),
+      ),
       Layer.provideMerge(VcsProcess.layer),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
@@ -577,6 +589,12 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       emitAndDrain,
       sqlCount: sqlCounter.count,
+      readTurn: (turnId: TurnId) =>
+        testRuntime.runPromise(
+          Effect.flatMap(ProjectionTurnRepository, (turns) =>
+            turns.getByTurnId({ threadId: asThreadId("thread-1"), turnId }),
+          ).pipe(Effect.map(Option.getOrUndefined), Effect.provide(ProjectionTurnRepositoryLive)),
+        ),
       readThreadShell: () =>
         testRuntime.runPromise(
           snapshotQuery
@@ -1186,6 +1204,187 @@ describe("ProviderRuntimeIngestion", () => {
       expect(thread?.session?.lastError).toContain("deterministic startup failure");
     }),
   );
+
+  describe("session-scoped background task lifecycle", () => {
+    it.each(
+      (["ready", "running", "starting"] as const).flatMap((status) =>
+        [false, true].map((oldAdmission) => ({ status, oldAdmission })),
+      ),
+    )(
+      "settles older children while parent is $status (old admission: $oldAdmission)",
+      async ({ status, oldAdmission }) => {
+        const harness = await createHarness();
+        const threadId = asThreadId("thread-1");
+        const incarnation = RuntimeSessionId.make("background-session");
+        const providerInstanceId = ProviderInstanceId.make("codex");
+        const nextRequest = CommandId.make("next-parent-request");
+        const session = {
+          threadId,
+          status,
+          providerName: "codex",
+          providerInstanceId,
+          sessionIncarnationId: incarnation,
+          runtimeMode: "approval-required" as const,
+          activeTurnId: status === "running" ? asTurnId("later-parent-turn") : null,
+          ...(status === "running" ? { activeTurnRequestId: nextRequest } : {}),
+          ...(status === "starting"
+            ? {
+                pendingTurnRequestId: nextRequest,
+                pendingTurnMessageId: asMessageId("next-message"),
+                pendingTurnSessionId: incarnation,
+                pendingTurnRequestedAt: "2026-01-01T00:01:00.000Z",
+                pendingTurnDeadlineAt: "2026-01-01T00:02:00.000Z",
+              }
+            : {}),
+          lastError: null,
+          updatedAt: "2026-01-01T00:01:00.000Z",
+        };
+        const spawnRequest = CommandId.make("spawn-parent-request");
+        await harness.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("bind-spawn-session"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId,
+            sessionIncarnationId: incarnation,
+            runtimeMode: "approval-required",
+            lastError: null,
+            activeTurnId: asTurnId("original-spawn-turn"),
+            activeTurnRequestId: spawnRequest,
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        const base = {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId,
+          sessionIncarnationId: incarnation,
+          threadId,
+          turnId: asTurnId("original-spawn-turn"),
+          ...(oldAdmission ? { admissionRequestId: spawnRequest } : {}),
+          createdAt: "2026-01-01T00:01:01.000Z",
+        };
+        for (const taskId of ["child-a", "child-b"]) {
+          harness.emit({
+            ...base,
+            admissionRequestId: spawnRequest,
+            type: "task.started",
+            eventId: asEventId(`start-${taskId}`),
+            payload: { taskId, taskType: "agent", description: taskId },
+          });
+        }
+        await harness.drain();
+        expect((await harness.readThreadShell()).backgroundLiveness).toBe("working");
+        await harness.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("bind-background-session"),
+          threadId,
+          session,
+          createdAt: session.updatedAt,
+        });
+        harness.emit({
+          ...base,
+          type: "task.updated",
+          eventId: asEventId("child-a-idle"),
+          payload: { taskId: "child-a", status: "idle", timelineBypass: true },
+        });
+        harness.emit({
+          ...base,
+          type: "task.completed",
+          eventId: asEventId("child-b-completed"),
+          payload: { taskId: "child-b", status: "completed" },
+        });
+        await harness.drain();
+        expect((await harness.readThreadShell()).backgroundLiveness).toBeNull();
+        const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+        expect(thread?.activities.some((entry) => entry.id === "child-a-idle")).toBe(true);
+        expect(thread?.activities.some((entry) => entry.id === "child-b-completed")).toBe(true);
+        expect(thread?.session?.status).toBe(status);
+        expect(thread?.session?.activeTurnId).toBe(session.activeTurnId);
+        // Neither late usage nor another parent response may restart the fleet.
+        harness.emit({
+          ...base,
+          type: "task.progress",
+          eventId: asEventId("late-child-usage"),
+          payload: { taskId: "child-a", description: "Final usage", summary: "Final usage" },
+        });
+        harness.emit({
+          ...base,
+          type: "content.delta",
+          eventId: asEventId("stale-parent-output"),
+          payload: { streamKind: "assistant_text", delta: "must remain fenced" },
+        });
+        await harness.drain();
+        expect((await harness.readThreadShell()).backgroundLiveness).toBeNull();
+        const finalThread = (await harness.readModel()).threads[0];
+        expect(finalThread?.messages.some((m) => m.text.includes("must remain fenced"))).toBe(
+          false,
+        );
+        expect(finalThread?.activities).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "task.progress",
+              payload: expect.objectContaining({ taskId: "child-a" }),
+            }),
+          ]),
+        );
+      },
+    );
+
+    it.each(["incarnation", "provider", "stopped", "failed-admission"] as const)(
+      "keeps the %s fence for background task events",
+      async (fence) => {
+        const harness = await createHarness();
+        const threadId = asThreadId("thread-1");
+        const incarnation = RuntimeSessionId.make("bound-session");
+        await harness.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("bind-fenced-background"),
+          threadId,
+          session: {
+            threadId,
+            status:
+              fence === "stopped" ? "stopped" : fence === "failed-admission" ? "error" : "ready",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            sessionIncarnationId: incarnation,
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            ...(fence === "failed-admission"
+              ? { failedTurnRequestId: CommandId.make("failed-request") }
+              : {}),
+            lastError: null,
+            updatedAt: "2026-01-01T00:01:00.000Z",
+          },
+          createdAt: "2026-01-01T00:01:00.000Z",
+        });
+        harness.emit({
+          type: "task.updated",
+          eventId: asEventId("fenced-child-status"),
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make(
+            fence === "provider" ? "other-codex" : "codex",
+          ),
+          sessionIncarnationId:
+            fence === "incarnation" ? RuntimeSessionId.make("old-session") : incarnation,
+          threadId,
+          turnId: asTurnId("spawn-turn"),
+          createdAt: "2026-01-01T00:01:01.000Z",
+          payload: { taskId: "fenced-child", status: "running", timelineBypass: true },
+        });
+        await harness.drain();
+        expect((await harness.readThreadShell()).backgroundLiveness).toBeNull();
+        expect(
+          (await harness.readModel()).threads[0]?.activities.some(
+            (a) => a.id === "fenced-child-status",
+          ),
+        ).toBe(false);
+      },
+    );
+  });
 
   it("accepts only the exact pending admission and provider session incarnation", async () => {
     const harness = await createHarness();
@@ -5227,6 +5426,207 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  effectIt.effect("settles the turn while repository detection for a diff is blocked", () =>
+    Effect.gen(function* () {
+      const detectionStarted = yield* Deferred.make<void>();
+      const releaseDetection = yield* Deferred.make<boolean>();
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          isGitRepository: () =>
+            Deferred.succeed(detectionStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseDetection)),
+            ),
+        }),
+      );
+      yield* Effect.addFinalizer(() => Deferred.succeed(releaseDetection, true));
+      const base = {
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("blocked-diff-turn"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      yield* Effect.promise(() =>
+        harness.emitAndDrain([
+          { ...base, type: "turn.started", eventId: asEventId("evt-blocked-turn-start") },
+        ]),
+      );
+      harness.emit({
+        ...base,
+        type: "turn.diff.updated",
+        eventId: asEventId("evt-blocked-diff"),
+        payload: { unifiedDiff: "diff --git a/file.ts b/file.ts\n+new\n" },
+      });
+      yield* Deferred.await(detectionStarted);
+
+      const settled = yield* harness.engine.streamDomainEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "thread.session-set" &&
+            event.payload.threadId === base.threadId &&
+            event.payload.session.status === "error",
+        ),
+        Stream.runHead,
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      harness.emit({
+        ...base,
+        type: "item.completed",
+        eventId: asEventId("evt-blocked-final-reply"),
+        itemId: asItemId("blocked-final-reply"),
+        payload: { itemType: "assistant_message", status: "completed", detail: "Work finished." },
+      });
+      harness.emit({
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("evt-blocked-turn-completed"),
+        payload: { state: "failed" },
+      });
+      // Resolves only if turn.completed is processed while detection is still blocked.
+      yield* Fiber.join(settled);
+      const blocked = yield* Effect.promise(harness.readModel);
+      expect(blocked.threads[0]?.session).toMatchObject({ status: "error", activeTurnId: null });
+      expect(blocked.threads[0]?.messages).toEqual(
+        expect.arrayContaining([expect.objectContaining({ text: "Work finished." })]),
+      );
+      expect(blocked.threads[0]?.checkpoints).toEqual([]);
+
+      // A newer turn starts before detection returns. The late placeholder
+      // must neither settle the failed turn as completed nor move the
+      // latest-turn pointer back to it.
+      const nextTurnId = asTurnId("next-turn");
+      // Pylon requires a new user admission after a failed session.
+      yield* Effect.promise(() =>
+        harness.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-next-turn-after-failure"),
+          threadId: base.threadId,
+          message: {
+            messageId: asMessageId("msg-next-turn"),
+            role: "user",
+            text: "Continue",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: base.createdAt,
+        }),
+      );
+      const nextTurnStarted = yield* harness.engine.streamDomainEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "thread.session-set" &&
+            event.payload.session.activeTurnId === nextTurnId,
+        ),
+        Stream.runHead,
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      harness.emit({
+        ...base,
+        type: "turn.started",
+        turnId: nextTurnId,
+        eventId: asEventId("evt-next-turn-start"),
+      });
+      yield* Fiber.join(nextTurnStarted);
+      yield* Deferred.succeed(releaseDetection, true);
+      yield* Effect.promise(harness.drain);
+      const released = yield* Effect.promise(harness.readModel);
+      expect(released.threads[0]?.checkpoints).toEqual([]);
+      expect(released.threads[0]?.latestTurn).toMatchObject({
+        turnId: nextTurnId,
+        state: "running",
+      });
+      expect(yield* Effect.promise(() => harness.readTurn(base.turnId))).toMatchObject({
+        state: "error",
+        checkpointRef: null,
+      });
+    }),
+  );
+
+  effectIt.effect("discards a diff when its runtime is retired during repository detection", () =>
+    Effect.gen(function* () {
+      const detectionStarted = yield* Deferred.make<void>();
+      const releaseDetection = yield* Deferred.make<boolean>();
+      let current = true;
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          isGitRepository: () =>
+            Deferred.succeed(detectionStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseDetection)),
+            ),
+        }),
+      );
+      yield* Effect.addFinalizer(() => Deferred.succeed(releaseDetection, true));
+      const base = {
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("retired-diff-turn"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      yield* Effect.promise(() =>
+        harness.emitAndDrain([
+          { ...base, type: "turn.started", eventId: asEventId("evt-retired-diff-start") },
+        ]),
+      );
+      harness.emit(
+        attachProviderRuntimeEventFence(
+          {
+            ...base,
+            type: "turn.diff.updated",
+            eventId: asEventId("evt-retired-diff"),
+            payload: { unifiedDiff: "diff --git a/file.ts b/file.ts\n+new\n" },
+          },
+          { generation: {}, isCurrent: Effect.sync(() => current) },
+        ),
+      );
+      yield* Deferred.await(detectionStarted);
+      current = false;
+      yield* Deferred.succeed(releaseDetection, true);
+      yield* Effect.promise(harness.drain);
+      expect((yield* Effect.promise(harness.readModel)).threads[0]?.checkpoints).toEqual([]);
+      expect(yield* Effect.promise(() => harness.readTurn(base.turnId))).toMatchObject({
+        state: "running",
+        checkpointRef: null,
+      });
+    }),
+  );
+
+  effectIt.effect("ignores a diff for a missing turn without moving the latest turn", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const base = {
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      yield* Effect.promise(() =>
+        harness.emitAndDrain([
+          {
+            ...base,
+            type: "turn.started",
+            eventId: asEventId("evt-existing-turn"),
+            turnId: asTurnId("current-turn"),
+          },
+          {
+            ...base,
+            type: "turn.diff.updated",
+            eventId: asEventId("evt-missing-turn-diff"),
+            turnId: asTurnId("missing-turn"),
+            payload: { unifiedDiff: "diff --git a/file.ts b/file.ts\n+late\n" },
+          },
+        ]),
+      );
+      const snapshot = yield* Effect.promise(harness.readModel);
+      expect(snapshot.threads[0]?.checkpoints).toEqual([]);
+      expect(snapshot.threads[0]?.latestTurn).toMatchObject({
+        turnId: "current-turn",
+        state: "running",
+      });
+      expect(
+        yield* Effect.promise(() => harness.readTurn(asTurnId("missing-turn"))),
+      ).toBeUndefined();
+    }),
+  );
+
   effectIt.effect("tracks provider diff updates from a nested Git workspace", () =>
     Effect.gen(function* () {
       const harness = yield* Effect.promise(() =>
@@ -5234,6 +5634,14 @@ describe("ProviderRuntimeIngestion", () => {
       );
       yield* Effect.promise(() =>
         harness.emitAndDrain([
+          {
+            type: "turn.started",
+            eventId: asEventId("evt-nested-turn-started"),
+            provider: ProviderDriverKind.make("codex"),
+            createdAt: "2026-01-01T00:00:00.000Z",
+            threadId: asThreadId("thread-1"),
+            turnId: asTurnId("nested-turn"),
+          },
           {
             type: "turn.diff.updated",
             eventId: asEventId("evt-nested-diff"),
@@ -5257,6 +5665,17 @@ describe("ProviderRuntimeIngestion", () => {
   it("consumes P1 runtime events into thread metadata, diff checkpoints, and activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("evt-p1-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-p1"),
+      },
+    ]);
 
     harness.emit({
       type: "thread.metadata.updated",
