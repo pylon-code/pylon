@@ -272,6 +272,9 @@ describe("pairRewindBlockedReason", () => {
     expect(ask([executor({ latestTurn: runningTurn, archivedAt: NOW })])).toBeNull();
     expect(ask([shell(FAN_OUT_CHILD, { latestTurn: runningTurn })])).toBeNull();
     expect(ask([executor({ latestTurn: runningTurn, environmentId: OTHER_ENV })])).toBeNull();
+  });
+});
+
 describe("pair status wording", () => {
   it("names every phase the same way on every client", () => {
     expect(pairPhaseLabel("idle")).toBe("Waiting for a brief");

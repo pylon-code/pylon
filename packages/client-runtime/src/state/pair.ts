@@ -164,6 +164,8 @@ export function pairRewindBlockedReason(input: {
     state.phase === "needs-input"
     ? "Stop the executor before rewinding. It works in this thread's worktree and would write over the restored files."
     : null;
+}
+
 /** What the executor is doing, in the words every client uses. */
 export function pairPhaseLabel(phase: PairExecutorPhase): string {
   switch (phase) {

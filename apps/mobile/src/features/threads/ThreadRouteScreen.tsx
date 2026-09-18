@@ -46,7 +46,7 @@ import {
 } from "@t3tools/shared/projectScripts";
 import { Alert, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { pairRewindBlockedReason } from "@t3tools/client-runtime/state/pair";
+import { pairRewindBlockedReason, resolvePairState } from "@t3tools/client-runtime/state/pair";
 import { useThreadShells } from "../../state/entities";
 import { useWorkspaceState } from "../../state/workspace";
 import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
@@ -99,8 +99,6 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useSelectedThreadGitActions } from "../../state/use-selected-thread-git-actions";
 import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-state";
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
-import { resolvePairState } from "@t3tools/client-runtime/state/pair";
-import { useThreadShells } from "../../state/entities";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { threadEnvironment } from "../../state/threads";
@@ -300,7 +298,6 @@ function ThreadRouteContent(
     "session agent depth update",
   );
   const navigation = useNavigation();
-  const threadShells = useThreadShells();
   const pairState = useMemo(() => {
     if (!selectedThread) {
       return undefined;
