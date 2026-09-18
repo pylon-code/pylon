@@ -338,6 +338,47 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped),
   );
 
+  it.live("anchors relative configured Claude homePath to OS homedir without writing to disk", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const relativeHome = ".claude-relative-test-home";
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-relative-claude-test",
+            home,
+            settings: {
+              ...settings,
+              providerInstances: {
+                [ProviderInstanceId.make("claude-relative")]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  config: { homePath: relativeHome },
+                },
+              },
+            },
+          }),
+        ),
+      );
+
+      const summary = yield* service.readSummary(WINDOW);
+      const claudeSource = summary.sources.find(
+        (source) =>
+          source.fingerprint.provider === "claude" &&
+          source.fingerprint.resolvedHomePath.includes(relativeHome),
+      );
+      assert.isDefined(claudeSource);
+      assert.strictEqual(claudeSource?.status, "missing");
+      assert.strictEqual(
+        claudeSource?.fingerprint.resolvedHomePath,
+        NodePath.join(NodeOS.homedir(), relativeHome, "projects"),
+      );
+      assert.notStrictEqual(
+        claudeSource?.fingerprint.resolvedHomePath,
+        NodePath.resolve(relativeHome, "projects"),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.live("reprices unchanged transcripts when custom prices are added, edited, or removed", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

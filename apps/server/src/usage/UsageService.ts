@@ -43,7 +43,7 @@ import * as Semaphore from "effect/Semaphore";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import { ServerConfig } from "../config.ts";
-import { expandHomePath } from "../pathExpansion.ts";
+import { expandHomePath, resolveProviderHomePath } from "../pathExpansion.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
@@ -277,7 +277,7 @@ export const make = Effect.gen(function* () {
           if (Option.isNone(decoded)) continue;
           const configured = decoded.value.homePath.trim();
           home = configured
-            ? expandHomePath(configured)
+            ? resolveProviderHomePath(configured)
             : environment.CLAUDE_CONFIG_DIR?.trim() || path.join(NodeOS.homedir(), ".claude");
         } else {
           home = expandHomePath(
