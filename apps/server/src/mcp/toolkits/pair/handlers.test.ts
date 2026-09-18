@@ -832,10 +832,10 @@ describe("pair_await", () => {
     }),
   );
 
-  it.effect("does not wait at all when maxSeconds is omitted", () =>
+  it.effect("reads the state without waiting only when asked for zero seconds", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ shells: [makeShell(LEAD_ID), runningExecutor()] });
-      expect(yield* harness.call("pair_await", {})).toMatchObject({
+      expect(yield* harness.call("pair_await", { maxSeconds: 0 })).toMatchObject({
         state: "running",
         waitedSeconds: 0,
       });
@@ -1000,7 +1000,7 @@ describe("protected paths", () => {
       yield* harness.call("pair_handoff", brief);
       harness.shells.set(EXECUTOR_ID, runningExecutor());
       harness.files.set(`${ROOT}/src/a.test.ts`, "half written");
-      expect(yield* harness.call("pair_await", {})).toMatchObject({
+      expect(yield* harness.call("pair_await", { maxSeconds: 0 })).toMatchObject({
         state: "running",
         protectedPaths: null,
       });

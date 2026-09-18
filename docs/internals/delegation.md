@@ -96,7 +96,10 @@ created without a first message and waits for a brief. A brief to a running exec
 unless the lead asks to steer, and a turn can be steered once: the steer message id is derived from
 the turn id, so the limit survives restarts. `pair_await` blocks inside the tool call, which costs no
 tokens, up to a cap chosen by the lead's provider: long only where Pylon sets that provider's MCP
-tool timeout itself.
+tool timeout itself. The lead does not choose the length. A live Codex lead asked for 10 to 20
+seconds at a time and looped, which is polling with a model turn per call, so any request other than
+an explicit 0 waits the whole cap; the call still returns the moment the executor changes state, and
+0 reads the state without waiting.
 
 Pairing is session-scoped. When a provider session is prepared, `ProviderService` adds a `pair`
 capability if delegation is on and the thread's executor exists and is not archived. No tool requires
