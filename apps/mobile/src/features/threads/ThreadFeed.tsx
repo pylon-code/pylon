@@ -109,7 +109,12 @@ import {
   type SelectableMarkdownSkill,
 } from "../../native/SelectableMarkdownText";
 
-import { AppText as Text } from "../../components/AppText";
+import { AppText, AppText as Text } from "../../components/AppText";
+import {
+  delegationNoticeHeadline,
+  delegationNoticeSummary,
+  parseDelegationNotice,
+} from "@t3tools/client-runtime/state/delegation-notice";
 import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
 import { VideoAttachmentTile } from "../../components/VideoAttachmentTile";
 import { MediaVideoPlayer } from "../../components/MediaVideoPlayer";
@@ -1376,6 +1381,7 @@ function renderFeedEntry(
     readonly onToggleTurnFold: (turnId: TurnId) => void;
     readonly onPressPreview: (source: FilePreviewSource) => void;
     readonly onPressVideo: (attachment: ChatFileAttachment, sourceIdentifier: string) => void;
+    readonly onOpenThread?: (threadId: string) => void;
     readonly markdownLinkHandlers: MarkdownLinkHandlers;
     readonly renderMarkdownImage: MarkdownImageRenderer;
     readonly renderViewedImage: MarkdownImageRenderer;
@@ -1508,6 +1514,38 @@ function renderFeedEntry(
       !message.streaming;
 
     if (isUser) {
+      const notice = parseDelegationNotice(message);
+      if (notice !== null) {
+        return (
+          <View
+            accessibilityRole="summary"
+            accessibilityLabel={delegationNoticeSummary(notice)}
+            className="my-2 rounded-xl border border-border bg-subtle p-3 gap-1.5"
+            style={{ borderWidth: StyleSheet.hairlineWidth }}
+          >
+            {notice.updates.map((update) => (
+              <Pressable
+                key={update.threadId}
+                onPress={
+                  props.onOpenThread ? () => props.onOpenThread?.(update.threadId) : undefined
+                }
+                accessibilityRole="button"
+                className="py-1 active:opacity-70"
+              >
+                <AppText className="font-t3-medium text-sm">
+                  {delegationNoticeHeadline(update)}
+                </AppText>
+                <AppText className="text-xs text-foreground-muted" numberOfLines={1}>
+                  {update.title}
+                </AppText>
+                {update.reason !== null && (
+                  <AppText className="text-xs text-danger-foreground">{update.reason}</AppText>
+                )}
+              </Pressable>
+            ))}
+          </View>
+        );
+      }
       const referenceIds = new Set(
         collectComposerContextReferences(message.text).map((reference) => reference.contextId),
       );
@@ -2059,6 +2097,16 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const iconSubtleColor = theme["--color-icon-subtle"];
   const screenColor = theme["--color-screen"];
   const userBubbleColor = theme["--color-user-bubble"];
+  const onOpenThread = useCallback(
+    (threadId: string) => {
+      navigation.navigate("Thread", {
+        environmentId: String(props.environmentId),
+        threadId: String(threadId),
+      });
+    },
+    [navigation, props.environmentId],
+  );
+
   const onMarkdownLinkPress = useCallback(
     (href: string) => {
       const presentation = resolveMarkdownLinkPresentation(href);
@@ -2720,6 +2768,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onToggleTurnFold,
             onPressPreview,
             onPressVideo,
+            onOpenThread,
             markdownLinkHandlers,
             renderMarkdownImage,
             renderViewedImage,
@@ -2774,6 +2823,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       markdownLinkHandlers,
       onPressPreview,
       onPressVideo,
+      onOpenThread,
       onToggleTurnFold,
       onToggleWorkGroup,
       onToggleWorkRow,
