@@ -41,6 +41,7 @@ import {
   type ProviderInstallState,
   UsageLimitSourceId,
   ServerProviderMutationBusyError,
+  type ServerProvider,
   ResolvedKeybindingRule,
   type ServerLifecycleStreamEvent,
   ThreadId,
@@ -6446,6 +6447,154 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }
       assert.equal(refresh.mock.calls.length, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "proves initial config snapshots, explicit refresh, startup availability, remote subscriptions and genuine config changes",
+    () =>
+      Effect.gen(function* () {
+        const initialProviders = [
+          {
+            instanceId: ProviderInstanceId.make("codex"),
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            installed: true,
+            version: "1.0.0",
+            status: "ready" as const,
+            auth: { status: "authenticated" as const },
+            checkedAt: "2026-04-11T00:00:00.000Z",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          },
+        ] as const;
+
+        const refreshedProviders = [
+          {
+            ...initialProviders[0],
+            version: "1.1.0",
+          },
+        ] as const;
+
+        const refreshCalls = yield* Ref.make(0);
+        const providerChangesQueue = yield* Queue.unbounded<ReadonlyArray<ServerProvider>>();
+        const settingsChangesQueue = yield* Queue.unbounded<typeof DEFAULT_SERVER_SETTINGS>();
+
+        const refresh = vi.fn(() =>
+          Ref.updateAndGet(refreshCalls, (count) => count + 1).pipe(
+            Effect.flatMap(() => Queue.offer(providerChangesQueue, refreshedProviders)),
+            Effect.as(refreshedProviders),
+          ),
+        );
+
+        yield* buildAppUnderTest({
+          layers: {
+            providerRegistry: {
+              getProviders: Effect.succeed(initialProviders),
+              subscribeChanges: Effect.succeed(Stream.fromQueue(providerChangesQueue)),
+              refresh,
+            },
+            serverSettings: {
+              getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+              streamChanges: Stream.fromQueue(settingsChangesQueue),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+
+        // 1. Startup availability: serverGetConfig returns initial providers without triggering refresh
+        const startupConfig = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) => client[WS_METHODS.serverGetConfig]({})),
+        );
+        assert.deepEqual(startupConfig.providers, initialProviders);
+        assert.equal(refresh.mock.calls.length, 0);
+
+        // 2. Initial config snapshots and remote/variant subscriptions without starting provider probes
+        const remoteVariants = [
+          {},
+          { usageLimitsCommand: true },
+          { environmentThemes: true, usageLimitSources: true },
+          { usageLimitsCommand: true, environmentThemes: true, usageLimitSources: true },
+        ] as const;
+
+        for (const input of remoteVariants) {
+          const snapshot = yield* Effect.scoped(
+            withWsRpcClient(wsUrl, (client) =>
+              client[WS_METHODS.subscribeServerConfig](input).pipe(
+                Stream.runHead,
+                Effect.map(Option.getOrThrow),
+              ),
+            ),
+          );
+          assert.equal(snapshot.type, "snapshot");
+          if (snapshot.type === "snapshot") {
+            assert.deepEqual(snapshot.config.providers, initialProviders);
+          }
+        }
+        assert.equal(refresh.mock.calls.length, 0);
+
+        // 3. Genuine config changes (settings) still stream to active subscribers
+        yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            Effect.gen(function* () {
+              const eventsFiber = yield* client[WS_METHODS.subscribeServerConfig]({}).pipe(
+                Stream.take(2),
+                Stream.runCollect,
+                Effect.forkScoped,
+              );
+
+              // Push genuine settings change
+              const updatedSettings: typeof DEFAULT_SERVER_SETTINGS = {
+                ...DEFAULT_SERVER_SETTINGS,
+                observability: {
+                  ...DEFAULT_SERVER_SETTINGS.observability,
+                  otlpTracesUrl: "http://localhost:4318/v1/traces",
+                },
+              };
+              yield* Queue.offer(settingsChangesQueue, updatedSettings);
+
+              const events = yield* Fiber.join(eventsFiber);
+              const [first, second] = Array.from(events);
+              assert.equal(first?.type, "snapshot");
+              assert.equal(second?.type, "settingsUpdated");
+              if (second?.type === "settingsUpdated") {
+                assert.equal(
+                  second.payload.settings.observability.otlpTracesUrl,
+                  "http://localhost:4318/v1/traces",
+                );
+              }
+            }),
+          ),
+        );
+        assert.equal(refresh.mock.calls.length, 0);
+
+        // 4. Explicit refresh triggers provider probes and publishes provider updates to active subscribers
+        yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            Effect.gen(function* () {
+              const eventsFiber = yield* client[WS_METHODS.subscribeServerConfig]({}).pipe(
+                Stream.take(2),
+                Stream.runCollect,
+                Effect.forkScoped,
+              );
+
+              // Explicitly invoke serverRefreshProviders
+              const refreshResponse = yield* client[WS_METHODS.serverRefreshProviders]({});
+              assert.deepEqual(refreshResponse.providers, refreshedProviders);
+              assert.equal(refresh.mock.calls.length, 1);
+
+              const events = yield* Fiber.join(eventsFiber);
+              const [first, second] = Array.from(events);
+              assert.equal(first?.type, "snapshot");
+              assert.equal(second?.type, "providerStatuses");
+              if (second?.type === "providerStatuses") {
+                assert.deepEqual(second.payload.providers, refreshedProviders);
+              }
+            }),
+          ),
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
   it.effect("returns cached whole-host resources over websocket", () =>
