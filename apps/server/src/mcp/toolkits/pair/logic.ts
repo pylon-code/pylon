@@ -13,7 +13,14 @@ import {
 import { delegatedParentThreadId } from "@t3tools/shared/delegatedThreads";
 
 import { delegatedThreadId, deriveDelegatedThreadState } from "../delegation/logic.ts";
-import { MAX_PAIR_AWAIT_SECONDS, type PairExecutorState } from "./tools.ts";
+import type { PairExecutorState } from "./tools.ts";
+
+/**
+ * The longest `pair_await` any provider is allowed. Defined here, not in
+ * `tools.ts`, so this module stays free of service imports: the provider
+ * service reads pair identity from it while preparing a session.
+ */
+export const MAX_PAIR_AWAIT_SECONDS = 150;
 
 /** The reserved delegation key. The fan-out tools must refuse it. */
 export const PAIR_DELEGATION_KEY = "pair";

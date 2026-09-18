@@ -22,6 +22,7 @@ import * as ProjectionSnapshotQuery from "../../../orchestration/Services/Projec
 import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { MAX_PAIR_AWAIT_SECONDS } from "./logic.ts";
 
 // Crypto reaches the handlers as a layer requirement of `toLayer(make)`.
 const dependencies = [
@@ -35,8 +36,6 @@ const dependencies = [
 const MAX_BRIEF_CHARS = 32_000;
 const MIN_RESULT_CHARS = 1_000;
 const MAX_RESULT_CHARS = 60_000;
-/** Upper bound of any provider's wait cap; `logic.ts` narrows it per lead driver. */
-export const MAX_PAIR_AWAIT_SECONDS = 150;
 
 export const PairExecutorState = Schema.Literals([
   "idle",
