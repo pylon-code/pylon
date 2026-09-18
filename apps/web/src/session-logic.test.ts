@@ -2685,3 +2685,31 @@ describe("session activity performance", () => {
     expect(updateMs).toBeLessThan(fromScratchMs / 2);
   });
 });
+
+describe("deriveWorkLogEntries delegation bookkeeping", () => {
+  it("hides child-state observations and delivery receipts but keeps the pause notice", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        kind: "delegation.child-state",
+        tone: "info",
+        summary: "Pylon child completed",
+        payload: { childThreadId: "delegated:parent:0123456789abcdef" },
+      }),
+      makeActivity({
+        kind: "delegation.follow-through.delivered",
+        tone: "info",
+        summary: "Delegated child update delivered to parent",
+        payload: { notificationIds: [], messageId: "delegation-follow-through:abc" },
+      }),
+      makeActivity({
+        kind: "delegation.follow-through.paused",
+        tone: "info",
+        summary: "Automatic delegation follow-through paused",
+        payload: { detail: "Three automatic follow-through turns have run." },
+      }),
+    ]);
+    expect(entries.map((entry) => entry.label)).toEqual([
+      "Automatic delegation follow-through paused",
+    ]);
+  });
+});
