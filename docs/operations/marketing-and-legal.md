@@ -27,6 +27,15 @@ practices.
 workflow still deploys `apps/web` only; nothing in CI deploys the marketing
 site.
 
+Vercel's git integration would otherwise build the site on every push to every
+branch. On 2026-09-18 that was well over a hundred builds of a site nobody had
+touched, which hit the account's build rate limit, failed the Vercel check on
+unrelated pull requests, and stalled the hosted app's release deploy (#655). The
+config's `ignoreCommand` now skips a build unless `apps/marketing`,
+`packages/shared`, or the lockfile changed since the branch's last deployment.
+A skipped build shows as a cancelled deployment in Vercel and a neutral check
+on the pull request. To force one, redeploy from the Vercel dashboard.
+
 ## Before adding a legal page back
 
 The site currently publishes no legal documents because it does not need to.
