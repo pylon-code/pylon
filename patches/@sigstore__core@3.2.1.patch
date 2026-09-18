@@ -1,0 +1,17 @@
+--- a/dist/crypto.js
++++ b/dist/crypto.js
+@@ -51,6 +51,14 @@
+     // The try/catch is to work around an issue in Node 14.x where verify throws
+     // an error in some scenarios if the signature is invalid.
+     try {
++        // Match Node/OpenSSL's default digest on Electron/BoringSSL without changing
++        // explicit algorithms or digest-free algorithms such as Ed25519 and Ed448.
++        if (algorithm === undefined) {
++            const publicKey = key instanceof crypto_1.default.KeyObject ? key : crypto_1.default.createPublicKey(key);
++            if (['ec', 'rsa', 'rsa-pss'].includes(publicKey.asymmetricKeyType)) {
++                algorithm = 'sha256';
++            }
++        }
+         return crypto_1.default.verify(algorithm, data, key, signature);
+     }
+     catch (e) {
