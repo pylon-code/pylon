@@ -249,6 +249,15 @@ export class DelegationDepthExceededError extends Schema.TaggedError<DelegationD
   }
 }
 
+export class DelegationPairedError extends Schema.TaggedError<DelegationPairedError>()(
+  "DelegationPairedError",
+  { threadId: Schema.String },
+) {
+  override get message(): string {
+    return "This thread is paired, so it works through its one executor instead of new child threads. Brief the executor with pair_handoff and wait with pair_await. If the work really needs several parallel threads, ask the user to turn Pair off for this thread first.";
+  }
+}
+
 export class DelegationKeyInvalidError extends Schema.TaggedError<DelegationKeyInvalidError>()(
   "DelegationKeyInvalidError",
   { field: Schema.Literals(["delegationKey", "messageKey"]) },
@@ -399,6 +408,7 @@ export const DelegationToolError = Schema.Union([
   McpCapabilityUnavailableError,
   DelegatingThreadNotFoundError,
   DelegationDepthExceededError,
+  DelegationPairedError,
   DelegationKeyInvalidError,
   DelegationKeyReservedError,
   DelegationProviderUnavailableError,

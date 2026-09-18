@@ -143,7 +143,10 @@ back. To change the executor's model, turn the pair off first. With **Pylon dele
 also ask for a pair in your message, for example “Pair with Antigravity for this.”
 
 While a thread is paired, the lead's own subagents are paused for that thread only, so
-implementation goes to the executor. Your provider's settings are not changed and other threads are
+implementation goes to the executor. Pylon's own delegation is paused there too: a paired lead cannot
+start other child threads, and asking it to "delegate" means briefing its executor. Turn **Pair** off
+for that thread if a task really needs several threads at once; children it started before pairing
+can still be checked, messaged, and stopped. Your provider's settings are not changed and other threads are
 unaffected; this takes effect the next time the lead's session starts. Antigravity can be the
 executor but cannot lead a pair, because Pylon has no way to pause its own subagents; on an
 Antigravity thread **Pair** is unavailable and says why. Codex can lead, though its own subagents

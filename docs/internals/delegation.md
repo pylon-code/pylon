@@ -141,6 +141,14 @@ collaboration tool was called. Claude and Prime Agent leads were verified the sa
 native daemon with an OpenAI Codex model; its log does not name tools, so the evidence is the
 `pair-message:` brief on the executor and the consumed receipt on the lead.
 
+A paired thread does not fan out. `delegate_thread` refuses with `DelegationPairedError` while the
+thread's executor exists and is not archived, and `read_delegation_skill` returns the pair protocol
+there instead of the fan-out workflow. Both check the projection rather than the session's `pair`
+capability, so a pair started mid-session is covered at once. This came from use, not design: a
+paired Claude lead that was told to "use delegation" looked up the delegation tools, read the skill,
+started two children, and never briefed its executor. The status, result, send and interrupt tools
+still work, so children from before the pair can be wound down.
+
 The executor follows its lead. `PairLifecycleReactor` watches domain events and dispatches existing
 commands: archiving, settling, or deleting a lead does the same to its executor, including an
 executor that was archived when the pair was turned off. An executor's own lifecycle never echoes

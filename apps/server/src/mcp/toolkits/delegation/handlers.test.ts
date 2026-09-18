@@ -1,3 +1,4 @@
+import { pairExecutorThreadId } from "@t3tools/shared/delegatedThreads";
 import * as NodeCrypto from "node:crypto";
 
 import {
@@ -54,6 +55,7 @@ import * as ServerSettings from "../../../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../../../vcs/VcsStatusBroadcaster.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { DelegationToolkitHandlersLive } from "./handlers.ts";
+import { PAIR_LEAD_PROTOCOL } from "../../../provider/RuntimeInstructions.ts";
 import { DelegationToolkit } from "./tools.ts";
 
 const NOW = "2026-09-15T12:00:00.000Z";
@@ -520,6 +522,37 @@ describe("delegation toolkit gate", () => {
         });
       }
       expect(yield* harness.commandTypes).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses to fan out from a paired thread, and says what to do instead", () =>
+    Effect.gen(function* () {
+      // Seen live: a paired lead told to "use delegation" started two fan-out
+      // children and never briefed its executor. One pair, one executor.
+      const executorId = pairExecutorThreadId(PARENT_ID);
+      const paired = yield* makeHarness({
+        shells: [makeShell(PARENT_ID), makeShell(executorId)],
+      });
+      const refused = yield* paired.call("delegate_thread", delegateInput).pipe(Effect.flip);
+      expect(refused).toMatchObject({ _tag: "DelegationPairedError", threadId: PARENT_ID });
+      expect(refused.message).toContain("pair_handoff");
+      expect(refused.message).toContain("turn Pair off");
+      expect(yield* paired.commandTypes).toEqual([]);
+
+      // The pair protocol replaces the fan-out workflow for a paired thread.
+      const skill = yield* paired.call("read_delegation_skill", {});
+      expect(skill).toContain(PAIR_LEAD_PROTOCOL);
+      expect(skill).not.toContain("Current preferred delegation method");
+
+      // A pair that was turned off archives its executor, and fan-out works again.
+      const off = yield* makeHarness({
+        shells: [makeShell(PARENT_ID), makeShell(executorId, { archivedAt: NOW })],
+      });
+      expect(yield* off.call("read_delegation_skill", {})).not.toContain(PAIR_LEAD_PROTOCOL);
+      const tag = yield* off
+        .call("delegate_thread", delegateInput)
+        .pipe(Effect.match({ onFailure: (error) => error._tag, onSuccess: () => "ok" }));
+      expect(tag).not.toBe("DelegationPairedError");
     }),
   );
 
