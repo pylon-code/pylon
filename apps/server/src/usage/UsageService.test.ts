@@ -244,7 +244,7 @@ describe("UsageService", () => {
           assert.strictEqual(totalOutputTokens(first), 7);
           assert.include(
             first.sources.map((source) => source.fingerprint.resolvedHomePath),
-            NodePath.join(configured, "projects"),
+            yield* Effect.promise(() => NodeFSP.realpath(NodePath.join(configured, "projects"))),
           );
           const initial = yield* settingsService.getSettings;
           yield* settingsService.mutateProviderInstances({
@@ -266,7 +266,9 @@ describe("UsageService", () => {
           assert.strictEqual(totalOutputTokens(second), 8);
           assert.include(
             second.sources.map((source) => source.fingerprint.resolvedHomePath),
-            NodePath.join(environmentHome, "projects"),
+            yield* Effect.promise(() =>
+              NodeFSP.realpath(NodePath.join(environmentHome, "projects")),
+            ),
           );
         }).pipe(
           Effect.provide(
