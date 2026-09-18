@@ -7,6 +7,7 @@ import {
   type OrchestrationThreadShell,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
+import { deriveDelegatedThreadState } from "../mcp/toolkits/delegation/logic.ts";
 import {
   observeDelegatedChild,
   isActionableDelegationObservation,
@@ -88,10 +89,29 @@ describe("delegated lifecycle observation", () => {
       observeDelegatedChild(shell({ session: { ...session, failedTurnRequestId: requestId } })),
     ).toMatchObject({ generation: "epoch:0:request:request-new", phase: "error" });
   });
-  it.each(["completed", "running"] as const)("stopped overrides stale %s turn", (state) => {
+  it("reports a completed turn as completed when the session was stopped afterwards", () => {
+    expect(
+      observeDelegatedChild(shell({ latestTurn: turn, session: { ...session, status: "stopped" } }))
+        ?.phase,
+    ).toBe("completed");
+  });
+  it("reports a running turn as interrupted when the session is stopped", () => {
     expect(
       observeDelegatedChild(
-        shell({ latestTurn: { ...turn, state }, session: { ...session, status: "stopped" } }),
+        shell({
+          latestTurn: { ...turn, state: "running", completedAt: null },
+          session: { ...session, status: "stopped" },
+        }),
+      )?.phase,
+    ).toBe("interrupted");
+  });
+  it("reports interrupted while a stop request is pending regardless of the turn", () => {
+    expect(
+      observeDelegatedChild(
+        shell({
+          latestTurn: turn,
+          session: { ...session, pendingStopRequestId: CommandId.make("stop-1") },
+        }),
       )?.phase,
     ).toBe("interrupted");
   });
@@ -136,6 +156,19 @@ describe("delegated lifecycle observation", () => {
       observeDelegatedChild(shell({ hasPendingApprovals: true, hasPendingUserInput: true }))?.phase,
     ).toBe("needs-approval");
     expect(observeDelegatedChild(shell({ hasPendingUserInput: true }))?.phase).toBe("needs-input");
+  });
+  it("agrees with deriveDelegatedThreadState on every completed child", () => {
+    const completedShells = [
+      shell(),
+      shell({ session: { ...session, status: "stopped" } }),
+      shell({ session: { ...session, status: "idle" } }),
+      shell({ session: null }),
+      shell({ backgroundLiveness: "monitoring" }),
+    ];
+    for (const candidate of completedShells) {
+      expect(deriveDelegatedThreadState(candidate)).toBe("completed");
+      expect(observeDelegatedChild(candidate)?.phase).toBe("completed");
+    }
   });
 });
 
