@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ComponentProps } from "react";
+import { useEffect, useLayoutEffect, useId, useRef, useState, type ComponentProps } from "react";
 
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
@@ -13,6 +13,14 @@ export function PullRequestCommentBody({
   const [overflowing, setOverflowing] = useState(false);
   const content = useRef<HTMLDivElement>(null);
   const id = useId();
+  const scrollAfterCollapse = useRef(false);
+
+  useLayoutEffect(() => {
+    if (!expanded && scrollAfterCollapse.current) {
+      scrollAfterCollapse.current = false;
+      content.current?.parentElement?.scrollIntoView({ block: "nearest" });
+    }
+  }, [expanded]);
 
   useEffect(() => {
     const element = content.current;
@@ -49,7 +57,7 @@ export function PullRequestCommentBody({
           aria-expanded={expanded}
           aria-controls={id}
           onClick={() => {
-            if (expanded) content.current?.parentElement?.scrollIntoView({ block: "nearest" });
+            scrollAfterCollapse.current = expanded;
             setExpanded(!expanded);
           }}
         >

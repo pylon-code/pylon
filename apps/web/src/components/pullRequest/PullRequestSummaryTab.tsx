@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  PullRequestActor,
   PullRequestComment,
   PullRequestDetailView,
   PullRequestRef,
@@ -64,6 +65,15 @@ function reviewerKey(login: string): string {
   return login.toLowerCase();
 }
 
+function commentActorProfileUrl(actor: PullRequestActor | null, detail: PullRequestDetailView) {
+  if (detail.provider !== "github" || !actor) return null;
+  const path =
+    actor.isBot || actor.login.endsWith("[bot]")
+      ? `/apps/${encodeURIComponent(actor.login.replace(/\[bot\]$/, ""))}`
+      : `/${encodeURIComponent(actor.login)}`;
+  return new URL(path, detail.url).toString();
+}
+
 function CommentIdentity({
   comment,
   detail,
@@ -72,10 +82,7 @@ function CommentIdentity({
   detail: PullRequestDetailView;
 }) {
   const actor = comment.author;
-  const profileUrl =
-    detail.provider === "github" && actor && !actor.login.endsWith("[bot]")
-      ? new URL(`/${encodeURIComponent(actor.login)}`, detail.url).toString()
-      : null;
+  const profileUrl = commentActorProfileUrl(actor, detail);
   return (
     <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
       <PullRequestActorLabel
@@ -396,16 +403,7 @@ function CommentGroup({
             <PullRequestActorLabel
               key={actor?.login ?? "ghost"}
               actor={actor}
-              profileUrl={
-                detail.provider === "github" && actor
-                  ? new URL(
-                      actor.isBot || actor.login.endsWith("[bot]")
-                        ? `/apps/${encodeURIComponent(actor.login.replace(/\[bot\]$/, ""))}`
-                        : `/${encodeURIComponent(actor.login)}`,
-                      detail.url,
-                    ).toString()
-                  : null
-              }
+              profileUrl={commentActorProfileUrl(actor, detail)}
               labelClassName="sr-only"
               className="relative rounded-full bg-background ring-2 ring-background hover:z-10 focus-visible:z-10 [&>img]:size-6 [&>span:first-child]:size-6"
             />
@@ -495,6 +493,10 @@ export function PullRequestSummaryTab({
   const [openedBotGroup, setOpenedBotGroup] = useState<string | null>(null);
   const [shownBots, setShownBots] = useState({ url: detail.url, count: COMMENT_PAGE });
   const shownBotComments = shownBots.url === detail.url ? shownBots.count : COMMENT_PAGE;
+  const [openedFinishedGroup, setOpenedFinishedGroup] = useState<string | null>(null);
+  const [shownFinished, setShownFinished] = useState({ url: detail.url, count: COMMENT_PAGE });
+  const shownFinishedComments =
+    shownFinished.url === detail.url ? shownFinished.count : COMMENT_PAGE;
   const shownComments = shown.url === detail.url ? shown.count : COMMENT_PAGE;
   // A comment that already lives on a review thread is that thread: the thread carries the line
   // and side the bare comment has lost, and a resolved one is finished work nobody should be
@@ -521,6 +523,10 @@ export function PullRequestSummaryTab({
   const hiddenCommentCount = activeComments.length - recentComments.length;
   const recentBotComments = botComments.slice(Math.max(0, botComments.length - shownBotComments));
   const hiddenBotCommentCount = botComments.length - recentBotComments.length;
+  const recentFinishedComments = finishedComments.slice(
+    Math.max(0, finishedComments.length - shownFinishedComments),
+  );
+  const hiddenFinishedCommentCount = finishedComments.length - recentFinishedComments.length;
   const [commentOrder, setCommentOrder] = useState<"newest" | "oldest">("newest");
   const visibleComments = orderPullRequestComments(recentComments, commentOrder);
   const showOldestCommentsButton =
@@ -1030,37 +1036,70 @@ export function PullRequestSummaryTab({
                 ) : null}
                 {finishedComments.length > 0 ? (
                   <CommentGroup
-                    key={detail.url}
+                    key={`finished:${detail.url}`}
                     label={`${finishedComments.length} resolved or dismissed comment${finishedComments.length === 1 ? "" : "s"}`}
                     comments={finishedComments}
                     detail={detail}
+                    onOpenChange={(open) => {
+                      if (open) setOpenedFinishedGroup(detail.url);
+                    }}
                   >
                     <div className="space-y-2 pt-2">
-                      {orderPullRequestComments(finishedComments, commentOrder).map((comment) => {
-                        const thread = threadByCommentId.get(comment.id);
-                        return (
-                          <CollapsedComment
-                            key={comment.id}
-                            comment={comment}
-                            editing={commentEditing}
-                            detail={detail}
-                            thread={thread}
-                            label={thread?.isResolved ? "Resolved" : "Review dismissed"}
-                            body={visibleBody(comment.body)}
-                            reactionBar={
-                              <PullRequestReactionBar
-                                className="ml-auto justify-end"
-                                reactions={comment.reactions ?? []}
-                                canReact={detail.capabilities.reactions === true}
-                                subjectId={comment.id}
-                                environmentId={environmentId}
-                                reference={reference}
-                                onRefresh={onRefresh}
-                              />
-                            }
-                          />
-                        );
-                      })}
+                      {openedFinishedGroup === detail.url
+                        ? orderPullRequestComments(recentFinishedComments, commentOrder).map(
+                            (comment) => {
+                              const thread = threadByCommentId.get(comment.id);
+                              return (
+                                <CollapsedComment
+                                  key={comment.id}
+                                  comment={comment}
+                                  editing={commentEditing}
+                                  detail={detail}
+                                  thread={thread}
+                                  label={thread?.isResolved ? "Resolved" : "Review dismissed"}
+                                  body={visibleBody(comment.body)}
+                                  reactionBar={
+                                    <PullRequestReactionBar
+                                      className="ml-auto justify-end"
+                                      reactions={comment.reactions ?? []}
+                                      canReact={detail.capabilities.reactions === true}
+                                      subjectId={comment.id}
+                                      environmentId={environmentId}
+                                      reference={reference}
+                                      onRefresh={onRefresh}
+                                    />
+                                  }
+                                />
+                              );
+                            },
+                          )
+                        : null}
+                      {hiddenFinishedCommentCount > 0 ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="w-full"
+                          onClick={() =>
+                            setShownFinished({
+                              url: detail.url,
+                              count: shownFinishedComments + COMMENT_PAGE,
+                            })
+                          }
+                        >
+                          Show {Math.min(hiddenFinishedCommentCount, COMMENT_PAGE)} older resolved
+                          or dismissed comments ({hiddenFinishedCommentCount} hidden)
+                        </Button>
+                      ) : null}
+                      {shownFinishedComments > COMMENT_PAGE ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="w-full"
+                          onClick={() => setShownFinished({ url: detail.url, count: COMMENT_PAGE })}
+                        >
+                          Show only {COMMENT_PAGE} recent resolved or dismissed comments
+                        </Button>
+                      ) : null}
                     </div>
                   </CommentGroup>
                 ) : null}
