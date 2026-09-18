@@ -13,6 +13,7 @@ import {
   RuntimeMode,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
@@ -31,9 +32,12 @@ const dependencies = [
   ProjectionSnapshotQuery.ProjectionSnapshotQuery,
   ProviderRegistry.ProviderRegistry,
   ServerSettings.ServerSettingsService,
+  // Reads the lead's protected paths in the worktree the pair shares.
+  FileSystem.FileSystem,
 ];
 
 const MAX_BRIEF_CHARS = 32_000;
+const MAX_PROTECTED_PATHS = 50;
 const MIN_RESULT_CHARS = 1_000;
 const MAX_RESULT_CHARS = 60_000;
 
@@ -92,6 +96,12 @@ export const PairHandoffInput = Schema.Struct({
     description:
       "The brief: exact files, the behavior wanted, the acceptance checks to run, exclusions, and the report format. The executor shares your worktree, so refer to paths directly.",
   }),
+  protectedPaths: Schema.optional(
+    Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(MAX_PROTECTED_PATHS)).annotate({
+      description:
+        "Files you own and the executor must not edit, normally your tests and contract, as paths relative to the worktree. Pylon records their content now and pair_await tells you if any changed. Each brief replaces the previous list; omit it to protect nothing.",
+    }),
+  ),
   steer: Schema.optional(
     Schema.Boolean.annotate({
       description:
@@ -153,6 +163,18 @@ export const PairAwaitResult = Schema.Struct({
     }),
   ),
   turnCount: Schema.Int,
+  /**
+   * The protected paths of the latest brief, checked once the executor is no
+   * longer running. Null while it runs, when the brief protected nothing, or
+   * when the server restarted since the brief and the record was lost.
+   */
+  protectedPaths: Schema.NullOr(
+    Schema.Struct({
+      checked: Schema.Int,
+      /** Paths whose content differs from the brief, or that no longer exist. */
+      changed: Schema.Array(Schema.String),
+    }),
+  ),
 });
 export type PairAwaitResult = typeof PairAwaitResult.Type;
 
@@ -218,6 +240,15 @@ export class PairKeyInvalidError extends Schema.TaggedError<PairKeyInvalidError>
 ) {
   override get message(): string {
     return "messageKey must be 1-64 letters, digits, underscores, or hyphens.";
+  }
+}
+
+export class PairProtectedPathInvalidError extends Schema.TaggedError<PairProtectedPathInvalidError>()(
+  "PairProtectedPathInvalidError",
+  { path: Schema.String },
+) {
+  override get message(): string {
+    return `Protected path ${this.path} must be an existing file inside the worktree, given relative to it.`;
   }
 }
 
@@ -311,6 +342,7 @@ export const PairToolError = Schema.Union([
   PairNotActiveError,
   PairArchivedError,
   PairKeyInvalidError,
+  PairProtectedPathInvalidError,
   PairDefaultMissingError,
   PairProviderUnavailableError,
   PairModelUnavailableError,

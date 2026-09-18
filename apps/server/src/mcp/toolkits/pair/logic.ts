@@ -82,3 +82,29 @@ export function pairExecutorTitle(leadTitle: string): string {
 export function isPairLeadSupported(leadDriver: string | undefined): boolean {
   return leadDriver !== "antigravity";
 }
+
+export interface ProtectedPathRecord {
+  readonly path: string;
+  /** Hex digest of the file's content when the brief was sent. */
+  readonly hash: string;
+}
+
+/**
+ * A protected path as the lead may write it, reduced to a clean path relative
+ * to the worktree, or null when it could reach outside it. STUB.
+ */
+export function normalizeProtectedPath(_path: string): string | null {
+  throw new Error("pair/logic.normalizeProtectedPath is not implemented");
+}
+
+/**
+ * Recorded paths whose current content differs or that no longer exist, in
+ * recorded order. `current` maps a path to its digest, or null when the file
+ * could not be read. STUB.
+ */
+export function changedProtectedPaths(
+  _recorded: ReadonlyArray<ProtectedPathRecord>,
+  _current: ReadonlyMap<string, string | null>,
+): ReadonlyArray<string> {
+  throw new Error("pair/logic.changedProtectedPaths is not implemented");
+}

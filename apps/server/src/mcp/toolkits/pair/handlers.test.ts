@@ -24,8 +24,10 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -233,6 +235,8 @@ interface HarnessOptions {
   readonly rejectedCommandIds?: ReadonlyArray<string>;
   readonly delegationDefault?: ModelSelection | null;
   readonly childRuntimeMode?: DelegationChildRuntimeMode;
+  /** Absolute path to content, for the worktree the pair shares. */
+  readonly files?: Readonly<Record<string, string>>;
 }
 
 const DEFAULT_SELECTION: ModelSelection = { instanceId: ANTIGRAVITY, model: "gemini-3-flash" };
@@ -245,6 +249,7 @@ const makeHarness = Effect.fn("makePairHarness")(function* (options: HarnessOpti
   for (const shell of options.archived ?? []) archived.set(shell.id, shell);
   const details = new Map<string, OrchestrationThread>();
   for (const detail of options.details ?? []) details.set(detail.id, detail);
+  const files = new Map(Object.entries(options.files ?? {}));
   const messageIds = new Set(options.existingMessageIds ?? []);
   const accepted = new Set<string>();
   const rejected = new Set(options.rejectedCommandIds ?? []);
@@ -328,6 +333,22 @@ const makeHarness = Effect.fn("makePairHarness")(function* (options: HarnessOpti
       delegationChildRuntimeMode: options.childRuntimeMode ?? "inherit",
     }),
     Layer.succeed(Crypto.Crypto, testCrypto),
+    FileSystem.layerNoop({
+      readFile: (path) => {
+        const content = files.get(path);
+        return content === undefined
+          ? Effect.fail(
+              PlatformError.systemError({
+                _tag: "NotFound",
+                module: "FileSystem",
+                method: "readFile",
+                description: "no such file",
+                pathOrDescriptor: path,
+              }),
+            )
+          : Effect.succeed(new TextEncoder().encode(content));
+      },
+    }),
   );
 
   const toolkit = yield* PairToolkit.pipe(
@@ -349,7 +370,7 @@ const makeHarness = Effect.fn("makePairHarness")(function* (options: HarnessOpti
   const commandTypes = Ref.get(commands).pipe(
     Effect.map((recorded) => recorded.map((command) => command.type)),
   );
-  return { commands, commandTypes, shells, call };
+  return { commands, commandTypes, shells, files, call };
 });
 
 const tagOf = <A, E extends { readonly _tag: string }>(effect: Effect.Effect<A, E>) =>
@@ -701,6 +722,7 @@ describe("pair_await", () => {
         assistantMessage: null,
         filesChanged: [],
         turnCount: 0,
+        protectedPaths: null,
       });
 
       const done = yield* makeHarness({
@@ -722,6 +744,7 @@ describe("pair_await", () => {
         },
         filesChanged: [{ path: "src/a.ts", kind: "modified", additions: 3, deletions: 1 }],
         turnCount: 1,
+        protectedPaths: null,
       });
     }),
   );
@@ -804,6 +827,145 @@ describe("pair_await", () => {
       expect(yield* harness.call("pair_await", {})).toMatchObject({
         state: "running",
         waitedSeconds: 0,
+      });
+    }),
+  );
+});
+
+describe("protected paths", () => {
+  const ROOT = "/wt/repo/lead";
+  const finishedExecutor = () => makeExecutor({ latestTurn: completedTurn() });
+  const twoTests = {
+    [`${ROOT}/src/a.test.ts`]: "a v1",
+    [`${ROOT}/src/b.test.ts`]: "b v1",
+  };
+  const brief = {
+    messageKey: "m-1",
+    text: "Make these tests pass without editing them",
+    protectedPaths: ["src/a.test.ts", "./src//b.test.ts"],
+  };
+
+  it.effect("records the lead's files at handoff and reports the ones the executor changed", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        shells: [makeShell(LEAD_ID), finishedExecutor()],
+        files: twoTests,
+      });
+      yield* harness.call("pair_handoff", brief);
+      expect(yield* harness.call("pair_await", {})).toMatchObject({
+        protectedPaths: { checked: 2, changed: [] },
+      });
+
+      harness.files.set(`${ROOT}/src/b.test.ts`, "b edited by the executor");
+      expect(yield* harness.call("pair_await", {})).toMatchObject({
+        protectedPaths: { checked: 2, changed: ["src/b.test.ts"] },
+      });
+
+      harness.files.delete(`${ROOT}/src/a.test.ts`);
+      expect(yield* harness.call("pair_await", {})).toMatchObject({
+        protectedPaths: { checked: 2, changed: ["src/a.test.ts", "src/b.test.ts"] },
+      });
+    }),
+  );
+
+  it.effect("refuses a brief before starting a turn when a path is missing or escapes", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        shells: [makeShell(LEAD_ID), finishedExecutor()],
+        files: twoTests,
+      });
+      for (const path of ["../outside.ts", "/etc/passwd", "src/missing.test.ts"]) {
+        expect(
+          yield* harness
+            .call("pair_handoff", { ...brief, protectedPaths: ["src/a.test.ts", path] })
+            .pipe(Effect.flip),
+        ).toMatchObject({ _tag: "PairProtectedPathInvalidError", path });
+      }
+      expect(yield* harness.commandTypes).toEqual([]);
+      // Nothing was recorded by the refused briefs.
+      expect(yield* harness.call("pair_await", {})).toMatchObject({ protectedPaths: null });
+    }),
+  );
+
+  it.effect("reports nothing while the executor is still running", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        shells: [makeShell(LEAD_ID), finishedExecutor()],
+        files: twoTests,
+      });
+      yield* harness.call("pair_handoff", brief);
+      harness.shells.set(EXECUTOR_ID, runningExecutor());
+      harness.files.set(`${ROOT}/src/a.test.ts`, "half written");
+      expect(yield* harness.call("pair_await", {})).toMatchObject({
+        state: "running",
+        protectedPaths: null,
+      });
+    }),
+  );
+
+  it.effect("keeps the record across a steer and replaces it with each new brief", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        shells: [makeShell(LEAD_ID), finishedExecutor()],
+        files: twoTests,
+      });
+      yield* harness.call("pair_handoff", brief);
+
+      // A steer redirects the running turn; what the lead owns has not changed.
+      harness.shells.set(EXECUTOR_ID, runningExecutor());
+      yield* harness.call("pair_handoff", {
+        messageKey: "m-steer",
+        text: "other way",
+        steer: true,
+      });
+      harness.shells.set(EXECUTOR_ID, finishedExecutor());
+      expect(yield* harness.call("pair_await", {})).toMatchObject({
+        protectedPaths: { checked: 2, changed: [] },
+      });
+
+      // The next brief protects one file, then a brief that protects nothing clears it.
+      yield* harness.call("pair_handoff", {
+        messageKey: "m-2",
+        text: "next step",
+        protectedPaths: ["src/a.test.ts"],
+      });
+      expect(yield* harness.call("pair_await", {})).toMatchObject({
+        protectedPaths: { checked: 1, changed: [] },
+      });
+      yield* harness.call("pair_handoff", { messageKey: "m-3", text: "free-form step" });
+      expect(yield* harness.call("pair_await", {})).toMatchObject({ protectedPaths: null });
+    }),
+  );
+
+  it.effect("does not re-record when a messageKey is replayed", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        shells: [makeShell(LEAD_ID), finishedExecutor()],
+        files: twoTests,
+      });
+      yield* harness.call("pair_handoff", brief);
+      harness.files.set(`${ROOT}/src/a.test.ts`, "edited");
+      // A retry of the same brief must not adopt the edited content as the baseline.
+      yield* harness.call("pair_handoff", brief);
+      expect(yield* harness.call("pair_await", {})).toMatchObject({
+        protectedPaths: { checked: 2, changed: ["src/a.test.ts"] },
+      });
+      expect(yield* harness.commandTypes).toEqual(["thread.turn.start"]);
+    }),
+  );
+
+  it.effect("reads from the project root when the pair has no worktree", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        shells: [
+          makeShell(LEAD_ID, { worktreePath: null }),
+          makeExecutor({ worktreePath: null, latestTurn: completedTurn() }),
+        ],
+        files: { "/repo/src/a.test.ts": "a v1" },
+      });
+      yield* harness.call("pair_handoff", { ...brief, protectedPaths: ["src/a.test.ts"] });
+      expect(yield* harness.call("pair_await", {})).toMatchObject({
+        protectedPaths: { checked: 1, changed: [] },
       });
     }),
   );
