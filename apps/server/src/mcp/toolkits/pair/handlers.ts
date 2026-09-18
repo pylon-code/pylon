@@ -296,10 +296,10 @@ const make = Effect.gen(function* () {
     readonly steer?: boolean | undefined;
   }) =>
     Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireMcpCapability("delegation");
       if (!isValidDelegationKey(input.messageKey)) {
         return yield* new PairKeyInvalidError();
       }
-      const scope = yield* McpInvocationContext.requireMcpCapability("delegation");
       const executorId = yield* executorIdFor(scope.threadId);
 
       return yield* withLeadGate(scope.threadId)(
@@ -430,7 +430,7 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const waitedSeconds = state === "running" && waitBudget <= 0 ? 0 : elapsedSeconds(now);
+      const waitedSeconds = elapsedSeconds(now);
 
       let assistantMessage: PairAwaitResult["assistantMessage"] = null;
       let filesChanged: PairAwaitResult["filesChanged"] = [];

@@ -43,7 +43,8 @@ import {
 
 import { DelegationToolkitHandlersLive } from "./toolkits/delegation/handlers.ts";
 import { DelegationToolkit } from "./toolkits/delegation/tools.ts";
-import { PairToolkit, PairToolkitHandlersLive } from "./toolkits/pair/index.ts";
+import { PairToolkitHandlersLive } from "./toolkits/pair/handlers.ts";
+import { PairToolkit } from "./toolkits/pair/tools.ts";
 import { PullRequestsToolkitHandlersLive } from "./toolkits/pullRequests/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 
