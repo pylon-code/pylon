@@ -9,6 +9,7 @@
  *
  * @module mcp/toolkits/delegation/handlers
  */
+import { pairExecutorThreadId } from "@t3tools/shared/delegatedThreads";
 import {
   CommandId,
   MessageId,
@@ -37,6 +38,7 @@ import * as OrchestrationEngine from "../../../orchestration/Services/Orchestrat
 import { markDelegationObservationConsumed } from "../../../orchestration/delegationObservationConsumed.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ThreadDeletionReactor from "../../../orchestration/Services/ThreadDeletionReactor.ts";
+import { PAIR_LEAD_PROTOCOL } from "../../../provider/RuntimeInstructions.ts";
 import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../../../vcs/VcsStatusBroadcaster.ts";
@@ -68,6 +70,7 @@ import {
   DelegatingThreadNotFoundError,
   DelegationDefaultMissingError,
   DelegationDepthExceededError,
+  DelegationPairedError,
   DelegationFailedError,
   DelegationKeyConsumedError,
   DelegationKeyInvalidError,
@@ -139,6 +142,12 @@ const make = Effect.gen(function* () {
   const vcsStatus = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
   const git = yield* GitWorkflowService.GitWorkflowService;
   const config = yield* ServerConfig;
+
+  /** A pair is on while its executor thread exists and is not archived. */
+  const isPaired = (threadId: ThreadId) =>
+    orFail(snapshots.getThreadShellById(pairExecutorThreadId(threadId))).pipe(
+      Effect.map((executor) => Option.isSome(executor) && executor.value.archivedAt === null),
+    );
   const crypto = yield* Crypto.Crypto;
 
   // One permit per parent: providers issue tool calls in parallel, and the
@@ -427,6 +436,9 @@ const make = Effect.gen(function* () {
       yield* requireKey("delegationKey", input.delegationKey);
       if (isDelegatedThreadId(scope.threadId)) {
         return yield* new DelegationDepthExceededError({ threadId: scope.threadId });
+      }
+      if (yield* isPaired(scope.threadId)) {
+        return yield* new DelegationPairedError({ threadId: scope.threadId });
       }
       const childId = yield* childIdFor(scope.threadId, input.delegationKey);
       const initialMessageId = initialMessageIdFor(childId);
@@ -764,6 +776,11 @@ const make = Effect.gen(function* () {
         const parent = yield* orFail(snapshots.getThreadShellById(scope.threadId));
         if (Option.isNone(parent))
           return yield* new DelegatingThreadNotFoundError({ threadId: scope.threadId });
+        // A paired thread hands work to its executor; the fan-out workflow would
+        // send it straight past the pair.
+        if (yield* isPaired(scope.threadId)) {
+          return `This thread is paired. Delegating here means briefing the executor.\n\n${PAIR_LEAD_PROTOCOL}`;
+        }
         const settings = yield* orFail(serverSettings.getSettings);
         const effective = resolveProjectSettings(settings, parent.value.projectId).settings;
         const preference = effective.enableAgentDelegation

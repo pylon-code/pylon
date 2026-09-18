@@ -95,6 +95,13 @@ describe("buildRuntimeInstructions", () => {
     }
   });
 
+  it("tells a paired lead that delegating means briefing its executor", () => {
+    // A user who says "use delegation" on a paired thread means the executor.
+    for (const rule of ["delegate_thread", "delegate", "means brief your executor"]) {
+      expect(PAIR_LEAD_PROTOCOL).toContain(rule);
+    }
+  });
+
   it("points the lead at Pylon's pair tools and away from its harness's own agents", () => {
     // Codex keeps its collaboration tools whatever feature flags say, and a lead
     // told to "brief the executor" reaches for them unless the protocol is explicit.
