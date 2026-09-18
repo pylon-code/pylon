@@ -94,9 +94,18 @@ comment when closing or reopening a review, and change labels on GitHub with tri
 GitLab, and Azure DevOps support auto-merge while checks are outstanding. GitHub also supports
 approving waiting fork workflows and opening a revert pull request for a merged change.
 
-Choose stacked or side-by-side diffs in **Settings → General → Diff layout**. Enable
-**Settings → General → Proactive panels** to open a thread's linked review, and the diff of its latest
-completed turn, automatically when you enter the thread or when agent work finishes.
+Opening the diff panel shows the working tree. Use its scope menu for branch changes or a specific
+turn; reopening the panel returns to the working tree. Large working-tree and branch diffs list all
+changed files and complete line counts while loading file previews as needed. Select a file in the
+tree to jump directly to it. Individual file previews still have a size limit.
+
+Choose stacked or side-by-side diffs in **Settings → General → Diff layout**. Files start collapsed;
+choose **Default diff file state → Expanded** to expand them by default in diffs and pull request
+Code tabs. Your saved choice survives restarts.
+
+Enable **Settings → General → Proactive panels** to open linked pull requests first. When there is
+no linked review, completed changes to at least three files or 50 lines can open the working-tree
+diff automatically. Manual panel choices take priority.
 
 For Azure DevOps, use the host website to view diffs or change comments. Bitbucket does not support
 reopening a declined pull request.

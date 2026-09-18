@@ -42,6 +42,7 @@ const clientSettings: ClientSettings = {
   desktopNotifyOnFailure: true,
   composerCollapseOnScroll: true,
   dismissedProviderUpdateNotificationKeys: [],
+  diffFilesCollapsed: true,
   diffIgnoreWhitespace: true,
   diffLayout: "stacked",
   environmentIdentificationMode: "artwork",

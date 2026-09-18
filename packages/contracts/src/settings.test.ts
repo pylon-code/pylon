@@ -199,6 +199,19 @@ describe("ClientSettings retired status motion", () => {
   });
 });
 
+describe("ClientSettings default diff file state", () => {
+  it("keeps files collapsed when existing settings omit the preference", () => {
+    expect(decodeClientSettings({}).diffFilesCollapsed).toBe(true);
+  });
+
+  it.each([true, false])("preserves a saved collapsed preference of %s", (diffFilesCollapsed) => {
+    const settings = decodeClientSettings({ diffFilesCollapsed });
+    expect(encodeClientSettings(settings).diffFilesCollapsed).toBe(diffFilesCollapsed);
+    expect(decodeClientSettingsPatch({ diffFilesCollapsed }).diffFilesCollapsed).toBe(
+      diffFilesCollapsed,
+    );
+  });
+});
 describe("ClientSettings quit confirmation", () => {
   it("defaults to hold", () => {
     expect(decodeClientSettings({}).confirmQuit).toBe("hold");
