@@ -44,6 +44,46 @@ function thread(
 }
 
 describe("projectThreadAwareness", () => {
+  it.each([
+    { hasPendingApprovals: true },
+    { hasPendingUserInput: true },
+    {
+      latestTurn: {
+        turnId: "turn-1" as TurnId,
+        state: "completed",
+        requestedAt: NOW,
+        startedAt: NOW,
+        completedAt: NOW,
+        assistantMessageId: null,
+      },
+    },
+    {
+      latestTurn: {
+        turnId: "turn-1" as TurnId,
+        state: "error",
+        requestedAt: NOW,
+        startedAt: NOW,
+        completedAt: NOW,
+        assistantMessageId: null,
+      },
+    },
+  ] satisfies Partial<OrchestrationThreadShell>[])(
+    "suppresses delegated awareness for %j while preserving parent alerts",
+    (overrides) => {
+      const input = { environmentId: "env-1" as EnvironmentId, project, thread: thread(overrides) };
+      expect(projectThreadAwareness(input)).not.toBeNull();
+      expect(
+        projectThreadAwareness({
+          ...input,
+          thread: {
+            ...input.thread,
+            id: "delegated:parent:with:colons:0123456789abcdef" as ThreadId,
+          },
+        }),
+      ).toBeNull();
+    },
+  );
+
   it("returns null for idle threads without an active awareness state", () => {
     expect(
       projectThreadAwareness({

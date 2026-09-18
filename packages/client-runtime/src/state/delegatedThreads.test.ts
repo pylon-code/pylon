@@ -10,6 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   delegatedParentThreadId,
+  visibleDelegatedThreads,
   delegatedThreadRows,
   flattenNestedThreads,
   nestDelegatedThreads,
@@ -261,5 +262,31 @@ describe("delegatedThreadRows", () => {
         parentRef,
       )[0]?.activity,
     ).toHaveLength(160);
+  });
+});
+
+describe("visibleDelegatedThreads", () => {
+  const parent = thread(local, "parent");
+  const child = thread(local, `delegated:parent:${HASH}`);
+  const orphan = thread(remote, `delegated:missing:${HASH}`);
+  const rows = [parent, child, orphan];
+
+  it("collapses children even when their parent is in another section or unavailable", () => {
+    expect(visibleDelegatedThreads(rows, false, null)).toEqual([parent]);
+    expect(visibleDelegatedThreads([orphan], false, null)).toEqual([]);
+  });
+
+  it("expands and collapses again without losing the source rows", () => {
+    expect(visibleDelegatedThreads(rows, true, null)).toEqual(rows);
+    expect(visibleDelegatedThreads(rows, false, null)).toEqual([parent]);
+    expect(rows).toHaveLength(3);
+  });
+
+  it("keeps only the open child visible, scoped to its environment", () => {
+    const remoteChild = thread(remote, child.id);
+    expect(visibleDelegatedThreads([...rows, remoteChild], false, `local:${child.id}`)).toEqual([
+      parent,
+      child,
+    ]);
   });
 });

@@ -18,6 +18,9 @@ Background delivery requires Pylon Connect; a direct or Tailscale connection alo
 push notifications. The mobile app does not need to maintain a connection to your environment.
 Notification permission is controlled in system Settings.
 
+Delegated child threads do not send notifications. Follow their progress in the parent thread’s
+subagent panel; the parent thread can still notify you.
+
 ## Android
 
 Android notifications work only in Pylon Mobile builds that include push support. In other builds,

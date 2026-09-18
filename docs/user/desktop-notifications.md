@@ -4,6 +4,9 @@ Pylon can alert you when an agent needs approval, asks for input, finishes a tur
 or fails. Click an alert to open its thread. Completion refers to the foreground
 turn; separately running background work may continue.
 
+Delegated child threads do not send notifications. Follow their progress in the parent thread’s
+subagent panel; the parent thread can still notify you.
+
 ## Desktop
 
 Open **Settings → General → Notifications**. Native desktop notifications and

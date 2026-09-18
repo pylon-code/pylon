@@ -23,6 +23,7 @@ import {
 import { resolveSettledThreadTimestamp } from "@t3tools/client-runtime/state/thread-sort";
 import {
   delegatedParentThreadId,
+  visibleDelegatedThreads,
   flattenNestedThreads,
   nestDelegatedThreads,
   nestedRowContainsThread,
@@ -46,6 +47,7 @@ import {
   AlarmClockOffIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   CircleDashedIcon,
@@ -2721,13 +2723,37 @@ export default function Sidebar() {
     };
   }, [nowMinute, optimisticDrop, scopedProjectKeys, serverConfigs, snoozeWakeTick, threads]);
 
-  // Delegated children render under their parent when both share a section.
-  // Only top-level rows take part in paging, collapse, and drag order: a
-  // nested child's order keys are never shown, so drops never write them.
-  const nestedPinned = useMemo(() => nestDelegatedThreads(pinnedThreads), [pinnedThreads]);
-  const nestedActive = useMemo(() => nestDelegatedThreads(activeThreads), [activeThreads]);
-  const nestedSnoozed = useMemo(() => nestDelegatedThreads(snoozedThreads), [snoozedThreads]);
-  const nestedSettled = useMemo(() => nestDelegatedThreads(settledThreads), [settledThreads]);
+  const [delegationsExpanded, setDelegationsExpanded] = useState(false);
+  const delegatedThreadCount = useMemo(
+    () =>
+      [...pinnedThreads, ...activeThreads, ...snoozedThreads, ...settledThreads].filter(
+        (thread) => delegatedParentThreadId(thread.id) !== null,
+      ).length,
+    [pinnedThreads, activeThreads, snoozedThreads, settledThreads],
+  );
+  // Apply disclosure before nesting so children in another section (including
+  // Settled) collapse too. Keep the open child visible without expanding siblings.
+  const visibleDelegations = useCallback(
+    (rows: readonly EnvironmentThreadShell[]) =>
+      visibleDelegatedThreads(rows, delegationsExpanded, routeThreadKey),
+    [delegationsExpanded, routeThreadKey],
+  );
+  const nestedPinned = useMemo(
+    () => nestDelegatedThreads(visibleDelegations(pinnedThreads)),
+    [pinnedThreads, visibleDelegations],
+  );
+  const nestedActive = useMemo(
+    () => nestDelegatedThreads(visibleDelegations(activeThreads)),
+    [activeThreads, visibleDelegations],
+  );
+  const nestedSnoozed = useMemo(
+    () => nestDelegatedThreads(visibleDelegations(snoozedThreads)),
+    [snoozedThreads, visibleDelegations],
+  );
+  const nestedSettled = useMemo(
+    () => nestDelegatedThreads(visibleDelegations(settledThreads)),
+    [settledThreads, visibleDelegations],
+  );
   const childThreadsByParentKey = useMemo(() => {
     const merged = new Map<string, readonly EnvironmentThreadShell[]>();
     for (const nested of [nestedPinned, nestedActive, nestedSnoozed, nestedSettled]) {
@@ -3487,7 +3513,7 @@ export default function Sidebar() {
     const activeRows = rowsOf(nestedActive.topLevel, "active");
     items.push({ kind: "marker", marker: "active-placeholder" });
     items.push(...activeRows);
-    if (snoozedThreads.length > 0) {
+    if (nestedSnoozed.topLevel.length > 0) {
       items.push({ kind: "marker", marker: "snoozed-header" });
       items.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
     }
@@ -3500,6 +3526,7 @@ export default function Sidebar() {
     activeThreads.length,
     nestedActive,
     nestedPinned,
+    nestedSnoozed,
     pinnedThreads.length,
     renderedSettledThreads,
     settledThreads.length,
@@ -4679,6 +4706,21 @@ export default function Sidebar() {
         }
       >
         <SidebarGroup className="ps-[calc(var(--sidebar-content-inset)+1px)] pe-[var(--sidebar-content-inset)] pb-1 pt-0">
+          {!isSearchingThreads && delegatedThreadCount > 0 && (
+            <button
+              type="button"
+              aria-expanded={delegationsExpanded}
+              onClick={() => {
+                clearSelection();
+                setDelegationsExpanded((expanded) => !expanded);
+              }}
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:outline-2 focus-visible:outline-ring"
+            >
+              <ChevronRightIcon className={cn("size-3.5", delegationsExpanded && "rotate-90")} />
+              <span>Delegated threads</span>
+              <span className="ml-auto tabular-nums">{delegatedThreadCount}</span>
+            </button>
+          )}
           {isSearchingThreads ? (
             threadSearchResults.length > 0 ? (
               <TooltipProvider
@@ -4976,7 +5018,7 @@ export default function Sidebar() {
                                 label={
                                   snoozedShelfExpanded
                                     ? "Snoozed"
-                                    : `Snoozed (${snoozedThreads.length})`
+                                    : `Snoozed (${visibleDelegations(snoozedThreads).length})`
                                 }
                                 toggle={{
                                   expanded: snoozedShelfExpanded,
@@ -4993,7 +5035,7 @@ export default function Sidebar() {
                                 label={
                                   settledShelfExpanded
                                     ? "Settled"
-                                    : `Settled (${settledThreads.length})`
+                                    : `Settled (${visibleDelegations(settledThreads).length})`
                                 }
                                 dragging={from !== null}
                                 isDropTarget={dragTargetSection === "settled"}
