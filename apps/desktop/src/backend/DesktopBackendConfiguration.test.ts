@@ -707,6 +707,102 @@ describe("DesktopBackendConfiguration", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect(
+    "resolveWsl forwards discovered version-managed Node in launch PATH for staged runtime",
+    () => {
+      const linuxAppRoot = "/home/developer/.pylon-code/wsl-runtime/24.13.1-x64";
+      const nodePath = "/home/developer/.nvm/versions/node/v24.13.1/bin/node";
+      const resolvedPath =
+        "/home/developer/.nvm/versions/node/v24.13.1/bin:/home/developer/.local/bin:/usr/bin:/bin";
+
+      return withPackagedWslHarness(
+        {
+          archiveHash: "c".repeat(64),
+          forbidFallback: "A healthy staged runtime must not fall back to mounted server tree",
+          wsl: () => ({
+            prepareRuntime: (_distro, _archive) => ({ ok: true, linuxAppRoot }),
+            ensureNodePty: (_distro, _root) => ({
+              ok: true,
+              nodePath,
+              resolvedPath,
+            }),
+          }),
+        },
+        () =>
+          Effect.gen(function* () {
+            const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+            const config = yield* configuration.resolveWsl({ port: 5000, distro: "Ubuntu" });
+
+            assert.equal(config.bootstrapDelivery, "stdin");
+            assert.deepEqual(config.args.slice(0, 4), ["-d", "Ubuntu", "--exec", "env"]);
+            assert.deepEqual(config.args.slice(5, 7), [
+              nodePath,
+              `${linuxAppRoot}/apps/server/dist/bin.mjs`,
+            ]);
+            assert.include(config.args, "--bootstrap-fd");
+            assert.include(config.args, "0");
+            const pathArg = config.args.find((arg) => arg.startsWith("PATH="));
+            assert.ok(pathArg);
+            assert.equal(
+              pathArg,
+              `PATH=/home/developer/.nvm/versions/node/v24.13.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${resolvedPath}`,
+            );
+            assert.notInclude(config.args, "bash");
+            assert.notInclude(config.args, "/bin/sh");
+            assert.notInclude(config.args, "-c");
+            assert.isTrue(Option.isNone(config.preflightFailure));
+          }),
+      );
+    },
+  );
+
+  it.effect(
+    "resolveWsl forwards discovered version-managed Node in launch PATH when falling back to mounted runtime",
+    () => {
+      const nodePath = "/home/developer/.fnm/current/bin/node";
+      const resolvedPath =
+        "/home/developer/.fnm/current/bin:/home/developer/.local/bin:/usr/bin:/bin";
+
+      return withPackagedWslHarness(
+        {
+          archiveHash: "d".repeat(64),
+          wsl: () => ({
+            prepareRuntime: () => ({ ok: false, reason: "staged runtime preparation failed" }),
+            ensureNodePty: (_distro, _root) => ({
+              ok: true,
+              nodePath,
+              resolvedPath,
+            }),
+          }),
+        },
+        ({ mountedAppRoot }) =>
+          Effect.gen(function* () {
+            const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+            const config = yield* configuration.resolveWsl({ port: 5000, distro: "Ubuntu" });
+
+            assert.equal(config.bootstrapDelivery, "stdin");
+            assert.deepEqual(config.args.slice(0, 4), ["-d", "Ubuntu", "--exec", "env"]);
+            assert.deepEqual(config.args.slice(5, 7), [
+              nodePath,
+              `${mountedAppRoot}/apps/server/dist/bin.mjs`,
+            ]);
+            assert.include(config.args, "--bootstrap-fd");
+            assert.include(config.args, "0");
+            const pathArg = config.args.find((arg) => arg.startsWith("PATH="));
+            assert.ok(pathArg);
+            assert.equal(
+              pathArg,
+              `PATH=/home/developer/.fnm/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${resolvedPath}`,
+            );
+            assert.notInclude(config.args, "bash");
+            assert.notInclude(config.args, "/bin/sh");
+            assert.notInclude(config.args, "-c");
+            assert.isTrue(Option.isNone(config.preflightFailure));
+          }),
+      );
+    },
+  );
+
   it.effect("resolvePrimary and resolveWsl share one token under concurrent resolution", () =>
     withHarness(
       Effect.gen(function* () {

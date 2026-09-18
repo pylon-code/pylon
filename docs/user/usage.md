@@ -9,6 +9,12 @@ API-equivalent cost. These estimates are not your subscription bill.
 Totals depend on the history available on each server. Grok turns without a saved completed-turn
 record are missing from the totals.
 
+Usage includes each configured account's history, including disabled accounts. Custom homes follow
+the account's home setting or its `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `GROK_HOME` environment
+variable. Use absolute paths in the account's environment settings; relative
+environment paths depend on each project's working directory and cannot be reliably discovered
+by Usage. Accounts sharing a history directory count once.
+
 **Past 24h** shows an hourly chart of the rolling 24-hour period; **7 days**, **30 days**, and
 **90 days** use daily resolution. The environment filter applies to both Usage and Limits. On web and
 desktop, Pylon remembers your view, period, metric, and environment selection.

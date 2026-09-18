@@ -831,6 +831,16 @@ describe("parseResolvedPath", () => {
     expect(parseResolvedPath("nodePath:/usr/bin/node\n")).toBeNull();
     expect(parseResolvedPath("resolvedPath:\n")).toBeNull();
   });
+
+  it("parses paths containing version-managed Node directories", () => {
+    const resolvedPath =
+      "/home/developer/.nvm/versions/node/v24.13.1/bin:/home/developer/.fnm/current/bin:/home/developer/.volta/bin:/usr/bin:/bin";
+    expect(
+      parseResolvedPath(
+        `nodePath:/home/developer/.nvm/versions/node/v24.13.1/bin/node\nnodeVersion:24.13.1\nresolvedPath:${resolvedPath}\n`,
+      ),
+    ).toBe(resolvedPath);
+  });
 });
 
 describe("formatMissingToolsReason", () => {
