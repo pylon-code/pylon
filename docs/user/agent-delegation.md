@@ -139,8 +139,8 @@ follows **Child permissions**. While the pair is on, the control shows the execu
 it is doing, and **Open executor** takes you to its thread. The switch waits while the lead is
 mid-turn, because a change applies between turns. Turning the pair off deletes an executor that was
 never briefed and archives one that has history; turning it on again brings an archived executor
-back. To change the executor's model, turn the pair off first. You can also ask for a pair in your
-message, for example “Pair with Antigravity for this.”
+back. To change the executor's model, turn the pair off first. With **Pylon delegation** on, you can
+also ask for a pair in your message, for example “Pair with Antigravity for this.”
 
 While a thread is paired, the lead's own subagents are paused for that thread only, so
 implementation goes to the executor. Your provider's settings are not changed and other threads are
