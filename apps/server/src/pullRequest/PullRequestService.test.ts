@@ -2979,7 +2979,7 @@ it.effect("keeps unrelated PRs warm after a mutation, explicit refresh, and proj
       { projectId: "p1" as ProjectId, repository: "acme/web", number: 2 },
       { projectId: "p2" as ProjectId, repository: "acme/docs", number: 3 },
     ];
-    const readAll = Effect.forEach(refs, (ref) => service.summary({ ...ref, allowStale: false }));
+    const readAll = Effect.forEach(refs, (ref) => service.summary(ref));
     yield* readAll;
     yield* service.invalidate({ reference: { ...refs[0]!, host: "github.com" } });
     yield* readAll;
