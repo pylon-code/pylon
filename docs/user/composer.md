@@ -102,7 +102,10 @@ first or last line.
 On web and desktop, choose **Edit from here** beneath a sent message to rewind
 the conversation to before that message. Choose **Revert and keep changes** to
 leave files as they are, or **Revert files too** to also restore the worktree, Git
-index, staged and unstaged changes, and untracked files. The selected prompt and
+index, staged and unstaged changes, and untracked files. File restore is only offered for threads running in a worktree, and it is
+refused when another thread or agent session also uses that directory, since
+restoring would erase their changes. A thread that works in the project directory
+rewinds the conversation only. The selected prompt and
 its attachments and inline context return to the composer for editing and resending. Any unsent
 draft stays above the restored prompt. Mobile offers the same file choice in its
 existing rollback action; restoring the prompt to the composer is available on
