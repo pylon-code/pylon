@@ -101,13 +101,23 @@ tool timeout itself.
 Pairing is session-scoped. When a provider session is prepared, `ProviderService` adds a `pair`
 capability if delegation is on and the thread's executor exists and is not archived. No tool requires
 that capability; adapters read it. A paired Claude query denies the Agent tool (named Task in older
-Claude Code), a paired Codex app-server starts with `features.multi_agent=false`, and every harness
-that receives Pylon instructions gets the pair protocol in place of the delegation block. Nothing is
+Claude Code), a paired Codex app-server starts with `features.multi_agent=false` and
+`features.multi_agent_v2=false`, and every harness that receives Pylon instructions gets the pair
+protocol in place of the delegation block. Nothing is
 written to a provider's own settings, so a thread that is not paired behaves exactly as the provider
 ships. A pair started mid-session reaches the lead through the `pair_start` result, which carries the
-same protocol text; the tool denial applies from the next session start. Antigravity cannot lead,
-because it offers no per-session control over its own subagents, but it can be the executor. Prime
-Agent's own subagent depth is not yet held while paired.
+same protocol text; the tool denial applies from the next session start. Prime Agent's own subagent
+depth is not yet held while paired.
+
+Two providers cannot lead and are refused by `pair_start` and by the clients, though both work as the
+executor. Antigravity offers no per-session control over its own subagents. Codex has the two flags
+above, but Codex 0.153.4 keeps all six `collaboration.*` tools with both off (checked with
+`codex exec -c features.multi_agent=false -c features.multi_agent_v2=false`), and in four live runs a
+paired Codex lead spawned its own subagent on its own model and never called a pair tool. It also
+reported seeing neither the pair protocol nor the `t3-code` tools, although the provider log shows
+the server ready and the protocol sent in the turn's developer instructions; why is not yet known.
+A Claude lead was verified end to end: `pair_handoff`, `pair_await`, the executor's own session
+writing the file, and the lead checking it.
 
 The executor follows its lead. `PairLifecycleReactor` watches domain events and dispatches existing
 commands: archiving, settling, or deleting a lead does the same to its executor, including an

@@ -344,6 +344,9 @@ validationLayer("CodexAdapterLive validation", (it) => {
             validationRuntimeFactory.factory.mock.calls[0]?.[0].appServerArgs ?? [];
           // A `-c` override for this app-server process only; the user's config.toml is untouched.
           NodeAssert.strictEqual(appServerArgs.includes("features.multi_agent=false"), expected);
+          // The `collaboration.*` tools belong to the second flag; a lead left with
+          // them briefs its own subagent instead of the executor.
+          NodeAssert.strictEqual(appServerArgs.includes("features.multi_agent_v2=false"), expected);
         }
       }),
     ),

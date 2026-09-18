@@ -94,6 +94,20 @@ describe("buildRuntimeInstructions", () => {
     }
   });
 
+  it("points the lead at Pylon's pair tools and away from its harness's own agents", () => {
+    // Codex keeps its collaboration tools whatever feature flags say, and a lead
+    // told to "brief the executor" reaches for them unless the protocol is explicit.
+    for (const rule of [
+      "t3-code MCP server",
+      "search your tools for pair_handoff",
+      "spawn_agent",
+      "collaboration",
+      "is not your executor",
+    ]) {
+      expect(PAIR_LEAD_PROTOCOL).toContain(rule);
+    }
+  });
+
   it("describes the collaborative browser only when preview tools are available", () => {
     expect(buildRuntimeInstructions({ harness: "Antigravity" })).not.toContain("<pylon_browser>");
     expect(

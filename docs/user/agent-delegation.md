@@ -140,8 +140,10 @@ message, for example “Pair with Antigravity for this.”
 
 While a thread is paired, the lead's own subagents are paused for that thread only, so
 implementation goes to the executor. Your provider's settings are not changed and other threads are
-unaffected; this takes effect the next time the lead's session starts. Antigravity can be the
-executor but cannot lead a pair.
+unaffected; this takes effect the next time the lead's session starts. Antigravity and Codex can be
+the executor but cannot lead a pair yet: Pylon has no way to pause their own subagents, and a Codex
+lead hands work to those instead of the executor. On a thread using either one, **Pair** is
+unavailable and says why.
 
 The executor appears under its parent in the sidebar like any delegated thread. Archive it to turn
 the pair off for that thread. Archiving, settling, or deleting the lead does the same to its
