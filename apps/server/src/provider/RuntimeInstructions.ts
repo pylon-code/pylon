@@ -28,12 +28,31 @@ const DELEGATION_INSTRUCTIONS = `<pylon_delegation>
 Keep small or tightly coupled work local. Before choosing a delegation method for worthwhile independent work, call the t3-code MCP tool read_delegation_skill to read the current project preference and workflow. It does not start a child. The default is built-in subagents; a saved Pylon preference permits Pylon child threads without a separate request each time. Explicit user instructions override the preference. Availability alone is not a request to delegate, and missing built-in agents do not justify an automatic Pylon fallback. Follow the skill when using delegate_thread and managing results.
 </pylon_delegation>`;
 
+/**
+ * What a lead needs to run a pair well. Also returned by `pair_start`, because a
+ * pair started mid-session reaches the lead before its next session start does.
+ */
+export const PAIR_LEAD_PROTOCOL = `You are the lead of a Pylon pair. One executor thread on a faster, cheaper model is linked to this thread and works in your worktree. Hand implementation to it instead of using your own subagents.
+Brief it with pair_handoff: exact files, the behavior wanted, the acceptance checks to run, exclusions, and the report format. Hand off a whole plan step, not small nudges; write tests or exact acceptance checks first when you can. Wait with pair_await, or end your turn: Pylon wakes you when the executor finishes or needs the user. Never poll in a loop.
+When it reports, read the diff in your worktree and re-run the checks yourself. The executor's report is not verification, and its prose is less reliable than its code. Send one consolidated correction, at most three rounds, then ask the user. Only you commit, push, and open pull requests. Make small or tightly coupled changes yourself. If the executor needs an approval or an answer, tell the user; never approve on their behalf.`;
+
+/**
+ * Included only while this thread has a pair executor. It replaces the
+ * delegation block: a paired lead hands work to its executor, not to new child
+ * threads.
+ */
+const PAIR_INSTRUCTIONS = `<pylon_pair>
+${PAIR_LEAD_PROTOCOL}
+</pylon_pair>`;
+
 export interface RuntimeInstructionsOptions {
   readonly harness: string;
   readonly model?: string | undefined;
   readonly reasoningEffort?: string | undefined;
   /** Whether this session's MCP credential grants the delegation tools. */
   readonly delegationAvailable?: boolean | undefined;
+  /** Whether this thread had a pair executor when the session was prepared. */
+  readonly pairActive?: boolean | undefined;
   /** Whether this session's MCP credential grants the collaborative browser preview tools. */
   readonly browserAvailable?: boolean | undefined;
   /** Whether this session's MCP credential grants the device tools. */
@@ -50,7 +69,11 @@ export function buildRuntimeInstructions(runtime: RuntimeInstructionsOptions): s
   return `<runtime_info>In case you're asked: you are running in Pylon through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images and videos in your response using Markdown with absolute file paths.</runtime_info>\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}${
     runtime.browserAvailable === true ? `\n\n${BROWSER_INSTRUCTIONS}` : ""
   }${runtime.deviceAvailable === true ? `\n\n${DEVICE_INSTRUCTIONS}` : ""}${
-    runtime.delegationAvailable === true ? `\n\n${DELEGATION_INSTRUCTIONS}` : ""
+    runtime.pairActive === true
+      ? `\n\n${PAIR_INSTRUCTIONS}`
+      : runtime.delegationAvailable === true
+        ? `\n\n${DELEGATION_INSTRUCTIONS}`
+        : ""
   }`;
 }
 

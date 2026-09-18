@@ -66,3 +66,12 @@ export function pairSteerMessageId(executorId: ThreadId, turnId: TurnId): Messag
 export function pairExecutorTitle(leadTitle: string): string {
   return `Executor · ${leadTitle}`.slice(0, EXECUTOR_TITLE_MAX_CHARS);
 }
+
+/**
+ * Whether a provider can lead a pair. STUB: the executor implements this.
+ * Antigravity has no per-session control over its own subagents, so it can
+ * only be the executor.
+ */
+export function isPairLeadSupported(_leadDriver: string | undefined): boolean {
+  throw new Error("pair/logic.isPairLeadSupported is not implemented");
+}

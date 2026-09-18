@@ -74,6 +74,11 @@ export const PairStartResult = Schema.Struct({
   runtimeMode: RuntimeMode,
   worktreePath: Schema.NullOr(Schema.String),
   branch: Schema.NullOr(Schema.String),
+  /**
+   * How to run the pair. A pair started mid-session reaches the lead here,
+   * before its next session start carries the same text as instructions.
+   */
+  protocol: Schema.String,
 });
 export type PairStartResult = typeof PairStartResult.Type;
 
@@ -178,6 +183,15 @@ export class PairDepthExceededError extends Schema.TaggedError<PairDepthExceeded
 ) {
   override get message(): string {
     return "An executor or delegated thread cannot start a pair. Report back to your lead instead.";
+  }
+}
+
+export class PairLeadUnsupportedError extends Schema.TaggedError<PairLeadUnsupportedError>()(
+  "PairLeadUnsupportedError",
+  { providerInstanceId: Schema.String },
+) {
+  override get message(): string {
+    return "This provider cannot lead a pair, because Pylon cannot hold its own subagents for one session. It works as the executor: ask the user to start the pair from a thread on another provider.";
   }
 }
 
@@ -294,6 +308,7 @@ export const PairToolError = Schema.Union([
   McpCapabilityUnavailableError,
   PairLeadNotFoundError,
   PairDepthExceededError,
+  PairLeadUnsupportedError,
   PairNotActiveError,
   PairArchivedError,
   PairKeyInvalidError,
