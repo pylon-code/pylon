@@ -152,6 +152,10 @@ executor but cannot lead a pair, because Pylon has no way to pause its own subag
 Antigravity thread **Pair** is unavailable and says why. Codex can lead, though its own subagents
 cannot be switched off, so it is told to leave them alone rather than prevented from using them.
 
+A long pair can fill the executor's context. The lead can start it over with an empty one, on the
+same model, without ending the pair; the executor's transcript is removed and the files it changed
+stay as they are. You can ask for it: “reset your executor.”
+
 The executor appears under its parent in the sidebar like any delegated thread. Archive it to turn
 the pair off for that thread. Archiving, settling, or deleting the lead does the same to its
 executor. Rewinding the lead stops the executor first, because both work on the same files. The Pair

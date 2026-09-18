@@ -44,6 +44,7 @@ import {
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import { ThreadDeletionReactor } from "../../../orchestration/Services/ThreadDeletionReactor.ts";
 import { PAIR_LEAD_PROTOCOL } from "../../../provider/RuntimeInstructions.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { PairToolkitHandlersLive } from "./handlers.ts";
@@ -283,6 +284,8 @@ const makeHarness = Effect.fn("makePairHarness")(function* (options: HarnessOpti
     }
   };
 
+  // Dispatches and deletion-reactor drains, in the order they happened.
+  const order: string[] = [];
   // Mirrors the receipt store: an accepted command id replays without effect,
   // a rejected one fails as previously rejected forever.
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
@@ -302,6 +305,7 @@ const makeHarness = Effect.fn("makePairHarness")(function* (options: HarnessOpti
       }
       accepted.add(command.commandId);
       yield* Ref.update(commands, (recorded) => [...recorded, command]);
+      order.push(command.type);
       apply(command);
       return { sequence: 1 };
     });
@@ -345,6 +349,9 @@ const makeHarness = Effect.fn("makePairHarness")(function* (options: HarnessOpti
       delegationChildRuntimeMode: options.childRuntimeMode ?? "inherit",
     }),
     Layer.succeed(Crypto.Crypto, testCrypto),
+    Layer.mock(ThreadDeletionReactor)({
+      drainThrough: () => Effect.sync(() => void order.push("deletion-reactor drained")),
+    }),
     FileSystem.layerNoop({
       readFile: (path) => {
         const content = files.get(path);
@@ -382,7 +389,7 @@ const makeHarness = Effect.fn("makePairHarness")(function* (options: HarnessOpti
   const commandTypes = Ref.get(commands).pipe(
     Effect.map((recorded) => recorded.map((command) => command.type)),
   );
-  return { commands, commandTypes, shells, files, call };
+  return { commands, commandTypes, shells, files, call, order };
 });
 
 const tagOf = <A, E extends { readonly _tag: string }>(effect: Effect.Effect<A, E>) =>
@@ -1247,6 +1254,10 @@ describe("pair_reset", () => {
         branch: "feat/now",
         worktreePath: "/wt/now",
       });
+      // The deletion reactor stops the old provider session after the delete. The
+      // new thread has the same id, so it must not exist until that has happened,
+      // or a brief sent straight after the reset could have its session stopped.
+      expect(harness.order).toEqual(["thread.delete", "deletion-reactor drained", "thread.create"]);
       // The first create of a pair uses a fixed id. Reusing it here would replay
       // that receipt as a success and create nothing.
       expect(created?.commandId).not.toBe(`server:mcp-pair-create:${EXECUTOR_ID}`);

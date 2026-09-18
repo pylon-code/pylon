@@ -94,6 +94,7 @@ const PairTestLayer = McpHttpServer.PairToolkitRegistrationLive.pipe(
       Layer.mock(ProjectionSnapshotQuery)({}),
       Layer.mock(OrchestrationEngineService)({}),
       Layer.mock(ProviderRegistry)({}),
+      Layer.mock(ThreadDeletionReactor)({}),
       ServerSettings.layerTest(),
       NodeServices.layer,
     ),

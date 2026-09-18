@@ -19,6 +19,7 @@ import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
 
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
+import * as ThreadDeletionReactor from "../../../orchestration/Services/ThreadDeletionReactor.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
@@ -34,6 +35,8 @@ const dependencies = [
   ServerSettings.ServerSettingsService,
   // Reads the lead's protected paths in the worktree the pair shares.
   FileSystem.FileSystem,
+  // A reset waits for the old executor's session to be stopped before reusing its id.
+  ThreadDeletionReactor.ThreadDeletionReactor,
 ];
 
 const MAX_BRIEF_CHARS = 32_000;

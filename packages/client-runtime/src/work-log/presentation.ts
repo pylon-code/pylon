@@ -87,6 +87,7 @@ const T3_MCP_TOOL_LABELS: Record<
   pair_handoff: ["Hand off", "Handing off", "Handed off", "to the pair executor"],
   pair_await: ["Await", "Awaiting", "Awaited", "the pair executor"],
   pair_stop: ["Stop", "Stopping", "Stopped", "the pair executor"],
+  pair_reset: ["Reset", "Resetting", "Reset", "the pair executor"],
   orchestrator_capabilities: ["Get", "Getting", "Got", "orchestration capabilities"],
   delegate_task: ["Delegate", "Delegating", "Delegated", "a child task"],
   task_status: ["Get", "Getting", "Got", "delegated task status"],

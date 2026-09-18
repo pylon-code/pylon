@@ -31,6 +31,7 @@ import * as Semaphore from "effect/Semaphore";
 import type { OrchestrationDispatchError } from "../../../orchestration/Errors.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { markDelegationObservationConsumed } from "../../../orchestration/delegationObservationConsumed.ts";
+import * as ThreadDeletionReactor from "../../../orchestration/Services/ThreadDeletionReactor.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
 import { PAIR_LEAD_PROTOCOL } from "../../../provider/RuntimeInstructions.ts";
@@ -82,6 +83,7 @@ import {
   type PairAwaitResult,
   type PairHandoffResult,
   type PairStartResult,
+  type PairResetResult,
   type PairStopResult,
 } from "./tools.ts";
 
@@ -128,6 +130,7 @@ const requirePairCapability = McpInvocationContext.requireMcpCapability("pair").
 const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const deletionReactor = yield* ThreadDeletionReactor.ThreadDeletionReactor;
   const providers = yield* ProviderRegistry.ProviderRegistry;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
@@ -656,13 +659,88 @@ const make = Effect.gen(function* () {
       );
     });
 
+  const pair_reset = () =>
+    Effect.gen(function* () {
+      const scope = yield* requirePairCapability;
+      const executorId = yield* executorIdFor(scope.threadId);
+
+      return yield* withLeadGate(scope.threadId)(
+        Effect.gen(function* () {
+          const existing = yield* findExecutor(executorId);
+          if (Option.isNone(existing) || existing.value.archivedAt !== null) {
+            return yield* new PairNotActiveError();
+          }
+          const executor = existing.value;
+          const state = derivePairExecutorState(executor);
+          if (state === "running") {
+            return yield* new PairExecutorBusyError();
+          }
+
+          if (executor.latestTurn === null && executor.session === null) {
+            const result: PairResetResult = {
+              threadId: executorId,
+              reset: false,
+              state,
+              providerInstanceId: executor.modelSelection.instanceId,
+              model: executor.modelSelection.model,
+            };
+            return result;
+          }
+
+          const leadOpt = yield* orFail(snapshots.getThreadShellById(scope.threadId));
+          if (Option.isNone(leadOpt)) {
+            return yield* new PairLeadNotFoundError({ threadId: scope.threadId });
+          }
+          const lead = leadOpt.value;
+
+          const uuid = yield* orFail(crypto.randomUUIDv4);
+          const deleted = yield* engine
+            .dispatch({
+              type: "thread.delete",
+              commandId: CommandId.make(`server:mcp-pair-reset-delete:${executorId}:${uuid}`),
+              threadId: executorId,
+            })
+            .pipe(mapDispatch(() => undefined));
+          // The deletion reactor stops the old provider session. The new thread
+          // reuses the id, so wait, or that stop could land on the new session.
+          yield* orFail(deletionReactor.drainThrough(deleted.sequence));
+
+          yield* engine
+            .dispatch({
+              type: "thread.create",
+              commandId: CommandId.make(`server:mcp-pair-reset-create:${executorId}:${uuid}`),
+              threadId: executorId,
+              projectId: executor.projectId,
+              title: executor.title,
+              modelSelection: executor.modelSelection,
+              runtimeMode: executor.runtimeMode,
+              interactionMode: "default",
+              branch: lead.branch,
+              worktreePath: lead.worktreePath,
+              createdAt: yield* nowIso,
+            })
+            .pipe(mapDispatch(() => undefined));
+
+          protectedRecords.delete(executorId);
+
+          const result: PairResetResult = {
+            threadId: executorId,
+            reset: true,
+            state: "idle",
+            providerInstanceId: executor.modelSelection.instanceId,
+            model: executor.modelSelection.model,
+          };
+          return result;
+        }),
+      );
+    });
+
   return PairToolkit.of({
     pair_start,
     pair_handoff,
     pair_await,
     pair_stop,
-    // Contract stub: the executor implements this.
-    pair_reset: () => Effect.fail(new PairNotActiveError()),
+    pair_reset,
   });
 });
 
