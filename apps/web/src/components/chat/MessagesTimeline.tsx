@@ -4,6 +4,8 @@ import { delegationActivity } from "../../delegationActivity";
 import { usePreparedConnection } from "~/state/session";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
 import { PierreEntryIcon } from "./PierreEntryIcon";
+import { DelegationNoticeRow } from "./DelegationNoticeRow";
+import { parseDelegationNotice } from "@t3tools/client-runtime/state/delegation-notice";
 import { ReadOnlySourcePreview } from "../files/AttachmentFilePreview";
 import { useRightPanelStore } from "~/rightPanelStore";
 import {
@@ -1664,6 +1666,10 @@ function ContextCompactionTimelineRow({
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
+  const notice = parseDelegationNotice(row.message);
+  if (notice !== null) {
+    return <DelegationNoticeRow notice={notice} environmentId={ctx.activeThreadEnvironmentId} />;
+  }
   const { onImageExpand, onFileOpen } = ctx;
   const resources = useMemo(
     () => selectMessageImageResources(row.message.attachments),
