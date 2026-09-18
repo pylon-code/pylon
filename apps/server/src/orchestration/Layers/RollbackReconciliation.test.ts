@@ -108,7 +108,7 @@ it.effect("clears stale owners and enqueues every nonterminal rollback during st
       }),
       Effect.provideService(WorkspaceEntries, {} as never),
       Effect.provideService(VcsStatusBroadcaster, {} as never),
-      Effect.provide(Layer.mock(PullRequestService)({ refreshAfterTurn: Effect.void })),
+      Effect.provide(Layer.mock(PullRequestService)({ refreshAfterTurn: () => Effect.void })),
       Effect.provideService(RollbackSagaRepository, repository as never),
       Effect.provideService(RollbackSagaRunner, runner),
       Effect.provideService(RollbackWorkspace, {} as never),
