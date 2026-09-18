@@ -450,6 +450,9 @@ describe("UsageService", () => {
       yield* Effect.gen(function* () {
         const settingsService = yield* ServerSettings.ServerSettingsService;
         const fileSystem = yield* FileSystem.FileSystem;
+        const claudeProjects = yield* fileSystem.realPath(
+          NodePath.join(home, "claude", "projects"),
+        );
         const firstScanStarted = yield* Deferred.make<void>();
         const secondScanStarted = yield* Deferred.make<void>();
         const releaseRates = yield* Deferred.make<void>();
@@ -460,7 +463,7 @@ describe("UsageService", () => {
             exists: (path) =>
               fileSystem.exists(path).pipe(
                 Effect.tap(() => {
-                  if (path !== NodePath.join(home, "claude", "projects")) return Effect.void;
+                  if (path !== claudeProjects) return Effect.void;
                   homeProbes += 1;
                   return Deferred.succeed(
                     homeProbes === 1 ? firstScanStarted : secondScanStarted,
