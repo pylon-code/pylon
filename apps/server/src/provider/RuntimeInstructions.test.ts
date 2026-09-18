@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { buildCodexThreadInstructions } from "./CodexDeveloperInstructions.ts";
 import { PAIR_LEAD_PROTOCOL, buildRuntimeInstructions } from "./RuntimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
@@ -139,5 +140,23 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("device_list");
     expect(instructions).toContain("device_open");
     expect(instructions).toContain("agent-device");
+  });
+});
+
+describe("the instructions a Codex thread starts with", () => {
+  it("are Pylon's own, for the tools this session has, without Codex's mode template", () => {
+    expect(buildCodexThreadInstructions({ browser: true, device: false, pair: true })).toBe(
+      buildRuntimeInstructions({
+        harness: "Codex",
+        browserAvailable: true,
+        deviceAvailable: false,
+        delegationAvailable: false,
+        pairActive: true,
+      }),
+    );
+    const none = buildCodexThreadInstructions(false);
+    expect(none).toContain("running in Pylon through the Codex harness");
+    expect(none).not.toContain("<pylon_browser>");
+    expect(none).not.toContain("<pylon_pair>");
   });
 });

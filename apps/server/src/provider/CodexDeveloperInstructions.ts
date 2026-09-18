@@ -187,3 +187,21 @@ export function buildCodexDeveloperInstructions(
     deviceAvailable: tools.device === true,
   })}`;
 }
+
+/**
+ * Pylon's own instructions for a Codex thread, without Codex's mode template.
+ * Sent once on `thread/start` and `thread/resume`: Codex 0.153 no longer applies
+ * the developer instructions carried inside a turn's collaboration mode.
+ */
+export function buildCodexThreadInstructions(
+  toolsAvailable: boolean | T3CodeToolAvailability = true,
+): string {
+  const tools = normalizeAvailability(toolsAvailable);
+  return buildRuntimeInstructions({
+    harness: "Codex",
+    delegationAvailable: tools.delegation === true,
+    pairActive: tools.pair === true,
+    browserAvailable: tools.browser === true,
+    deviceAvailable: tools.device === true,
+  });
+}
