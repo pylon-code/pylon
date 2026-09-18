@@ -722,6 +722,7 @@ const make = Effect.gen(function* () {
             .pipe(mapDispatch(() => undefined));
 
           protectedRecords.delete(executorId);
+          instantReadCounts.delete(executorId);
 
           const result: PairResetResult = {
             threadId: executorId,
