@@ -46,7 +46,6 @@ export function initialExecutorInstanceId(
   return (withModels ?? entries[0])?.instanceId;
 }
 
-
 function executorLabel(
   props: Pick<PairControlProps, "executorSelection" | "modelOptionsByInstance">,
 ): string | null {

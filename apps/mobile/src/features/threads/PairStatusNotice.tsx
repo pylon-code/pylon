@@ -33,9 +33,7 @@ export function PairStatusNotice(props: {
       <View className="gap-1">
         <Text className="text-sm font-t3-bold text-foreground">{line}</Text>
         {props.state.activity !== null ? (
-          <Text className="text-sm leading-snug text-foreground-muted">
-            {props.state.activity}
-          </Text>
+          <Text className="text-sm leading-snug text-foreground-muted">{props.state.activity}</Text>
         ) : null}
         <Text className="text-sm font-t3-bold text-primary">Open executor</Text>
       </View>
