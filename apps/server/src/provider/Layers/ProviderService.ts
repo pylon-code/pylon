@@ -4100,12 +4100,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const resolveAbsoluteConversationRollback = Effect.fn(
     "ProviderService.resolveAbsoluteConversationRollback",
-  )(function* (threadId: ThreadId) {
+  )(function* (threadId: ThreadId, options?: { readonly allowRecovery: boolean }) {
     const routed = yield* resolveRoutableSession({
       threadId,
       operation: "ProviderService.absoluteConversationRollback",
-      allowRecovery: true,
+      allowRecovery: options?.allowRecovery ?? true,
     });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.absoluteConversationRollback",
+        "The provider session is no longer active for conversation anchor capture.",
+      );
+    }
     yield* requireAdapterGenerationCurrent(
       routed.adapter,
       "ProviderService.absoluteConversationRollback",
@@ -4136,9 +4142,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     const routed = yield* resolveRoutableSession({
       threadId,
       operation: "ProviderService.hasAbsoluteConversationRollback",
-      allowRecovery: true,
+      // Checkpoint probes must not create an unbound replacement incarnation
+      // after Stop. Only turn admission can start and bind that replacement.
+      allowRecovery: false,
     });
     if (
+      !routed.isActive ||
       routed.adapter.capabilities.conversationRollback !== "absolute" ||
       routed.adapter.absoluteConversationRollback === undefined
     ) {
@@ -4216,6 +4225,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     Effect.fn("captureConversationAnchor")(function* (input) {
       const { routed, operations, incarnation } = yield* resolveAbsoluteConversationRollback(
         input.threadId,
+        // Stop can land after the availability probe but before capture.
+        { allowRecovery: false },
       );
       const anchor = yield* operations
         .captureAnchor(input)
