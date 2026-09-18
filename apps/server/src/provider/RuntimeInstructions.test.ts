@@ -95,6 +95,12 @@ describe("buildRuntimeInstructions", () => {
     }
   });
 
+  it("tells a paired lead how to give the executor a fresh start", () => {
+    for (const rule of ["pair_reset", "remembers nothing"]) {
+      expect(PAIR_LEAD_PROTOCOL).toContain(rule);
+    }
+  });
+
   it("tells a paired lead that delegating means briefing its executor", () => {
     // A user who says "use delegation" on a paired thread means the executor.
     for (const rule of ["delegate_thread", "delegate", "means brief your executor"]) {

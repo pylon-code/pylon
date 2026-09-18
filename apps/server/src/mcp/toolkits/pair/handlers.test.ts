@@ -44,6 +44,7 @@ import {
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import { ThreadDeletionReactor } from "../../../orchestration/Services/ThreadDeletionReactor.ts";
 import { PAIR_LEAD_PROTOCOL } from "../../../provider/RuntimeInstructions.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { PairToolkitHandlersLive } from "./handlers.ts";
@@ -283,6 +284,8 @@ const makeHarness = Effect.fn("makePairHarness")(function* (options: HarnessOpti
     }
   };
 
+  // Dispatches and deletion-reactor drains, in the order they happened.
+  const order: string[] = [];
   // Mirrors the receipt store: an accepted command id replays without effect,
   // a rejected one fails as previously rejected forever.
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
@@ -302,6 +305,7 @@ const makeHarness = Effect.fn("makePairHarness")(function* (options: HarnessOpti
       }
       accepted.add(command.commandId);
       yield* Ref.update(commands, (recorded) => [...recorded, command]);
+      order.push(command.type);
       apply(command);
       return { sequence: 1 };
     });
@@ -345,6 +349,9 @@ const makeHarness = Effect.fn("makePairHarness")(function* (options: HarnessOpti
       delegationChildRuntimeMode: options.childRuntimeMode ?? "inherit",
     }),
     Layer.succeed(Crypto.Crypto, testCrypto),
+    Layer.mock(ThreadDeletionReactor)({
+      drainThrough: () => Effect.sync(() => void order.push("deletion-reactor drained")),
+    }),
     FileSystem.layerNoop({
       readFile: (path) => {
         const content = files.get(path);
@@ -382,7 +389,7 @@ const makeHarness = Effect.fn("makePairHarness")(function* (options: HarnessOpti
   const commandTypes = Ref.get(commands).pipe(
     Effect.map((recorded) => recorded.map((command) => command.type)),
   );
-  return { commands, commandTypes, shells, files, call };
+  return { commands, commandTypes, shells, files, call, order };
 });
 
 const tagOf = <A, E extends { readonly _tag: string }>(effect: Effect.Effect<A, E>) =>
@@ -1209,6 +1216,95 @@ describe("pair_stop", () => {
         state: "completed",
       });
       expect(yield* harness.commandTypes).toEqual([]);
+    }),
+  );
+});
+
+describe("pair_reset", () => {
+  it.effect("replaces a finished executor with a fresh one on the same model", () =>
+    Effect.gen(function* () {
+      const used = makeExecutor({
+        latestTurn: completedTurn(),
+        modelSelection: { instanceId: ANTIGRAVITY, model: "gemini-3-flash" },
+        runtimeMode: "approval-required",
+        // The lead has moved since the executor was created.
+        branch: "old-branch",
+        worktreePath: "/wt/old",
+      });
+      const harness = yield* makeHarness({
+        shells: [makeShell(LEAD_ID, { branch: "feat/now", worktreePath: "/wt/now" }), used],
+      });
+      expect(yield* harness.call("pair_reset", {})).toEqual({
+        threadId: EXECUTOR_ID,
+        reset: true,
+        state: "idle",
+        providerInstanceId: "antigravity",
+        model: "gemini-3-flash",
+      });
+      const recorded = yield* Ref.get(harness.commands);
+      expect(recorded.map((command) => command.type)).toEqual(["thread.delete", "thread.create"]);
+      const [removed, created] = recorded;
+      expect(removed).toMatchObject({ threadId: EXECUTOR_ID });
+      expect(created).toMatchObject({
+        type: "thread.create",
+        threadId: EXECUTOR_ID,
+        modelSelection: { instanceId: ANTIGRAVITY, model: "gemini-3-flash" },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        branch: "feat/now",
+        worktreePath: "/wt/now",
+      });
+      // The deletion reactor stops the old provider session after the delete. The
+      // new thread has the same id, so it must not exist until that has happened,
+      // or a brief sent straight after the reset could have its session stopped.
+      expect(harness.order).toEqual(["thread.delete", "deletion-reactor drained", "thread.create"]);
+      // The first create of a pair uses a fixed id. Reusing it here would replay
+      // that receipt as a success and create nothing.
+      expect(created?.commandId).not.toBe(`server:mcp-pair-create:${EXECUTOR_ID}`);
+      expect(created?.commandId.startsWith(`server:mcp-pair-reset-create:${EXECUTOR_ID}:`)).toBe(
+        true,
+      );
+      expect(removed?.commandId.startsWith(`server:mcp-pair-reset-delete:${EXECUTOR_ID}:`)).toBe(
+        true,
+      );
+    }),
+  );
+
+  it.effect("leaves an executor that never ran as it is", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ shells: [makeShell(LEAD_ID), makeExecutor()] });
+      expect(yield* harness.call("pair_reset", {})).toMatchObject({
+        threadId: EXECUTOR_ID,
+        reset: false,
+        state: "idle",
+      });
+      expect(yield* harness.commandTypes).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses while the executor is running, and without a pair", () =>
+    Effect.gen(function* () {
+      const busy = yield* makeHarness({ shells: [makeShell(LEAD_ID), runningExecutor()] });
+      expect(yield* tagOf(busy.call("pair_reset", {}))).toBe("PairExecutorBusyError");
+      expect(yield* busy.commandTypes).toEqual([]);
+
+      const none = yield* makeHarness();
+      expect(yield* tagOf(none.call("pair_reset", {}))).toBe("PairNotActiveError");
+
+      const off = yield* makeHarness({
+        shells: [makeShell(LEAD_ID), makeExecutor({ archivedAt: NOW })],
+      });
+      expect(yield* tagOf(off.call("pair_reset", {}))).toBe("PairNotActiveError");
+    }),
+  );
+
+  it.effect("works for a paired lead with Pylon delegation off", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        shells: [makeShell(LEAD_ID), makeExecutor({ latestTurn: completedTurn() })],
+      });
+      const paired = invocation({ capabilities: ["pair", "pull-requests"] });
+      expect(yield* harness.call("pair_reset", {}, paired)).toMatchObject({ reset: true });
     }),
   );
 });

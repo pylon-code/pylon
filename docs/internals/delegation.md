@@ -171,6 +171,17 @@ executor that never ran, whose lead is not among the active or archived threads,
 than a day old. A missing lead alone proves nothing, because that is what every freshly paired draft
 looks like. The delete uses a deterministic command id, and a failed sweep only logs.
 
+`pair_reset` gives the executor an empty context without ending the pair. One executor serves
+every brief, so its context only grows; the first one used in earnest ended a day at 126k of 128k
+tokens. No command starts a thread's provider session afresh, and adding one would have meant a
+contract and decider change, so the reset deletes the executor thread and creates it again under the
+same id, with the same model and runtime mode and the lead's current branch and worktree. The
+transcript goes; the files stay. It is refused while the executor runs, does nothing for one that
+never ran, and uses unique command ids: the first create of a pair has a fixed id, and reusing it
+would replay that receipt and create nothing. Between the delete and the create it waits for the
+thread deletion reactor, which stops the old provider session after `thread.deleted`; the new thread
+has the same id, so a brief sent straight after the reset could otherwise have its session stopped.
+
 A brief can name the files its lead owns, normally its tests and contract, as `protectedPaths`.
 The handlers hash each file when the brief is accepted and `pair_await` reports the ones whose
 content changed or that disappeared, once the executor is no longer running. This is what makes
