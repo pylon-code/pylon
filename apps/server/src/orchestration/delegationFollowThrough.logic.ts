@@ -19,12 +19,9 @@ export function observeDelegatedChild(
   // Rollback can reuse a provider turn ID under a new committed source generation.
   const generation = `epoch:${shell.sourceEpoch ?? 0}:${attempt}`;
   const phase = (() => {
-    if (
-      session?.pendingStopRequestId !== undefined ||
-      session?.status === "stopped" ||
-      session?.status === "interrupted"
-    )
-      return "interrupted" as const;
+    // A pending stop is an explicit interruption of whatever is running.
+    if (session?.pendingStopRequestId !== undefined) return "interrupted" as const;
+    // Admission in flight: the previous turn's terminal state is stale.
     if (session?.pendingTurnRequestId !== undefined || session?.status === "starting")
       return "running" as const;
     if (session?.status === "error" || session?.failedTurnRequestId !== undefined)
@@ -34,9 +31,14 @@ export function observeDelegatedChild(
     if (session?.activeTurnId !== null && session?.activeTurnId !== undefined)
       return "running" as const;
     if (shell.backgroundLiveness === "working") return "running" as const;
+    // The turn's own terminal state wins over a session that was stopped
+    // afterwards by a restart or the idle reaper. A stopped session only
+    // means "interrupted" when the turn never reached a terminal state.
     if (turn?.state === "error") return "error" as const;
     if (turn?.state === "interrupted") return "interrupted" as const;
     if (turn?.state === "completed") return "completed" as const;
+    if (session?.status === "stopped" || session?.status === "interrupted")
+      return "interrupted" as const;
     return "running" as const;
   })();
   const blockerIds = [

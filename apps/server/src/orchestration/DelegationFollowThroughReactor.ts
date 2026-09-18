@@ -167,10 +167,16 @@ export const make = Effect.gen(function* () {
       const old = previous.get(child.id);
       // Startup baselines old terminal children. Previously armed or pending work
       // recovers from its persisted observation; new lifecycle events are live.
+      // Children only run inside this process, so a state that differs from
+      // the persisted observation at startup changed while nothing could
+      // observe it live. Baseline it like a historical child.
+      const startupPass = work.causeId.startsWith("startup:");
       const baseline =
         old?.noticeKey === observation.noticeKey
           ? old.baseline === true
-          : !old && work.liveChildId !== child.id && isActionableDelegationObservation(observation);
+          : (startupPass || !old) &&
+            work.liveChildId !== child.id &&
+            isActionableDelegationObservation(observation);
       const notificationId = EventId.make(
         `delegation-notice:${yield* digest(observation.noticeKey)}`,
       );

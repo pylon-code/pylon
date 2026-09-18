@@ -579,7 +579,10 @@ export function deriveWorkLogEntries(
       activity.kind === "session.agent-depth.updated" ||
       activity.kind === "session.input-queue.updated" ||
       activity.kind === "turn.cost" ||
-      activity.kind === "turn.plan.updated"
+      activity.kind === "turn.plan.updated" ||
+      // Reactor bookkeeping for Pylon children; the Agents panel is the roster.
+      activity.kind === "delegation.child-state" ||
+      activity.kind === "delegation.follow-through.delivered"
     ) {
       continue;
     }
