@@ -164,6 +164,13 @@ executor while its lead's session is starting or running, so it is not restarted
 reactor reads no settings: following a lead is cleanup and keeps working after delegation is turned
 off.
 
+The same reactor sweeps once when the server starts. Turning Pair on in a draft creates the executor
+before its lead thread exists, so an abandoned draft, or one whose id changed before its first send,
+leaves an executor nothing will ever brief. `orphanedExecutorIds` finds them conservatively: a pair
+executor that never ran, whose lead is not among the active or archived threads, and that is more
+than a day old. A missing lead alone proves nothing, because that is what every freshly paired draft
+looks like. The delete uses a deterministic command id, and a failed sweep only logs.
+
 A brief can name the files its lead owns, normally its tests and contract, as `protectedPaths`.
 The handlers hash each file when the brief is accepted and `pair_await` reports the ones whose
 content changed or that disappeared, once the executor is no longer running. This is what makes

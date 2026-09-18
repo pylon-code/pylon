@@ -26,6 +26,7 @@ import * as OrchestrationEngine from "./Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts";
 import {
   type PairLifecycleIntent,
+  orphanedExecutorIds,
   pairLifecycleApplies,
   pairLifecycleIntent,
 } from "./pairLifecycle.logic.ts";
@@ -133,7 +134,42 @@ export const make = Effect.gen(function* () {
     return worker.enqueue({ event, intent });
   };
 
+  const sweep = Effect.gen(function* () {
+    const activeSnapshot = yield* snapshots.getShellSnapshot();
+    const archivedSnapshot = yield* snapshots.getArchivedShellSnapshot();
+    const knownThreadIds = new Set<string>();
+    for (const thread of activeSnapshot.threads) {
+      knownThreadIds.add(thread.id);
+    }
+    for (const thread of archivedSnapshot.threads) {
+      knownThreadIds.add(thread.id);
+    }
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+    const orphanIds = orphanedExecutorIds({
+      threads: activeSnapshot.threads,
+      knownThreadIds,
+      nowMs,
+    });
+    for (const executorId of orphanIds) {
+      const commandId = CommandId.make(`server:pair-lifecycle:orphan:${executorId}`);
+      yield* engine.dispatch({
+        type: "thread.delete",
+        commandId,
+        threadId: executorId,
+      });
+    }
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.interrupt
+        : Effect.logWarning("Pylon pair orphan sweep failed", {
+            cause: Cause.pretty(cause),
+          }),
+    ),
+  );
+
   const start = Effect.fn("PairLifecycleReactor.start")(function* () {
+    yield* sweep;
     const events = yield* engine.subscribeDomainEvents;
     yield* forkParked(Stream.runForEach(events, processEvent));
   });
