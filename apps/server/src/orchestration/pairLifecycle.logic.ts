@@ -1,12 +1,11 @@
 /**
  * Pure rules for what a lead's lifecycle means for its pair executor.
  *
- * STUB: written by the lead so the tests compile. The executor replaces the
- * bodies; exported names and signatures must not change.
- *
  * @module orchestration/pairLifecycle.logic
  */
 import type { OrchestrationEvent, OrchestrationThreadShell, ThreadId } from "@t3tools/contracts";
+import { isDelegatedThreadId } from "../mcp/toolkits/delegation/logic.ts";
+import { derivePairExecutorState } from "../mcp/toolkits/pair/logic.ts";
 
 /**
  * - `archive`, `delete`, `settle`: the executor follows its lead.
@@ -21,14 +20,47 @@ export interface PairLifecycleIntent {
 }
 
 /** What a domain event asks of the pair, or null when it asks nothing. */
-export function pairLifecycleIntent(_event: OrchestrationEvent): PairLifecycleIntent | null {
-  throw new Error("pairLifecycle.logic.pairLifecycleIntent is not implemented");
+export function pairLifecycleIntent(event: OrchestrationEvent): PairLifecycleIntent | null {
+  if (event.metadata.historyImport === true) {
+    return null;
+  }
+  let action: PairLifecycleAction;
+  switch (event.type) {
+    case "thread.archived":
+      action = "archive";
+      break;
+    case "thread.deleted":
+      action = "delete";
+      break;
+    case "thread.settled":
+      action = "settle";
+      break;
+    case "thread.checkpoint-revert-requested":
+      action = "interrupt";
+      break;
+    default:
+      return null;
+  }
+  const leadThreadId = event.payload.threadId;
+  if (isDelegatedThreadId(leadThreadId)) {
+    return null;
+  }
+  return { leadThreadId, action };
 }
 
 /** Whether the action still has something to do for this executor. */
 export function pairLifecycleApplies(
-  _action: PairLifecycleAction,
-  _executor: OrchestrationThreadShell,
+  action: PairLifecycleAction,
+  executor: OrchestrationThreadShell,
 ): boolean {
-  throw new Error("pairLifecycle.logic.pairLifecycleApplies is not implemented");
+  switch (action) {
+    case "archive":
+      return executor.archivedAt === null;
+    case "delete":
+      return true;
+    case "settle":
+      return executor.archivedAt === null && executor.settledOverride !== "settled";
+    case "interrupt":
+      return derivePairExecutorState(executor) === "running";
+  }
 }
