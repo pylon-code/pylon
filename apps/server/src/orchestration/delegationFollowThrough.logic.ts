@@ -68,6 +68,59 @@ export function isActionableDelegationObservation(observation: DelegationObserva
   return observation.phase !== "running";
 }
 
+/** The activity kind that records what the follow-through reactor last saw of a child. */
+export const DELEGATION_OBSERVED_ACTIVITY_KIND = "delegation.child-state";
+
+/**
+ * What a parent has already read when a tool hands it a child's state in-turn,
+ * or null when waking it later is still right. Only a finished attempt counts:
+ * a child that needs the user keeps its wake, and so does one still running.
+ */
+export function consumedDelegationObservation(
+  shell: OrchestrationThreadShell,
+): DelegationObservation | null {
+  const observation = observeDelegatedChild(shell);
+  if (observation === null) return null;
+  if (
+    observation.phase === "completed" ||
+    observation.phase === "error" ||
+    observation.phase === "interrupted"
+  ) {
+    return observation;
+  }
+  return null;
+}
+
+/**
+ * The receipt both the reactor and the tools write for a child, keyed so the
+ * newest one replaces the last. `baseline: true` tells the reactor the parent
+ * needs no wake for this notice. `noticeDigest` is the hex SHA-256 of the
+ * observation's `noticeKey`.
+ */
+export function delegationObservationReceipt(input: {
+  readonly observation: DelegationObservation;
+  readonly noticeDigest: string;
+  readonly baseline: boolean;
+}): {
+  readonly activityId: string;
+  readonly payload: {
+    readonly childThreadId: string;
+    readonly noticeKey: string;
+    readonly notificationId: string;
+    readonly baseline: boolean;
+  };
+} {
+  return {
+    activityId: `delegation-observation:${input.observation.childThreadId}`,
+    payload: {
+      childThreadId: input.observation.childThreadId,
+      noticeKey: input.observation.noticeKey,
+      notificationId: `delegation-notice:${input.noticeDigest}`,
+      baseline: input.baseline,
+    },
+  };
+}
+
 /** No new turn should bypass deliberate stops, user blockers, or owned transitions. */
 export function isDelegationParentEligible(shell: OrchestrationThreadShell, nowMs: number) {
   const session = shell.session;

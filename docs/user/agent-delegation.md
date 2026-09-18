@@ -108,6 +108,10 @@ approval/input queues a follow-through turn for its parent. A busy parent receiv
 updates together when it becomes eligible to run again. The parent is instructed to review results
 and inspect blockers; a completed child is not automatically treated as verified work.
 
+A parent that waited for a child inside its own turn and already received the finished result is not
+woken again for it, so no turn is spent repeating what it knows. A child that needs your approval or
+an answer always queues its update.
+
 This applies only to separate Pylon child threads. Built-in subagents keep their provider's lifecycle
 behavior. Updates use ordinary parent turns and the existing work log; no separate monitoring panel
 is required. Follow-through runs on the server, including when using a remote or tunneled client.

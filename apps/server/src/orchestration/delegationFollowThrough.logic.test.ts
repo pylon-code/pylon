@@ -9,6 +9,9 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 import { deriveDelegatedThreadState } from "../mcp/toolkits/delegation/logic.ts";
 import {
+  DELEGATION_OBSERVED_ACTIVITY_KIND,
+  consumedDelegationObservation,
+  delegationObservationReceipt,
   observeDelegatedChild,
   isActionableDelegationObservation,
   isDelegationParentEligible,
@@ -215,5 +218,41 @@ describe("parent follow-through eligibility", () => {
       expect(isDelegationParentEligible(shell({ session: { ...session, ...fields } }), now)).toBe(
         false,
       );
+  });
+});
+
+describe("an observation a parent read in-turn", () => {
+  it("counts only a finished attempt, so a child that needs the user still wakes its parent", () => {
+    expect(consumedDelegationObservation(shell())).toEqual(observeDelegatedChild(shell()));
+    for (const state of ["error", "interrupted"] as const) {
+      const finished = shell({ latestTurn: { ...turn, state } });
+      expect(consumedDelegationObservation(finished)).toEqual(observeDelegatedChild(finished));
+    }
+    expect(consumedDelegationObservation(shell({ hasPendingApprovals: true }))).toBeNull();
+    expect(consumedDelegationObservation(shell({ hasPendingUserInput: true }))).toBeNull();
+    expect(
+      consumedDelegationObservation(
+        shell({ session: { ...session, status: "running", activeTurnId: turn.turnId } }),
+      ),
+    ).toBeNull();
+    expect(consumedDelegationObservation(shell({ latestTurn: null }))).toBeNull();
+    expect(consumedDelegationObservation(shell({ archivedAt: timestamp }))).toBeNull();
+  });
+
+  it("writes the receipt the reactor reads, under the id that replaces the last one", () => {
+    const observation = observeDelegatedChild(shell());
+    if (observation === null) throw new Error("expected an observation");
+    expect(DELEGATION_OBSERVED_ACTIVITY_KIND).toBe("delegation.child-state");
+    expect(
+      delegationObservationReceipt({ observation, noticeDigest: "abc123", baseline: true }),
+    ).toEqual({
+      activityId: `delegation-observation:${id}`,
+      payload: {
+        childThreadId: id,
+        noticeKey: observation.noticeKey,
+        notificationId: "delegation-notice:abc123",
+        baseline: true,
+      },
+    });
   });
 });

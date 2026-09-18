@@ -59,6 +59,15 @@ that was stopped afterwards by a restart or the idle reaper. At startup, any chi
 differs from the persisted one is baselined rather than delivered, because children only run inside
 the server process and nothing could have observed that change live.
 
+A parent can also read a child's state inside its own turn, through `pair_await`,
+`delegated_thread_status`, or `delegated_thread_result`. When what those return is a finished attempt
+(completed, error, or interrupted), `markDelegationObservationConsumed` writes the reactor's own
+`delegation.child-state` receipt for that `noticeKey` with `baseline: true`. Activities are stored
+by id, so it replaces whatever the reactor recorded while the parent was busy, and the reactor's
+existing rule then skips the wake. Either order of the two writes gives the same result. Running
+children and children that need the user are never marked, so those wakes still happen. The writer
+never fails a tool call; if it cannot write, the cost is one redundant wake.
+
 ## Defaults and agent guidance
 
 `delegationDefaultModelSelection` and `delegationChildRuntimeMode` are project-scoped settings resolved

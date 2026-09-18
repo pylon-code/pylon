@@ -680,6 +680,45 @@ describe("delegated_thread_status", () => {
       });
     }),
   );
+
+  it.effect(
+    "marks delegation observation consumed on a completed child and skips when timed out",
+    () =>
+      Effect.gen(function* () {
+        const completedChild = makeShell(CHILD_ID, {
+          latestTurn: completedTurn({ turnId: TurnId.make("turn-2") }),
+        });
+        const completedHarness = yield* makeHarness({
+          shells: [makeShell(PARENT_ID), completedChild],
+        });
+        yield* completedHarness.call("delegated_thread_status", { delegationKey: "k1" });
+        const completedCommands = yield* Ref.get(completedHarness.commands);
+        expect(completedCommands).toHaveLength(1);
+        expect(completedCommands[0]).toMatchObject({
+          type: "thread.activity.append",
+          threadId: PARENT_ID,
+          activity: {
+            kind: "delegation.child-state",
+            payload: {
+              baseline: true,
+              childThreadId: CHILD_ID,
+            },
+          },
+        });
+
+        const running = makeShell(CHILD_ID, { latestTurn: turn() });
+        const runningHarness = yield* makeHarness({
+          shells: [makeShell(PARENT_ID), running],
+        });
+        const runningFiber = yield* Effect.forkChild(
+          runningHarness.call("delegated_thread_status", { delegationKey: "k1", waitSeconds: 5 }),
+        );
+        yield* TestClock.adjust("5 seconds");
+        yield* Fiber.join(runningFiber);
+        const runningCommands = yield* Ref.get(runningHarness.commands);
+        expect(runningCommands).toHaveLength(0);
+      }),
+  );
 });
 
 describe("delegated_thread_result", () => {

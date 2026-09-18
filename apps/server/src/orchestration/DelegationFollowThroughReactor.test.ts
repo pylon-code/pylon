@@ -372,6 +372,34 @@ describe("DelegationFollowThroughReactor", () => {
       }),
     ),
   );
+  it.effect("does not wake a parent for a completion a tool already handed it in-turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // The child finishes while the parent is mid-turn, so the reactor records
+        // the observation without delivering it.
+        const busy = yield* makeHarness([shell(PARENT, true), shell(CHILD, true)]);
+        busy.replace(shell(CHILD));
+        yield* busy.emit(CHILD);
+        assert.strictEqual(busy.wakes().length, 0);
+        // pair_await or delegated_thread_status then returns that completion to the
+        // parent and rewrites the same receipt with baseline: true.
+        const consumed = {
+          ...busy.persisted,
+          activities: busy.persisted.activities.map((activity) =>
+            activity.kind === "delegation.child-state"
+              ? { ...activity, payload: { ...Object(activity.payload), baseline: true } }
+              : activity,
+          ),
+        };
+        assert.isTrue(
+          consumed.activities.some((activity) => activity.kind === "delegation.child-state"),
+        );
+        const idle = yield* makeHarness([shell(PARENT), shell(CHILD)], true, consumed);
+        yield* idle.emit(PARENT);
+        assert.strictEqual(idle.wakes().length, 0);
+      }),
+    ),
+  );
   it.effect(
     "recovers a persisted pending observation and respects a persisted delivery receipt",
     () =>

@@ -694,6 +694,41 @@ describe("pair_handoff", () => {
 });
 
 describe("pair_await", () => {
+  it.effect(
+    "marks delegation observation consumed on a completed executor and skips when timed out",
+    () =>
+      Effect.gen(function* () {
+        const completedHarness = yield* makeHarness({
+          shells: [makeShell(LEAD_ID), finished],
+          details: [finishedDetail],
+        });
+        yield* completedHarness.call("pair_await", { maxSeconds: 10 });
+        const completedCommands = yield* Ref.get(completedHarness.commands);
+        expect(completedCommands).toHaveLength(1);
+        expect(completedCommands[0]).toMatchObject({
+          type: "thread.activity.append",
+          threadId: LEAD_ID,
+          activity: {
+            kind: "delegation.child-state",
+            payload: {
+              baseline: true,
+              childThreadId: EXECUTOR_ID,
+            },
+          },
+        });
+
+        const runningHarness = yield* makeHarness({
+          shells: [makeShell(LEAD_ID), runningExecutor()],
+        });
+        const runningFiber = yield* Effect.forkChild(
+          runningHarness.call("pair_await", { maxSeconds: 5 }),
+        );
+        yield* TestClock.adjust("5 seconds");
+        yield* Fiber.join(runningFiber);
+        const runningCommands = yield* Ref.get(runningHarness.commands);
+        expect(runningCommands).toHaveLength(0);
+      }),
+  );
   const finished = makeExecutor({
     latestTurn: completedTurn({ assistantMessageId: MessageId.make("a-1") }),
   });
@@ -1054,7 +1089,7 @@ describe("protected paths", () => {
       expect(yield* harness.call("pair_await", {})).toMatchObject({
         protectedPaths: { checked: 2, changed: ["src/a.test.ts"] },
       });
-      expect(yield* harness.commandTypes).toEqual(["thread.turn.start"]);
+      expect(yield* harness.commandTypes).toEqual(["thread.turn.start", "thread.activity.append"]);
     }),
   );
 
