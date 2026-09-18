@@ -10403,6 +10403,24 @@ describe("PrimeAgentDaemonAdapter", () => {
           payload: { presentation: { kind: "status", key: "build", text: "Running" } },
         });
 
+        for (const message of ["Starting Python kernel...", undefined, ""]) {
+          yield* offer(captures, {
+            _tag: "ExtensionRequest",
+            request: { id: "native-working-message", method: "setWorkingMessage", message },
+          });
+          const working = yield* awaitObservedType(
+            subscription.observed,
+            "session-presentation.updated",
+          );
+          expect(working.payload).toEqual({
+            presentation: {
+              kind: "status",
+              key: "prime-working-message",
+              ...(message ? { text: message } : {}),
+            },
+          });
+        }
+
         yield* offer(captures, {
           _tag: "ExtensionRequest",
           request: {

@@ -376,6 +376,17 @@ function projectExtensionRequest(
         }),
         (presentation) => ({ _tag: "Presentation", presentation }),
       );
+    case "setWorkingMessage":
+      return Option.map(
+        decodeSessionPresentation({
+          kind: "status",
+          key: "prime-working-message",
+          ...(request.message === undefined || request.message.trim().length === 0
+            ? {}
+            : { text: request.message }),
+        }),
+        (presentation) => ({ _tag: "Presentation", presentation }),
+      );
     case "setWidget":
       return Option.map(
         decodeSessionPresentation({
