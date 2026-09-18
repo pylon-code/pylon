@@ -125,11 +125,18 @@ child provider usage still applies.
 ## Pair with an executor
 
 Instead of handing out many separate tasks, an agent can pair with one executor: a second thread on a
-faster, cheaper model that stays linked for as long as the first thread lives. Ask for it in your
-message, for example “Pair with Antigravity for this.” The lead plans, writes the brief, and checks
-the result; the executor does the implementation in the same worktree, so there is nothing to merge
-back. The executor uses your **Default delegation model** unless you name a provider, and follows
-**Child permissions**.
+faster, cheaper model that stays linked for as long as the first thread lives. The lead plans, writes
+the brief, and checks the result; the executor does the implementation in the same worktree, so there
+is nothing to merge back.
+
+In the web composer, **Pair** sits beside the model picker. Open it, choose the executor's model, and
+turn the switch on. The executor starts from your **Default delegation model** when you have one, and
+follows **Child permissions**. While the pair is on, the control shows the executor's model and what
+it is doing, and **Open executor** takes you to its thread. The switch waits while the lead is
+mid-turn, because a change applies between turns. Turning the pair off deletes an executor that was
+never briefed and archives one that has history; turning it on again brings an archived executor
+back. To change the executor's model, turn the pair off first. You can also ask for a pair in your
+message, for example “Pair with Antigravity for this.”
 
 While a thread is paired, the lead's own subagents are paused for that thread only, so
 implementation goes to the executor. Your provider's settings are not changed and other threads are
@@ -138,8 +145,9 @@ executor but cannot lead a pair.
 
 The executor appears under its parent in the sidebar like any delegated thread. Archive it to turn
 the pair off for that thread. Archiving, settling, or deleting the lead does the same to its
-executor. Rewinding the lead stops the executor first, because both work on the same files. Pairing needs **Pylon delegation** turned on in **Settings →
-Integrations**.
+executor. Rewinding the lead stops the executor first, because both work on the same files. Pairing
+needs **Pylon delegation** turned on in **Settings → Integrations**; until it is, the switch stays
+off and says so. The Pair control is on the web and desktop apps; the mobile app does not have it yet.
 
 ## Things to know
 
