@@ -61,6 +61,11 @@ the preview with the server-owned Sigstore and frozen source policy before a pre
 extracted, imported, or executed. The production managed tool store then installs the bundled CLI
 without a package manager or lifecycle script.
 
+The native background-command proof starts a real IPython kernel. The workflow installs a pinned,
+checksum-verified `uv` bootstrap prerequisite before running the proofs; a clean runner cannot rely on
+a developer machine's `uv` installation. Prime then provisions Python in the isolated fixture home.
+This does not enable package lifecycle scripts for managed Prime installation.
+
 The cases cover stock and signed-preview bridge capability, side-by-side installation, real start/use,
 update or exact no-op, rollback, stock switch-back, unchanged stock bytes, receipt-owned-only cleanup,
 repeated Pylon restart/crash receipt recovery, and native multiple-instance evidence. The native multi
