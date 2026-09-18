@@ -19,11 +19,23 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import {
+  ANTIGRAVITY_AUTH_BROWSER_MARKER,
+  ANTIGRAVITY_AUTH_STDOUT_PREFIX,
   makeAntigravityStderrHandler,
   makeAntigravityStdoutTransform,
 } from "../antigravityAuthSupport.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 import { normalizeAntigravitySessionUpdate } from "./AntigravityProtocol.ts";
+
+function redactAntigravityStderrLine(line: string): string | undefined {
+  if (
+    line.startsWith(ANTIGRAVITY_AUTH_STDOUT_PREFIX) ||
+    line.startsWith(ANTIGRAVITY_AUTH_BROWSER_MARKER)
+  ) {
+    return undefined;
+  }
+  return line;
+}
 
 export interface AntigravityAcpRuntimeInput extends Omit<
   AcpSessionRuntime.AcpSessionRuntimeOptions,
@@ -31,6 +43,8 @@ export interface AntigravityAcpRuntimeInput extends Omit<
   | "cancelBehavior"
   | "clientCapabilities"
   | "onStderr"
+  | "promptInactivityTimeout"
+  | "redactStderrLine"
   | "resumeMethod"
   | "transformSessionUpdate"
   | "transformStdout"
@@ -59,12 +73,19 @@ export const makeAntigravityAcpRuntime = Effect.fn("makeAntigravityAcpRuntime")(
   EffectAcpErrors.AcpError,
   Crypto.Crypto | Scope.Scope
 > {
+  const isChatSession = input.clientFileSystem === true;
   const context = yield* Layer.build(
     AcpSessionRuntime.layer({
       ...input,
       authMethodId: input.authMethod ?? "oauth-personal",
       resumeMethod: "resume",
       cancelBehavior: "wait-for-prompt",
+      ...(isChatSession
+        ? {
+            promptInactivityTimeout: "5 minutes",
+            redactStderrLine: redactAntigravityStderrLine,
+          }
+        : {}),
       clientCapabilities: {
         fs: {
           readTextFile: input.clientFileSystem === true,
