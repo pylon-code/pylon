@@ -171,12 +171,11 @@ describe("pair message ids and title", () => {
 });
 
 describe("pair lead support", () => {
-  it("refuses the providers whose own subagents Pylon cannot pause", () => {
-    // Antigravity offers no control. Codex 0.153 keeps its collaboration tools
-    // whatever feature flags say, and a paired Codex lead used them every time.
+  it("refuses only the provider that cannot be steered away from its own subagents", () => {
+    // Codex keeps its collaboration tools whatever feature flags say, but once it
+    // receives the pair protocol it briefs the executor and leaves them alone.
     expect(isPairLeadSupported("antigravity")).toBe(false);
-    expect(isPairLeadSupported("codex")).toBe(false);
-    for (const driver of ["claudeAgent", "primeAgent", "cursor", "opencode", undefined]) {
+    for (const driver of ["claudeAgent", "codex", "primeAgent", "cursor", "opencode", undefined]) {
       expect(isPairLeadSupported(driver)).toBe(true);
     }
   });
