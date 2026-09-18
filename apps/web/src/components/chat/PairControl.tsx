@@ -29,6 +29,21 @@ export interface PairControlProps {
   readonly onExecutorChange: (instanceId: ProviderInstanceId, model: string) => void;
 }
 
+/**
+ * Where the executor picker opens when nothing is chosen yet: the first provider
+ * that actually offers models. Opening on a provider with none shows "No models
+ * found", which reads as though pairing were unavailable.
+ */
+export function initialExecutorInstanceId(
+  entries: ReadonlyArray<ProviderInstanceEntry>,
+  modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>,
+): ProviderInstanceId | undefined {
+  const withModels = entries.find(
+    (entry) => (modelOptionsByInstance.get(entry.instanceId)?.length ?? 0) > 0,
+  );
+  return (withModels ?? entries[0])?.instanceId;
+}
+
 /** What the executor is doing, in the words the panel and the trigger's label use. */
 export function pairPhaseLabel(phase: PairExecutorPhase): string {
   switch (phase) {
@@ -87,8 +102,9 @@ export function PairControlPanel(props: PairControlProps) {
   const disabledReason = switchDisabledReason(props);
   const isSwitchDisabled = disabledReason !== null;
 
-  const firstEntry = props.instanceEntries[0];
-  const activeInstanceId = props.executorSelection?.instanceId ?? firstEntry?.instanceId;
+  const activeInstanceId =
+    props.executorSelection?.instanceId ??
+    initialExecutorInstanceId(props.instanceEntries, props.modelOptionsByInstance);
   const model = props.executorSelection?.model ?? "";
 
   return (

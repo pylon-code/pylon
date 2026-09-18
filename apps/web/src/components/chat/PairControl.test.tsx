@@ -15,6 +15,7 @@ import {
   PairControlPanel,
   pairPhaseLabel,
   type PairControlProps,
+  initialExecutorInstanceId,
 } from "./PairControl";
 
 vi.mock("@tanstack/react-router", () => ({
@@ -167,5 +168,27 @@ describe("PairControlPanel", () => {
     expect(html).toContain("Open executor");
     // Changing the executor's model mid-pair needs a reset, which does not exist yet.
     expect(html).toContain("Turn the pair off to change the executor.");
+  });
+});
+
+describe("initialExecutorInstanceId", () => {
+  const empty = { ...provider, instanceId: ProviderInstanceId.make("cursor") };
+  const entries = deriveProviderInstanceEntries([empty, provider]);
+
+  it("opens the executor picker on the first provider that offers models", () => {
+    expect(
+      initialExecutorInstanceId(
+        entries,
+        new Map([
+          [ProviderInstanceId.make("cursor"), []],
+          [ANTIGRAVITY, [{ slug: "gemini-3-flash", name: "Gemini 3 Flash" }]],
+        ]),
+      ),
+    ).toBe(ANTIGRAVITY);
+  });
+
+  it("falls back to the first provider, and to nothing when there are none", () => {
+    expect(initialExecutorInstanceId(entries, new Map())).toBe(entries[0]?.instanceId);
+    expect(initialExecutorInstanceId([], new Map())).toBeUndefined();
   });
 });
