@@ -56,6 +56,7 @@ import {
   selectAssistantMessage,
   truncateText,
 } from "./logic.ts";
+import { PAIR_DELEGATION_KEY } from "../pair/logic.ts";
 import { delegationSkill } from "./skill.ts";
 import {
   DelegatedMessageKeyConsumedError,
@@ -69,6 +70,7 @@ import {
   DelegationFailedError,
   DelegationKeyConsumedError,
   DelegationKeyInvalidError,
+  DelegationKeyReservedError,
   DelegationLimitExceededError,
   DelegationModelUnavailableError,
   DelegationProviderUnavailableError,
@@ -155,10 +157,15 @@ const make = Effect.gen(function* () {
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
-  const requireKey = (field: "delegationKey" | "messageKey", value: string) =>
-    isValidDelegationKey(value)
-      ? Effect.void
-      : Effect.fail(new DelegationKeyInvalidError({ field }));
+  const requireKey = (field: "delegationKey" | "messageKey", value: string) => {
+    if (!isValidDelegationKey(value)) {
+      return Effect.fail(new DelegationKeyInvalidError({ field }));
+    }
+    if (field === "delegationKey" && value === PAIR_DELEGATION_KEY) {
+      return Effect.fail(new DelegationKeyReservedError({ delegationKey: value }));
+    }
+    return Effect.void;
+  };
 
   const childIdFor = Effect.fn("DelegationToolkit.childIdFor")(function* (
     parentId: ThreadId,
