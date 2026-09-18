@@ -139,3 +139,29 @@ export function pairExecutorCreateInput(input: {
     worktreePath: input.lead.worktreePath,
   };
 }
+
+/**
+ * Why a lead cannot be rewound right now, or null. The executor works in the
+ * lead's worktree, so one that holds a turn would write over the files a rewind
+ * restores. The server interrupts it when a rewind is requested, but that lands
+ * a moment late; the clients ask the user to stop it first.
+ */
+export function pairRewindBlockedReason(input: {
+  readonly threads: readonly EnvironmentThreadShell[];
+  readonly environmentId: EnvironmentId;
+  readonly leadThreadId: ThreadId;
+}): string | null {
+  const state = resolvePairState({
+    threads: input.threads,
+    // Any lead that has an executor counts here, whatever its provider.
+    lead: { environmentId: input.environmentId, threadId: input.leadThreadId, driverKind: null },
+  });
+  if (state.kind !== "on") {
+    return null;
+  }
+  return state.phase === "running" ||
+    state.phase === "needs-approval" ||
+    state.phase === "needs-input"
+    ? "Stop the executor before rewinding. It works in this thread's worktree and would write over the restored files."
+    : null;
+}

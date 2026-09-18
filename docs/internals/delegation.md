@@ -159,7 +159,9 @@ back, because archiving it is how a user turns the pair off, and unarchiving a l
 pair back on. A rewind of the lead is not blocked, since that would mean changing rewind admission in
 the decider. Instead the reactor interrupts a running executor the moment the rewind is requested: the
 two threads share one worktree, and an executor that kept editing would write over the restored
-files. It may still write for a moment before the interrupt lands. The idle-session reaper skips an
+files. It may still write for a moment before the interrupt lands, so the web and mobile clients
+refuse a rewind while the executor holds a turn, including one paused on an approval or a question,
+and say why (`pairRewindBlockedReason`). The reactor stays as the backstop for any other client. The idle-session reaper skips an
 executor while its lead's session is starting or running, so it is not restarted between briefs. The
 reactor reads no settings: following a lead is cleanup and keeps working after delegation is turned
 off.

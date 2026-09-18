@@ -13,6 +13,7 @@ import type { EnvironmentThreadShell } from "./models.ts";
 import {
   PAIR_UNSUPPORTED_LEAD_REASON,
   isPairLeadSupported,
+  pairRewindBlockedReason,
   pairExecutorCreateInput,
   resolvePairState,
   withoutPairExecutors,
@@ -236,5 +237,38 @@ describe("pairExecutorCreateInput", () => {
         childRuntimeMode: "inherit",
       }).title,
     ).toHaveLength(200);
+  });
+});
+
+describe("pairRewindBlockedReason", () => {
+  const ask = (threads: readonly EnvironmentThreadShell[]) =>
+    pairRewindBlockedReason({ threads, environmentId: ENV, leadThreadId: LEAD });
+
+  it("blocks a rewind while the executor holds a turn in the shared worktree", () => {
+    const busy = [
+      executor({
+        latestTurn: runningTurn,
+        session: session({ status: "running", activeTurnId: turnId }),
+      }),
+      executor({ session: session({ status: "starting" }) }),
+      // Paused on the user, but it resumes and writes once they answer.
+      executor({ latestTurn: runningTurn, hasPendingApprovals: true }),
+      executor({ latestTurn: runningTurn, hasPendingUserInput: true }),
+    ];
+    for (const thread of busy) {
+      expect(ask([thread])).toBe(
+        "Stop the executor before rewinding. It works in this thread's worktree and would write over the restored files.",
+      );
+    }
+  });
+
+  it("allows it otherwise", () => {
+    expect(ask([])).toBeNull();
+    expect(ask([executor()])).toBeNull();
+    expect(ask([executor({ latestTurn: completedTurn, session: session() })])).toBeNull();
+    // A pair that was turned off, another thread's child, another environment.
+    expect(ask([executor({ latestTurn: runningTurn, archivedAt: NOW })])).toBeNull();
+    expect(ask([shell(FAN_OUT_CHILD, { latestTurn: runningTurn })])).toBeNull();
+    expect(ask([executor({ latestTurn: runningTurn, environmentId: OTHER_ENV })])).toBeNull();
   });
 });
