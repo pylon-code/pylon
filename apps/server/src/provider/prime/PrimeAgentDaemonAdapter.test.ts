@@ -47,6 +47,7 @@ import type { ProviderAdapterError } from "../Errors.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderEventLoggers from "../Layers/ProviderEventLoggers.ts";
+import { type EventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 import { makeProviderServiceLive } from "../Layers/ProviderService.ts";
 import { ProviderSessionDirectoryLive } from "../Layers/ProviderSessionDirectory.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
@@ -11583,5 +11584,93 @@ describe("PrimeAgentDaemonAdapter", () => {
         expect(adapter.absoluteConversationRollback).toBeUndefined();
       }),
     ).pipe(Effect.provide(testLayer)),
+  );
+  it.effect(
+    "records bounded diagnostic classification and suppresses arbitrary private errors from native and canonical logs on SessionClosed",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const loggedNativeEntries: unknown[] = [];
+          const mockNativeLogger: EventNdjsonLogger = {
+            filePath: "/mock/native.ndjson",
+            write: (entry) =>
+              Effect.sync(() => {
+                loggedNativeEntries.push(entry);
+              }),
+            close: () => Effect.void,
+          };
+          const captures = makeCaptures();
+          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
+            instanceId,
+            runtimeFactory: fakeRuntimeFactory(captures),
+            nativeEventLogger: mockNativeLogger,
+          });
+          const subscription = yield* subscribe(adapter);
+          yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+          yield* awaitObservedType(subscription.observed, "thread.started");
+
+          yield* offer(captures, {
+            _tag: "SessionClosed",
+            error: "PRIVATE_SECRET_DO_NOT_LOG /private/server/credentials.key",
+            diagnostic: {
+              reason: "ingress-capacity",
+              connectionGeneration: 2,
+              proofEpoch: 1,
+            },
+          });
+          const exited = yield* awaitObservedType(subscription.observed, "session.exited");
+
+          expect(exited).toMatchObject({
+            payload: {
+              exitKind: "error",
+              reason: "Prime Agent session closed unexpectedly.",
+            },
+          });
+
+          // Verify diagnostic classification is recorded in native logger
+          const closedEntry = loggedNativeEntries.find(
+            (entry) =>
+              typeof entry === "object" &&
+              entry !== null &&
+              "event" in entry &&
+              typeof (entry as { event: unknown }).event === "object" &&
+              (entry as { event: unknown }).event !== null &&
+              "method" in (entry as { event: { method: unknown } }).event &&
+              (entry as { event: { method: unknown } }).event.method === "SessionClosed",
+          ) as
+            | {
+                readonly event: {
+                  readonly kind: string;
+                  readonly provider: string;
+                  readonly threadId: ThreadId;
+                  readonly method: string;
+                  readonly diagnostic?: unknown;
+                };
+              }
+            | undefined;
+          expect(closedEntry).toBeDefined();
+          expect(closedEntry?.event).toMatchObject({
+            kind: "notification",
+            provider: "primeAgent",
+            threadId,
+            method: "SessionClosed",
+            diagnostic: {
+              reason: "ingress-capacity",
+              connectionGeneration: 2,
+              proofEpoch: 1,
+            },
+          });
+
+          // Verify arbitrary private error strings remain strictly absent from both native and canonical logs
+          const serializedNative = encodeUnknownJson(loggedNativeEntries);
+          const serializedCanonical = encodeUnknownJson(subscription.events);
+          expect(serializedNative).not.toContain("PRIVATE_SECRET_DO_NOT_LOG");
+          expect(serializedNative).not.toContain("/private/server/credentials.key");
+          expect(serializedCanonical).not.toContain("PRIVATE_SECRET_DO_NOT_LOG");
+          expect(serializedCanonical).not.toContain("/private/server/credentials.key");
+
+          yield* Fiber.interrupt(subscription.fiber);
+        }),
+      ).pipe(Effect.provide(testLayer)),
   );
 });

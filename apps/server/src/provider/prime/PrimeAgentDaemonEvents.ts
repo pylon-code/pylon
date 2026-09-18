@@ -28,6 +28,24 @@ const serviceTier = Schema.NullOr(
 const queueMode = Schema.Literals(["all", "one-at-a-time"]);
 const stopReason = Schema.Literals(["stop", "length", "toolUse", "error", "aborted"]);
 
+export const PrimeSessionClosedDiagnosticReason = Schema.Literals([
+  "proof-lost",
+  "ingress-capacity",
+  "snapshot-reconciliation",
+  "mcp-restore",
+  "provider-closed",
+]);
+export type PrimeSessionClosedDiagnosticReason = typeof PrimeSessionClosedDiagnosticReason.Type;
+
+const nonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+
+export const PrimeSessionClosedDiagnostic = Schema.Struct({
+  reason: PrimeSessionClosedDiagnosticReason,
+  connectionGeneration: Schema.optional(nonNegativeInt),
+  proofEpoch: Schema.optional(nonNegativeInt),
+});
+export type PrimeSessionClosedDiagnostic = typeof PrimeSessionClosedDiagnostic.Type;
+
 const textContent = Schema.Struct({
   type: Schema.Literal("text"),
   text: Schema.String,
@@ -650,7 +668,10 @@ export const PrimeAgentDaemonConnectionEvent = Schema.Union([
     error: Schema.optional(Schema.String),
   }),
   Schema.Struct({ type: Schema.Literal("heartbeats_changed") }),
-  Schema.Struct({ type: Schema.Literal("closed"), error: Schema.optional(Schema.String) }),
+  Schema.Struct({
+    type: Schema.Literal("closed"),
+    error: Schema.optional(Schema.String),
+  }),
 ]);
 export type PrimeAgentDaemonConnectionEvent = typeof PrimeAgentDaemonConnectionEvent.Type;
 
@@ -1387,7 +1408,11 @@ export type PrimeDaemonEvent = (
       readonly error?: string | undefined;
     }
   | { readonly _tag: "HeartbeatsChanged" }
-  | { readonly _tag: "SessionClosed"; readonly error?: string | undefined }
+  | {
+      readonly _tag: "SessionClosed";
+      readonly error?: string | undefined;
+      readonly diagnostic?: PrimeSessionClosedDiagnostic | undefined;
+    }
   | {
       readonly _tag: "Ignored";
       readonly reason: "unknown-event" | "malformed-event";
@@ -2045,7 +2070,11 @@ function mapPrimeAgentDaemonConnectionEvent(
     case "heartbeats_changed":
       return { _tag: "HeartbeatsChanged" };
     case "closed":
-      return { _tag: "SessionClosed", error: optionalBounded(event.error) };
+      return {
+        _tag: "SessionClosed",
+        error: optionalBounded(event.error),
+        diagnostic: { reason: "provider-closed" },
+      };
   }
 }
 
