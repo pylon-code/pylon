@@ -51,6 +51,11 @@ The pending admission id alone is not used: interrupt recovery before the provid
 session but leaves that id set until the next turn start replaces it. A first turn stopped before admission leaves a
 session but no turn and is reported as interrupted, not queued forever.
 
+When observing a delegated child's status, terminal turn states (`completed`, `interrupted`, `error`)
+take precedence over a post-turn stopped session, because a child session naturally stops after each
+turn finishes. An explicit pending stop request (`pendingStopRequestId !== null`) or a stopped session
+_without_ a terminal turn still reports `interrupted`.
+
 ## Defaults and agent guidance
 
 `delegationDefaultModelSelection` and `delegationChildRuntimeMode` are project-scoped settings resolved
