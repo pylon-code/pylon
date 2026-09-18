@@ -91,8 +91,15 @@ const lead = (driverKind: string | null | undefined = "claudeAgent") => ({
 describe("isPairLeadSupported", () => {
   it("refuses the providers the server refuses", () => {
     expect(isPairLeadSupported("antigravity")).toBe(false);
-    expect(isPairLeadSupported("codex")).toBe(false);
-    for (const driver of ["claudeAgent", "primeAgent", "cursor", "opencode", null, undefined])
+    for (const driver of [
+      "claudeAgent",
+      "codex",
+      "primeAgent",
+      "cursor",
+      "opencode",
+      null,
+      undefined,
+    ])
       expect(isPairLeadSupported(driver)).toBe(true);
   });
 });

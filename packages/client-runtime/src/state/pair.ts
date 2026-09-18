@@ -40,12 +40,9 @@ export type PairState =
       readonly activity: string | null;
     };
 
-/**
- * Mirrors the server's rule. Antigravity offers no control over its own
- * subagents, and Codex keeps its collaboration tools whatever Pylon passes it.
- */
+/** Mirrors the server's rule: Antigravity offers no control over its own subagents. */
 export function isPairLeadSupported(driverKind: string | null | undefined): boolean {
-  return driverKind !== "antigravity" && driverKind !== "codex";
+  return driverKind !== "antigravity";
 }
 
 export function resolvePairState(input: {

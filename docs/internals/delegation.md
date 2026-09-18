@@ -121,17 +121,16 @@ ships. A pair started mid-session reaches the lead through the `pair_start` resu
 same protocol text; the tool denial applies from the next session start. Prime Agent's own subagent
 depth is not yet held while paired.
 
-Two providers cannot lead and are refused by `pair_start` and by the clients, though both work as the
-executor. Antigravity offers no per-session control over its own subagents. Codex has the two flags
-above, but Codex 0.153.4 keeps all six `collaboration.*` tools with both off (checked with
-`codex exec -c features.multi_agent=false -c features.multi_agent_v2=false`), and in four live runs a
-paired Codex lead spawned its own subagent on its own model and never called a pair tool. Part of
-the cause was that Pylon's instructions did not reach Codex at all (see the Codex protocol traps in
-[providers](providers.md)); its `t3-code` tools are deferred behind tool discovery, so a lead that is
-never told about them does not find them. Codex stays refused until a paired run on a fresh thread
-shows it briefing the executor with its collaboration tools still present.
-A Claude lead was verified end to end: `pair_handoff`, `pair_await`, the executor's own session
-writing the file, and the lead checking it.
+Antigravity cannot lead and is refused by `pair_start` and by the clients, though it works as the
+executor: it offers no per-session control over its own subagents and receives no Pylon
+instructions. Codex can lead, but for it the protocol is the only control. Codex 0.153.4 keeps all
+six `collaboration.*` tools with both flags above off (checked with
+`codex exec -c features.multi_agent=false -c features.multi_agent_v2=false`), and its `t3-code`
+tools are deferred behind tool discovery, so a Codex lead that is not told about the pair tools
+spawns its own subagent on its own model instead. That happened in every run until Pylon's
+instructions reached Codex (see the Codex protocol traps in [providers](providers.md)). With them, a
+fresh Codex lead made one `pair_handoff` and one `pair_await`, a Claude executor did the work, and no
+collaboration tool was called. A Claude lead was verified the same way.
 
 The executor follows its lead. `PairLifecycleReactor` watches domain events and dispatches existing
 commands: archiving, settling, or deleting a lead does the same to its executor, including an
