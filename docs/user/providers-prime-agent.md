@@ -168,6 +168,12 @@ session, daemon, or loaded SDK runtime, Pylon schedules the switch until that ex
 It never interrupts a turn for maintenance. The same controls work when Settings connects to the host
 locally, remotely, through a relay, or through a tunnel.
 
+If Prime is quarantined after an older Pylon session ended, install or update to a managed
+build that supports settlement recovery. Pylon checks whether that earlier session has
+finished cleanup before activating the build. If it cannot prove cleanup, it preserves your
+current configuration and explains the failure. Do not delete ownership records or change
+Agent home to bypass quarantine.
+
 Use the build list to roll back to an already verified build. **Use stock/configured Prime** restores
 the binary path that was configured before managed installation. **Prune unreferenced builds** removes
 only verified Pylon-owned builds that no provider selection or scheduled switch references. It never

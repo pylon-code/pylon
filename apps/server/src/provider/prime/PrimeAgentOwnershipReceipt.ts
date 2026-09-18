@@ -939,6 +939,32 @@ export class PrimeAgentOwnershipReceiptStore {
     );
   }
 
+  /** A replacement observes settlement; it never claims the prior live owner's authority. */
+  async clearLegacyAfterSettlement(
+    receipt: PrimeAgentAcquiredOwnershipReceipt,
+    observe: () => Promise<boolean>,
+  ): Promise<boolean> {
+    if (receipt.recovery !== undefined || receipt.ownerProcessId === PROCESS_OWNER_ID) return false;
+    const filePath = this.filePath(receipt.attemptId);
+    return await withReceiptLock(
+      this.directory,
+      { attemptId: receipt.attemptId, effectiveHome: receipt.effectiveHome },
+      this.lockRuntime,
+      async () => {
+        const previous = await readReceiptFile(filePath);
+        if (previous.state !== "acquired" || !sameAcquiredReceipt(previous, receipt)) return false;
+        if (!(await observe())) return false;
+        // Keep the observation under the same cross-process lock as the exact receipt CAS.
+        const current = await readReceiptFile(filePath);
+        if (current.state !== "acquired" || !sameAcquiredReceipt(current, receipt)) return false;
+        await NodeFSP.unlink(filePath);
+        await syncDirectory(this.directory);
+        liveSafeAttempts.delete(receipt.attemptId);
+        return true;
+      },
+    );
+  }
+
   async claimForAdoption(input: {
     readonly receipt: PrimeAgentAcquiredOwnershipReceipt;
     readonly nextConfigRevision: string;

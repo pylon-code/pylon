@@ -368,6 +368,11 @@ export interface PrimeAgentDaemonBridge extends PrimeAgentPublicPackage {
   /** Exact frozen client capability evidence used with the post-connect daemon gates. */
   readonly sdkFeatures?: ReadonlyArray<string>;
   readonly recoverableOwnedSessionAdoptionAvailable?: boolean;
+  readonly observeOwnedSessionSettlement?: (input: {
+    readonly agentDir: string;
+    readonly activeSessionId: string;
+    readonly contractProof: PrimeAgentOwnedSessionContractProof;
+  }) => Promise<unknown>;
   readonly createRecoverableOwnedSession?: (
     client: PrimeAgentDaemonClient,
     options: PrimeAgentRecoverableOwnedSessionCreateOptions,
@@ -742,6 +747,15 @@ function requireDaemonExports(input: {
     negotiatedDaemonSessionCapabilitiesAvailable,
     sdkFeatures,
     recoverableOwnedSessionAdoptionAvailable,
+    ...(sdkFeatures.includes("owned_session_settlement_observation_v1") &&
+    Predicate.isFunction(input.loadedModule.observeOwnedSessionSettlement)
+      ? {
+          observeOwnedSessionSettlement: input.loadedModule
+            .observeOwnedSessionSettlement as NonNullable<
+            PrimeAgentDaemonBridge["observeOwnedSessionSettlement"]
+          >,
+        }
+      : {}),
     ...(recoverableOwnedSessionAdoptionAvailable
       ? {
           createRecoverableOwnedSession: createRecoverableOwnedSession as NonNullable<

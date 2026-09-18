@@ -358,6 +358,17 @@ owned cleanup proof as normal teardown: only a matched settled result clears its
 retires its prepared authority. Admitted authority additionally requires terminal projection and checkpoint
 quiescence before deletion. Uncertain or mismatched cleanup retains authority for diagnosis.
 
+A legacy acquired receipt without a recovery handle can be retired during an explicit managed
+install/update only when the receipt-verified target SDK exposes the frozen
+`owned_session_settlement_observation_v1` feature. Its read-only public observation checks
+Prime's durable registrations across socket namespaces in the receipt's exact canonical home.
+Pylon holds the receipt mutation lock during observation and compares the full receipt again
+before deleting it. It never claims historical ownership, launches a worker, or signals a
+process. Pending receipts, recoverable authority, corrupt/private-path failures, registrations
+that remain, and uncertain observations keep quarantine. The normal provider quiescence fence
+and settings CAS still govern the subsequent runtime switch. Stock/older SDKs cannot perform
+this remediation, and native Windows remains unsupported.
+
 Graceful process shutdown detaches an eligible owned worker and leaves its compatible supervisor alive;
 explicit Stop and normal terminal cleanup still require Prime's authoritative owned-session cleanup proof.
 The private row is deleted only after that proof, terminal projection delivery, and checkpoint quiescence.

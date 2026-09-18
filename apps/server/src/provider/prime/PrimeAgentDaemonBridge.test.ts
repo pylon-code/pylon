@@ -143,6 +143,34 @@ afterEach(() => {
 });
 
 describe("PrimeAgentDaemonBridge", () => {
+  it.effect("loads settlement observation only with its frozen SDK contract", () =>
+    Effect.gen(function* () {
+      for (const registry of [undefined, "mutable", "frozen"] as const) {
+        const pkg = makePackage({
+          moduleSource:
+            daemonModuleSource({
+              ...(registry === undefined ? {} : { sdkFeatureRegistry: registry }),
+              extraSdkFeatures: ["owned_session_settlement_observation_v1"],
+            }) +
+            '\nexport async function observeOwnedSessionSettlement() { return { feature: "owned_session_settlement_observation_v1", status: "settled" }; }',
+        });
+        const bridge = yield* loadPrimeAgentDaemonBridge(pkg.cliPath);
+        expect(typeof bridge.observeOwnedSessionSettlement).toBe(
+          registry === "frozen" ? "function" : "undefined",
+        );
+      }
+      const missing = makePackage({
+        moduleSource: daemonModuleSource({
+          sdkFeatureRegistry: "frozen",
+          extraSdkFeatures: ["owned_session_settlement_observation_v1"],
+        }),
+      });
+      expect(
+        (yield* loadPrimeAgentDaemonBridge(missing.cliPath)).observeOwnedSessionSettlement,
+      ).toBeUndefined();
+    }),
+  );
+
   it.effect("reports a missing configured executable", () =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(

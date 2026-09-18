@@ -11,6 +11,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import { loadPrimeAgentDaemonBridge } from "./PrimeAgentDaemonBridge.ts";
+import { recoverPrimeAgentLegacySettlement } from "./PrimeAgentLegacySettlement.ts";
+import { PrimeAgentOwnershipReceiptStore } from "./PrimeAgentOwnershipReceipt.ts";
+
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
@@ -168,6 +172,15 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
             ? [{ instanceId: provider.instanceId, buildId: provider.distribution.buildId }]
             : [],
         );
+      },
+      recoverLegacyOwnership: async (instanceId, verifiedBinaryPath) => {
+        const changed = await recoverPrimeAgentLegacySettlement({
+          instanceId,
+          store: new PrimeAgentOwnershipReceiptStore(config.stateDir, { platform }),
+          loadBridge: () => runPromise(loadPrimeAgentDaemonBridge(verifiedBinaryPath)),
+        });
+        if (changed)
+          await runPromise(providerRegistry.refreshInstance(ProviderInstanceId.make(instanceId)));
       },
       reserveQuiescentBinding: async (instanceId, expected) => {
         const current = await runPromise(
