@@ -3359,6 +3359,8 @@ const makeWsRpcLayer = (
               if (
                 input.resource._tag === "attachment" ||
                 input.resource._tag === "native-app-icon" ||
+                // GitHub media carries its repository context.
+                input.resource._tag === "github-media" ||
                 (input.resource._tag === "media-file" &&
                   path.isAbsolute(input.resource.path) &&
                   isDriveOrPosixAbsolutePath(input.resource.path))
