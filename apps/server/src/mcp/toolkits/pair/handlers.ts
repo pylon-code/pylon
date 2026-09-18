@@ -395,8 +395,23 @@ const make = Effect.gen(function* () {
               return acceptedResult;
             }
 
+            // A pair turned on from the composer creates the executor before the lead's
+            // first turn has set up its worktree, and a lead can move to another branch,
+            // so the executor's location is corrected at the moment it is about to be used
+            // rather than chased through events.
+            const leadOpt = yield* orFail(snapshots.getThreadShellById(scope.threadId));
+            if (Option.isNone(leadOpt)) {
+              return yield* new PairLeadNotFoundError({ threadId: scope.threadId });
+            }
+            const lead = leadOpt.value;
+
+            const needsMove =
+              shell.branch !== lead.branch || shell.worktreePath !== lead.worktreePath;
+
             if (input.protectedPaths !== undefined && input.protectedPaths.length > 0) {
-              const root = yield* resolveWorktreeRoot(shell);
+              const root = yield* resolveWorktreeRoot(
+                needsMove ? { ...shell, worktreePath: lead.worktreePath } : shell,
+              );
               const records: ProtectedPathRecord[] = [];
               const seenPaths = new Set<string>();
               for (const entry of input.protectedPaths) {
@@ -415,6 +430,20 @@ const make = Effect.gen(function* () {
                 records.push({ path: normalized, hash });
               }
               nextProtectedRecords = records;
+            }
+
+            if (needsMove) {
+              yield* engine
+                .dispatch({
+                  type: "thread.meta.update",
+                  commandId: CommandId.make(
+                    `server:mcp-pair-follow:${executorId}:${input.messageKey}`,
+                  ),
+                  threadId: executorId,
+                  branch: lead.branch,
+                  worktreePath: lead.worktreePath,
+                })
+                .pipe(mapDispatch(() => undefined));
             }
           }
 
