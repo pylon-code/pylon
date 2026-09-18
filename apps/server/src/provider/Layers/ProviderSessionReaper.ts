@@ -4,6 +4,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
+import * as NodeCrypto from "node:crypto";
+import { delegatedParentThreadId } from "@t3tools/shared/delegatedThreads";
+import { isPairExecutorThreadId } from "../../mcp/toolkits/pair/logic.ts";
 
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
@@ -92,6 +95,30 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
             idleDurationMs,
           });
           continue;
+        }
+
+        // A lead that is mid-turn, often blocked in pair_await, is about to
+        // brief the executor again, and reaping it would restart its provider
+        // process between every brief.
+        if (
+          isPairExecutorThreadId(binding.threadId, (input) =>
+            NodeCrypto.createHash("sha256").update(input).digest("hex"),
+          )
+        ) {
+          const leadId = delegatedParentThreadId(binding.threadId);
+          if (leadId !== null) {
+            const lead = yield* projectionSnapshotQuery
+              .getThreadShellById(leadId)
+              .pipe(Effect.map(Option.getOrUndefined));
+            if (lead?.session?.status === "running" || lead?.session?.status === "starting") {
+              yield* Effect.logDebug("provider.session.reaper.skipped-paired-lead-active", {
+                threadId: binding.threadId,
+                leadThreadId: leadId,
+                idleDurationMs,
+              });
+              continue;
+            }
+          }
         }
 
         const reaped = yield* providerService.stopSession({ threadId: binding.threadId }).pipe(
