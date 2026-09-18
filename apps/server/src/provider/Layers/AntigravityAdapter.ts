@@ -86,6 +86,7 @@ import {
   selectAntigravityPermissionOptionId,
 } from "../acp/AntigravityProtocol.ts";
 import {
+  ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE,
   formatAntigravityErrorMessage,
   isAntigravityCorruptedSessionError,
 } from "../acp/AntigravityErrors.ts";
@@ -100,8 +101,15 @@ const ResumeCursor = Schema.Struct({
   sessionId: Schema.NonEmptyString,
 });
 const decodeResumeCursor = Schema.decodeUnknownOption(ResumeCursor);
+
+const knownCorruptedSessionIds = new Set<string>();
+
+export function _resetKnownCorruptedAntigravitySessionsForTest(): void {
+  knownCorruptedSessionIds.clear();
+}
 const isAcpError = Schema.is(EffectAcpErrors.AcpError);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
 
 type Adapter = ProviderAdapterShape<ProviderAdapterError>;
 type Runtime = Pick<
@@ -404,6 +412,9 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
     const message = assistantMessage(context, itemId);
     message.accumulatedText += text;
     if (isAntigravityCorruptedSessionError(message.accumulatedText)) {
+      if (context.nativeSessionId) {
+        knownCorruptedSessionIds.add(context.nativeSessionId);
+      }
       context.fatalError = formatAntigravityErrorMessage(message.accumulatedText);
       return;
     }
@@ -829,6 +840,9 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                 (isAntigravityCorruptedSessionError(toolCall.detail) ? toolCall.detail : undefined);
 
               if (errorCandidate) {
+                if (context.nativeSessionId) {
+                  knownCorruptedSessionIds.add(context.nativeSessionId);
+                }
                 context.fatalError = formatAntigravityErrorMessage(errorCandidate);
               }
             }
@@ -980,6 +994,13 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             issue: "The saved Antigravity session is invalid. Start a new thread.",
           });
         }
+        if (Option.isSome(cursor) && knownCorruptedSessionIds.has(cursor.value.sessionId)) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE,
+          });
+        }
         const previous = sessions.get(input.threadId);
         if (previous) yield* stopContext(previous);
         const cwd = path.resolve(input.cwd);
@@ -1054,7 +1075,29 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                       outcome: { outcome: "cancelled" },
                     } satisfies NativePermissionResponse),
               );
-              const started = yield* runtime.start();
+              const started = yield* runtime.start().pipe(
+                Effect.catch((cause) => {
+                  const errorText =
+                    cause instanceof Error
+                      ? cause.message
+                      : typeof cause === "object" && cause !== null && "detail" in cause
+                        ? String((cause as { detail: unknown }).detail)
+                        : String(cause);
+                  if (isAntigravityCorruptedSessionError(errorText)) {
+                    if (Option.isSome(cursor)) {
+                      knownCorruptedSessionIds.add(cursor.value.sessionId);
+                    }
+                    return Effect.fail(
+                      new ProviderAdapterValidationError({
+                        provider: PROVIDER,
+                        operation: "startSession",
+                        issue: ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE,
+                      }),
+                    );
+                  }
+                  return Effect.fail(cause);
+                }),
+              );
               const model = yield* applyAntigravityAcpModelSelection({
                 runtime,
                 model: input.modelSelection?.model,
@@ -1156,14 +1199,16 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                 : Effect.void,
             ),
             Effect.mapError((cause) =>
-              isAcpError(cause)
-                ? mapAntigravityError(input.threadId, "session/start", cause)
-                : new ProviderAdapterRequestError({
-                    provider: PROVIDER,
-                    method: "session/start",
-                    detail: "Could not start Antigravity. Check the provider setup status.",
-                    cause,
-                  }),
+              isProviderAdapterValidationError(cause)
+                ? cause
+                : isAcpError(cause)
+                  ? mapAntigravityError(input.threadId, "session/start", cause)
+                  : new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "session/start",
+                      detail: "Could not start Antigravity. Check the provider setup status.",
+                      cause,
+                    }),
             ),
           );
       }).pipe(Effect.scoped),
@@ -1410,6 +1455,9 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             ? formatAntigravityErrorMessage(result.stopReason)
             : undefined);
       if (fatalError) {
+        if (isAntigravityCorruptedSessionError(fatalError) && context.nativeSessionId) {
+          knownCorruptedSessionIds.add(context.nativeSessionId);
+        }
         context.session = {
           ...context.session,
           resumeCursor: undefined,
@@ -1494,6 +1542,10 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       Effect.tapError((cause) => {
         const errorText = isProviderAdapterRequestError(cause) ? cause.detail : cause.message;
         if (isAntigravityCorruptedSessionError(errorText)) {
+          if (context.nativeSessionId) {
+            knownCorruptedSessionIds.add(context.nativeSessionId);
+          }
+          context.fatalError = formatAntigravityErrorMessage(errorText);
           context.stopped = true;
           context.disconnected = true;
           return stopContext(context).pipe(Effect.forkIn(ownerScope));

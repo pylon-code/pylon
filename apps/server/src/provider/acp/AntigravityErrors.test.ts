@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE,
   extractAntigravityModelName,
   formatAntigravityErrorMessage,
   isAntigravityCorruptedSessionError,
@@ -47,6 +48,19 @@ describe("AntigravityErrors", () => {
       expect(isAntigravityCorruptedSessionError("reached terminal step type. Exiting.")).toBe(true);
     });
 
+    it("detects actionable and legacy formatted checkpoint error messages", () => {
+      expect(
+        isAntigravityCorruptedSessionError(
+          "Antigravity agent executor encountered an irreparable internal checkpoint error. This session cannot be resumed; please start a new thread or branch to continue.",
+        ),
+      ).toBe(true);
+      expect(
+        isAntigravityCorruptedSessionError(
+          "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.",
+        ),
+      ).toBe(true);
+    });
+
     it("returns false for regular errors and prose", () => {
       expect(isAntigravityCorruptedSessionError(undefined)).toBe(false);
       expect(isAntigravityCorruptedSessionError("")).toBe(false);
@@ -83,12 +97,10 @@ describe("AntigravityErrors", () => {
       );
     });
 
-    it("formats doneCh internal checkpoint crash", () => {
+    it("formats doneCh internal checkpoint crash as actionable unrecoverable message", () => {
       expect(
         formatAntigravityErrorMessage("agent executor error: could not find doneCh for checkpoint"),
-      ).toBe(
-        "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.",
-      );
+      ).toBe(ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE);
     });
 
     it("formats general model unreachable", () => {

@@ -12,6 +12,7 @@ import {
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -35,7 +36,12 @@ import {
   parseSessionUpdateEvent,
   type AcpToolCallState,
 } from "../acp/AcpRuntimeModel.ts";
-import { makeAntigravityAdapter, type AntigravityAdapterOptions } from "./AntigravityAdapter.ts";
+import {
+  _resetKnownCorruptedAntigravitySessionsForTest,
+  makeAntigravityAdapter,
+  type AntigravityAdapterOptions,
+} from "./AntigravityAdapter.ts";
+import { ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE } from "../acp/AntigravityErrors.ts";
 
 const instanceId = ProviderInstanceId.make("antigravity-test");
 const threadId = ThreadId.make("antigravity-thread");
@@ -79,6 +85,7 @@ const makeHarness = Effect.fn("makeAntigravityAdapterHarness")(function* (option
   readonly holdClose?: boolean;
   readonly holdDispatch?: boolean;
   readonly readNativeContext?: AntigravityAdapterOptions["readNativeContext"];
+  readonly failCheckpointStart?: boolean;
 }) {
   const runtimeEvents = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
   const canonicalEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
@@ -93,7 +100,13 @@ const makeHarness = Effect.fn("makeAntigravityAdapterHarness")(function* (option
   const calls: string[] = [];
   const launches: Array<Parameters<AntigravityAdapterOptions["makeRuntime"]>[0]> = [];
   const stops: Array<Effect.Effect<void>> = [];
-  const controls = { failModel: false, failAuth: false, authInvalidations: 0, closed: 0 };
+  const controls = {
+    failModel: false,
+    failAuth: false,
+    failCheckpointStart: options?.failCheckpointStart ?? false,
+    authInvalidations: 0,
+    closed: 0,
+  };
   let currentModel = nativeDefault;
   let promptIndex = 0;
   let active: NativePrompt | undefined;
@@ -142,6 +155,12 @@ const makeHarness = Effect.fn("makeAntigravityAdapterHarness")(function* (option
       }),
     start: () =>
       Effect.gen(function* () {
+        if (controls.failCheckpointStart) {
+          return yield* new AcpErrors.AcpTransportError({
+            detail: "Agent execution error: could not find doneCh for checkpoint",
+            cause: undefined,
+          });
+        }
         if (controls.failAuth) {
           return yield* new AcpErrors.AcpTransportError({
             detail: ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE,
@@ -1769,9 +1788,7 @@ it.layer(layer)("AntigravityAdapter", (it) => {
             event.type === "turn.completed",
         );
         expect(ended.payload.state).toBe("failed");
-        expect(ended.payload.errorMessage).toBe(
-          "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.",
-        );
+        expect(ended.payload.errorMessage).toBe(ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE);
 
         // Verify corrupted text was NOT emitted as assistant delta
         expect(
@@ -1823,9 +1840,7 @@ it.layer(layer)("AntigravityAdapter", (it) => {
           event.type === "turn.completed",
       );
       expect(ended.payload.state).toBe("failed");
-      expect(ended.payload.errorMessage).toBe(
-        "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.",
-      );
+      expect(ended.payload.errorMessage).toBe(ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE);
 
       const exited = yield* h.waitForEvent(
         (event): event is Extract<ProviderRuntimeEvent, { type: "session.exited" }> =>
@@ -1859,9 +1874,7 @@ it.layer(layer)("AntigravityAdapter", (it) => {
           event.type === "turn.completed",
       );
       expect(ended.payload.state).toBe("failed");
-      expect(ended.payload.errorMessage).toBe(
-        "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.",
-      );
+      expect(ended.payload.errorMessage).toBe(ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE);
 
       const exited = yield* h.waitForEvent(
         (event): event is Extract<ProviderRuntimeEvent, { type: "session.exited" }> =>
@@ -1903,9 +1916,7 @@ it.layer(layer)("AntigravityAdapter", (it) => {
           event.type === "turn.completed",
       );
       expect(ended.payload.state).toBe("failed");
-      expect(ended.payload.errorMessage).toBe(
-        "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.",
-      );
+      expect(ended.payload.errorMessage).toBe(ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE);
       expect(
         h.seen.some(
           (e) => e.type === "content.delta" && (e as any).payload?.delta?.includes("doneCh"),
@@ -1919,6 +1930,86 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       expect(exited.payload.exitKind).toBe("error");
       expect(yield* h.adapter.hasSession(threadId)).toBe(false);
     }),
+  );
+
+  it.effect(
+    "refuses to resume a session known to have suffered an irreparable checkpoint error",
+    () =>
+      Effect.gen(function* () {
+        _resetKnownCorruptedAntigravitySessionsForTest();
+        const h = yield* makeHarness();
+        const session = yield* h.adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        const sending = yield* h.adapter
+          .sendTurn({ threadId, input: "Execute prompt" })
+          .pipe(Effect.forkChild);
+        const prompt = yield* h.nextPrompt;
+        const checkpointError = "Agent execution error: could not find doneCh for checkpoint";
+        yield* Deferred.fail(
+          prompt.result,
+          new AcpErrors.AcpRequestError({ code: -32603, errorMessage: checkpointError }),
+        );
+        yield* Fiber.join(sending);
+
+        const ended = yield* h.waitForEvent(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+            event.type === "turn.completed",
+        );
+        expect(ended.payload.state).toBe("failed");
+        expect(ended.payload.errorMessage).toBe(ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE);
+
+        // Attempting to resume the corrupted session fails fast with actionable validation error
+        const resumeExit = yield* h.adapter
+          .startSession({
+            threadId,
+            cwd: process.cwd(),
+            runtimeMode: "approval-required",
+            resumeCursor: session.resumeCursor,
+          })
+          .pipe(Effect.exit);
+
+        expect(Exit.isFailure(resumeExit)).toBe(true);
+        if (Exit.isFailure(resumeExit)) {
+          const squashed = Cause.squash(resumeExit.cause) as any;
+          expect(squashed._tag).toBe("ProviderAdapterValidationError");
+          expect(squashed.issue).toBe(ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE);
+        }
+
+        // Starting a fresh session without the corrupted resumeCursor succeeds
+        const freshSession = yield* h.adapter.startSession({
+          threadId: ThreadId.make("thread-new-recovery"),
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+        });
+        expect(freshSession.status).toBe("ready");
+      }),
+  );
+
+  it.effect(
+    "fails startSession with actionable recovery when native runtime resume fails with checkpoint error",
+    () =>
+      Effect.gen(function* () {
+        _resetKnownCorruptedAntigravitySessionsForTest();
+        const h = yield* makeHarness({ failCheckpointStart: true });
+        const resumeExit = yield* h.adapter
+          .startSession({
+            threadId,
+            cwd: process.cwd(),
+            runtimeMode: "approval-required",
+            resumeCursor: { schemaVersion: 1, sessionId: "session-corrupted-cold-start" },
+          })
+          .pipe(Effect.exit);
+
+        expect(Exit.isFailure(resumeExit)).toBe(true);
+        if (Exit.isFailure(resumeExit)) {
+          const squashed = Cause.squash(resumeExit.cause) as any;
+          expect(squashed._tag).toBe("ProviderAdapterValidationError");
+          expect(squashed.issue).toBe(ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE);
+        }
+      }),
   );
 
   it.effect("does not mutate normal bash 503 or terminate session on ordinary tool output", () =>

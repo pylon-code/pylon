@@ -3,6 +3,9 @@
  * clean, actionable user-facing messages.
  */
 
+export const ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE =
+  "Antigravity agent executor encountered an irreparable internal checkpoint error. This session cannot be resumed; please start a new thread or branch to continue.";
+
 export function extractAntigravityModelName(text: string): string | undefined {
   const match =
     /model\s+([a-zA-Z0-9._-]+)\s+on the server/i.exec(text) ??
@@ -17,7 +20,9 @@ export function isAntigravityCorruptedSessionError(text?: string | null): boolea
     /could not find doneCh for checkpoint/i.test(text) ||
     /reached terminal step type\. Exiting/i.test(text) ||
     /agent executor error:\s*could not find doneCh/i.test(text) ||
-    /Antigravity agent executor encountered an internal checkpoint error/i.test(text)
+    /Antigravity agent executor encountered an (?:irreparable )?internal checkpoint error/i.test(
+      text,
+    )
   );
 }
 
@@ -61,7 +66,7 @@ export function formatAntigravityErrorMessage(raw: string): string {
   }
 
   if (isAntigravityCorruptedSessionError(raw)) {
-    return "Antigravity agent executor encountered an internal checkpoint error. Please retry your message.";
+    return ANTIGRAVITY_CHECKPOINT_ERROR_MESSAGE;
   }
 
   if (/model unreachable/i.test(raw)) {
