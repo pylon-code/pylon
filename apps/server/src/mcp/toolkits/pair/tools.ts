@@ -154,6 +154,7 @@ export const PairAwaitResult = Schema.Struct({
       createdAt: Schema.String,
     }),
   ),
+  /** The files changed by the executor's latest turn, not by earlier briefs. */
   filesChanged: Schema.Array(
     Schema.Struct({
       path: Schema.String,
@@ -162,6 +163,7 @@ export const PairAwaitResult = Schema.Struct({
       deletions: Schema.Int,
     }),
   ),
+  /** Every turn the executor has completed for this pair. */
   turnCount: Schema.Int,
   /**
    * The protected paths of the latest brief, checked once the executor is no
