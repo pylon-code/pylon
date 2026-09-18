@@ -54,6 +54,7 @@ import {
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
+import { pairRewindBlockedReason } from "@t3tools/client-runtime/state/pair";
 import { deriveReportedTurnCosts } from "@t3tools/client-runtime/state/turn-costs";
 import { canAskSessionSideQuestion } from "@t3tools/client-runtime/state/session-side-question";
 import { wasBootstrapThreadDeleted } from "@t3tools/client-runtime/errors";
@@ -7327,6 +7328,15 @@ export default function ChatView(props: ChatViewProps) {
         setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
         return;
       }
+      const pairBlockedReason = pairRewindBlockedReason({
+        threads: allThreadShells,
+        environmentId,
+        leadThreadId: activeThread.id,
+      });
+      if (pairBlockedReason !== null) {
+        setThreadError(activeThread.id, pairBlockedReason);
+        return;
+      }
       if (restoreFiles === undefined) {
         setPendingRevert({ target, messageId, routeThreadKey });
         return;
@@ -7450,6 +7460,7 @@ export default function ChatView(props: ChatViewProps) {
       activeThread,
       activeEnvironmentUnavailable,
       activeEnvironmentUnavailableLabel,
+      allThreadShells,
       composerDraftTarget,
       composerRef,
       createAttachmentAssetUrl,
