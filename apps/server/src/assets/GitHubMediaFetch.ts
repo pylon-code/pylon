@@ -111,7 +111,8 @@ const fetchFollowingRedirects = Effect.fn("GitHubMediaFetch.fetchFollowingRedire
     if (response.status < 300 || response.status >= 400) return response;
     // A chain this long is not GitHub answering with bytes, and its body is not the media.
     if (!location || hop >= MAX_REDIRECTS) return null;
-    const next = new URL(location, target);
+    const next = URL.parse(location, target);
+    if (next === null) return null;
     const host = next.hostname.toLowerCase();
     const knownHost =
       CREDENTIALED_HOSTS.has(host) ||

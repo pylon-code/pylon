@@ -89,6 +89,8 @@ merge. Reviews open as tabs in the right panel, and your filters, search, and so
 you return. Command-click (Control-click on Windows and Linux) a pull request number in the sidebar
 to open it in your browser instead. GitLab calls these merge requests.
 
+Images and videos hosted on GitHub can load from private pull requests using the GitHub account signed in on the repository’s server. For a remote environment, run `gh auth login` on that machine with an account that can read the repository. GitHub Enterprise media is not supported yet.
+
 Press Command+Enter (Control+Enter on Windows and Linux) to submit a pull request comment.
 Long comments start as previews. Bot reports and resolved or dismissed discussions are grouped
 separately; expand a group and load older comments to read its history.

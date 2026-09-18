@@ -88,6 +88,7 @@ for (const location of [
   "https://internal.example/private",
   "http://raw.githubusercontent.com/x",
   "https://raw.githubusercontent.com:8443/x",
+  "https://[",
   "https://user:password@raw.githubusercontent.com/x",
 ]) {
   it.effect(`refuses an unsafe media redirect: ${location}`, () => {
