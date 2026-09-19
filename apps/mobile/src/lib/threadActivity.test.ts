@@ -3910,38 +3910,3 @@ it("keeps attachment-only question answers expandable outside mobile work groups
   expect(running[1]).toBe(group);
   expect(running[2]?.type).toBe("work-toggle");
 });
-
-describe("buildThreadFeed delegation bookkeeping", () => {
-  it("hides child-state observations and delivery receipts but keeps the pause notice", () => {
-    const feed = buildThreadFeed({
-      messages: [],
-      activities: [
-        makeActivity({
-          id: EventId.make("obs-1"),
-          kind: "delegation.child-state",
-          summary: "Pylon child completed",
-          createdAt: "2026-04-01T00:00:01.000Z",
-          payload: { childThreadId: "delegated:parent:0123456789abcdef" },
-        }),
-        makeActivity({
-          id: EventId.make("delivered-1"),
-          kind: "delegation.follow-through.delivered",
-          summary: "Delegated child update delivered to parent",
-          createdAt: "2026-04-01T00:00:02.000Z",
-          payload: { notificationIds: [], messageId: "delegation-follow-through:abc" },
-        }),
-        makeActivity({
-          id: EventId.make("paused-1"),
-          kind: "delegation.follow-through.paused",
-          summary: "Automatic delegation follow-through paused",
-          createdAt: "2026-04-01T00:00:03.000Z",
-          payload: { detail: "Three automatic follow-through turns have run." },
-        }),
-      ],
-    });
-    const summaries = feed.flatMap((entry) =>
-      entry.type === "activity-group" ? entry.activities.map((item) => item.summary) : [],
-    );
-    expect(summaries).toEqual(["Automatic delegation follow-through paused"]);
-  });
-});

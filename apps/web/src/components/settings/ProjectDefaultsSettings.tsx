@@ -1,6 +1,5 @@
 import {
   DEFAULT_SERVER_SETTINGS,
-  type DelegationChildRuntimeMode,
   EnvironmentId,
   type ModelSelection,
   type ProviderInstanceId,
@@ -47,16 +46,6 @@ import {
  * environment defaults at an environment scope and project overrides at a
  * project or checkout scope; the scoped hooks route the write.
  */
-const CHILD_PERMISSION_LABELS = {
-  inherit: "Same as parent",
-  "approval-required": "Supervised",
-} as const satisfies Record<DelegationChildRuntimeMode, string>;
-
-const CHILD_PERMISSION_DESCRIPTIONS = {
-  inherit: "Children use the permission mode of the agent that started them.",
-  "approval-required": "Children ask before running commands or editing files.",
-} as const satisfies Record<DelegationChildRuntimeMode, string>;
-
 export function ProjectDefaultsSettings({ category }: { category: ProjectSettingsCategory }) {
   const { scope, target, targets, connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
@@ -84,25 +73,6 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const mixedWorkspace = useScopedSettingsMixed(["defaultThreadEnvMode"]);
   const mixedBrowser = useScopedSettingsMixed(["enableAgentBrowserAccess"]);
   const mixedDevice = useScopedSettingsMixed(["enableAgentDeviceAccess"]);
-  const mixedDelegation = useScopedSettingsMixed(["enableAgentDelegation"]);
-  const mixedDelegationModel = useScopedSettingsMixed(["delegationDefaultModelSelection"]);
-  const mixedDelegationPreference = useScopedSettingsMixed(["delegationPreference"]);
-  const mixedChildPermissions = useScopedSettingsMixed(["delegationChildRuntimeMode"]);
-  // A saved default is shown exactly as stored, even when unavailable, because
-  // delegation never substitutes another provider. With none saved the picker
-  // shows a suggestion; nothing is stored until a pick.
-  const delegationSelection =
-    settings.delegationDefaultModelSelection ??
-    resolveDefaultProviderModelSelection(providers, null);
-  const delegationModelOptions = getCustomModelOptionsByInstance(
-    settings,
-    providers,
-    delegationSelection?.instanceId,
-    delegationSelection?.model,
-  );
-  const delegationEntry = entries.find(
-    (entry) => entry.instanceId === delegationSelection?.instanceId,
-  );
   const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
   const mixedMergeMethod = useScopedSettingsMixed(["pullRequestMergeMethod"]);
   const modelSource = useScopedSettingSource(["defaultModelSelection"]);
@@ -161,19 +131,6 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       return;
     }
     updateSettings({ defaultModelSelection: value });
-  };
-
-  const setDelegationModel = (value: ModelSelection | null) => {
-    const reason = value ? modelDisabledReason(value.instanceId, value.model) : null;
-    if (reason) {
-      toastManager.add({
-        type: "error",
-        title: "Default delegation model not saved",
-        description: reason,
-      });
-      return;
-    }
-    updateSettings({ delegationDefaultModelSelection: value });
   };
 
   return (
@@ -494,201 +451,6 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 checked={mixedBrowser ? false : settings.enableAgentBrowserAccess}
                 onCheckedChange={(enabled) => updateSettings({ enableAgentBrowserAccess: enabled })}
               />
-            }
-          />
-          <SettingsRow
-            serverScoped
-            settingKeys={["enableAgentDelegation"]}
-            mixed={mixedDelegation}
-            {...searchableSetting("agent-delegation")}
-            description={
-              isProjectScope
-                ? "Allow agents to use separate Pylon threads in this project according to your preferred method or an explicit request. Changes apply to new agent sessions; existing sessions and children keep running."
-                : "Allow agents to use separate Pylon threads according to your preferred method or an explicit request. Changes apply to new agent sessions; existing sessions and children keep running. Projects can override it."
-            }
-            control={
-              <Switch
-                aria-label="Pylon delegation"
-                mixed={mixedDelegation}
-                checked={mixedDelegation ? false : settings.enableAgentDelegation}
-                onCheckedChange={(enabled) => updateSettings({ enableAgentDelegation: enabled })}
-              />
-            }
-          />
-          <SettingsRow
-            serverScoped
-            settingKeys={["delegationPreference"]}
-            mixed={mixedDelegationPreference}
-            {...searchableSetting("delegation-preference")}
-            description="Choose the method when delegation is worthwhile. Small tasks stay local, and your message takes priority. The Pylon preference is inactive while delegation is off."
-            resetAction={
-              settings.delegationPreference !== "built-in" ? (
-                <SettingResetButton
-                  label="preferred delegation method"
-                  onClick={() => updateSettings({ delegationPreference: "built-in" })}
-                />
-              ) : null
-            }
-            control={
-              <Select
-                value={mixedDelegationPreference ? null : settings.delegationPreference}
-                onValueChange={(value) => {
-                  if (value === "built-in" || value === "pylon")
-                    updateSettings({ delegationPreference: value });
-                }}
-              >
-                <SelectTrigger size="sm" aria-label="Preferred delegation method">
-                  <SelectValue>
-                    {mixedDelegationPreference
-                      ? "Mixed"
-                      : settings.delegationPreference === "pylon"
-                        ? "Pylon threads"
-                        : "Built-in agents"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectPopup align="end" alignItemWithTrigger={false}>
-                  <SelectItem value="built-in">Built-in agents</SelectItem>
-                  <SelectItem value="pylon">Pylon threads</SelectItem>
-                </SelectPopup>
-              </Select>
-            }
-          />
-          <SettingsRow
-            serverScoped
-            settingKeys={["delegationDefaultModelSelection"]}
-            mixed={mixedDelegationModel}
-            {...searchableSetting("delegation-default-model")}
-            description={
-              isProjectScope
-                ? "Saved provider and model for Pylon child threads in this project, including while delegation is off. Does not change built-in subagents. A provider or model named in your request takes priority."
-                : "Saved provider and model for Pylon child threads, including while delegation is off. Does not change built-in subagents. A provider or model named in your request takes priority. Projects can override it."
-            }
-            status={
-              unavailable || mixedDelegationModel
-                ? undefined
-                : settings.delegationDefaultModelSelection === null
-                  ? "Not set"
-                  : delegationEntry && (!delegationEntry.enabled || !delegationEntry.isAvailable)
-                    ? "Provider unavailable"
-                    : undefined
-            }
-            resetAction={
-              settings.delegationDefaultModelSelection !== null ? (
-                <SettingResetButton
-                  label="default delegation model"
-                  onClick={() => setDelegationModel(null)}
-                />
-              ) : null
-            }
-            control={
-              delegationSelection && delegationEntry ? (
-                <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
-                  <ProviderModelPicker
-                    activeInstanceId={delegationSelection.instanceId}
-                    model={delegationSelection.model}
-                    lockedProvider={null}
-                    instanceEntries={entries}
-                    modelOptionsByInstance={delegationModelOptions}
-                    triggerVariant="outline"
-                    triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                    {...(mixedDelegationModel
-                      ? { triggerLabel: "Mixed" }
-                      : settings.delegationDefaultModelSelection === null
-                        ? { triggerLabel: "Choose a model" }
-                        : {})}
-                    getModelDisabledReason={modelDisabledReason}
-                    onOpenProviderSetup={(instanceId) => {
-                      if (representative)
-                        void navigate({
-                          to: "/settings/providers",
-                          search: { environmentId: representative.environmentId, instanceId },
-                        });
-                    }}
-                    onInstanceModelChange={(instanceId, model) =>
-                      setDelegationModel(createModelSelection(instanceId, model))
-                    }
-                  />
-                  {!mixedDelegationModel && settings.delegationDefaultModelSelection !== null ? (
-                    <TraitsPicker
-                      provider={delegationEntry.driverKind}
-                      models={delegationEntry.models}
-                      model={delegationSelection.model}
-                      prompt=""
-                      onPromptChange={() => {}}
-                      modelOptions={delegationSelection.options ?? []}
-                      allowPromptInjectedEffort={false}
-                      planModeEnabled={settings.planModeEnabled}
-                      triggerVariant="outline"
-                      triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                      onModelOptionsChange={(options) =>
-                        setDelegationModel(
-                          createModelSelection(
-                            delegationSelection.instanceId,
-                            delegationSelection.model,
-                            options,
-                          ),
-                        )
-                      }
-                    />
-                  ) : null}
-                </div>
-              ) : settings.delegationDefaultModelSelection !== null ? (
-                <span className="text-sm text-muted-foreground">
-                  Unavailable provider: {settings.delegationDefaultModelSelection.instanceId} ·{" "}
-                  {settings.delegationDefaultModelSelection.model}
-                </span>
-              ) : (
-                <span className="text-sm text-muted-foreground">No providers available</span>
-              )
-            }
-          />
-          <SettingsRow
-            serverScoped
-            settingKeys={["delegationChildRuntimeMode"]}
-            mixed={mixedChildPermissions}
-            {...searchableSetting("delegation-child-permissions")}
-            description="Saved permissions for Pylon child threads. A child never gets broader permissions than its parent. Turning Pylon delegation off does not disable built-in subagents; stop a running child from its thread."
-            resetAction={
-              settings.delegationChildRuntimeMode !==
-              DEFAULT_SERVER_SETTINGS.delegationChildRuntimeMode ? (
-                <SettingResetButton
-                  label="child permissions"
-                  onClick={() =>
-                    updateSettings({
-                      delegationChildRuntimeMode:
-                        DEFAULT_SERVER_SETTINGS.delegationChildRuntimeMode,
-                    })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <Select
-                value={mixedChildPermissions ? null : settings.delegationChildRuntimeMode}
-                onValueChange={(value) => {
-                  if (value) updateSettings({ delegationChildRuntimeMode: value });
-                }}
-              >
-                <SelectTrigger size="sm" aria-label="Child permissions">
-                  <SelectValue>
-                    {mixedChildPermissions
-                      ? "Mixed"
-                      : CHILD_PERMISSION_LABELS[settings.delegationChildRuntimeMode]}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectPopup align="end" alignItemWithTrigger={false}>
-                  {(["inherit", "approval-required"] as const).map((mode) => (
-                    <SelectItem key={mode} value={mode} className="min-w-64 py-2">
-                      <div className="grid gap-0.5">
-                        <span className="font-medium">{CHILD_PERMISSION_LABELS[mode]}</span>
-                        <span className="text-xs leading-4 text-muted-foreground">
-                          {CHILD_PERMISSION_DESCRIPTIONS[mode]}
-                        </span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectPopup>
-              </Select>
             }
           />
           {isProjectScope ? (

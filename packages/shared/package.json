@@ -3,10 +3,6 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./delegatedThreads": {
-      "types": "./src/delegatedThreads.ts",
-      "import": "./src/delegatedThreads.ts"
-    },
     "./usageLimits": {
       "types": "./src/usageLimits.ts",
       "import": "./src/usageLimits.ts"

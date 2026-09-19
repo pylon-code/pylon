@@ -106,9 +106,6 @@ export function createSidebarSortingStrategy(input: {
   /** Space each pinned boundary opens for its label while dragging. The
    * markers stay zero height at rest, so nothing is reserved until pickup. */
   boundaryLabelHeight?: number;
-  /** Rows whose measured node also holds nested delegated children. They never
-   * set the single-row height, and a lifted group keeps its own height. */
-  groupKeys?: ReadonlySet<string>;
 }): SortingStrategy {
   const { items } = input;
   const indices = new Map(items.map((item, index) => [sidebarListItemId(item), index]));
@@ -138,11 +135,9 @@ export function createSidebarSortingStrategy(input: {
         }
         continue;
       }
-      if (input.groupKeys?.has(item.key) !== true) {
-        if (item.section === "pinned" || item.section === "active")
-          cardHeight ??= rects[index]?.height;
-        else slimHeight ??= rects[index]?.height;
-      }
+      if (item.section === "pinned" || item.section === "active")
+        cardHeight ??= rects[index]?.height;
+      else slimHeight ??= rects[index]?.height;
       if (item.key !== active.key) groups[item.section].push(item);
     }
     // Cards are 4.875rem + 0.25rem padding; slim rows/placeholders are h-9.
@@ -206,19 +201,13 @@ export function createSidebarSortingStrategy(input: {
           ? cardHeight
           : slimHeight;
       const moved = item.kind === "thread" && item.key === active.key;
-      // A lifted group keeps its measured height while its row variant is unchanged.
-      const keepsGroupHeight =
-        moved &&
-        input.groupKeys?.has(item.key) === true &&
-        (item.section === "settled" || item.section === "snoozed") ===
-          (active.section === "settled" || active.section === "snoozed");
       const height =
         item.kind === "marker" &&
         (item.marker === "pinned-header" || item.marker === "pinned-divider")
           ? labelHeight
           : item.kind === "marker" && item.marker.endsWith("placeholder")
             ? slimHeight
-            : moved && !keepsGroupHeight
+            : moved
               ? fallback
               : (rect?.height ?? fallback);
       top += height + 1;

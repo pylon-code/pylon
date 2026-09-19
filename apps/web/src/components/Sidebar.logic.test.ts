@@ -1184,20 +1184,6 @@ describe("resolveSidebarDropTarget", () => {
   const resolve = (activeKey: string, overId: string) =>
     resolveSidebarDropTarget(items, activeKey, overId);
 
-  it("drops the moved row's children from the destination order only", () => {
-    const children = new Set(["a2", "p2"]);
-    expect(resolveSidebarDropTarget(items, "p1", "a1", children)).toMatchObject({
-      section: "active",
-      pinnedOrder: ["p2"],
-      activeOrder: ["a1", "p1"],
-    });
-    expect(resolveSidebarDropTarget(items, "a1", "p1", children)).toMatchObject({
-      section: "pinned",
-      pinnedOrder: ["a1", "p1"],
-      activeOrder: ["a2"],
-    });
-  });
-
   it("keeps marker-like scoped thread keys draggable", () => {
     const key = "marker:pinned-header";
     const list: SidebarListItem[] = [

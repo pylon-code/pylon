@@ -348,9 +348,6 @@ export function applyServerSettingsPatch(
     ...(patch.defaultModelSelection !== undefined
       ? { defaultModelSelection: patch.defaultModelSelection }
       : {}),
-    ...(patch.delegationDefaultModelSelection !== undefined
-      ? { delegationDefaultModelSelection: patch.delegationDefaultModelSelection }
-      : {}),
     ...(patch.defaultProjectScripts !== undefined
       ? { defaultProjectScripts: patch.defaultProjectScripts }
       : {}),

@@ -20,7 +20,6 @@ import * as OrchestrationEngine from "./Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts";
 import { pullRequestMatchesProject } from "./ThreadPullRequestReactor.ts";
 import {
-  hasLiveDelegatedChild,
   isAutoSettlementCandidate,
   resolveAutoSettlementAt,
   type SettlementPullRequest,
@@ -95,11 +94,7 @@ export const make = Effect.gen(function* () {
     const projects = new Map(snapshot.projects.map((project) => [project.id, project]));
     // A merge rechecks all candidates, including branches that discovery has
     // not linked yet. Those lookups can still have cached the PR as open.
-    const candidates = snapshot.threads.filter(
-      (thread) =>
-        isAutoSettlementCandidate(thread, now) &&
-        !hasLiveDelegatedChild(thread, snapshot.threads, now),
-    );
+    const candidates = snapshot.threads.filter((thread) => isAutoSettlementCandidate(thread, now));
 
     // Return the thread when it still needs a pull request decision. A rejected
     // dispatch skips it for this snapshot instead of retrying through a lookup.

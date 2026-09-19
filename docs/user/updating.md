@@ -76,3 +76,13 @@ Mobile updates are separate from the desktop tracks. The mobile app downloads up
 background and applies them when you next leave the app. It saves drafts and queued messages before
 restarting. If you keep the app open for a long time, it may ask to install immediately; choosing
 **Later** leaves the update queued for the next suitable moment.
+
+## Former pair and delegated threads
+
+Pylon's pair mode and cross-provider thread delegation have been removed. Agents can use their
+provider's native subagents. Existing executor and delegated conversations remain ordinary threads;
+they no longer follow a lead's lifecycle or automatically wake another thread.
+
+Start a new thread for work that previously used pair mode, so the agent starts without the old pair
+instructions or session restrictions. Old conversations and project files remain available. Update
+both the server and its clients to remove the old controls everywhere.

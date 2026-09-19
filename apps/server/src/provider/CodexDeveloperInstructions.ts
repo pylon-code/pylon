@@ -4,8 +4,6 @@ import { buildRuntimeInstructions } from "./RuntimeInstructions.ts";
 export interface T3CodeToolAvailability {
   readonly browser: boolean;
   readonly device: boolean;
-  readonly delegation?: boolean;
-  readonly pair?: boolean;
 }
 
 const normalizeAvailability = (
@@ -181,8 +179,6 @@ export function buildCodexDeveloperInstructions(
   return `${base}\n\n${buildRuntimeInstructions({
     harness: "Codex",
     ...runtime,
-    delegationAvailable: tools.delegation === true,
-    pairActive: tools.pair === true,
     browserAvailable: tools.browser === true,
     deviceAvailable: tools.device === true,
   })}`;
@@ -199,8 +195,6 @@ export function buildCodexThreadInstructions(
   const tools = normalizeAvailability(toolsAvailable);
   return buildRuntimeInstructions({
     harness: "Codex",
-    delegationAvailable: tools.delegation === true,
-    pairActive: tools.pair === true,
     browserAvailable: tools.browser === true,
     deviceAvailable: tools.device === true,
   });

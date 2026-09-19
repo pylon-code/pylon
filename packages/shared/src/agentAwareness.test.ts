@@ -44,63 +44,6 @@ function thread(
 }
 
 describe("projectThreadAwareness", () => {
-  it.each([
-    {
-      latestTurn: {
-        turnId: "turn-1" as TurnId,
-        state: "completed",
-        requestedAt: NOW,
-        startedAt: NOW,
-        completedAt: NOW,
-        assistantMessageId: null,
-      },
-    },
-    {
-      latestTurn: {
-        turnId: "turn-1" as TurnId,
-        state: "error",
-        requestedAt: NOW,
-        startedAt: NOW,
-        completedAt: NOW,
-        assistantMessageId: null,
-      },
-    },
-  ] satisfies Partial<OrchestrationThreadShell>[])(
-    "suppresses delegated awareness for %j while preserving parent alerts",
-    (overrides) => {
-      const input = { environmentId: "env-1" as EnvironmentId, project, thread: thread(overrides) };
-      expect(projectThreadAwareness(input)).not.toBeNull();
-      expect(
-        projectThreadAwareness({
-          ...input,
-          thread: {
-            ...input.thread,
-            id: "delegated:parent:with:colons:0123456789abcdef" as ThreadId,
-          },
-        }),
-      ).toBeNull();
-    },
-  );
-
-  it.each([
-    { hasPendingApprovals: true },
-    { hasPendingUserInput: true },
-  ] satisfies Partial<OrchestrationThreadShell>[])(
-    "still alerts for a delegated child blocked on %j",
-    (overrides) => {
-      const state = projectThreadAwareness({
-        environmentId: "env-1" as EnvironmentId,
-        project,
-        thread: {
-          ...thread(overrides),
-          id: "delegated:parent:with:colons:0123456789abcdef" as ThreadId,
-        },
-      });
-      expect(state).not.toBeNull();
-      expect(state?.threadId).toBe("delegated:parent:with:colons:0123456789abcdef");
-    },
-  );
-
   it("returns null for idle threads without an active awareness state", () => {
     expect(
       projectThreadAwareness({

@@ -1,5 +1,3 @@
-import { resolvePairState } from "@t3tools/client-runtime/state/pair";
-import { delegatedThreadRows } from "@t3tools/client-runtime/state/delegated-threads";
 import { prepareRevertedMessageContext } from "../lib/composerRewindContext";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { resolveLoadBalancingStatus } from "@t3tools/client-runtime/load-balancing";
@@ -55,7 +53,6 @@ import {
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
-import { pairRewindBlockedReason } from "@t3tools/client-runtime/state/pair";
 import { deriveReportedTurnCosts } from "@t3tools/client-runtime/state/turn-costs";
 import { canAskSessionSideQuestion } from "@t3tools/client-runtime/state/session-side-question";
 import { wasBootstrapThreadDeleted } from "@t3tools/client-runtime/errors";
@@ -3033,29 +3030,6 @@ export default function ChatView(props: ChatViewProps) {
     () => foldSubagentActivities(threadActivities, { sessionLive: agentSessionLive }),
     [agentSessionLive, threadActivities],
   );
-  const allThreadShells = useThreadShells();
-  const activeThreadPaired = useMemo(
-    () =>
-      activeThread
-        ? resolvePairState({
-            threads: allThreadShells,
-            lead: { environmentId, threadId: activeThread.id, driverKind: null },
-          }).kind === "on"
-        : false,
-    [activeThread, allThreadShells, environmentId],
-  );
-  const delegatedThreads = useMemo(
-    () => (activeThreadRef ? delegatedThreadRows(allThreadShells, activeThreadRef) : []),
-    [allThreadShells, activeThreadRef],
-  );
-  const delegatedLiveCount = delegatedThreads.filter((row) =>
-    ["starting", "running", "needs-approval", "needs-input"].includes(row.status),
-  ).length;
-  const delegatedAttentionCount = delegatedThreads.filter(
-    (row) => row.status === "needs-approval" || row.status === "needs-input",
-  ).length;
-  const delegationWaitingTurnId =
-    activeThread?.session?.status === "running" ? activeThread.session.activeTurnId : null;
   const agentPanelModel = useMemo(
     () => deriveAgentPanelModel({ agents: runtimeSubagents }),
     [runtimeSubagents],
@@ -6410,7 +6384,7 @@ export default function ChatView(props: ChatViewProps) {
   // Both ends of the seam, read from shells the client already holds. Keyed on
   // the two ids rather than the thread object so a streaming turn does not
   // rescan every shell on each token.
-
+  const allThreadShells = useThreadShells();
   const activeThreadContinuedFrom = activeThread?.continuedFromThreadId ?? null;
   const threadContinuationLinks = useMemo(
     () =>
@@ -7364,15 +7338,6 @@ export default function ChatView(props: ChatViewProps) {
         setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
         return;
       }
-      const pairBlockedReason = pairRewindBlockedReason({
-        threads: allThreadShells,
-        environmentId,
-        leadThreadId: activeThread.id,
-      });
-      if (pairBlockedReason !== null) {
-        setThreadError(activeThread.id, pairBlockedReason);
-        return;
-      }
       if (restoreFiles === undefined) {
         setPendingRevert({ target, messageId, routeThreadKey });
         return;
@@ -7496,7 +7461,6 @@ export default function ChatView(props: ChatViewProps) {
       activeThread,
       activeEnvironmentUnavailable,
       activeEnvironmentUnavailableLabel,
-      allThreadShells,
       composerDraftTarget,
       composerRef,
       createAttachmentAssetUrl,
@@ -7835,7 +7799,6 @@ export default function ChatView(props: ChatViewProps) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: promptForSend,
         planMarkdown: activeProposedPlan.planMarkdown,
-        options: { paired: activeThreadPaired },
       });
       const outgoingFollowUpText = formatOutgoingPrompt({
         provider: ctxSelectedProvider,
@@ -10127,11 +10090,8 @@ export default function ChatView(props: ChatViewProps) {
       // Suppressed while the Agents surface is visible: the roster itself is
       // on screen, so the toggle badge would be pointing at nothing.
       liveAgentCount={
-        rightPanelOpen && activeRightPanelSurface?.kind === "agents"
-          ? 0
-          : agentPanelModel.liveCount + delegatedLiveCount
+        rightPanelOpen && activeRightPanelSurface?.kind === "agents" ? 0 : agentPanelModel.liveCount
       }
-      attentionAgentCount={delegatedAttentionCount}
       onToggleTerminal={toggleTerminalVisibility}
       onToggleRightPanel={toggleRightPanel}
     />
@@ -10278,7 +10238,6 @@ export default function ChatView(props: ChatViewProps) {
       <AgentsPanel
         key={`${activeThreadRef?.environmentId ?? "none"}:${activeThreadRef?.threadId ?? "none"}`}
         model={agentPanelModel}
-        delegatedThreads={delegatedThreads}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
         canCancelAgents={canCancelSessionAgents}
@@ -10488,8 +10447,6 @@ export default function ChatView(props: ChatViewProps) {
                   ? {
                       onCiteAssistantText: citeAssistantText,
                       agentPanelModel,
-                      delegatedThreads,
-                      delegationWaitingTurnId,
                       onOpenAgents: addAgentsSurface,
                       onUseArtifactTemplate: useArtifactTemplate,
                       reportedTurnCosts,
@@ -10714,7 +10671,6 @@ export default function ChatView(props: ChatViewProps) {
                             respondingRequestIds={respondingRequestIds}
                             showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                             activeProposedPlan={activeProposedPlan}
-                            pairedImplement={activeThreadPaired}
                             activeTasksProgress={activeComposerTasksProgress}
                             activeTaskSteps={activeComposerTaskSteps}
                             activeDelegatedWork={activeComposerDelegatedWork}
@@ -11000,7 +10956,7 @@ export default function ChatView(props: ChatViewProps) {
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
           agentsAvailable
           deviceAvailable={activeThreadRef !== null}
-          liveAgentCount={agentPanelModel.liveCount + delegatedLiveCount}
+          liveAgentCount={agentPanelModel.liveCount}
         >
           {rightPanelContent}
         </RightPanelTabs>
@@ -11058,7 +11014,7 @@ export default function ChatView(props: ChatViewProps) {
             pullRequestsAvailable={pullRequestsSurfaceAvailable}
             agentsAvailable
             deviceAvailable={activeThreadRef !== null}
-            liveAgentCount={agentPanelModel.liveCount + delegatedLiveCount}
+            liveAgentCount={agentPanelModel.liveCount}
           >
             {rightPanelContent}
           </RightPanelTabs>

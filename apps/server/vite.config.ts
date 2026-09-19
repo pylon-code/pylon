@@ -1,6 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - Static build asset loading, outside the Effect service runtime.
 import "vite-plus/test/config";
-import * as NodeFS from "node:fs";
 import { defineConfig, mergeConfig } from "vite-plus";
 
 import baseConfig from "../../vite.config.ts";
@@ -57,12 +55,6 @@ export default mergeConfig(
         js: "#!/usr/bin/env node\n",
       },
       define: {
-        __PYLON_DELEGATION_SKILL__: JSON.stringify(
-          NodeFS.readFileSync(
-            new URL("../../.agents/skills/pylon-delegation/SKILL.md", import.meta.url),
-            "utf8",
-          ),
-        ),
         __T3CODE_BUILD_CHANNEL__: JSON.stringify(cliBuildChannel),
         __T3CODE_BUILD_RELAY_URL__: JSON.stringify(repoEnv.T3CODE_RELAY_URL?.trim() ?? ""),
         __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(

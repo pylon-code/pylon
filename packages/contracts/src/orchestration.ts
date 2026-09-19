@@ -1933,27 +1933,7 @@ const ThreadCompactionQueueSentCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-/** Server-only, compare-and-set admission for a delegated child lifecycle notice. */
-const ThreadDelegationFollowThroughCommand = Schema.Struct({
-  type: Schema.Literal("thread.delegation.follow-through"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  expectedParentUpdatedAt: IsoDateTime,
-  expectedSourceEpoch: NonNegativeInt,
-  children: Schema.Array(Schema.Struct({ threadId: ThreadId, updatedAt: IsoDateTime })),
-  messageId: MessageId,
-  text: TrimmedNonEmptyString,
-  notificationIds: Schema.Array(EventId),
-  createdAt: IsoDateTime,
-});
-
-export const DelegationFollowThroughDeliveredPayload = Schema.Struct({
-  notificationIds: Schema.Array(EventId),
-  messageId: MessageId,
-});
-
 const InternalOrchestrationCommand = Schema.Union([
-  ThreadDelegationFollowThroughCommand,
   ThreadCompactionCompleteCommand,
   ThreadCompactionQueueResumeCommand,
   ThreadCompactionQueueSentCommand,

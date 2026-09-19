@@ -1,4 +1,3 @@
-import * as ServerSettings from "../../serverSettings.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
@@ -65,7 +64,6 @@ const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(val
 function makeOrchestrationLayer(
   databasePath?: string,
   repositoryIdentityResolver?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"],
-  withSettings = true,
 ) {
   const persistence = databasePath
     ? makeSqlitePersistenceLive(databasePath)
@@ -95,9 +93,6 @@ function makeOrchestrationLayer(
     Layer.provide(persistence),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
-    Layer.provideMerge(
-      withSettings ? ServerSettings.layerTest({ enableAgentDelegation: true }) : Layer.empty,
-    ),
   );
 }
 
@@ -110,19 +105,8 @@ async function createOrchestrationSystem(
   );
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
   const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
-  const settingsOption = await runtime.runPromise(
-    Effect.serviceOption(ServerSettings.ServerSettingsService),
-  );
-  if (Option.isNone(settingsOption)) throw new Error("Test settings missing");
-  const settings = settingsOption.value;
   return {
     engine,
-    readObservations: (threadId: ThreadId, childThreadIds: readonly ThreadId[]) =>
-      runtime.runPromise(
-        snapshotQuery.getDelegationObservationActivities({ threadId, childThreadIds }),
-      ),
-    updateSettings: (enabled: boolean) =>
-      runtime.runPromise(settings.updateSettings({ enableAgentDelegation: enabled })),
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     readPendingRequests: (threadId: ThreadId) =>
       runtime.runPromise(snapshotQuery.getPendingRequestActivities({ threadId })),
@@ -656,8 +640,6 @@ describe("OrchestrationEngine", () => {
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
           getThreadRuntimeContext: () => Effect.die("unused"),
           getTurnStartMessage: () => Effect.die("unused"),
-          getDeliveredDelegationNotificationIds: () => Effect.die("unused"),
-          getDelegationObservationActivities: () => Effect.die("unused"),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
@@ -1027,162 +1009,6 @@ describe("OrchestrationEngine", () => {
         }
       }).pipe(Effect.provide(makeOrchestrationLayer())),
   );
-
-  effectIt.effect("rejects automatic follow-through if the settings service is unavailable", () =>
-    Effect.gen(function* () {
-      const engine = yield* OrchestrationEngineService;
-      const error = yield* engine
-        .dispatch({
-          type: "thread.delegation.follow-through",
-          commandId: CommandId.make("missing-settings"),
-          threadId: ThreadId.make("parent"),
-          expectedParentUpdatedAt: now(),
-          expectedSourceEpoch: 0,
-          children: [],
-          messageId: asMessageId("missing-settings"),
-          text: "child notice",
-          notificationIds: [],
-          createdAt: now(),
-        })
-        .pipe(Effect.flip);
-      expect(error).toMatchObject({
-        _tag: "OrchestrationCommandInvariantError",
-        detail: "Delegation admission requires the server settings service.",
-      });
-    }).pipe(Effect.provide(makeOrchestrationLayer(undefined, undefined, false))),
-  );
-
-  it("atomically delivers once across receipt eviction and ignores disabled delegation", async () => {
-    const system = await createOrchestrationSystem();
-    const parentId = ThreadId.make("parent");
-    const childId = ThreadId.make("delegated:parent:0123456789abcdef");
-    const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" };
-    const dispatch = (command: Parameters<typeof system.engine.dispatch>[0]) =>
-      system.run(system.engine.dispatch(command));
-    try {
-      await dispatch({
-        type: "project.create",
-        commandId: CommandId.make("project"),
-        projectId: asProjectId("p"),
-        title: "Project",
-        workspaceRoot: "/tmp/followthrough",
-        defaultModelSelection: modelSelection,
-        createdAt: now(),
-      });
-      for (const threadId of [parentId, childId])
-        await dispatch({
-          type: "thread.create",
-          commandId: CommandId.make(`create:${threadId}`),
-          threadId,
-          projectId: asProjectId("p"),
-          title: "Thread",
-          modelSelection,
-          runtimeMode: "approval-required",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: null,
-          createdAt: now(),
-        });
-      let readyCount = 0;
-      const ready = () =>
-        dispatch({
-          type: "thread.session.set",
-          commandId: CommandId.make(`ready:${readyCount++}`),
-          threadId: parentId,
-          createdAt: now(),
-          session: {
-            threadId: parentId,
-            status: "ready",
-            providerName: "codex",
-            runtimeMode: "approval-required",
-            activeTurnId: null,
-            lastError: null,
-            updatedAt: now(),
-          },
-        });
-      const follow = async (
-        key: string,
-        notificationIds: readonly EventId[],
-        messageId = asMessageId(key),
-      ) => {
-        const snapshot = await system.readModel();
-        return dispatch({
-          type: "thread.delegation.follow-through",
-          commandId: CommandId.make(key),
-          threadId: parentId,
-          expectedParentUpdatedAt: snapshot.threads.find((thread) => thread.id === parentId)!
-            .updatedAt,
-          expectedSourceEpoch: 0,
-          children: [
-            {
-              threadId: childId,
-              updatedAt: snapshot.threads.find((thread) => thread.id === childId)!.updatedAt,
-            },
-          ],
-          messageId,
-          text: "Review child",
-          notificationIds,
-          createdAt: now(),
-        });
-      };
-      await ready();
-      await follow("first", [EventId.make("notice-a")]);
-      let parent = (await system.readModel()).threads.find((thread) => thread.id === parentId)!;
-      expect(parent.messages.filter((message) => message.role === "user")).toHaveLength(1);
-      expect(parent.session?.pendingTurnMessageId).toBe("first");
-      expect(
-        parent.activities.some(
-          (activity) => activity.kind === "delegation.follow-through.delivered",
-        ),
-      ).toBe(true);
-      await ready();
-      await dispatch({
-        type: "thread.activity.append",
-        commandId: CommandId.make("observation"),
-        threadId: parentId,
-        createdAt: now(),
-        activity: {
-          id: EventId.make(`delegation-observation:${childId}`),
-          kind: "delegation.child-state",
-          tone: "info",
-          summary: "child observed",
-          payload: { childId },
-          turnId: null,
-          createdAt: now(),
-        },
-      });
-      for (let index = 0; index < 505; index++)
-        await dispatch({
-          type: "thread.activity.append",
-          commandId: CommandId.make(`noise:${index}`),
-          threadId: parentId,
-          createdAt: now(),
-          activity: {
-            id: EventId.make(`noise:${index}`),
-            kind: "tool.completed",
-            tone: "info",
-            summary: "noise",
-            payload: {},
-            turnId: null,
-            createdAt: now(),
-          },
-        });
-      expect(await system.readObservations(parentId, [childId])).toHaveLength(1);
-      expect(await system.readObservations(childId, [childId])).toHaveLength(0);
-      await follow("mixed", [EventId.make("notice-a"), EventId.make("notice-b")]);
-      await follow("duplicate-message", [EventId.make("notice-b")], asMessageId("first"));
-      await system.updateSettings(false);
-      await follow("disabled", [EventId.make("notice-b")]);
-      parent = (await system.readModel()).threads.find((thread) => thread.id === parentId)!;
-      expect(parent.messages.filter((message) => message.role === "user")).toHaveLength(1);
-      await system.updateSettings(true);
-      await follow("second", [EventId.make("notice-b")]);
-      parent = (await system.readModel()).threads.find((thread) => thread.id === parentId)!;
-      expect(parent.messages.filter((message) => message.role === "user")).toHaveLength(2);
-    } finally {
-      await system.dispose();
-    }
-  });
 
   it("persists deterministic read models for repeated snapshot reads", async () => {
     const createdAt = now();

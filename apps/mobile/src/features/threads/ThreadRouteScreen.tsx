@@ -46,8 +46,6 @@ import {
 } from "@t3tools/shared/projectScripts";
 import { Alert, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { pairRewindBlockedReason, resolvePairState } from "@t3tools/client-runtime/state/pair";
-import { useThreadShells } from "../../state/entities";
 import { useWorkspaceState } from "../../state/workspace";
 import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
 import { clearPendingThreadCreationOutcome } from "../../state/pending-thread-creation";
@@ -261,7 +259,6 @@ function ThreadRouteContent(
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
-  const threadShells = useThreadShells();
   const revertThreadCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
     label: "thread rollback",
     reportFailure: false,
@@ -298,31 +295,6 @@ function ThreadRouteContent(
     "session agent depth update",
   );
   const navigation = useNavigation();
-  const pairState = useMemo(() => {
-    if (!selectedThread) {
-      return undefined;
-    }
-    return resolvePairState({
-      threads: threadShells,
-      lead: {
-        environmentId: selectedThread.environmentId,
-        threadId: selectedThread.id,
-        driverKind: null,
-      },
-    });
-  }, [threadShells, selectedThread]);
-  const pairExecutorLabel = pairState?.kind === "on" ? pairState.modelSelection.model : "";
-  const onOpenPairExecutor = useCallback(() => {
-    if (!selectedThread || pairState?.kind !== "on") {
-      return;
-    }
-    navigation.dispatch(
-      StackActions.push("Thread", {
-        environmentId: selectedThread.environmentId,
-        threadId: pairState.executorId,
-      }),
-    );
-  }, [navigation, pairState, selectedThread]);
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
@@ -806,15 +778,6 @@ function ThreadRouteContent(
   const onRevertMessage = useCallback(
     (target: RollbackTarget) => {
       if (!selectedThread || !rollbackTargetIdle) return;
-      const pairBlockedReason = pairRewindBlockedReason({
-        threads: threadShells,
-        environmentId: selectedThread.environmentId,
-        leadThreadId: selectedThread.id,
-      });
-      if (pairBlockedReason !== null) {
-        Alert.alert("Rollback unavailable", pairBlockedReason);
-        return;
-      }
       const revert = (restoreFiles: boolean) => {
         setRollbackCommandPending(true);
         void revertThreadCheckpoint({
@@ -846,7 +809,7 @@ function ThreadRouteContent(
         ],
       );
     },
-    [revertThreadCheckpoint, rollbackTargetIdle, selectedThread, threadShells],
+    [revertThreadCheckpoint, rollbackTargetIdle, selectedThread],
   );
 
   const onRecoverRollback = useCallback(
@@ -1240,9 +1203,6 @@ function ThreadRouteContent(
         }
       >
         <ThreadDetailScreen
-          pairState={pairState}
-          pairExecutorLabel={pairExecutorLabel}
-          onOpenPairExecutor={onOpenPairExecutor}
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
           contentPresentation={contentPresentation}
           screenTone={connectionTone(routeConnectionState)}

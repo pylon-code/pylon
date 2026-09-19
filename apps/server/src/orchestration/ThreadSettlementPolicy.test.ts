@@ -7,11 +7,7 @@ import {
   type OrchestrationThreadShell,
   type ThreadPullRequestLink,
 } from "@t3tools/contracts";
-import {
-  type SettlementPullRequest,
-  hasLiveDelegatedChild,
-  resolveAutoSettlementAt,
-} from "./ThreadSettlementPolicy.ts";
+import { type SettlementPullRequest, resolveAutoSettlementAt } from "./ThreadSettlementPolicy.ts";
 
 const NOW = "2026-08-28T12:00:00.000Z";
 const makeThread = (
@@ -289,84 +285,5 @@ describe("linked request settlement", () => {
     expect(decide(makeThread({ pullRequests: [missing, merged] }), null, { days: null })).toBe(
       true,
     );
-  });
-});
-
-describe("hasLiveDelegatedChild", () => {
-  const parent = makeThread({ id: ThreadId.make("lead:with:colons") });
-  const childId = ThreadId.make("delegated:lead:with:colons:0123456789abcdef");
-  const runningTurn = {
-    turnId: TurnId.make("turn-1"),
-    state: "running" as const,
-    requestedAt: NOW,
-    startedAt: NOW,
-    completedAt: null,
-    assistantMessageId: null,
-  };
-  const child = (overrides: Partial<OrchestrationThreadShell> = {}) =>
-    makeThread({ id: childId, createdAt: "2026-08-20T00:00:00.000Z", ...overrides });
-
-  it("protects a parent whose child is running or needs the user", () => {
-    expect(hasLiveDelegatedChild(parent, [parent, child({ latestTurn: runningTurn })], NOW)).toBe(
-      true,
-    );
-    const finished = { ...runningTurn, state: "completed" as const, completedAt: NOW };
-    expect(
-      hasLiveDelegatedChild(
-        parent,
-        [parent, child({ latestTurn: finished, hasPendingApprovals: true })],
-        NOW,
-      ),
-    ).toBe(true);
-    expect(
-      hasLiveDelegatedChild(
-        parent,
-        [parent, child({ latestTurn: finished, hasPendingUserInput: true })],
-        NOW,
-      ),
-    ).toBe(true);
-  });
-
-  it("releases the parent once its children finish, stop, fail, or are archived", () => {
-    for (const state of ["completed", "interrupted", "error"] as const) {
-      const latestTurn = { ...runningTurn, state, completedAt: NOW };
-      expect(hasLiveDelegatedChild(parent, [parent, child({ latestTurn })], NOW)).toBe(false);
-    }
-    expect(
-      hasLiveDelegatedChild(
-        parent,
-        [parent, child({ latestTurn: runningTurn, archivedAt: NOW })],
-        NOW,
-      ),
-    ).toBe(false);
-  });
-
-  it("counts a child that never ran only while it is newly created", () => {
-    // A fan-out child receives its first turn in the same call that creates it.
-    // An idle pair executor has the same shape for the life of its lead and
-    // must not keep the lead active forever.
-    expect(
-      hasLiveDelegatedChild(
-        parent,
-        [parent, child({ createdAt: "2026-08-28T11:59:00.000Z" })],
-        NOW,
-      ),
-    ).toBe(true);
-    expect(
-      hasLiveDelegatedChild(
-        parent,
-        [parent, child({ createdAt: "2026-08-28T11:00:00.000Z" })],
-        NOW,
-      ),
-    ).toBe(false);
-  });
-
-  it("ignores other parents' children and ordinary threads", () => {
-    const other = makeThread({
-      id: ThreadId.make("delegated:someone-else:0123456789abcdef"),
-      latestTurn: runningTurn,
-    });
-    const ordinary = makeThread({ id: ThreadId.make("thread-2"), latestTurn: runningTurn });
-    expect(hasLiveDelegatedChild(parent, [parent, other, ordinary], NOW)).toBe(false);
   });
 });

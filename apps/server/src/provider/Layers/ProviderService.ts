@@ -88,7 +88,6 @@ import * as ServerConfig from "../../config.ts";
 import * as DeviceService from "../../device/DeviceService.ts";
 import { ensureAgentDeviceShim } from "../../device/AgentDeviceShim.ts";
 import type * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
-import { pairExecutorThreadId } from "../../mcp/toolkits/pair/logic.ts";
 import {
   increment,
   providerMetricAttributes,
@@ -1166,16 +1165,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         (entry) => entry.enableAgentBrowserAccess !== undefined,
       );
       const deviceOverridden = entries.some((entry) => entry.enableAgentDeviceAccess !== undefined);
-      const delegationOverridden = entries.some(
-        (entry) => entry.enableAgentDelegation !== undefined,
-      );
       const environment = {
         browser: settings.enableAgentBrowserAccess,
         device: settings.enableAgentDeviceAccess,
         computer: settings.enableAgentComputerAccess,
-        delegation: settings.enableAgentDelegation,
       };
-      if (!browserOverridden && !deviceOverridden && !delegationOverridden) return environment;
+      if (!browserOverridden && !deviceOverridden) return environment;
       // Provider-only runtimes may omit orchestration. An unresolved project
       // must not bypass an explicit project override, but a capability no
       // project overrides keeps its environment value.
@@ -1183,7 +1178,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         browser: browserOverridden ? false : environment.browser,
         device: deviceOverridden ? false : environment.device,
         computer: environment.computer,
-        delegation: delegationOverridden ? false : environment.delegation,
       };
       if (Option.isNone(projectionQuery)) return denied;
       const thread = yield* projectionQuery.value
@@ -1195,14 +1189,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         browser: resolved.enableAgentBrowserAccess,
         device: resolved.enableAgentDeviceAccess,
         computer: environment.computer,
-        delegation: resolved.enableAgentDelegation,
       };
     },
     Effect.catch((cause) =>
       Effect.logWarning(
-        "Could not read server settings; withholding agent browser, device, and delegation access for this session.",
+        "Could not read server settings; withholding agent browser and device access for this session.",
         { cause },
-      ).pipe(Effect.as({ browser: false, device: false, computer: false, delegation: false })),
+      ).pipe(Effect.as({ browser: false, device: false, computer: false })),
     ),
   );
 
@@ -1214,50 +1207,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     if (access.browser) capabilities.add("preview");
     if (access.device) capabilities.add("device");
     if (access.computer) capabilities.add("computer");
-    // A delegated child never receives delegation; its id carries the prefix.
-    if (access.delegation && !threadId.startsWith("delegated:")) {
-      capabilities.add("delegation");
-    }
-    if (!threadId.startsWith("delegated:") && Option.isSome(projectionQuery)) {
-      const executorId = pairExecutorThreadId(threadId, (input) =>
-        NodeCrypto.createHash("sha256").update(input).digest("hex"),
-      );
-      const executor = yield* projectionQuery.value
-        .getThreadShellById(executorId)
-        .pipe(Effect.orElseSucceed(() => Option.none()));
-      // An archived executor is a pair that was turned off; the lead gets its
-      // own subagents and the delegation instructions back.
-      if (Option.isSome(executor) && executor.value.archivedAt === null) {
-        capabilities.add("pair");
-      }
-    }
     return capabilities;
-  });
-
-  /**
-   * A paired lead hands work to its executor, so its own subagents are held for
-   * this session wherever the provider lets Pylon set their depth; Prime Agent is
-   * the one that does today. The change is the session's own and never touches
-   * the provider's global setting, and a failure only logs: the pair protocol
-   * already tells the lead not to use them.
-   */
-  const holdPairedAgentDepth = Effect.fn("ProviderService.holdPairedAgentDepth")(function* (
-    threadId: ThreadId,
-    adapter: ProviderAdapterShape<ProviderAdapterError>,
-  ) {
-    const setDepth = adapter.setSessionAgentDepth;
-    if (setDepth === undefined) return;
-    const capabilities = yield* agentAccessCapabilities(threadId);
-    if (!capabilities.has("pair")) return;
-    yield* setDepth(threadId, 0).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("provider.session.pair-agent-depth-failed", {
-          threadId,
-          provider: adapter.provider,
-          cause,
-        }),
-      ),
-    );
   });
 
   /** Install only the local CLI here. device_open supplies a separate config for each host. */
@@ -1932,7 +1882,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             ),
           ),
         );
-      yield* holdPairedAgentDepth(input.binding.threadId, adapter);
       yield* requireAdapterGenerationCurrent(adapter, input.operation).pipe(
         Effect.onError(() =>
           adapter
@@ -2242,7 +2191,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                 `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
               );
             }
-            yield* holdPairedAgentDepth(threadId, adapter);
             const sessionWithInstance = {
               ...session,
               providerInstanceId: resolvedInstanceId,

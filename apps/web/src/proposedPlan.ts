@@ -73,27 +73,11 @@ function sanitizePlanFileSegment(input: string): string {
 /** Prefix of the message the app sends when the user approves a plan. */
 export const PLAN_IMPLEMENTATION_PROMPT_PREFIX = "PLEASE IMPLEMENT THIS PLAN:\n";
 
-/**
- * The message sent when the user approves a plan. On a paired thread it ends
- * with a reminder of how a pair implements, at the moment the lead decides how
- * to start; the prefix stays first because other code recognizes it.
- */
-export function buildPlanImplementationPrompt(
-  planMarkdown: string,
-  options: { readonly paired?: boolean } = {},
-): string {
-  const base = `${PLAN_IMPLEMENTATION_PROMPT_PREFIX}${planMarkdown.trim()}`;
-  if (options.paired === true) {
-    return `${base}\n\nThis thread is paired. Write the contract and the failing tests yourself, then hand the plan to your executor one step at a time with pair_handoff, and verify each step before the next.`;
-  }
-  return base;
+export function buildPlanImplementationPrompt(planMarkdown: string): string {
+  return `${PLAN_IMPLEMENTATION_PROMPT_PREFIX}${planMarkdown.trim()}`;
 }
 
-export function resolvePlanFollowUpSubmission(input: {
-  draftText: string;
-  planMarkdown: string;
-  options?: { readonly paired?: boolean };
-}): {
+export function resolvePlanFollowUpSubmission(input: { draftText: string; planMarkdown: string }): {
   text: string;
   interactionMode: "default" | "plan";
 } {
@@ -106,7 +90,7 @@ export function resolvePlanFollowUpSubmission(input: {
   }
 
   return {
-    text: buildPlanImplementationPrompt(input.planMarkdown, input.options),
+    text: buildPlanImplementationPrompt(input.planMarkdown),
     interactionMode: "default",
   };
 }

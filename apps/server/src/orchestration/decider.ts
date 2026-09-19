@@ -313,15 +313,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   readModel,
   userInputActivity,
   pendingRequestActivities,
-  delegationAdmission,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
-  readonly delegationAdmission?: {
-    readonly enabled: boolean;
-    readonly messageExists: boolean;
-    readonly deliveredNotificationIds: ReadonlyArray<EventId>;
-  };
   readonly userInputActivity?: OrchestrationThreadActivity;
   readonly pendingRequestActivities?: ReadonlyArray<OrchestrationThreadActivity>;
 }): Effect.fn.Return<
@@ -1424,100 +1418,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: occurredAt,
         },
       };
-    }
-
-    case "thread.delegation.follow-through": {
-      if (
-        delegationAdmission &&
-        (!delegationAdmission.enabled ||
-          delegationAdmission.messageExists ||
-          command.notificationIds.some((id) =>
-            delegationAdmission.deliveredNotificationIds.includes(id),
-          ))
-      )
-        return [];
-      const parent = readModel.threads.find((thread) => thread.id === command.threadId);
-      if (parent?.messages.some((message) => message.id === command.messageId)) return [];
-      const session = parent?.session;
-      // A stale notice must never steer a user turn or restart an explicitly stopped parent.
-      if (
-        !parent ||
-        parent.deletedAt !== null ||
-        parent.archivedAt !== null ||
-        parent.updatedAt !== command.expectedParentUpdatedAt ||
-        (parent.sourceEpoch ?? 0) !== command.expectedSourceEpoch ||
-        parent.settledOverride === "settled" ||
-        parent.snoozedUntil != null ||
-        !session ||
-        session.status !== "ready" ||
-        session.activeTurnId !== null ||
-        session.pendingTurnRequestId !== undefined ||
-        session.failedTurnRequestId !== undefined ||
-        session.pendingStopRequestId !== undefined ||
-        session.compactionQueue !== undefined ||
-        parent.latestTurn?.state === "running" ||
-        parent.latestTurn?.state === "interrupted" ||
-        parent.latestTurn?.state === "error" ||
-        parent.rollbackStatus?.state === "pending" ||
-        parent.rollbackStatus?.state === "recovering" ||
-        parent.rollbackStatus?.state === "manual-recovery" ||
-        openRequests({ activities: pendingRequestActivities ?? parent.activities }).size > 0 ||
-        command.children.length === 0 ||
-        command.notificationIds.length === 0
-      )
-        return [];
-      const prefix = `delegated:${parent.id}:`;
-      if (
-        command.children.some((expected) => {
-          const child = readModel.threads.find((thread) => thread.id === expected.threadId);
-          return (
-            !child ||
-            child.archivedAt !== null ||
-            child.deletedAt !== null ||
-            !child.id.startsWith(prefix) ||
-            !/^[0-9a-f]{16}$/.test(child.id.slice(prefix.length)) ||
-            child.updatedAt !== expected.updatedAt ||
-            child.projectId !== parent.projectId
-          );
-        })
-      )
-        return [];
-      return yield* decideCommandSequence({
-        readModel,
-        commands: [
-          {
-            type: "thread.turn.start",
-            commandId: command.commandId,
-            threadId: parent.id,
-            message: {
-              messageId: command.messageId,
-              role: "user",
-              text: command.text,
-              attachments: [],
-            },
-            modelSelection: parent.modelSelection,
-            runtimeMode: parent.runtimeMode,
-            interactionMode: parent.interactionMode,
-            sourceEpoch: command.expectedSourceEpoch,
-            createdAt: command.createdAt,
-          },
-          {
-            type: "thread.activity.append",
-            commandId: command.commandId,
-            threadId: parent.id,
-            createdAt: command.createdAt,
-            activity: {
-              id: EventId.make(`delegation-delivered:${command.messageId}`),
-              kind: "delegation.follow-through.delivered",
-              tone: "info",
-              summary: "Delegated child update delivered to parent",
-              payload: { notificationIds: command.notificationIds, messageId: command.messageId },
-              turnId: null,
-              createdAt: command.createdAt,
-            },
-          },
-        ],
-      });
     }
 
     case "thread.turn.start": {

@@ -168,13 +168,10 @@ import {
 } from "../voice-input/ComposerDictationControl";
 import { useVoiceInputController } from "../voice-input/useVoiceInputController";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
-import { pairSettingsRow, type PairLead } from "@t3tools/client-runtime/state/pair-control";
-import { delegatedParentThreadId } from "@t3tools/shared/delegatedThreads";
 import {
   type ExistingThreadSettingsRouteSession,
   useExistingThreadSettingsRoutePresentation,
 } from "./ThreadSettingsSheet";
-import { usePairToggle } from "./usePairToggle";
 import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
@@ -1565,53 +1562,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       }),
     [currentModelOption?.capabilities, currentModelSelection.options],
   );
-  const isDelegatedThread = delegatedParentThreadId(props.selectedThread.id) !== null;
-  const lead = useMemo<PairLead>(
-    () => ({
-      id: props.selectedThread.id,
-      projectId: props.selectedThread.projectId,
-      title: props.selectedThread.title,
-      runtimeMode: props.selectedThread.runtimeMode,
-      branch: props.selectedThread.branch,
-      worktreePath: props.selectedThread.worktreePath,
-      session: props.selectedThread.session,
-    }),
-    [props.selectedThread],
-  );
-  const leadDriverKind = composerAuthority.provider?.driver ?? null;
-  const {
-    state: pairState,
-    executorSelection,
-    lockedReason: pairLockedReasonValue,
-    onToggle: onTogglePair,
-  } = usePairToggle({
-    environmentId: props.environmentId,
-    projectId: props.selectedThread.projectId,
-    lead,
-    leadDriverKind,
-  });
-  const executorLabel = executorSelection?.model ?? "";
-  const pairRow = useMemo(
-    () =>
-      pairSettingsRow({
-        state: pairState,
-        lockedReason: pairLockedReasonValue,
-        executorSelection,
-        executorLabel,
-      }),
-    [executorLabel, executorSelection, pairLockedReasonValue, pairState],
-  );
-  const pairSession = useMemo(
-    () =>
-      isDelegatedThread
-        ? undefined
-        : {
-            ...pairRow,
-            onToggle: onTogglePair,
-          },
-    [isDelegatedThread, onTogglePair, pairRow],
-  );
-
   const settingsOwnerId = composerOwnerKey;
   const settingsRouteSession = useMemo<ExistingThreadSettingsRouteSession>(
     () => ({
@@ -1633,14 +1583,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         if (!props.sessionInputBlocked) props.onUpdateRuntimeMode(mode);
       },
       getModelDisabledReason: getModelChangeDisabledReason,
-      ...(pairSession ? { pair: pairSession } : {}),
     }),
     [
       confirmSessionHarnessRefinement,
       currentModelSelection,
       currentRuntimeMode,
       getModelChangeDisabledReason,
-      pairSession,
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
       props.sessionInputBlocked,

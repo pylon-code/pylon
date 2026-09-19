@@ -247,22 +247,6 @@
       "types": "./src/state/subagentRuntime.ts",
       "default": "./src/state/subagentRuntime.ts"
     },
-    "./state/delegated-threads": {
-      "types": "./src/state/delegatedThreads.ts",
-      "default": "./src/state/delegatedThreads.ts"
-    },
-    "./state/pair": {
-      "types": "./src/state/pair.ts",
-      "default": "./src/state/pair.ts"
-    },
-    "./state/pair-control": {
-      "types": "./src/state/pairControl.ts",
-      "default": "./src/state/pairControl.ts"
-    },
-    "./state/delegation-notice": {
-      "types": "./src/state/delegationNotice.ts",
-      "default": "./src/state/delegationNotice.ts"
-    },
     "./state/thread-sort": {
       "types": "./src/state/threadSort.ts",
       "default": "./src/state/threadSort.ts"

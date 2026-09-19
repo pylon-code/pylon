@@ -636,48 +636,6 @@ describe("device group summaries", () => {
   });
 });
 
-describe("delegation tool presentation", () => {
-  it.each([
-    [
-      "delegate_thread",
-      "Delegated a task to a child thread",
-      "Delegating a task to a child thread",
-    ],
-    ["delegated_thread_status", "Checked a child thread", "Checking a child thread"],
-    ["delegated_thread_result", "Read a child thread's result", "Reading a child thread's result"],
-    ["send_to_delegated_thread", "Messaged a child thread", "Messaging a child thread"],
-    ["interrupt_delegated_thread", "Interrupted a child thread", "Interrupting a child thread"],
-  ])("labels %s with the Pylon tool icon", (tool, completed, running) => {
-    for (const label of [`mcp__t3-code__${tool}`, `t3-code · ${tool}`, tool]) {
-      expect(resolveWorkEntryToolPresentation({ label, toolLifecycleStatus: "completed" })).toEqual(
-        { displayName: completed, icon: "t3-code" },
-      );
-      expect(
-        resolveWorkEntryToolPresentation({ label, toolLifecycleStatus: "inProgress" }),
-      ).toEqual({ displayName: running, icon: "t3-code" });
-    }
-  });
-});
-
-describe("pair tool presentation", () => {
-  it.each([
-    ["pair_start", "Started a pair executor", "Starting a pair executor"],
-    ["pair_handoff", "Handed off to the pair executor", "Handing off to the pair executor"],
-    ["pair_await", "Awaited the pair executor", "Awaiting the pair executor"],
-    ["pair_stop", "Stopped the pair executor", "Stopping the pair executor"],
-    ["pair_reset", "Reset the pair executor", "Resetting the pair executor"],
-  ])("labels %s with the Pylon tool icon", (tool, completed, running) => {
-    for (const label of [`mcp__t3-code__${tool}`, `t3-code · ${tool}`, tool]) {
-      expect(resolveWorkEntryToolPresentation({ label, toolLifecycleStatus: "completed" })).toEqual(
-        { displayName: completed, icon: "t3-code" },
-      );
-      expect(
-        resolveWorkEntryToolPresentation({ label, toolLifecycleStatus: "inProgress" }),
-      ).toEqual({ displayName: running, icon: "t3-code" });
-    }
-  });
-});
-
 describe("pull request tool presentation", () => {
   it.each([
     "mcp__t3-code__link_pull_request",

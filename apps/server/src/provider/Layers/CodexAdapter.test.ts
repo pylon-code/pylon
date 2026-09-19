@@ -311,12 +311,12 @@ validationLayer("CodexAdapterLive validation", (it) => {
       });
     }),
   );
-  it.effect("turns off Codex's own multi-agent feature only while the thread is paired", () =>
+  it.effect("leaves native subagents enabled even with stale pair capabilities", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const adapter = yield* CodexAdapter;
         for (const [name, capabilities, expected] of [
-          ["thread-paired", ["delegation", "pair"], true],
+          ["thread-paired", ["delegation", "pair"], false],
           ["thread-unpaired", ["delegation"], false],
         ] as const) {
           validationRuntimeFactory.factory.mockClear();
@@ -342,10 +342,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
           });
           const appServerArgs =
             validationRuntimeFactory.factory.mock.calls[0]?.[0].appServerArgs ?? [];
-          // A `-c` override for this app-server process only; the user's config.toml is untouched.
           NodeAssert.strictEqual(appServerArgs.includes("features.multi_agent=false"), expected);
-          // The `collaboration.*` tools belong to the second flag; a lead left with
-          // them briefs its own subagent instead of the executor.
           NodeAssert.strictEqual(appServerArgs.includes("features.multi_agent_v2=false"), expected);
         }
       }),
