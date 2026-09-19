@@ -356,7 +356,9 @@ export class AntigravityTaskNotificationBuffer {
         break;
       }
       parts.push({ type: "notification", notification });
-      if (!leading?.remainder) break;
+      // Whitespace and the provider's optional terminal brace belong to the
+      // envelope; neither should create a new assistant-message shell.
+      if (!leading?.remainder.trim() || leading.remainder.trim() === "}") break;
 
       const buffer = new AntigravityTaskNotificationBuffer(
         this.fallbackTaskId ? `${this.fallbackTaskId}:notice:${parts.length}` : undefined,

@@ -306,6 +306,18 @@ describe("Antigravity task notifications", () => {
       },
     );
 
+    it.each(["\n", "\n}\n"])(
+      "consumes terminal envelope trivia %j without a message shell",
+      (suffix) => {
+        const notice = systemNotice(0, "log");
+        const buffer = new AntigravityTaskNotificationBuffer();
+        expect(buffer.push(notice + suffix)).toBe("");
+        expect(buffer.finish()).toEqual([
+          { type: "notification", notification: parseAntigravityTaskNotification(notice) },
+        ]);
+      },
+    );
+
     it("keeps ambiguous bare closing tags with trailing narration losslessly", () => {
       const text =
         systemNotice(0, "log").replace("Log: file:///path/to/tasks/task-444.log\n", "") +
