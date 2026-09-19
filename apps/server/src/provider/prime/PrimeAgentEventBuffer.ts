@@ -7,6 +7,14 @@ import * as PubSub from "effect/PubSub";
  * reports the forced-drop path and closes after this bounded drain deadline.
  */
 export const PRIME_AGENT_EVENT_BUFFER_CAPACITY = 256;
+/**
+ * Cap on events retained in one provisional assistant segment while a resync
+ * proof is pending. A streamed assistant message arrives as one AssistantStream
+ * event per token chunk, so long replies routinely exceed the pubsub slot count
+ * above; memory stays bounded by the runtime's byte-weight limit, and this count
+ * only guards against a completion that never arrives.
+ */
+export const PRIME_AGENT_PROVISIONAL_SEGMENT_EVENT_LIMIT = 16_384;
 export const PRIME_AGENT_EVENT_TEARDOWN_TIMEOUT_MS = 1_000;
 
 export const makePrimeAgentEventPubSub = <A>() =>

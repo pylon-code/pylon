@@ -320,6 +320,7 @@ function fixture(options?: {
     options?: PrimeAgentDaemonPromptOptions,
   ) => Promise<unknown>;
   /** Convenience default for server offer, frozen SDK feature, and post-attach proof. */
+  readonly provisionalSegmentEventLimit?: number;
   readonly correlatedPromptLifecycleCapability?: boolean;
   readonly correlatedPromptLifecycleSdkFeature?: boolean;
   readonly correlatedPromptLifecycleProof?: boolean;
@@ -1148,6 +1149,9 @@ function fixture(options?: {
             requiredExtension,
           }),
       ...(resumeCursor === undefined ? {} : { resumeCursor }),
+      ...(options?.provisionalSegmentEventLimit === undefined
+        ? {}
+        : { provisionalSegmentEventLimit: options.provisionalSegmentEventLimit }),
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
       ...(mcpServer === undefined ? {} : { mcpServer }),
       ...(recovery === undefined ? {} : { recovery }),
@@ -1602,6 +1606,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     "usage updated",
     "different completion",
     "new prompt",
+    "long stream",
     "overflow",
   ] as const) {
     it.effect(`reconciles a delayed assistant segment after a snapshot: ${variant}`, () =>
@@ -1609,13 +1614,25 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
         Effect.gen(function* () {
           const correlationId = "recovered-prompt";
           const lifecycle = promptLifecycle(correlationId, "delivered", 2);
+          // A streamed reply arrives as one delta per token chunk; the old
+          // pubsub-sized cap (256) closed the session mid-reply.
+          const longStreamDeltas = PRIME_AGENT_EVENT_BUFFER_CAPACITY * 4;
+          const overflowLimit = 8;
           const test = fixture({
             correlatedPromptLifecycleCapability: true,
             rawSnapshot: { ...snapshot(), promptLifecycles: { records: [], expired: [] } },
+            ...(variant === "overflow" ? { provisionalSegmentEventLimit: overflowLimit } : {}),
           });
           const runtime = yield* test.make();
           const isReplay = variant === "replayed" || variant === "usage updated";
-          const expectedCount = variant === "overflow" ? 5 : isReplay ? 7 : 10;
+          const expectedCount =
+            variant === "overflow"
+              ? 5
+              : variant === "long stream"
+                ? 6 + longStreamDeltas
+                : isReplay
+                  ? 7
+                  : 10;
           const received = yield* collectEvents(runtime, expectedCount).pipe(
             Effect.forkChild({ startImmediately: true }),
           );
@@ -1666,8 +1683,28 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
               }),
             );
           yield* emit({ type: "message_start", message: { ...recovered, content: [] } });
+          if (variant === "long stream") {
+            for (let index = 0; index < longStreamDeltas; index += 1) {
+              yield* emit({
+                type: "message_update",
+                message: recovered,
+                assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "r" },
+              });
+            }
+            yield* emit({ type: "message_end", message: { ...recovered, timestamp: 3 } });
+            const events = yield* Fiber.join(received);
+            expect(events.filter((event) => event._tag === "SessionClosed")).toHaveLength(0);
+            expect(events.filter((event) => event._tag === "AssistantStream")).toHaveLength(
+              longStreamDeltas,
+            );
+            expect(events.at(-1)).toMatchObject({
+              _tag: "MessageCompleted",
+              message: expect.objectContaining({ text: "recovered result" }),
+            });
+            return;
+          }
           if (variant === "overflow") {
-            for (let index = 0; index < 256; index += 1) {
+            for (let index = 0; index < overflowLimit; index += 1) {
               yield* emit({
                 type: "message_update",
                 message: recovered,
