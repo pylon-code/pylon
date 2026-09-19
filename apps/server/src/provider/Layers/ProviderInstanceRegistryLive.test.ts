@@ -522,6 +522,75 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
     );
   });
 
+  it.live("retries recovered admission without settings changes or unrelated runtime churn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "prime-retry-admission-" });
+        const instanceId = ProviderInstanceId.make("primeAgent");
+        const codexId = ProviderInstanceId.make("codex");
+        let quarantined = true;
+        let admissions = 0;
+        const driver = {
+          ...PrimeAgentDriver,
+          preflight: (...args: Parameters<NonNullable<typeof PrimeAgentDriver.preflight>>) => {
+            admissions += 1;
+            return quarantined
+              ? Effect.succeed(
+                  new Map(
+                    args[0].map((input) => [
+                      input.instanceId,
+                      {
+                        kind: "unavailable" as const,
+                        error: new ProviderDriverError({
+                          driver: PrimeAgentDriver.driverKind,
+                          instanceId: input.instanceId,
+                          detail: "quarantined",
+                        }),
+                      },
+                    ]),
+                  ),
+                )
+              : PrimeAgentDriver.preflight!(...args);
+          },
+        };
+        const configMap = {
+          [instanceId]: {
+            driver: PrimeAgentDriver.driverKind,
+            enabled: false,
+            config: makePrimeAgentConfig({ enabled: false, agentHomePath: root }),
+          },
+          [codexId]: {
+            driver: CodexDriver.driverKind,
+            enabled: false,
+            config: makeCodexConfig({ enabled: false }),
+          },
+        };
+        const { registry, mutator } = yield* makeProviderInstanceRegistry({
+          drivers: [driver, CodexDriver],
+          configMap,
+        });
+        const codex = yield* registry.getInstance(codexId);
+        expect(yield* registry.getInstance(instanceId)).toBeUndefined();
+        yield* registry.retryUnavailable(instanceId);
+        expect(yield* registry.getInstance(instanceId)).toBeUndefined();
+        quarantined = false;
+        yield* mutator.reconcile(configMap);
+        expect(yield* registry.getInstance(instanceId)).toBeUndefined();
+        yield* registry.retryUnavailable(instanceId);
+        const prime = yield* registry.getInstance(instanceId);
+        expect(prime).toBeDefined();
+        expect(yield* registry.listUnavailable).toEqual([]);
+        expect(yield* registry.getInstance(codexId)).toBe(codex);
+        const count = admissions;
+        yield* registry.retryUnavailable(instanceId);
+        yield* registry.retryUnavailable(ProviderInstanceId.make("removed"));
+        expect(admissions).toBe(count);
+        expect(yield* registry.getInstance(instanceId)).toBe(prime);
+      }),
+    ).pipe(Effect.provideService(HostProcessPlatform, "linux"), Effect.provide(testLayer)),
+  );
+
   it.live("rotates Prime generation only for material changes", () =>
     Effect.scoped(
       Effect.gen(function* () {

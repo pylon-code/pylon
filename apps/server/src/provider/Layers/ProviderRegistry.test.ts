@@ -1083,6 +1083,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             const instanceRegistryLayer = Layer.succeed(
               ProviderInstanceRegistry.ProviderInstanceRegistry,
               {
+                retryUnavailable: () => Effect.void,
                 getInstance: (id) =>
                   Effect.succeed(id === instance.instanceId ? instance : undefined),
                 listInstances: Effect.succeed([instance]),
@@ -1351,6 +1352,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const instanceRegistryLayer = Layer.succeed(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             {
+              retryUnavailable: () => Effect.void,
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
@@ -1465,6 +1467,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const instanceRegistryLayer = Layer.succeed(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             {
+              retryUnavailable: () => Effect.void,
               getInstance: (requestedId) =>
                 Ref.get(instancesRef).pipe(
                   Effect.map((instances) =>
@@ -1580,6 +1583,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const instanceRegistryLayer = Layer.succeed(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             {
+              retryUnavailable: () => Effect.void,
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === claudeInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
@@ -1728,6 +1732,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const instanceRegistryLayer = Layer.succeed(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             {
+              retryUnavailable: () => Effect.void,
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === claudeInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
@@ -1993,6 +1998,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const instanceRegistryLayer = Layer.succeed(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             {
+              retryUnavailable: () => Effect.void,
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === primeInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
@@ -2178,6 +2184,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const instanceRegistryLayer = Layer.succeed(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             {
+              retryUnavailable: () => Effect.void,
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === cursorInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
@@ -2302,6 +2309,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             const instanceRegistryLayer = Layer.succeed(
               ProviderInstanceRegistry.ProviderInstanceRegistry,
               {
+                retryUnavailable: () => Effect.void,
                 getInstance: (instanceId) =>
                   Effect.succeed(instanceId === openCodeInstanceId ? instance : undefined),
                 listInstances: Effect.succeed([instance]),
@@ -2404,6 +2412,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const instanceRegistryLayer = Layer.succeed(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             {
+              retryUnavailable: () => Effect.void,
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
@@ -2506,6 +2515,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const instanceRegistryLayer = Layer.succeed(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             {
+              retryUnavailable: () => Effect.void,
               getInstance: (instanceId) =>
                 Ref.get(instancesRef).pipe(
                   Effect.map((instances) =>
@@ -3740,6 +3750,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const instanceRegistryLayer = Layer.succeed(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             {
+              retryUnavailable: () => Effect.void,
               getInstance: (instanceId) =>
                 Effect.succeed(instances.find((instance) => instance.instanceId === instanceId)),
               listInstances: Effect.succeed(instances),
@@ -3912,6 +3923,7 @@ it.effect(
         const instanceRegistryLayer = Layer.succeed(
           ProviderInstanceRegistry.ProviderInstanceRegistry,
           {
+            retryUnavailable: () => Effect.void,
             getInstance: () => Effect.succeed(instance),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),

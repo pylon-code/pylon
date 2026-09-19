@@ -355,14 +355,24 @@ const makeReconcile = <R>(input: {
   readonly state: RegistryState;
   readonly driversById: ReadonlyMap<ProviderDriverKind, AnyProviderDriver<R>>;
   readonly parentScope: Scope.Scope;
-}): ((configMap: ProviderInstanceConfigMap) => Effect.Effect<void, never, R>) => {
+}): ((
+  configMap: ProviderInstanceConfigMap | undefined,
+  retryInstanceId?: ProviderInstanceId,
+) => Effect.Effect<void, never, R>) => {
   const { state, driversById, parentScope } = input;
-  return (configMap: ProviderInstanceConfigMap) =>
+  return (
+    requestedConfigMap: ProviderInstanceConfigMap | undefined,
+    retryInstanceId?: ProviderInstanceId,
+  ) =>
     state.reconcileSemaphore.withPermit(
       Effect.gen(function* () {
         const previousEntries = yield* Ref.get(state.entries);
         const previousUnavailable = yield* Ref.get(state.unavailable);
         const previousConfigMap = yield* Ref.get(state.configured);
+        const configMap = requestedConfigMap ?? previousConfigMap;
+        if (retryInstanceId !== undefined && !previousUnavailable.has(retryInstanceId)) return;
+        const retryDriver =
+          retryInstanceId === undefined ? undefined : configMap[retryInstanceId]?.driver;
         const nextRaw = Object.entries(configMap);
         const nextKeys = new Set<ProviderInstanceId>(
           nextRaw.map(([raw]) => ProviderInstanceId.make(raw)),
@@ -432,6 +442,7 @@ const makeReconcile = <R>(input: {
                 ] as const,
             );
           if (
+            driverKind !== retryDriver &&
             Equal.equals(materialEntries(previousDriverEntries), materialEntries(nextDriverEntries))
           ) {
             continue;
@@ -559,8 +570,8 @@ const makeReconcile = <R>(input: {
           const previousShadow = previousUnavailable.get(instanceId);
           if (
             previousShadow !== undefined &&
-            driver?.preflight !== undefined &&
-            !changedPreflightDrivers.has(entry.driver)
+            ((retryInstanceId !== undefined && entry.driver !== retryDriver) ||
+              (driver?.preflight !== undefined && !changedPreflightDrivers.has(entry.driver)))
           ) {
             builtUnavailable.set(instanceId, previousShadow);
             continue;
@@ -702,6 +713,8 @@ export const makeProviderInstanceRegistry = <R>(input: {
     yield* reconcile(input.configMap);
 
     const registry: ProviderInstanceRegistryShape = {
+      retryUnavailable: (instanceId) =>
+        reconcileWithR(undefined, instanceId).pipe(Effect.provideContext(driverContext)),
       getInstance: (id) => Ref.get(entries).pipe(Effect.map((map) => map.get(id)?.instance)),
       listInstances: Ref.get(entries).pipe(
         Effect.map(
