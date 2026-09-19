@@ -25,6 +25,7 @@ import type {
 } from "@opencode-ai/sdk/v2";
 
 import {
+  EnvironmentId,
   ApprovalRequestId,
   CheckpointRef,
   TurnId,
@@ -35,6 +36,8 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { ServerActivation } from "../../serverActivation.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
@@ -70,6 +73,8 @@ type MessageEntry = {
   };
   parts: Array<unknown>;
 };
+
+const mcpAdd = vi.fn(async () => ({ data: {} }));
 
 const runtimeMock = {
   state: {
@@ -252,6 +257,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
   createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>
     ({
+      mcp: { add: mcpAdd },
       session: {
         create: async (input: Record<string, unknown>) => {
           runtimeMock.state.sessionCreateUrls.push(baseUrl);
@@ -661,6 +667,8 @@ const makeOpenCodeAdapterTestLayer = (
 const OpenCodeAdapterTestLayer = makeOpenCodeAdapterTestLayer();
 
 beforeEach(() => {
+  mcpAdd.mockReset();
+  mcpAdd.mockResolvedValue({ data: {} });
   runtimeMock.reset();
 });
 
@@ -7913,6 +7921,75 @@ const completeExactOpenCodeTurn = (
   });
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCode exact rollback", (it) => {
+  for (const connectionFails of [false, true]) {
+    it.effect(
+      `recovers before activation and gates turns on MCP (failure: ${connectionFails})`,
+      () =>
+        Effect.gen(function* () {
+          const adapter = yield* OpenCodeAdapter;
+          const threadId = asThreadId(`exact-recovery-mcp-activation-${connectionFails}`);
+          yield* Effect.addFinalizer(() => adapter.stopSession(threadId).pipe(Effect.orDie));
+          makeOpenCodeEventQueue();
+          yield* startExactOpenCodeSession(adapter, threadId);
+          const selected = (yield* adapter.listSessions()).find((s) => s.threadId === threadId)!;
+          yield* adapter.stopSession(threadId);
+          const activation = yield* Deferred.make<void>();
+          const connecting = promiseWithResolvers<void>();
+          const connected = promiseWithResolvers<void>();
+          mcpAdd.mockImplementation(async () => {
+            connecting.resolve();
+            await connected.promise;
+            return { data: {} };
+          });
+          McpProviderSession.setMcpProviderSession({
+            environmentId: EnvironmentId.make("test"),
+            threadId,
+            providerSessionId: "test-session",
+            providerInstanceId: ProviderInstanceId.make("opencode"),
+            endpoint: "http://127.0.0.1:3773/mcp",
+            authorizationHeader: "Bearer test",
+            capabilities: new Set(["preview"]),
+          });
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              McpProviderSession.clearMcpProviderSession(threadId);
+              connected.resolve();
+            }),
+          );
+          const recovered = yield* adapter.recoverSession!({
+            threadId,
+            providerInstanceId: ProviderInstanceId.make("opencode"),
+            sessionIncarnationId: selected.sessionIncarnationId!,
+            runtimeMode: "full-access",
+            cwd: process.cwd(),
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("opencode"),
+              "openai/gpt-5",
+            ),
+            resumeCursor: selected.resumeCursor,
+          }).pipe(Effect.provideService(ServerActivation, Deferred.await(activation)));
+          NodeAssert.equal(recovered?.sessionIncarnationId, selected.sessionIncarnationId);
+          NodeAssert.equal(mcpAdd.mock.calls.length, 0);
+          yield* adapter.activateRecoveredSession!(threadId);
+          yield* Deferred.succeed(activation, undefined);
+          yield* Effect.promise(() => connecting.promise);
+          const turn = yield* adapter
+            .sendTurn({ threadId, input: "continue" })
+            .pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          NodeAssert.equal(runtimeMock.state.promptCalls.length, 0);
+          if (connectionFails) connected.reject(new Error("MCP connection failed"));
+          else connected.resolve();
+          const result = yield* Fiber.join(turn).pipe(Effect.exit);
+          NodeAssert.equal(Exit.isFailure(result), connectionFails);
+          if (Exit.isFailure(result))
+            NodeAssert.match(Cause.pretty(result.cause), /MCP connection failed/);
+          NodeAssert.equal(mcpAdd.mock.calls.length, 1);
+          NodeAssert.equal(runtimeMock.state.promptCalls.length, connectionFails ? 0 : 1);
+        }).pipe(Effect.scoped),
+    );
+  }
+
   it.effect("rejects unknown external plan behavior while preserving ordinary plan turns", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
