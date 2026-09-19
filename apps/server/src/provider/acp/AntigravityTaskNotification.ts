@@ -243,7 +243,7 @@ function isPotentialNoticePrefix(candidate: string): boolean {
   return false;
 }
 
-/** Buffer only a possible standalone notice; normal prose keeps streaming. */
+/** Extract provider notices from narration while keeping ordinary prose streaming. */
 export class AntigravityTaskNotificationBuffer {
   private readonly fallbackTaskId: string | undefined;
   constructor(fallbackTaskId?: string) {
@@ -251,9 +251,59 @@ export class AntigravityTaskNotificationBuffer {
   }
   private pending = "";
   private passthrough = false;
+  private proseTail = "";
+  private proseLine = "";
+  private lineBreaks = 0;
+  private fence: string | undefined;
+
+  private streamProse(text: string): string {
+    const combined = this.proseTail + text;
+    this.proseTail = "";
+    for (let index = 0; index < combined.length; index++) {
+      // Only a full provider preamble at a paragraph boundary can interrupt
+      // narration. Bare tags and fenced examples remain ordinary text.
+      if (this.lineBreaks >= 2 && !this.fence && combined[index] === "T") {
+        const candidate = combined.slice(index);
+        if (
+          candidate.length <= MAX_BUFFER_LENGTH &&
+          candidate.startsWith(SYSTEM_MESSAGE_PREAMBLE)
+        ) {
+          this.passthrough = false;
+          this.lineBreaks = 0;
+          this.pending = candidate;
+          return combined.slice(0, index);
+        }
+        if (SYSTEM_MESSAGE_PREAMBLE.startsWith(candidate)) {
+          this.proseTail = candidate;
+          return combined.slice(0, index);
+        }
+      }
+      const char = combined[index];
+      if (char === "\n") {
+        const delimiter = /^ {0,3}(`{3,}|~{3,})/.exec(this.proseLine)?.[1];
+        if (delimiter) {
+          if (!this.fence) this.fence = delimiter;
+          else if (
+            delimiter[0] === this.fence[0] &&
+            delimiter.length >= this.fence.length &&
+            this.proseLine.trim() === delimiter
+          ) {
+            this.fence = undefined;
+          }
+        }
+        this.proseLine = "";
+        this.lineBreaks++;
+      } else if (char !== "\r") {
+        this.lineBreaks = 0;
+        // Only the beginning of the line is needed to track Markdown fences.
+        if (this.proseLine.length < 256) this.proseLine += char;
+      }
+    }
+    return combined;
+  }
 
   push(text: string): string {
-    if (this.passthrough) return text;
+    if (this.passthrough) return this.streamProse(text);
     this.pending += text;
     const candidate = this.pending.trimStart();
     if (this.pending.length <= MAX_BUFFER_LENGTH && isPotentialNoticePrefix(candidate)) {
@@ -262,15 +312,30 @@ export class AntigravityTaskNotificationBuffer {
     this.passthrough = true;
     const result = this.pending;
     this.pending = "";
-    return result;
+    return this.streamProse(result);
   }
 
   finish(): { text: string; notification: AntigravityTaskNotification | undefined } {
-    const text = this.pending;
+    const text = this.pending + this.proseTail;
     this.pending = "";
+    this.proseTail = "";
     const notification = this.passthrough
       ? undefined
       : parseAntigravityTaskNotification(text, this.fallbackTaskId);
-    return { text: notification ? "" : text, notification };
+    if (notification) return { text: "", notification };
+
+    // ACP can append the assistant's next narration to the same item as a
+    // system notice. Validate the complete envelope independently, without
+    // relaxing the standalone parser's protection for quoted/malformed text.
+    const closeTag = "</SYSTEM_MESSAGE>";
+    const closeIndex = text.indexOf(closeTag);
+    if (!this.passthrough && closeIndex !== -1) {
+      const end = closeIndex + closeTag.length;
+      const leadingNotice = parseAntigravityTaskNotification(text.slice(0, end));
+      if (leadingNotice) {
+        return { text: text.slice(end), notification: leadingNotice };
+      }
+    }
+    return { text, notification: undefined };
   }
 }

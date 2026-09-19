@@ -247,12 +247,54 @@ describe("Antigravity task notifications", () => {
       expect(parseAntigravityTaskNotification(peerReview)).toBeUndefined();
     });
 
+    it("recognizes a system notice between narration across every chunk boundary", () => {
+      const before = "I will wait for the tests.\n\nThe system will notify us.\n\n";
+      const after = "I will check the results.";
+      const notice = systemNotice(0, "log");
+      const text = before + notice + after;
+      for (let split = 0; split <= text.length; split++) {
+        const buffer = new AntigravityTaskNotificationBuffer();
+        const emitted = buffer.push(text.slice(0, split)) + buffer.push(text.slice(split));
+        const result = buffer.finish();
+        expect(emitted).toBe(before);
+        expect(result).toEqual({
+          text: after,
+          notification: parseAntigravityTaskNotification(notice),
+        });
+      }
+    });
+
+    it("preserves fenced system notice examples even with character-sized chunks", () => {
+      const text = "Here is an example:\n\n```text\n\n" + systemNotice(0, "log") + "\n```";
+      const buffer = new AntigravityTaskNotificationBuffer();
+      let emitted = "";
+      for (const char of text) emitted += buffer.push(char);
+      const result = buffer.finish();
+      expect(emitted + result.text).toBe(text);
+      expect(result.notification).toBeUndefined();
+    });
+
+    it("separates a closed system notice from narration across every chunk boundary", () => {
+      const notice = systemNotice(0, "log");
+      const narration = "I will check the progress of the local task.";
+      const text = notice + narration;
+      for (let split = 0; split <= text.length; split++) {
+        const buffer = new AntigravityTaskNotificationBuffer();
+        expect(buffer.push(text.slice(0, split))).toBe("");
+        expect(buffer.push(text.slice(split))).toBe("");
+        expect(buffer.finish()).toEqual({
+          text: narration,
+          notification: parseAntigravityTaskNotification(notice),
+        });
+      }
+      expect(parseAntigravityTaskNotification(text)).toBeUndefined();
+    });
+
     it.each([
       "<SYSTEM_MESSAGE>",
       "<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-17T17:21:40Z",
       systemNotice().replace("code 0", "code unknown"),
       systemNotice().replace("code 0", "code 99999999999999999"),
-      systemNotice() + "\nAdditional explanation from assistant.",
     ])("returns incomplete or unrecognized system messages without losing text", (text) => {
       const buffer = new AntigravityTaskNotificationBuffer();
       const emitted = buffer.push(text);

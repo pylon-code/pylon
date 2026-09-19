@@ -503,21 +503,20 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           rawPayload: { taskId: notification.taskId },
         }),
       );
-    } else {
-      yield* emitAssistantText(context, key, text, {});
-      if (key && message.started) {
-        yield* emit(
-          context,
-          makeAcpAssistantItemEvent({
-            stamp: yield* stamp,
-            provider: PROVIDER,
-            threadId: context.threadId,
-            turnId: message.turnId,
-            itemId: key,
-            lifecycle: "item.completed",
-          }),
-        );
-      }
+    }
+    yield* emitAssistantText(context, key, text, {});
+    if (key && message.started) {
+      yield* emit(
+        context,
+        makeAcpAssistantItemEvent({
+          stamp: yield* stamp,
+          provider: PROVIDER,
+          threadId: context.threadId,
+          turnId: message.turnId,
+          itemId: key,
+          lifecycle: "item.completed",
+        }),
+      );
     }
     context.assistantMessages.delete(key);
     if (key === context.currentAnonymousItemId) {
