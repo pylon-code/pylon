@@ -4,6 +4,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as AcpErrors from "effect-acp/errors";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
@@ -304,6 +305,110 @@ it.effect("exempts watchdog from prompt inactivity timeout when tool calls are i
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+for (const scenario of [
+  {
+    name: "refreshes the deadline on root tool progress",
+    method: "tool-progress",
+    remaining: 2000,
+  },
+  {
+    name: "does not refresh the deadline on foreign progress",
+    method: "foreign-progress",
+    remaining: 1250,
+  },
+  {
+    name: "restores the shorter timeout after tool completion",
+    method: "tool-complete",
+    remaining: 500,
+  },
+]) {
+  it.effect(`prompt watchdog ${scenario.name}`, () =>
+    Effect.gen(function* () {
+      const toolStarted = yield* Deferred.make<void>();
+      const runtime = yield* make({
+        spawn: {
+          command: process.execPath,
+          args: mockAgentArgs,
+          env: { T3_ACP_EMIT_ACTIVE_TOOL_THEN_HANG: "1" },
+        },
+        cwd: process.cwd(),
+        promptInactivityTimeout: "500 millis",
+        toolInactivityTimeout: "2 seconds",
+        clientInfo: { name: "watchdog-progress-test", version: "0.0.0" },
+      });
+      yield* runtime.getEvents().pipe(
+        Stream.runForEach((event) => {
+          if (event._tag === "EventStreamBarrier") {
+            return Deferred.succeed(event.acknowledge, undefined).pipe(Effect.asVoid);
+          }
+          return event._tag === "ToolCallUpdated" && event.toolCall.status === "inProgress"
+            ? Deferred.succeed(toolStarted, undefined).pipe(Effect.asVoid)
+            : Effect.void;
+        }),
+        Effect.forkScoped,
+      );
+      yield* runtime.start();
+      const promptFiber = yield* runtime
+        .prompt({ prompt: [{ type: "text", text: "run tool" }] })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(toolStarted);
+      yield* TestClock.adjust("750 millis");
+      yield* runtime.request(`_test/watchdog-${scenario.method}`, {});
+      yield* runtime.drainEvents;
+      yield* TestClock.adjust(scenario.remaining - 1);
+      assert.isUndefined(promptFiber.pollUnsafe());
+      yield* TestClock.adjust(1);
+      const error = yield* Fiber.join(promptFiber).pipe(Effect.flip);
+      assert.equal(error._tag, "AcpTransportError");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+}
+
+it.effect("Antigravity bounds silent tools without applying the shorter prompt timeout", () =>
+  Effect.gen(function* () {
+    const toolStarted = yield* Deferred.make<void>();
+    const runtime = yield* makeAntigravityAcpRuntime({
+      spawn: {
+        command: process.execPath,
+        args: mockAgentArgs,
+        env: {
+          T3_ACP_ANTIGRAVITY: "1",
+          T3_ACP_EMIT_ACTIVE_TOOL_THEN_HANG: "1",
+        },
+      },
+      childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+      clientFileSystem: true,
+      cwd: process.cwd(),
+      clientInfo: { name: "antigravity-silent-tool-test", version: "0.0.0" },
+    });
+    yield* runtime.getEvents().pipe(
+      Stream.runForEach((event) =>
+        event._tag === "ToolCallUpdated" && event.toolCall.status === "inProgress"
+          ? Deferred.succeed(toolStarted, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      ),
+      Effect.forkScoped,
+    );
+    yield* runtime.start();
+    const promptFiber = yield* runtime
+      .prompt({ prompt: [{ type: "text", text: "run tool" }] })
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(toolStarted);
+
+    yield* TestClock.adjust("5 minutes");
+    assert.isUndefined(promptFiber.pollUnsafe());
+    yield* TestClock.adjust("9 minutes");
+    assert.isUndefined(promptFiber.pollUnsafe());
+    yield* TestClock.adjust("1 minute");
+
+    const error = yield* Fiber.join(promptFiber).pipe(Effect.flip);
+    assert.equal(error._tag, "AcpTransportError");
+    if (error._tag === "AcpTransportError") {
+      assert.include(error.detail ?? "", "sent nothing for 15 minutes");
+    }
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect(
   "exempts watchdog from prompt inactivity timeout when client requests are in flight",
   () =>
@@ -318,6 +423,7 @@ it.effect(
         },
         cwd: process.cwd(),
         promptInactivityTimeout: "500 millis",
+        toolInactivityTimeout: "1 second",
         clientInfo: {
           name: "acp-session-runtime-client-req-exempt-test",
           version: "0.0.0",
@@ -347,6 +453,8 @@ it.effect(
       yield* Effect.yieldNow;
       assert.isUndefined(promptFiber.pollUnsafe());
 
+      yield* TestClock.adjust("2 seconds");
+      assert.isUndefined(promptFiber.pollUnsafe());
       yield* Deferred.succeed(permissionRelease, undefined);
       yield* Fiber.interrupt(promptFiber);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

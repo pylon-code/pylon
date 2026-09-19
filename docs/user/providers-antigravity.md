@@ -104,6 +104,11 @@ Resuming can take longer than an ordinary follow-up.
 Antigravity to finish cancellation before forcing its process to stop. Process cleanup can add a
 little time. Stopping cannot undo commands or file changes already completed.
 
+If Antigravity sends no progress for five minutes, Pylon stops the unresponsive session and reports
+an error. While an agent tool is active, the silence limit is fifteen minutes; even a legitimate
+long-running command must report progress within that interval. Waiting for your approval or an
+answer to a question does not count toward these limits.
+
 ### Command output
 
 Background command completion notices appear as expandable command results, with

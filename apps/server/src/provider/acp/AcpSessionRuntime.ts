@@ -124,6 +124,8 @@ export interface AcpSessionRuntimeOptions {
   ) => Effect.Effect<void, never>;
   /** Disconnects the session when the agent produces no activity within this duration during a prompt. */
   readonly promptInactivityTimeout?: Duration.Input;
+  /** Optional silence limit while agent-owned tools are active; otherwise tools are exempt. */
+  readonly toolInactivityTimeout?: Duration.Input;
   /** Redacts or drops a line before it is added to the stderr ring buffer. Returning undefined drops the line. */
   readonly redactStderrLine?: (line: string) => string | undefined;
 }
@@ -387,7 +389,16 @@ export const make = (
       ? Duration.toMillis(promptInactivityTimeout)
       : undefined;
 
+    const toolInactivityTimeoutMillis =
+      options.toolInactivityTimeout === undefined
+        ? undefined
+        : Duration.toMillis(Duration.fromInputUnsafe(options.toolInactivityTimeout));
     const lastAgentActivityRef = yield* Ref.make<number>(yield* Clock.currentTimeMillis);
+    const watchdogWakeups = yield* Queue.sliding<void>(1);
+    const recordAgentActivity = Effect.gen(function* () {
+      yield* Ref.set(lastAgentActivityRef, yield* Clock.currentTimeMillis);
+      yield* Queue.offer(watchdogWakeups, undefined);
+    });
     const inflightClientRequestsRef = yield* Ref.make<number>(0);
 
     const maxStderrRingLines = 20;
@@ -636,7 +647,6 @@ export const make = (
           if (options.shouldDiscardSessionUpdate?.(notification) === true) {
             return;
           }
-          yield* Ref.set(lastAgentActivityRef, yield* Clock.currentTimeMillis);
           const gate = yield* Ref.get(sessionLoadGateRef);
           if (
             Option.isSome(gate) &&
@@ -683,6 +693,7 @@ export const make = (
             yield* options.observeSessionUpdate(notification);
           }
           yield* processSessionUpdate(notification);
+          yield* recordAgentActivity;
         }),
       ),
     );
@@ -1057,11 +1068,15 @@ export const make = (
       effect: Effect.Effect<A, E, R>,
     ): Effect.Effect<A, E, R> =>
       Effect.gen(function* () {
-        yield* Ref.set(lastAgentActivityRef, yield* Clock.currentTimeMillis);
+        yield* recordAgentActivity;
         yield* Ref.update(inflightClientRequestsRef, (count) => count + 1);
         return yield* effect;
       }).pipe(
-        Effect.ensuring(Ref.update(inflightClientRequestsRef, (count) => Math.max(0, count - 1))),
+        Effect.ensuring(
+          Ref.update(inflightClientRequestsRef, (count) => Math.max(0, count - 1)).pipe(
+            Effect.andThen(recordAgentActivity),
+          ),
+        ),
       );
 
     const makePromptWatchdog = (completed: Deferred.Deferred<void>) =>
@@ -1075,21 +1090,31 @@ export const make = (
 
           const now = yield* Clock.currentTimeMillis;
           const last = yield* Ref.get(lastAgentActivityRef);
-          const deadline = last + promptInactivityTimeoutMillis;
+          const toolCalls = yield* Ref.get(toolCallsRef);
+          const inactivityTimeout =
+            toolCalls.size > 0 ? toolInactivityTimeoutMillis : promptInactivityTimeoutMillis;
+          const deadline = last + (inactivityTimeout ?? promptInactivityTimeoutMillis);
 
           if (now < deadline) {
-            yield* Effect.sleep(Duration.millis(deadline - now));
+            // A completed tool switches back to the shorter prompt deadline.
+            // Wake on activity rather than sleeping through that transition.
+            yield* Effect.raceFirst(
+              Effect.sleep(Duration.millis(deadline - now)),
+              Queue.take(watchdogWakeups),
+            );
             continue;
           }
 
-          const toolCalls = yield* Ref.get(toolCallsRef);
           const inflight = yield* Ref.get(inflightClientRequestsRef);
-          if (toolCalls.size > 0 || inflight > 0) {
+          // Client requests may be waiting for a human approval. An agent-owned
+          // tool, however, can itself be stuck and must not disable the watchdog
+          // forever for providers that configure a tool silence limit.
+          if (inactivityTimeout === undefined || inflight > 0) {
             yield* Ref.set(lastAgentActivityRef, now);
             continue;
           }
 
-          const minutes = Math.max(1, Math.round(promptInactivityTimeoutMillis / 60_000));
+          const minutes = Math.max(1, Math.round(inactivityTimeout / 60_000));
           const error = new EffectAcpErrors.AcpTransportError({
             operation: "call-rpc",
             method: "session/prompt",
