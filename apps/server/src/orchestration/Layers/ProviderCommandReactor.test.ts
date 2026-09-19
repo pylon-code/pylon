@@ -4208,6 +4208,147 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
+  const startTurnAndSettle = async (harness: Awaited<ReturnType<typeof createHarness>>) => {
+    const now = "2026-01-01T00:00:00.000Z";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-unbound-1"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-unbound-1"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      return thread?.session?.status === "running";
+    });
+    const boundIncarnation = harness.runtimeSessions[0]!.sessionIncarnationId!;
+    // The harness has no runtime ingestion; settle the turn the way ingestion
+    // would after a turn.completed event.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-ready-unbound-1"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          startedAt: now,
+          sessionIncarnationId: boundIncarnation,
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    return boundIncarnation;
+  };
+
+  it("adopts an idle runtime whose incarnation the projection never bound", async () => {
+    const harness = await createHarness();
+    const boundIncarnation = await startTurnAndSettle(harness);
+    // Simulate ProviderService recovery restarting the runtime under a fresh
+    // incarnation without a projection binding.
+    const recoveredIncarnation = RuntimeSessionId.make("session-recovered");
+    harness.runtimeSessions.splice(0, 1, {
+      ...harness.runtimeSessions[0]!,
+      sessionIncarnationId: recoveredIncarnation,
+    });
+    expect(recoveredIncarnation).not.toBe(boundIncarnation);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-unbound-2"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-unbound-2"),
+          role: "user",
+          text: "second",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+    expect(harness.sendTurn.mock.calls[1]?.[0]?.sessionIncarnationId).toBe(recoveredIncarnation);
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      return thread?.session?.status === "running";
+    });
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.session?.sessionIncarnationId).toBe(recoveredIncarnation);
+    expect(
+      thread?.activities.filter((activity) => activity.kind === "provider.turn.start.failed"),
+    ).toHaveLength(0);
+  });
+
+  it("still rejects an unbound runtime that is mid-turn", async () => {
+    const harness = await createHarness();
+    await startTurnAndSettle(harness);
+    harness.runtimeSessions.splice(0, 1, {
+      ...harness.runtimeSessions[0]!,
+      status: "running",
+      activeTurnId: asTurnId("turn-foreign"),
+      sessionIncarnationId: RuntimeSessionId.make("session-foreign"),
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-unbound-3"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-unbound-3"),
+          role: "user",
+          text: "second",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      return thread?.session?.status === "error";
+    });
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.session?.lastError).toContain(
+      "no longer matches the accepted session incarnation",
+    );
+  });
+
   effectIt.effect("delivers an accepted steer before a later settings transition", () =>
     Effect.gen(function* () {
       const harness = yield* Effect.promise(() => createHarness());
