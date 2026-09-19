@@ -86,7 +86,10 @@ import {
   PRIME_AGENT_PLAN_TOOL_DEFINITION,
   PRIME_AGENT_PLAN_TOOL_NAME,
 } from "./PrimeAgentManagedExtension.ts";
-import { PRIME_AGENT_EVENT_BUFFER_CAPACITY } from "./PrimeAgentEventBuffer.ts";
+import {
+  PRIME_AGENT_EVENT_BUFFER_CAPACITY,
+  PRIME_AGENT_PROVISIONAL_SEGMENT_EVENT_LIMIT,
+} from "./PrimeAgentEventBuffer.ts";
 import { primeAgentSessionFileName } from "./PrimeAgentSessionIdentity.ts";
 import {
   isPrimeAgentCompatibleResumeCursor,
@@ -936,6 +939,8 @@ export interface PrimeAgentDaemonSessionRuntimeInput {
   readonly disableExtensionDiscovery?: boolean;
   /** Supervised sessions fail closed on transport loss and are re-created after verification. */
   readonly disableAutoReconnect?: boolean;
+  /** Test seam: overrides PRIME_AGENT_PROVISIONAL_SEGMENT_EVENT_LIMIT. */
+  readonly provisionalSegmentEventLimit?: number;
   /** Explicit Pylon-owned extension that must load without errors or collisions. */
   readonly expectedExtension?: {
     readonly path: string;
@@ -2601,6 +2606,8 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
     const CORRELATED_PROOF_FENCE_RETIRED = Symbol("correlated-proof-fence-retired");
     const MAX_CORRELATED_PROOF_ROUTES = PRIME_AGENT_EVENT_BUFFER_CAPACITY;
     const MAX_CORRELATED_PROOF_ROUTE_WEIGHT = 64 * 1024 * 1024;
+    const MAX_PROVISIONAL_SEGMENT_EVENTS =
+      input.provisionalSegmentEventLimit ?? PRIME_AGENT_PROVISIONAL_SEGMENT_EVENT_LIMIT;
     const boundedCorrelatedProofRouteWeight = (root: unknown): number => {
       const stack: unknown[] = [root];
       const seen = new WeakSet<object>();
@@ -2663,6 +2670,22 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         Queue.offerUnsafe(runtimeEventWeightCapacityAvailable, undefined);
       }
     };
+    // Waits until the event queue has room for one more proof-routed offer. Runs
+    // only inside the serialized ordinary route, so it is the single waiter on
+    // the capacity signal. Resolves false once the caller's fence retires.
+    const awaitRuntimeEventQueueRoom = (isCurrent: () => boolean): Effect.Effect<boolean> =>
+      Effect.suspend(() => {
+        if (!isCurrent()) return Effect.succeed(false);
+        if (
+          Queue.sizeUnsafe(eventQueue) < PRIME_AGENT_EVENT_BUFFER_CAPACITY / 2 &&
+          queuedRuntimeEventWeight < MAX_CORRELATED_PROOF_ROUTE_WEIGHT / 2
+        ) {
+          return Effect.succeed(true);
+        }
+        return Queue.take(runtimeEventWeightCapacityAvailable).pipe(
+          Effect.flatMap(() => awaitRuntimeEventQueueRoom(isCurrent)),
+        );
+      });
     // Ordinary raw routes are serialized behind a separate bounded staging tail, so
     // at most one decoded event waits here for queue capacity. Initialization never
     // waits because no stream consumer exists until runtime creation returns.
@@ -3873,8 +3896,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         }
         const segment = pending ?? { correlationId, events: [], weight: 0 };
         const weight = boundedCorrelatedProofRouteWeight(event);
+        // Streamed deltas arrive per token chunk, so this segment is bounded
+        // by byte weight plus a generous count, not by the pubsub slot count.
         if (
-          segment.events.length >= PRIME_AGENT_EVENT_BUFFER_CAPACITY ||
+          segment.events.length >= MAX_PROVISIONAL_SEGMENT_EVENTS ||
           weight > MAX_CORRELATED_PROOF_ROUTE_WEIGHT - segment.weight
         ) {
           recovered.provisionalAssistant = undefined;
@@ -3893,10 +3918,23 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           if (duplicate && (pending === undefined || pending.correlationId === correlationId))
             return Effect.void;
           if (correlationId !== undefined) recovered.correlationIds.delete(correlationId);
-          if (pending !== undefined)
-            return Effect.forEach(pending.events, (effect) => effect, { discard: true }).pipe(
-              Effect.andThen(forwarded),
-            );
+          if (pending !== undefined) {
+            // The held segment can be far larger than the event queue. Its
+            // offers take the fail-fast proof route, so wait for queue room
+            // before each one instead of losing the tail of a long reply.
+            const releaseIsCurrent = () =>
+              !runtimeEventIngressFailed &&
+              recoveredMessageCompletions === recovered &&
+              correlatedPromptLifecycleProofFenceIsCurrent(recovered.proofEpoch);
+            return Effect.forEach(
+              pending.events,
+              (effect) =>
+                awaitRuntimeEventQueueRoom(releaseIsCurrent).pipe(
+                  Effect.flatMap((current) => (current ? effect : Effect.void)),
+                ),
+              { discard: true },
+            ).pipe(Effect.andThen(forwarded));
+          }
         } else if (event.message.role === "toolResult" && duplicate) {
           return Effect.void;
         }
