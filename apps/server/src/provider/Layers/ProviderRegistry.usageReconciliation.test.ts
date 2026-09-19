@@ -89,6 +89,7 @@ it.effect(
       const registryLayer = ProviderRegistryLive.pipe(
         Layer.provideMerge(
           Layer.succeed(ProviderInstanceRegistry, {
+            retryUnavailable: () => Effect.void,
             getInstance: (id) =>
               Ref.get(instances).pipe(
                 Effect.map((items) => items.find((item) => item.instanceId === id)),

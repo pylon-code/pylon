@@ -17,6 +17,7 @@ import { PrimeAgentOwnershipReceiptStore } from "./PrimeAgentOwnershipReceipt.ts
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 import {
@@ -99,6 +100,7 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
   const settings = yield* ServerSettingsService;
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
+  const instanceRegistry = yield* ProviderInstanceRegistry;
   const runtimeContext = yield* Effect.context<never>();
   const runPromise = Effect.runPromiseWith(runtimeContext);
 
@@ -174,13 +176,14 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
         );
       },
       recoverLegacyOwnership: async (instanceId, verifiedBinaryPath) => {
-        const changed = await recoverPrimeAgentLegacySettlement({
+        await recoverPrimeAgentLegacySettlement({
           instanceId,
           store: new PrimeAgentOwnershipReceiptStore(config.stateDir, { platform }),
           loadBridge: () => runPromise(loadPrimeAgentDaemonBridge(verifiedBinaryPath)),
         });
-        if (changed)
-          await runPromise(providerRegistry.refreshInstance(ProviderInstanceId.make(instanceId)));
+        // Recovery may have completed before a previous install failed. Retry admission
+        // even when this call found no remaining receipt; status refresh cannot create instances.
+        await runPromise(instanceRegistry.retryUnavailable(ProviderInstanceId.make(instanceId)));
       },
       reserveQuiescentBinding: async (instanceId, expected) => {
         const current = await runPromise(
