@@ -459,6 +459,27 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
     );
   });
 
+  const completeAssistantText = Effect.fn("AntigravityAdapter.completeAssistantText")(function* (
+    context: SessionContext,
+    itemId: string,
+  ) {
+    const message = context.assistantMessages.get(itemId);
+    if (itemId && message?.started) {
+      yield* emit(
+        context,
+        makeAcpAssistantItemEvent({
+          stamp: yield* stamp,
+          provider: PROVIDER,
+          threadId: context.threadId,
+          turnId: message.turnId,
+          itemId,
+          lifecycle: "item.completed",
+        }),
+      );
+    }
+    context.assistantMessages.delete(itemId);
+  });
+
   const finishAssistantMessage = Effect.fn("AntigravityAdapter.finishAssistantMessage")(function* (
     context: SessionContext,
     itemId: string,
@@ -466,8 +487,19 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
     const key = itemId || context.currentAnonymousItemId || "";
     const message = context.assistantMessages.get(key);
     if (!message) return;
-    const { text, notification } = message.buffer.finish();
-    if (notification) {
+    let textItemId = key;
+    let segment = 0;
+    for (const part of message.buffer.finish()) {
+      if (part.type === "text") {
+        assistantMessage(context, textItemId).turnId = message.turnId;
+        yield* emitAssistantText(context, textItemId, part.text, {});
+        continue;
+      }
+      // Completing the previous item is essential: ingestion keeps appending
+      // to its active assistant segment until it receives item.completed.
+      yield* completeAssistantText(context, textItemId);
+      textItemId = `${key}:after-task:${++segment}`;
+      const notification = part.notification;
       // Native task IDs are not ACP tool IDs. Do not correlate by command text:
       // the same command may be running more than once at the same time.
       const status =
@@ -504,21 +536,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         }),
       );
     }
-    yield* emitAssistantText(context, key, text, {});
-    if (key && message.started) {
-      yield* emit(
-        context,
-        makeAcpAssistantItemEvent({
-          stamp: yield* stamp,
-          provider: PROVIDER,
-          threadId: context.threadId,
-          turnId: message.turnId,
-          itemId: key,
-          lifecycle: "item.completed",
-        }),
-      );
-    }
-    context.assistantMessages.delete(key);
+    yield* completeAssistantText(context, textItemId);
     if (key === context.currentAnonymousItemId) {
       context.currentAnonymousItemId = undefined;
     }

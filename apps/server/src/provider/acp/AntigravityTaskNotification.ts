@@ -243,6 +243,24 @@ function isPotentialNoticePrefix(candidate: string): boolean {
   return false;
 }
 
+export type AntigravityMessagePart =
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "notification"; readonly notification: AntigravityTaskNotification };
+
+// Mixed messages need an unambiguous provider trailer. A literal closing tag
+// can occur in command output (including tests of this very protocol).
+const CLOSED_SYSTEM_TRAILER =
+  /(?:^|\r?\n)(?:[^\S\r\n]*Log:[^\S\r\n]*file:\/\/[^\r\n]+\r?\n[^\S\r\n]*|[^\S\r\n]*<\/attachment>\s*)<\/SYSTEM_MESSAGE>/g;
+
+function leadingSystemNotice(text: string) {
+  for (const trailer of text.matchAll(CLOSED_SYSTEM_TRAILER)) {
+    const end = trailer.index + trailer[0].length;
+    const notification = parseAntigravityTaskNotification(text.slice(0, end));
+    if (notification) return { notification, remainder: text.slice(end) };
+  }
+  return undefined;
+}
+
 /** Extract provider notices from narration while keeping ordinary prose streaming. */
 export class AntigravityTaskNotificationBuffer {
   private readonly fallbackTaskId: string | undefined;
@@ -315,27 +333,40 @@ export class AntigravityTaskNotificationBuffer {
     return this.streamProse(result);
   }
 
-  finish(): { text: string; notification: AntigravityTaskNotification | undefined } {
-    const text = this.pending + this.proseTail;
+  finish(): ReadonlyArray<AntigravityMessagePart> {
+    const parts: AntigravityMessagePart[] = [];
+    let text = this.pending + this.proseTail;
+    let passthrough = this.passthrough;
+    let fallbackTaskId = this.fallbackTaskId;
     this.pending = "";
     this.proseTail = "";
-    const notification = this.passthrough
-      ? undefined
-      : parseAntigravityTaskNotification(text, this.fallbackTaskId);
-    if (notification) return { text: "", notification };
-
-    // ACP can append the assistant's next narration to the same item as a
-    // system notice. Validate the complete envelope independently, without
-    // relaxing the standalone parser's protection for quoted/malformed text.
-    const closeTag = "</SYSTEM_MESSAGE>";
-    const closeIndex = text.indexOf(closeTag);
-    if (!this.passthrough && closeIndex !== -1) {
-      const end = closeIndex + closeTag.length;
-      const leadingNotice = parseAntigravityTaskNotification(text.slice(0, end));
-      if (leadingNotice) {
-        return { text: text.slice(end), notification: leadingNotice };
+    while (true) {
+      if (passthrough) {
+        if (text) parts.push({ type: "text", text });
+        break;
       }
+
+      // Split before parsing the whole buffer: multiple notices otherwise look
+      // like a single notice whose output contains the intervening narration.
+      const leading = leadingSystemNotice(text);
+      const notification =
+        leading?.notification ?? parseAntigravityTaskNotification(text, fallbackTaskId);
+      if (!notification) {
+        if (text) parts.push({ type: "text", text });
+        break;
+      }
+      parts.push({ type: "notification", notification });
+      if (!leading?.remainder) break;
+
+      const buffer = new AntigravityTaskNotificationBuffer(
+        this.fallbackTaskId ? `${this.fallbackTaskId}:notice:${parts.length}` : undefined,
+      );
+      const prose = buffer.push(leading.remainder);
+      if (prose) parts.push({ type: "text", text: prose });
+      text = buffer.pending + buffer.proseTail;
+      passthrough = buffer.passthrough;
+      fallbackTaskId = buffer.fallbackTaskId;
     }
-    return { text, notification: undefined };
+    return parts;
   }
 }
