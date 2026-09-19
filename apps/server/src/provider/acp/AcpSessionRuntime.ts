@@ -1077,18 +1077,22 @@ export const make = (
         return;
       }
 
-      yield* acp.agent.cancel({ sessionId: started.sessionId });
-      if (Option.isNone(activePrompt)) {
-        return;
-      }
+      const cancelGrace = options.cancelTimeout ?? defaultCancelTimeout;
       const completed = yield* Effect.gen(function* () {
-        const result = yield* Fiber.await(activePrompt.value.fiber);
-        yield* Deferred.await(activePrompt.value.completed);
+        yield* acp.agent.cancel({ sessionId: started.sessionId });
+        if (Option.isNone(activePrompt)) {
+          return;
+        }
+        const prompt = activePrompt.value;
+        const result = yield* Fiber.await(prompt.fiber);
+        yield* Deferred.await(prompt.completed);
         if (Option.isNone(yield* Ref.get(terminationErrorRef))) {
           yield* drainEvents;
         }
-        return result;
-      }).pipe(Effect.timeoutOption(options.cancelTimeout ?? defaultCancelTimeout));
+        if (Exit.isFailure(result)) {
+          return yield* Effect.failCause(result.cause);
+        }
+      }).pipe(Effect.timeoutOption(cancelGrace));
       if (Option.isNone(completed)) {
         const error = new EffectAcpErrors.AcpTransportError({
           operation: "call-rpc",
@@ -1098,9 +1102,6 @@ export const make = (
         });
         yield* retireRuntime(error);
         return;
-      }
-      if (Exit.isFailure(completed.value)) {
-        return yield* Effect.failCause(completed.value.cause);
       }
     });
 
