@@ -872,15 +872,36 @@ const make = Effect.gen(function* () {
       });
     }
 
-    if (
+    // ProviderService recovery (an interrupt, response, or rollback probe that
+    // routes after the adapter dropped its session) restarts the runtime under
+    // a fresh incarnation without dispatching a projection binding, and
+    // ingestion then drops every event that runtime emits. An idle runtime in
+    // that state is adopted below through the same pending-turn bind a fresh
+    // start uses, so the thread recovers on its next message instead of
+    // failing every turn until the orphaned runtime exits. Only a runtime that
+    // is still mid-turn keeps the mismatch fatal.
+    const runtimeIncarnationDiverged =
       options?.expectedSessionIncarnationId !== undefined &&
       activeSession !== undefined &&
-      activeSession.sessionIncarnationId !== options.expectedSessionIncarnationId
-    ) {
+      activeSession.sessionIncarnationId !== options.expectedSessionIncarnationId;
+    const divergedRuntimeIsIdle =
+      activeSession !== undefined &&
+      activeSession.status !== "running" &&
+      activeSession.activeTurnId === undefined &&
+      activeSession.activeTurnRequestId === undefined;
+    if (runtimeIncarnationDiverged && !divergedRuntimeIsIdle) {
       return yield* new ProviderAdapterRequestError({
         provider: providerErrorLabel(String(persistedInstanceId ?? "unknown")),
         method: "thread.turn.start",
         detail: `The provider runtime for thread '${threadId}' no longer matches the accepted session incarnation.`,
+      });
+    }
+    if (runtimeIncarnationDiverged) {
+      yield* Effect.logInfo("provider command reactor adopting unbound idle provider runtime", {
+        threadId,
+        providerInstanceId: activeSession?.providerInstanceId,
+        expectedSessionIncarnationId: options?.expectedSessionIncarnationId,
+        runtimeSessionIncarnationId: activeSession?.sessionIncarnationId,
       });
     }
 
