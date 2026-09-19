@@ -38,8 +38,6 @@ const makeProjectionSnapshotQueryLayer = (importedWorkspaceRoots: ReadonlyArray<
   Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
     getCommandReadModel: () => Effect.die("unused"),
     getUserInputActivity: () => Effect.die("unused"),
-    getDelegationObservationActivities: () => Effect.succeed([]),
-    getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
     getPendingRequestActivities: () => Effect.die("unused"),
     getTurnStartMessage: () => Effect.die("unused"),
     listActivitiesByKind: () => Effect.die("unused"),

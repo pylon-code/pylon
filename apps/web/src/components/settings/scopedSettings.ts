@@ -46,7 +46,6 @@ const PROJECT_SCOPED_KEYS = new Set<string>(PROJECT_SCOPED_SERVER_SETTING_KEYS);
 
 const WHOLE_VALUE_KEYS: ReadonlySet<string> = new Set([
   "defaultModelSelection",
-  "delegationDefaultModelSelection",
   "sourceControlWriterModelSelection",
   "textGenerationModelSelection",
 ]);

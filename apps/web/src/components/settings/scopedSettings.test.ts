@@ -192,15 +192,6 @@ describe("scoped settings targets", () => {
 });
 
 describe("scoped settings writes", () => {
-  it("stores delegation preference per project without enabling delegation", () => {
-    const plan = planScopedSettingsPatch(checkout, [server], { delegationPreference: "pylon" });
-    expect(plan.serverWrites[0]?.patch).toEqual({
-      projectSettingsOverrides: { [projectId]: { delegationPreference: "pylon" } },
-    });
-    expect(server.serverConfig?.settings.delegationPreference).toBe("built-in");
-    expect(server.serverConfig?.settings.enableAgentDelegation).toBe(false);
-  });
-
   it("stores project device permission without changing the environment's permission", () => {
     const plan = planScopedSettingsPatch(checkout, [server], { enableAgentDeviceAccess: true });
     expect(plan.serverWrites[0]?.patch).toEqual({
@@ -234,7 +225,11 @@ describe("scoped settings writes", () => {
     expect(persistServer).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["defaultModelSelection", "delegationDefaultModelSelection"] as const)(
+  it.each([
+    "defaultModelSelection",
+    "sourceControlWriterModelSelection",
+    "textGenerationModelSelection",
+  ] as const)(
     "replaces a project %s override without keeping the previous model's options",
     (key) => {
       const withOptions = environment("Server", {

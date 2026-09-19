@@ -3697,11 +3697,6 @@ export function makeOpenCodeAdapter(
                 system: buildRuntimeInstructions({
                   harness: "OpenCode",
                   model: `${parsedModel.providerID}/${parsedModel.modelID}`,
-                  delegationAvailable: McpProviderSession.hasMcpProviderCapability(
-                    input.threadId,
-                    "delegation",
-                  ),
-                  pairActive: McpProviderSession.hasMcpProviderCapability(input.threadId, "pair"),
                   browserAvailable: McpProviderSession.hasMcpProviderCapability(
                     input.threadId,
                     "preview",

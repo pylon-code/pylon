@@ -761,62 +761,6 @@ describe("sidebar drag projection", () => {
   });
 });
 
-describe("sidebar drag projection with nested delegated children", () => {
-  // A group's measured node holds the parent card plus two nested child cards.
-  const GROUP_HEIGHT = 249;
-  const items = [
-    pinnedHeader,
-    divider,
-    thread("a1", "active"),
-    thread("a2", "active"),
-    thread("a3", "active"),
-    settledHeader,
-    thread("s1", "settled"),
-  ];
-
-  function groupLayout(groupKeys: ReadonlySet<string>, active: string, over: string) {
-    const args = layout(items, active, over);
-    let top = args.rects[0]!.top;
-    const rects = args.rects.map((rect, index) => {
-      const item = items[index]!;
-      const height = item.kind === "thread" && groupKeys.has(item.key) ? GROUP_HEIGHT : rect.height;
-      const next = { ...rect, top, height, bottom: top + height };
-      top += height + 1;
-      return next;
-    });
-    return { ...args, rects, activeNodeRect: rects[args.activeIndex]! };
-  }
-
-  function groupPreview(group: string, active: string, over: string) {
-    const groupKeys = new Set([group]);
-    const strategy = createSidebarSortingStrategy({
-      items,
-      settledOrder: [],
-      settledExpanded: true,
-      groupKeys,
-    });
-    const args = groupLayout(groupKeys, active, over);
-    return new Map(
-      items.map((item, index) => [sidebarListItemId(item), strategy({ ...args, index })]),
-    );
-  }
-
-  it("opens a single card gap for a plain row even when a group is measured first", () => {
-    const result = groupPreview("a1", "a3", "a1");
-    expect(result.get("a1")).toEqual({ ...stationary, y: 83 });
-    expect(result.get("a2")).toEqual({ ...stationary, y: 83 });
-    expect(result.get(sidebarMarkerId("settled-header"))).toEqual(stationary);
-  });
-
-  it("keeps a lifted group's own height so rows below it do not slide underneath", () => {
-    const result = groupPreview("a2", "a2", "a3");
-    expect(result.get("a1")).toEqual(stationary);
-    expect(result.get("a3")).toEqual({ ...stationary, y: -(GROUP_HEIGHT + 1) });
-    expect(result.get(sidebarMarkerId("settled-header"))).toEqual(stationary);
-    expect(result.get("s1")).toEqual(stationary);
-  });
-});
-
 describe("lifted card clearance", () => {
   const rect = (top: number, height: number) => ({
     top,

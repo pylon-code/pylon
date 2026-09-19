@@ -75,8 +75,6 @@ describe("CheckpointDiffQuery.layer", () => {
         Layer.provideMerge(Layer.succeed(CheckpointStore.CheckpointStore, checkpointStore)),
         Layer.provideMerge(
           Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-            getDelegationObservationActivities: () => Effect.succeed([]),
-            getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
             getPendingRequestActivities: () => Effect.succeed([]),
             getUserInputActivity: () => Effect.die("unused"),
             listActivitiesByKind: () => Effect.die("unused"),
@@ -194,8 +192,6 @@ describe("CheckpointDiffQuery.layer", () => {
         Layer.provideMerge(Layer.succeed(CheckpointStore.CheckpointStore, checkpointStore)),
         Layer.provideMerge(
           Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-            getDelegationObservationActivities: () => Effect.succeed([]),
-            getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
             getPendingRequestActivities: () => Effect.succeed([]),
             getUserInputActivity: () => Effect.die("unused"),
             listActivitiesByKind: () => Effect.die("unused"),
@@ -288,8 +284,6 @@ describe("CheckpointDiffQuery.layer", () => {
         Layer.provideMerge(Layer.succeed(CheckpointStore.CheckpointStore, checkpointStore)),
         Layer.provideMerge(
           Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-            getDelegationObservationActivities: () => Effect.succeed([]),
-            getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
             getPendingRequestActivities: () => Effect.succeed([]),
             getUserInputActivity: () => Effect.die("unused"),
             listActivitiesByKind: () => Effect.die("unused"),
@@ -367,8 +361,6 @@ describe("CheckpointDiffQuery.layer", () => {
         Layer.provideMerge(Layer.succeed(CheckpointStore.CheckpointStore, checkpointStore)),
         Layer.provideMerge(
           Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-            getDelegationObservationActivities: () => Effect.succeed([]),
-            getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
             getPendingRequestActivities: () => Effect.succeed([]),
             getUserInputActivity: () => Effect.die("unused"),
             listActivitiesByKind: () => Effect.die("unused"),
@@ -431,8 +423,6 @@ describe("CheckpointDiffQuery.layer", () => {
         Layer.provideMerge(Layer.succeed(CheckpointStore.CheckpointStore, checkpointStore)),
         Layer.provideMerge(
           Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-            getDelegationObservationActivities: () => Effect.succeed([]),
-            getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
             getPendingRequestActivities: () => Effect.succeed([]),
             getUserInputActivity: () => Effect.die("unused"),
             listActivitiesByKind: () => Effect.die("unused"),

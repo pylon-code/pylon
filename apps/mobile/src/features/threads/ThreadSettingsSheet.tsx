@@ -295,7 +295,6 @@ function SwitchRow(props: {
   readonly value: boolean;
   readonly onValueChange: (value: boolean) => void;
   readonly isLast?: boolean;
-  readonly disabled?: boolean;
 }) {
   return (
     <View
@@ -307,7 +306,6 @@ function SwitchRow(props: {
       <Text className="text-sm font-t3-medium text-foreground">{props.label}</Text>
       <ThemedSwitch
         accessibilityLabel={props.label}
-        disabled={props.disabled}
         onValueChange={props.onValueChange}
         value={props.value}
       />
@@ -329,12 +327,6 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
-  readonly pair?: {
-    readonly value: boolean;
-    readonly disabled: boolean;
-    readonly detail: string | null;
-    readonly onToggle: (on: boolean) => void;
-  };
 };
 
 export type ExistingThreadSettingsRouteSession = ThreadSettingsSessionProps & {
@@ -401,12 +393,6 @@ type ThreadSettingsSessionValue = {
   readonly setSearchQuery: (query: string) => void;
   readonly setShowLegacy: (showLegacy: boolean) => void;
   readonly toggleProvider: (providerKey: string) => void;
-  readonly pair?: {
-    readonly value: boolean;
-    readonly disabled: boolean;
-    readonly detail: string | null;
-    readonly onToggle: (on: boolean) => void;
-  };
 };
 
 const ThreadSettingsSessionContext = createContext<ThreadSettingsSessionValue | null>(null);
@@ -540,7 +526,6 @@ function ThreadSettingsSessionProvider(
       setSearchQuery,
       setShowLegacy: setShowLegacyToggle,
       toggleProvider,
-      pair: props.pair,
     }),
     [
       applyOptionChange,
@@ -556,7 +541,6 @@ function ThreadSettingsSessionProvider(
       providerFilter,
       props.getModelDisabledReason,
       props.onUpdateRuntimeMode,
-      props.pair,
       props.providerGroups,
       displayedRuntimeMode,
       runtimeChoices,
@@ -796,26 +780,6 @@ function ThreadSettingsOptionsItem(props: {
           />
         </Animated.View>
       </Animated.View>
-
-      {session.pair !== undefined ? (
-        <>
-          <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">Pair</Text>
-          <View className="mx-4 overflow-hidden rounded-2xl bg-card">
-            <SwitchRow
-              isLast
-              label="Pair with an executor"
-              value={session.pair.value}
-              disabled={session.pair.disabled}
-              onValueChange={session.pair.onToggle}
-            />
-          </View>
-          {session.pair.detail !== null ? (
-            <Text className="px-5 pt-2 text-xs leading-snug text-foreground-muted">
-              {session.pair.detail}
-            </Text>
-          ) : null}
-        </>
-      ) : null}
 
       {Platform.OS !== "ios" && session.hasLegacyModels ? (
         <>

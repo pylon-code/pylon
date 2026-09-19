@@ -89,7 +89,6 @@ import {
   supportsSessionResourceReload,
 } from "@t3tools/client-runtime/state/session-resources";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
-import { delegatedParentThreadId } from "@t3tools/shared/delegatedThreads";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import {
   Fragment,
@@ -1085,9 +1084,6 @@ import { ThreadHandoffTab } from "./ThreadHandoffTab";
 import { ProviderBindingConflictNotice } from "./ProviderBindingConflictNotice";
 import { QuickQuestionDialog } from "./QuickQuestionDialog";
 import { SessionResourcesDialog } from "./SessionResourcesDialog";
-import { PairControl } from "./PairControl";
-import type { PairLead } from "@t3tools/client-runtime/state/pair-control";
-import { usePairControl } from "./usePairControl";
 
 const WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS = 10_000;
 
@@ -1301,7 +1297,6 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
-  pairedImplement?: boolean;
 }) {
   return (
     <>
@@ -1337,7 +1332,6 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
-        pairedImplement={props.pairedImplement ?? false}
       />
     </>
   );
@@ -1477,7 +1471,6 @@ export interface ChatComposerProps {
   // Plan
   showPlanFollowUpPrompt: boolean;
   activeProposedPlan: Thread["proposedPlans"][number] | null;
-  pairedImplement?: boolean;
   activeTasksProgress: ComposerTasksProgress | null;
   activeTaskSteps: readonly ComposerTaskStep[] | null;
   activeDelegatedWork: ComposerDelegatedWorkSummary | null;
@@ -2135,33 +2128,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // which can differ from the persisted selection when that selection is
   // disabled.
   const selectedProvider: ProviderDriverKind = composerSelection.driverKind;
-  const isDelegatedLead = activeThread ? delegatedParentThreadId(activeThread.id) !== null : false;
-  const pairLead = useMemo<PairLead | null>(
-    () =>
-      activeThread
-        ? {
-            id: activeThread.id,
-            projectId: activeThread.projectId,
-            title: activeThread.title,
-            runtimeMode: activeThread.runtimeMode,
-            branch: activeThread.branch,
-            worktreePath: activeThread.worktreePath,
-            session: activeThread.session
-              ? {
-                  status: activeThread.session.status,
-                  activeTurnId: activeThread.session.activeTurnId,
-                }
-              : null,
-          }
-        : null,
-    [activeThread],
-  );
-  const pairControl = usePairControl({
-    environmentId,
-    lead: pairLead,
-    leadDriverKind: selectedProvider,
-    projectId: activeThread?.projectId ?? null,
-  });
 
   const { modelOptions: composerModelOptions, selectedModel } = useEffectiveComposerModelState({
     threadRef: composerDraftTarget,
@@ -5930,15 +5896,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onInstanceModelChange={onProviderModelSelect}
         onOpenProviderSetup={onOpenProviderSetup}
       />
-      {!isDelegatedLead && (
-        <PairControl
-          {...pairControl}
-          instanceEntries={providerInstanceEntries}
-          modelOptionsByInstance={modelOptionsByInstance}
-          environmentId={environmentId}
-          size={composerControlsInStrip ? "xs" : "sm"}
-        />
-      )}
 
       {composerControlsCompact ? (
         <CompactComposerControlsMenu
@@ -7893,7 +7850,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                       onInterrupt={handleInterruptPrimaryAction}
                       onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
-                      pairedImplement={props.pairedImplement ?? false}
                     />
                   </div>
                 </div>

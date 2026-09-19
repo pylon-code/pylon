@@ -1,5 +1,3 @@
-import * as NodeCrypto from "node:crypto";
-
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -739,14 +737,8 @@ const makeThreadProjectProjectionLayer = (
   threadId: ThreadId,
   projectId: ProjectId,
   projectionStatus: () => "found" | "missing" | "failed" = () => "found",
-  /** Delegated threads that exist besides `threadId`, such as its pair executor. */
-  delegatedThreads: ReadonlyArray<ThreadId> = [],
-  /** The ones among them that are archived, as an executor is once its pair is turned off. */
-  archivedThreads: ReadonlyArray<ThreadId> = [],
 ) =>
   Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-    getDelegationObservationActivities: () => Effect.succeed([]),
-    getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
     getPendingRequestActivities: () => Effect.die("unused"),
     getUserInputActivity: () => Effect.die("unused"),
     listActivitiesByKind: () => Effect.die("unused"),
@@ -768,32 +760,6 @@ const makeThreadProjectProjectionLayer = (
     getTurnStartMessage: () => Effect.die("unused"),
     getThreadShellById: (requestedThreadId) =>
       Effect.gen(function* () {
-        // The pair capability looks up the thread's executor, a delegated id.
-        if (requestedThreadId !== threadId && requestedThreadId.startsWith("delegated:")) {
-          if (!delegatedThreads.includes(requestedThreadId)) return Option.none();
-          return Option.some(
-            yield* decodeProjectSettingsThreadShell({
-              id: requestedThreadId,
-              projectId,
-              title: "Executor",
-              modelSelection: createModelSelection(codexInstanceId, "gpt-5.4"),
-              runtimeMode: "full-access",
-              branch: null,
-              worktreePath: null,
-              latestTurn: null,
-              createdAt: "2026-01-01T00:00:00.000Z",
-              updatedAt: "2026-01-01T00:00:00.000Z",
-              archivedAt: archivedThreads.includes(requestedThreadId)
-                ? "2026-01-02T00:00:00.000Z"
-                : null,
-              session: null,
-              latestUserMessageAt: null,
-              hasPendingApprovals: false,
-              hasPendingUserInput: false,
-              hasActionableProposedPlan: false,
-            }).pipe(Effect.orDie),
-          );
-        }
         assert.equal(requestedThreadId, threadId);
         const status = projectionStatus();
         if (status === "missing") return Option.none();
@@ -6880,16 +6846,7 @@ describe("agent browser access", () => {
   const makeBrowserAccessProjectionLayer = (
     threadId: ThreadId,
     status: "found" | "missing" | "failed" = "found",
-    delegatedThreads: ReadonlyArray<ThreadId> = [],
-    archivedThreads: ReadonlyArray<ThreadId> = [],
-  ) =>
-    makeThreadProjectProjectionLayer(
-      threadId,
-      projectId,
-      () => status,
-      delegatedThreads,
-      archivedThreads,
-    );
+  ) => makeThreadProjectProjectionLayer(threadId, projectId, () => status);
 
   const makeAgentBrowserProviderLayer = (
     enableAgentBrowserAccess: boolean,
@@ -6899,22 +6856,14 @@ describe("agent browser access", () => {
       readonly threadId: ThreadId;
       readonly override?:
         | boolean
-        | {
-            readonly browser?: boolean;
-            readonly device?: boolean;
-            readonly delegation?: boolean;
-          }
+        | { readonly browser?: boolean; readonly device?: boolean }
         | undefined;
       /** False leaves the projection query to the surrounding runtime composition. */
       readonly provideProjection?: boolean;
       readonly projectionStatus?: "found" | "missing" | "failed";
-      /** Delegated threads the projection knows besides `threadId`. */
-      readonly delegatedThreads?: ReadonlyArray<ThreadId>;
-      readonly archivedThreads?: ReadonlyArray<ThreadId>;
     },
     enableAgentDeviceAccess = false,
     enableAgentComputerAccess = false,
-    enableAgentDelegation = false,
   ) => {
     const providerAdapterLayer = Layer.succeed(
       ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -6930,12 +6879,7 @@ describe("agent browser access", () => {
       Layer.provideMerge(directoryLayer),
       Layer.provide(
         project && project.provideProjection !== false
-          ? makeBrowserAccessProjectionLayer(
-              project.threadId,
-              project.projectionStatus,
-              project.delegatedThreads,
-              project.archivedThreads,
-            )
+          ? makeBrowserAccessProjectionLayer(project.threadId, project.projectionStatus)
           : Layer.empty,
       ),
       Layer.provide(
@@ -6943,7 +6887,6 @@ describe("agent browser access", () => {
           enableAgentBrowserAccess,
           enableAgentDeviceAccess,
           enableAgentComputerAccess,
-          enableAgentDelegation,
           projectSettingsOverrides:
             projectOverride === undefined
               ? {}
@@ -6957,9 +6900,6 @@ describe("agent browser access", () => {
                             : {}),
                           ...(projectOverride.device !== undefined
                             ? { enableAgentDeviceAccess: projectOverride.device }
-                            : {}),
-                          ...(projectOverride.delegation !== undefined
-                            ? { enableAgentDelegation: projectOverride.delegation }
                             : {}),
                         },
                 },
@@ -7062,122 +7002,7 @@ describe("agent browser access", () => {
           });
         }).pipe(Effect.provide(layer));
         assert.deepEqual(issued, [[...expected]]);
-      }
-    }).pipe(Effect.provide(NodeServices.layer)),
-  );
-
-  it.effect("grants delegation only when enabled and never to a delegated child thread", () =>
-    Effect.gen(function* () {
-      for (const [threadName, delegation, override, expected] of [
-        ["thread-delegation-off", false, undefined, ["pull-requests"]],
-        ["thread-delegation-on", true, undefined, ["delegation", "pull-requests"]],
-        ["delegated:thread-delegation-on:0123456789abcdef", true, undefined, ["pull-requests"]],
-        [
-          "thread-delegation-project-on",
-          false,
-          { delegation: true },
-          ["delegation", "pull-requests"],
-        ],
-        ["thread-delegation-project-off", true, { delegation: false }, ["pull-requests"]],
-      ] as const) {
-        const threadId = asThreadId(threadName);
-        const issued: string[][] = [];
-        const codex = makeFakeCodexAdapter();
-        const layer = makeAgentBrowserProviderLayer(
-          false,
-          codex,
-          {
-            issueMcpCredential: (request) =>
-              Effect.sync(() => {
-                issued.push([...request.capabilities].sort());
-                return undefined;
-              }),
-          },
-          override === undefined ? undefined : { threadId, override },
-          false,
-          false,
-          delegation,
-        );
-        yield* Effect.gen(function* () {
-          const provider = yield* ProviderService.ProviderService;
-          yield* provider.startSession(threadId, {
-            provider: CODEX_DRIVER,
-            providerInstanceId: codexInstanceId,
-            threadId,
-            runtimeMode: "full-access",
-          });
-        }).pipe(Effect.provide(layer));
-        assert.deepEqual(issued, [[...expected]]);
-      }
-    }).pipe(Effect.provide(NodeServices.layer)),
-  );
-
-  it.effect("marks a session as paired whenever its executor exists and is not archived", () =>
-    Effect.gen(function* () {
-      const lead = asThreadId("thread-pair-lead");
-      const executorOf = (threadId: ThreadId) =>
-        asThreadId(
-          `delegated:${threadId}:${NodeCrypto.createHash("sha256")
-            .update(`${threadId}\npair`)
-            .digest("hex")
-            .slice(0, 16)}`,
-        );
-      const otherChild = asThreadId(`delegated:${lead}:0123456789abcdef`);
-      for (const [label, threadId, delegation, delegatedThreads, expected, archived] of [
-        ["paired", lead, true, [executorOf(lead)], ["delegation", "pair", "pull-requests"], false],
-        ["no executor", lead, true, [], ["delegation", "pull-requests"], false],
-        ["only a fan-out child", lead, true, [otherChild], ["delegation", "pull-requests"], false],
-        // The user switched this pair on for this thread, so it does not need the
-        // setting that lets agents start threads on their own.
-        ["delegation off", lead, false, [executorOf(lead)], ["pair", "pull-requests"], false],
-        ["delegation off, no executor", lead, false, [], ["pull-requests"], false],
-        [
-          "delegation off, pair turned off",
-          lead,
-          false,
-          [executorOf(lead)],
-          ["pull-requests"],
-          true,
-        ],
-        ["the executor itself", executorOf(lead), true, [], ["pull-requests"], false],
-        // Turning a pair off archives an executor that has history. The lead
-        // must get its own subagents back, not stay in paired mode.
-        ["pair turned off", lead, true, [executorOf(lead)], ["delegation", "pull-requests"], true],
-      ] as const) {
-        const issued: string[][] = [];
-        const codex = makeFakeCodexAdapter();
-        const layer = makeAgentBrowserProviderLayer(
-          false,
-          codex,
-          {
-            issueMcpCredential: (request) =>
-              Effect.sync(() => {
-                issued.push([...request.capabilities].sort());
-                return undefined;
-              }),
-          },
-          { threadId, delegatedThreads, archivedThreads: archived ? delegatedThreads : [] },
-          false,
-          false,
-          delegation,
-        );
-        yield* Effect.gen(function* () {
-          const provider = yield* ProviderService.ProviderService;
-          yield* provider.startSession(threadId, {
-            provider: CODEX_DRIVER,
-            providerInstanceId: codexInstanceId,
-            threadId,
-            runtimeMode: "full-access",
-          });
-        }).pipe(Effect.provide(layer));
-        assert.deepEqual(issued, [[...expected]], label);
-        // A paired lead's own subagents are held for that session only, on any
-        // provider that lets Pylon set the depth: Prime Agent is the one today.
-        assert.deepEqual(
-          codex.setSessionAgentDepth.mock.calls,
-          expected.some((capability) => capability === "pair") ? [[threadId, 0]] : [],
-          `${label}: agent depth`,
-        );
+        assert.deepEqual(codex.setSessionAgentDepth.mock.calls, []);
       }
     }).pipe(Effect.provide(NodeServices.layer)),
   );

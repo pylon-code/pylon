@@ -1,5 +1,3 @@
-import * as NodeCrypto from "node:crypto";
-
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ProjectId,
@@ -253,8 +251,6 @@ describe("ProviderSessionReaper", () => {
       Layer.provideMerge(Layer.succeed(ProviderService, providerService)),
       Layer.provideMerge(
         Layer.succeed(ProjectionSnapshotQuery, {
-          getDelegationObservationActivities: () => Effect.succeed([]),
-          getDeliveredDelegationNotificationIds: () => Effect.succeed([]),
           getPendingRequestActivities: () => Effect.succeed([]),
           getUserInputActivity: () => Effect.die("unused"),
           listActivitiesByKind: () => Effect.die("unused"),
@@ -435,67 +431,6 @@ describe("ProviderSessionReaper", () => {
     const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
     expect(Option.isSome(remaining)).toBe(true);
   });
-
-  it.each([
-    ["running", false],
-    ["starting", false],
-    ["ready", true],
-  ] as const)(
-    "while a pair's lead session is %s, reaping its idle executor is %s",
-    async (leadStatus, reaped) => {
-      const lead = ThreadId.make(`thread-reaper-pair-lead-${leadStatus}`);
-      const executor = ThreadId.make(
-        `delegated:${lead}:${NodeCrypto.createHash("sha256")
-          .update(`${lead}\npair`)
-          .digest("hex")
-          .slice(0, 16)}`,
-      );
-      const now = "2026-01-01T00:00:00.000Z";
-      const session = (threadId: ThreadId, status: "running" | "starting" | "ready") => ({
-        threadId,
-        status,
-        providerName: "claudeAgent" as const,
-        runtimeMode: "full-access" as const,
-        activeTurnId: null,
-        lastError: null,
-        updatedAt: now,
-      });
-      const harness = await createHarness({
-        readModel: makeReadModel([
-          { id: lead, session: session(lead, leadStatus) },
-          { id: executor, session: session(executor, "ready") },
-        ]),
-      });
-      const repository = await runtime!.runPromise(
-        Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
-      );
-      // Only the executor has a stale binding. A lead that is mid-turn, often
-      // blocked in pair_await, is about to brief it again: reaping it now would
-      // restart its provider process between every brief.
-      await runtime!.runPromise(
-        repository.upsert({
-          threadId: executor,
-          providerName: "antigravity",
-          providerInstanceId: null,
-          adapterKey: "antigravity",
-          runtimeMode: "full-access",
-          status: "running",
-          lastSeenAt: "2026-04-14T00:00:00.000Z",
-          resumeCursor: { opaque: "resume-pair-executor" },
-          runtimePayload: null,
-        }),
-      );
-
-      await startReaper();
-      if (reaped) {
-        await waitFor(() => harness.stopSession.mock.calls.length === 1);
-        expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId: executor });
-      } else {
-        await Effect.runPromise(drainFibers);
-        expect(harness.stopSession).not.toHaveBeenCalled();
-      }
-    },
-  );
 
   it.each(["ready", "interrupted", "error"] as const)(
     "gives a long turn a full idle window after becoming %s",

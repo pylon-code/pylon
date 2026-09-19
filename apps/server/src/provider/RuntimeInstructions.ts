@@ -18,16 +18,6 @@ const DEVICE_INSTRUCTIONS = `<pylon_devices>
 The \`t3-code\` MCP server also exposes \`device_*\` tools for iOS Simulators and Android Emulators on this environment. For mobile verification, call \`device_list\`, then \`device_open\` so the user can watch the device in their Device panel; its result explains how to drive the device. Driving happens through the \`agent-device\` CLI, which is on PATH. Keep the host config and session flags returned by \`device_open\` on every command so concurrent devices stay independent: prefer \`agent-device snapshot -i\` refs over coordinates, and use \`device_screenshot\` when you need to see the screen. Do not call simctl, adb, xcrun, or serve-sim directly while these tools are present. If \`device_list\` reports a platform as unavailable, say so instead of trying another route.
 </pylon_devices>`;
 
-/**
- * Included only when the session's MCP credential grants delegation, so it never
- * describes tools the agent does not have. It carries no default model name:
- * the server resolves the user's defaults when the tool runs, so the text cannot
- * go stale when settings change mid-session.
- */
-const DELEGATION_INSTRUCTIONS = `<pylon_delegation>
-Keep small or tightly coupled work local. Before choosing a delegation method for worthwhile independent work, call the t3-code MCP tool read_delegation_skill to read the current project preference and workflow. It does not start a child. The default is built-in subagents; a saved Pylon preference permits Pylon child threads without a separate request each time. Explicit user instructions override the preference. Availability alone is not a request to delegate, and missing built-in agents do not justify an automatic Pylon fallback. Follow the skill when using delegate_thread and managing results.
-</pylon_delegation>`;
-
 const ANTIGRAVITY_PROGRESS_INSTRUCTIONS = `<pylon_progress>
 Provide concise narration before invoking tools so the user understands what you are about to do.
 Share periodic meaningful progress during longer work (roughly every 60 seconds).
@@ -35,33 +25,10 @@ Summarize results rather than echoing raw output or logs.
 Respect user preferences and never fabricate progress.
 </pylon_progress>`;
 
-/**
- * What a lead needs to run a pair well. Also returned by `pair_start`, because a
- * pair started mid-session reaches the lead before its next session start does.
- */
-export const PAIR_LEAD_PROTOCOL = `You are the lead of a Pylon pair. One executor thread on a faster, cheaper model is linked to this thread and works in your worktree. Hand implementation to it instead of using your own subagents.
-The executor is reached only through the pair tools on the t3-code MCP server: pair_handoff, pair_await, pair_stop. If they are not in your tool list, search your tools for pair_handoff. An agent started with your harness's own tools (Agent, Task, spawn_agent, or anything in a collaboration namespace) is not your executor: it runs on your model, at your cost, and Pylon cannot see it. Do not use those tools while paired, even when asked to "brief the executor". The same goes for Pylon's fan-out tools: delegate_thread is refused on a paired thread. If the user asks you to delegate or to "use delegation" here, that means brief your executor.
-Work test-first. Write the contract (types, signatures, stubs) and the failing tests yourself, run them, and confirm they fail for the right reason. Commit them. Then brief the executor with pair_handoff, listing your tests and contract as protectedPaths: make these tests pass without editing them, with the exact files, the behavior wanted, the commands to run, the exclusions, and the report format. Hand off a whole plan step, not small nudges. Where tests cannot express the work, give exact acceptance checks instead. Ask the executor for code only, and write documentation and pull request text yourself.
-Wait with pair_await, or end your turn: Pylon wakes you when the executor finishes or needs the user. Never poll in a loop. If the executor's context is nearly full or it has lost the thread of the work, call pair_reset between briefs: it starts over on the same model and remembers nothing, so the next brief must stand on its own.
-When it reports, confirm your tests are unchanged (protectedPaths.changed in the pair_await result is empty), read the diff in your worktree, and re-run the checks yourself. The executor's report is not verification, and its prose is less reliable than its code. Send one consolidated correction, at most three rounds, then ask the user. Only you push and open pull requests. Make small or tightly coupled changes yourself. If the executor needs an approval or an answer, tell the user; never approve on their behalf.`;
-
-/**
- * Included only while this thread has a pair executor. It replaces the
- * delegation block: a paired lead hands work to its executor, not to new child
- * threads.
- */
-const PAIR_INSTRUCTIONS = `<pylon_pair>
-${PAIR_LEAD_PROTOCOL}
-</pylon_pair>`;
-
 export interface RuntimeInstructionsOptions {
   readonly harness: string;
   readonly model?: string | undefined;
   readonly reasoningEffort?: string | undefined;
-  /** Whether this session's MCP credential grants the delegation tools. */
-  readonly delegationAvailable?: boolean | undefined;
-  /** Whether this thread had a pair executor when the session was prepared. */
-  readonly pairActive?: boolean | undefined;
   /** Whether this session's MCP credential grants the collaborative browser preview tools. */
   readonly browserAvailable?: boolean | undefined;
   /** Whether this session's MCP credential grants the device tools. */
@@ -79,13 +46,7 @@ export function buildRuntimeInstructions(runtime: RuntimeInstructionsOptions): s
     runtime.harness === "Antigravity" ? `\n\n${ANTIGRAVITY_PROGRESS_INSTRUCTIONS}` : "";
   return `<runtime_info>In case you're asked: you are running in Pylon through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images and videos in your response using Markdown with absolute file paths.</runtime_info>\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}${
     runtime.browserAvailable === true ? `\n\n${BROWSER_INSTRUCTIONS}` : ""
-  }${runtime.deviceAvailable === true ? `\n\n${DEVICE_INSTRUCTIONS}` : ""}${
-    runtime.pairActive === true
-      ? `\n\n${PAIR_INSTRUCTIONS}`
-      : runtime.delegationAvailable === true
-        ? `\n\n${DELEGATION_INSTRUCTIONS}`
-        : ""
-  }${progressInstructions}`;
+  }${runtime.deviceAvailable === true ? `\n\n${DEVICE_INSTRUCTIONS}` : ""}${progressInstructions}`;
 }
 
 function toSingleLine(value: string): string {

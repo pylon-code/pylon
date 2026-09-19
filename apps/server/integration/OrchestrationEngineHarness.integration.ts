@@ -66,8 +66,6 @@ import {
 } from "../src/orchestration/Services/OrchestrationEngine.ts";
 import { ThreadDeletionReactor } from "../src/orchestration/Services/ThreadDeletionReactor.ts";
 import * as ThreadSettlementReactor from "../src/orchestration/ThreadSettlementReactor.ts";
-import * as DelegationFollowThroughReactor from "../src/orchestration/DelegationFollowThroughReactor.ts";
-import * as PairLifecycleReactor from "../src/orchestration/PairLifecycleReactor.ts";
 import * as PullRequestSyncReactor from "../src/orchestration/PullRequestSyncReactor.ts";
 import * as ThreadPullRequestReactor from "../src/orchestration/ThreadPullRequestReactor.ts";
 import * as ProjectSettingsReactor from "../src/orchestration/ProjectSettingsReactor.ts";
@@ -392,18 +390,6 @@ export const makeOrchestrationIntegrationHarness = (
       ),
       Layer.provideMerge(
         Layer.succeed(ThreadPullRequestReactor.ThreadPullRequestReactor, {
-          start: () => Effect.void,
-          drain: Effect.void,
-        }),
-      ),
-      Layer.provide(
-        Layer.succeed(DelegationFollowThroughReactor.DelegationFollowThroughReactor, {
-          start: () => Effect.void,
-          drain: Effect.void,
-        }),
-      ),
-      Layer.provide(
-        Layer.succeed(PairLifecycleReactor.PairLifecycleReactor, {
           start: () => Effect.void,
           drain: Effect.void,
         }),

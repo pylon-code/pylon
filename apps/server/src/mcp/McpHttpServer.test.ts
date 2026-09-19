@@ -13,14 +13,12 @@ import * as Stream from "effect/Stream";
 import { McpProtocol, McpSchema, McpServer } from "effect/unstable/ai";
 import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
-import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ThreadDeletionReactor } from "../orchestration/Services/ThreadDeletionReactor.ts";
-import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import * as ServerConfig from "../config.ts";
-import * as ServerSettings from "../serverSettings.ts";
-import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
+import { CuaService } from "../computer/CuaService.ts";
+import { DeviceService } from "../device/DeviceService.ts";
+import { McpSessionRegistry } from "./McpSessionRegistry.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -64,38 +62,6 @@ const PullRequestsTestLayer = McpHttpServer.PullRequestsToolkitRegistrationLive.
         getThreadShellById: () => Effect.succeed(Option.none()),
       }),
       Layer.mock(OrchestrationEngineService)({}),
-      NodeServices.layer,
-    ),
-  ),
-);
-const DelegationTestLayer = McpHttpServer.DelegationToolkitRegistrationLive.pipe(
-  Layer.provideMerge(McpServer.McpServer.layer),
-  Layer.provide(
-    Layer.mergeAll(
-      Layer.mock(ProjectionSnapshotQuery)({}),
-      Layer.mock(OrchestrationEngineService)({}),
-      Layer.mock(ThreadDeletionReactor)({}),
-      Layer.mock(ProviderRegistry)({}),
-      Layer.mock(GitWorkflowService.GitWorkflowService)({}),
-      Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
-      ServerSettings.layerTest(),
-      ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-delegation-test-" }).pipe(
-        Layer.provide(NodeServices.layer),
-      ),
-      NodeServices.layer,
-    ),
-  ),
-);
-
-const PairTestLayer = McpHttpServer.PairToolkitRegistrationLive.pipe(
-  Layer.provideMerge(McpServer.McpServer.layer),
-  Layer.provide(
-    Layer.mergeAll(
-      Layer.mock(ProjectionSnapshotQuery)({}),
-      Layer.mock(OrchestrationEngineService)({}),
-      Layer.mock(ProviderRegistry)({}),
-      Layer.mock(ThreadDeletionReactor)({}),
-      ServerSettings.layerTest(),
       NodeServices.layer,
     ),
   ),
@@ -807,73 +773,36 @@ it.effect("registers annotated tools and preserves authenticated request context
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect(
-  "registers the delegation toolkit and surfaces a missing capability as a tool error",
-  () =>
-    Effect.gen(function* () {
-      const server = yield* McpServer.McpServer;
-      const names = server.tools.map(({ tool }) => tool.name);
-      expect(names).toEqual(
-        expect.arrayContaining([
-          "read_delegation_skill",
-          "delegate_thread",
-          "delegated_thread_status",
-          "delegated_thread_result",
-          "send_to_delegated_thread",
-          "interrupt_delegated_thread",
-        ]),
-      );
-      const delegate = server.tools.find(({ tool }) => tool.name === "delegate_thread");
-      expect(delegate?.tool.annotations?.idempotentHint).toBe(true);
-      expect(delegate?.tool.annotations?.destructiveHint).toBe(false);
-      expect(delegate?.tool.annotations?.openWorldHint).toBe(false);
-      const status = server.tools.find(({ tool }) => tool.name === "delegated_thread_status");
-      expect(status?.tool.annotations?.readOnlyHint).toBe(true);
-
-      const skillTool = server.tools.find(({ tool }) => tool.name === "read_delegation_skill");
-      expect(skillTool?.tool.annotations?.readOnlyHint).toBe(true);
-      const skillDenied = yield* server
-        .callTool({ name: "read_delegation_skill", arguments: {} })
-        .pipe(
-          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-          Effect.provideService(McpSchema.McpServerClient, client),
-        );
-      expect(skillDenied.isError).toBe(true);
-      const denied = yield* server
-        .callTool({ name: "delegated_thread_status", arguments: { delegationKey: "k1" } })
-        .pipe(
-          // A preview-only credential: delegation was not enabled when the session started.
-          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-          Effect.provideService(McpSchema.McpServerClient, client),
-        );
-      expect(denied.isError).toBe(true);
-      expect(denied.content).toEqual([
-        { type: "text", text: "MCP credential does not grant the delegation capability." },
-      ]);
-    }).pipe(Effect.provide(DelegationTestLayer)),
-);
-
-it.effect("registers the pair toolkit and surfaces a missing capability as a tool error", () =>
+it.effect("serves only the retained MCP tools, without pair or delegation tools", () =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     const names = server.tools.map(({ tool }) => tool.name);
     expect(names).toEqual(
-      expect.arrayContaining(["pair_start", "pair_handoff", "pair_await", "pair_stop"]),
+      expect.arrayContaining([
+        "preview_open",
+        "device_open",
+        "link_pull_request",
+        "list_thread_pull_requests",
+      ]),
     );
-    const start = server.tools.find(({ tool }) => tool.name === "pair_start");
-    expect(start?.tool.annotations?.idempotentHint).toBe(true);
-    expect(start?.tool.annotations?.destructiveHint).toBe(false);
-    expect(start?.tool.annotations?.openWorldHint).toBe(false);
-
-    const denied = yield* server
-      .callTool({ name: "pair_await", arguments: {} })
-      .pipe(
-        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-        Effect.provideService(McpSchema.McpServerClient, client),
-      );
-    expect(denied.isError).toBe(true);
-    expect(denied.content).toEqual([
-      { type: "text", text: "MCP credential does not grant the delegation capability." },
-    ]);
-  }).pipe(Effect.provide(PairTestLayer)),
+    expect(names.filter((name) => /pair_|delegat/.test(name))).toEqual([]);
+  }).pipe(
+    Effect.provide(
+      McpHttpServer.layer.pipe(
+        Layer.provide(HttpRouter.layer),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(CuaService)({}),
+            Layer.mock(DeviceService)({}),
+            Layer.mock(McpSessionRegistry)({}),
+            Layer.mock(ProjectionSnapshotQuery)({}),
+            Layer.mock(OrchestrationEngineService)({}),
+            PreviewAutomationBroker.layer,
+          ),
+        ),
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-retained-tools-" })),
+        Layer.provide(NodeServices.layer),
+      ),
+    ),
+  ),
 );

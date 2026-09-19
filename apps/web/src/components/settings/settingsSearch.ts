@@ -564,36 +564,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow simulator emulator ios android drive tools sessions"],
   },
   {
-    id: "agent-delegation",
-    title: "Pylon delegation",
-    to: "/settings/integrations",
-    scope: "project-defaults",
-    searchTerms: [
-      "agent delegation native built-in subagents child threads delegate orchestrate other providers worktrees enable disable off on",
-    ],
-  },
-  {
-    id: "delegation-preference",
-    title: "Preferred delegation method",
-    to: "/settings/integrations",
-    scope: "project-defaults",
-    searchTerms: ["prefer native built-in agents pylon threads delegation method"],
-  },
-  {
-    id: "delegation-default-model",
-    title: "Default delegation model",
-    to: "/settings/integrations",
-    scope: "project-defaults",
-    searchTerms: ["child thread provider model antigravity delegate"],
-  },
-  {
-    id: "delegation-child-permissions",
-    title: "Child permissions",
-    to: "/settings/integrations",
-    scope: "project-defaults",
-    searchTerms: ["delegated child supervised approval permission mode"],
-  },
-  {
     id: "device-hub",
     title: "Device hub",
     to: "/settings/integrations",

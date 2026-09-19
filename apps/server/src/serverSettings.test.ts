@@ -334,32 +334,6 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     ).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
-  it.effect("persists delegation preference across disable, reload, and project reset", () =>
-    Effect.gen(function* () {
-      const service = yield* ServerSettingsModule.ServerSettingsService;
-      const projectId = ProjectId.make("delegation-preference-project");
-      yield* service.updateSettings({
-        delegationPreference: "pylon",
-        enableAgentDelegation: false,
-        projectSettingsOverrides: { [projectId]: { delegationPreference: "built-in" } },
-      });
-      const saved = yield* reloadSettings;
-      assert.equal(saved.delegationPreference, "pylon");
-      assert.equal(saved.enableAgentDelegation, false);
-      assert.deepEqual(saved.projectSettingsOverrides[projectId], {
-        delegationPreference: "built-in",
-      });
-      yield* service.updateSettings({
-        enableAgentDelegation: true,
-        projectSettingsOverrides: { [projectId]: null },
-      });
-      const restored = yield* reloadSettings;
-      assert.equal(restored.delegationPreference, "pylon");
-      assert.equal(restored.enableAgentDelegation, true);
-      assert.isUndefined(restored.projectSettingsOverrides[projectId]);
-    }).pipe(Effect.provide(makeServerSettingsLayer())),
-  );
-
   it.effect("persists custom usage prices and removes them from the settings file", () =>
     Effect.scoped(
       Effect.gen(function* () {

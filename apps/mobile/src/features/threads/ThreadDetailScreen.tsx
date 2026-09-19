@@ -127,8 +127,6 @@ import {
   COMPOSER_TRANSITION_DURATION_MS,
   ThreadComposer,
 } from "./ThreadComposer";
-import type { PairState } from "@t3tools/client-runtime/state/pair";
-import { PairStatusNotice } from "./PairStatusNotice";
 import { ThreadFeed } from "./ThreadFeed";
 import type { SessionCompactionMenuAction } from "./sessionCompactionMenu";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
@@ -208,9 +206,6 @@ export interface ThreadDetailScreenProps {
   readonly serverConfig: T3ServerConfig | null;
   readonly layoutVariant?: LayoutVariant;
   readonly usesAutomaticContentInsets?: boolean;
-  readonly pairState?: PairState;
-  readonly pairExecutorLabel?: string;
-  readonly onOpenPairExecutor?: () => void;
   readonly onHeaderMaterialVisibilityChange?: (visible: boolean) => void;
   readonly onOpenConnectionEditor: () => void;
   readonly onChangeDraftMessage: (value: string) => void;
@@ -1068,15 +1063,6 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onScrollToEnd={handleScrollToEnd}
               />
               <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
-                {props.pairState !== undefined &&
-                props.pairExecutorLabel !== undefined &&
-                props.onOpenPairExecutor !== undefined ? (
-                  <PairStatusNotice
-                    state={props.pairState}
-                    executorLabel={props.pairExecutorLabel}
-                    onOpenExecutor={props.onOpenPairExecutor}
-                  />
-                ) : null}
                 {props.feedbackSubmissions.map((submission) => (
                   <ComposerFeedback
                     key={submission.id}

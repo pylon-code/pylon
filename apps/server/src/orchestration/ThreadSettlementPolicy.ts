@@ -1,8 +1,6 @@
 import type { OrchestrationThreadShell } from "@t3tools/contracts";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
-import { deriveDelegatedThreadState, isChildOfParent } from "../mcp/toolkits/delegation/logic.ts";
-
 export interface SettlementPullRequest {
   readonly state: "open" | "closed" | "merged";
   readonly closedAt?: string | null;
@@ -135,29 +133,4 @@ export function isAutoSettlementCandidate(thread: OrchestrationThreadShell, now:
     thread.latestTurn.completedAt != null &&
     Date.parse(thread.latestTurn.completedAt) > Date.parse(thread.snoozedAt);
   return wokeOnError || wokeOnCompletion;
-}
-
-/**
- * A parent coordinating delegated work is not finished, however quiet it looks:
- * its own turn ended and it waits to be woken. Settling it would also block
- * that wake, because follow-through never resumes a settled thread.
- *
- * A child that never ran counts only while newly created. A fan-out child gets
- * its first turn in the call that creates it, but an idle pair executor keeps
- * that shape for the life of its lead and must not pin the lead open forever.
- */
-export function hasLiveDelegatedChild(
-  parent: Pick<OrchestrationThreadShell, "id">,
-  threads: ReadonlyArray<OrchestrationThreadShell>,
-  now: string,
-): boolean {
-  return threads.some((child) => {
-    if (child.archivedAt !== null || !isChildOfParent(child.id, parent.id)) return false;
-    if (child.hasPendingApprovals || child.hasPendingUserInput) return true;
-    const state = deriveDelegatedThreadState(child);
-    if (state === "running") return true;
-    if (state !== "queued") return false;
-    const age = Date.parse(now) - Date.parse(child.createdAt);
-    return !Number.isNaN(age) && Math.abs(age) <= QUEUED_TURN_START_GRACE_MS;
-  });
 }

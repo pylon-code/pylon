@@ -11,7 +11,6 @@ import type {
   ApprovalRequestId,
   CheckpointRef,
   CommandId,
-  EventId,
   IsoDateTime,
   MessageId,
   OrchestrationCheckpointSummary,
@@ -256,17 +255,6 @@ export interface ProjectionSnapshotQueryShape {
    * Read one requested message and whether another user message exists.
    * Newer queued messages count too, preserving first-turn title eligibility.
    */
-  readonly getDelegationObservationActivities: (input: {
-    readonly threadId: ThreadId;
-    readonly childThreadIds: ReadonlyArray<ThreadId>;
-  }) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
-
-  /** Durable delivery receipts, independent of the bounded activity window. */
-  readonly getDeliveredDelegationNotificationIds: (input: {
-    readonly threadId: ThreadId;
-    readonly notificationIds: ReadonlyArray<EventId>;
-  }) => Effect.Effect<ReadonlyArray<EventId>, ProjectionRepositoryError>;
-
   readonly getTurnStartMessage: (input: {
     readonly threadId: ThreadId;
     readonly messageId: MessageId;

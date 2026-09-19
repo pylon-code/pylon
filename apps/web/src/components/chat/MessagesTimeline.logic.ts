@@ -1,4 +1,3 @@
-import { delegationActivity } from "../../delegationActivity";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 export { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import * as Equal from "effect/Equal";
@@ -704,9 +703,7 @@ function deriveTurnFolds(input: {
       // when the turn settles makes a still-running fleet invisible.
       if (
         entry.kind === "work" &&
-        (entry.entry.agentSpawn !== undefined ||
-          delegationActivity(entry.entry)?.name === "delegate_thread" ||
-          workLogEntryIsMissingResponse(entry.entry))
+        (entry.entry.agentSpawn !== undefined || workLogEntryIsMissingResponse(entry.entry))
       ) {
         continue;
       }
@@ -938,7 +935,6 @@ export function deriveMessagesTimelineRows(input: {
       !entryBelongsToActiveTurn(entry, index) ||
       entry.kind !== "work" ||
       entry.entry.agentSpawn !== undefined ||
-      delegationActivity(entry.entry)?.name === "delegate_thread" ||
       entry.entry.questionAnswer !== undefined ||
       entry.entry.sourceActivityKind === "context-compaction" ||
       entry.entry.tone === "error"
@@ -1066,7 +1062,6 @@ export function deriveMessagesTimelineRows(input: {
     if (timelineEntry.kind === "work") {
       if (
         timelineEntry.entry.agentSpawn !== undefined ||
-        delegationActivity(timelineEntry.entry)?.name === "delegate_thread" ||
         timelineEntry.entry.questionAnswer !== undefined ||
         timelineEntry.entry.tone === "error"
       ) {
@@ -1089,7 +1084,6 @@ export function deriveMessagesTimelineRows(input: {
           nextEntry.kind !== "work" ||
           workLogEntryIsMissingResponse(nextEntry.entry) ||
           nextEntry.entry.agentSpawn !== undefined ||
-          delegationActivity(nextEntry.entry)?.name === "delegate_thread" ||
           nextEntry.entry.questionAnswer !== undefined ||
           nextEntry.entry.sourceActivityKind === "context-compaction" ||
           nextEntry.entry.tone === "error" ||

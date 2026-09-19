@@ -1627,11 +1627,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 harness: "Grok",
                 model: displayModel,
                 reasoningEffort: normalizeGrokReasoningEffort(requestedTurnReasoningEffort),
-                delegationAvailable: McpProviderSession.hasMcpProviderCapability(
-                  input.threadId,
-                  "delegation",
-                ),
-                pairActive: McpProviderSession.hasMcpProviderCapability(input.threadId, "pair"),
                 browserAvailable: McpProviderSession.hasMcpProviderCapability(
                   input.threadId,
                   "preview",

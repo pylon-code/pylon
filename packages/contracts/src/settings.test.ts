@@ -9,8 +9,6 @@ import {
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   decodeStoredClientSettings,
-  PROJECT_SCOPED_SERVER_SETTING_KEYS,
-  ProjectSettingsOverrides,
   encodeStoredClientSettings,
   resolveProviderInstanceEnabled,
   retainUnreadClientSettings,
@@ -25,7 +23,6 @@ const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
-const decodeProjectSettingsOverrides = Schema.decodeUnknownSync(ProjectSettingsOverrides);
 
 describe("ServerSettings default permissions", () => {
   it("keeps full access for settings saved before a default was configured", () => {
@@ -984,57 +981,6 @@ describe("optional computer access", () => {
   });
 });
 
-describe("agent delegation access", () => {
-  it("defaults to built-in and supports a scoped delegation preference", () => {
-    expect(decodeServerSettings({}).delegationPreference).toBe("built-in");
-    expect(decodeServerSettingsPatch({ delegationPreference: "pylon" })).toEqual({
-      delegationPreference: "pylon",
-    });
-    expect(decodeProjectSettingsOverrides({ delegationPreference: "built-in" })).toEqual({
-      delegationPreference: "built-in",
-    });
-    expect(() => decodeServerSettingsPatch({ delegationPreference: "always" })).toThrow();
-    expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain("delegationPreference");
-  });
-
-  it("defaults off, patches, and accepts a project override", () => {
-    expect(decodeServerSettings({}).enableAgentDelegation).toBe(false);
-    expect(DEFAULT_SERVER_SETTINGS.enableAgentDelegation).toBe(false);
-    expect(decodeServerSettingsPatch({ enableAgentDelegation: true })).toEqual({
-      enableAgentDelegation: true,
-    });
-    expect(decodeProjectSettingsOverrides({ enableAgentDelegation: true })).toEqual({
-      enableAgentDelegation: true,
-    });
-    expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain("enableAgentDelegation");
-  });
-
-  it("defaults to no delegation model and children in the parent's permission mode", () => {
-    const decoded = decodeServerSettings({});
-    expect(decoded.delegationDefaultModelSelection).toBeNull();
-    expect(decoded.delegationChildRuntimeMode).toBe("inherit");
-    const selection = { instanceId: "antigravity", model: "gemini-3.8-flash-medium" };
-    expect(
-      decodeServerSettingsPatch({
-        delegationDefaultModelSelection: selection,
-        delegationChildRuntimeMode: "approval-required",
-      }),
-    ).toMatchObject({
-      delegationDefaultModelSelection: selection,
-      delegationChildRuntimeMode: "approval-required",
-    });
-    expect(decodeProjectSettingsOverrides({ delegationDefaultModelSelection: null })).toEqual({
-      delegationDefaultModelSelection: null,
-    });
-    expect(() =>
-      decodeServerSettingsPatch({ delegationChildRuntimeMode: "full-access" }),
-    ).toThrow();
-    for (const key of ["delegationDefaultModelSelection", "delegationChildRuntimeMode"] as const) {
-      expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain(key);
-    }
-  });
-});
-
 describe("ClientSettings desktop notification preferences", () => {
   it("defaults every desktop notification preference on", () => {
     const settings = decodeClientSettings({});
@@ -1106,4 +1052,30 @@ describe("ClientSettings notifications", () => {
       expect(() => decodeClientSettingsPatch({ notificationMode })).toThrow();
     },
   );
+});
+
+describe("settings saved before Pylon delegation was removed", () => {
+  it("drops retired keys at environment and project scope without losing other preferences", () => {
+    const retired = {
+      enableAgentDelegation: true,
+      delegationPreference: "pylon",
+      delegationDefaultModelSelection: { providerInstanceId: "claude", modelId: "old-model" },
+      delegationChildRuntimeMode: "approval-required",
+    };
+    const settings = decodeServerSettings({
+      ...retired,
+      enableAgentBrowserAccess: true,
+      projectSettingsOverrides: {
+        project: { ...retired, defaultRuntimeMode: "approval-required" },
+      },
+    });
+    expect(settings.enableAgentBrowserAccess).toBe(true);
+    expect(settings.projectSettingsOverrides.project).toEqual({
+      defaultRuntimeMode: "approval-required",
+    });
+    for (const key of Object.keys(retired)) {
+      expect(settings).not.toHaveProperty(key);
+      expect(encodeServerSettings(settings)).not.toHaveProperty(key);
+    }
+  });
 });

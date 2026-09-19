@@ -1731,14 +1731,6 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                     text: buildRuntimeInstructions({
                       harness: "Antigravity",
                       model,
-                      delegationAvailable: McpProviderSession.hasMcpProviderCapability(
-                        input.threadId,
-                        "delegation",
-                      ),
-                      pairActive: McpProviderSession.hasMcpProviderCapability(
-                        input.threadId,
-                        "pair",
-                      ),
                       browserAvailable: McpProviderSession.hasMcpProviderCapability(
                         input.threadId,
                         "preview",
