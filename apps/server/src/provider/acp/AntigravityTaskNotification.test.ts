@@ -43,10 +43,9 @@ describe("Antigravity task notifications", () => {
         const buffer = new AntigravityTaskNotificationBuffer();
         expect(buffer.push(text.slice(0, split))).toBe("");
         expect(buffer.push(text.slice(split))).toBe("");
-        expect(buffer.finish()).toEqual({
-          text: "",
-          notification: parseAntigravityTaskNotification(text),
-        });
+        expect(buffer.finish()).toEqual([
+          { type: "notification", notification: parseAntigravityTaskNotification(text) },
+        ]);
       }
     });
 
@@ -54,7 +53,7 @@ describe("Antigravity task notifications", () => {
       const buffer = new AntigravityTaskNotificationBuffer();
       expect(buffer.push("Here is an example:\n")).toBe("Here is an example:\n");
       expect(buffer.push(legacyNotice())).toBe(legacyNotice());
-      expect(buffer.finish()).toEqual({ text: "", notification: undefined });
+      expect(buffer.finish()).toEqual([]);
       expect(
         parseAntigravityTaskNotification("```xml\n" + legacyNotice() + "\n```"),
       ).toBeUndefined();
@@ -69,8 +68,10 @@ describe("Antigravity task notifications", () => {
       const buffer = new AntigravityTaskNotificationBuffer();
       const emitted = buffer.push(text);
       const result = buffer.finish();
-      expect(emitted + result.text).toBe(text);
-      expect(result.notification).toBeUndefined();
+      expect(emitted + result.map((part) => (part.type === "text" ? part.text : "")).join("")).toBe(
+        text,
+      );
+      expect(result.every((part) => part.type === "text")).toBe(true);
     });
 
     it("bounds buffering and falls back to lossless text for oversized notices", () => {
@@ -78,7 +79,7 @@ describe("Antigravity task notifications", () => {
       const text = "<task_notification>\n" + "x".repeat(1024 * 1024);
       expect(buffer.push(text)).toBe(text);
       expect(buffer.push("tail")).toBe("tail");
-      expect(buffer.finish()).toEqual({ text: "", notification: undefined });
+      expect(buffer.finish()).toEqual([]);
     });
   });
 
@@ -142,10 +143,9 @@ describe("Antigravity task notifications", () => {
         const buffer = new AntigravityTaskNotificationBuffer();
         expect(buffer.push(text.slice(0, split))).toBe("");
         expect(buffer.push(text.slice(split))).toBe("");
-        expect(buffer.finish()).toEqual({
-          text: "",
-          notification: parseAntigravityTaskNotification(text),
-        });
+        expect(buffer.finish()).toEqual([
+          { type: "notification", notification: parseAntigravityTaskNotification(text) },
+        ]);
       }
     });
 
@@ -202,8 +202,10 @@ describe("Antigravity task notifications", () => {
         const buffer = new AntigravityTaskNotificationBuffer();
         const emitted = buffer.push(text);
         const result = buffer.finish();
-        expect(emitted + result.text).toBe(text);
-        expect(result.notification).toBeUndefined();
+        expect(
+          emitted + result.map((part) => (part.type === "text" ? part.text : "")).join(""),
+        ).toBe(text);
+        expect(result.every((part) => part.type === "text")).toBe(true);
       },
     );
 
@@ -214,7 +216,7 @@ describe("Antigravity task notifications", () => {
       // Buffer immediately passes through when sender does not match taskId
       const buffer = new AntigravityTaskNotificationBuffer();
       expect(buffer.push(mismatchedNotice)).toBe(mismatchedNotice);
-      expect(buffer.finish()).toEqual({ text: "", notification: undefined });
+      expect(buffer.finish()).toEqual([]);
     });
 
     it("rejects arbitrary prose containing task-looking phrases", () => {
@@ -235,7 +237,7 @@ describe("Antigravity task notifications", () => {
       );
       // Subsequent chunks stream immediately
       expect(buffer.push("1. First fix\n")).toBe("1. First fix\n");
-      expect(buffer.finish()).toEqual({ text: "", notification: undefined });
+      expect(buffer.finish()).toEqual([]);
     });
 
     it("streams unrelated <SYSTEM_MESSAGE> prose immediately without treating as task notice", () => {
@@ -243,8 +245,114 @@ describe("Antigravity task notifications", () => {
       const peerReview = `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-14T23:22:20Z sender=reviewer priority=NORMAL content=### Adversarial Review: PR`;
       // Buffer diverges when content does not start with Task id "
       expect(buffer.push(peerReview)).toBe(peerReview);
-      expect(buffer.finish()).toEqual({ text: "", notification: undefined });
+      expect(buffer.finish()).toEqual([]);
       expect(parseAntigravityTaskNotification(peerReview)).toBeUndefined();
+    });
+
+    it("recognizes a system notice between narration across every chunk boundary", () => {
+      const before = "I will wait for the tests.\n\nThe system will notify us.\n\n";
+      const after = "I will check the results.";
+      const notice = systemNotice(0, "log");
+      const text = before + notice + after;
+      for (let split = 0; split <= text.length; split++) {
+        const buffer = new AntigravityTaskNotificationBuffer();
+        const emitted = buffer.push(text.slice(0, split)) + buffer.push(text.slice(split));
+        const result = buffer.finish();
+        expect(emitted).toBe(before);
+        expect(result).toEqual([
+          { type: "notification", notification: parseAntigravityTaskNotification(notice) },
+          { type: "text", text: after },
+        ]);
+      }
+    });
+
+    it.each(["\n", "\r\n"])(
+      "keeps multiple notices and narration ordered with %j framing",
+      (newline) => {
+        const first = systemNotice(0, "log").replaceAll("\n", newline);
+        const second = systemNotice(8, "log")
+          .replaceAll("task-444", "task-445")
+          .replaceAll("\n", newline);
+        const middle = `I will inspect the other task.${newline}${newline}`;
+        const after = "Both tasks have finished.";
+        const text = first + middle + second + after;
+        for (let split = 0; split <= text.length; split++) {
+          const buffer = new AntigravityTaskNotificationBuffer();
+          expect(buffer.push(text.slice(0, split)) + buffer.push(text.slice(split))).toBe("");
+          expect(buffer.finish()).toEqual([
+            { type: "notification", notification: parseAntigravityTaskNotification(first) },
+            { type: "text", text: middle },
+            { type: "notification", notification: parseAntigravityTaskNotification(second) },
+            { type: "text", text: after },
+          ]);
+        }
+      },
+    );
+
+    it.each(["expected </SYSTEM_MESSAGE> in fixture", "</SYSTEM_MESSAGE>"])(
+      "preserves literal closing tags in output: %s",
+      (output) => {
+        const notice = systemNotice(0, "log").replace("✔ passed", `${output}\nAll tests passed`);
+        const narration = "I will check the results.";
+        const text = notice + narration;
+        for (let split = 0; split <= text.length; split++) {
+          const buffer = new AntigravityTaskNotificationBuffer();
+          expect(buffer.push(text.slice(0, split)) + buffer.push(text.slice(split))).toBe("");
+          expect(buffer.finish()).toEqual([
+            { type: "notification", notification: parseAntigravityTaskNotification(notice) },
+            { type: "text", text: narration },
+          ]);
+        }
+      },
+    );
+
+    it.each(["\n", "\n}\n"])(
+      "consumes terminal envelope trivia %j without a message shell",
+      (suffix) => {
+        const notice = systemNotice(0, "log");
+        const buffer = new AntigravityTaskNotificationBuffer();
+        expect(buffer.push(notice + suffix)).toBe("");
+        expect(buffer.finish()).toEqual([
+          { type: "notification", notification: parseAntigravityTaskNotification(notice) },
+        ]);
+      },
+    );
+
+    it("keeps ambiguous bare closing tags with trailing narration losslessly", () => {
+      const text =
+        systemNotice(0, "log").replace("Log: file:///path/to/tasks/task-444.log\n", "") +
+        "Next steps.";
+      const buffer = new AntigravityTaskNotificationBuffer();
+      expect(buffer.push(text)).toBe("");
+      expect(buffer.finish()).toEqual([{ type: "text", text }]);
+    });
+
+    it("preserves fenced system notice examples even with character-sized chunks", () => {
+      const text = "Here is an example:\n\n```text\n\n" + systemNotice(0, "log") + "\n```";
+      const buffer = new AntigravityTaskNotificationBuffer();
+      let emitted = "";
+      for (const char of text) emitted += buffer.push(char);
+      const result = buffer.finish();
+      expect(emitted + result.map((part) => (part.type === "text" ? part.text : "")).join("")).toBe(
+        text,
+      );
+      expect(result.every((part) => part.type === "text")).toBe(true);
+    });
+
+    it("separates a closed system notice from narration across every chunk boundary", () => {
+      const notice = systemNotice(0, "log");
+      const narration = "I will check the progress of the local task.";
+      const text = notice + narration;
+      for (let split = 0; split <= text.length; split++) {
+        const buffer = new AntigravityTaskNotificationBuffer();
+        expect(buffer.push(text.slice(0, split))).toBe("");
+        expect(buffer.push(text.slice(split))).toBe("");
+        expect(buffer.finish()).toEqual([
+          { type: "notification", notification: parseAntigravityTaskNotification(notice) },
+          { type: "text", text: narration },
+        ]);
+      }
+      expect(parseAntigravityTaskNotification(text)).toBeUndefined();
     });
 
     it.each([
@@ -252,13 +360,14 @@ describe("Antigravity task notifications", () => {
       "<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-17T17:21:40Z",
       systemNotice().replace("code 0", "code unknown"),
       systemNotice().replace("code 0", "code 99999999999999999"),
-      systemNotice() + "\nAdditional explanation from assistant.",
     ])("returns incomplete or unrecognized system messages without losing text", (text) => {
       const buffer = new AntigravityTaskNotificationBuffer();
       const emitted = buffer.push(text);
       const result = buffer.finish();
-      expect(emitted + result.text).toBe(text);
-      expect(result.notification).toBeUndefined();
+      expect(emitted + result.map((part) => (part.type === "text" ? part.text : "")).join("")).toBe(
+        text,
+      );
+      expect(result.every((part) => part.type === "text")).toBe(true);
     });
   });
 });
@@ -280,10 +389,12 @@ describe("plain async task completion notices", () => {
       const buffer = new AntigravityTaskNotificationBuffer("message-123");
       expect(buffer.push(notice.slice(0, split))).toBe("");
       expect(buffer.push(notice.slice(split))).toBe("");
-      expect(buffer.finish()).toEqual({
-        text: "",
-        notification: parseAntigravityTaskNotification(notice, "message-123"),
-      });
+      expect(buffer.finish()).toEqual([
+        {
+          type: "notification",
+          notification: parseAntigravityTaskNotification(notice, "message-123"),
+        },
+      ]);
     }
   });
   it.each(["failed", "cancelled"] as const)(
@@ -306,7 +417,9 @@ describe("plain async task completion notices", () => {
     const buffer = new AntigravityTaskNotificationBuffer("message-123");
     const emitted = buffer.push(text);
     const result = buffer.finish();
-    expect(emitted + result.text).toBe(text);
-    expect(result.notification).toBeUndefined();
+    expect(emitted + result.map((part) => (part.type === "text" ? part.text : "")).join("")).toBe(
+      text,
+    );
+    expect(result.every((part) => part.type === "text")).toBe(true);
   });
 });

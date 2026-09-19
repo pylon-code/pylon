@@ -243,7 +243,25 @@ function isPotentialNoticePrefix(candidate: string): boolean {
   return false;
 }
 
-/** Buffer only a possible standalone notice; normal prose keeps streaming. */
+export type AntigravityMessagePart =
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "notification"; readonly notification: AntigravityTaskNotification };
+
+// Mixed messages need an unambiguous provider trailer. A literal closing tag
+// can occur in command output (including tests of this very protocol).
+const CLOSED_SYSTEM_TRAILER =
+  /(?:^|\r?\n)(?:[^\S\r\n]*Log:[^\S\r\n]*file:\/\/[^\r\n]+\r?\n[^\S\r\n]*|[^\S\r\n]*<\/attachment>\s*)<\/SYSTEM_MESSAGE>/g;
+
+function leadingSystemNotice(text: string) {
+  for (const trailer of text.matchAll(CLOSED_SYSTEM_TRAILER)) {
+    const end = trailer.index + trailer[0].length;
+    const notification = parseAntigravityTaskNotification(text.slice(0, end));
+    if (notification) return { notification, remainder: text.slice(end) };
+  }
+  return undefined;
+}
+
+/** Extract provider notices from narration while keeping ordinary prose streaming. */
 export class AntigravityTaskNotificationBuffer {
   private readonly fallbackTaskId: string | undefined;
   constructor(fallbackTaskId?: string) {
@@ -251,9 +269,59 @@ export class AntigravityTaskNotificationBuffer {
   }
   private pending = "";
   private passthrough = false;
+  private proseTail = "";
+  private proseLine = "";
+  private lineBreaks = 0;
+  private fence: string | undefined;
+
+  private streamProse(text: string): string {
+    const combined = this.proseTail + text;
+    this.proseTail = "";
+    for (let index = 0; index < combined.length; index++) {
+      // Only a full provider preamble at a paragraph boundary can interrupt
+      // narration. Bare tags and fenced examples remain ordinary text.
+      if (this.lineBreaks >= 2 && !this.fence && combined[index] === "T") {
+        const candidate = combined.slice(index);
+        if (
+          candidate.length <= MAX_BUFFER_LENGTH &&
+          candidate.startsWith(SYSTEM_MESSAGE_PREAMBLE)
+        ) {
+          this.passthrough = false;
+          this.lineBreaks = 0;
+          this.pending = candidate;
+          return combined.slice(0, index);
+        }
+        if (SYSTEM_MESSAGE_PREAMBLE.startsWith(candidate)) {
+          this.proseTail = candidate;
+          return combined.slice(0, index);
+        }
+      }
+      const char = combined[index];
+      if (char === "\n") {
+        const delimiter = /^ {0,3}(`{3,}|~{3,})/.exec(this.proseLine)?.[1];
+        if (delimiter) {
+          if (!this.fence) this.fence = delimiter;
+          else if (
+            delimiter[0] === this.fence[0] &&
+            delimiter.length >= this.fence.length &&
+            this.proseLine.trim() === delimiter
+          ) {
+            this.fence = undefined;
+          }
+        }
+        this.proseLine = "";
+        this.lineBreaks++;
+      } else if (char !== "\r") {
+        this.lineBreaks = 0;
+        // Only the beginning of the line is needed to track Markdown fences.
+        if (this.proseLine.length < 256) this.proseLine += char;
+      }
+    }
+    return combined;
+  }
 
   push(text: string): string {
-    if (this.passthrough) return text;
+    if (this.passthrough) return this.streamProse(text);
     this.pending += text;
     const candidate = this.pending.trimStart();
     if (this.pending.length <= MAX_BUFFER_LENGTH && isPotentialNoticePrefix(candidate)) {
@@ -262,15 +330,45 @@ export class AntigravityTaskNotificationBuffer {
     this.passthrough = true;
     const result = this.pending;
     this.pending = "";
-    return result;
+    return this.streamProse(result);
   }
 
-  finish(): { text: string; notification: AntigravityTaskNotification | undefined } {
-    const text = this.pending;
+  finish(): ReadonlyArray<AntigravityMessagePart> {
+    const parts: AntigravityMessagePart[] = [];
+    let text = this.pending + this.proseTail;
+    let passthrough = this.passthrough;
+    let fallbackTaskId = this.fallbackTaskId;
     this.pending = "";
-    const notification = this.passthrough
-      ? undefined
-      : parseAntigravityTaskNotification(text, this.fallbackTaskId);
-    return { text: notification ? "" : text, notification };
+    this.proseTail = "";
+    while (true) {
+      if (passthrough) {
+        if (text) parts.push({ type: "text", text });
+        break;
+      }
+
+      // Split before parsing the whole buffer: multiple notices otherwise look
+      // like a single notice whose output contains the intervening narration.
+      const leading = leadingSystemNotice(text);
+      const notification =
+        leading?.notification ?? parseAntigravityTaskNotification(text, fallbackTaskId);
+      if (!notification) {
+        if (text) parts.push({ type: "text", text });
+        break;
+      }
+      parts.push({ type: "notification", notification });
+      // Whitespace and the provider's optional terminal brace belong to the
+      // envelope; neither should create a new assistant-message shell.
+      if (!leading?.remainder.trim() || leading.remainder.trim() === "}") break;
+
+      const buffer = new AntigravityTaskNotificationBuffer(
+        this.fallbackTaskId ? `${this.fallbackTaskId}:notice:${parts.length}` : undefined,
+      );
+      const prose = buffer.push(leading.remainder);
+      if (prose) parts.push({ type: "text", text: prose });
+      text = buffer.pending + buffer.proseTail;
+      passthrough = buffer.passthrough;
+      fallbackTaskId = buffer.fallbackTaskId;
+    }
+    return parts;
   }
 }

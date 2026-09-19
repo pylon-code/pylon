@@ -832,6 +832,60 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       }),
   );
 
+  it.effect("separates system task results from narration in the same ACP item", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* h.adapter.sendTurn({ threadId, input: "Run checks" });
+      const prompt = yield* h.nextPrompt;
+      const itemId = "task-and-narration";
+      const narration = "I will check the progress of the local npm test task.";
+      const notice =
+        "The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n" +
+        '<SYSTEM_MESSAGE> [Message] timestamp=2026-09-19T20:38:15Z sender=session/task-8742 priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-8742" finished with result:\n\n' +
+        "The command exited with code 0. Output:\n\nLog: file:///path/tasks/task-8742.log\n</SYSTEM_MESSAGE>";
+      yield* h.emitNative({ _tag: "AssistantItemStarted", itemId });
+      const middle = "The first task finished.\n\n";
+      const second = notice.replaceAll("task-8742", "task-8743").replace("code 0", "code 8");
+      for (const text of [
+        "I will wait for the tests.\n\n" + notice.slice(0, 25),
+        notice.slice(25) + middle + second + narration,
+      ]) {
+        yield* h.emitNative({ _tag: "ContentDelta", itemId, text, rawPayload: {} });
+      }
+      yield* h.emitNative({ _tag: "AssistantItemCompleted", itemId });
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+      expect(
+        h.seen
+          .filter((event) => event.type === "content.delta")
+          .map((event) => event.payload.delta),
+      ).toEqual(["I will wait for the tests.\n\n", middle, narration]);
+      const completed = h.seen.filter((event) => event.type === "item.completed");
+      expect(completed.map((event) => event.payload.itemType)).toEqual([
+        "assistant_message",
+        "command_execution",
+        "assistant_message",
+        "command_execution",
+        "assistant_message",
+      ]);
+      expect(completed[1]).toMatchObject({
+        itemId: "antigravity-task:session/task-8742",
+        payload: {
+          status: "completed",
+          data: { taskId: "session/task-8742", item: { exitCode: 0 } },
+        },
+      });
+      expect(completed[0]?.itemId).toBe(itemId);
+      expect(completed[2]?.itemId).toBe(`${itemId}:after-task:1`);
+      expect(completed[3]).toMatchObject({
+        itemId: "antigravity-task:session/task-8743",
+        payload: { status: "failed", data: { item: { exitCode: 8 } } },
+      });
+      expect(completed[4]?.itemId).toBe(`${itemId}:after-task:2`);
+    }),
+  );
+
   it.effect("preserves normal streaming, malformed notices, and interrupted message buffers", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
