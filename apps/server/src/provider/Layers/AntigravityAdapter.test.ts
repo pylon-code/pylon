@@ -22,6 +22,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as AcpErrors from "effect-acp/errors";
 import type * as AcpSchema from "effect-acp/schema";
@@ -830,6 +831,136 @@ it.layer(layer)("AntigravityAdapter", (it) => {
           },
         });
       }),
+  );
+
+  it.effect("publishes idle text while the prompt and a background command remain active", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* h.adapter.sendTurn({ threadId, input: "Check release status" });
+      const prompt = yield* h.nextPrompt;
+      yield* h.emitNative({
+        _tag: "ToolCallUpdated",
+        toolCall: {
+          toolCallId: "watch",
+          kind: "execute",
+          status: "inProgress",
+          command: "gh pr checks --watch",
+          data: {},
+        },
+        rawPayload: {},
+      });
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "final",
+        text: "The release is ready.",
+        rawPayload: {},
+      });
+      yield* h.drainEvents;
+      yield* TestClock.adjust("2 seconds");
+      const published = yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+          event.type === "item.completed" && event.payload.itemType === "assistant_message",
+      );
+      expect(published.itemId).toBe("final");
+      expect(h.hasActivePrompt()).toBe(true);
+      expect(h.seen.some((event) => event.type === "turn.completed")).toBe(false);
+      expect(h.calls.some((call) => call.startsWith("cancel:"))).toBe(false);
+
+      // A later chunk in the same ACP item must become a separate message,
+      // rather than reuse a completed item and duplicate the original text.
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "final",
+        text: "The watcher has also finished.",
+        rawPayload: {},
+      });
+      yield* h.drainEvents;
+      yield* h.emitNative({ _tag: "AssistantItemCompleted", itemId: "final" });
+      yield* h.emitNative({
+        _tag: "ToolCallUpdated",
+        toolCall: {
+          toolCallId: "watch",
+          kind: "execute",
+          status: "completed",
+          command: "gh pr checks --watch",
+          data: {},
+        },
+        rawPayload: {},
+      });
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+      yield* TestClock.adjust("4 seconds");
+      yield* h.drainEvents;
+      const texts = h.seen.filter((event) => event.type === "content.delta");
+      expect(texts.map((event) => [event.itemId, event.payload.delta])).toEqual([
+        ["final", "The release is ready."],
+        ["final:continuation:1", "The watcher has also finished."],
+      ]);
+      expect(
+        h.seen
+          .filter(
+            (event) =>
+              event.type === "item.completed" && event.payload.itemType === "assistant_message",
+          )
+          .map((event) => event.itemId),
+      ).toEqual(["final", "final:continuation:1"]);
+    }),
+  );
+
+  it.effect("resets the quiet period as text arrives and does not leak incomplete notices", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* h.adapter.sendTurn({ threadId, input: "Run checks" });
+      const prompt = yield* h.nextPrompt;
+      const notice =
+        '<SYSTEM_MESSAGE> [Message] timestamp=2026-09-19T20:59:57Z sender=session/task-1 priority=MESSAGE_PRIORITY_HIGH content=Task id "session/task-1" finished with result:\n\nThe command exited with code 0. Output:\n';
+      yield* h.emitNative({ _tag: "ContentDelta", itemId: "notice", text: notice, rawPayload: {} });
+      yield* h.drainEvents;
+      yield* TestClock.adjust("4 seconds");
+      yield* h.drainEvents;
+      expect(
+        h.seen.some((event) => event.type === "content.delta" || event.type === "item.completed"),
+      ).toBe(false);
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "notice",
+        text: "Log: file:///path/task-1.log\n</SYSTEM_MESSAGE>All checks passed.",
+        rawPayload: {},
+      });
+      yield* h.drainEvents;
+      yield* TestClock.adjust("1 second");
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "notice",
+        text: " Ready to review.",
+        rawPayload: {},
+      });
+      yield* h.drainEvents;
+      yield* TestClock.adjust("1 second");
+      yield* h.drainEvents;
+      expect(h.seen.some((event) => event.type === "item.completed")).toBe(false);
+      yield* TestClock.adjust("2 seconds");
+      yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+          event.type === "item.completed" && event.payload.itemType === "assistant_message",
+      );
+      expect(
+        h.seen
+          .filter((event) => event.type === "content.delta")
+          .map((event) => event.payload.delta),
+      ).toEqual(["All checks passed. Ready to review."]);
+      expect(
+        h.seen
+          .filter((event) => event.type === "item.completed")
+          .map((event) => event.payload.itemType),
+      ).toEqual(["command_execution", "assistant_message"]);
+      expect(h.hasActivePrompt()).toBe(true);
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+      expect(h.seen.filter((event) => event.type === "item.completed")).toHaveLength(2);
+    }),
   );
 
   it.effect("separates system task results from narration in the same ACP item", () =>

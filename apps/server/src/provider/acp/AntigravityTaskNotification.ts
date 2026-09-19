@@ -333,13 +333,24 @@ export class AntigravityTaskNotificationBuffer {
     return this.streamProse(result);
   }
 
+  canFlushOnIdle(): boolean {
+    return this.finishedParts().every(
+      (part) => part.type === "notification" || !isPotentialNoticePrefix(part.text.trimStart()),
+    );
+  }
+
   finish(): ReadonlyArray<AntigravityMessagePart> {
+    const parts = this.finishedParts();
+    this.pending = "";
+    this.proseTail = "";
+    return parts;
+  }
+
+  private finishedParts(): ReadonlyArray<AntigravityMessagePart> {
     const parts: AntigravityMessagePart[] = [];
     let text = this.pending + this.proseTail;
     let passthrough = this.passthrough;
     let fallbackTaskId = this.fallbackTaskId;
-    this.pending = "";
-    this.proseTail = "";
     while (true) {
       if (passthrough) {
         if (text) parts.push({ type: "text", text });

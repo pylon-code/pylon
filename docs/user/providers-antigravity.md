@@ -174,6 +174,11 @@ seconds.
 When Pylon cannot send to Antigravity, the composer says why: it is not installed, it is signed out,
 no model is chosen, its models have not loaded, or the thread's saved model is no longer offered.
 
+Antigravity can keep a turn open while a background command is still pending, even after writing
+its response. Pylon shows response text after a brief pause without waiting for the turn to end.
+A visible answer does not mean every background task has finished. Use **Stop** when you intend to
+cancel the remaining work.
+
 If Google reports `SUBSCRIPTION_REQUIRED`, an account restriction, or a usage limit, follow the
 provider's message and any retry time. A finished turn can contain an upstream error instead of
 completed work. Pylon does not switch to an API key to get past a limit. See
