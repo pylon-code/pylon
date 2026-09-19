@@ -19,6 +19,7 @@ import {
   type TurnCompletedPayload,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -226,10 +227,14 @@ interface SessionContext {
   readonly approvals: Map<ApprovalRequestId, PendingApproval>;
   readonly questions: Map<ApprovalRequestId, PendingQuestion>;
   readonly commands: Map<string, OpenCommand>;
+  readonly assistantMessageLock: Semaphore.Semaphore;
+  readonly assistantContinuationCounts: Map<string, number>;
   readonly assistantMessages: Map<
     string,
     {
       buffer: AntigravityTaskNotificationBuffer;
+      outputItemId: string;
+      lastTextAt: Option.Option<number>;
       turnId: TurnId | undefined;
       started: boolean;
     }
@@ -411,8 +416,12 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       (context.currentAnonymousItemId ??= `${context.activeTurnId ?? "turn"}:msg-${++context.anonymousMessageCount}`);
     const existing = context.assistantMessages.get(key);
     if (existing) return existing;
+    const continuation = context.assistantContinuationCounts.get(key) ?? 0;
+    const outputItemId = continuation === 0 ? key : `${key}:continuation:${continuation}`;
     const message = {
-      buffer: new AntigravityTaskNotificationBuffer(key),
+      buffer: new AntigravityTaskNotificationBuffer(outputItemId),
+      outputItemId,
+      lastTextAt: Option.none<number>(),
       turnId: context.activeTurnId,
       started: false,
     };
@@ -439,7 +448,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           provider: PROVIDER,
           threadId: context.threadId,
           turnId: message.turnId,
-          itemId,
+          itemId: message.outputItemId,
           lifecycle: "item.started",
         }),
       );
@@ -452,7 +461,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         provider: PROVIDER,
         threadId: context.threadId,
         turnId: message.turnId,
-        ...(itemId ? { itemId } : {}),
+        ...(itemId ? { itemId: message.outputItemId } : {}),
         text,
         rawPayload,
       }),
@@ -472,7 +481,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
           provider: PROVIDER,
           threadId: context.threadId,
           turnId: message.turnId,
-          itemId,
+          itemId: message.outputItemId,
           lifecycle: "item.completed",
         }),
       );
@@ -498,7 +507,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       // Completing the previous item is essential: ingestion keeps appending
       // to its active assistant segment until it receives item.completed.
       yield* completeAssistantText(context, textItemId);
-      textItemId = `${key}:after-task:${++segment}`;
+      textItemId = `${message.outputItemId}:after-task:${++segment}`;
       const notification = part.notification;
       // Native task IDs are not ACP tool IDs. Do not correlate by command text:
       // the same command may be running more than once at the same time.
@@ -544,8 +553,43 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
 
   const finishAssistantMessages = Effect.fn("AntigravityAdapter.finishAssistantMessages")(
     function* (context: SessionContext) {
-      for (const itemId of context.assistantMessages.keys()) {
-        yield* finishAssistantMessage(context, itemId);
+      yield* context.assistantMessageLock.withPermit(
+        Effect.gen(function* () {
+          for (const itemId of context.assistantMessages.keys()) {
+            yield* finishAssistantMessage(context, itemId);
+          }
+          context.assistantContinuationCounts.clear();
+        }),
+      );
+    },
+  );
+
+  // Antigravity may keep session/prompt open after its final text while a
+  // background command is pending. Publish quiet text segments independently
+  // of prompt completion; this never completes the turn or cancels a tool.
+  const publishIdleAssistantMessages = Effect.fn("AntigravityAdapter.publishIdleAssistantMessages")(
+    function* (context: SessionContext) {
+      while (!context.stopped) {
+        yield* Effect.sleep("2 seconds");
+        yield* context.assistantMessageLock.withPermit(
+          Effect.gen(function* () {
+            if (context.stopped || context.fatalError) return;
+            const now = yield* Clock.currentTimeMillis;
+            for (const [key, message] of context.assistantMessages) {
+              if (
+                Option.isNone(message.lastTextAt) ||
+                now - message.lastTextAt.value < 2_000 ||
+                !message.buffer.canFlushOnIdle()
+              )
+                continue;
+              context.assistantContinuationCounts.set(
+                key,
+                (context.assistantContinuationCounts.get(key) ?? 0) + 1,
+              );
+              yield* finishAssistantMessage(context, key);
+            }
+          }),
+        );
       }
     },
   );
@@ -1038,19 +1082,33 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         return;
       }
       case "AssistantItemStarted":
-        assistantMessage(context, event.itemId);
+        yield* context.assistantMessageLock.withPermit(
+          Effect.sync(() => assistantMessage(context, event.itemId)),
+        );
         return;
       case "AssistantItemCompleted":
-        yield* finishAssistantMessage(context, event.itemId);
+        yield* context.assistantMessageLock.withPermit(
+          Effect.gen(function* () {
+            yield* finishAssistantMessage(context, event.itemId);
+            context.assistantContinuationCounts.delete(event.itemId);
+          }),
+        );
         return;
       case "ContentDelta": {
-        const itemId = event.itemId ?? event.messageId ?? "";
-        const text = assistantMessage(context, itemId).buffer.push(event.text);
-        yield* emitAssistantText(
-          context,
-          itemId || context.currentAnonymousItemId || "",
-          text,
-          sanitizeAntigravityToolPayload(event.rawPayload),
+        yield* context.assistantMessageLock.withPermit(
+          Effect.gen(function* () {
+            const itemId = event.itemId ?? event.messageId ?? "";
+            const message = assistantMessage(context, itemId);
+            if (event.text.length > 0)
+              message.lastTextAt = Option.some(yield* Clock.currentTimeMillis);
+            const text = message.buffer.push(event.text);
+            yield* emitAssistantText(
+              context,
+              itemId || context.currentAnonymousItemId || "",
+              text,
+              sanitizeAntigravityToolPayload(event.rawPayload),
+            );
+          }),
         );
         return;
       }
@@ -1378,6 +1436,8 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                 approvals: new Map(),
                 questions: new Map(),
                 commands: new Map(),
+                assistantMessageLock: yield* Semaphore.make(1),
+                assistantContinuationCounts: new Map(),
                 assistantMessages: new Map(),
                 subagents: new Map(),
                 turns: [],
@@ -1397,6 +1457,12 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
               };
               const running = context;
               sessions.set(input.threadId, running);
+              yield* publishIdleAssistantMessages(running).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logError("Could not publish an idle Antigravity message.", { cause }),
+                ),
+                Effect.forkIn(sessionScope),
+              );
               yield* Stream.runForEach(runtime.getEvents(), (event) =>
                 handleEvent(running, event, transportId),
               ).pipe(
