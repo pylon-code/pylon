@@ -4210,7 +4210,7 @@ describe("ProviderCommandReactor", () => {
 
   const startTurnAndSettle = async (harness: Awaited<ReturnType<typeof createHarness>>) => {
     const now = "2026-01-01T00:00:00.000Z";
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.turn.start",
         commandId: CommandId.make("cmd-turn-start-unbound-1"),
@@ -4236,7 +4236,7 @@ describe("ProviderCommandReactor", () => {
     const boundIncarnation = harness.runtimeSessions[0]!.sessionIncarnationId!;
     // The harness has no runtime ingestion; settle the turn the way ingestion
     // would after a turn.completed event.
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.session.set",
         commandId: CommandId.make("cmd-session-ready-unbound-1"),
@@ -4271,7 +4271,7 @@ describe("ProviderCommandReactor", () => {
     });
     expect(recoveredIncarnation).not.toBe(boundIncarnation);
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.turn.start",
         commandId: CommandId.make("cmd-turn-start-unbound-2"),
@@ -4317,7 +4317,7 @@ describe("ProviderCommandReactor", () => {
       sessionIncarnationId: RuntimeSessionId.make("session-foreign"),
     });
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.turn.start",
         commandId: CommandId.make("cmd-turn-start-unbound-3"),
