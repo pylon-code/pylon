@@ -11052,23 +11052,26 @@ export default function ChatView(props: ChatViewProps) {
             <AlertDialogTitle>Edit from here?</AlertDialogTitle>
             <AlertDialogDescription>
               Rewind the provider conversation and Pylon history to before this message. Your prompt
-              and attachments return to the composer. Choose whether to keep your current files or
-              also restore the worktree, Git index, staged and unstaged changes, and untracked files
-              to that point.
+              and attachments return to the composer.
+              {activeWorktreePath === null
+                ? " Files stay as they are because this thread shares the project directory."
+                : " Choose whether to keep your current files or also restore the worktree, Git index, staged and unstaged changes, and untracked files to that point."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                if (!pendingRevert || pendingRevert.routeThreadKey !== routeThreadKey) return;
-                setPendingRevert(null);
-                void onRevertToTurnCount(pendingRevert.target, pendingRevert.messageId, true);
-              }}
-            >
-              Revert files too
-            </Button>
+            {activeWorktreePath !== null ? (
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  if (!pendingRevert || pendingRevert.routeThreadKey !== routeThreadKey) return;
+                  setPendingRevert(null);
+                  void onRevertToTurnCount(pendingRevert.target, pendingRevert.messageId, true);
+                }}
+              >
+                Revert files too
+              </Button>
+            ) : null}
             <Button
               onClick={() => {
                 if (!pendingRevert || pendingRevert.routeThreadKey !== routeThreadKey) return;
