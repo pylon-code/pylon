@@ -34,6 +34,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { forkParked, ServerActivation } from "../../serverActivation.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
@@ -349,6 +350,7 @@ interface OpenCodeSessionContext {
   readonly sessionIncarnationId: ProviderSession["sessionIncarnationId"];
   readonly client: OpencodeClient;
   readonly server: OpenCodeServerConnection;
+  readonly connectMcp: Effect.Effect<void, ProviderAdapterProcessError>;
   readonly exactRollbackUnavailableReason: string | undefined;
   readonly directory: string;
   openCodeSessionId: string;
@@ -3228,23 +3230,40 @@ export function makeOpenCodeAdapter(
               directory,
               ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
             });
-            if (mcpSession && !server.external) {
-              yield* runOpenCodeSdk("mcp.add", () =>
-                client.mcp.add({
-                  name: "t3-code",
-                  config: {
-                    type: "remote",
-                    url: mcpSession.endpoint,
-                    headers: {
-                      Authorization: mcpSession.authorizationHeader,
-                    },
-                    oauth: false,
-                    // OpenCode also applies this to connecting and listing tools.
-                    timeout: McpProviderSession.MCP_PROVIDER_TOOL_TIMEOUT_MS,
-                  },
-                }),
-              );
-            }
+            const activation = yield* ServerActivation;
+            const connectMcp = yield* Effect.cached(
+              (mcpSession && !server.external
+                ? runOpenCodeSdk("mcp.add", (signal) =>
+                    client.mcp.add(
+                      {
+                        name: "t3-code",
+                        config: {
+                          type: "remote",
+                          url: mcpSession.endpoint,
+                          headers: {
+                            Authorization: mcpSession.authorizationHeader,
+                          },
+                          oauth: false,
+                          // OpenCode also applies this to connecting and listing tools.
+                          timeout: McpProviderSession.MCP_PROVIDER_TOOL_TIMEOUT_MS,
+                        },
+                      },
+                      { signal },
+                    ),
+                  )
+                : Effect.void
+              ).pipe(
+                Effect.asVoid,
+                Effect.mapError((cause) => toProcessError(input.threadId, cause)),
+              ),
+            );
+            // Recovery runs before command readiness. MCP initialization calls
+            // back into Pylon, so awaiting it here would block both sides.
+            const connectMcpWhenActive =
+              recovering && activation !== undefined
+                ? activation.pipe(Effect.andThen(connectMcp))
+                : connectMcp;
+            if (!recovering) yield* connectMcpWhenActive;
             // Resume: re-adopt the session named by the durable cursor —
             // OpenCode scopes history by session id. The probe recovers only
             // a confirmed not-found (start fresh); transport/auth/server
@@ -3340,6 +3359,7 @@ export function makeOpenCodeAdapter(
 
             return {
               sessionScope,
+              connectMcp: connectMcpWhenActive,
               server,
               exactRollbackUnavailableReason,
               client,
@@ -3383,6 +3403,7 @@ export function makeOpenCodeAdapter(
         sessionIncarnationId: input.sessionIncarnationId,
         client: started.client,
         server: started.server,
+        connectMcp: started.connectMcp,
         exactRollbackUnavailableReason: started.exactRollbackUnavailableReason,
         directory,
         openCodeSessionId: started.openCodeSession.id,
@@ -3521,11 +3542,19 @@ export function makeOpenCodeAdapter(
         },
       });
 
+      if (recovering) {
+        yield* forkParked(context.connectMcp.pipe(Effect.ignoreCause({ log: true }))).pipe(
+          Effect.provideService(Scope.Scope, context.sessionScope),
+        );
+      }
       return context.session;
     });
 
     const sendTurn: OpenCodeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
       const context = yield* ensureSessionContext(sessions, input.threadId);
+      yield* awaitOpenCodeContextReady(context);
+      yield* requireNotQuarantined(context);
+      yield* context.connectMcp;
       yield* awaitOpenCodeContextReady(context);
       yield* requireNotQuarantined(context);
       const modelSelection =
@@ -3917,6 +3946,9 @@ export function makeOpenCodeAdapter(
       requestedModelSelection?: ProviderSendTurnInput["modelSelection"],
     ) {
       const context = yield* ensureSessionContext(sessions, threadId);
+      yield* awaitOpenCodeContextReady(context);
+      yield* requireNotQuarantined(context);
+      yield* context.connectMcp;
       yield* awaitOpenCodeContextReady(context);
       yield* requireNotQuarantined(context);
       const modelSelection =
