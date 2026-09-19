@@ -40,4 +40,38 @@ describe("ComposerBannerStack", () => {
 
     expect(markup.indexOf("liveness")).toBeLessThan(markup.indexOf("composer-activity"));
   });
+
+  it("keeps the details popover out of a compact banner until the row is narrow", () => {
+    // A compact banner's description is short enough to stay on screen, so the
+    // popover trigger only appears once the row is too narrow to show it.
+    const markup = renderToStaticMarkup(
+      <ComposerBannerStack
+        items={[item("clone", { description: "Finishing an update", compact: true })]}
+      />,
+    );
+
+    expect(markup).toContain('data-composer-banner-layout="wrap-actions-narrow"');
+    expect(markup).toContain("@max-[400px]:inline-flex");
+  });
+
+  it("always offers the details popover on a banner that can truncate", () => {
+    const markup = renderToStaticMarkup(
+      <ComposerBannerStack
+        items={[
+          item("notice", {
+            description: "A description long enough to truncate on a narrow composer",
+          }),
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-composer-banner-layout="wrap-actions"');
+    expect(markup).not.toContain("@max-[400px]:inline-flex");
+  });
+
+  it("renders no details popover when a banner has no description", () => {
+    const markup = renderToStaticMarkup(<ComposerBannerStack items={[item("bare")]} />);
+
+    expect(markup).not.toContain("Show notice details");
+  });
 });

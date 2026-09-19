@@ -127,6 +127,8 @@ export function useAutoBalanceUpdateBanner(
     ),
     description:
       manual > 0 ? `${manual} ${manual === 1 ? "needs" : "need"} a manual update` : undefined,
+    // Short and static: it never truncates, so it needs no details popover.
+    compact: true,
     actions:
       running === 0 && targets.length > 0 ? (
         <ServerUpdatesAction
