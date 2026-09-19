@@ -89,10 +89,25 @@ Pylon keeps conversation history and file diffs, but Antigravity cannot rewind i
 Reverting a thread or editing and resubmitting an earlier turn is unavailable. Continue with a
 follow-up message or start a new thread.
 
+### Progress, steering, and stopping
+
+Pylon asks Antigravity to explain what it is doing before using tools and to give brief progress
+updates during longer work. The model controls when it speaks, so tool activity can still appear
+between updates.
+
+Send a steering message to redirect work already in progress. Antigravity cancels the current
+response before handling the new message. If it does not acknowledge cancellation promptly, Pylon
+stops that agent process, resumes the saved conversation, and delivers the steering message.
+Resuming can take longer than an ordinary follow-up.
+
+**Stop** cancels the response without sending another message. Pylon allows three seconds for
+Antigravity to finish cancellation before forcing its process to stop. Process cleanup can add a
+little time. Stopping cannot undo commands or file changes already completed.
+
 ### Command output
 
 Background command completion notices appear as expandable command results, with
-terminal output and the command's exit status. Antigravity may also report the
+terminal output and the reported completion status. An exit code appears only when Antigravity supplies one. Antigravity may also report the
 original command separately. Long output uses the same truncation limits as other
 command results.
 
