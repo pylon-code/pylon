@@ -262,3 +262,51 @@ describe("Antigravity task notifications", () => {
     });
   });
 });
+
+describe("plain async task completion notices", () => {
+  const notice =
+    "An async task completed with status: success\nTask Summary: node scripts/verify.mjs --pr 329\nExecution output: Tests passed\nRun is still in progress; current conclusion: in_progress.";
+  it("preserves output without inventing a native exit code", () => {
+    const parsed = parseAntigravityTaskNotification(notice, "message-123");
+    expect(parsed).toEqual({
+      taskId: "message-123",
+      command: "node scripts/verify.mjs --pr 329",
+      status: "completed",
+      output: "Tests passed\nRun is still in progress; current conclusion: in_progress.",
+    });
+  });
+  it("buffers the new envelope across arbitrary chunk boundaries", () => {
+    for (let split = 0; split <= notice.length; split++) {
+      const buffer = new AntigravityTaskNotificationBuffer("message-123");
+      expect(buffer.push(notice.slice(0, split))).toBe("");
+      expect(buffer.push(notice.slice(split))).toBe("");
+      expect(buffer.finish()).toEqual({
+        text: "",
+        notification: parseAntigravityTaskNotification(notice, "message-123"),
+      });
+    }
+  });
+  it.each(["failed", "cancelled"] as const)(
+    "keeps %s status without guessing an exit code",
+    (status) => {
+      const parsed = parseAntigravityTaskNotification(
+        notice.replace("status: success", `status: ${status}`),
+        "message-456",
+      );
+      expect(parsed?.status).toBe(status);
+      expect(parsed?.exitCode).toBeUndefined();
+    },
+  );
+  it.each([
+    "An async task completed with status: success",
+    "An async task completed with status: unknown\nTask Summary: test\nExecution output: done",
+    "Here is the notice:\n" + notice,
+    "```text\n" + notice + "\n```",
+  ])("preserves ordinary, quoted, or incomplete text", (text) => {
+    const buffer = new AntigravityTaskNotificationBuffer("message-123");
+    const emitted = buffer.push(text);
+    const result = buffer.finish();
+    expect(emitted + result.text).toBe(text);
+    expect(result.notification).toBeUndefined();
+  });
+});

@@ -173,3 +173,12 @@ describe("the instructions a Codex thread starts with", () => {
     expect(none).not.toContain("<pylon_pair>");
   });
 });
+
+it("asks Antigravity for progress narration and concise task summaries", () => {
+  const instructions = buildRuntimeInstructions({ harness: "Antigravity" });
+  expect(instructions).toContain("<pylon_progress>");
+  expect(instructions).toMatch(/before.*tool/i);
+  expect(instructions).toMatch(/progress/i);
+  expect(instructions).toMatch(/raw.*(?:output|logs)/i);
+  expect(buildRuntimeInstructions({ harness: "Codex" })).not.toContain("<pylon_progress>");
+});

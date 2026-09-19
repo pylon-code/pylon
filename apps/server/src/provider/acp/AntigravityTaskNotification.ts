@@ -1,7 +1,8 @@
 export interface AntigravityTaskNotification {
   readonly command: string;
   readonly taskId: string;
-  readonly exitCode: number;
+  readonly exitCode?: number;
+  readonly status?: "completed" | "failed" | "cancelled";
   readonly output: string;
 }
 
@@ -30,6 +31,7 @@ const TERMINAL_TRAILER_PATTERN =
 
 export function parseAntigravityTaskNotification(
   text: string,
+  _fallbackTaskId?: string,
 ): AntigravityTaskNotification | undefined {
   // 1. Legacy XML format
   const legacyMatch =
@@ -218,6 +220,7 @@ function isPotentialNoticePrefix(candidate: string): boolean {
 
 /** Buffer only a possible standalone notice; normal prose keeps streaming. */
 export class AntigravityTaskNotificationBuffer {
+  constructor(readonly fallbackTaskId?: string) {}
   private pending = "";
   private passthrough = false;
 
