@@ -28,6 +28,13 @@ const DELEGATION_INSTRUCTIONS = `<pylon_delegation>
 Keep small or tightly coupled work local. Before choosing a delegation method for worthwhile independent work, call the t3-code MCP tool read_delegation_skill to read the current project preference and workflow. It does not start a child. The default is built-in subagents; a saved Pylon preference permits Pylon child threads without a separate request each time. Explicit user instructions override the preference. Availability alone is not a request to delegate, and missing built-in agents do not justify an automatic Pylon fallback. Follow the skill when using delegate_thread and managing results.
 </pylon_delegation>`;
 
+const ANTIGRAVITY_PROGRESS_INSTRUCTIONS = `<pylon_progress>
+Provide concise narration before invoking tools so the user understands what you are about to do.
+Share periodic meaningful progress during longer work (roughly every 60 seconds).
+Summarize results rather than echoing raw output or logs.
+Respect user preferences and never fabricate progress.
+</pylon_progress>`;
+
 /**
  * What a lead needs to run a pair well. Also returned by `pair_start`, because a
  * pair started mid-session reaches the lead before its next session start does.
@@ -68,6 +75,8 @@ export function buildRuntimeInstructions(runtime: RuntimeInstructionsOptions): s
   const effort = toSingleLine(runtime.reasoningEffort ?? "");
   const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${model}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
+  const progressInstructions =
+    runtime.harness === "Antigravity" ? `\n\n${ANTIGRAVITY_PROGRESS_INSTRUCTIONS}` : "";
   return `<runtime_info>In case you're asked: you are running in Pylon through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images and videos in your response using Markdown with absolute file paths.</runtime_info>\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}${
     runtime.browserAvailable === true ? `\n\n${BROWSER_INSTRUCTIONS}` : ""
   }${runtime.deviceAvailable === true ? `\n\n${DEVICE_INSTRUCTIONS}` : ""}${
@@ -76,7 +85,7 @@ export function buildRuntimeInstructions(runtime: RuntimeInstructionsOptions): s
       : runtime.delegationAvailable === true
         ? `\n\n${DELEGATION_INSTRUCTIONS}`
         : ""
-  }`;
+  }${progressInstructions}`;
 }
 
 function toSingleLine(value: string): string {

@@ -1,7 +1,8 @@
 export interface AntigravityTaskNotification {
   readonly command: string;
   readonly taskId: string;
-  readonly exitCode: number;
+  readonly exitCode?: number;
+  readonly status?: "completed" | "failed" | "cancelled";
   readonly output: string;
 }
 
@@ -30,7 +31,21 @@ const TERMINAL_TRAILER_PATTERN =
 
 export function parseAntigravityTaskNotification(
   text: string,
+  fallbackTaskId?: string,
 ): AntigravityTaskNotification | undefined {
+  const plain =
+    /^An async task completed with status: (success|failed|cancelled)\r?\nTask Summary: ([^\r\n]+)\r?\nExecution output:(?:[^\S\r\n]*\r?\n|[^\S\r\n])?([\s\S]*)$/.exec(
+      text.trimStart(),
+    );
+  if (plain && fallbackTaskId && plain[2]?.trim()) {
+    return {
+      command: plain[2].trim(),
+      taskId: fallbackTaskId,
+      status: plain[1] === "success" ? "completed" : plain[1] === "failed" ? "failed" : "cancelled",
+      output: plain[3] ?? "",
+    };
+  }
+
   // 1. Legacy XML format
   const legacyMatch =
     /^\s*<task_notification>\r?\nTask completed: ([^\r\n]+) \(task ID: ([^\s()]+)\)\r?\nExit code: (-?\d+)\r?\nOutput:\r?\n([\s\S]*?)\r?\n<\/task_notification>\s*$/.exec(
@@ -183,6 +198,18 @@ function isPotentialSystemNoticeBody(after: string): boolean {
 
 function isPotentialNoticePrefix(candidate: string): boolean {
   if (candidate === "") return true;
+  const plainPrefix = "An async task completed with status: ";
+  if (plainPrefix.startsWith(candidate)) return true;
+  if (candidate.startsWith(plainPrefix)) {
+    const rest = candidate.slice(plainPrefix.length);
+    return ["success", "failed", "cancelled"].some(
+      (status) =>
+        status.startsWith(rest) ||
+        rest === status + "\r" ||
+        rest.startsWith(status + "\n") ||
+        rest.startsWith(status + "\r\n"),
+    );
+  }
 
   // 1. Legacy format
   if (LEGACY_OPEN.startsWith(candidate) || candidate.startsWith(LEGACY_OPEN)) {
@@ -218,6 +245,10 @@ function isPotentialNoticePrefix(candidate: string): boolean {
 
 /** Buffer only a possible standalone notice; normal prose keeps streaming. */
 export class AntigravityTaskNotificationBuffer {
+  private readonly fallbackTaskId: string | undefined;
+  constructor(fallbackTaskId?: string) {
+    this.fallbackTaskId = fallbackTaskId;
+  }
   private pending = "";
   private passthrough = false;
 
@@ -237,7 +268,9 @@ export class AntigravityTaskNotificationBuffer {
   finish(): { text: string; notification: AntigravityTaskNotification | undefined } {
     const text = this.pending;
     this.pending = "";
-    const notification = this.passthrough ? undefined : parseAntigravityTaskNotification(text);
+    const notification = this.passthrough
+      ? undefined
+      : parseAntigravityTaskNotification(text, this.fallbackTaskId);
     return { text: notification ? "" : text, notification };
   }
 }

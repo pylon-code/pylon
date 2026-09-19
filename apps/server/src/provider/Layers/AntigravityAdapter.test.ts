@@ -633,6 +633,95 @@ it.layer(layer)("AntigravityAdapter", (it) => {
     }),
   );
 
+  it.effect("reports a new transport failure after steering as failed rather than cancelled", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* h.adapter.sendTurn({ threadId, input: "Original work" });
+      yield* h.nextPrompt;
+      yield* h.adapter.sendTurn({ threadId, input: "Changed work" });
+      const prompt = yield* h.nextPrompt;
+      const failure = new AcpErrors.AcpTransportError({
+        operation: "call-rpc",
+        method: "session/prompt",
+        detail: "New transport failure",
+        cause: undefined,
+      });
+      yield* h.emitNative({ _tag: "ConnectionTerminated", error: failure });
+      yield* Deferred.fail(prompt.result, failure);
+      const ended = yield* h.waitForEvent((event) => event.type === "turn.completed");
+      expect(ended.payload.state).toBe("failed");
+    }),
+  );
+
+  it.effect("keeps anonymous narration on one assistant item through completion", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* h.adapter.sendTurn({ threadId, input: "Work" });
+      const prompt = yield* h.nextPrompt;
+      yield* h.emitNative({ _tag: "ContentDelta", text: "Checking now.", rawPayload: {} });
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+      const started = h.seen.filter(
+        (event) => event.type === "item.started" && event.payload.itemType === "assistant_message",
+      );
+      const completed = h.seen.filter(
+        (event) =>
+          event.type === "item.completed" && event.payload.itemType === "assistant_message",
+      );
+      const delta = h.seen.find((event) => event.type === "content.delta");
+      expect(started).toHaveLength(1);
+      expect(completed.map((event) => event.itemId)).toEqual(started.map((event) => event.itemId));
+      expect(delta?.itemId).toBe(started[0]?.itemId);
+    }),
+  );
+
+  it.effect("renders plain async notices as distinct command results and preserves narration", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* h.adapter.sendTurn({ threadId, input: "Run checks" });
+      const prompt = yield* h.nextPrompt;
+      for (const itemId of ["plain-1", "plain-2"]) {
+        yield* h.emitNative({ _tag: "AssistantItemStarted", itemId });
+        yield* h.emitNative({
+          _tag: "ContentDelta",
+          itemId,
+          text: "An async task completed with status: success\nTask Summary: vp test\nExecution output: all passed",
+          rawPayload: {},
+        });
+        yield* h.emitNative({ _tag: "AssistantItemCompleted", itemId });
+      }
+      yield* h.emitNative({
+        _tag: "ContentDelta",
+        itemId: "progress",
+        text: "The tests passed; I am reviewing the diff.",
+        rawPayload: {},
+      });
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+      expect(
+        h.seen
+          .filter((event) => event.type === "content.delta")
+          .map((event) => event.payload.delta),
+      ).toEqual(["The tests passed; I am reviewing the diff."]);
+      const results = h.seen.filter(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+          event.type === "item.completed" && event.payload.itemType === "command_execution",
+      );
+      expect(results).toHaveLength(2);
+      expect(new Set(results.map((event) => event.itemId)).size).toBe(2);
+      for (const result of results) {
+        expect(result.payload.status).toBe("completed");
+        expect(result.payload.data).toMatchObject({
+          command: "vp test",
+          item: { aggregatedOutput: "all passed" },
+        });
+      }
+    }),
+  );
+
   it.effect(
     "renders chunked task notices as command results without assistant-message shells",
     () =>
@@ -2090,7 +2179,7 @@ it.layer(layer)("AntigravityAdapter", (it) => {
   );
 
   it.effect(
-    "settles a steered turn cancelled with detail when the forced stop retires the process",
+    "resumes the saved session and delivers steering after cancellation retires the process",
     () =>
       Effect.gen(function* () {
         const h = yield* makeHarness({ holdCancel: true });
@@ -2128,17 +2217,19 @@ it.layer(layer)("AntigravityAdapter", (it) => {
         );
         yield* Deferred.succeed(h.cancelRelease, undefined);
         yield* Fiber.await(first);
-        yield* Fiber.await(steering);
-
+        const replacement = yield* h.nextPrompt;
+        expect(replacement.content).toContainEqual({ type: "text", text: "Are you done yet?" });
+        expect(h.launches).toHaveLength(2);
+        expect(h.launches[1]?.resumeSessionId).toBe(nativeSessionId);
+        const admitted = yield* Fiber.join(steering);
+        expect(admitted.turnId).toBeDefined();
+        yield* Deferred.succeed(replacement.result, { stopReason: "end_turn" });
         const ended = yield* h.waitForEvent(
           (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
-            event.type === "turn.completed",
+            event.type === "turn.completed" && event.payload.state === "completed",
         );
-        expect(ended.payload.state).toBe("cancelled");
-        expect(ended.payload.errorMessage).toBe(cancelDetail);
-        const completions = h.seen.filter((event) => event.type === "turn.completed");
-        expect(completions).toHaveLength(1);
-        expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+        expect(ended.turnId).toBe(admitted.turnId);
+        expect(yield* h.adapter.hasSession(threadId)).toBe(true);
       }),
   );
 

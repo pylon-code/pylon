@@ -6,6 +6,8 @@ import * as Fiber from "effect/Fiber";
 import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
 import * as AcpErrors from "effect-acp/errors";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import { makeAntigravityAcpRuntime } from "./AntigravityAcpSupport.ts";
 import * as NodeURL from "node:url";
 
 import { make, type AcpSessionRequestLogEvent } from "./AcpSessionRuntime.ts";
@@ -391,5 +393,37 @@ it.effect("retires runtime on cancel timeout with wait-for-prompt and returns su
 
     const promptResult = yield* Fiber.join(promptFiber).pipe(Effect.flip);
     assert.equal(promptResult._tag, "AcpTransportError");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("Antigravity stops an unresponsive prompt within three seconds", () =>
+  Effect.gen(function* () {
+    const promptStarted = yield* Deferred.make<void>();
+    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const runtime = yield* makeAntigravityAcpRuntime({
+      childProcessSpawner,
+      clientFileSystem: true,
+      spawn: {
+        command: process.execPath,
+        args: mockAgentArgs,
+        env: { T3_ACP_HANG_PROMPT_FOREVER: "1", T3_ACP_ANTIGRAVITY: "1" },
+      },
+      cwd: process.cwd(),
+      clientInfo: { name: "antigravity-stop-budget-test", version: "0.0.0" },
+      requestLogger: (event) =>
+        event.method === "session/prompt" && event.status === "started"
+          ? Deferred.succeed(promptStarted, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+    });
+    yield* runtime.start();
+    const prompt = yield* runtime
+      .prompt({ prompt: [{ type: "text", text: "hang" }] })
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(promptStarted);
+    const stopping = yield* runtime.cancel.pipe(Effect.forkChild);
+    yield* TestClock.adjust("3 seconds");
+    yield* Fiber.join(stopping);
+    const result = yield* Fiber.join(prompt).pipe(Effect.flip);
+    assert.equal(result._tag, "AcpTransportError");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
