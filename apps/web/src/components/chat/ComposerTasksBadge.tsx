@@ -159,7 +159,7 @@ function TaskSummary({
         </ComposerBanner.Count>
         {delegatesLabel ? (
           <span
-            className="hidden shrink-0 items-center gap-1 text-foreground/70 sm:inline-flex"
+            className="hidden shrink-0 items-center gap-1 text-foreground/70 @min-[560px]:inline-flex"
             data-composer-task-delegates="true"
           >
             <UsersIcon aria-hidden className="size-3 shrink-0" />

@@ -2785,6 +2785,7 @@ export default function ChatView(props: ChatViewProps) {
           ),
           title: `${unavailableConnection.phase === "connecting" ? "Connecting" : "Reconnecting"} to ${activeEnvironmentUnavailableState.label}`,
           description: "Finishing an update",
+          compact: true,
         });
       } else {
         items.push({
@@ -6676,6 +6677,7 @@ export default function ChatView(props: ChatViewProps) {
       icon: <AlarmClockIcon />,
       title: "Thread woke from snooze",
       description: "Send a message to continue",
+      compact: true,
       dismissLabel: "Dismiss Woke notification",
       onDismiss: acknowledgeActiveThreadWoke,
     };
@@ -6691,6 +6693,7 @@ export default function ChatView(props: ChatViewProps) {
       icon: isSnoozed ? <AlarmClockIcon /> : <CheckCircle2Icon />,
       title: `This thread is ${isSnoozed ? "snoozed" : "settled"}`,
       description: `Send a message to ${isSnoozed ? "wake" : "unsettle"}`,
+      compact: true,
       actions: (
         <Button
           size="xs"
@@ -6797,6 +6800,7 @@ export default function ChatView(props: ChatViewProps) {
       icon: <Minimize2Icon />,
       title: "Resume with less context",
       description: `${formatContextWindowTokens(activeContextWindow.usedTokens)} tokens from earlier`,
+      compact: true,
       actions: compactDisabledReason ? (
         <Tooltip>
           <TooltipTrigger render={<span className="inline-flex">{compactAction}</span>} />
