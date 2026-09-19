@@ -22,6 +22,27 @@ const mockAgentCommand = "node";
 const mockAgentArgs = [mockAgentPath];
 
 describe("AcpSessionRuntime", () => {
+  it.effect("attaches child stderr when the ACP process exits before initialize", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.make({
+        spawn: {
+          command: process.execPath,
+          args: [
+            "-e",
+            `process.stderr.write("Invalid project config at /tmp/project/.cursor/cli.json: schema validation failed. Unrecognized key(s): \x27approvalMode\x27, \x27sandbox\x27\\n"); process.exit(1);`,
+          ],
+        },
+        cwd: process.cwd(),
+        clientInfo: { name: "t3-test", version: "0.0.0" },
+        authMethodId: "test",
+      });
+      const error = yield* runtime.start().pipe(Effect.flip);
+      expect(error._tag).toBe("AcpProcessExitedError");
+      expect(error.message).toContain("cli.json");
+      expect(error.message).toContain("Unrecognized key");
+      expect(error.message).not.toContain("ACP process exited with code 1\nACP process exited");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
   it.effect("merges custom initialize client capabilities into the ACP handshake", () => {
     const requestEvents: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
     return Effect.gen(function* () {
