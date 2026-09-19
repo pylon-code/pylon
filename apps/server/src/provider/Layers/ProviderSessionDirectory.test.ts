@@ -97,6 +97,58 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
     }),
   );
 
+  for (const replacement of [false, true]) {
+    it.effect(
+      `preserves only matching-incarnation admission metadata (replacement: ${replacement})`,
+      () =>
+        Effect.gen(function* () {
+          const directory = yield* ProviderSessionDirectory;
+          const threadId = ThreadId.make(`admission-incarnation-${replacement}`);
+          const binding = {
+            provider: ProviderDriverKind.make("antigravity"),
+            providerInstanceId: ProviderInstanceId.make("antigravity"),
+            threadId,
+          };
+          yield* directory.upsert({
+            ...binding,
+            resumeCursor: { sessionId: "native-conversation" },
+            runtimePayload: {
+              sessionIncarnationId: "original",
+              admissionRequestId: "original-admission",
+              activeTurnRequestId: "original-admission",
+              cwd: "/tmp/workspace",
+            },
+          });
+          yield* directory.upsert({
+            ...binding,
+            runtimePayload: { sessionIncarnationId: replacement ? "replacement" : "original" },
+          });
+          const updated = Option.getOrThrow(yield* directory.getBinding(threadId));
+          expect(updated.runtimePayload).toMatchObject({
+            admissionRequestId: replacement ? null : "original-admission",
+            activeTurnRequestId: replacement ? null : "original-admission",
+            cwd: "/tmp/workspace",
+          });
+          expect(updated.resumeCursor).toEqual({ sessionId: "native-conversation" });
+          // An adapter that recovers actual running work supplies its own lineage.
+          yield* directory.upsert({
+            ...binding,
+            runtimePayload: {
+              sessionIncarnationId: "recovered-running",
+              admissionRequestId: "recovered-admission",
+              activeTurnRequestId: "recovered-admission",
+            },
+          });
+          expect(
+            Option.getOrThrow(yield* directory.getBinding(threadId)).runtimePayload,
+          ).toMatchObject({
+            admissionRequestId: "recovered-admission",
+            activeTurnRequestId: "recovered-admission",
+          });
+        }),
+    );
+  }
+
   it.effect("persists runtime fields and merges payload updates", () =>
     Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;

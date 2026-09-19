@@ -53,7 +53,16 @@ function mergeRuntimePayload(
     return existing ?? null;
   }
   if (isRecord(existing) && isRecord(next)) {
-    return { ...existing, ...next };
+    // Turn admission belongs to one runtime incarnation. A resumed process may
+    // reuse the conversation cursor, but must not inherit the retired prompt.
+    const incarnationChanged =
+      typeof next.sessionIncarnationId === "string" &&
+      next.sessionIncarnationId !== existing.sessionIncarnationId;
+    return {
+      ...existing,
+      ...(incarnationChanged ? { admissionRequestId: null, activeTurnRequestId: null } : {}),
+      ...next,
+    };
   }
   return next;
 }

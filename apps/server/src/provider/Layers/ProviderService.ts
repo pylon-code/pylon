@@ -4013,12 +4013,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           overrides.sessionIncarnationId = incarnation.id;
         }
         const activeAdmission = activeTurnAdmissions.get(session.threadId);
+        const persistedIncarnationId = readRuntimePayloadString(
+          binding.runtimePayload,
+          "sessionIncarnationId",
+        );
+        const sessionIncarnationId = overrides.sessionIncarnationId ?? session.sessionIncarnationId;
         const persistedRequestId =
-          readRuntimePayloadString(binding.runtimePayload, "activeTurnRequestId") ??
-          (session.status === "running"
-            ? readRuntimePayloadString(binding.runtimePayload, "admissionRequestId")
-            : undefined);
-        if (activeAdmission !== undefined) {
+          session.status === "running" &&
+          (persistedIncarnationId === undefined || persistedIncarnationId === sessionIncarnationId)
+            ? (readRuntimePayloadString(binding.runtimePayload, "activeTurnRequestId") ??
+              readRuntimePayloadString(binding.runtimePayload, "admissionRequestId"))
+            : undefined;
+        if (
+          activeAdmission !== undefined &&
+          activeAdmission.sessionIncarnationId === sessionIncarnationId
+        ) {
           overrides.activeTurnRequestId = activeAdmission.requestId;
         } else if (persistedRequestId !== undefined) {
           overrides.activeTurnRequestId = CommandId.make(persistedRequestId);

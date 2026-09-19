@@ -3619,6 +3619,80 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("does not carry a retired turn admission into interrupt recovery", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-interrupt-recovery-admission");
+      const initial = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: fixtureCwd("interrupt-recovery-admission"),
+        runtimeMode: "full-access",
+      });
+      yield* provider.sendTurn({
+        threadId,
+        input: "original work",
+        attachments: [],
+        admissionRequestId: CommandId.make("retired-admission"),
+        sessionIncarnationId: initial.sessionIncarnationId,
+      });
+      const startedId = asEventId("retired-turn-started");
+      const observed = yield* provider.streamEvents.pipe(
+        Stream.filter((event) => event.eventId === startedId),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+      routing.codex.emit({
+        type: "turn.started",
+        eventId: startedId,
+        provider: CODEX_DRIVER,
+        threadId,
+        turnId: asTurnId("retired-turn"),
+        sessionIncarnationId: initial.sessionIncarnationId,
+        admissionRequestId: CommandId.make("retired-admission"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        payload: {},
+      });
+      yield* Fiber.join(observed);
+      assert.equal(
+        (yield* provider.listSessions()).find((s) => s.threadId === threadId)?.activeTurnRequestId,
+        "retired-admission",
+      );
+      // The first Stop destroyed the adapter process. A second Stop resumes
+      // the persisted conversation before routing its interrupt.
+      routing.codex.removeSession(threadId);
+      yield* provider.interruptTurn({ threadId });
+      const recovered = (yield* provider.listSessions()).find((s) => s.threadId === threadId)!;
+      assert.notEqual(recovered.sessionIncarnationId, initial.sessionIncarnationId);
+      assert.equal(recovered.status, "ready");
+      assert.isUndefined(recovered.activeTurnId);
+      assert.isUndefined(recovered.activeTurnRequestId);
+      const inventory = yield* provider.listSessionsForInstance!(codexInstanceId);
+      assert.isUndefined(inventory.find((s) => s.threadId === threadId)?.activeTurnRequestId);
+      const binding = Option.getOrThrow(yield* directory.getBinding(threadId));
+      assert.propertyVal(binding.runtimePayload, "activeTurnRequestId", null);
+      assert.deepEqual(binding.resumeCursor, initial.resumeCursor);
+      // Older servers may already have written the stale request into the new
+      // binding. A ready adapter is not running that persisted request.
+      yield* directory.upsert({
+        threadId,
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        runtimePayload: {
+          admissionRequestId: "retired-admission",
+          activeTurnRequestId: "retired-admission",
+        },
+      });
+      assert.isUndefined(
+        (yield* provider.listSessions()).find((s) => s.threadId === threadId)?.activeTurnRequestId,
+      );
+    }),
+  );
+
   it.effect("recovers stale sessions for sendTurn using persisted cwd", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
