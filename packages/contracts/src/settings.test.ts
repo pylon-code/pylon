@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
+import { ProjectId } from "./baseSchemas.ts";
 
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
@@ -1070,7 +1071,7 @@ describe("settings saved before Pylon delegation was removed", () => {
       },
     });
     expect(settings.enableAgentBrowserAccess).toBe(true);
-    expect(settings.projectSettingsOverrides.project).toEqual({
+    expect(settings.projectSettingsOverrides[ProjectId.make("project")]).toEqual({
       defaultRuntimeMode: "approval-required",
     });
     for (const key of Object.keys(retired)) {
