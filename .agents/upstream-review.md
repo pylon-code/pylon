@@ -15,7 +15,7 @@ The maintainer authorized compatible catch-up and routine adaptations that prese
 
 ## Active cycle
 
-None currently active. Cycle #669 and cycle #667 are fully completed and landed.
+[Upstream integration cycle #682](https://github.com/pylon-code/pylon/issues/682) covers web interaction fixes, ACP diagnostics, and Claude continuation through bounded upstream head `7445aa733ada33e45289e5aa5055f79142556513`. Pylon head at open `ee01ed60b09333939e48f362afa4601ce8285a13`. Review cursor stays at `bbedad0278bbf753503184c00e0c09a0eab6679c`.
 
 ## Latest cycle
 
