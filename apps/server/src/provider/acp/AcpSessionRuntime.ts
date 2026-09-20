@@ -408,7 +408,11 @@ export const make = (
     const appendStderrChunk = (chunk: string) => {
       const text = `${stderrPending}${chunk}`;
       const lines = text.split("\n");
-      stderrPending = lines.pop() ?? "";
+      const nextPending = lines.pop() ?? "";
+      stderrPending =
+        nextPending.length > maxStderrLineLength
+          ? nextPending.slice(-maxStderrLineLength)
+          : nextPending;
       for (const line of lines) {
         appendStderrLine(line);
       }
@@ -426,7 +430,8 @@ export const make = (
           }
         }
       }
-      return lines.length > 0 ? ` Last stderr: ${lines.join(" | ")}` : "";
+      const rendered = lines.length > 0 ? sanitizeAcpStderrExcerpt(lines.join(" | ")) : "";
+      return rendered.length > 0 ? ` Last stderr: ${rendered}` : "";
     };
 
     const startupRpcTimeout = Duration.fromInputUnsafe(

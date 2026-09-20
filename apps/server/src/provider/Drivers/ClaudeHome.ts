@@ -21,7 +21,7 @@ export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function
   environment?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<string, never, Path.Path> {
   const path = yield* Path.Path;
-  const homePath = config.homePath.trim();
+  const homePath = (config.homePath ?? "").trim();
   if (homePath.length > 0) {
     return path.resolve(resolveProviderHomePath(homePath));
   }
@@ -38,7 +38,7 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   baseEnv?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<NodeJS.ProcessEnv, never, Path.Path> {
   const resolvedBaseEnv = baseEnv ?? process.env;
-  const homePath = config.homePath.trim();
+  const homePath = (config.homePath ?? "").trim();
   if (homePath.length === 0) return resolvedBaseEnv;
   const resolvedHomePath = yield* resolveClaudeHomePath(config);
   return {
