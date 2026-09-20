@@ -2114,7 +2114,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               {compactRows ? (
                 <>
                   {terminalStatusIcon}
-                  {topStatus && CompactStatusIcon ? (
+                  {topStatus ? (
                     isWokeStatus ? (
                       <button
                         type="button"
@@ -2125,7 +2125,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                           topStatus.className,
                         )}
                       >
-                        <CompactStatusIcon aria-hidden className="size-3.5" />
+                        {CompactStatusIcon ? (
+                          <CompactStatusIcon aria-hidden className="size-3.5" />
+                        ) : (
+                          <span className="size-2 rounded-full bg-current" aria-hidden />
+                        )}
                         <span role="status" className="sr-only">
                           {topStatus.label}
                         </span>
@@ -2133,9 +2137,16 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                     ) : (
                       <span
                         role="status"
-                        className={cn("inline-flex shrink-0", topStatus.className)}
+                        className={cn(
+                          "inline-flex shrink-0 items-center justify-center",
+                          topStatus.className,
+                        )}
                       >
-                        <CompactStatusIcon aria-hidden className="size-3.5" />
+                        {CompactStatusIcon ? (
+                          <CompactStatusIcon aria-hidden className="size-3.5" />
+                        ) : (
+                          <span className="size-2 rounded-full bg-current" aria-hidden />
+                        )}
                         <span className="sr-only">{topStatus.label}</span>
                       </span>
                     )
