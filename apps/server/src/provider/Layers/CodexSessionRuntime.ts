@@ -2412,6 +2412,11 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/permissions/requestApproval", (payload) =>
       Effect.gen(function* () {
+        const requestEpoch = eventEpoch;
+        if (quarantined)
+          return yield* CodexErrors.CodexAppServerRequestError.invalidParams(
+            "Codex conversation is held for exact recovery.",
+          );
         const requestId = ApprovalRequestId.make(
           yield* randomUUIDv4("app-permission-approval-request"),
         );
@@ -2419,6 +2424,10 @@ export const makeCodexSessionRuntime = (
         const itemId = ProviderItemId.make(payload.itemId);
         const decision = yield* Deferred.make<ProviderApprovalDecision>();
 
+        if (quarantined || requestEpoch !== eventEpoch)
+          return yield* CodexErrors.CodexAppServerRequestError.invalidParams(
+            "The Codex request belongs to a retired conversation boundary.",
+          );
         yield* Ref.update(pendingApprovalsRef, (current) => {
           const next = new Map(current);
           next.set(requestId, {
@@ -2451,7 +2460,7 @@ export const makeCodexSessionRuntime = (
           ...(turnId ? { turnId } : {}),
           ...(itemId ? { itemId } : {}),
           payload,
-        });
+        }).pipe(Effect.provideService(CodexNotificationEpoch, requestEpoch));
 
         const resolved = yield* Deferred.await(decision).pipe(
           Effect.ensuring(
@@ -2464,11 +2473,12 @@ export const makeCodexSessionRuntime = (
         );
         // Approving grants the requested profile; denying answers with an
         // empty grant so the app-server treats the permission as withheld.
+        const isSessionOrAlways = resolved === "acceptForSession" || resolved === "acceptAlways";
         const grantedPermissions =
-          resolved === "accept" || resolved === "acceptForSession" ? payload.permissions : {};
+          resolved === "accept" || isSessionOrAlways ? payload.permissions : {};
         return {
           permissions: grantedPermissions,
-          ...(resolved === "acceptForSession" ? { scope: "session" as const } : {}),
+          ...(isSessionOrAlways ? { scope: "session" as const } : {}),
         } satisfies EffectCodexSchema.PermissionsRequestApprovalResponse;
       }),
     );

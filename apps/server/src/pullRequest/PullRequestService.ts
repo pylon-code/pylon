@@ -2632,18 +2632,20 @@ export const make = Effect.gen(function* () {
         : null,
     ]);
     const read = Cache.get(diffCache, key).pipe(
-      Effect.tap((value) =>
-        canCacheDiff(value)
-          ? Effect.void
-          : Cache.getSuccess(diffCache, key).pipe(
-              Effect.flatMap((current) =>
-                Option.isSome(current) && current.value === value
-                  ? Cache.invalidate(diffCache, key)
-                  : Effect.void,
-              ),
-              Effect.uninterruptible,
-            ),
-      ),
+      Effect.flatMap((value) => {
+        if (canCacheDiff(value)) {
+          return Effect.succeed(value);
+        }
+        return Cache.getSuccess(diffCache, key).pipe(
+          Effect.flatMap((current) =>
+            Option.isSome(current) && current.value === value
+              ? Cache.invalidate(diffCache, key)
+              : Effect.void,
+          ),
+          Effect.uninterruptible,
+          Effect.as(value),
+        );
+      }),
     );
     return staleDiff(key, read);
   };
