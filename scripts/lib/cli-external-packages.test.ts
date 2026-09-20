@@ -9,6 +9,8 @@ import * as Schema from "effect/Schema";
 
 import serverPackageJson from "../../apps/server/package.json" with { type: "json" };
 
+import { findEsmImportsOfExternalPackages } from "./cli-executable-imports.ts";
+
 import {
   CLI_RUNTIME_EXTERNAL_PREFIXES,
   findInlinedExternalPackages,
@@ -279,5 +281,54 @@ var x = 1;
     const result = findInlinedExternalPackages("var x = 1; // node_modules/detect-libc/lib.js");
     assert.strictEqual(result.regionCount, 0);
     assert.deepStrictEqual(result.inlined, []);
+  });
+});
+
+describe("findEsmImportsOfExternalPackages", () => {
+  it("flags external packages imported statically or dynamically", () => {
+    const source = [
+      'import { open } from "@libsql/client";',
+      'import * as pty from "node-pty";',
+      'import "side-effect-pkg";',
+      'export { x } from "re-exported-pkg";',
+      'const dynamic = await import("dynamic-pkg");',
+      'import { something } from "./local.js";',
+      'import { other } from "../parent.js";',
+      'import * as path from "node:path";',
+      'import * as fs from "fs";',
+    ].join("\n");
+    assert.deepStrictEqual(findEsmImportsOfExternalPackages(source), [
+      "@libsql/client",
+      "dynamic-pkg",
+      "node-pty",
+      "re-exported-pkg",
+      "side-effect-pkg",
+    ]);
+  });
+
+  it("ignores imports inside generated extension source and comments", () => {
+    const source = [
+      'const extension = `import { Type } from "typebox";\nimport type { ExtensionAPI } from "@earendil-works/pi-coding-agent";`;',
+      '// import "comment-only";',
+      "const example = 'import(\"string-only\")';",
+      'const interpolated = `source ${import("real-package")}`;',
+    ].join("\n");
+    assert.deepStrictEqual(findEsmImportsOfExternalPackages(source), ["real-package"]);
+  });
+
+  it("allows optional dynamic Bun built-ins but rejects static imports", () => {
+    assert.deepStrictEqual(
+      findEsmImportsOfExternalPackages('const load = () => import("bun:sqlite");'),
+      [],
+    );
+    assert.deepStrictEqual(
+      findEsmImportsOfExternalPackages('import { Database } from "bun:sqlite";'),
+      ["bun:sqlite"],
+    );
+  });
+
+  it("does not mistake createRequire calls for imports", () => {
+    const source = 'const { FileFinder } = createRequire(import.meta.url)("@ff-labs/fff-node");';
+    assert.deepStrictEqual(findEsmImportsOfExternalPackages(source), []);
   });
 });
