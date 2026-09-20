@@ -91,6 +91,7 @@ export function claudeConfigDirKeychainService(
  */
 const resolveClaudeCredentialConfigDir = Effect.fn("resolveClaudeCredentialConfigDir")(function* (
   config: Pick<ClaudeSettings, "homePath">,
+  environment: Record<string, string | undefined> = process.env,
 ): Effect.fn.Return<
   { readonly configDir: string; readonly defaultConfigDir: string },
   never,
@@ -98,9 +99,15 @@ const resolveClaudeCredentialConfigDir = Effect.fn("resolveClaudeCredentialConfi
 > {
   const path = yield* Path.Path;
   const defaultConfigDir = path.resolve(path.join(NodeOS.homedir(), ".claude"));
-  const homePath = config.homePath.trim();
+  const homePath = (config.homePath ?? "").trim();
+  const inheritedConfigDir = environment.CLAUDE_CONFIG_DIR?.trim();
   return {
-    configDir: homePath.length > 0 ? resolveProviderHomePath(homePath) : defaultConfigDir,
+    configDir:
+      homePath.length > 0
+        ? resolveProviderHomePath(homePath)
+        : inheritedConfigDir && inheritedConfigDir.length > 0
+          ? resolveProviderHomePath(inheritedConfigDir)
+          : defaultConfigDir,
     defaultConfigDir,
   };
 });

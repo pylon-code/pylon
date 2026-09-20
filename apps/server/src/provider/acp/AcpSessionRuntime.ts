@@ -22,6 +22,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
+import { appendAcpStderrTail, sanitizeAcpStderrExcerpt } from "./AcpStderr.ts";
 import {
   collectSessionConfigOptionValues,
   decideToolCallUpdateEmission,
@@ -371,6 +372,8 @@ export const make = (
     );
     const stoppingRef = yield* Ref.make(false);
     const stderrFailure = yield* Deferred.make<never, EffectAcpErrors.AcpError>();
+    const stderrTailRef = yield* Ref.make("");
+    const stderrDrained = yield* Deferred.make<void>();
     const runtimeClosed = yield* Deferred.make<void>();
     const promptSerializationSemaphore = yield* Semaphore.make(1);
     const promptDispatchSemaphore = yield* Semaphore.make(1);
@@ -405,7 +408,11 @@ export const make = (
     const appendStderrChunk = (chunk: string) => {
       const text = `${stderrPending}${chunk}`;
       const lines = text.split("\n");
-      stderrPending = lines.pop() ?? "";
+      const nextPending = lines.pop() ?? "";
+      stderrPending =
+        nextPending.length > maxStderrLineLength
+          ? nextPending.slice(-maxStderrLineLength)
+          : nextPending;
       for (const line of lines) {
         appendStderrLine(line);
       }
@@ -423,7 +430,8 @@ export const make = (
           }
         }
       }
-      return lines.length > 0 ? ` Last stderr: ${lines.join(" | ")}` : "";
+      const rendered = lines.length > 0 ? sanitizeAcpStderrExcerpt(lines.join(" | ")) : "";
+      return rendered.length > 0 ? ` Last stderr: ${rendered}` : "";
     };
 
     const startupRpcTimeout = Duration.fromInputUnsafe(
@@ -465,22 +473,45 @@ export const make = (
       }
     });
 
+    const enrichProcessExitWithStderr = (
+      error: EffectAcpErrors.AcpError,
+    ): Effect.Effect<EffectAcpErrors.AcpError> =>
+      error._tag !== "AcpProcessExitedError" || (error.stderr?.trim().length ?? 0) > 0
+        ? Effect.succeed(error)
+        : Deferred.await(stderrDrained).pipe(
+            Effect.timeout("250 millis"),
+            Effect.ignore,
+            Effect.andThen(Ref.get(stderrTailRef)),
+            Effect.map((tail) => {
+              const stderr = sanitizeAcpStderrExcerpt(tail);
+              return stderr.length === 0
+                ? error
+                : new EffectAcpErrors.AcpProcessExitedError({
+                    ...(error.code !== undefined ? { code: error.code } : {}),
+                    ...(error.pid !== undefined ? { pid: error.pid } : {}),
+                    stderr,
+                    ...(error.cause !== undefined ? { cause: error.cause } : {}),
+                  });
+            }),
+          );
+
     const recordTermination = Effect.fn("AcpSessionRuntime.recordTermination")(function* (
       error: EffectAcpErrors.AcpError,
     ) {
       if (yield* Ref.get(stoppingRef)) {
         return;
       }
+      const enriched = yield* enrichProcessExitWithStderr(error);
       const firstTermination = yield* Ref.modify(terminationErrorRef, (current) =>
         Option.isSome(current)
           ? ([false, current] as const)
-          : ([true, Option.some(error)] as const),
+          : ([true, Option.some(enriched)] as const),
       );
       if (!firstTermination) {
         return;
       }
       yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
-      yield* Queue.offer(eventQueue, { _tag: "ConnectionTerminated", error });
+      yield* Queue.offer(eventQueue, { _tag: "ConnectionTerminated", error: enriched });
     });
 
     const logRequest = (event: AcpSessionRequestLogEvent) =>
@@ -497,6 +528,9 @@ export const make = (
             ? Effect.raceFirst(effect, Deferred.await(stderrFailure))
             : effect
           ).pipe(
+            Effect.catch((error) =>
+              enrichProcessExitWithStderr(error).pipe(Effect.flatMap(Effect.fail)),
+            ),
             Effect.tap((result) =>
               logRequest({
                 method,
@@ -545,9 +579,10 @@ export const make = (
       Stream.decodeText(),
       Stream.runForEach((chunk) => {
         appendStderrChunk(chunk);
-        return (
-          options.onStderr ? options.onStderr(chunk.slice(-maxStderrChunkLength)) : Effect.void
-        ).pipe(
+        return Ref.update(stderrTailRef, (current) => appendAcpStderrTail(current, chunk)).pipe(
+          Effect.andThen(
+            options.onStderr ? options.onStderr(chunk.slice(-maxStderrChunkLength)) : Effect.void,
+          ),
           Effect.catch((error) =>
             Effect.gen(function* () {
               yield* Deferred.fail(stderrFailure, error);
@@ -557,6 +592,7 @@ export const make = (
           ),
         );
       }),
+      Effect.ensuring(Deferred.succeed(stderrDrained, undefined)),
       Effect.ignore,
       Effect.forkIn(runtimeScope),
     );
