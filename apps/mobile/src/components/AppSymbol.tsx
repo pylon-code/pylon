@@ -208,8 +208,6 @@ const ANDROID_ICON_BY_MATERIAL_NAME: Record<string, Icon> = {
   keyboard_arrow_up: IconChevronUp,
   keyboard_hide: IconKeyboardHide,
   lock: IconLock,
-  more_vert: IconDotsVertical,
-  merge: IconGitMerge,
   public: IconWorld,
   remove: IconMinus,
   terminal: IconTerminal2,
