@@ -8,6 +8,7 @@ import {
   getServerProviderSupportedRuntimeModes,
   resolveServerProviderRuntimeMode,
   ServerConfig,
+  ServerObservability,
   resolveEnvironmentMachineKind,
   ServerPrimeManagedInstalledBuild,
   ServerProvider,
@@ -20,6 +21,7 @@ import {
 const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
 const decodePrimeManagedInstalledBuild = Schema.decodeUnknownSync(ServerPrimeManagedInstalledBuild);
 const decodeServerProviders = Schema.decodeUnknownSync(ServerProviders);
+const decodeServerObservability = Schema.decodeUnknownSync(ServerObservability);
 const decodeUpsertKeybindingResult = Schema.decodeUnknownSync(ServerUpsertKeybindingResult);
 const decodeAvailableEditors = Schema.decodeUnknownSync(ServerConfig.fields.availableEditors);
 
@@ -369,6 +371,21 @@ describe("server config forward compatibility", () => {
     ]);
 
     expect(parsed).toEqual([decodedBase]);
+  });
+});
+
+describe("ServerObservability", () => {
+  it("reads a server from before the log signal as exporting no logs", () => {
+    const parsed = decodeServerObservability({
+      logsDirectoryPath: "/tmp/t3/logs",
+      localTracingEnabled: true,
+      otlpTracesUrl: "https://collector.example.com/v1/traces",
+      otlpTracesEnabled: true,
+      otlpMetricsEnabled: false,
+    });
+
+    expect(parsed.otlpLogsEnabled).toBe(false);
+    expect(parsed.otlpLogsUrl).toBeUndefined();
   });
 });
 
