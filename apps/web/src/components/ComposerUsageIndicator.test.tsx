@@ -8,7 +8,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import { deriveComposerUsage, hasComposerUsageContent } from "../providerUsageAccounts";
-import { shouldShowComposerContextStrip } from "./BranchToolbar.logic";
 import { ComposerUsageIndicator } from "./ComposerUsageIndicator";
 
 const prime: ServerProvider = {
@@ -74,14 +73,8 @@ function renderUsage(
     selectedModel,
     enabled: options.enabled ?? true,
   });
-  // Exercise the gate ChatView uses when there are no other reasons to show the strip.
-  const showStrip = shouldShowComposerContextStrip({
-    hasActiveProject: true,
-    showsGitControls: false,
-    showEnvironmentIndicator: false,
-    hostsRestingComposerControls: false,
-    hasCapacityReading: hasComposerUsageContent(usage),
-  });
+  // Capacity content decides whether this child contributes to the strip.
+  const showStrip = hasComposerUsageContent(usage);
   const html = renderToStaticMarkup(
     <ComposerUsageIndicator
       environmentId={EnvironmentId.make("test-environment")}

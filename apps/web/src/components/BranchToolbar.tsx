@@ -24,15 +24,17 @@ import {
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useProject, useThreadShell, useThreadShellsForProjectRefs } from "../state/entities";
 import { ComposerUsageIndicator } from "./ComposerUsageIndicator";
-import type { ComposerUsage } from "../providerUsageAccounts";
+import { type ComposerUsage, hasComposerUsageContent } from "../providerUsageAccounts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   type EnvMode,
   type EnvironmentOption,
+  resolveContextStripHasContent,
   resolveContextStripLabelsCompact,
   resolveCurrentWorkspaceLabel,
   resolveEnvModeLabel,
   resolveEffectiveEnvMode,
+  resolveInitialContextStripVisibility,
   resolveLockedWorkspaceLabel,
   resolvePreviousWorktreeLabel,
   resolvePreviousWorktreeSeed,
@@ -95,6 +97,7 @@ interface BranchToolbarProps {
   timestampFormat: TimestampFormat;
   composerControlsHostRef?: (element: HTMLDivElement | null) => void;
   contextStripVisible?: boolean;
+  onContextStripVisibilityChange?: (visible: boolean) => void;
 }
 
 interface MobileRunContextSelectorProps {
@@ -309,18 +312,30 @@ const COMPOSER_CONTEXT_MOTION_DURATION_MS = 180;
 const COMPOSER_CONTEXT_MOTION_EASING = "cubic-bezier(0.32, 0.72, 0, 1)";
 const COMPOSER_CONTEXT_LABEL_SELECTOR = "[data-composer-label]";
 
-function useLabelsOverflow(element: HTMLDivElement | null): boolean {
+function useLabelsOverflow(
+  element: HTMLDivElement | null,
+  initialHasContent: boolean,
+  onHasContentChange?: (hasContent: boolean) => void,
+): { labelsOverflow: boolean; hasContent: boolean } {
   const [overflows, setOverflows] = useState(false);
+  const [hasContent, setHasContent] = useState(initialHasContent);
   const pendingLabelRectsRef = useRef<Map<HTMLElement, DOMRect> | null>(null);
   const labelAnimationsRef = useRef(new Map<HTMLElement, Animation>());
+  const onHasContentChangeRef = useRef(onHasContentChange);
+  onHasContentChangeRef.current = onHasContentChange;
+
   // A render-synced mirror instead of useEffectEvent: the compiler memoizes
   // the event callback, which left observers reading the first render's null
   // element forever.
-  const stateRef = useRef({ element, overflows });
-  stateRef.current = { element, overflows };
+  const stateRef = useRef({ element, overflows, hasContent });
+  stateRef.current = { element, overflows, hasContent };
 
   const measure = useCallback(() => {
-    const { element: current, overflows: compact } = stateRef.current;
+    const {
+      element: current,
+      overflows: compact,
+      hasContent: currentHasContent,
+    } = stateRef.current;
     if (!current) return;
     const available = current.clientWidth;
     if (available === 0) return;
@@ -367,6 +382,11 @@ function useLabelsOverflow(element: HTMLDivElement | null): boolean {
       if (width <= 1) continue;
       groups += 1;
       needed += width;
+    }
+    const nextHasContent = resolveContextStripHasContent({ groupCount: groups });
+    if (nextHasContent !== currentHasContent) {
+      setHasContent(nextHasContent);
+      onHasContentChangeRef.current?.(nextHasContent);
     }
     needed += stripGap * Math.max(0, groups - 1);
     for (const label of current.querySelectorAll<HTMLElement>("[data-composer-label]")) {
@@ -458,16 +478,19 @@ function useLabelsOverflow(element: HTMLDivElement | null): boolean {
 
   useEffect(() => {
     if (!element) return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
+    const resizeObserver = new ResizeObserver(measure);
+    resizeObserver.observe(element);
+    const mutationObserver = new MutationObserver(measure);
+    mutationObserver.observe(element, { childList: true, subtree: true });
     document.fonts.addEventListener("loadingdone", measure);
     return () => {
-      observer.disconnect();
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
       document.fonts.removeEventListener("loadingdone", measure);
     };
   }, [element, measure]);
 
-  return overflows;
+  return { labelsOverflow: overflows, hasContent };
 }
 
 export const BranchToolbar = memo(function BranchToolbar({
@@ -493,7 +516,8 @@ export const BranchToolbar = memo(function BranchToolbar({
   usageStaleAfterMs,
   timestampFormat,
   composerControlsHostRef,
-  contextStripVisible = true,
+  contextStripVisible,
+  onContextStripVisibilityChange,
 }: BranchToolbarProps) {
   const branchSelectorRef = useRef<BranchToolbarBranchSelectorHandle>(null);
   const threadRef = useMemo(
@@ -585,7 +609,24 @@ export const BranchToolbar = memo(function BranchToolbar({
     canPickEnvironment: showEnvironmentPicker,
   });
   const [stripElement, setStripElement] = useState<HTMLDivElement | null>(null);
-  const labelsOverflow = useLabelsOverflow(stripElement);
+  const initialHasContent = resolveInitialContextStripVisibility({
+    showsGitControls: showGitControls,
+    showsEnvironmentIndicator: showEnvironmentIndicator && Boolean(availableEnvironments),
+    hasCapacityReading: hasComposerUsageContent(composerUsage),
+  });
+  const { labelsOverflow, hasContent } = useLabelsOverflow(
+    stripElement,
+    initialHasContent,
+    onContextStripVisibilityChange,
+  );
+  const isStripVisible = contextStripVisible ?? hasContent;
+
+  useEffect(
+    () => () => {
+      onContextStripVisibilityChange?.(false);
+    },
+    [onContextStripVisibilityChange],
+  );
 
   if (!hasActiveThread || !activeProject) return null;
 
@@ -598,7 +639,7 @@ export const BranchToolbar = memo(function BranchToolbar({
         // A non-Git strip with no visible composer controls should occupy no
         // space, but its host must retain a prospective width so controls can
         // become visible again when the chat view grows.
-        !contextStripVisible && "pointer-events-none invisible absolute inset-x-0 top-full",
+        !isStripVisible && "pointer-events-none invisible absolute inset-x-0 top-full",
       )}
     >
       {/*
@@ -608,91 +649,95 @@ export const BranchToolbar = memo(function BranchToolbar({
         project keeps the environment selector and drops everything downstream
         of a repository.
       */}
-      <div
-        className={cn(
-          "flex min-w-0 items-center gap-1",
-          composerControlsHostRef ? "shrink" : "flex-1",
-        )}
-      >
-        {showGitControls ? (
-          <div className="contents @3xl/composer-surface:hidden">
-            <MobileRunContextSelector
-              autoEnvironmentLabel={autoEnvironmentLabel}
-              onAutoEnvironment={onAutoEnvironment}
-              envLocked={envLocked}
-              envModeLocked={envModeLocked}
-              environmentId={environmentId}
-              availableEnvironments={availableEnvironments}
-              showEnvironmentPicker={showEnvironmentPicker}
-              showEnvironmentIndicator={showEnvironmentIndicator}
-              onEnvironmentChange={onEnvironmentChange}
-              effectiveEnvMode={effectiveEnvMode}
-              activeWorktreePath={activeWorktreePath}
-              onEnvModeChange={onEnvModeChange}
-              previousWorktreeLabel={previousWorktreeLabel}
-              onUsePreviousWorktree={onUsePreviousWorktree}
-            />
-          </div>
-        ) : null}
+      {showGitControls || (showEnvironmentIndicator && availableEnvironments) ? (
         <div
           className={cn(
-            "min-w-10 items-center gap-1",
-            showGitControls ? "hidden @3xl/composer-surface:flex" : "flex",
+            "flex min-w-0 items-center gap-1",
+            composerControlsHostRef ? "shrink" : "flex-1",
           )}
         >
-          {showEnvironmentIndicator && availableEnvironments && (
-            <>
-              <BranchToolbarEnvironmentSelector
+          {showGitControls ? (
+            <div className="contents @3xl/composer-surface:hidden">
+              <MobileRunContextSelector
                 autoEnvironmentLabel={autoEnvironmentLabel}
                 onAutoEnvironment={onAutoEnvironment}
                 envLocked={envLocked}
+                envModeLocked={envModeLocked}
                 environmentId={environmentId}
                 availableEnvironments={availableEnvironments}
-                {...(showEnvironmentPicker && onEnvironmentChange ? { onEnvironmentChange } : {})}
+                showEnvironmentPicker={showEnvironmentPicker}
+                showEnvironmentIndicator={showEnvironmentIndicator}
+                onEnvironmentChange={onEnvironmentChange}
+                effectiveEnvMode={effectiveEnvMode}
+                activeWorktreePath={activeWorktreePath}
+                onEnvModeChange={onEnvModeChange}
+                previousWorktreeLabel={previousWorktreeLabel}
+                onUsePreviousWorktree={onUsePreviousWorktree}
               />
-              {showGitControls ? (
-                <Separator
-                  orientation="vertical"
-                  className="mx-0.5 h-3.5!"
-                  data-composer-context-control
-                />
-              ) : null}
-            </>
-          )}
-          {showGitControls ? (
-            <BranchToolbarEnvModeSelector
-              envLocked={envModeLocked}
-              effectiveEnvMode={effectiveEnvMode}
-              activeWorktreePath={activeWorktreePath}
-              onEnvModeChange={onEnvModeChange}
-              previousWorktreeLabel={previousWorktreeLabel}
-              onUsePreviousWorktree={onUsePreviousWorktree}
-            />
+            </div>
           ) : null}
-        </div>
-        {/*
+          <div
+            className={cn(
+              "min-w-10 items-center gap-1",
+              showGitControls ? "hidden @3xl/composer-surface:flex" : "flex",
+            )}
+          >
+            {showEnvironmentIndicator && availableEnvironments && (
+              <>
+                <BranchToolbarEnvironmentSelector
+                  autoEnvironmentLabel={autoEnvironmentLabel}
+                  onAutoEnvironment={onAutoEnvironment}
+                  envLocked={envLocked}
+                  environmentId={environmentId}
+                  availableEnvironments={availableEnvironments}
+                  {...(showEnvironmentPicker && onEnvironmentChange ? { onEnvironmentChange } : {})}
+                />
+                {showGitControls ? (
+                  <Separator
+                    orientation="vertical"
+                    className="mx-0.5 h-3.5!"
+                    data-composer-context-control
+                  />
+                ) : null}
+              </>
+            )}
+            {showGitControls ? (
+              <BranchToolbarEnvModeSelector
+                envLocked={envModeLocked}
+                effectiveEnvMode={effectiveEnvMode}
+                activeWorktreePath={activeWorktreePath}
+                onEnvModeChange={onEnvModeChange}
+                previousWorktreeLabel={previousWorktreeLabel}
+                onUsePreviousWorktree={onUsePreviousWorktree}
+              />
+            ) : null}
+          </div>
+          {/*
           Pylon keeps the branch in the left run beside the workspace controls
           rather than pushing it right as upstream does: they describe the same
           thing, and Usage sits opposite them.
         */}
-        {showGitControls ? (
-          <BranchToolbarBranchSelector
-            ref={branchSelectorRef}
-            className="min-w-0 justify-start"
-            environmentId={environmentId}
-            threadId={threadId}
-            {...(draftId ? { draftId } : {})}
-            envLocked={envLocked}
-            {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
-            {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
-            {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}
-            startFromOrigin={startFromOrigin}
-            onStartFromOriginChange={onStartFromOriginChange}
-            {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
-            {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
-          />
-        ) : null}
-      </div>
+          {showGitControls ? (
+            <BranchToolbarBranchSelector
+              ref={branchSelectorRef}
+              className="min-w-0 justify-start"
+              environmentId={environmentId}
+              threadId={threadId}
+              {...(draftId ? { draftId } : {})}
+              envLocked={envLocked}
+              {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
+              {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
+              {...(onActiveThreadBranchOverrideChange
+                ? { onActiveThreadBranchOverrideChange }
+                : {})}
+              startFromOrigin={startFromOrigin}
+              onStartFromOriginChange={onStartFromOriginChange}
+              {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
+              {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
+            />
+          ) : null}
+        </div>
+      ) : null}
 
       {composerControlsHostRef ? (
         <div
