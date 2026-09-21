@@ -1155,7 +1155,7 @@ jobs:
     # the DEPLOY_HOSTED_WEB repository variable to "true" once they exist.
     if: ${{ !failure() && !cancelled() && vars.DEPLOY_HOSTED_WEB == 'true' && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     env:
       T3CODE_CLERK_PUBLISHABLE_KEY: ${{ needs.relay_public_config.outputs.clerk_publishable_key }}
       T3CODE_CLERK_JWT_TEMPLATE: ${{ needs.relay_public_config.outputs.clerk_jwt_template }}
@@ -1225,7 +1225,10 @@ jobs:
       - name: Refresh release lockfile
         run: vp install --lockfile-only --ignore-scripts
 
-      - name: Deploy and alias channel
+      - id: deploy
+        name: Deploy and alias channel
+        timeout-minutes: 25
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -1303,6 +1306,11 @@ jobs:
           if [[ "$channel_name" == "latest" && -n "$router_domain" && "$router_domain" != "$channel_domain" ]]; then
             alias_deployment "$deployment_url" "$router_domain"
           fi
+
+      - name: Warn on hosted web app deploy failure
+        if: steps.deploy.outcome != 'success'
+        run: |
+          echo "::warning::Hosted web app deploy did not succeed (${{ steps.deploy.outcome }}). The desktop release has published successfully."
 
   finalize:
     name: Finalize release
@@ -1395,7 +1403,7 @@ jobs:
       needs.relay_public_config.result == 'success' &&
       needs.release.result == 'success' &&
       vars.ANNOUNCE_RELEASE_ON_DISCORD == 'true' &&
-      (needs.deploy_web.result == 'success' || needs.deploy_web.result == 'skipped') &&
+      (needs.deploy_web.result == 'success' || needs.deploy_web.result == 'skipped' || needs.deploy_web.result == 'failure' || needs.deploy_web.result == 'cancelled') &&
       (needs.finalize.result == 'success' || needs.finalize.result == 'skipped')
     needs: [preflight, relay_public_config, release, deploy_web, finalize]
     runs-on: ubuntu-latest
