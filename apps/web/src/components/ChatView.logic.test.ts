@@ -95,7 +95,6 @@ import {
   getAntigravitySendBlockReason,
   waitForRevertedMessage,
   prepareRevertedMessageAttachments,
-  resolveComposerContextStripVisibility,
 } from "./ChatView.logic";
 
 describe("agent browser close confirmation", () => {
@@ -2751,65 +2750,5 @@ describe("draft retention through worktree setup", () => {
     expect(canFinalizePromotedDraft(preparing)).toBe(false);
     expect(canFinalizePromotedDraft({ ...preparing, session: readySession })).toBe(true);
     expect(canFinalizePromotedDraft({ ...preparing, latestTurn: completedTurn })).toBe(true);
-  });
-});
-
-describe("resolveComposerContextStripVisibility", () => {
-  // A thread on a Git repo, at rest, with nothing else to show.
-  const base = {
-    hasActiveProject: true,
-    showGitControls: true,
-    showEnvironmentIndicator: false,
-    hostsRestingComposerControls: false,
-    restingComposerControlsVisible: false,
-    hasCapacityReading: false,
-  };
-
-  it("shows the strip for the Git controls it will draw", () => {
-    expect(resolveComposerContextStripVisibility(base)).toEqual({ mount: true, visible: true });
-  });
-
-  // The repository is still there during a rollback, but every Git control is
-  // suppressed, so keeping the strip open would leave an empty bar.
-  it("hides the strip when a rollback suppresses the Git controls", () => {
-    expect(resolveComposerContextStripVisibility({ ...base, showGitControls: false })).toEqual({
-      mount: false,
-      visible: false,
-    });
-  });
-
-  it("keeps the strip during a rollback when capacity still has something to say", () => {
-    expect(
-      resolveComposerContextStripVisibility({
-        ...base,
-        showGitControls: false,
-        hasCapacityReading: true,
-      }),
-    ).toEqual({ mount: true, visible: true });
-  });
-
-  // The reason the strip is mounted at all on a route that hosts relocated
-  // controls: it has to be measurable before anyone knows whether they fit.
-  it("mounts but hides the measuring strip until the relocated controls fit", () => {
-    const input = {
-      ...base,
-      showGitControls: false,
-      hostsRestingComposerControls: true,
-      restingComposerControlsVisible: false,
-    };
-    expect(resolveComposerContextStripVisibility(input)).toEqual({ mount: true, visible: false });
-    expect(
-      resolveComposerContextStripVisibility({ ...input, restingComposerControlsVisible: true }),
-    ).toEqual({ mount: true, visible: true });
-  });
-
-  it("shows nothing without a project to describe", () => {
-    expect(
-      resolveComposerContextStripVisibility({
-        ...base,
-        hasActiveProject: false,
-        hasCapacityReading: true,
-      }),
-    ).toEqual({ mount: false, visible: false });
   });
 });

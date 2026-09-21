@@ -55,33 +55,21 @@ export function shouldShowEnvironmentIndicator(input: {
   return input.activeEnvironment !== null && !input.activeEnvironment.isPrimary;
 }
 
-export function shouldShowComposerContextStrip(input: {
-  hasActiveProject: boolean;
-  /**
-   * The Git controls the strip will actually draw — not merely whether the
-   * project is a repository. A rollback suppresses them while the repository
-   * is still there, and a strip kept open for controls nobody renders is an
-   * empty bar.
-   */
-  showsGitControls: boolean;
-  showEnvironmentIndicator: boolean;
-  /** A collapsed composer's controls currently fit in their measured strip host. */
-  hostsRestingComposerControls: boolean;
-  /**
-   * The capacity readout has something to say. It sits at the far end of the
-   * strip and is the only entry here that belongs to the account rather than
-   * the workspace, so a project with no repository and one environment can
-   * still have a reason to keep the strip open.
-   */
-  hasCapacityReading: boolean;
+/** Emptiness is structural: whether any child groups have laid-out content. */
+export function resolveContextStripHasContent(input: { readonly groupCount: number }): boolean {
+  return input.groupCount > 0;
+}
+
+/**
+ * Initial synchronous estimate before the DOM strip measures its children.
+ * Avoids layout shift on initial render of common Git workspaces.
+ */
+export function resolveInitialContextStripVisibility(input: {
+  readonly showsGitControls: boolean;
+  readonly showsEnvironmentIndicator: boolean;
+  readonly hasCapacityReading: boolean;
 }): boolean {
-  return (
-    input.hasActiveProject &&
-    (input.showsGitControls ||
-      input.showEnvironmentIndicator ||
-      input.hostsRestingComposerControls ||
-      input.hasCapacityReading)
-  );
+  return input.showsGitControls || input.showsEnvironmentIndicator || input.hasCapacityReading;
 }
 
 // Labels collapse to icons when the strip's content no longer fits. A small

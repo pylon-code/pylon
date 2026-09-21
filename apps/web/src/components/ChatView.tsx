@@ -291,7 +291,7 @@ import {
   summarizeHandoffDiff,
 } from "./chat/ThreadHandoff.logic";
 import { ThreadContinuationBanner } from "./chat/ThreadContinuationBanner";
-import { deriveComposerUsage, hasComposerUsageContent } from "../providerUsageAccounts";
+import { deriveComposerUsage } from "../providerUsageAccounts";
 import { usageStaleAfterMs } from "./providerUsage/ProviderUsageMatrix.logic";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
@@ -521,7 +521,6 @@ import {
   toolGroupConsumesUpwardNavigation,
   waitForStartedServerThread,
   shouldRefocusComposerOnWindowFocus,
-  resolveComposerContextStripVisibility,
 } from "./ChatView.logic";
 import type { ThreadSyncPhase } from "../threadSync";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
@@ -6358,18 +6357,10 @@ export default function ChatView(props: ChatViewProps) {
   // that as "no capacity" would hide the strip and then pop it back in a moment
   // later. Assume a reading is coming, the way `isGitRepo` assumes a repository
   // above. The client already knows whether the readout is switched off.
-  const composerUsageHasContent =
-    hasComposerUsageContent(composerUsage) ||
-    (settings.showProviderUsageInContextPopover && serverConfig === null);
-  const { mount: mountComposerContextStrip, visible: showComposerContextStrip } =
-    resolveComposerContextStripVisibility({
-      hasActiveProject: activeProject !== null,
-      showGitControls: showComposerGitControls,
-      showEnvironmentIndicator: showComposerEnvironmentIndicator,
-      hostsRestingComposerControls: routeKind === "server",
-      restingComposerControlsVisible,
-      hasCapacityReading: composerUsageHasContent,
-    });
+  const [composerContextStripVisible, setComposerContextStripVisible] = useState(() =>
+    Boolean(activeProject !== null && showComposerGitControls),
+  );
+  const showComposerContextStrip = activeProject !== null && composerContextStripVisible;
   // The strip dims a reading the server should already have replaced, so the
   // bound follows the server's own poll rather than a fixed number.
   const composerUsageStaleAfterMs = useMemo(
@@ -10791,7 +10782,7 @@ export default function ChatView(props: ChatViewProps) {
                           data-terminal-open={terminalUiState.terminalOpen ? "true" : undefined}
                           className="relative z-0"
                         >
-                          {mountComposerContextStrip && (
+                          {activeProject !== null && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
                                 ref={branchToolbarRef}
@@ -10832,7 +10823,7 @@ export default function ChatView(props: ChatViewProps) {
                                 }
                                 availableEnvironments={logicalProjectEnvironments}
                                 composerControlsHostRef={setRestingComposerControlsHost}
-                                contextStripVisible={showComposerContextStrip}
+                                onContextStripVisibilityChange={setComposerContextStripVisible}
                               />
                             </div>
                           )}
