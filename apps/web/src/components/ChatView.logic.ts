@@ -1,3 +1,4 @@
+import { shouldShowComposerContextStrip } from "./BranchToolbar.logic";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type AssetCreateUrlInput,
@@ -1470,4 +1471,43 @@ export function restorePlanFollowUpComposer(input: {
     prompt: input.snapshot.prompt,
     detectTrigger: true,
   });
+}
+
+/**
+ * Whether the composer's context strip is mounted, and whether it is visible.
+ *
+ * The two differ on purpose: an existing thread keeps a hidden, off-flow strip
+ * mounted so the composer can measure whether its relocated controls fit there,
+ * while the visible chrome stays content-driven. Assembled here rather than
+ * inline in the view so the inputs — the part that has twice been wrong — are
+ * testable without rendering a chat.
+ */
+export function resolveComposerContextStripVisibility(input: {
+  readonly hasActiveProject: boolean;
+  /** What `BranchToolbar` will actually draw, so a rollback cannot leave an empty bar. */
+  readonly showGitControls: boolean;
+  readonly showEnvironmentIndicator: boolean;
+  /** This route hosts the collapsed composer's relocated controls. */
+  readonly hostsRestingComposerControls: boolean;
+  /** Those controls currently fit, so they are really in the strip. */
+  readonly restingComposerControlsVisible: boolean;
+  readonly hasCapacityReading: boolean;
+}): { readonly mount: boolean; readonly visible: boolean } {
+  const common = {
+    hasActiveProject: input.hasActiveProject,
+    showsGitControls: input.showGitControls,
+    showEnvironmentIndicator: input.showEnvironmentIndicator,
+    hasCapacityReading: input.hasCapacityReading,
+  };
+  return {
+    mount: shouldShowComposerContextStrip({
+      ...common,
+      hostsRestingComposerControls: input.hostsRestingComposerControls,
+    }),
+    visible: shouldShowComposerContextStrip({
+      ...common,
+      hostsRestingComposerControls:
+        input.hostsRestingComposerControls && input.restingComposerControlsVisible,
+    }),
+  };
 }

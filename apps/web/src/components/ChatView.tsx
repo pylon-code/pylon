@@ -415,7 +415,6 @@ import {
   type EnvironmentOption,
   resolveEffectiveEnvMode,
   resolveLocalCheckoutBranchMismatch,
-  shouldShowComposerContextStrip,
   shouldShowEnvironmentIndicator,
 } from "./BranchToolbar.logic";
 import {
@@ -522,6 +521,7 @@ import {
   toolGroupConsumesUpwardNavigation,
   waitForStartedServerThread,
   shouldRefocusComposerOnWindowFocus,
+  resolveComposerContextStripVisibility,
 } from "./ChatView.logic";
 import type { ThreadSyncPhase } from "../threadSync";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
@@ -3945,7 +3945,11 @@ export default function ChatView(props: ChatViewProps) {
     }
   }, [environmentId, gitStatusCwd, liveIsGitRepo]);
   const isGitRepo = liveIsGitRepo ?? recallCheckoutIsRepo(environmentId, gitStatusCwd) ?? true;
-
+  // One source for the Git run: what the strip shows must be what it draws.
+  const showComposerGitControls = isGitRepo && !rollbackActive;
+  const initialDiffPanelGitScope =
+    gitStatusQuery.data?.hasWorkingTreeChanges === true ? "unstaged" : "branch";
+  const diffPanelGitStatusResolutionKey = gitStatusQuery.data ? "resolved" : "pending";
   const terminalShortcutLabelOptions = useMemo(
     () => ({
       context: {
@@ -6357,20 +6361,15 @@ export default function ChatView(props: ChatViewProps) {
   const composerUsageHasContent =
     hasComposerUsageContent(composerUsage) ||
     (settings.showProviderUsageInContextPopover && serverConfig === null);
-  const mountComposerContextStrip = shouldShowComposerContextStrip({
-    hasActiveProject: activeProject !== null,
-    isGitRepo,
-    showEnvironmentIndicator: showComposerEnvironmentIndicator,
-    hostsRestingComposerControls: routeKind === "server",
-    hasCapacityReading: composerUsageHasContent,
-  });
-  const showComposerContextStrip = shouldShowComposerContextStrip({
-    hasActiveProject: activeProject !== null,
-    isGitRepo,
-    showEnvironmentIndicator: showComposerEnvironmentIndicator,
-    hostsRestingComposerControls: routeKind === "server" && restingComposerControlsVisible,
-    hasCapacityReading: composerUsageHasContent,
-  });
+  const { mount: mountComposerContextStrip, visible: showComposerContextStrip } =
+    resolveComposerContextStripVisibility({
+      hasActiveProject: activeProject !== null,
+      showGitControls: showComposerGitControls,
+      showEnvironmentIndicator: showComposerEnvironmentIndicator,
+      hostsRestingComposerControls: routeKind === "server",
+      restingComposerControlsVisible,
+      hasCapacityReading: composerUsageHasContent,
+    });
   // The strip dims a reading the server should already have replaced, so the
   // bound follows the server's own poll rather than a fixed number.
   const composerUsageStaleAfterMs = useMemo(
@@ -10798,7 +10797,7 @@ export default function ChatView(props: ChatViewProps) {
                                 ref={branchToolbarRef}
                                 environmentId={activeThread.environmentId}
                                 threadId={activeThread.id}
-                                showGitControls={isGitRepo && !rollbackActive}
+                                showGitControls={showComposerGitControls}
                                 {...(routeKind === "draft" && draftId ? { draftId } : {})}
                                 onEnvModeChange={onEnvModeChange}
                                 startFromOrigin={startFromOrigin}

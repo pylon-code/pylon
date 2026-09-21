@@ -57,7 +57,13 @@ export function shouldShowEnvironmentIndicator(input: {
 
 export function shouldShowComposerContextStrip(input: {
   hasActiveProject: boolean;
-  isGitRepo: boolean;
+  /**
+   * The Git controls the strip will actually draw — not merely whether the
+   * project is a repository. A rollback suppresses them while the repository
+   * is still there, and a strip kept open for controls nobody renders is an
+   * empty bar.
+   */
+  showsGitControls: boolean;
   showEnvironmentIndicator: boolean;
   /** A collapsed composer's controls currently fit in their measured strip host. */
   hostsRestingComposerControls: boolean;
@@ -71,7 +77,7 @@ export function shouldShowComposerContextStrip(input: {
 }): boolean {
   return (
     input.hasActiveProject &&
-    (input.isGitRepo ||
+    (input.showsGitControls ||
       input.showEnvironmentIndicator ||
       input.hostsRestingComposerControls ||
       input.hasCapacityReading)
