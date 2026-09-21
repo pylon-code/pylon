@@ -5622,9 +5622,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const composerControlsVisibleInStrip = composerControlsInStrip && restingControlsVisible;
   const composerControlsHidden = composerControlsInStrip && !restingControlsVisible;
-  if (composerControlsHidden && isComposerModelPickerOpen) {
-    setIsComposerModelPickerOpen(false);
-  }
+  useEffect(() => {
+    if (composerControlsHidden && isComposerModelPickerOpen) {
+      setIsComposerModelPickerOpen(false);
+    }
+  }, [composerControlsHidden, isComposerModelPickerOpen]);
   useLayoutEffect(() => {
     onRestingControlsVisibilityChange(composerControlsVisibleInStrip);
   }, [composerControlsVisibleInStrip, onRestingControlsVisibilityChange]);

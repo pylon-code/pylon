@@ -695,9 +695,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       return;
     }
     const maxScrollOffset = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight);
-    setShowTopScrollFade(scrollElement.scrollTop > 1);
-    setShowBottomScrollFade(maxScrollOffset - scrollElement.scrollTop > 1);
+    const nextTop = scrollElement.scrollTop > 1;
+    const nextBottom = maxScrollOffset - scrollElement.scrollTop > 1;
+    setShowTopScrollFade((prev) => (prev === nextTop ? prev : nextTop));
+    setShowBottomScrollFade((prev) => (prev === nextBottom ? prev : nextBottom));
   }, []);
+  const handleListLayout = useCallback(() => {
+    window.requestAnimationFrame(updateModelListScrollFades);
+  }, [updateModelListScrollFades]);
   const modelJumpShortcutContext = useMemo(
     () =>
       ({
@@ -788,9 +793,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     sidebarInstanceEntries,
   ]);
 
-  useLayoutEffect(() => {
-    setShowTopScrollFade(false);
-    setShowBottomScrollFade(filteredItemKeys.length > 5);
+  useEffect(() => {
+    const nextBottom = filteredItemKeys.length > 5;
+    setShowTopScrollFade((prev) => (prev ? false : prev));
+    setShowBottomScrollFade((prev) => (prev === nextBottom ? prev : nextBottom));
     let nestedFrame = 0;
     const frame = window.requestAnimationFrame(() => {
       updateModelListScrollFades();
@@ -800,7 +806,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       window.cancelAnimationFrame(frame);
       window.cancelAnimationFrame(nestedFrame);
     };
-  }, [filteredItemKeys, updateModelListScrollFades]);
+  }, [filteredItemKeys.length, updateModelListScrollFades]);
 
   return (
     <TooltipProvider delay={0}>
@@ -1016,10 +1022,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   }
                   estimatedItemSize={52}
                   drawDistance={480}
-                  recycleItems
                   contentContainerClassName="pl-2 pr-px"
                   ItemSeparatorComponent={ModelListSeparator}
-                  onLayout={updateModelListScrollFades}
+                  onLayout={handleListLayout}
                   onScroll={updateModelListScrollFades}
                   className={cn(
                     "scrollbar-gutter-stable h-full overflow-x-hidden overscroll-y-contain py-1.5 [&::-webkit-scrollbar-track]:my-2",
