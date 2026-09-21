@@ -12,6 +12,7 @@ import * as Path from "effect/Path";
 import * as FileSystem from "effect/FileSystem";
 
 import * as LocalDeviceHost from "./LocalDeviceHost.ts";
+import { DEVICE_HUB_VERSION } from "./DeviceToolchain.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import { HttpClient } from "effect/unstable/http";
@@ -123,7 +124,7 @@ it.effect("closes an owned hub process when readiness is interrupted before publ
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "pylon-device-start-" });
-    const installDir = path.join(baseDir, "tools", "expo-device-hub", "0.9.0");
+    const installDir = path.join(baseDir, "tools", "expo-device-hub", DEVICE_HUB_VERSION);
     const entryPath = path.join(
       installDir,
       "node_modules",
@@ -134,7 +135,7 @@ it.effect("closes an owned hub process when readiness is interrupted before publ
     );
     yield* fs.makeDirectory(path.dirname(entryPath), { recursive: true });
     yield* fs.writeFileString(entryPath, "");
-    yield* fs.writeFileString(path.join(installDir, ".install-complete"), "0.9.0");
+    yield* fs.writeFileString(path.join(installDir, ".install-complete"), DEVICE_HUB_VERSION);
     const readinessEntered = yield* Deferred.make<void>();
     const finalized = yield* Ref.make(0);
     const host = yield* LocalDeviceHost.make().pipe(
