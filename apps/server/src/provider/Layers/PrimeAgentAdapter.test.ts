@@ -619,6 +619,53 @@ exec ${process.execPath} ${mockAgentPath} "$@"
     assert.equal(failedTerminals[0]?.payload.state, "failed");
     yield* failingAdapter.stopSession(failingThreadId);
     yield* Fiber.interrupt(failureEventFiber);
+
+    const dieAdapter = yield* makePrimeAgentAdapter(decodeSettings({ binaryPath: wrapperPath }), {
+      instanceId: ProviderInstanceId.make("primeAgent-defect"),
+      environment: {
+        ...process.env,
+        T3_ACP_DIE_PROMPT: "1",
+        T3_ACP_DIE_PROMPT_MESSAGE: "Simulated ACP prompt defect",
+        T3_ACP_PRIME_TERMINAL_QUIESCENCE_DELAY_MS: "500",
+      },
+    });
+    const dieThreadId = ThreadId.make("prompt-defect");
+    const dieEvents: Array<ProviderRuntimeEvent> = [];
+    const dieCompleted = yield* Deferred.make<void>();
+    const dieEventFiber = yield* dieAdapter.streamEvents.pipe(
+      Stream.runForEach((event) =>
+        Effect.gen(function* () {
+          dieEvents.push(event);
+          if (event.type === "turn.completed") yield* Deferred.succeed(dieCompleted, undefined);
+        }),
+      ),
+      Effect.forkChild,
+    );
+    yield* Effect.yieldNow;
+    yield* dieAdapter.startSession({
+      threadId: dieThreadId,
+      provider: ProviderDriverKind.make("primeAgent"),
+      cwd: process.cwd(),
+      runtimeMode: "full-access",
+    });
+    const diePromptResult = yield* dieAdapter
+      .sendTurn({ threadId: dieThreadId, input: "fail with defect", attachments: [] })
+      .pipe(Effect.result);
+    assert.equal(diePromptResult._tag, "Success");
+    yield* Deferred.await(dieCompleted);
+    const dieTurnId = dieEvents.find(
+      (event) => event.threadId === dieThreadId && event.type === "turn.started",
+    )?.turnId;
+    assert.isDefined(dieTurnId);
+    const dieTerminals = dieEvents.filter(
+      (event): event is TurnCompletedEvent =>
+        event.turnId === dieTurnId && isTurnCompletedEvent(event),
+    );
+    assert.lengthOf(dieTerminals, 1);
+    assert.equal(dieTerminals[0]?.payload.state, "failed");
+    assert.include(dieTerminals[0]?.payload.errorMessage ?? "", "Simulated ACP prompt defect");
+    yield* dieAdapter.stopSession(dieThreadId);
+    yield* Fiber.interrupt(dieEventFiber);
   }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );
 
