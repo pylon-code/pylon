@@ -1,5 +1,7 @@
 "use client";
 
+import { useAtomValue } from "@effect/atom-react";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { PreviewViewportSetting, ScopedThreadRef } from "@t3tools/contracts";
 import { useShallow } from "zustand/react/shallow";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -7,7 +9,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { previewBridge } from "~/components/preview/previewBridge";
 import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
 import { useClientSettingsHydrated } from "~/hooks/useSettings";
+import { dispatchSnapShotComposerFocus } from "~/lib/desktopSnapShot";
 import { cn, isMacPlatform } from "~/lib/utils";
+import { previewStateAtom } from "~/previewStateStore";
 
 import { resolveBrowserSurfacePanelRect, useBrowserSurfaceStore } from "./browserSurfaceStore";
 import { useActiveBrowserRecordingTabIds } from "./browserRecording";
@@ -93,7 +97,21 @@ export function HostedBrowserWebview(props: {
     (state) => (state.activityByTabId[runtimeTabId] ?? 0) > 0,
   );
   const recordingActive = useActiveBrowserRecordingTabIds().has(runtimeTabId);
+  const threadKey = scopedThreadKey(threadRef);
+  const previewState = useAtomValue(previewStateAtom(threadKey));
+  const controller = previewState.desktopByTabId[tabId]?.controller ?? "none";
+  const controllerRef = useRef(controller);
+  controllerRef.current = controller;
   usePreviewBridge({ threadRef, tabId, runtimeTabId });
+
+  useEffect(() => {
+    if (controller === "agent" && typeof document !== "undefined") {
+      if (document.activeElement === webviewRef.current) {
+        webviewRef.current?.blur();
+        dispatchSnapShotComposerFocus();
+      }
+    }
+  }, [controller]);
 
   useEffect(() => {
     if (!clientSettingsHydrated) return;
@@ -156,6 +174,13 @@ export function HostedBrowserWebview(props: {
         }
       }, recovery.delayMs);
     };
+    const handleFocus = () => {
+      if (controllerRef.current === "agent") {
+        webview.blur();
+        dispatchSnapShotComposerFocus();
+      }
+    };
+    webview.addEventListener("focus", handleFocus);
     webview.addEventListener("did-attach", register);
     webview.addEventListener("dom-ready", register);
     webview.addEventListener("render-process-gone", recoverGuest);
@@ -163,6 +188,7 @@ export function HostedBrowserWebview(props: {
     return () => {
       disposed = true;
       if (recoveryTimeout !== null) clearTimeout(recoveryTimeout);
+      webview.removeEventListener("focus", handleFocus);
       webview.removeEventListener("did-attach", register);
       webview.removeEventListener("dom-ready", register);
       webview.removeEventListener("render-process-gone", recoverGuest);

@@ -41,6 +41,8 @@ import {
 } from "~/previewMiniPlayerStore";
 import { useRightPanelStore } from "~/rightPanelStore";
 
+import { usePreviewFocus } from "~/hooks/usePreviewFocus";
+import { cn } from "~/lib/utils";
 import { previewBridge } from "./previewBridge";
 import { subscribePreviewAction } from "./previewActionBus";
 import { openPreviewSession } from "./openPreviewSession";
@@ -705,10 +707,16 @@ export function PreviewView({
     });
   }, [handleRefresh, handleResetZoom, handleZoomIn, handleZoomOut, visible]);
 
+  const previewFocused = usePreviewFocus();
+
   return (
     <div
-      className="flex min-h-0 flex-1 flex-col bg-background"
+      className={cn(
+        "flex min-h-0 flex-1 flex-col bg-background transition-shadow duration-150",
+        previewFocused && "ring-1 ring-inset ring-ring/60",
+      )}
       data-thread-key={scopedThreadKey(threadRef)}
+      data-preview-focused={previewFocused ? "true" : undefined}
     >
       <PreviewChromeRow
         url={url}

@@ -8,6 +8,7 @@ import {
 } from "react";
 
 import { isElectron } from "~/env";
+import { usePreviewFocus } from "~/hooks/usePreviewFocus";
 import { useResizableWidth } from "~/hooks/useResizableWidth";
 import { cn } from "~/lib/utils";
 
@@ -65,6 +66,7 @@ export function PreviewPanelShell(props: {
   children: ReactNode;
 }) {
   const useDragRegion = isElectron && props.mode !== "sheet" && props.mode !== "embedded";
+  const previewFocused = usePreviewFocus();
   const isInline = props.mode === "inline";
   const collapsible = isInline && props.open !== undefined;
   const open = props.open ?? true;
@@ -142,6 +144,7 @@ export function PreviewPanelShell(props: {
       }
       data-preview-panel-mode={props.mode}
       data-preview-panel-maximized={maximized ? "true" : "false"}
+      data-preview-focused={previewFocused ? "true" : undefined}
     >
       {isInline && !maximized ? <RightPanelResizeHandle handlers={handlers} /> : null}
       <div className={cn("h-full min-h-0 w-full", collapsible && "overflow-clip")}>
