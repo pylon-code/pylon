@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { HomeProjectScope } from "../home/homeThreadList";
 import {
+  getProjectScopeAccessibilityLabel,
   getProjectScopeSelectionTarget,
   resolveDraftProjectSelection,
   resolveEnvironmentProjectMatch,
@@ -52,6 +53,21 @@ function makeScope(projects: ReadonlyArray<EnvironmentProject>): HomeProjectScop
     })),
   };
 }
+
+describe("getProjectScopeAccessibilityLabel", () => {
+  it("formats single-workspace project scopes with title and root", () => {
+    const project = makeProject("pylon", "mac", { workspaceRoot: "/Users/alice/pylon" });
+    const scope = makeScope([project]);
+    expect(getProjectScopeAccessibilityLabel(scope, project)).toBe("T3 Code, /Users/alice/pylon");
+  });
+
+  it("formats multi-workspace project scopes with count", () => {
+    const project1 = makeProject("pylon-mac", "mac");
+    const project2 = makeProject("pylon-server", "server");
+    const scope = makeScope([project1, project2]);
+    expect(getProjectScopeAccessibilityLabel(scope, project1)).toBe("T3 Code, 2 workspaces");
+  });
+});
 
 describe("getProjectScopeSelectionTarget", () => {
   it("keeps the current environment when it hosts the selected logical project", () => {
