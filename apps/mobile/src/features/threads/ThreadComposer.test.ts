@@ -5,6 +5,7 @@ import {
   getThreadComposerModelChangeDisabledReason,
   resolveThreadComposerAdmissionReason,
   resolveThreadComposerAuthority,
+  threadComposerShowsCollapsedActions,
   threadComposerShowsStopAction,
 } from "./ThreadComposer.logic";
 
@@ -234,6 +235,15 @@ describe("ThreadComposer provider authority", () => {
     expect(threadComposerShowsStopAction("running")).toBe(true);
     expect(threadComposerShowsStopAction("starting")).toBe(true);
     expect(threadComposerShowsStopAction("ready")).toBe(false);
+  });
+
+  it("keeps collapsed actions mutually exclusive with toolbar visibility (#244)", () => {
+    // When toolbar is hidden (collapsed composer, idle dictation), show collapsed actions
+    expect(threadComposerShowsCollapsedActions({ isToolbarVisible: false })).toBe(true);
+
+    // When toolbar is visible (expanded composer, or dictation presented including error phase),
+    // hide collapsed actions so duplicate Stop and dictation controls never render simultaneously
+    expect(threadComposerShowsCollapsedActions({ isToolbarVisible: true })).toBe(false);
   });
 });
 

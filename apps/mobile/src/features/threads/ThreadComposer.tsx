@@ -151,6 +151,7 @@ import {
   getThreadComposerModelChangeDisabledReason,
   resolveThreadComposerAdmissionReason,
   resolveThreadComposerAuthority,
+  threadComposerShowsCollapsedActions,
   threadComposerShowsStopAction,
 } from "./ThreadComposer.logic";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
@@ -1861,7 +1862,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 </Pressable>
               </ControlPillMenu>
             ) : null}
-            {!isExpanded && !voiceInput.isBusy ? (
+            {threadComposerShowsCollapsedActions({ isToolbarVisible }) ? (
               <Animated.View
                 className="flex-row items-center gap-1.5"
                 entering={FadeIn.duration(180)}
