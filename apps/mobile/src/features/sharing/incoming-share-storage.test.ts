@@ -5,7 +5,10 @@ const fileSystemMocks = vi.hoisted(() => {
   let entries: File[] = [];
 
   class File {
-    readonly exists = true;
+    exists = true;
+    delete = vi.fn(() => {
+      this.exists = false;
+    });
 
     constructor(
       readonly name: string,
@@ -57,15 +60,16 @@ afterEach(() => {
 });
 
 describe("incoming share storage", () => {
-  it("skips an invalid persisted share by default", async () => {
-    fileSystemMocks.setEntries([
-      new fileSystemMocks.File("valid.json", JSON.stringify(VALID_DRAFT)),
-      new fileSystemMocks.File("invalid.json", "{"),
-    ]);
+  it("skips and deletes an invalid persisted share by default", async () => {
+    const validFile = new fileSystemMocks.File("valid.json", JSON.stringify(VALID_DRAFT));
+    const invalidFile = new fileSystemMocks.File("invalid.json", "{");
+    fileSystemMocks.setEntries([validFile, invalidFile]);
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await expect(loadIncomingShareDrafts()).resolves.toEqual([VALID_DRAFT]);
     expect(warning).toHaveBeenCalledOnce();
+    expect(invalidFile.delete).toHaveBeenCalledOnce();
+    expect(validFile.delete).not.toHaveBeenCalled();
   });
 
   it("rejects an invalid persisted share in strict mode", async () => {

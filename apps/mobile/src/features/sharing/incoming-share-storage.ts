@@ -51,6 +51,13 @@ export async function loadIncomingShareDrafts(options?: {
           throw error;
         }
         console.warn("[incoming-share] ignored invalid persisted share", error);
+        try {
+          if (entry.exists) {
+            entry.delete();
+          }
+        } catch (cleanupError) {
+          console.warn("[incoming-share] failed to delete corrupt persisted share", cleanupError);
+        }
       }
     }
     return drafts.sort((left, right) => right.createdAt.localeCompare(left.createdAt));

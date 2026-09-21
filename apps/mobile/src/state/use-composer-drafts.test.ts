@@ -1409,7 +1409,7 @@ describe("mobile composer drafts", () => {
 
     await releaseUnusedComposerAttachmentFiles([file]);
 
-    expect(incomingShareStorageMocks.load).toHaveBeenLastCalledWith({ strict: true });
+    expect(incomingShareStorageMocks.load).toHaveBeenLastCalledWith();
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
 
     await releaseUnusedComposerAttachmentFiles([file]);
@@ -1435,7 +1435,7 @@ describe("mobile composer drafts", () => {
 
     await releaseUnusedComposerAttachmentFiles([file]);
 
-    expect(incomingShareStorageMocks.load).toHaveBeenCalledWith({ strict: true });
+    expect(incomingShareStorageMocks.load).toHaveBeenCalledWith();
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
   });
 
