@@ -1,5 +1,7 @@
+import { cloneElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vite-plus/test";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./ComposerBannerStack";
 
@@ -10,7 +12,7 @@ function item(
   return { id, variant: "default", icon: null, title: id, ...overrides };
 }
 
-describe("ComposerBannerStack", () => {
+describe("ComposerBannerStack ordering", () => {
   it("renders nothing without items", () => {
     expect(renderToStaticMarkup(<ComposerBannerStack items={[]} />)).toBe("");
   });
@@ -40,38 +42,102 @@ describe("ComposerBannerStack", () => {
 
     expect(markup.indexOf("liveness")).toBeLessThan(markup.indexOf("composer-activity"));
   });
+});
 
-  it("keeps the details popover out of a compact banner until the row is narrow", () => {
-    // A compact banner's description is short enough to stay on screen, so the
-    // popover trigger only appears once the row is too narrow to show it.
-    const markup = renderToStaticMarkup(
-      <ComposerBannerStack
-        items={[item("clone", { description: "Finishing an update", compact: true })]}
-      />,
-    );
+vi.mock("../ui/popover", () => ({
+  Popover: "popover",
+  PopoverTrigger: ({ render, children }: { render: ReactElement; children: ReactNode }) =>
+    cloneElement(render, {}, children),
+  PopoverPopup: "popup",
+}));
+vi.mock("../ui/button", () => ({ Button: "button" }));
+vi.mock("../ui/scroll-area", () => ({ ScrollArea: "div" }));
 
-    expect(markup).toContain('data-composer-banner-layout="wrap-actions-narrow"');
-    expect(markup).toContain("@max-[400px]:inline-flex");
-  });
+let renderer: ReactTestRenderer;
+afterEach(async () => {
+  if (renderer) await act(() => renderer.unmount());
+  vi.unstubAllGlobals();
+});
 
-  it("always offers the details popover on a banner that can truncate", () => {
-    const markup = renderToStaticMarkup(
+it("only offers notice details when the description cannot fit", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  let resize = () => {};
+  let mutate = () => {};
+  vi.stubGlobal(
+    "MutationObserver",
+    class {
+      constructor(callback: () => void) {
+        mutate = callback;
+      }
+      observe() {}
+      disconnect() {}
+    },
+  );
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: () => void) {
+        resize = callback;
+      }
+      observe() {}
+      disconnect() {}
+    },
+  );
+  let position = "static";
+  vi.stubGlobal("getComputedStyle", () => ({ position }));
+  let availableWidth = 200;
+  const nested = { clientWidth: 100, scrollWidth: 80 };
+  const text = {
+    querySelectorAll: () => [nested],
+    get clientWidth() {
+      return (
+        availableWidth -
+        (renderer?.root.findAllByProps({ "aria-label": "Show notice details" }).length ? 28 : 0)
+      );
+    },
+    scrollWidth: 80,
+  };
+  await act(() => {
+    renderer = create(
       <ComposerBannerStack
         items={[
-          item("notice", {
-            description: "A description long enough to truncate on a narrow composer",
-          }),
+          {
+            id: "usage",
+            variant: "info",
+            icon: null,
+            title: "Usage limits",
+            description: "OpenCode",
+          },
         ]}
       />,
+      {
+        createNodeMock: (element) =>
+          element.type === "span" ? text : element.type === "button" ? { offsetWidth: 24 } : null,
+      },
     );
-
-    expect(markup).toContain('data-composer-banner-layout="wrap-actions"');
-    expect(markup).not.toContain("@max-[400px]:inline-flex");
   });
-
-  it("renders no details popover when a banner has no description", () => {
-    const markup = renderToStaticMarkup(<ComposerBannerStack items={[item("bare")]} />);
-
-    expect(markup).not.toContain("Show notice details");
-  });
+  const details = () => renderer.root.findAllByProps({ "aria-label": "Show notice details" });
+  expect(details()).toHaveLength(0);
+  text.scrollWidth = 300;
+  await act(() => resize());
+  expect(details()).toHaveLength(1);
+  // It fits without the icon: the icon must not keep its own overflow alive.
+  availableWidth = 308;
+  await act(() => resize());
+  expect(details()).toHaveLength(0);
+  text.scrollWidth = 80;
+  await act(() => resize());
+  expect(details()).toHaveLength(0);
+  nested.scrollWidth = 500;
+  await act(() => mutate());
+  expect(details()).toHaveLength(1);
+  nested.scrollWidth = 80;
+  await act(() => mutate());
+  expect(details()).toHaveLength(0);
+  position = "absolute";
+  await act(() => resize());
+  expect(details()).toHaveLength(1);
+  position = "static";
+  await act(() => resize());
+  expect(details()).toHaveLength(0);
 });
