@@ -95,6 +95,16 @@ export function threadComposerShowsStopAction(
   return status === "running" || status === "starting";
 }
 
+/**
+ * Keeps collapsed actions and the composer toolbar mutually exclusive by construction,
+ * preventing duplicated controls during non-busy presentation phases (such as dictation error).
+ */
+export function threadComposerShowsCollapsedActions(input: {
+  readonly isToolbarVisible: boolean;
+}): boolean {
+  return !input.isToolbarVisible;
+}
+
 /** Explain disabled model rows while preserving the session's provider and safety guards. */
 export function getThreadComposerModelChangeDisabledReason(input: {
   readonly option: ModelOption;
