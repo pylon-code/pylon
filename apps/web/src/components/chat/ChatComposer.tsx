@@ -5,7 +5,6 @@ import { environmentThreadDetails } from "../../state/threads";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { trackPendingContextImport } from "./pendingContextImport";
 import { observeResponsiveBreakpointFade, usePanelAnimationSettings } from "../../panelAnimations";
-import { measureRestingComposerControls } from "./restingComposerControlsMeasurement";
 import { runtimeModeConfig, runtimeModeOptions } from "./runtimeModeConfig";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { AttachmentFilePreview } from "../files/AttachmentFilePreview";
@@ -5620,34 +5619,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // collapse. Both leave the footer unrendered, so the strip is the only place
   // to see or change the model without expanding the composer.
   const composerControlsInStrip = isComposerResting || isComposerCollapsedMobile;
-  useEffect(() => {
-    const composerForm = composerFormRef.current;
-    if (!composerForm) return;
-    const footerControls = composerFooterControlsRef.current;
-    const stopFooterControlsFade = footerControls
-      ? observeResponsiveBreakpointFade({
-          target: footerControls,
-          container: composerForm,
-          active: panelAnimationsActive,
-          durationMs: panelAnimationDurationMs,
-          breakpoint: {
-            value: composerFooterHasWideActions
-              ? COMPOSER_FOOTER_WIDE_ACTIONS_COMPACT_BREAKPOINT_PX
-              : COMPOSER_FOOTER_COMPACT_BREAKPOINT_PX,
-            unit: "px",
-          },
-        })
-      : undefined;
-
-    return stopFooterControlsFade;
-  }, [
-    activeThreadId,
-    composerControlsInStrip,
-    isComposerApprovalState,
-    composerFooterHasWideActions,
-    panelAnimationDurationMs,
-    panelAnimationsActive,
-  ]);
 
   const composerControlsVisibleInStrip = composerControlsInStrip && restingControlsVisible;
   const composerControlsHidden = composerControlsInStrip && !restingControlsVisible;
@@ -6037,7 +6008,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 }
               >
                 <ComposerControlIcon icon={MessageCircleQuestionIcon} />
-                {!composerControlsCompact ? <span>Quick question</span> : null}
+                <span
+                  data-composer-control-label
+                  className={cn(isComposerFooterCompact && "sr-only")}
+                >
+                  Quick question
+                </span>
               </TooltipTrigger>
               <TooltipPopup side="top">Quick question</TooltipPopup>
             </Tooltip>
@@ -6211,7 +6187,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const addComposerAttachments = async (
     files: File[],
     options?: {
-      readonly source?: ChatFileAttachment["source"];
+      readonly source?: string;
       readonly selection?: { start: number; end: number };
       readonly skipImageInlineChip?: boolean;
     },

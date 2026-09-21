@@ -349,6 +349,8 @@ function PullRequestBaseFreshnessWarning({
   pending,
   onUpdate,
   iconClassName,
+  className,
+  children,
 }: {
   readonly baseBranch: string;
   readonly freshness: {
@@ -358,6 +360,8 @@ function PullRequestBaseFreshnessWarning({
   readonly pending: boolean;
   readonly onUpdate: (method: PullRequestUpdateMethod) => void;
   readonly iconClassName?: string;
+  readonly className?: string;
+  readonly children?: ReactNode;
 }) {
   const behind =
     freshness.behindBy === null
@@ -764,6 +768,13 @@ export function PullRequestDetailPanel({
         detail.headRepositoryNameWithOwner,
       )
     : null;
+  const onCheckoutCommandError = useCallback((error: Error) => {
+    toastManager.add({
+      type: "error",
+      title: "Could not copy checkout command",
+      description: error.message,
+    });
+  }, []);
   const branchRefsQuery = useEnvironmentQuery(
     detail === null
       ? null
@@ -1153,10 +1164,12 @@ export function PullRequestDetailPanel({
       return;
     }
     setHandoff(kind);
-    const projectRef = scopeProjectRef(
-      actingEnvironmentId,
-      acting?.projectId ?? handoffSummary.projectId,
-    );
+    const handoffProjectId = acting?.projectId ?? handoffSummary?.projectId;
+    if (!handoffProjectId) {
+      setHandoff(null);
+      return;
+    }
+    const projectRef = scopeProjectRef(actingEnvironmentId, handoffProjectId);
     const opened = await openThreadWithTask(projectRef, task);
     setHandoff(null);
     if (opened === null) {
@@ -1210,7 +1223,10 @@ export function PullRequestDetailPanel({
     });
     // Wherever the reader chose to act: the thread, the checkout it is pointed at and the composer
     // the task lands in are all one server's, and picking another one moves all three.
-    const projectRef = scopeProjectRef(actingEnvironmentId, acting?.projectId ?? detail.projectId);
+    const projectRef = scopeProjectRef(
+      actingEnvironmentId,
+      acting?.projectId ?? handoffSummary.projectId,
+    );
     // The thread is opened before the checkout rather than after it, because the project's setup
     // script only runs for a checkout that knows which thread it is for — and a worktree with no
     // dependencies installed is not something anyone can test.

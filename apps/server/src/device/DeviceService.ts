@@ -279,7 +279,6 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
                   error.step === "probe"
                     ? "Could not connect to this host over SSH."
                     : `Device support failed during ${error.step}.`,
-                cause: error,
               }),
           ),
         );
@@ -340,7 +339,6 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
                   : error.step === "probe"
                     ? "Could not connect to this host over SSH."
                     : `Device support failed during ${error.step}.`,
-              cause: error,
             }),
         ),
       );
