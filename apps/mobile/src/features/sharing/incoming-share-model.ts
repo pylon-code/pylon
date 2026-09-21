@@ -393,41 +393,56 @@ export async function buildIncomingShareDraft(input: {
       await releaseOwnedFiles(input.fileReader, [uri, payload.value]);
       continue;
     }
-    if (
-      resolved?.contentSize !== null &&
-      resolved?.contentSize !== undefined &&
-      resolved.contentSize > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES
-    ) {
-      warnings.push(
-        `'${resolved.originalName ?? fallbackName(uri, index, mimeType)}' exceeds the 10 MB attachment limit.`,
-      );
+    const name = resolved?.originalName ?? fallbackName(uri, index, mimeType);
+    let sizeBytes: number | null =
+      resolved?.contentSize !== null && resolved?.contentSize !== undefined
+        ? resolved.contentSize
+        : null;
+
+    if (input.fileReader.readSize) {
+      try {
+        const measured = await input.fileReader.readSize(uri);
+        if (measured !== null) {
+          sizeBytes = measured;
+        }
+      } catch {
+        // Fall back to resolved size or base64 estimation
+      }
+    }
+
+    if (sizeBytes !== null && sizeBytes > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+      warnings.push(`'${name}' exceeds the 10 MB attachment limit.`);
+      await releaseOwnedFiles(input.fileReader, [uri, payload.value]);
+      continue;
+    }
+
+    if (sizeBytes !== null && sizeBytes <= 0) {
+      warnings.push(`'${name}' is empty or could not be read.`);
       await releaseOwnedFiles(input.fileReader, [uri, payload.value]);
       continue;
     }
 
     try {
       const base64 = await input.fileReader.readBase64(uri);
-      const sizeBytes = resolved?.contentSize ?? estimateBase64ByteSize(base64);
-      if (sizeBytes <= 0 || sizeBytes > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
-        warnings.push(
-          `'${resolved?.originalName ?? fallbackName(uri, index, mimeType)}' exceeds the 10 MB attachment limit.`,
-        );
+      const measuredBytes = sizeBytes ?? estimateBase64ByteSize(base64);
+      if (measuredBytes <= 0 || measuredBytes > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+        warnings.push(`'${name}' exceeds the 10 MB attachment limit.`);
         continue;
       }
       const dataUrl = `data:${mimeType};base64,${base64}`;
       attachments.push({
         id: `${input.id}:image:${index}`,
         type: "image",
-        name: resolved?.originalName ?? fallbackName(uri, index, mimeType),
+        name,
         mimeType,
-        sizeBytes,
+        sizeBytes: measuredBytes,
         dataUrl,
         // The share provider's file is temporary. A data-backed preview keeps
         // the composer valid after its source file and App Group entry are gone.
         previewUri: dataUrl,
       });
     } catch {
-      warnings.push(`Could not read '${fallbackName(uri, index, mimeType)}'.`);
+      warnings.push(`Could not read '${name}'.`);
     } finally {
       await releaseOwnedFiles(input.fileReader, [uri, payload.value]);
     }

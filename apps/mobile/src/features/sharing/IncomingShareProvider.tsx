@@ -130,10 +130,10 @@ async function removeReplayedPayloadFiles(payloads: ReadonlyArray<SharePayload>)
     return;
   }
   const resolvedPayloads = payloads.some((payload) =>
-    ["file", "audio", "video"].includes(payload.shareType),
+    ["image", "file", "audio", "video"].includes(payload.shareType),
   )
-    ? []
-    : await resolvedPayloadsForFiles();
+    ? await resolvedPayloadsForFiles()
+    : [];
   for (const payload of resolvedPayloads) {
     if (["image", "file", "audio", "video"].includes(payload.shareType) && payload.contentUri) {
       uris.add(payload.contentUri);
@@ -154,13 +154,9 @@ const incomingShareInbox = new IncomingShareInbox({
   buildDraft: async ({ payloads, id, createdAt }) => {
     const cleanupUris = new Set<string>();
     const persistedUris = new Set<string>();
-    const hasGenericFilePayload = payloads.some((payload) =>
-      ["file", "audio", "video"].includes(payload.shareType),
-    );
-    const resolvedPayloads =
-      !hasGenericFilePayload && payloads.some((payload) => payload.shareType === "image")
-        ? await resolvedPayloadsForFiles()
-        : [];
+    const resolvedPayloads = payloads.some((payload) => payload.shareType === "image")
+      ? await resolvedPayloadsForFiles()
+      : [];
     const draft = await buildIncomingShareDraft({
       payloads,
       resolvedPayloads,

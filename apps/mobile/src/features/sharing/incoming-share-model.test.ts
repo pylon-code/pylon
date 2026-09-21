@@ -103,6 +103,67 @@ describe("incoming native shares", () => {
     expect(hasIncomingShareContent(result)).toBe(false);
   });
 
+  it("rejects oversized images via measured file size before base64 conversion even without resolved payloads", async () => {
+    const image: SharePayload = {
+      shareType: "image",
+      value: "file:///shared/photo.png",
+      mimeType: "image/png",
+    };
+    const readBase64 = vi.fn(() => Promise.resolve("huge-content"));
+    const readSize = vi.fn(async () => PROVIDER_SEND_TURN_MAX_IMAGE_BYTES + 1024);
+    const removeOwnedFile = vi.fn(() => Promise.resolve());
+
+    const result = await buildIncomingShareDraft({
+      id: "share-oversized-measured",
+      createdAt: "2026-07-15T10:00:00.000Z",
+      payloads: [image],
+      resolvedPayloads: [],
+      fileReader: { readBase64, readSize, removeOwnedFile },
+    });
+
+    expect(result.attachments).toEqual([]);
+    expect(result.warnings).toEqual(["'photo.png' exceeds the 10 MB attachment limit."]);
+    expect(readBase64).not.toHaveBeenCalled();
+    expect(readSize).toHaveBeenCalledWith(image.value);
+    expect(removeOwnedFile).toHaveBeenCalledWith(image.value);
+    expect(hasIncomingShareContent(result)).toBe(false);
+  });
+
+  it("rejects oversized images when measured file size exceeds limit despite smaller resolved contentSize", async () => {
+    const image: SharePayload = {
+      shareType: "image",
+      value: "file:///shared/spoofed.png",
+      mimeType: "image/png",
+    };
+    const readBase64 = vi.fn(() => Promise.resolve("huge-content"));
+    const readSize = vi.fn(async () => PROVIDER_SEND_TURN_MAX_IMAGE_BYTES + 1);
+    const removeOwnedFile = vi.fn(() => Promise.resolve());
+
+    const result = await buildIncomingShareDraft({
+      id: "share-spoofed",
+      createdAt: "2026-07-15T10:00:00.000Z",
+      payloads: [image],
+      resolvedPayloads: [
+        {
+          ...image,
+          contentUri: image.value,
+          contentType: "image",
+          contentMimeType: "image/png",
+          contentSize: 100,
+          originalName: "spoofed.png",
+        },
+      ],
+      fileReader: { readBase64, readSize, removeOwnedFile },
+    });
+
+    expect(result.attachments).toEqual([]);
+    expect(result.warnings).toEqual(["'spoofed.png' exceeds the 10 MB attachment limit."]);
+    expect(readBase64).not.toHaveBeenCalled();
+    expect(readSize).toHaveBeenCalledWith(image.value);
+    expect(removeOwnedFile).toHaveBeenCalledWith(image.value);
+    expect(hasIncomingShareContent(result)).toBe(false);
+  });
+
   it("keeps a shared PDF on disk without converting its contents to base64", async () => {
     const file: SharePayload = {
       shareType: "file",
