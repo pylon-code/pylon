@@ -103,7 +103,8 @@ rl.on("line", (line) => {
       );
     }
     const threadId = message.params?.threadId;
-    const childSnapshot = script.childResumeSnapshots?.[threadId];
+    const rawSnapshot = script.childResumeSnapshots?.[threadId];
+    const childSnapshot = Array.isArray(rawSnapshot) ? rawSnapshot.shift() : rawSnapshot;
     if (script.resumeRequestMarker) {
       write({
         jsonrpc: "2.0",
@@ -119,6 +120,9 @@ rl.on("line", (line) => {
     }
     if (childSnapshot?.error) {
       write({ id, error: { code: -32000, message: childSnapshot.error } });
+      for (const notification of childSnapshot.notifications ?? []) {
+        write({ jsonrpc: "2.0", method: notification.method, params: notification.params });
+      }
       return;
     }
     if (childSnapshot) {
