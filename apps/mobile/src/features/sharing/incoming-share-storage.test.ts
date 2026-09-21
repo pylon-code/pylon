@@ -43,7 +43,12 @@ vi.mock("expo-file-system", () => ({
   Paths: { document: "/documents" },
 }));
 
-import { IncomingShareStorageError, loadIncomingShareDrafts } from "./incoming-share-storage";
+import {
+  INCOMING_SHARE_TTL_MS,
+  MAX_INCOMING_SHARE_DRAFTS,
+  IncomingShareStorageError,
+  loadIncomingShareDrafts,
+} from "./incoming-share-storage";
 
 const VALID_DRAFT = {
   schemaVersion: 1,
@@ -66,7 +71,9 @@ describe("incoming share storage", () => {
     fileSystemMocks.setEntries([validFile, invalidFile]);
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    await expect(loadIncomingShareDrafts()).resolves.toEqual([VALID_DRAFT]);
+    await expect(
+      loadIncomingShareDrafts({ now: Date.parse("2026-08-28T12:00:00.000Z") }),
+    ).resolves.toEqual([VALID_DRAFT]);
     expect(warning).toHaveBeenCalledOnce();
     expect(invalidFile.delete).toHaveBeenCalledOnce();
     expect(validFile.delete).not.toHaveBeenCalled();
@@ -78,5 +85,60 @@ describe("incoming share storage", () => {
     await expect(loadIncomingShareDrafts({ strict: true })).rejects.toBeInstanceOf(
       IncomingShareStorageError,
     );
+  });
+
+  it("prunes and deletes expired drafts older than TTL", async () => {
+    const freshDraft = {
+      ...VALID_DRAFT,
+      id: "share-fresh",
+      createdAt: "2026-08-28T12:00:00.000Z",
+    };
+    const expiredDraft = {
+      ...VALID_DRAFT,
+      id: "share-expired",
+      createdAt: "2026-08-01T12:00:00.000Z",
+    };
+    const freshFile = new fileSystemMocks.File("share-fresh.json", JSON.stringify(freshDraft));
+    const expiredFile = new fileSystemMocks.File(
+      "share-expired.json",
+      JSON.stringify(expiredDraft),
+    );
+    fileSystemMocks.setEntries([freshFile, expiredFile]);
+
+    const now = Date.parse("2026-08-28T13:00:00.000Z");
+    const loaded = await loadIncomingShareDrafts({ now });
+
+    expect(loaded).toEqual([freshDraft]);
+    expect(expiredFile.delete).toHaveBeenCalledOnce();
+    expect(freshFile.delete).not.toHaveBeenCalled();
+  });
+
+  it("caps retained drafts at MAX_INCOMING_SHARE_DRAFTS and prunes excess older files", async () => {
+    const files: any[] = [];
+    const drafts: any[] = [];
+    for (let i = 0; i < MAX_INCOMING_SHARE_DRAFTS + 5; i++) {
+      const pad = String(i).padStart(2, "0");
+      const d = {
+        ...VALID_DRAFT,
+        id: `share-${pad}`,
+        createdAt: `2026-08-28T12:${pad}:00.000Z`,
+      };
+      drafts.push(d);
+      files.push(new fileSystemMocks.File(`share-${pad}.json`, JSON.stringify(d)));
+    }
+    fileSystemMocks.setEntries(files);
+
+    const now = Date.parse("2026-08-28T13:00:00.000Z");
+    const loaded = await loadIncomingShareDrafts({ now });
+
+    expect(loaded).toHaveLength(MAX_INCOMING_SHARE_DRAFTS);
+    // Drafts sorted newest first: indices 0..4 (the oldest) should be deleted
+    for (let i = 0; i < 5; i++) {
+      expect(files[i].delete).toHaveBeenCalledOnce();
+    }
+    // Newest MAX_INCOMING_SHARE_DRAFTS (indices 5..24) should NOT be deleted
+    for (let i = 5; i < files.length; i++) {
+      expect(files[i].delete).not.toHaveBeenCalled();
+    }
   });
 });

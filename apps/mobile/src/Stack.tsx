@@ -409,7 +409,7 @@ function RootStackLayout(props: {
   readonly state: NavigationState;
 }) {
   const navigation = useNavigation();
-  const { pendingShare } = useIncomingShare();
+  const { pendingShare, dismissShare } = useIncomingShare();
   const sharePresentationRef = useRef(EMPTY_INCOMING_SHARE_PRESENTATION_STATE);
   useAgentNotificationNavigation();
   // Presents the Pylon Connect onboarding sheet after an in-session sign-in.
@@ -418,11 +418,25 @@ function RootStackLayout(props: {
   useAppShortcuts(props.state);
   useEffect(() => {
     const topRouteName = props.state.routes[props.state.index]?.name;
+    const isShareSheetPresented = topRouteName === "NewTaskSheet";
+    const previousPresentedId = sharePresentationRef.current.presentedShareId;
     const transition = transitionIncomingSharePresentation(sharePresentationRef.current, {
-      isShareSheetPresented: topRouteName === "NewTaskSheet",
+      isShareSheetPresented,
       pendingShareId: pendingShare?.id ?? null,
     });
     sharePresentationRef.current = transition.state;
+
+    // If the sheet was dismissed without consuming the share, dismiss it from the inbox
+    // so it does not block remaining queued shares or permanently leak attachments on disk.
+    if (
+      previousPresentedId !== null &&
+      !isShareSheetPresented &&
+      pendingShare?.id === previousPresentedId
+    ) {
+      void dismissShare(previousPresentedId);
+      return;
+    }
+
     if (!transition.shareIdToPresent) {
       return;
     }
@@ -430,7 +444,7 @@ function RootStackLayout(props: {
       screen: "NewTask",
       params: { incomingShareId: transition.shareIdToPresent },
     });
-  }, [navigation, pendingShare, props.state]);
+  }, [dismissShare, navigation, pendingShare, props.state]);
   // Full pathname (sheets included) for keyboard-command scoping; the
   // workspace layout only reacts to the underlying non-overlay route.
   const path = getPathFromState(props.state, navigationPathConfig);
