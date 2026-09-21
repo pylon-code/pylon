@@ -1430,6 +1430,23 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleUnknownExtRequest((method, params) => {
+    if (
+      method === "_test/watchdog-tool-progress" ||
+      method === "_test/watchdog-tool-complete" ||
+      method === "_test/watchdog-foreign-progress"
+    ) {
+      return agent.client
+        .sessionUpdate({
+          sessionId: method === "_test/watchdog-foreign-progress" ? "child-session" : sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "tool-call-long-running-1",
+            status: method === "_test/watchdog-tool-complete" ? "completed" : "in_progress",
+            rawOutput: "tool progress",
+          },
+        })
+        .pipe(Effect.as({}));
+    }
     if (method === "_test/environment") {
       return Effect.succeed({
         inherited: process.env.T3_ACP_RUNTIME_AMBIENT === "sentinel",

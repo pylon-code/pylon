@@ -45,6 +45,7 @@ export interface AntigravityAcpRuntimeInput extends Omit<
   | "clientCapabilities"
   | "onStderr"
   | "promptInactivityTimeout"
+  | "toolInactivityTimeout"
   | "redactStderrLine"
   | "resumeMethod"
   | "transformSessionUpdate"
@@ -85,6 +86,7 @@ export const makeAntigravityAcpRuntime = Effect.fn("makeAntigravityAcpRuntime")(
       ...(isChatSession
         ? {
             promptInactivityTimeout: "5 minutes",
+            toolInactivityTimeout: "15 minutes",
             redactStderrLine: redactAntigravityStderrLine,
           }
         : {}),
