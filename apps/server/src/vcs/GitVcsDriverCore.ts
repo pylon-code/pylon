@@ -2355,6 +2355,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       prefix: `t3code-review-index-${process.pid}-`,
     });
     const indexExists = yield* fileSystem.exists(indexPath);
+    const indexStat = indexExists
+      ? yield* fileSystem.stat(indexPath).pipe(Effect.option)
+      : Option.none();
+    const indexTime =
+      Option.isSome(indexStat) && Option.isSome(indexStat.value.mtime)
+        ? Math.floor((indexStat.value.mtime.value.getTime() - 1) / 1000)
+        : null;
     if (indexExists) yield* fileSystem.copyFile(indexPath, tempIndexPath);
     const env = { GIT_INDEX_FILE: tempIndexPath } satisfies NodeJS.ProcessEnv;
     const tempIndexConfig = [
@@ -2385,6 +2392,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ],
       { env, stdin: `${pathsToAdd.join("\0")}\0` },
     );
+    if (indexTime !== null && indexTime > 0) {
+      yield* fileSystem.utimes(tempIndexPath, indexTime, indexTime).pipe(Effect.ignore);
+    }
     return env;
   });
 
