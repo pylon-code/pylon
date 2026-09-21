@@ -175,13 +175,11 @@ export function useSharedPullRequestSummary(
   );
 }
 
-export const observedPullRequestProvidersAtom = Atom.make<
-  ReadonlyMap<string, PullRequestProviderSummary>
->(new Map()).pipe(Atom.withLabel("web-pull-requests:observed-providers"));
+const observedPullRequestProvidersAtom = Atom.make<ReadonlyMap<string, PullRequestProviderSummary>>(
+  new Map(),
+).pipe(Atom.withLabel("web-pull-requests:observed-providers"));
 
-export function observePullRequestProviders(
-  providers: ReadonlyArray<PullRequestProviderSummary>,
-): void {
+function observePullRequestProviders(providers: ReadonlyArray<PullRequestProviderSummary>): void {
   appAtomRegistry.modify(observedPullRequestProvidersAtom, (previous) => {
     let changed = false;
     const next = new Map(previous);
