@@ -8,9 +8,11 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -23,6 +25,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import type * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -334,6 +337,15 @@ export function makePrimeAgentAdapter(
         : Effect.succeed(ctx);
     };
 
+    const drainEventsSafely = (ctx: PrimeAgentSessionContext) =>
+      (ctx.notificationFiber
+        ? Effect.raceFirst(
+            ctx.acp.drainEvents,
+            Fiber.await(ctx.notificationFiber).pipe(Effect.asVoid),
+          )
+        : ctx.acp.drainEvents
+      ).pipe(Effect.timeoutOption(Duration.seconds(5)), Effect.asVoid);
+
     const settleActiveTurnLocked = (
       ctx: PrimeAgentSessionContext,
       turnId: TurnId,
@@ -359,7 +371,7 @@ export function makePrimeAgentAdapter(
 
         // ACP notifications and the prompt response travel on independent queues.
         // Keep the turn bound until the event consumer acknowledges this barrier.
-        yield* ctx.acp.drainEvents;
+        yield* drainEventsSafely(ctx);
 
         if (
           sessions.get(ctx.threadId) !== ctx ||
@@ -782,7 +794,7 @@ export function makePrimeAgentAdapter(
               }),
             ),
           ).pipe(
-            Effect.catch((cause) =>
+            Effect.catchCause((cause) =>
               Effect.logError("Failed to process Prime Agent runtime notification.", { cause }),
             ),
             Effect.forkChild,
@@ -993,8 +1005,37 @@ export function makePrimeAgentAdapter(
                 Effect.as({ stopReason: "cancelled" as const }),
               ),
             ).pipe(
-              Effect.mapError((error) =>
-                mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
+              Effect.catchCause((cause) =>
+                Effect.fail(
+                  Option.match(Cause.findErrorOption(cause), {
+                    onSome: (error) =>
+                      mapAcpToAdapterError(
+                        PROVIDER,
+                        input.threadId,
+                        "session/prompt",
+                        error as EffectAcpErrors.AcpError,
+                      ),
+                    onNone: () => {
+                      const squashed = Cause.squash(cause);
+                      const detail =
+                        typeof squashed === "object" && squashed !== null
+                          ? "detail" in squashed &&
+                            typeof (squashed as { detail: unknown }).detail === "string"
+                            ? (squashed as { detail: string }).detail
+                            : "message" in squashed &&
+                                typeof (squashed as { message: unknown }).message === "string"
+                              ? (squashed as { message: string }).message
+                              : String(squashed)
+                          : String(squashed);
+                      return new ProviderAdapterRequestError({
+                        provider: PROVIDER,
+                        method: "session/prompt",
+                        detail,
+                        cause,
+                      });
+                    },
+                  }),
+                ),
               ),
               Effect.exit,
             );
@@ -1005,11 +1046,18 @@ export function makePrimeAgentAdapter(
             // must not enqueue a barrier that can no longer be acknowledged.
             const promptCancelled =
               Exit.isSuccess(promptExit) && promptExit.value.stopReason === "cancelled";
-            if (!promptCancelled && !activeTurn.cancellationRequested && !ctx.stopRequested) {
-              yield* ctx.acp.drainEvents;
+            if (
+              Exit.isSuccess(promptExit) &&
+              !promptCancelled &&
+              !activeTurn.cancellationRequested &&
+              !ctx.stopRequested
+            ) {
+              yield* drainEventsSafely(ctx);
             }
             const terminal =
-              activeTurn.terminalQuiescenceExpected && !promptCancelled
+              Exit.isSuccess(promptExit) &&
+              activeTurn.terminalQuiescenceExpected &&
+              !promptCancelled
                 ? yield* Effect.raceFirst(
                     Deferred.await(activeTurn.terminalQuiescence),
                     Deferred.await(activeTurn.cancellation).pipe(
@@ -1055,12 +1103,22 @@ export function makePrimeAgentAdapter(
           });
 
           const worker = yield* restore(promptEffect).pipe(
-            Effect.catch((error) =>
+            Effect.catchCause((cause) =>
               Effect.gen(function* () {
+                const failure = Cause.squash(cause);
+                const errorMessage =
+                  typeof failure === "object" && failure !== null
+                    ? "detail" in failure &&
+                      typeof (failure as { detail: unknown }).detail === "string"
+                      ? (failure as { detail: string }).detail
+                      : "message" in failure &&
+                          typeof (failure as { message: unknown }).message === "string"
+                        ? (failure as { message: string }).message
+                        : String(failure)
+                    : String(failure);
                 yield* settleActiveTurn(ctx, turnId, {
                   state: "failed",
-                  errorMessage:
-                    error._tag === "ProviderAdapterRequestError" ? error.detail : error.message,
+                  errorMessage,
                 });
                 // Admission succeeded and the runtime event stream already
                 // carries the mapped prompt failure. Returning the admitted turn
