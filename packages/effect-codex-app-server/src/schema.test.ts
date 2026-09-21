@@ -260,3 +260,88 @@ it("accepts account plans Codex has not published yet", () => {
     true,
   );
 });
+
+it("accepts hook event names and handler types Codex has not published yet", () => {
+  for (const eventName of ["preToolUse", "interrupt", "future_hook_event"]) {
+    assert.equal(Schema.is(CodexSchema.ServerNotification__HookEventName)(eventName), true);
+    assert.equal(Schema.is(CodexSchema.V2HookStartedNotification__HookEventName)(eventName), true);
+    assert.equal(
+      Schema.is(CodexSchema.V2HookCompletedNotification__HookEventName)(eventName),
+      true,
+    );
+    assert.equal(Schema.is(CodexSchema.V2HooksListResponse__HookEventName)(eventName), true);
+    assert.equal(Schema.is(CodexSchema.V2PluginReadResponse__HookEventName)(eventName), true);
+  }
+
+  for (const handlerType of ["command", "mcpTool", "future_handler_type"]) {
+    assert.equal(Schema.is(CodexSchema.ServerNotification__HookHandlerType)(handlerType), true);
+    assert.equal(
+      Schema.is(CodexSchema.V2HookStartedNotification__HookHandlerType)(handlerType),
+      true,
+    );
+    assert.equal(
+      Schema.is(CodexSchema.V2HookCompletedNotification__HookHandlerType)(handlerType),
+      true,
+    );
+    assert.equal(Schema.is(CodexSchema.V2HooksListResponse__HookHandlerType)(handlerType), true);
+  }
+});
+
+it("accepts CodexErrorInfo strings Codex has not published yet across all responses and notifications", () => {
+  const errorSchemas = [
+    CodexSchema.ServerNotification__CodexErrorInfo,
+    CodexSchema.V2ErrorNotification__CodexErrorInfo,
+    CodexSchema.V2ReviewStartResponse__CodexErrorInfo,
+    CodexSchema.V2ThreadForkResponse__CodexErrorInfo,
+    CodexSchema.V2ThreadListResponse__CodexErrorInfo,
+    CodexSchema.V2ThreadMetadataUpdateResponse__CodexErrorInfo,
+    CodexSchema.V2ThreadReadResponse__CodexErrorInfo,
+    CodexSchema.V2ThreadResumeResponse__CodexErrorInfo,
+    CodexSchema.V2ThreadRollbackResponse__CodexErrorInfo,
+    CodexSchema.V2ThreadStartedNotification__CodexErrorInfo,
+    CodexSchema.V2ThreadStartResponse__CodexErrorInfo,
+    CodexSchema.V2ThreadUnarchiveResponse__CodexErrorInfo,
+    CodexSchema.V2TurnCompletedNotification__CodexErrorInfo,
+    CodexSchema.V2TurnStartedNotification__CodexErrorInfo,
+    CodexSchema.V2TurnStartResponse__CodexErrorInfo,
+  ];
+
+  for (const schema of errorSchemas) {
+    assert.equal(Schema.is(schema)("contextWindowExceeded"), true);
+    assert.equal(Schema.is(schema)("misalignmentPolicyViolation"), true);
+    assert.equal(Schema.is(schema)("rateLimitExceeded"), true);
+    assert.equal(Schema.is(schema)("unrecognised_future_error_string"), true);
+    assert.equal(Schema.is(schema)({ httpConnectionFailed: { httpStatusCode: 502 } }), true);
+    assert.equal(Schema.is(schema)(123), false);
+  }
+
+  // Verify notifications and responses with unknown error variants decode successfully
+  assert.equal(
+    isTurnCompletedNotification({
+      threadId: "thread-1",
+      turn: {
+        error: {
+          codexErrorInfo: "unrecognised_future_error_string",
+          message: "A future policy violation occurred",
+        },
+        id: "turn-1",
+        items: [],
+        status: "failed",
+      },
+    }),
+    true,
+  );
+
+  assert.equal(
+    Schema.is(CodexSchema.V2ErrorNotification)({
+      error: {
+        codexErrorInfo: "unrecognised_future_error_string",
+        message: "A future error occurred",
+      },
+      threadId: "thread-1",
+      turnId: "turn-1",
+      willRetry: false,
+    }),
+    true,
+  );
+});

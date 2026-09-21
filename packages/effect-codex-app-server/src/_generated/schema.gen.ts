@@ -2125,37 +2125,14 @@ export const ServerNotification__GuardianWarningNotification = Schema.Struct({
   threadId: Schema.String.annotate({ description: "Thread target for the guardian warning." }),
 });
 
-export type ServerNotification__HookEventName =
-  | "preToolUse"
-  | "permissionRequest"
-  | "postToolUse"
-  | "preCompact"
-  | "postCompact"
-  | "sessionStart"
-  | "sessionEnd"
-  | "userPromptSubmit"
-  | "subagentStart"
-  | "subagentStop"
-  | "stop";
-export const ServerNotification__HookEventName = Schema.Literals([
-  "preToolUse",
-  "permissionRequest",
-  "postToolUse",
-  "preCompact",
-  "postCompact",
-  "sessionStart",
-  "sessionEnd",
-  "userPromptSubmit",
-  "subagentStart",
-  "subagentStop",
-  "stop",
-]);
+export type ServerNotification__HookEventName = string;
+export const ServerNotification__HookEventName = Schema.String;
 
 export type ServerNotification__HookExecutionMode = "sync" | "async";
 export const ServerNotification__HookExecutionMode = Schema.Literals(["sync", "async"]);
 
-export type ServerNotification__HookHandlerType = "command" | "prompt" | "agent";
-export const ServerNotification__HookHandlerType = Schema.Literals(["command", "prompt", "agent"]);
+export type ServerNotification__HookHandlerType = string;
+export const ServerNotification__HookHandlerType = Schema.String;
 
 export type ServerNotification__HookOutputEntryKind =
   | "warning"
@@ -4177,41 +4154,14 @@ export const V2HookCompletedNotification__AbsolutePathBuf = Schema.String.annota
     "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
 });
 
-export type V2HookCompletedNotification__HookEventName =
-  | "preToolUse"
-  | "permissionRequest"
-  | "postToolUse"
-  | "preCompact"
-  | "postCompact"
-  | "sessionStart"
-  | "sessionEnd"
-  | "userPromptSubmit"
-  | "subagentStart"
-  | "subagentStop"
-  | "stop";
-export const V2HookCompletedNotification__HookEventName = Schema.Literals([
-  "preToolUse",
-  "permissionRequest",
-  "postToolUse",
-  "preCompact",
-  "postCompact",
-  "sessionStart",
-  "sessionEnd",
-  "userPromptSubmit",
-  "subagentStart",
-  "subagentStop",
-  "stop",
-]);
+export type V2HookCompletedNotification__HookEventName = string;
+export const V2HookCompletedNotification__HookEventName = Schema.String;
 
 export type V2HookCompletedNotification__HookExecutionMode = "sync" | "async";
 export const V2HookCompletedNotification__HookExecutionMode = Schema.Literals(["sync", "async"]);
 
-export type V2HookCompletedNotification__HookHandlerType = "command" | "prompt" | "agent";
-export const V2HookCompletedNotification__HookHandlerType = Schema.Literals([
-  "command",
-  "prompt",
-  "agent",
-]);
+export type V2HookCompletedNotification__HookHandlerType = string;
+export const V2HookCompletedNotification__HookHandlerType = Schema.String;
 
 export type V2HookCompletedNotification__HookOutputEntryKind =
   | "warning"
@@ -4259,34 +4209,11 @@ export const V2HooksListResponse__HookErrorInfo = Schema.Struct({
   path: Schema.String,
 });
 
-export type V2HooksListResponse__HookEventName =
-  | "preToolUse"
-  | "permissionRequest"
-  | "postToolUse"
-  | "preCompact"
-  | "postCompact"
-  | "sessionStart"
-  | "sessionEnd"
-  | "userPromptSubmit"
-  | "subagentStart"
-  | "subagentStop"
-  | "stop";
-export const V2HooksListResponse__HookEventName = Schema.Literals([
-  "preToolUse",
-  "permissionRequest",
-  "postToolUse",
-  "preCompact",
-  "postCompact",
-  "sessionStart",
-  "sessionEnd",
-  "userPromptSubmit",
-  "subagentStart",
-  "subagentStop",
-  "stop",
-]);
+export type V2HooksListResponse__HookEventName = string;
+export const V2HooksListResponse__HookEventName = Schema.String;
 
-export type V2HooksListResponse__HookHandlerType = "command" | "prompt" | "agent";
-export const V2HooksListResponse__HookHandlerType = Schema.Literals(["command", "prompt", "agent"]);
+export type V2HooksListResponse__HookHandlerType = string;
+export const V2HooksListResponse__HookHandlerType = Schema.String;
 
 export type V2HooksListResponse__HookSource =
   | "system"
@@ -4328,41 +4255,14 @@ export const V2HookStartedNotification__AbsolutePathBuf = Schema.String.annotate
     "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
 });
 
-export type V2HookStartedNotification__HookEventName =
-  | "preToolUse"
-  | "permissionRequest"
-  | "postToolUse"
-  | "preCompact"
-  | "postCompact"
-  | "sessionStart"
-  | "sessionEnd"
-  | "userPromptSubmit"
-  | "subagentStart"
-  | "subagentStop"
-  | "stop";
-export const V2HookStartedNotification__HookEventName = Schema.Literals([
-  "preToolUse",
-  "permissionRequest",
-  "postToolUse",
-  "preCompact",
-  "postCompact",
-  "sessionStart",
-  "sessionEnd",
-  "userPromptSubmit",
-  "subagentStart",
-  "subagentStop",
-  "stop",
-]);
+export type V2HookStartedNotification__HookEventName = string;
+export const V2HookStartedNotification__HookEventName = Schema.String;
 
 export type V2HookStartedNotification__HookExecutionMode = "sync" | "async";
 export const V2HookStartedNotification__HookExecutionMode = Schema.Literals(["sync", "async"]);
 
-export type V2HookStartedNotification__HookHandlerType = "command" | "prompt" | "agent";
-export const V2HookStartedNotification__HookHandlerType = Schema.Literals([
-  "command",
-  "prompt",
-  "agent",
-]);
+export type V2HookStartedNotification__HookHandlerType = string;
+export const V2HookStartedNotification__HookHandlerType = Schema.String;
 
 export type V2HookStartedNotification__HookOutputEntryKind =
   | "warning"
@@ -5506,31 +5406,8 @@ export const V2PluginReadResponse__AppTemplateUnavailableReason = Schema.Literal
   "NO_ACTIVE_WORKSPACE",
 ]);
 
-export type V2PluginReadResponse__HookEventName =
-  | "preToolUse"
-  | "permissionRequest"
-  | "postToolUse"
-  | "preCompact"
-  | "postCompact"
-  | "sessionStart"
-  | "sessionEnd"
-  | "userPromptSubmit"
-  | "subagentStart"
-  | "subagentStop"
-  | "stop";
-export const V2PluginReadResponse__HookEventName = Schema.Literals([
-  "preToolUse",
-  "permissionRequest",
-  "postToolUse",
-  "preCompact",
-  "postCompact",
-  "sessionStart",
-  "sessionEnd",
-  "userPromptSubmit",
-  "subagentStart",
-  "subagentStop",
-  "stop",
-]);
+export type V2PluginReadResponse__HookEventName = string;
+export const V2PluginReadResponse__HookEventName = Schema.String;
 
 export type V2PluginReadResponse__PluginAuthPolicy = "ON_INSTALL" | "ON_USE";
 export const V2PluginReadResponse__PluginAuthPolicy = Schema.Literals(["ON_INSTALL", "ON_USE"]);
@@ -12404,17 +12281,7 @@ export const ServerNotification__ModelVerificationNotification = Schema.Struct({
 });
 
 export type ServerNotification__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -12426,19 +12293,7 @@ export type ServerNotification__CodexErrorInfo =
     };
 export const ServerNotification__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -13611,17 +13466,7 @@ export const V2ConfigWriteResponse__ConfigLayerSource = Schema.Union(
 );
 
 export type V2ErrorNotification__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -13633,19 +13478,7 @@ export type V2ErrorNotification__CodexErrorInfo =
     };
 export const V2ErrorNotification__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -15493,17 +15326,7 @@ export const V2ReviewStartResponse__MemoryCitation = Schema.Struct({
 });
 
 export type V2ReviewStartResponse__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -15515,19 +15338,7 @@ export type V2ReviewStartResponse__CodexErrorInfo =
     };
 export const V2ReviewStartResponse__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -15762,19 +15573,7 @@ export const V2ThreadForkResponse__MemoryCitation = Schema.Struct({
 });
 
 export type V2ThreadForkResponse__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "rateLimitExceeded"
-  | "misalignmentPolicyViolation"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -15786,21 +15585,7 @@ export type V2ThreadForkResponse__CodexErrorInfo =
     };
 export const V2ThreadForkResponse__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "rateLimitExceeded",
-      "misalignmentPolicyViolation",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -16113,17 +15898,7 @@ export const V2ThreadListResponse__MemoryCitation = Schema.Struct({
 });
 
 export type V2ThreadListResponse__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -16135,19 +15910,7 @@ export type V2ThreadListResponse__CodexErrorInfo =
     };
 export const V2ThreadListResponse__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -16391,17 +16154,7 @@ export const V2ThreadMetadataUpdateResponse__MemoryCitation = Schema.Struct({
 });
 
 export type V2ThreadMetadataUpdateResponse__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -16413,19 +16166,7 @@ export type V2ThreadMetadataUpdateResponse__CodexErrorInfo =
     };
 export const V2ThreadMetadataUpdateResponse__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -16673,19 +16414,7 @@ export const V2ThreadReadResponse__MemoryCitation = Schema.Struct({
 });
 
 export type V2ThreadReadResponse__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "rateLimitExceeded"
-  | "misalignmentPolicyViolation"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -16697,21 +16426,7 @@ export type V2ThreadReadResponse__CodexErrorInfo =
     };
 export const V2ThreadReadResponse__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "rateLimitExceeded",
-      "misalignmentPolicyViolation",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -17030,19 +16745,7 @@ export const V2ThreadResumeResponse__MemoryCitation = Schema.Struct({
 });
 
 export type V2ThreadResumeResponse__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "rateLimitExceeded"
-  | "misalignmentPolicyViolation"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -17054,21 +16757,7 @@ export type V2ThreadResumeResponse__CodexErrorInfo =
     };
 export const V2ThreadResumeResponse__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "rateLimitExceeded",
-      "misalignmentPolicyViolation",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -17312,19 +17001,7 @@ export const V2ThreadRollbackResponse__MemoryCitation = Schema.Struct({
 });
 
 export type V2ThreadRollbackResponse__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "rateLimitExceeded"
-  | "misalignmentPolicyViolation"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -17336,21 +17013,7 @@ export type V2ThreadRollbackResponse__CodexErrorInfo =
     };
 export const V2ThreadRollbackResponse__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "rateLimitExceeded",
-      "misalignmentPolicyViolation",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -17656,17 +17319,7 @@ export const V2ThreadStartedNotification__MemoryCitation = Schema.Struct({
 });
 
 export type V2ThreadStartedNotification__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -17678,19 +17331,7 @@ export type V2ThreadStartedNotification__CodexErrorInfo =
     };
 export const V2ThreadStartedNotification__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -17938,17 +17579,7 @@ export const V2ThreadStartResponse__MemoryCitation = Schema.Struct({
 });
 
 export type V2ThreadStartResponse__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -17960,19 +17591,7 @@ export type V2ThreadStartResponse__CodexErrorInfo =
     };
 export const V2ThreadStartResponse__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -18256,17 +17875,7 @@ export const V2ThreadUnarchiveResponse__MemoryCitation = Schema.Struct({
 });
 
 export type V2ThreadUnarchiveResponse__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -18278,19 +17887,7 @@ export type V2ThreadUnarchiveResponse__CodexErrorInfo =
     };
 export const V2ThreadUnarchiveResponse__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -18538,19 +18135,7 @@ export const V2TurnCompletedNotification__MemoryCitation = Schema.Struct({
 });
 
 export type V2TurnCompletedNotification__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "rateLimitExceeded"
-  | "misalignmentPolicyViolation"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -18562,21 +18147,7 @@ export type V2TurnCompletedNotification__CodexErrorInfo =
     };
 export const V2TurnCompletedNotification__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "rateLimitExceeded",
-      "misalignmentPolicyViolation",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -18800,17 +18371,7 @@ export const V2TurnStartedNotification__MemoryCitation = Schema.Struct({
 });
 
 export type V2TurnStartedNotification__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -18822,19 +18383,7 @@ export type V2TurnStartedNotification__CodexErrorInfo =
     };
 export const V2TurnStartedNotification__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
@@ -19169,17 +18718,7 @@ export const V2TurnStartResponse__MemoryCitation = Schema.Struct({
 });
 
 export type V2TurnStartResponse__CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "other"
+  | string
   | { readonly httpConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamConnectionFailed: { readonly httpStatusCode?: number | null } }
   | { readonly responseStreamDisconnected: { readonly httpStatusCode?: number | null } }
@@ -19191,19 +18730,7 @@ export type V2TurnStartResponse__CodexErrorInfo =
     };
 export const V2TurnStartResponse__CodexErrorInfo = Schema.Union(
   [
-    Schema.Literals([
-      "contextWindowExceeded",
-      "sessionBudgetExceeded",
-      "usageLimitExceeded",
-      "serverOverloaded",
-      "cyberPolicy",
-      "internalServerError",
-      "unauthorized",
-      "badRequest",
-      "threadRollbackFailed",
-      "sandboxError",
-      "other",
-    ]),
+    Schema.String,
     Schema.Struct({
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(

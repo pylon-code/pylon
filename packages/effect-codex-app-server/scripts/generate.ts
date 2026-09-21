@@ -182,62 +182,41 @@ const Codex0150DefinitionSchemas: Record<string, Schema.Json> = {
     type: "string",
     enum: ["started", "interacted", "interrupted", "completed"],
   },
+  // Deliberately open, like PlanType. Hook events and handlers evolve across
+  // Codex releases (e.g. `interrupt` and `mcpTool` in 0.150). Closed literals
+  // cause hook notifications to fail schema decoding and drop silently.
+  HookEventName: {
+    type: "string",
+  },
+  HookHandlerType: {
+    type: "string",
+  },
 };
 
-// Pinned protocol JSON omits later CodexErrorInfo variants. Keep historical
-// thread payloads decodable; do not fold unknown values into "other".
-const CodexErrorInfoCompatibilityValues = [
-  "rateLimitExceeded",
-  "misalignmentPolicyViolation",
-] as const;
-
-const CodexErrorInfoCompatibilityExports = new Set([
-  "V2ThreadReadResponse",
-  "V2ThreadResumeResponse",
-  "V2ThreadRollbackResponse",
-  "V2ThreadForkResponse",
-  "V2TurnCompletedNotification",
-]);
-
+// Deliberately keep the string variant open across all exports for CodexErrorInfo.
+// Pinned protocol JSON omits later variants (e.g. rateLimitExceeded,
+// misalignmentPolicyViolation) and will omit future variants. An unrecognised error
+// variant must not take down the provider or be silently swallowed.
 function applyCodex0151DefinitionCompatibility(
-  exportName: string,
+  _exportName: string,
   definitionName: string,
   definitionSchema: Schema.Json,
 ): Schema.Json {
-  if (
-    !CodexErrorInfoCompatibilityExports.has(exportName) ||
-    definitionName !== "CodexErrorInfo" ||
-    typeof definitionSchema !== "object"
-  ) {
+  if (definitionName !== "CodexErrorInfo" || typeof definitionSchema !== "object") {
     return definitionSchema;
   }
 
   const schema = definitionSchema as {
-    readonly oneOf?: ReadonlyArray<{ readonly enum?: ReadonlyArray<string> }>;
+    readonly oneOf?: ReadonlyArray<Schema.Json>;
   };
   const [firstVariant, ...remainingVariants] = schema.oneOf ?? [];
-  const currentEnum = firstVariant?.enum;
-  if (!currentEnum) {
+  if (!firstVariant) {
     return definitionSchema;
   }
-
-  const missingValues = CodexErrorInfoCompatibilityValues.filter(
-    (value) => !currentEnum.includes(value),
-  );
-  if (missingValues.length === 0) {
-    return definitionSchema;
-  }
-
-  const enumValues = [...currentEnum];
-  const otherIndex = enumValues.indexOf("other");
-  const nextEnum =
-    otherIndex === -1
-      ? [...enumValues, ...missingValues]
-      : [...enumValues.slice(0, otherIndex), ...missingValues, ...enumValues.slice(otherIndex)];
 
   return {
     ...definitionSchema,
-    oneOf: [{ ...firstVariant, enum: nextEnum }, ...remainingVariants],
+    oneOf: [{ type: "string" }, ...remainingVariants],
   };
 }
 
@@ -706,6 +685,32 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
     );
 
     for (const [definitionName, definitionSchema] of Object.entries(parsed.definitions ?? {})) {
+      const override = Codex0150DefinitionSchemas[definitionName];
+      if (
+        override &&
+        typeof override === "object" &&
+        "enum" in override &&
+        Array.isArray((override as { readonly enum?: unknown }).enum)
+      ) {
+        const upstreamEnum =
+          typeof definitionSchema === "object" &&
+          definitionSchema !== null &&
+          "enum" in definitionSchema &&
+          Array.isArray((definitionSchema as { readonly enum?: unknown }).enum)
+            ? (definitionSchema as { readonly enum?: ReadonlyArray<string> }).enum
+            : undefined;
+        if (upstreamEnum) {
+          const overrideEnumSet = new Set(
+            (override as { readonly enum: ReadonlyArray<string> }).enum,
+          );
+          const missing = upstreamEnum.filter((value) => !overrideEnumSet.has(value));
+          if (missing.length > 0) {
+            throw new Error(
+              `Override enum "${definitionName}" is not a superset of upstream enum in ${file.exportName}. Missing: ${missing.join(", ")}`,
+            );
+          }
+        }
+      }
       const compatibleDefinitionSchema =
         Codex0150DefinitionSchemas[definitionName] ??
         applyCodex0151DefinitionCompatibility(file.exportName, definitionName, definitionSchema);
