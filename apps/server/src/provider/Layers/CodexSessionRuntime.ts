@@ -1529,7 +1529,7 @@ export const makeCodexSessionRuntime = (
 
     const updateCollabChildMetadata = (
       agentThreadId: string,
-      update: { readonly model?: string; readonly effort?: string },
+      update: { readonly model?: string; readonly effort?: string | null },
       overwriteKnown: boolean,
     ) =>
       Ref.modify(collabChildMetadataRef, (current) => {
@@ -1541,8 +1541,14 @@ export const makeCodexSessionRuntime = (
         };
         const model =
           update.model && (overwriteKnown || !previous.model) ? update.model : previous.model;
-        const effort =
-          update.effort && (overwriteKnown || !previous.effort) ? update.effort : previous.effort;
+        const effort = (() => {
+          if (update.effort !== undefined) {
+            if (overwriteKnown || !previous.effort) {
+              return update.effort ?? undefined;
+            }
+          }
+          return previous.effort;
+        })();
         const changed = model !== previous.model || effort !== previous.effort;
         if (!changed) {
           return [false, current] as const;
@@ -1554,17 +1560,11 @@ export const makeCodexSessionRuntime = (
 
     const markCollabChildClosed = (agentThreadId: string) =>
       Ref.update(collabChildMetadataRef, (current) => {
-        const previous = current.get(agentThreadId) ?? {
-          model: undefined,
-          effort: undefined,
-          lookupStarted: false,
-          closed: false,
-        };
-        if (previous.closed) {
+        if (!current.has(agentThreadId)) {
           return current;
         }
         const next = new Map(current);
-        next.set(agentThreadId, { ...previous, closed: true });
+        next.delete(agentThreadId);
         return next;
       });
 
@@ -1575,7 +1575,11 @@ export const makeCodexSessionRuntime = (
           return current;
         }
         const next = new Map(current);
-        next.set(agentThreadId, { ...previous, closed: false });
+        next.set(agentThreadId, {
+          ...previous,
+          closed: false,
+          ...(previous.model ? {} : { lookupStarted: false }),
+        });
         return next;
       });
 
@@ -1610,12 +1614,22 @@ export const makeCodexSessionRuntime = (
           return [false, current] as const;
         }
         const next = new Map(current);
-        next.set(agentThreadId, { ...previous, lookupStarted: true });
+        next.set(agentThreadId, { ...previous, lookupStarted: true, closed: false });
         return [true, next] as const;
       });
       if (!shouldStart) {
         return;
       }
+
+      const resetLookupStarted = Ref.update(collabChildMetadataRef, (current) => {
+        const previous = current.get(agentThreadId);
+        if (!previous || !previous.lookupStarted || previous.model) {
+          return current;
+        }
+        const next = new Map(current);
+        next.set(agentThreadId, { ...previous, lookupStarted: false });
+        return next;
+      });
 
       // The child is already loaded. This rejoins it without starting a turn,
       // and excludeTurns avoids loading or replaying its history.
@@ -1627,20 +1641,25 @@ export const makeCodexSessionRuntime = (
           Effect.flatMap((response) =>
             Effect.gen(function* () {
               if (response.thread.id !== agentThreadId) {
+                yield* resetLookupStarted;
                 return;
               }
               const child = (yield* Ref.get(collabChildAgentsRef)).get(agentThreadId);
               const metadata = (yield* Ref.get(collabChildMetadataRef)).get(agentThreadId);
-              if (!child || metadata?.closed) {
+              if (!child || !metadata || metadata.closed) {
                 return;
               }
               const model = nonEmptyMetadataValue(response.model);
               const effort = nonEmptyMetadataValue(response.reasoningEffort);
+              if (!model) {
+                yield* resetLookupStarted;
+                return;
+              }
               const changed = yield* updateCollabChildMetadata(
                 agentThreadId,
                 {
-                  ...(model ? { model } : {}),
-                  ...(effort ? { effort } : {}),
+                  model,
+                  ...(effort !== undefined ? { effort } : {}),
                 },
                 false,
               );
@@ -1649,7 +1668,7 @@ export const makeCodexSessionRuntime = (
               }
             }),
           ),
-          Effect.catch(() => Effect.void),
+          Effect.catch(() => resetLookupStarted),
           Effect.forkIn(runtimeScope),
         );
     });
@@ -1736,6 +1755,7 @@ export const makeCodexSessionRuntime = (
               ...(state.parentThreadId ? { parentThreadId: state.parentThreadId } : {}),
             },
           });
+          yield* markCollabChildOpen(thread.id);
           yield* startCollabChildMetadataLookup(thread.id);
           return true;
         }
@@ -1800,6 +1820,7 @@ export const makeCodexSessionRuntime = (
             },
           });
           if (item.kind === "started") {
+            yield* markCollabChildOpen(item.agentThreadId);
             yield* startCollabChildMetadataLookup(item.agentThreadId);
           }
           return true;
@@ -1825,18 +1846,18 @@ export const makeCodexSessionRuntime = (
         ) {
           const model = nonEmptyMetadataValue(
             notification.method === "thread/settings/updated"
-              ? notification.params.threadSettings.model
+              ? notification.params.threadSettings?.model
               : notification.params.toModel,
           );
           const effort =
             notification.method === "thread/settings/updated"
-              ? nonEmptyMetadataValue(notification.params.threadSettings.effort)
+              ? (nonEmptyMetadataValue(notification.params.threadSettings?.effort) ?? null)
               : undefined;
           const changed = yield* updateCollabChildMetadata(
             providerConversationId,
             {
               ...(model ? { model } : {}),
-              ...(effort ? { effort } : {}),
+              ...(effort !== undefined ? { effort } : {}),
             },
             true,
           );
@@ -1864,6 +1885,12 @@ export const makeCodexSessionRuntime = (
         switch (notification.method) {
           case "turn/started": {
             yield* markCollabChildOpen(child.agentThreadId);
+            const currentMetadata = (yield* Ref.get(collabChildMetadataRef)).get(
+              child.agentThreadId,
+            );
+            if (!currentMetadata?.model) {
+              yield* startCollabChildMetadataLookup(child.agentThreadId);
+            }
             const childTurnId =
               typeof (notification.params as { turn?: { id?: unknown } }).turn?.id === "string"
                 ? ((notification.params as { turn: { id: string } }).turn.id as string)
@@ -2087,6 +2114,9 @@ export const makeCodexSessionRuntime = (
                 next.delete(foreignThreadId);
                 return next;
               });
+              if (notification.method === "thread/closed") {
+                yield* markCollabChildClosed(foreignThreadId);
+              }
             }
           }
           yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);

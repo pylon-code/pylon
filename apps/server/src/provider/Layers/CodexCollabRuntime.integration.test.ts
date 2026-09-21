@@ -28,6 +28,9 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 const ROOT = wireFixture.rootThreadId;
 const [CHILD_A, CHILD_B] = wireFixture.childThreadIds as [string, string];
+const CHILD_A_TURN_STARTED = wireFixture.notifications.find(
+  (entry) => entry.method === "turn/started" && entry.params.threadId === CHILD_A,
+);
 const CHILD_A_TURN_ID = (
   wireFixture.notifications.find(
     (entry) => entry.method === "turn/started" && entry.params.threadId === CHILD_A,
@@ -136,7 +139,7 @@ function capturedSpawnedThread(childId = CHILD_A) {
   };
 }
 
-function childSettings(threadId: string, model: string, effort: string) {
+function childSettings(threadId: string, model: string, effort: string | null = null) {
   return {
     method: "thread/settings/updated",
     params: {
@@ -344,6 +347,128 @@ describe("CodexSessionRuntime collab integration", () => {
         "child metadata notifications must not leak to the parent path",
       );
       assert.equal(readRecordedRequests().length, 1);
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "clears child reasoning effort when thread settings update omits or clears effort",
+    () =>
+      Effect.gen(function* () {
+        const script = {
+          rootThreadId: ROOT,
+          recordRequests: true,
+          notifications: [
+            capturedStartedActivity(),
+            childSettings(CHILD_A, "model-with-effort", "high"),
+            childSettings(CHILD_A, "model-without-effort", null),
+          ],
+          childResumeSnapshots: {
+            [CHILD_A]: { model: "model-initial", reasoningEffort: "medium" },
+          },
+        };
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
+        NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            NodeFS.rmSync(scriptPath, { force: true });
+            NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+          }),
+        );
+
+        const runtime = yield* makeCodexSessionRuntime({
+          threadId: ThreadId.make("thread-collab-cleared-effort"),
+          binaryPath: peerPath,
+          cwd: NodeOS.tmpdir(),
+          runtimeMode: "full-access",
+          environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+        });
+        const metadataUpdatesFiber = yield* runtime.events.pipe(
+          Stream.filter(
+            (event) =>
+              event.method === "collabAgent/metadataUpdated" &&
+              (event.payload as { agentThreadId?: string }).agentThreadId === CHILD_A,
+          ),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+
+        yield* runtime.start();
+        yield* runtime.sendTurn({ input: "test clearing effort" });
+        const events = Array.from(yield* Fiber.join(metadataUpdatesFiber));
+        assert.equal(events.length, 2);
+        assert.deepInclude(events[0]?.payload, {
+          agentThreadId: CHILD_A,
+          model: "model-with-effort",
+          effort: "high",
+        });
+        assert.deepInclude(events[1]?.payload, {
+          agentThreadId: CHILD_A,
+          model: "model-without-effort",
+        });
+        assert.isUndefined((events[1]?.payload as { effort?: string }).effort);
+
+        yield* runtime.close;
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("retries child model lookup on turn start after initial lookup failed", () =>
+    Effect.gen(function* () {
+      const script = {
+        rootThreadId: ROOT,
+        recordRequests: true,
+        notifications: [capturedStartedActivity()],
+        childResumeSnapshots: {
+          [CHILD_A]: [
+            {
+              error: "transient network failure",
+              notifications: [CHILD_A_TURN_STARTED],
+            },
+            { model: "gpt-5.6-luna", reasoningEffort: "low" },
+          ],
+        },
+      };
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
+      NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          NodeFS.rmSync(scriptPath, { force: true });
+          NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+        }),
+      );
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-collab-retry-lookup"),
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      });
+      const metadataFiber = yield* runtime.events.pipe(
+        Stream.filter(
+          (event) =>
+            event.method === "collabAgent/metadataUpdated" &&
+            (event.payload as { agentThreadId?: string }).agentThreadId === CHILD_A,
+        ),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+
+      yield* runtime.start();
+      yield* runtime.sendTurn({ input: "start one child with retry" });
+      const events = Array.from(yield* Fiber.join(metadataFiber));
+      assert.equal(events.length, 1);
+      assert.deepInclude(events[0]?.payload, {
+        agentThreadId: CHILD_A,
+        model: "gpt-5.6-luna",
+        effort: "low",
+      });
+      assert.equal(readRecordedRequests().length, 2);
 
       yield* runtime.close;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
