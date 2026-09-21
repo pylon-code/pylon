@@ -594,6 +594,17 @@ function workEntryIsActiveTurnActivity(entry: WorkLogEntry): boolean {
  * a "Worked for ..." row. A single ordinary activity after that message joins
  * the fold, while larger groups and failures stay visible as a trailing summary.
  */
+function isBackgroundTaskWorkEntry(entry: WorkLogEntry): boolean {
+  return (
+    entry.isBackgroundTask === true ||
+    entry.toolCallId?.startsWith("antigravity-task:") === true ||
+    entry.toolTitle === "Background command result" ||
+    entry.label === "Background command result" ||
+    entry.sourceActivityKind === "task.progress" ||
+    entry.sourceActivityKind === "task.completed"
+  );
+}
+
 function deriveTurnFolds(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   terminalAssistantMessageIds: ReadonlySet<string>;
@@ -677,6 +688,10 @@ function deriveTurnFolds(input: {
         )
       : undefined;
 
+    const hasBackgroundTaskActivity = group.entries.some(
+      (entry) => entry.kind === "work" && isBackgroundTaskWorkEntry(entry.entry),
+    );
+
     const hiddenEntryIds = new Set<string>();
     const terminalEntryIndex = group.terminalEntry
       ? group.entries.findIndex((entry) => entry.id === group.terminalEntry?.id)
@@ -684,6 +699,21 @@ function deriveTurnFolds(input: {
     for (const [index, entry] of group.entries.entries()) {
       if (entry.id === group.terminalEntry?.id || entry.id === firstAssistantEntry?.id) {
         continue;
+      }
+      if (entry.kind === "message") {
+        const followsWork = group.entries.slice(0, index).some((e) => e.kind === "work");
+        const followedByNonBackgroundTaskWork = group.entries
+          .slice(index + 1)
+          .some((e) => e.kind === "work" && !isBackgroundTaskWorkEntry(e.entry));
+        if (followsWork || !followedByNonBackgroundTaskWork) {
+          // If the message came after prior work, or if it was not followed by
+          // any active/synchronous tool calls (e.g. it answered the user's prompt
+          // before an asynchronous background task completed), it is substantive
+          // response text and must never be folded into the work disclosure.
+          if (hasBackgroundTaskActivity || followsWork) {
+            continue;
+          }
+        }
       }
       const isCompaction =
         entry.kind === "work" && entry.entry.sourceActivityKind === "context-compaction";

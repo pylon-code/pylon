@@ -107,6 +107,8 @@ export interface WorkLogEntry {
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
   toolCallId?: string;
+  taskId?: string;
+  isBackgroundTask?: boolean;
   /**
    * One row per workflow run or per-turn batch of direct spawns, like web's
    * "Kicked off N subagents" CTA. Mobile has no Agents sheet, so the row
@@ -1649,6 +1651,18 @@ interface ThreadFeedTurnFold {
   readonly label: string;
 }
 
+function isBackgroundTaskActivity(activity: ThreadFeedActivity): boolean {
+  return (
+    activity.workEntry.isBackgroundTask === true ||
+    activity.workEntry.toolTitle === "Background command result" ||
+    activity.workEntry.label === "Background command result" ||
+    activity.workEntry.taskId !== undefined ||
+    activity.workEntry.toolCallId?.startsWith("antigravity-task:") === true ||
+    activity.workEntry.sourceActivityKind === "task.progress" ||
+    activity.workEntry.sourceActivityKind === "task.completed"
+  );
+}
+
 function deriveThreadFeedTurnFolds(
   feed: ReadonlyArray<ThreadFeedEntry>,
   latestTurn: ThreadFeedLatestTurn | null,
@@ -1709,18 +1723,41 @@ function deriveThreadFeedTurnFolds(
 
     const firstAssistantMessageId = firstAssistantMessageIdByTurn.get(turnId);
     const terminalAssistantMessageId = terminalAssistantMessageIdByTurn.get(turnId);
+    const hasBackgroundTaskActivity = entries.some(
+      (entry) => entry.type === "activity-group" && entry.activities.some(isBackgroundTaskActivity),
+    );
     const hiddenEntryIds = new Set(
       entries
-        .filter(
-          (entry) =>
-            entry.id !== firstAssistantMessageId &&
-            entry.id !== terminalAssistantMessageId &&
-            !(
-              entry.type === "activity-group" &&
-              (isUserInputActivityGroup(entry) ||
-                entry.activities.some((activity) => activity.terminalResponseNotice === true))
-            ),
-        )
+        .filter((entry, index) => {
+          if (entry.id === firstAssistantMessageId || entry.id === terminalAssistantMessageId) {
+            return false;
+          }
+          if (entry.type === "message") {
+            const followsActivity = entries
+              .slice(0, index)
+              .some((e) => e.type === "activity-group");
+            const followedByNonBackgroundTaskActivity = entries
+              .slice(index + 1)
+              .some(
+                (e) =>
+                  e.type === "activity-group" &&
+                  e.activities.some((act) => !isBackgroundTaskActivity(act)),
+              );
+            if (followsActivity || !followedByNonBackgroundTaskActivity) {
+              if (hasBackgroundTaskActivity || followsActivity) {
+                return false;
+              }
+            }
+          }
+          if (
+            entry.type === "activity-group" &&
+            (isUserInputActivityGroup(entry) ||
+              entry.activities.some((activity) => activity.terminalResponseNotice === true))
+          ) {
+            return false;
+          }
+          return true;
+        })
         .map((entry) => entry.id),
     );
     if (hiddenEntryIds.size === 0) {
