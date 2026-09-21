@@ -11,7 +11,7 @@ import * as Path from "effect/Path";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
-import { ensureDeviceHub, isDeviceHubInstalled } from "./DeviceToolchain.ts";
+import { DEVICE_HUB_VERSION, ensureDeviceHub, isDeviceHubInstalled } from "./DeviceToolchain.ts";
 
 it.effect("failed installation cleans staging and exposes only a safe failure message", () =>
   Effect.gen(function* () {
@@ -48,7 +48,7 @@ it.effect("preserves a complete install published by another process holding the
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "pylon-device-publish-" });
-    const installDir = path.join(baseDir, "tools", "expo-device-hub", "0.9.0");
+    const installDir = path.join(baseDir, "tools", "expo-device-hub", DEVICE_HUB_VERSION);
     yield* fs.makeDirectory(path.dirname(installDir), { recursive: true });
     const release = yield* Effect.acquireRelease(
       Effect.promise(() =>
@@ -80,7 +80,7 @@ it.effect("preserves a complete install published by another process holding the
     );
     yield* fs.makeDirectory(path.dirname(entryPath), { recursive: true });
     yield* fs.writeFileString(entryPath, "published by the other process");
-    yield* fs.writeFileString(path.join(installDir, ".install-complete"), "0.9.0");
+    yield* fs.writeFileString(path.join(installDir, ".install-complete"), DEVICE_HUB_VERSION);
     yield* Effect.promise(() => release());
     yield* TestClock.adjust("1 second");
     expect((yield* Fiber.join(installed)).entryPath).toBe(entryPath);
