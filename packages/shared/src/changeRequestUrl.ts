@@ -1,4 +1,8 @@
-import type { RepositoryIdentity, ThreadLinkedPullRequest } from "@t3tools/contracts";
+import type {
+  RepositoryIdentity,
+  SourceControlProviderKind,
+  ThreadLinkedPullRequest,
+} from "@t3tools/contracts";
 import { canonicalRepositoryKey } from "./sourceControl.ts";
 
 /**
@@ -98,40 +102,93 @@ export function changeRequestUrlFor(
   }
 }
 
-/** Builds a GitHub URL that remains available when the pull request API cannot be read. */
-export function gitHubPullRequestBrowserUrl(
+export interface PullRequestBrowserUrlTarget {
+  readonly url: string;
+  readonly label: string;
+}
+
+/** Builds a provider-appropriate URL and label that remains available when the pull request API cannot be read. */
+export function fallbackPullRequestBrowserUrl(
   identity: RepositoryIdentity | null | undefined,
   repository: string,
   number: number,
-): string | null {
-  if (identity?.provider !== "github" || !Number.isSafeInteger(number) || number < 1) return null;
-  const repositoryPath = repository.split("/");
-  if (
-    repositoryPath.length !== 2 ||
-    repositoryPath.some((segment) => segment.length === 0 || segment === "." || segment === "..")
-  ) {
-    return null;
-  }
+  providerKind?: SourceControlProviderKind | string | null,
+): PullRequestBrowserUrlTarget | null {
+  const kind = (providerKind ?? identity?.provider) as SourceControlProviderKind | undefined;
+  if (!kind || kind === "unknown" || !Number.isSafeInteger(number) || number < 1) return null;
 
   let origin: string | null = null;
   try {
-    const remoteUrl = new URL(identity.locator.remoteUrl.trim());
+    const remoteUrl = new URL(identity?.locator?.remoteUrl?.trim() ?? "");
     if (remoteUrl.protocol === "http:" || remoteUrl.protocol === "https:") {
       origin = remoteUrl.origin;
     }
   } catch {
     // SCP-style remotes are read from their normalized identity below.
   }
-  const hostname = identity.canonicalKey.split("/")[0];
+  const hostname = identity?.canonicalKey?.split("/")[0];
   if (origin === null && !hostname) return null;
 
-  try {
-    const url = new URL(origin ?? `https://${hostname}`);
-    url.pathname = `/${repositoryPath.join("/")}/pull/${number}`;
-    return url.toString();
-  } catch {
-    return null;
+  const baseOrigin = origin ?? `https://${hostname}`;
+
+  switch (kind) {
+    case "github": {
+      const repositoryPath = repository.split("/");
+      if (
+        repositoryPath.length !== 2 ||
+        repositoryPath.some(
+          (segment) => segment.length === 0 || segment === "." || segment === "..",
+        )
+      ) {
+        return null;
+      }
+      try {
+        const url = new URL(baseOrigin);
+        url.pathname = `/${repositoryPath.join("/")}/pull/${number}`;
+        return { url: url.toString(), label: "Open on GitHub" };
+      } catch {
+        return null;
+      }
+    }
+    case "gitlab": {
+      try {
+        const url = new URL(baseOrigin);
+        url.pathname = `/${repository}/-/merge_requests/${number}`;
+        return { url: url.toString(), label: "Open on GitLab" };
+      } catch {
+        return null;
+      }
+    }
+    case "azure-devops": {
+      const host = hostname ?? new URL(baseOrigin).host;
+      const url = changeRequestUrlFor("azure-devops", host, repository, number);
+      return url ? { url, label: "Open on Azure DevOps" } : null;
+    }
+    case "bitbucket": {
+      try {
+        const url = new URL(baseOrigin);
+        url.pathname = `/${repository}/pull-requests/${number}`;
+        return { url: url.toString(), label: "Open on Bitbucket" };
+      } catch {
+        return null;
+      }
+    }
+    default:
+      return null;
   }
+}
+
+/** Builds a GitHub URL that remains available when the pull request API cannot be read. */
+export function gitHubPullRequestBrowserUrl(
+  identity: RepositoryIdentity | null | undefined,
+  repository: string,
+  number: number,
+  providerKind?: SourceControlProviderKind | string | null,
+): string | null {
+  const kind = providerKind ?? identity?.provider;
+  if (kind !== "github") return null;
+  const target = fallbackPullRequestBrowserUrl(identity, repository, number, "github");
+  return target?.url ?? null;
 }
 
 /**

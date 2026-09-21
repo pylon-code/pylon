@@ -12,19 +12,28 @@ import {
 } from "../ui/empty";
 import { PullRequestGlyph } from "./pullRequestIcons";
 
+export interface PullRequestExternalLink {
+  readonly url: string;
+  readonly label?: string;
+}
+
 export function PullRequestsUnavailableState({
   title = "Could not load pull requests",
   error,
   onRetry,
   refreshing = false,
   gitHubUrl,
+  externalLink,
 }: {
   title?: string;
   error: string;
   onRetry?: () => void;
   refreshing?: boolean;
   gitHubUrl?: string;
+  externalLink?: PullRequestExternalLink | null;
 }) {
+  const link = externalLink ?? (gitHubUrl ? { url: gitHubUrl, label: "Open on GitHub" } : null);
+
   return (
     <Empty className="min-h-0 justify-center-safe overflow-y-auto px-4 py-16 md:px-4 [&>*]:shrink-0">
       <EmptyMedia variant="icon">
@@ -36,7 +45,7 @@ export function PullRequestsUnavailableState({
             shows its message rather than trying to infer one from the failure text. */}
         <EmptyDescription>{error}</EmptyDescription>
       </EmptyHeader>
-      {onRetry || gitHubUrl ? (
+      {onRetry || link ? (
         <EmptyContent className="flex-row flex-wrap justify-center gap-2">
           {onRetry ? (
             <Button
@@ -50,14 +59,14 @@ export function PullRequestsUnavailableState({
               Retry
             </Button>
           ) : null}
-          {gitHubUrl ? (
+          {link ? (
             <Button
               size="sm"
               variant="outline"
-              render={<a href={gitHubUrl} target="_blank" rel="noopener noreferrer" />}
+              render={<a href={link.url} target="_blank" rel="noopener noreferrer" />}
             >
               <ExternalLinkIcon aria-hidden className="size-3.5" />
-              Open on GitHub
+              {link.label ?? "Open in browser"}
             </Button>
           ) : null}
         </EmptyContent>

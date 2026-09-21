@@ -71,7 +71,11 @@ import {
   derivePhysicalProjectKey,
   selectProjectGroupingSettings,
 } from "~/logicalProject";
-import { changeRequestRepositoryUrl, gitHubPullRequestBrowserUrl } from "~/lib/openPullRequestLink";
+import {
+  changeRequestRepositoryUrl,
+  fallbackPullRequestBrowserUrl,
+  gitHubPullRequestBrowserUrl,
+} from "~/lib/openPullRequestLink";
 import { usePreparePullRequestThreadAction } from "~/lib/sourceControlActions";
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
@@ -83,6 +87,7 @@ import { useEnvironmentQuery } from "~/state/query";
 import { useLiveRefresh } from "~/hooks/useLiveRefresh";
 import {
   pullRequestEnvironment,
+  usePullRequestProviders,
   pullRequestListEntryToSummary,
   newestPullRequestSummary,
   usePullRequestTurnRefresh,
@@ -898,12 +903,29 @@ export function PullRequestDetailPanel({
   const newThread = useNewThreadHandler();
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const unavailableGitHubUrl = useMemo(() => {
+  const observedProviders = usePullRequestProviders();
+  const unavailableFallbackLink = useMemo(() => {
     const identity = projects.find(
       (project) => project.id === reference.projectId && project.environmentId === environmentId,
     )?.repositoryIdentity;
-    return gitHubPullRequestBrowserUrl(identity, reference.repository, reference.number);
-  }, [environmentId, projects, reference.number, reference.projectId, reference.repository]);
+    const host = reference.host ?? identity?.canonicalKey?.split("/")[0];
+    const providerKind = host ? observedProviders.get(host.toLowerCase())?.kind : undefined;
+    return fallbackPullRequestBrowserUrl(
+      identity,
+      reference.repository,
+      reference.number,
+      providerKind,
+    );
+  }, [
+    environmentId,
+    observedProviders,
+    projects,
+    reference.host,
+    reference.number,
+    reference.projectId,
+    reference.repository,
+  ]);
+  const unavailableGitHubUrl = unavailableFallbackLink?.url ?? null;
   // Project settings stored the override under the sidebar group's key, which a duplicate row
   // borrows from its siblings, so the project alone does not always name the same key.
   const legacyProjectDefaultMergeMethod = useMemo(() => {
@@ -2741,6 +2763,7 @@ export function PullRequestDetailPanel({
             error={detailQuery.error}
             refreshing={detailQuery.isPending}
             onRetry={refreshDetail}
+            externalLink={unavailableFallbackLink}
             {...(unavailableGitHubUrl ? { gitHubUrl: unavailableGitHubUrl } : {})}
           />
         ) : detail ? (

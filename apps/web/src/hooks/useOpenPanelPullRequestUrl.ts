@@ -7,14 +7,15 @@ import {
   resolveDisplayedPullRequestDetail,
   resolvePullRequestReferenceHost,
 } from "../components/pullRequest/pullRequestDetail.logic";
-import { gitHubPullRequestBrowserUrl } from "../lib/openPullRequestLink";
+import { fallbackPullRequestBrowserUrl } from "../lib/openPullRequestLink";
 import { selectActiveRightPanelSurface, useRightPanelStore } from "../rightPanelStore";
 import { useProject } from "../state/entities";
-import { pullRequestEnvironment } from "../state/pullRequests";
+import { pullRequestEnvironment, usePullRequestProviders } from "../state/pullRequests";
 import { useEnvironmentQuery } from "../state/query";
 import { useSupportsMultiplePullRequests } from "./useSupportsMultiplePullRequests";
 
 export function useOpenPanelPullRequestUrl(threadRef: ScopedThreadRef | null) {
+  const observedProviders = usePullRequestProviders();
   const surface = useRightPanelStore((state) =>
     selectActiveRightPanelSurface(state.byThreadKey, threadRef),
   );
@@ -72,10 +73,13 @@ export function useOpenPanelPullRequestUrl(threadRef: ScopedThreadRef | null) {
         reference,
       })?.url ??
         requestedReference?.url ??
-        gitHubPullRequestBrowserUrl(
+        fallbackPullRequestBrowserUrl(
           project?.repositoryIdentity,
           reference.repository,
           reference.number,
-        ))
+          "host" in reference && typeof reference.host === "string" && reference.host.length > 0
+            ? observedProviders.get(reference.host.toLowerCase())?.kind
+            : undefined,
+        )?.url)
     : undefined;
 }

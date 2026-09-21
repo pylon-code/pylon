@@ -260,7 +260,8 @@ import {
 } from "lucide-react";
 import { cn, randomHex, randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
-import { gitHubPullRequestBrowserUrl } from "~/lib/openPullRequestLink";
+import { fallbackPullRequestBrowserUrl } from "~/lib/openPullRequestLink";
+import { usePullRequestProviders } from "~/state/pullRequests";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
@@ -2659,20 +2660,33 @@ export default function ChatView(props: ChatViewProps) {
   });
   const pullRequestsCapabilityKnown = serverConfig !== null;
   const supportsPullRequests = serverConfig?.environment.capabilities.pullRequests === true;
-  // Same fallback the load-failure view offers: a pull request stays readable on
-  // GitHub even when this environment's server is too old to browse it here.
-  const pullRequestsUnavailableGitHubUrl =
-    activeRightPanelSurface?.kind === "pull-request"
-      ? gitHubPullRequestBrowserUrl(
-          allProjects.find(
-            (project) =>
-              project.id === activeRightPanelSurface.projectId &&
-              project.environmentId === activeThread?.environmentId,
-          )?.repositoryIdentity,
-          activeRightPanelSurface.repository,
-          activeRightPanelSurface.number,
-        )
-      : null;
+  // Same fallback the load-failure view offers: a pull request stays readable in
+  // browser even when this environment's server is too old to browse it here.
+  const observedPullRequestProviders = usePullRequestProviders();
+  const pullRequestsUnavailableFallbackLink = useMemo(() => {
+    if (activeRightPanelSurface?.kind !== "pull-request") return null;
+    const identity = allProjects.find(
+      (project) =>
+        project.id === activeRightPanelSurface.projectId &&
+        project.environmentId === activeThread?.environmentId,
+    )?.repositoryIdentity;
+    const host = activeRightPanelSurface.host ?? identity?.canonicalKey?.split("/")[0];
+    const providerKind = host
+      ? observedPullRequestProviders.get(host.toLowerCase())?.kind
+      : undefined;
+    return fallbackPullRequestBrowserUrl(
+      identity,
+      activeRightPanelSurface.repository,
+      activeRightPanelSurface.number,
+      providerKind,
+    );
+  }, [
+    activeRightPanelSurface,
+    activeThread?.environmentId,
+    allProjects,
+    observedPullRequestProviders,
+  ]);
+  const pullRequestsUnavailableGitHubUrl = pullRequestsUnavailableFallbackLink?.url ?? null;
   const attachmentEnvironmentConfig = environmentById.get(environmentId)?.serverConfig ?? null;
   const attachmentUploadsCapabilityKnown = attachmentEnvironmentConfig !== null;
   const supportsQuestionAttachments =
@@ -10177,9 +10191,10 @@ export default function ChatView(props: ChatViewProps) {
       <PullRequestsUnavailableState
         title="Pull requests unavailable"
         error="Update this environment's Pylon server to browse pull requests."
-        // The pull request is still readable on GitHub even when this server is
+        // The pull request is still readable in browser even when this server is
         // too old to browse it here, so this surface gets the same way out as
         // the load-failure one rather than being a dead end.
+        externalLink={pullRequestsUnavailableFallbackLink}
         {...(pullRequestsUnavailableGitHubUrl
           ? { gitHubUrl: pullRequestsUnavailableGitHubUrl }
           : {})}

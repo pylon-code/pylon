@@ -427,3 +427,70 @@ it("reports an update hint instead of unauthenticated when gh predates --json", 
     /2\.81\.0/,
   );
 });
+
+it("refines unknown GitHub remotes with mixed-case provider hosts", () => {
+  const provider = GitHubSourceControlProvider.discovery.refineUnknownRemote?.({
+    cwd: "/repo",
+    context: {
+      provider: {
+        kind: "unknown",
+        name: "Enterprise.Example.Test",
+        baseUrl: "https://Enterprise.Example.Test",
+      },
+      remoteName: "origin",
+      remoteUrl: "https://Enterprise.Example.Test/org/repo.git",
+    },
+    auth: processResult(
+      JSON.stringify({
+        hosts: {
+          "enterprise.example.test": [
+            {
+              state: "success",
+              active: true,
+              host: "enterprise.example.test",
+              login: "enterprise-user",
+            },
+          ],
+        },
+      }),
+    ),
+  });
+
+  assert.deepStrictEqual(provider, {
+    kind: "github",
+    name: "GitHub Enterprise",
+    baseUrl: "https://Enterprise.Example.Test",
+  });
+});
+
+it("returns null when refining unknown remote with unauthenticated host", () => {
+  const provider = GitHubSourceControlProvider.discovery.refineUnknownRemote?.({
+    cwd: "/repo",
+    context: {
+      provider: {
+        kind: "unknown",
+        name: "enterprise.example.test",
+        baseUrl: "https://enterprise.example.test",
+      },
+      remoteName: "origin",
+      remoteUrl: "https://enterprise.example.test/org/repo.git",
+    },
+    auth: processResult(
+      JSON.stringify({
+        hosts: {
+          "enterprise.example.test": [
+            {
+              state: "error",
+              active: true,
+              host: "enterprise.example.test",
+              login: "enterprise-user",
+              error: "Token expired",
+            },
+          ],
+        },
+      }),
+    ),
+  });
+
+  assert.strictEqual(provider, null);
+});

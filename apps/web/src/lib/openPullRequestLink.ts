@@ -23,6 +23,8 @@ export {
   parseChangeRequestUrl,
   type ChangeRequestLink,
   gitHubPullRequestBrowserUrl,
+  fallbackPullRequestBrowserUrl,
+  type PullRequestBrowserUrlTarget,
   pullRequestCandidateUrlFromReferenceAutolink,
   matchesLinkedPullRequestUrl,
   changeRequestRepositoryUrl,
