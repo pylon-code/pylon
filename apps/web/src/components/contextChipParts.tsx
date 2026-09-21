@@ -1,4 +1,4 @@
-import type { PullRequestContextMetadata } from "@t3tools/contracts";
+import type { EnvironmentId, PullRequestContextMetadata } from "@t3tools/contracts";
 import { CircleDashedIcon, FilmIcon, ImageIcon } from "lucide-react";
 import { createContext, use, type ComponentProps, type MouseEvent, type ReactNode } from "react";
 import { composerFloatingLayerProps } from "./chat/composerEventScope";
@@ -20,6 +20,8 @@ import { PullRequestContextDetails } from "./PullRequestContextDetails";
 import { Button } from "./ui/button";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { PullRequestLinkPreview } from "./pullRequest/PullRequestLinkPreview";
+import { usePullRequestPreviewTarget } from "~/lib/openPullRequestLink";
 
 /** Shared visual slots; each surface keeps ownership of payload lookup and actions. */
 export function ContextChipShell({
@@ -111,6 +113,7 @@ export function ContextChipPopover(props: {
 
 export function PullRequestChip(props: {
   metadata: PullRequestContextMetadata;
+  environmentId: EnvironmentId | null;
   label: string;
   kindLabel: string;
   className: string;
@@ -118,32 +121,44 @@ export function PullRequestChip(props: {
   copyMarkdown?: string;
   onOpen: (event: MouseEvent<HTMLElement>, url: string) => void;
 }) {
-  return (
-    <ContextChipPopover
-      accessibleLabel={`${props.kindLabel} ${props.label}: ${props.metadata.title}`}
-      {...(props.copyMarkdown ? { copyMarkdown: props.copyMarkdown } : {})}
-      triggerClassName={props.className}
-      chip={
-        <>
-          <PullRequestGlyph.pullRequest
-            className={cn(COMPOSER_INLINE_CHIP_ICON_CLASS_NAME, "size-3.5")}
-          />
-          <span className={props.labelClassName}>{props.label}</span>
-        </>
-      }
+  const previewTarget = usePullRequestPreviewTarget(props.environmentId, props.metadata.url);
+  const button = (
+    <Button
+      variant="chip"
+      className={cn(
+        props.className,
+        CONTEXT_INLINE_CHIP_FOCUS_CLASS_NAME,
+        CONTEXT_INLINE_CHIP_INTERACTIVE_CLASS_NAME,
+        "cursor-pointer",
+      )}
+      aria-label={`Open ${props.kindLabel} ${props.label}: ${props.metadata.title}`}
+      data-markdown-copy={props.copyMarkdown}
+      onClick={(event) => props.onOpen(event, props.metadata.url)}
     >
-      <div className="space-y-3 p-2">
+      <PullRequestGlyph.pullRequest
+        className={cn(COMPOSER_INLINE_CHIP_ICON_CLASS_NAME, "size-3.5")}
+      />
+      <span className={props.labelClassName}>{props.label}</span>
+    </Button>
+  );
+  if (previewTarget !== null) {
+    return (
+      <PullRequestLinkPreview
+        link={button}
+        originalUrl={props.metadata.url}
+        target={previewTarget}
+        confirmBeforeOpen={false}
+        fallback={<PullRequestContextDetails metadata={props.metadata} />}
+      />
+    );
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger render={button} />
+      <TooltipPopup side="top">
         <PullRequestContextDetails metadata={props.metadata} />
-        <p className="text-xs text-muted-foreground">Captured pull request context</p>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={(event) => props.onOpen(event, props.metadata.url)}
-        >
-          Open pull request
-        </Button>
-      </div>
-    </ContextChipPopover>
+      </TooltipPopup>
+    </Tooltip>
   );
 }
 
