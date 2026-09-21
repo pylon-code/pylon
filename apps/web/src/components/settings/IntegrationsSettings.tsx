@@ -1,3 +1,4 @@
+import { DeviceToolVersions } from "../device/DeviceToolVersions";
 import { ComputerIntegrationSettings } from "./ComputerIntegrationSettings";
 import { DeviceHostsSettings } from "./DeviceHostsSettings";
 /**
@@ -676,6 +677,10 @@ function DeviceIntegrationControls({
         description={deviceHubDescription}
         control={
           <>
+            <DeviceToolVersions
+              kind="hub"
+              tools={state.hosts.find((host) => host.kind === "local")?.tools}
+            />
             {pending === "hub" ? <DeviceHubSetupStatus state={state} pending compact /> : null}
             <Switch
               checked={enabled}
@@ -728,6 +733,10 @@ function DeviceIntegrationControls({
           description={agentDeviceDescription}
           control={
             <>
+              <DeviceToolVersions
+                kind="agent"
+                tools={state.hosts.find((host) => host.kind === "local")?.tools}
+              />
               {pending === "agent" ? (
                 <AgentDeviceSetupStatus state={state} pending compact />
               ) : null}

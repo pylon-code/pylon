@@ -1,8 +1,10 @@
+import { DeviceToolVersions } from "../device/DeviceToolVersions";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 import { AppleIcon, AndroidIcon } from "../Icons";
 import { DeviceHostAvailability } from "../device/DeviceHostAvailability";
 import { Spinner } from "../ui/spinner";
 import type {
+  DeviceHostSummary,
   DevicePlatformAvailability,
   EnvironmentId,
   SshDeviceHostConfig,
@@ -34,7 +36,12 @@ export function DeviceHostsSettings(props: {
   const [checks, setChecks] = useState<
     Record<
       string,
-      { pending?: boolean; platforms?: ReadonlyArray<DevicePlatformAvailability>; error?: string }
+      {
+        pending?: boolean;
+        platforms?: ReadonlyArray<DevicePlatformAvailability>;
+        tools?: DeviceHostSummary["tools"];
+        error?: string;
+      }
     >
   >({});
   const setCheck = (id: string, value: (typeof checks)[string]) =>
@@ -149,6 +156,12 @@ export function DeviceHostsSettings(props: {
                         ))}
                     </div>
                     <p className="truncate text-xs text-muted-foreground">{host.target}</p>
+                    <DeviceToolVersions
+                      tools={
+                        checks[host.id]?.tools ??
+                        state.hosts.find((value) => value.id === host.id)?.tools
+                      }
+                    />
                     {error ? (
                       <div className="mt-1" role="status">
                         <details className="text-xs text-destructive">
