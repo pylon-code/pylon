@@ -84,7 +84,7 @@ type ServerNotificationHandler = (
   payload: unknown,
 ) => Effect.Effect<void, CodexError.CodexAppServerError>;
 
-const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make")(function* (
+export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make")(function* (
   stdio: Stdio.Stdio,
   options: CodexAppServerClientOptions = {},
   terminationError?: Effect.Effect<CodexError.CodexAppServerError>,
@@ -150,17 +150,29 @@ const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make")(func
 
     if (schema) {
       return decodeNotificationPayload(notification.method, schema, notification.params).pipe(
-        Effect.flatMap((decoded) =>
-          Effect.forEach(handlers, (handler) => handler(decoded), { discard: true }),
-        ),
-        Effect.catch(() => Effect.void),
+        Effect.matchEffect({
+          onFailure: (error) =>
+            Effect.logWarning(`Failed to decode Codex notification "${notification.method}"`, {
+              error,
+            }).pipe(
+              Effect.andThen(
+                unknownNotificationHandler
+                  ? Effect.ignore(
+                      unknownNotificationHandler(notification.method, notification.params),
+                    )
+                  : Effect.void,
+              ),
+            ),
+          onSuccess: (decoded) =>
+            Effect.ignore(
+              Effect.forEach(handlers, (handler) => handler(decoded), { discard: true }),
+            ),
+        }),
       );
     }
 
     return unknownNotificationHandler
-      ? unknownNotificationHandler(notification.method, notification.params).pipe(
-          Effect.catch(() => Effect.void),
-        )
+      ? Effect.ignore(unknownNotificationHandler(notification.method, notification.params))
       : Effect.void;
   };
 

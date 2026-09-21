@@ -9,6 +9,7 @@ import * as Stream from "effect/Stream";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 
+import * as CodexClient from "./client.ts";
 import * as CodexError from "./errors.ts";
 import * as CodexProtocol from "./protocol.ts";
 import * as CodexRpc from "./rpc.ts";
@@ -803,5 +804,68 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
       assert.equal(error.message, "Codex App Server input stream ended.");
       assert.equal("cause" in error, false);
     }),
+  );
+
+  it.effect(
+    "dispatches notifications that fail schema decoding to unknownNotificationHandler",
+    () =>
+      Effect.gen(function* () {
+        const { stdio, input } = yield* makeInMemoryStdio();
+        const unknownNotifications: Array<{ method: string; params: unknown }> = [];
+        const typedNotifications: Array<unknown> = [];
+
+        const client = yield* CodexClient.make(stdio);
+        const unknownReceived = yield* Deferred.make<void>();
+        const typedReceived = yield* Deferred.make<void>();
+        yield* client.handleUnknownServerNotification((method, params) =>
+          Effect.sync(() => {
+            unknownNotifications.push({ method, params });
+          }).pipe(Effect.andThen(Deferred.succeed(unknownReceived, undefined))),
+        );
+        yield* client.handleServerNotification("item/agentMessage/delta", (payload) =>
+          Effect.sync(() => {
+            typedNotifications.push(payload);
+          }).pipe(Effect.andThen(Deferred.succeed(typedReceived, undefined))),
+        );
+
+        // Offer a malformed item/agentMessage/delta notification (missing required fields)
+        yield* Queue.offer(
+          input,
+          encodeJsonl({
+            method: "item/agentMessage/delta",
+            params: { malformedField: true },
+          }),
+        );
+
+        // Offer a valid notification to verify normal dispatch continues
+        yield* Queue.offer(
+          input,
+          encodeJsonl({
+            method: "item/agentMessage/delta",
+            params: {
+              delta: "Valid delta",
+              itemId: "item-1",
+              threadId: "thread-1",
+              turnId: "turn-1",
+            },
+          }),
+        );
+
+        yield* Deferred.await(unknownReceived);
+        yield* Deferred.await(typedReceived);
+        yield* Queue.end(input);
+
+        assert.equal(unknownNotifications.length, 1);
+        assert.equal(unknownNotifications[0]?.method, "item/agentMessage/delta");
+        assert.deepEqual(unknownNotifications[0]?.params, { malformedField: true });
+
+        assert.equal(typedNotifications.length, 1);
+        assert.deepEqual(typedNotifications[0], {
+          delta: "Valid delta",
+          itemId: "item-1",
+          threadId: "thread-1",
+          turnId: "turn-1",
+        });
+      }),
   );
 });
