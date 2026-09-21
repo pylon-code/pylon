@@ -1578,6 +1578,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }
       const tabs = yield* SynchronizedRef.get(tabsRef);
       if (tabs.has(tabId)) yield* update(tabId, { controller: "none" });
+      if (currentMainWindow && !currentMainWindow.isDestroyed()) {
+        yield* attempt({ operation: "focusMainWindow", tabId }, () => {
+          currentMainWindow?.webContents.focus();
+        }).pipe(Effect.ignore);
+      }
     });
     return yield* control.semaphore.withPermit(execute().pipe(Effect.onExit(finalize)));
   });

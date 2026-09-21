@@ -16,6 +16,7 @@ import {
   useFaviconProjectRefForThread,
 } from "~/browserFaviconStore";
 import { useBrowserPointerStore } from "~/browser/browserPointerStore";
+import { dispatchSnapShotComposerFocus } from "~/lib/desktopSnapShot";
 import { applyPreviewDesktopState, type DesktopPreviewOverlay } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
 import { usePreparedConnection } from "~/state/session";
@@ -61,6 +62,7 @@ export function usePreviewBridge(input: {
   const lastReportedUrl = useRef<string | null>(null);
   const lastReportedKind = useRef<DesktopPreviewTabState["navStatus"]["kind"] | null>(null);
   const lastDesktopNavStatus = useRef<DesktopPreviewTabState["navStatus"] | null>(null);
+  const lastController = useRef<DesktopPreviewTabState["controller"] | null>(null);
   const handleStateChange = useEffectEvent(
     (changedTabId: string, state: DesktopPreviewTabState): void => {
       if (changedTabId !== runtimeTabId) return;
@@ -68,6 +70,16 @@ export function usePreviewBridge(input: {
         clearBrowserPointer(runtimeTabId);
       }
       lastDesktopNavStatus.current = state.navStatus;
+      if (lastController.current === "agent" && state.controller !== "agent") {
+        if (
+          typeof document !== "undefined" &&
+          document.activeElement?.tagName.toLowerCase() === "webview"
+        ) {
+          (document.activeElement as HTMLElement).blur();
+          dispatchSnapShotComposerFocus();
+        }
+      }
+      lastController.current = state.controller;
       applyPreviewDesktopState(stableThreadRef, tabId, projectDesktopState(state));
       if (state.favicon) {
         recordFaviconForThread(stableThreadRef, state.favicon, projectRef, environmentHostname);
@@ -93,6 +105,7 @@ export function usePreviewBridge(input: {
     lastReportedUrl.current = null;
     lastReportedKind.current = null;
     lastDesktopNavStatus.current = null;
+    lastController.current = null;
     return bridge.onStateChange(handleStateChange);
   }, [bridge, runtimeTabId, stableThreadRef, tabId]);
   useEffect(() => {
