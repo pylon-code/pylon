@@ -671,6 +671,21 @@ function DeviceIntegrationControls({
     }
   };
 
+  const checkVersions = state.supportsToolInspection ? (
+    <Button
+      size="sm"
+      variant="outline"
+      disabled={!environmentId || pending !== null || busy}
+      onClick={() => {
+        if (!environmentId) return;
+        setPending("check");
+        void list({ environmentId, input: { inspectOnly: true } }).finally(() => setPending(null));
+      }}
+    >
+      {pending === "check" ? "Checking…" : "Check versions"}
+    </Button>
+  ) : null;
+
   return (
     <>
       <SettingsRow
@@ -679,6 +694,7 @@ function DeviceIntegrationControls({
         control={
           <>
             <DeviceToolVersions
+              action={checkVersions}
               kind="hub"
               tools={state.hosts.find((host) => host.kind === "local")?.tools}
             />
@@ -735,6 +751,7 @@ function DeviceIntegrationControls({
           control={
             <>
               <DeviceToolVersions
+                action={checkVersions}
                 kind="agent"
                 tools={state.hosts.find((host) => host.kind === "local")?.tools}
               />
@@ -753,12 +770,12 @@ function DeviceIntegrationControls({
           }
         />
       ) : null}
-      {state.hostStatus === "failed" && state.hostStatusDetail ? (
-        <p role="alert" className="px-4 py-3 text-xs text-destructive">
-          {state.hostStatusDetail}
-        </p>
+      {environmentId ? (
+        <DeviceHostUpdates
+          state={{ ...state, hosts: state.hosts.filter((host) => host.kind === "local") }}
+          environmentId={environmentId}
+        />
       ) : null}
-      {environmentId ? <DeviceHostUpdates state={state} environmentId={environmentId} /> : null}
       <DeviceHostsSettings environmentId={environmentId} hosts={hosts} />
     </>
   );

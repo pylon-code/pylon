@@ -28,9 +28,11 @@ export function DeviceHostsSettings(props: {
 }) {
   const update = useAtomCommand(serverEnvironment.updateSettings);
   const test = useAtomCommand(deviceEnvironment.testHost, { reportFailure: false });
+  const retry = useAtomCommand(deviceEnvironment.list);
   const { state } = useDeviceState(props.environmentId);
   const [editing, setEditing] = useState<SshDeviceHostConfig | null>(null);
   const [busy, setBusy] = useState(false);
+  const [retrying, setRetrying] = useState<string | null>(null);
   const validPort = (port: number | undefined) =>
     port === undefined || (Number.isInteger(port) && port >= 1 && port <= 65535);
   const [checks, setChecks] = useState<
@@ -157,9 +159,10 @@ export function DeviceHostsSettings(props: {
                     </div>
                     <p className="truncate text-xs text-muted-foreground">{host.target}</p>
                     <DeviceToolVersions
+                      error={state.hosts.find((value) => value.id === host.id)?.toolInspectionError}
                       tools={
-                        checks[host.id]?.tools ??
-                        state.hosts.find((value) => value.id === host.id)?.tools
+                        state.hosts.find((value) => value.id === host.id)?.tools ??
+                        checks[host.id]?.tools
                       }
                     />
                     {error ? (
@@ -211,14 +214,34 @@ export function DeviceHostsSettings(props: {
                       </MenuItem>
                     </MenuPopup>
                   </Menu>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy || progress !== null}
-                    onClick={() => void testConnection(host)}
-                  >
-                    Test connection
-                  </Button>
+                  {status?.status === "failed" &&
+                  state.supportsHostRetry &&
+                  state.hostStatus !== "disabled" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy || retrying !== null}
+                      onClick={() => {
+                        if (!props.environmentId) return;
+                        setRetrying(host.id);
+                        void retry({
+                          environmentId: props.environmentId,
+                          input: { retryHostId: host.id },
+                        }).finally(() => setRetrying(null));
+                      }}
+                    >
+                      {retrying === host.id ? "Retrying…" : "Retry"}
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy || progress !== null}
+                      onClick={() => void testConnection(host)}
+                    >
+                      Test connection
+                    </Button>
+                  )}
                 </div>
               );
             })}

@@ -3731,10 +3731,14 @@ const makeWsRpcLayer = (
         [WS_METHODS.deviceList]: (input) =>
           observeRpcEffect(
             WS_METHODS.deviceList,
-            authorizeEffect(
-              requiredScopeForDeviceList(input),
-              input.retryHostId ? deviceService.retryHost(input.retryHostId) : deviceService.list,
-            ),
+            input.inspectOnly
+              ? deviceService.inspect
+              : authorizeEffect(
+                  requiredScopeForDeviceList(input),
+                  input.retryHostId
+                    ? deviceService.retryHost(input.retryHostId)
+                    : deviceService.list,
+                ),
             {
               "rpc.aggregate": "device",
             },
