@@ -1,3 +1,4 @@
+import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
 import { DeviceToolVersions } from "../device/DeviceToolVersions";
 import { ComputerIntegrationSettings } from "./ComputerIntegrationSettings";
 import { DeviceHostsSettings } from "./DeviceHostsSettings";
@@ -757,6 +758,7 @@ function DeviceIntegrationControls({
           {state.hostStatusDetail}
         </p>
       ) : null}
+      {environmentId ? <DeviceHostUpdates state={state} environmentId={environmentId} /> : null}
       <DeviceHostsSettings environmentId={environmentId} hosts={hosts} />
     </>
   );
