@@ -115,6 +115,7 @@ export function SettingsEnvironmentsRouteScreen() {
         </NativeHeaderToolbar>
       )}
       <ScrollView
+        alwaysBounceVertical
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
         className="flex-1"

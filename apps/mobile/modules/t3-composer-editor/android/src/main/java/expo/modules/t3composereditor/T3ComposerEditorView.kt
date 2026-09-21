@@ -14,6 +14,7 @@ import android.text.InputType
 import android.text.InputFilter
 import android.text.Layout
 import android.text.Spanned
+import android.text.TextUtils
 import android.text.TextWatcher
 import android.text.style.ReplacementSpan
 import android.util.TypedValue
@@ -224,7 +225,7 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
   }
 
   fun setPlaceholder(placeholder: String) {
-    editor.hint = placeholder
+    editor.placeholder = placeholder
   }
 
   fun setClipboardFragment(fragment: String) {
@@ -237,12 +238,14 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
     } else {
       Typeface.DEFAULT
     }
+    editor.applyPlaceholder()
   }
 
   fun setFontSize(fontSize: Float) {
     editor.textSize = fontSize
     applyLineHeight()
     applyTokenSpans()
+    editor.applyPlaceholder()
   }
 
   fun setLineHeight(lineHeight: Float) {
@@ -594,6 +597,37 @@ private class SelectionAwareEditText(context: Context) : EditText(context) {
   var pasteImagesListener: ((List<String>) -> Unit)? = null
   var pasteContextListener: ((Map<String, String>) -> Unit)? = null
   var clipboardFragment = ""
+
+  /**
+   * Placeholder shown while the draft is empty. An editable TextView never ellipsizes its hint,
+   * so a long placeholder wraps once a wide system font or a large font scale (Samsung defaults)
+   * runs out of width, and the resting composer grows to two lines. The hint is instead cut to
+   * one line with an ellipsis for whatever width the editor is measured at.
+   */
+  var placeholder = ""
+    set(value) {
+      field = value
+      applyPlaceholder()
+    }
+
+  fun applyPlaceholder(availableWidth: Int = width - compoundPaddingLeft - compoundPaddingRight) {
+    val next =
+      if (availableWidth > 0) {
+        TextUtils.ellipsize(placeholder, paint, availableWidth.toFloat(), TextUtils.TruncateAt.END)
+      } else {
+        placeholder
+      }
+    if (hint?.toString() != next.toString()) hint = next
+  }
+
+  override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+    if (MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.UNSPECIFIED) {
+      applyPlaceholder(
+        MeasureSpec.getSize(widthMeasureSpec) - compoundPaddingLeft - compoundPaddingRight
+      )
+    }
+    super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+  }
 
   private fun deleteChip(backwards: Boolean): Boolean {
     val content = text
