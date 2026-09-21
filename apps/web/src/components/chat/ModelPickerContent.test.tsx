@@ -1,20 +1,26 @@
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import type { ReactNode } from "react";
+import { LegendList } from "@legendapp/list/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => [] }));
-vi.mock("@legendapp/list/react", () => ({
-  LegendList: (props: {
+const mockLegendList = vi.fn(
+  (props: {
     data: string[];
     renderItem: (input: { item: string; index: number }) => ReactNode;
     ListHeaderComponent?: ReactNode;
+    onLayout?: () => void;
   }) => (
     <div>
       {props.ListHeaderComponent}
       {props.data.map((item, index) => props.renderItem({ item, index }))}
     </div>
   ),
+);
+
+vi.mock("@legendapp/list/react", () => ({
+  LegendList: (props: any) => mockLegendList(props),
 }));
 vi.mock("~/hooks/useSettings", () => ({
   useClientSettings: (select: (settings: { favorites: never[] }) => unknown) =>
@@ -74,5 +80,45 @@ describe("ModelPickerContent", () => {
     );
 
     expect(markup).toContain(message);
+  });
+  it("does not enable recycleItems on LegendList and passes onLayout", () => {
+    let capturedProps: Record<string, unknown> | null = null;
+    mockLegendList.mockImplementationOnce((props: any) => {
+      capturedProps = props;
+      return <div data-testid="legend-list" />;
+    });
+
+    const instanceId = ProviderInstanceId.make("generic-provider");
+    const model = { slug: "default", name: "Prime Agent Default" };
+    const provider: ServerProvider = {
+      instanceId,
+      driver: ProviderDriverKind.make("codex"),
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: { status: "unknown" },
+      checkedAt: "2026-09-10T00:00:00.000Z",
+      models: [model],
+      slashCommands: [],
+      skills: [],
+    };
+
+    renderToStaticMarkup(
+      <ModelPickerContent
+        activeInstanceId={instanceId}
+        model="default"
+        lockedProvider={null}
+        instanceEntries={deriveProviderInstanceEntries([provider])}
+        keybindings={[]}
+        modelOptionsByInstance={new Map([[instanceId, [model]]])}
+        terminalOpen={false}
+        onInstanceModelChange={() => {}}
+      />,
+    );
+
+    expect(capturedProps).not.toBeNull();
+    expect((capturedProps as any).recycleItems).toBeUndefined();
+    expect(typeof (capturedProps as any).onLayout).toBe("function");
   });
 });
