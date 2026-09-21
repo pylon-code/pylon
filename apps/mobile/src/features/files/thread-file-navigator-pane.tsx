@@ -57,16 +57,6 @@ export function ThreadFileNavigatorPane(props: {
     () =>
       [
         {
-          accessibilityLabel: "Refresh files",
-          icon: { name: "arrow.clockwise", type: "sfSymbol" as const },
-          identifier: "thread-file-navigator-refresh",
-          onPress: entriesQuery.refresh,
-          sharesBackground: false,
-          tintColor: foregroundColor,
-          type: "button" as const,
-          width: 44,
-        },
-        {
           accessibilityLabel: "Close files",
           icon: { name: "xmark", type: "sfSymbol" as const },
           identifier: "thread-file-navigator-close",
@@ -77,7 +67,7 @@ export function ThreadFileNavigatorPane(props: {
           width: 44,
         },
       ] as ComponentProps<typeof ScreenStackHeaderConfig>["headerRightBarButtonItems"],
-    [entriesQuery.refresh, foregroundColor, toggleAuxiliaryPane],
+    [foregroundColor, toggleAuxiliaryPane],
   );
 
   const fileTree = (
