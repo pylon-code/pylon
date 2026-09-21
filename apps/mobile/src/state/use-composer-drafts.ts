@@ -756,7 +756,7 @@ export async function releaseUnusedComposerAttachmentFiles(
   let incomingShareFileUris: ReadonlySet<string>;
   try {
     const { loadIncomingShareDrafts } = await import("../features/sharing/incoming-share-storage");
-    const incomingShares = await loadIncomingShareDrafts({ strict: true });
+    const incomingShares = await loadIncomingShareDrafts();
     incomingShareFileUris = new Set(
       incomingShares.flatMap((share) =>
         share.attachments.flatMap((attachment) =>
