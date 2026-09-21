@@ -677,9 +677,19 @@ export const make = Effect.gen(function* () {
             else counted.projectCount += 1;
             continue;
           }
+          const refinedProject =
+            kind !== identity.provider
+              ? {
+                  ...project,
+                  repositoryIdentity: {
+                    ...identity,
+                    provider: kind,
+                  },
+                }
+              : project;
           supported.push({
             cursorKey: key,
-            project,
+            project: refinedProject,
             api: withRateLimitBackoff(api, host, rateLimits),
             repository,
             host,

@@ -4,6 +4,7 @@ import {
   changeRequestRepositoryUrl,
   findProjectForChangeRequest,
   findProjectOnChangeRequestHost,
+  fallbackPullRequestBrowserUrl,
   gitHubPullRequestBrowserUrl,
   matchesLinkedPullRequestUrl,
   parseChangeRequestUrl,
@@ -24,6 +25,40 @@ function repositoryIdentity(
   };
 }
 
+describe("fallbackPullRequestBrowserUrl", () => {
+  it("builds an Open on GitHub fallback for an unrefined self-hosted identity when providerKind is passed", () => {
+    const identity = repositoryIdentity(
+      "unknown",
+      "github.acme.test/team/default",
+      "https://github.acme.test/team/default.git",
+    );
+    expect(fallbackPullRequestBrowserUrl(identity, "platform/api", 7, "github")).toEqual({
+      url: "https://github.acme.test/platform/api/pull/7",
+      label: "Open on GitHub",
+    });
+  });
+
+  it("returns null when provider is unknown and not refined", () => {
+    const identity = repositoryIdentity(
+      "unknown",
+      "github.acme.test/team/default",
+      "https://github.acme.test/team/default.git",
+    );
+    expect(fallbackPullRequestBrowserUrl(identity, "platform/api", 7)).toBeNull();
+  });
+
+  it("builds an Open on GitLab fallback for GitLab identities", () => {
+    const identity = repositoryIdentity(
+      "gitlab",
+      "gitlab.acme.test/team/default",
+      "https://gitlab.acme.test/team/default.git",
+    );
+    expect(fallbackPullRequestBrowserUrl(identity, "team/default", 12)).toEqual({
+      url: "https://gitlab.acme.test/team/default/-/merge_requests/12",
+      label: "Open on GitLab",
+    });
+  });
+});
 describe("gitHubPullRequestBrowserUrl", () => {
   it("uses the requested GitHub repository instead of the project's default repository", () => {
     const identity = repositoryIdentity(

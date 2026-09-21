@@ -244,6 +244,41 @@ it.effect("refines unknown self-hosted GitLab projects before listing merge requ
   }),
 );
 
+it.effect("refines unknown self-hosted GitHub projects before listing pull requests", () =>
+  Effect.gen(function* () {
+    let refinementCalls = 0;
+    const selfHosted = project({
+      id: "p1",
+      title: "self-hosted-gh",
+      workspaceRoot: "/github-enterprise",
+      repository: "corp/platform",
+      provider: "unknown",
+      host: "git.enterprise.test",
+    });
+    const service = yield* makeService({
+      projects: [
+        selfHosted,
+        { ...selfHosted, id: "p2" as ProjectId, workspaceRoot: "/github-enterprise-worktree" },
+      ],
+      providers: [fakeProvider("github")],
+      resolveHandle: ({ context }) => {
+        refinementCalls += 1;
+        assert.strictEqual(context?.remoteUrl, "https://git.enterprise.test/corp/platform.git");
+        return Effect.succeed({
+          context: { ...context!, provider: { ...context!.provider, kind: "github" } },
+          provider: undefined as never,
+        });
+      },
+    });
+
+    const result = yield* service.list({ state: "open" });
+
+    assert.strictEqual(refinementCalls, 1);
+    assert.strictEqual(result.providers[0]?.host, "git.enterprise.test");
+    assert.strictEqual(result.providers[0]?.kind, "github");
+  }),
+);
+
 it.effect("derives a legacy repository host after refining its provider", () =>
   Effect.gen(function* () {
     const current = project({

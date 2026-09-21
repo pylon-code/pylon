@@ -2,6 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   changeRequestUrlFor,
+  fallbackPullRequestBrowserUrl,
+  gitHubPullRequestBrowserUrl,
   parseChangeRequestUrl,
   pullRequestCandidateUrlFromReferenceAutolink,
   siblingPullRequestUrl,
@@ -138,5 +140,108 @@ describe("changeRequestUrlFor", () => {
       repository: "org/project/_git/web",
       number: 42,
     });
+  });
+});
+
+describe("fallbackPullRequestBrowserUrl", () => {
+  const selfHostedIdentity = {
+    canonicalKey: "git.enterprise.corp/org/repo",
+    locator: {
+      source: "git-remote" as const,
+      remoteName: "origin",
+      remoteUrl: "git@git.enterprise.corp:org/repo.git",
+    },
+    rootPath: "/work/repo",
+    provider: "unknown",
+  };
+
+  it("returns null when provider is unknown and not overridden", () => {
+    expect(fallbackPullRequestBrowserUrl(selfHostedIdentity, "org/repo", 42)).toBeNull();
+  });
+
+  it("builds a GitHub URL with label when refined to github", () => {
+    expect(fallbackPullRequestBrowserUrl(selfHostedIdentity, "org/repo", 42, "github")).toEqual({
+      url: "https://git.enterprise.corp/org/repo/pull/42",
+      label: "Open on GitHub",
+    });
+  });
+
+  it("builds a GitHub URL from an identity whose provider is github", () => {
+    expect(
+      fallbackPullRequestBrowserUrl({ ...selfHostedIdentity, provider: "github" }, "org/repo", 42),
+    ).toEqual({
+      url: "https://git.enterprise.corp/org/repo/pull/42",
+      label: "Open on GitHub",
+    });
+  });
+
+  it("respects HTTP protocol and custom ports from locator remote URL", () => {
+    expect(
+      fallbackPullRequestBrowserUrl(
+        {
+          ...selfHostedIdentity,
+          locator: {
+            source: "git-remote" as const,
+            remoteName: "origin",
+            remoteUrl: "http://git.enterprise.corp:8080/org/repo.git",
+          },
+        },
+        "org/repo",
+        42,
+        "github",
+      ),
+    ).toEqual({
+      url: "http://git.enterprise.corp:8080/org/repo/pull/42",
+      label: "Open on GitHub",
+    });
+  });
+
+  it("builds a GitLab URL with label when refined to gitlab", () => {
+    expect(fallbackPullRequestBrowserUrl(selfHostedIdentity, "org/repo", 42, "gitlab")).toEqual({
+      url: "https://git.enterprise.corp/org/repo/-/merge_requests/42",
+      label: "Open on GitLab",
+    });
+  });
+
+  it("returns null for invalid numbers or paths", () => {
+    expect(fallbackPullRequestBrowserUrl(selfHostedIdentity, "org/repo", 0, "github")).toBeNull();
+    expect(
+      fallbackPullRequestBrowserUrl(selfHostedIdentity, "org/repo/nested", 42, "github"),
+    ).toBeNull();
+  });
+});
+
+describe("gitHubPullRequestBrowserUrl", () => {
+  const identity = {
+    canonicalKey: "github.com/org/repo",
+    locator: {
+      source: "git-remote" as const,
+      remoteName: "origin",
+      remoteUrl: "git@github.com:org/repo.git",
+    },
+    rootPath: "/work/repo",
+    provider: "github",
+  };
+
+  it("builds a browser URL for standard GitHub identity", () => {
+    expect(gitHubPullRequestBrowserUrl(identity, "org/repo", 10)).toBe(
+      "https://github.com/org/repo/pull/10",
+    );
+  });
+
+  it("supports providerKind override for self-hosted GitHub", () => {
+    const unknownIdentity = {
+      canonicalKey: "git.enterprise.corp/org/repo",
+      locator: {
+        source: "git-remote" as const,
+        remoteName: "origin",
+        remoteUrl: "git@git.enterprise.corp:org/repo.git",
+      },
+      rootPath: "/work/repo",
+      provider: "unknown",
+    };
+    expect(gitHubPullRequestBrowserUrl(unknownIdentity, "org/repo", 10, "github")).toBe(
+      "https://git.enterprise.corp/org/repo/pull/10",
+    );
   });
 });

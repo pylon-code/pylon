@@ -9,6 +9,7 @@ import type {
   PullRequestListInput,
   PullRequestListStatsInput,
   PullRequestListEntry,
+  PullRequestProviderSummary,
   PullRequestRef,
   PullRequestSummary,
 } from "@t3tools/contracts";
@@ -173,6 +174,32 @@ export function useSharedPullRequestSummary(
     )?.summary ?? current
   );
 }
+
+export const observedPullRequestProvidersAtom = Atom.make<
+  ReadonlyMap<string, PullRequestProviderSummary>
+>(new Map()).pipe(Atom.withLabel("web-pull-requests:observed-providers"));
+
+export function observePullRequestProviders(
+  providers: ReadonlyArray<PullRequestProviderSummary>,
+): void {
+  appAtomRegistry.modify(observedPullRequestProvidersAtom, (previous) => {
+    let changed = false;
+    const next = new Map(previous);
+    for (const provider of providers) {
+      const key = provider.host.toLowerCase();
+      if (!next.has(key) || next.get(key) !== provider) {
+        next.set(key, provider);
+        changed = true;
+      }
+    }
+    return changed ? [true, next] : [false, previous];
+  });
+}
+
+export function usePullRequestProviders(): ReadonlyMap<string, PullRequestProviderSummary> {
+  return useAtomValue(observedPullRequestProvidersAtom);
+}
+
 export const pullRequestStackAtom = createPullRequestStackAtomFamily(
   connectionAtomRuntime,
   pullRequestEnvironment.refreshes,
@@ -294,6 +321,7 @@ export function usePullRequestList(
   const query = usePullRequestListsQuery(targets);
   useLayoutEffect(() => {
     for (const [environmentId, answer, observedAt] of query.observations) {
+      observePullRequestProviders(answer.providers);
       for (const entry of answer.entries) {
         observePullRequestSummary(
           environmentId,
