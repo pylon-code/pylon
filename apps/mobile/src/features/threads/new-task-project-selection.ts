@@ -19,6 +19,15 @@ export function getProjectScopeSelectionTarget(
   );
 }
 
+export function getProjectScopeAccessibilityLabel(
+  scope: HomeProjectScope,
+  selectionTarget: EnvironmentProject,
+): string {
+  return scope.projects.length > 1
+    ? `${scope.title}, ${scope.projects.length} workspaces`
+    : `${scope.title}, ${selectionTarget.workspaceRoot}`;
+}
+
 function getOnlySelectableProject(
   projectScopes: ReadonlyArray<HomeProjectScope>,
 ): EnvironmentProject | null {

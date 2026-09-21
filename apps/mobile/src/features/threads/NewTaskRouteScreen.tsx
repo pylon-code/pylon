@@ -21,7 +21,10 @@ import { useWorkspaceState } from "../../state/workspace";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
 import { useNewTaskFlow } from "./new-task-flow-provider";
-import { getProjectScopeSelectionTarget } from "./new-task-project-selection";
+import {
+  getProjectScopeAccessibilityLabel,
+  getProjectScopeSelectionTarget,
+} from "./new-task-project-selection";
 
 type NewTaskRouteParams = {
   readonly incomingShareId?: string | string[];
@@ -217,6 +220,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
             ) : null}
             {catalogState.hasReadyEnvironment ? (
               <NativeHeaderToolbar.Button
+                accessibilityLabel="Add project"
                 icon="plus"
                 onPress={() => navigation.dispatch(StackActions.push("AddProject"))}
                 separateBackground
@@ -250,6 +254,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
             </Text>
             {!catalogState.hasReadyEnvironment ? (
               <Pressable
+                accessibilityRole="button"
                 className="mt-1 rounded-full bg-primary px-4 py-2.5 active:opacity-70"
                 onPress={() => navigation.navigate("ConnectionsNew")}
               >
@@ -259,6 +264,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
               </Pressable>
             ) : (
               <Pressable
+                accessibilityRole="button"
                 className="mt-1 rounded-full bg-primary px-4 py-2.5 active:opacity-70"
                 onPress={() => navigation.dispatch(StackActions.push("AddProject"))}
               >
@@ -279,6 +285,10 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                   className={cn(scopeIndex > 0 && "border-t border-border-subtle")}
                 >
                   <Pressable
+                    accessible
+                    accessibilityLabel={getProjectScopeAccessibilityLabel(scope, selectionTarget)}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: reservedDestinationProject !== null }}
                     disabled={reservedDestinationProject !== null}
                     onPress={() => void selectProject(selectionTarget)}
                     className="flex-row items-center gap-3 bg-card px-4 py-3.5"

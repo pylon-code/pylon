@@ -222,7 +222,7 @@ index 5c4e0da4292b15d3a27b5ea1555f11452a470815..4d8abe3c4fc45bda48c2958bc9ca933c
      func setup () {
          let menu = UIMenu(title: _title,
              identifier: nil,
-@@ -86,8 +115,98 @@ public class MenuViewImplementation: UIButton {
+@@ -86,8 +115,99 @@ public class MenuViewImplementation: UIButton {
              }
          }
  
@@ -247,6 +247,7 @@ index 5c4e0da4292b15d3a27b5ea1555f11452a470815..4d8abe3c4fc45bda48c2958bc9ca933c
 +        // long-press and pointer secondary-click still present the menu, with
 +        // the wrapped content as the zoom preview.
 +        self.isUserInteractionEnabled = !shouldOpenOnLongPress
++        self.isAccessibilityElement = !shouldOpenOnLongPress
 +        self.updateLongPressInteraction()
 +    }
 +
