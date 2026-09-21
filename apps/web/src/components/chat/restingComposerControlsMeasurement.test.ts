@@ -30,7 +30,13 @@ function measurePicker(input: {
         ? input.fixedWidth
           ? [{ getBoundingClientRect: () => ({ width: input.fixedWidth }) }]
           : []
-        : [{ getBoundingClientRect: () => ({ width: 140 }) }],
+        : [
+            {
+              dataset: {},
+              querySelectorAll: () => [],
+              getBoundingClientRect: () => ({ width: 140 }),
+            },
+          ],
   };
   vi.stubGlobal("getComputedStyle", (element: unknown) => {
     if (element === label) return { flexGrow: input.flexGrow };
@@ -50,6 +56,7 @@ describe("measureRestingComposerControls", () => {
     expect(resolveRestingComposerControlsNaturalWidth(measurement)).toBe(196);
     expect(resolveRestingComposerControlsLayout({ ...measurement, hostWidth: 200 })).toEqual({
       hiddenCount: 0,
+      iconOnlyCount: 0,
       visible: true,
     });
   });
@@ -60,6 +67,7 @@ describe("measureRestingComposerControls", () => {
     expect(measurement.naturalFixedWidth).toBe(192);
     expect(resolveRestingComposerControlsLayout({ ...measurement, hostWidth: 200 })).toEqual({
       hiddenCount: 1,
+      iconOnlyCount: 1,
       visible: true,
     });
   });
@@ -70,6 +78,7 @@ describe("measureRestingComposerControls", () => {
     expect(measurement.naturalFixedWidth).toBe(212);
     expect(resolveRestingComposerControlsLayout({ ...measurement, hostWidth: 200 })).toEqual({
       hiddenCount: 1,
+      iconOnlyCount: 1,
       visible: true,
     });
   });
@@ -79,10 +88,12 @@ describe("measureRestingComposerControls", () => {
     expect(resolveRestingComposerControlsNaturalWidth(measurement)).toBe(300);
     expect(resolveRestingComposerControlsLayout({ ...measurement, hostWidth: 200 })).toEqual({
       hiddenCount: 1,
+      iconOnlyCount: 1,
       visible: true,
     });
     expect(resolveRestingComposerControlsLayout({ ...measurement, hostWidth: 180 })).toEqual({
       hiddenCount: 1,
+      iconOnlyCount: 1,
       visible: false,
     });
   });
