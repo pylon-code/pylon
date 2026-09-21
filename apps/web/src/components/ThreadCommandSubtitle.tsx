@@ -4,6 +4,8 @@ import { ProjectFavicon, type ProjectFaviconProject } from "./ProjectFavicon";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
 import { cn } from "~/lib/utils";
 
+import { MiddleTruncate } from "./ui/middle-truncate";
+
 export const COMMAND_PALETTE_META_ICON_CLASS = "size-3 shrink-0 text-muted-foreground/70";
 
 export function CommandPaletteMetaDot() {
@@ -64,7 +66,7 @@ export function ThreadCommandSubtitle(props: {
           {projectLabel ? <CommandPaletteMetaDot /> : null}
           <span className="inline-flex min-w-0 items-center gap-1">
             <WorkspaceIcon isWorktree={isWorktree} />
-            <span className="min-w-0 truncate">{branchLabel}</span>
+            <MiddleTruncate value={branchLabel} />
           </span>
         </>
       ) : null}

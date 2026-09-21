@@ -122,6 +122,7 @@ import {
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
+import { MiddleTruncate } from "../ui/middle-truncate";
 import { PullRequestDetailGhost, PullRequestTimelineGhost } from "./PullRequestGhosts";
 import { PullRequestCopyableCode } from "./PullRequestCopyableCode";
 import { PullRequestActivityUnavailableState } from "./PullRequestActivityUnavailableState";
@@ -2270,7 +2271,9 @@ export function PullRequestDetailPanel({
                             className="size-3 shrink-0"
                           />
                         ) : null}
-                        <code className="min-w-0 truncate">{detail.baseBranch}</code>
+                        <code className="flex min-w-0">
+                          <MiddleTruncate value={detail.baseBranch} showTitle={false} />
+                        </code>
                       </PullRequestBaseFreshnessWarning>
                     ) : (
                       <Tooltip>
@@ -2283,7 +2286,9 @@ export function PullRequestDetailPanel({
                                   className="size-3 shrink-0"
                                 />
                               ) : null}
-                              <code className="min-w-0 truncate">{detail.baseBranch}</code>
+                              <code className="flex min-w-0">
+                                <MiddleTruncate value={detail.baseBranch} showTitle={false} />
+                              </code>
                             </span>
                           }
                         />
@@ -2301,7 +2306,9 @@ export function PullRequestDetailPanel({
                     <Tooltip>
                       <TooltipTrigger
                         render={
-                          <code className="min-w-0 flex-1 truncate">{detail.headBranch}</code>
+                          <code className="flex min-w-0 flex-1">
+                            <MiddleTruncate value={detail.headBranch} showTitle={false} />
+                          </code>
                         }
                       />
                       <TooltipPopup side="top">{detail.headBranch}</TooltipPopup>
@@ -2460,7 +2467,9 @@ export function PullRequestDetailPanel({
                             className="size-3 shrink-0"
                           />
                         ) : null}
-                        <code className="min-w-0 truncate">{detail.baseBranch}</code>
+                        <code className="flex min-w-0">
+                          <MiddleTruncate value={detail.baseBranch} showTitle={false} />
+                        </code>
                       </PullRequestBaseFreshnessWarning>
                     ) : (
                       <Tooltip>
@@ -2473,7 +2482,9 @@ export function PullRequestDetailPanel({
                                   className="size-3 shrink-0"
                                 />
                               ) : null}
-                              <code className="min-w-0 truncate">{detail.baseBranch}</code>
+                              <code className="flex min-w-0">
+                                <MiddleTruncate value={detail.baseBranch} showTitle={false} />
+                              </code>
                             </span>
                           }
                         />
