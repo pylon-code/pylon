@@ -90,7 +90,7 @@ export function resolvePullRequestPreviewTarget({
     environmentId,
     input: {
       projectId: project.id,
-      host: parsed.authority ?? parsed.host,
+      host: parsed.host,
       repository: sourceControlRepositorySelector(project.repositoryIdentity) ?? parsed.repository,
       number: parsed.number,
     },

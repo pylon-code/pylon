@@ -4,7 +4,7 @@ import { Button } from "~/components/ui/button";
 
 import { cn } from "~/lib/utils";
 import { useForegroundPage } from "~/hooks/useForegroundPage";
-import { useDeviceHubAccess } from "~/state/device";
+import { refreshDeviceHubAccess, useDeviceHubAccess } from "~/state/device";
 import { DeviceLoadingView } from "./DeviceLoadingView";
 import { type DeviceAxElement, fetchDeviceAxTree } from "./deviceHubApi";
 import {

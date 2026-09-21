@@ -7163,6 +7163,8 @@ describe("agent browser access", () => {
         agentTarget: unused,
         state: unused(),
         subscribe: unused(),
+        inspect: unused(),
+        retryHost: unused,
         configure: unused,
         list: unused(),
         open: unused,

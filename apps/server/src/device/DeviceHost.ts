@@ -79,6 +79,7 @@ export class DeviceHost extends Context.Service<
   {
     readonly id: DeviceHostId;
     readonly summary: Effect.Effect<DeviceHostSummary>;
+    readonly inspect?: Effect.Effect<DeviceHostSummary, DeviceHostError>;
     readonly platformAvailability: (
       platform: DevicePlatform,
     ) => Effect.Effect<DevicePlatformAvailability>;
@@ -87,11 +88,11 @@ export class DeviceHost extends Context.Service<
      * concurrent callers share one start, and a ready host returns immediately.
      */
     readonly ensureReady: (
-      onPhase: (phase: "installing" | "starting") => Effect.Effect<void>,
+      onPhase: (phase: "installing" | "starting", detail?: string) => Effect.Effect<void>,
     ) => Effect.Effect<DeviceHostReady, DeviceHostError>;
     /** Installs and starts agent-device after the user grants agent access. */
     readonly ensureAgentReady: (
-      onPhase: (phase: "installing" | "starting") => Effect.Effect<void>,
+      onPhase: (phase: "installing" | "starting", detail?: string) => Effect.Effect<void>,
     ) => Effect.Effect<DeviceHostAgentReady, DeviceHostError | DeviceHostTimeoutError>;
     /** Current endpoints when already running, without starting anything. */
     readonly current: Effect.Effect<DeviceHostReady | null>;

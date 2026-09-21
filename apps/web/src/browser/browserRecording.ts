@@ -125,7 +125,7 @@ interface ActiveRecording {
   releaseSurfaceActivity: (() => void) | null;
   stream: MediaStream | null;
   recorder: MediaRecorder | null;
-  compositor: Awaited<ReturnType<typeof createRecordingCompositor>>;
+  compositor: Awaited<ReturnType<typeof createRecordingCompositor>> | null;
   savedBlob?: Blob;
   uploadPromise?: Promise<string>;
   lifecycle: BrowserRecordingLifecycle;
@@ -538,6 +538,7 @@ export async function startBrowserRecording(
     startupSettled,
     releaseSurfaceActivity,
     stream: null,
+    compositor: null,
     recorder: null,
     lifecycle: startingLifecycle,
   };
