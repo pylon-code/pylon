@@ -37,6 +37,7 @@ type IncomingShareContextValue = {
     expectedDestination: IncomingShareDestination,
   ) => Promise<void>;
   readonly consumeShare: (shareId: string) => Promise<void>;
+  readonly dismissShare: (shareId: string) => Promise<void>;
   readonly refresh: () => Promise<void>;
 };
 
@@ -292,6 +293,21 @@ export function IncomingShareProvider(props: React.PropsWithChildren) {
       setDrafts(snapshot);
     }
   }, []);
+  const dismissShare = useCallback(
+    async (shareId: string) => {
+      const target = drafts.find((draft) => draft.id === shareId);
+      if (target && target.attachments.length > 0) {
+        const { scheduleUnusedComposerAttachmentCleanup } =
+          await import("../../state/use-composer-drafts");
+        scheduleUnusedComposerAttachmentCleanup(target.attachments);
+      }
+      const snapshot = await incomingShareInbox.consume(shareId);
+      if (mountedRef.current) {
+        setDrafts(snapshot);
+      }
+    },
+    [drafts],
+  );
   const reserveShare = useCallback(
     async (shareId: string, destination: IncomingShareDestination) => {
       const snapshot = await incomingShareInbox.reserve(shareId, destination);
@@ -324,10 +340,12 @@ export function IncomingShareProvider(props: React.PropsWithChildren) {
       releaseShareReservation,
       reserveShare,
       consumeShare,
+      dismissShare,
       refresh,
     }),
     [
       consumeShare,
+      dismissShare,
       drafts,
       error,
       getShare,

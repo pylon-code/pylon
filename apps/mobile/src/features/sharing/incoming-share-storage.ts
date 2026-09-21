@@ -33,18 +33,38 @@ async function getFile(shareId: string) {
   return new File(await getDirectory(), fileName(shareId));
 }
 
+export const MAX_INCOMING_SHARE_DRAFTS = 20;
+export const INCOMING_SHARE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 export async function loadIncomingShareDrafts(options?: {
   readonly strict?: boolean;
+  readonly now?: number;
 }): Promise<ReadonlyArray<IncomingShareDraft>> {
   try {
     const { File } = await import("expo-file-system");
-    const drafts: IncomingShareDraft[] = [];
+    const entries: Array<{
+      readonly draft: IncomingShareDraft;
+      readonly file: InstanceType<typeof File>;
+    }> = [];
+    const nowMs = options?.now ?? Date.now();
     for (const entry of (await getDirectory()).list()) {
       if (!(entry instanceof File) || !entry.name.endsWith(".json")) {
         continue;
       }
       try {
-        drafts.push(decodeIncomingShareDraft(JSON.parse(await entry.text()) as unknown));
+        const decoded = decodeIncomingShareDraft(JSON.parse(await entry.text()) as unknown);
+        const createdAtMs = Date.parse(decoded.createdAt);
+        if (!Number.isNaN(createdAtMs) && nowMs - createdAtMs > INCOMING_SHARE_TTL_MS) {
+          try {
+            if (entry.exists) {
+              entry.delete();
+            }
+          } catch (cleanupError) {
+            console.warn("[incoming-share] failed to delete expired persisted share", cleanupError);
+          }
+          continue;
+        }
+        entries.push({ draft: decoded, file: entry });
       } catch (cause) {
         const error = new IncomingShareStorageError({ operation: "load", shareId: null, cause });
         if (options?.strict) {
@@ -60,7 +80,22 @@ export async function loadIncomingShareDrafts(options?: {
         }
       }
     }
-    return drafts.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    entries.sort((left, right) => right.draft.createdAt.localeCompare(left.draft.createdAt));
+    if (entries.length > MAX_INCOMING_SHARE_DRAFTS) {
+      const retained = entries.slice(0, MAX_INCOMING_SHARE_DRAFTS);
+      const excess = entries.slice(MAX_INCOMING_SHARE_DRAFTS);
+      for (const item of excess) {
+        try {
+          if (item.file.exists) {
+            item.file.delete();
+          }
+        } catch (cleanupError) {
+          console.warn("[incoming-share] failed to prune excess persisted share", cleanupError);
+        }
+      }
+      return retained.map((item) => item.draft);
+    }
+    return entries.map((item) => item.draft);
   } catch (cause) {
     if (cause instanceof IncomingShareStorageError) {
       throw cause;
