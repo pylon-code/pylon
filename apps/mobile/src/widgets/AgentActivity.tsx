@@ -70,7 +70,8 @@ export function AgentActivity(
   // for approval, indigo for input, sky for working, emerald for completed.
   // On iPhone the LA sits on a dark material, but macOS (iPhone Mirroring /
   // Mac notification center) renders it on a light one — so pick the web
-  // palette's light (-600) or dark (-300) variant off the color scheme.
+  // palette's light-background (-600) or dark-background (-300) variant.
+  // Approval uses amber-700 on light to retain 4.5:1 contrast.
   const isLightScheme = environment.colorScheme === "light";
   const phaseTint = (phase: AgentActivityPhase | undefined): string => {
     if (environment.isLuminanceReduced) {
