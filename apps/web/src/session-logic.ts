@@ -129,6 +129,7 @@ export interface WorkLogEntry {
   taskId?: string;
   /** Agent role (subagent_type) for labeled timeline rows. */
   agentRole?: string;
+  isBackgroundTask?: boolean;
   /** Strictly decoded provider-neutral notification rendered as a dedicated timeline leaf. */
   sessionNotification?: SessionNotificationActivity;
   /**

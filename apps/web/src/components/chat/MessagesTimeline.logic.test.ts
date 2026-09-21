@@ -1967,6 +1967,146 @@ describe("deriveMessagesTimelineRows", () => {
     expect(rows.map((row) => row.id)).toEqual(["turn-fold:turn-1", "assistant-final-entry"]);
   });
 
+  it("keeps assistant response visible when background task notification completes", () => {
+    const timelineEntries = [
+      {
+        id: "assistant-response-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:01Z",
+        message: {
+          id: "assistant-response" as never,
+          role: "assistant" as const,
+          text: "Here is the architectural overview answering your request in full.",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:01Z",
+          updatedAt: "2026-01-01T00:00:02Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "task-notification-entry",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:03Z",
+        entry: {
+          id: "task-work-1",
+          createdAt: "2026-01-01T00:00:03Z",
+          turnId: "turn-1" as never,
+          toolCallId: "antigravity-task:session/task-8742",
+          label: "Background command result",
+          toolTitle: "Background command result",
+          tone: "tool" as const,
+          itemType: "command_execution" as const,
+          isBackgroundTask: true,
+        },
+      },
+      {
+        id: "assistant-acknowledgment-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:05Z",
+        message: {
+          id: "assistant-acknowledgment" as never,
+          role: "assistant" as const,
+          text: "Background task finished successfully.",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:05Z",
+          updatedAt: "2026-01-01T00:00:06Z",
+          streaming: false,
+        },
+      },
+    ];
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "assistant-response-entry",
+      "turn-fold:turn-1",
+      "assistant-acknowledgment-entry",
+    ]);
+  });
+
+  it("keeps assistant response visible when tools precede response and background task completes after", () => {
+    const timelineEntries = [
+      {
+        id: "tool-entry",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:01Z",
+        entry: {
+          id: "tool-work-1",
+          createdAt: "2026-01-01T00:00:01Z",
+          turnId: "turn-1" as never,
+          toolCallId: "call_1",
+          label: "Read file",
+          tone: "tool" as const,
+          itemType: "dynamic_tool_call" as const,
+        },
+      },
+      {
+        id: "assistant-response-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:02Z",
+        message: {
+          id: "assistant-response" as never,
+          role: "assistant" as const,
+          text: "Here is the explanation.",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:02Z",
+          updatedAt: "2026-01-01T00:00:03Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "task-notification-entry",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:04Z",
+        entry: {
+          id: "task-work-1",
+          createdAt: "2026-01-01T00:00:04Z",
+          turnId: "turn-1" as never,
+          toolCallId: "antigravity-task:session/task-8742",
+          label: "Background command result",
+          toolTitle: "Background command result",
+          tone: "tool" as const,
+          itemType: "command_execution" as const,
+          isBackgroundTask: true,
+        },
+      },
+      {
+        id: "assistant-acknowledgment-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:05Z",
+        message: {
+          id: "assistant-acknowledgment" as never,
+          role: "assistant" as const,
+          text: "Task finished.",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:05Z",
+          updatedAt: "2026-01-01T00:00:06Z",
+          streaming: false,
+        },
+      },
+    ];
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "turn-fold:turn-1",
+      "assistant-response-entry",
+      "assistant-acknowledgment-entry",
+    ]);
+  });
+
   it("keeps a missing-response work row visible outside settled-turn folding", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

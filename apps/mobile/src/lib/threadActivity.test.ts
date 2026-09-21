@@ -2060,6 +2060,85 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  it("keeps middle assistant message visible when background task completes after it", () => {
+    const turnId = TurnId.make("turn-1");
+    const thread = makeThread({
+      id: ThreadId.make("thread-bg-task-middle-message"),
+      projectId: ProjectId.make("project-1"),
+      title: "Background task narrative",
+      latestTurn: {
+        turnId,
+        state: "completed",
+        requestedAt: "2026-04-01T00:00:00.000Z",
+        startedAt: "2026-04-01T00:00:01.000Z",
+        completedAt: "2026-04-01T00:00:10.000Z",
+        assistantMessageId: MessageId.make("assistant-final"),
+      },
+      messages: [
+        {
+          id: MessageId.make("assistant-first"),
+          role: "assistant",
+          text: "Starting work.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:01.000Z",
+          updatedAt: "2026-04-01T00:00:02.000Z",
+        },
+        {
+          id: MessageId.make("assistant-middle"),
+          role: "assistant",
+          text: "Here is the architectural overview answering your question.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:04.000Z",
+          updatedAt: "2026-04-01T00:00:05.000Z",
+        },
+        {
+          id: MessageId.make("assistant-final"),
+          role: "assistant",
+          text: "Background task completed.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:08.000Z",
+          updatedAt: "2026-04-01T00:00:09.000Z",
+        },
+      ],
+      activities: [
+        makeActivity({
+          id: EventId.make("act-1"),
+          turnId,
+          createdAt: "2026-04-01T00:00:02.500Z",
+          kind: "tool.completed",
+          summary: "Read file",
+          tone: "tool",
+          payload: { title: "Read file", itemType: "file_read", status: "completed" },
+        }),
+        makeActivity({
+          id: EventId.make("act-2"),
+          turnId,
+          createdAt: "2026-04-01T00:00:06.000Z",
+          kind: "tool.completed",
+          summary: "Background command result",
+          tone: "tool",
+          payload: {
+            title: "Background command result",
+            status: "completed",
+            toolCallId: "antigravity-task:session/task-1",
+          },
+        }),
+      ],
+    });
+
+    const feed = buildThreadFeed(thread);
+    const presentation = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
+    expect(presentation.map((entry) => entry.id)).toEqual([
+      "assistant-first",
+      "turn-fold:turn-1",
+      "assistant-middle",
+      "assistant-final",
+    ]);
+  });
+
   it.each([
     {
       outcome: "completed",
