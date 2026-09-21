@@ -85,6 +85,10 @@
       // These workspace packages are private to this monorepo.
       "includeEntryExports": true,
     },
+    "packages/client-runtime": {
+      "includeEntryExports": true,
+      "ignoreIssues": { "src/state/device.ts": ["exports"] },
+    },
     "packages/effect-acp": {
       "includeEntryExports": true,
       "entry": ["test/fixtures/*.ts"],
