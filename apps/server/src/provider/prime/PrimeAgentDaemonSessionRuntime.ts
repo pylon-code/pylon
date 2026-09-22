@@ -1262,6 +1262,7 @@ export interface PrimeAgentDaemonSessionRuntime {
   }) => Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly abort: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly abortAndClearQueue: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
+  readonly abortAndSendQueued: Effect.Effect<void, PrimeAgentDaemonSessionRuntimeError>;
   readonly sideQuestionsAvailable: boolean;
   /** Runs one requester-scoped unary question; native prompt/error/id fields never escape. */
   readonly askSideQuestion: (
@@ -8199,8 +8200,18 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       if (correlatedPromptLifecycleAvailable) {
         yield* requireCorrelatedPromptLifecycleAdmission("abort");
       }
-      yield* callVoid("abort", () => connection!.abort());
+      const canAbortAndSendQueued =
+        Predicate.isFunction(connection?.supportsNegotiatedCapability) &&
+        connection.supportsNegotiatedCapability("abort_and_send_queued_v1") === true &&
+        Predicate.isFunction(connection?.abortAndSendQueued);
+      if (canAbortAndSendQueued) {
+        yield* callVoid("abort", () => connection!.abortAndSendQueued!());
+      } else {
+        yield* callVoid("abort", () => connection!.abort());
+      }
     });
+
+    const abortAndSendQueued = abort;
 
     const abortAndClearQueue = Effect.gen(function* () {
       yield* ensureOpen("abort-and-clear-queue");
@@ -9020,6 +9031,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       setInputQueueMode,
       abort,
       abortAndClearQueue,
+      abortAndSendQueued,
       sideQuestionsAvailable,
       askSideQuestion,
       abortSideQuestion,
