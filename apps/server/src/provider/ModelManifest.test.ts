@@ -219,8 +219,12 @@ describe("resolveProviderCatalog", () => {
   });
 });
 
+// Remote fixtures date after the bundle so a fetch still outranks it.
+const REMOTE_UPDATED_AT = "2099-01-01T00:00:00Z";
+
 const REMOTE_MANIFEST: ModelManifestData = {
   version: 1,
+  updatedAt: REMOTE_UPDATED_AT,
   currentModels: {
     codex: ["remote-model"],
     claudeAgent: ["remote-agent-model"],
@@ -229,6 +233,7 @@ const REMOTE_MANIFEST: ModelManifestData = {
 
 const REMOTE_CLAUDE_MANIFEST: ModelManifestData = {
   version: 1,
+  updatedAt: REMOTE_UPDATED_AT,
   currentModels: {},
   providers: {
     claudeAgent: {

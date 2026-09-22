@@ -95,6 +95,12 @@ const ManifestProviderCatalog = Schema.Struct({
  */
 const ModelManifestEnvelopeSchema = Schema.Struct({
   version: Schema.Literal(1),
+  /**
+   * ISO date of the last edit. A release bundles its manifest, and a disk
+   * cache of an older edit must not outrank it. Optional so older remote
+   * files still decode; they count as older than any dated bundle.
+   */
+  updatedAt: Schema.optional(Schema.String),
   currentModels: Schema.Record(
     Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(64)),
     Schema.Array(
@@ -154,6 +160,13 @@ export const decodeManifestJson = (input: string) =>
 
 export const BUNDLED_MODEL_MANIFEST: ModelManifestData =
   Schema.decodeUnknownSync(ModelManifestSchema)(bundledManifestJson);
+
+/** Epoch millis of the manifest's `updatedAt`, or 0 when absent or unparsable. */
+function manifestUpdatedAtMs(manifest: ModelManifestData): number {
+  if (manifest.updatedAt === undefined) return 0;
+  const parsed = Date.parse(manifest.updatedAt);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
 
 export interface ResolvedManifestModel {
   readonly model: ServerProviderModel;
@@ -382,7 +395,14 @@ export const make = Effect.gen(function* () {
       );
       if (fromDisk === null) return;
       // The disk copy is the last-seen remote manifest, so it outranks the
-      // bundle even when stale: it is refreshed on the next successful fetch.
+      // bundle even when stale, unless the bundle's own edit date is newer
+      // than the cached manifest's. Then the release carries data the cache
+      // has not seen and the cache is dropped so the next refresh replaces
+      // it. Comparing edit dates, not fetch time, keeps this independent of
+      // when the cache was written relative to the release.
+      if (manifestUpdatedAtMs(BUNDLED_MODEL_MANIFEST) > manifestUpdatedAtMs(fromDisk.manifest)) {
+        return;
+      }
       manifest = fromDisk.manifest;
       fetchedAtMs = fromDisk.fetchedAtMs;
     }),
