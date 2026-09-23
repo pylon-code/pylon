@@ -169,7 +169,7 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
 }
 
 interface AgentCancelControls {
-  readonly enabled: boolean;
+  readonly canRequest: (agent: RuntimeSubagent) => boolean;
   readonly pendingIds: ReadonlySet<string>;
   readonly onRequest: (agent: RuntimeSubagent) => void;
 }
@@ -213,10 +213,18 @@ function AgentRow({
   ].filter((value): value is string => value !== null);
   const active = isActiveSubagentStatus(agent.status);
   const messageable =
-    messageControls.enabled && agent.kind !== "workflow" && agent.messageable && active;
-  const cancellable = cancelControls.enabled && agent.kind !== "workflow" && active;
+    messageControls.enabled &&
+    agent.source !== "relay" &&
+    agent.kind !== "workflow" &&
+    agent.messageable &&
+    active;
+  const cancellable = cancelControls.canRequest(agent) && agent.kind !== "workflow" && active;
   const stopping = cancellable && cancelControls.pendingIds.has(agent.id);
-  const liveActivityEligible = liveActivityControls.enabled && agent.kind !== "workflow";
+  const liveActivityEligible =
+    liveActivityControls.enabled &&
+    agent.watchable !== false &&
+    agent.source !== "relay" &&
+    agent.kind !== "workflow";
   const liveActivityAvailable = liveActivityEligible && active;
 
   return (
@@ -551,6 +559,9 @@ function ExpandedWorkflowSection({
         ) : null}
         <span className="ml-auto font-mono normal-case text-muted-foreground/80">
           {settled}/{members.length} settled
+          {group.workflow.source === "relay" && group.workflow.progress
+            ? ` · ${group.workflow.progress}`
+            : null}
         </span>
         <Button
           size="icon-micro"
@@ -639,6 +650,9 @@ function CollapsedWorkflowSection({
         <span className="ml-auto flex items-center gap-1.5 font-mono text-[.7rem] text-muted-foreground/80">
           {failed > 0 ? <span className="text-destructive-foreground">{failed} failed</span> : null}
           <span>{members.length} agents</span>
+          {group.workflow.source === "relay" && group.workflow.progress ? (
+            <span>· {group.workflow.progress}</span>
+          ) : null}
           <span className="tabular-nums">· {formatSubagentTokenCount(totalTokens)} tok</span>
           {elapsed ? <span className="tabular-nums">· {elapsed}</span> : null}
           <ChevronRight aria-hidden className="size-3" />
@@ -694,6 +708,7 @@ export function AgentsPanel({
   environmentId = null,
   threadId = null,
   canCancelAgents = false,
+  canCancelAgent,
   canMessageAgents = false,
   canWatchAgentActivity = false,
   agentMessageScopeKey,
@@ -706,6 +721,8 @@ export function AgentsPanel({
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
   canCancelAgents?: boolean;
+  /** Per-agent control resolution; detached workers may outlive a parent session. */
+  canCancelAgent?: (agent: RuntimeSubagent) => boolean;
   canMessageAgents?: boolean;
   canWatchAgentActivity?: boolean;
   agentMessageScopeKey?: string;
@@ -758,13 +775,20 @@ export function AgentsPanel({
   const liveActivityControls: AgentLiveActivityControls = {
     enabled: canWatchAgentActivity && environmentId !== null && threadId !== null,
     onRequest: (agent) => {
-      if (!isActiveSubagentStatus(agent.status) || agent.kind === "workflow") return;
+      if (
+        !isActiveSubagentStatus(agent.status) ||
+        agent.kind === "workflow" ||
+        agent.watchable === false ||
+        agent.source === "relay"
+      )
+        return;
       setLiveActivitySelection({ agentId: agent.id, scopeKey: liveActivityScopeKey });
     },
   };
 
   const cancelControls: AgentCancelControls = {
-    enabled: canCancelAgents && onCancelAgent !== undefined,
+    canRequest: (agent) =>
+      onCancelAgent !== undefined && (canCancelAgent?.(agent) ?? canCancelAgents),
     pendingIds: cancellingAgentIds,
     onRequest: (agent) => {
       setCancelError(null);

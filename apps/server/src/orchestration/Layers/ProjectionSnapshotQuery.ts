@@ -2213,6 +2213,22 @@ pending_approval_requests AS (
             activity.activity_id DESC
           LIMIT 1
         ),
+        relay_lifecycle AS (
+          SELECT activity.activity_id, activity.kind,
+            ROW_NUMBER() OVER (
+              PARTITION BY json_extract(activity.payload_json, '$.taskId')
+              ORDER BY activity.sequence DESC, activity.created_at DESC, activity.activity_id DESC
+            ) AS task_order
+          FROM projection_thread_activities AS activity
+          WHERE activity.thread_id = ${threadId}
+            AND activity.kind IN ('task.started', 'task.progress', 'task.updated', 'task.completed')
+            AND json_extract(activity.payload_json, '$.source') = 'relay'
+            AND json_type(activity.payload_json, '$.taskId') = 'text'
+        ),
+        active_relay_lifecycle AS (
+          SELECT activity_id FROM relay_lifecycle
+          WHERE task_order = 1 AND kind != 'task.completed'
+        ),
         pinned_activity_ids AS (
           SELECT activity_id
           FROM pending_approval_activities
@@ -2225,6 +2241,9 @@ pending_approval_requests AS (
           UNION ALL
           SELECT activity_id
           FROM latest_plan_activity
+          UNION ALL
+          SELECT activity_id
+          FROM active_relay_lifecycle
         )
   `;
 
@@ -3159,6 +3178,9 @@ pending_approval_requests AS (
                         backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
                           row.threadId,
                         ),
+                        nativeBackgroundWork: threadBackgroundLiveness.hasNativeBackgroundWork(
+                          row.threadId,
+                        ),
                         planProgress: threadPlanProgress.getThreadPlanProgress(row.threadId),
                       } satisfies OrchestrationThreadShell)
                     : Result.failVoid,
@@ -3325,6 +3347,9 @@ pending_approval_requests AS (
                   hasPendingUserInput: row.pendingUserInputCount > 0,
                   hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                   backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
+                    row.threadId,
+                  ),
+                  nativeBackgroundWork: threadBackgroundLiveness.hasNativeBackgroundWork(
                     row.threadId,
                   ),
                   planProgress: threadPlanProgress.getThreadPlanProgress(row.threadId),
@@ -3702,6 +3727,9 @@ pending_approval_requests AS (
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
         backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
+          threadRow.value.threadId,
+        ),
+        nativeBackgroundWork: threadBackgroundLiveness.hasNativeBackgroundWork(
           threadRow.value.threadId,
         ),
         planProgress: threadPlanProgress.getThreadPlanProgress(threadRow.value.threadId),

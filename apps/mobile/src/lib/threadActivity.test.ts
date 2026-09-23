@@ -290,6 +290,33 @@ function makeThread(
   };
 }
 
+describe("Relay ownership receipts", () => {
+  it("keeps internal bindings out of the mobile conversation feed", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-relay"),
+      projectId: ProjectId.make("project-relay"),
+      title: "Relay proof",
+      activities: [
+        makeActivity({
+          id: EventId.make("relay-binding"),
+          kind: "relay.binding",
+          summary: "Relay binding",
+          createdAt: "2026-04-01T00:00:00.000Z",
+          payload: { id: "job-1", environmentId: "env-1", threadId: "thread-relay" },
+        }),
+        makeActivity({
+          id: EventId.make("relay-activation"),
+          kind: "relay.activation",
+          summary: "Relay activation",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          payload: { id: "job-1", attempt: 2, toolCallId: "tool-2" },
+        }),
+      ],
+    });
+    expect(buildThreadFeed(thread)).toEqual([]);
+  });
+});
+
 describe("buildThreadFeed", () => {
   it("reuses unchanged feed and presentation rows during an assistant text update", () => {
     const completedTurnId = TurnId.make("completed-turn");
@@ -3716,6 +3743,43 @@ describe("quiet timeline: nested agents", () => {
       },
     });
     expect(rows[0]?.getFullDetail()).toBe("Reviewer 0 · completed\nReviewer 1 · completed");
+  });
+
+  it("groups Relay panel members with their coordinator in one mobile spawn card", () => {
+    const panel = "relay-panel:panel-22222222-2222-4222-8222-222222222222";
+    const turnId = TurnId.make("turn-relay-panel");
+    const activities = [panel, `${panel}:member:0`, `${panel}:member:1`].map((taskId, index) =>
+      makeActivity({
+        id: EventId.make(`relay-panel-${index}`),
+        kind: "task.started",
+        summary: index === 0 ? "Relay panel started" : "Relay worker started",
+        createdAt: `2026-04-01T00:00:0${index}.000Z`,
+        turnId,
+        payload: {
+          taskId,
+          taskType: index === 0 ? "local_workflow" : "subagent",
+          workflowName: "Relay panel",
+          agentKind: "agent",
+          source: "relay",
+          status: "running",
+          timelineBypass: true,
+        },
+      }),
+    );
+    const thread = makeThread({
+      id: ThreadId.make("thread-relay-panel"),
+      projectId: ProjectId.make("project-1"),
+      title: "Relay panel",
+      activities,
+    });
+    const rows = buildThreadFeed(thread).flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.workEntry.agentSpawn).toMatchObject({
+      workflowId: panel,
+      agentTaskIds: [panel, `${panel}:member:0`, `${panel}:member:1`],
+    });
   });
 
   it("summarizes a spawn card from the newest member report and the batch outcome", () => {

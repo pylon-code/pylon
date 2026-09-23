@@ -117,4 +117,17 @@ describe("session agent menu", () => {
     });
     expect(settled).toEqual([]);
   });
+
+  it("keeps detached worker stop available after the parent session and hides unsupported actions", () => {
+    const actions = buildSessionAgentMenuActions({
+      scopeKey: "remote:thread-1",
+      agents: [agent({ id: "relay:job-1", source: "relay", cancellable: true, watchable: false })],
+      canMessage: true,
+      canCancel: false,
+      canCancelAgent: (candidate) => candidate.source === "relay" && candidate.cancellable === true,
+      canWatchLiveActivity: true,
+      cancellingAgentIds: new Set(),
+    });
+    expect(actions.map((action) => action.title)).toEqual(["Stop Nested reviewer"]);
+  });
 });

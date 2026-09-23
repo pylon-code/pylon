@@ -576,6 +576,22 @@ describe("workEntryIndicatesToolNeutralStatus", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("does not expose Relay ownership receipts in the conversation", () => {
+    expect(
+      deriveWorkLogEntries([
+        makeActivity({
+          kind: "relay.binding",
+          summary: "Relay binding",
+          payload: { id: "job-1", environmentId: "env-1", threadId: "thread-1" },
+        }),
+        makeActivity({
+          kind: "relay.activation",
+          summary: "Relay activation",
+          payload: { id: "job-1", attempt: 2, toolCallId: "tool-2" },
+        }),
+      ]),
+    ).toEqual([]);
+  });
   it.each([
     {
       outcome: "completed",
@@ -2445,6 +2461,47 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
     // still need a CTA anchor) — but never more than the batch's single row.
     expect(entries).toHaveLength(1);
     expect(entries[0]!.agentSpawn?.agentTaskIds).toEqual(["child-1", "child-2"]);
+  });
+
+  it("groups Relay panel members with their coordinator in one Agents CTA", () => {
+    const panel = "relay-panel:panel-22222222-2222-4222-8222-222222222222";
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        kind: "task.started",
+        payload: {
+          taskId: panel,
+          taskType: "local_workflow",
+          source: "relay",
+          timelineBypass: true,
+        },
+        turnId: "turn-panel",
+      }),
+      makeActivity({
+        kind: "task.started",
+        payload: {
+          taskId: `${panel}:member:0`,
+          taskType: "subagent",
+          source: "relay",
+          timelineBypass: true,
+        },
+        turnId: "turn-panel",
+      }),
+      makeActivity({
+        kind: "task.started",
+        payload: {
+          taskId: `${panel}:member:1`,
+          taskType: "subagent",
+          source: "relay",
+          timelineBypass: true,
+        },
+        turnId: "turn-panel",
+      }),
+    ]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.agentSpawn).toEqual({
+      workflowId: panel,
+      agentTaskIds: [panel, `${panel}:member:0`, `${panel}:member:1`],
+    });
   });
 
   it("timelineBypass non-agent rows (background shells) stay suppressed", () => {

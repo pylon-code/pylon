@@ -36,7 +36,15 @@ export function sessionAgentLiveActivitySelectionIsOpen(input: {
   readonly selection: SessionAgentLiveActivitySelection | null;
   readonly currentScopeKey: string;
   readonly capabilityEnabled: boolean;
-  readonly agent: { readonly kind: string; readonly status: string } | null | undefined;
+  readonly agent:
+    | {
+        readonly kind: string;
+        readonly status: string;
+        readonly source?: string | undefined;
+        readonly watchable?: boolean | undefined;
+      }
+    | null
+    | undefined;
 }): boolean {
   return (
     input.selection !== null &&
@@ -44,6 +52,8 @@ export function sessionAgentLiveActivitySelectionIsOpen(input: {
     input.capabilityEnabled &&
     input.agent !== null &&
     input.agent !== undefined &&
+    input.agent.source !== "relay" &&
+    input.agent.watchable !== false &&
     input.agent.kind !== "workflow" &&
     (input.agent.status === "pending" ||
       input.agent.status === "running" ||

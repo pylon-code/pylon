@@ -236,6 +236,7 @@ import { WizardPopup } from "./ui/wizard";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import {
+  canCancelSessionAgent,
   canMessageSessionAgent,
   deriveAgentPanelModel,
   foldSubagentActivities,
@@ -243,6 +244,7 @@ import {
   isSessionAgentMessageDeliveryUnknown,
   supportsSessionAgentCancel,
   supportsSessionAgentMessage,
+  type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { canWatchSessionAgentLiveActivity } from "@t3tools/client-runtime/state/session-agent-live-activity";
 import { BranchToolbar, type BranchToolbarHandle } from "./BranchToolbar";
@@ -466,6 +468,7 @@ import {
   buildLoadingThreadFromShell,
   buildRunningThreadTurnInterruptInput,
   buildThreadTurnInterruptInput,
+  planBackgroundAgentStop,
   collectLocalTimelineMessageIds,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
@@ -3074,6 +3077,15 @@ export default function ChatView(props: ChatViewProps) {
     activeThread?.session?.runtimeMode === "full-access" &&
     (activeThread.session.status === "ready" || activeThread.session.status === "running") &&
     supportsSessionAgentCancel(activeSessionProviderStatus);
+  const canCancelAgent = useCallback(
+    (agent: RuntimeSubagent) =>
+      canCancelSessionAgent(
+        agent,
+        canCancelSessionAgents,
+        activeEnvironmentConnectionPhase === "connected",
+      ),
+    [activeEnvironmentConnectionPhase, canCancelSessionAgents],
+  );
   const canMessageSessionAgents =
     agentSessionLive &&
     activeThread?.session?.runtimeMode === "full-access" &&
@@ -6560,13 +6572,29 @@ export default function ChatView(props: ChatViewProps) {
     switchGitRef,
     updateThreadMetadata,
   ]);
-  // Background work (subagent fleets, workflow runs, watch loops) can outlive
-  // the turn; once it settles, the composer stop button is gone, so this
-  // banner is the only visible stop affordance. Stop routes through the
-  // stop-everything interrupt: it kills every live background task before
-  // interrupting, and works by session, so no active turn is needed.
+  // Background work can outlive the turn. The banner addresses each detached
+  // Relay worker through agent cancellation, then interrupts native work on
+  // the parent session when it is still available.
   const activeBackgroundLiveness =
     !isWorking && activeThread ? (activeThreadShell?.backgroundLiveness ?? null) : null;
+  const backgroundStopPlan = useMemo(
+    () =>
+      planBackgroundAgentStop(
+        runtimeSubagents,
+        canCancelAgent,
+        activeEnvironmentConnectionPhase === "connected" &&
+          (activeThread?.session?.status === "ready" ||
+            activeThread?.session?.status === "running"),
+        activeThreadShell?.nativeBackgroundWork,
+      ),
+    [
+      activeEnvironmentConnectionPhase,
+      activeThread?.session?.status,
+      activeThreadShell?.nativeBackgroundWork,
+      canCancelAgent,
+      runtimeSubagents,
+    ],
+  );
   const [isStoppingBackgroundWork, setIsStoppingBackgroundWork] = useState(false);
   useEffect(() => {
     // "Stopping..." holds until the liveness clears; the interrupt command
@@ -6581,26 +6609,44 @@ export default function ChatView(props: ChatViewProps) {
     setIsStoppingBackgroundWork(false);
   }, [activeThreadId]);
   const handleStopBackgroundWork = useCallback(async () => {
-    if (!activeThread) return;
+    if (!activeThread || !backgroundStopPlan.canStopAll) return;
     setIsStoppingBackgroundWork(true);
-    const result = await interruptThreadTurn({
-      environmentId,
-      input: buildThreadTurnInterruptInput(activeThread),
-    });
-    if (result._tag === "Failure") {
-      // Every failure clears the pending state — an interrupted command
-      // never reached the server, so liveness would hold "Stopping..."
-      // forever. Only real failures toast.
-      setIsStoppingBackgroundWork(false);
-      if (!isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        setThreadError(
-          activeThread.id,
-          error instanceof Error ? error.message : "Failed to stop background work.",
-        );
+    let failed = false;
+    let reportFailure = false;
+    for (const agentId of backgroundStopPlan.relayAgentIds) {
+      const result = await cancelThreadSessionAgent({
+        environmentId,
+        input: { threadId: activeThread.id, agentId: RuntimeTaskId.make(agentId) },
+      });
+      if (result._tag === "Failure") {
+        failed = true;
+        reportFailure ||= !isAtomCommandInterrupted(result);
       }
     }
-  }, [activeThread, environmentId, interruptThreadTurn, setThreadError]);
+    if (backgroundStopPlan.interruptParent) {
+      const result = await interruptThreadTurn({
+        environmentId,
+        input: buildThreadTurnInterruptInput(activeThread),
+      });
+      if (result._tag === "Failure") {
+        failed = true;
+        reportFailure ||= !isAtomCommandInterrupted(result);
+      }
+    }
+    if (failed) {
+      setIsStoppingBackgroundWork(false);
+      if (reportFailure) {
+        setThreadError(activeThread.id, "Could not stop all background work.");
+      }
+    }
+  }, [
+    activeThread,
+    backgroundStopPlan,
+    cancelThreadSessionAgent,
+    environmentId,
+    interruptThreadTurn,
+    setThreadError,
+  ]);
   const backgroundLivenessBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
     if (activeBackgroundLiveness === null || !activeThread) {
       return null;
@@ -6629,10 +6675,14 @@ export default function ChatView(props: ChatViewProps) {
         <Button
           size="xs"
           variant="ghost"
-          disabled={isStoppingBackgroundWork}
+          disabled={isStoppingBackgroundWork || !backgroundStopPlan.canStopAll}
           onClick={() => void handleStopBackgroundWork()}
         >
-          {isStoppingBackgroundWork ? "Stopping..." : "Stop"}
+          {isStoppingBackgroundWork
+            ? "Stopping..."
+            : backgroundStopPlan.canStopAll
+              ? "Stop"
+              : "Stop unavailable"}
         </Button>
       ),
     };
@@ -6640,6 +6690,7 @@ export default function ChatView(props: ChatViewProps) {
     activeBackgroundLiveness,
     activeThread,
     agentPanelModel.liveCount,
+    backgroundStopPlan.canStopAll,
     handleStopBackgroundWork,
     isStoppingBackgroundWork,
   ]);
@@ -8714,12 +8765,7 @@ export default function ChatView(props: ChatViewProps) {
   const onCancelSessionAgent = useCallback(
     async (agentId: string) => {
       const agent = runtimeSubagents.find((candidate) => candidate.id === agentId);
-      if (
-        !activeThreadId ||
-        !canCancelSessionAgents ||
-        agent === undefined ||
-        !isActiveSubagentStatus(agent.status)
-      ) {
+      if (!activeThreadId || agent === undefined || !canCancelAgent(agent)) {
         throw new Error("The agent is no longer cancellable.");
       }
       setCancellingAgentIds((current) => new Set(current).add(agentId));
@@ -8747,13 +8793,13 @@ export default function ChatView(props: ChatViewProps) {
             : `${agent.title} already stopped`,
         description:
           result.value.disposition === "cancel-requested"
-            ? "The provider accepted the request. Status will update when cancellation is confirmed."
-            : "The provider confirmed that this agent is no longer active.",
+            ? "Stop requested. Status will update when cancellation is confirmed."
+            : "This agent is no longer active.",
       });
     },
     [
       activeThreadId,
-      canCancelSessionAgents,
+      canCancelAgent,
       cancelThreadSessionAgent,
       environmentId,
       runtimeSubagents,
@@ -10260,6 +10306,7 @@ export default function ChatView(props: ChatViewProps) {
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
         canCancelAgents={canCancelSessionAgents}
+        canCancelAgent={canCancelAgent}
         canMessageAgents={canMessageSessionAgents}
         canWatchAgentActivity={canWatchSessionAgentActivity}
         agentMessageScopeKey={sessionAgentMessageScopeKey}

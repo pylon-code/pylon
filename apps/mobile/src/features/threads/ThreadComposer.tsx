@@ -13,6 +13,7 @@ import {
   type SessionCompactionControlSnapshot,
 } from "@t3tools/client-runtime/state/context-compaction";
 import {
+  canCancelSessionAgent,
   canMessageSessionAgent,
   isActiveSubagentStatus,
   supportsSessionAgentCancel,
@@ -867,6 +868,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     sessionAgentReady &&
     props.selectedThread.session?.runtimeMode === "full-access" &&
     supportsSessionAgentCancel(activeSessionProviderStatus);
+  const canCancelAgent = useCallback(
+    (agent: RuntimeSubagent) =>
+      canCancelSessionAgent(agent, canCancelSessionAgents, props.connectionState === "connected"),
+    [canCancelSessionAgents, props.connectionState],
+  );
   const canMessageSessionAgents =
     sessionAgentReady &&
     props.selectedThread.session?.runtimeMode === "full-access" &&
@@ -911,6 +917,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     agents: props.sessionAgents,
     provider: activeSessionProviderStatus,
     canCancel: canCancelSessionAgents,
+    detachedControlsAvailable: props.connectionState === "connected",
     canMessage: canMessageSessionAgents,
     cancellingAgentIds,
     onCancel: props.onCancelSessionAgent,
@@ -921,6 +928,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     agents: props.sessionAgents,
     provider: activeSessionProviderStatus,
     canCancel: canCancelSessionAgents,
+    detachedControlsAvailable: props.connectionState === "connected",
     canMessage: canMessageSessionAgents,
     cancellingAgentIds,
     onCancel: props.onCancelSessionAgent,
@@ -933,12 +941,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         agents: activeSessionAgents,
         canMessage: canMessageSessionAgents,
         canCancel: canCancelSessionAgents,
+        canCancelAgent,
         canWatchLiveActivity: canWatchSessionAgentActivity,
         cancellingAgentIds,
       }),
     [
       activeSessionAgents,
+      canCancelAgent,
       canCancelSessionAgents,
+      props.connectionState,
       canMessageSessionAgents,
       canWatchSessionAgentActivity,
       cancellingAgentIds,
@@ -950,9 +961,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     const current = control.agents.find((candidate) => candidate.id === agentId);
     if (
       control.scopeKey !== expectedScopeKey ||
-      !control.canCancel ||
       current === undefined ||
-      !isActiveSubagentStatus(current.status) ||
+      !canCancelSessionAgent(current, control.canCancel, control.detachedControlsAvailable) ||
       control.cancellingAgentIds.has(agentId)
     ) {
       return;
@@ -1044,7 +1054,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       const agent = control.agents.find((candidate) => candidate.id === action.agentId);
       if (!agent || !isActiveSubagentStatus(agent.status)) return;
       if (action.kind === "live-activity") {
-        if (!canWatchSessionAgentActivity || agent.kind === "workflow") return;
+        if (
+          !canWatchSessionAgentActivity ||
+          agent.watchable === false ||
+          agent.source === "relay" ||
+          agent.kind === "workflow"
+        )
+          return;
         setLiveActivitySelection({ agentId: agent.id, scopeKey: control.scopeKey });
         return;
       }
@@ -1056,7 +1072,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         setMessageAgentId(agent.id);
         return;
       }
-      if (!control.canCancel || control.cancellingAgentIds.has(agent.id)) return;
+      if (
+        !canCancelSessionAgent(agent, control.canCancel, control.detachedControlsAvailable) ||
+        control.cancellingAgentIds.has(agent.id)
+      )
+        return;
       const expectedScopeKey = control.scopeKey;
       Alert.alert(
         `Stop ${agent.title}?`,
@@ -2024,7 +2044,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                         }
                       >
                         <ComposerToolbarButton
-                          accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}. View live activity, message, or stop an agent.`}
+                          accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}. Open available agent actions.`}
                           icon="person.2"
                           label={`${activeSessionAgents.length} ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
                         />
