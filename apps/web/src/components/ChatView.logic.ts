@@ -555,6 +555,9 @@ export function planBackgroundAgentStop(
     (agent) =>
       agent.source === "relay" && agent.kind !== "workflow" && isActiveSubagentStatus(agent.status),
   );
+  const hasActiveRelay = agents.some(
+    (agent) => agent.source === "relay" && isActiveSubagentStatus(agent.status),
+  );
   const hasNativeAgent = agents.some(
     (agent) => agent.source !== "relay" && isActiveSubagentStatus(agent.status),
   );
@@ -563,7 +566,7 @@ export function planBackgroundAgentStop(
   const hasNativeWork = nativeBackgroundWork ?? hasNativeAgent;
   // A provider interrupt can close the parent session, so Relay-only work
   // must never send one merely because that session is still connected.
-  const interruptParent = canInterruptParent && (hasNativeWork || relayWorkers.length === 0);
+  const interruptParent = canInterruptParent && (hasNativeWork || !hasActiveRelay);
   return {
     relayAgentIds: relayWorkers.filter(canCancelAgent).map((agent) => agent.id),
     interruptParent,

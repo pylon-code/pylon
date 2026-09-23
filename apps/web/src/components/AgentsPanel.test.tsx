@@ -122,6 +122,15 @@ describe("background agent stop routing", () => {
       canStopAll: true,
     });
   });
+
+  it("does not interrupt the parent for a Relay panel before its members appear", () => {
+    const workflow = { ...relay, id: "relay:panel-1", kind: "workflow" as const };
+    expect(planBackgroundAgentStop([workflow], canCancel, true, false)).toEqual({
+      relayAgentIds: [],
+      interruptParent: false,
+      canStopAll: false,
+    });
+  });
 });
 
 describe("AgentsPanel agent cancellation", () => {
