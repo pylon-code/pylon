@@ -290,6 +290,33 @@ function makeThread(
   };
 }
 
+describe("Relay ownership receipts", () => {
+  it("keeps internal bindings out of the mobile conversation feed", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-relay"),
+      projectId: ProjectId.make("project-relay"),
+      title: "Relay proof",
+      activities: [
+        makeActivity({
+          id: EventId.make("relay-binding"),
+          kind: "relay.binding",
+          summary: "Relay binding",
+          createdAt: "2026-04-01T00:00:00.000Z",
+          payload: { id: "job-1", environmentId: "env-1", threadId: "thread-relay" },
+        }),
+        makeActivity({
+          id: EventId.make("relay-activation"),
+          kind: "relay.activation",
+          summary: "Relay activation",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          payload: { id: "job-1", attempt: 2, toolCallId: "tool-2" },
+        }),
+      ],
+    });
+    expect(buildThreadFeed(thread)).toEqual([]);
+  });
+});
+
 describe("buildThreadFeed", () => {
   it("reuses unchanged feed and presentation rows during an assistant text update", () => {
     const completedTurnId = TurnId.make("completed-turn");

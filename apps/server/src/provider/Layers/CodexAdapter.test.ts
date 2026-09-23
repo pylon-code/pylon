@@ -58,6 +58,7 @@ import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { readCodexExactCursor } from "./CodexAbsoluteRollback.ts";
 import type { CodexConversationSnapshot } from "./CodexAbsoluteHistory.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
+const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 
 // Test-local service tag so the rest of the file can keep using `yield* CodexAdapter`.
 class CodexAdapter extends Context.Service<CodexAdapter, CodexAdapterShape>()(
@@ -381,6 +382,44 @@ validationLayer("CodexAdapterLive validation", (it) => {
         NodeAssert.ok(
           McpProviderSession.MCP_PROVIDER_TOOL_TIMEOUT_MS > PREVIEW_RECORDING_STOP_TIMEOUT_MS,
         );
+      }),
+    ),
+  );
+});
+
+const relayValidationLayer = it.layer(
+  Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      return yield* makeCodexAdapter(decodeCodexSettings({}), {
+        environment: { ...process.env, PYLON_RELAY_CLI: "/tmp/pylon-relay-cli.mjs" },
+        makeRuntime: validationRuntimeFactory.factory,
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+relayValidationLayer("CodexAdapterLive Relay MCP", (it) => {
+  it.effect("passes the configured Relay CLI alongside Pylon MCP arguments", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        validationRuntimeFactory.factory.mockClear();
+        const adapter = yield* CodexAdapter;
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-relay-mcp"),
+          runtimeMode: "full-access",
+        });
+        const args = validationRuntimeFactory.factory.mock.calls[0]?.[0].appServerArgs ?? [];
+        const command = yield* encodeJsonString(process.execPath);
+        NodeAssert.ok(args.includes(`mcp_servers.relay.command=${command}`));
+        NodeAssert.ok(args.includes('mcp_servers.relay.args=["/tmp/pylon-relay-cli.mjs","mcp"]'));
+        NodeAssert.ok(args.includes("mcp_servers.relay.tool_timeout_sec=180.0"));
       }),
     ),
   );

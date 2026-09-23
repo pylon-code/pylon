@@ -133,6 +133,37 @@ describe("AgentsPanel agent cancellation", () => {
     expect(markup).not.toContain('aria-label="Stop ');
   });
 
+  it("offers detached worker stop after parent controls disappear without message or transcript controls", () => {
+    const detached = {
+      ...active,
+      id: "relay:job-1",
+      title: "Relay reviewer",
+      source: "relay" as const,
+      cancellable: true,
+      watchable: false,
+      model: "claude-sonnet-5",
+      effort: "high",
+    };
+    const markup = renderToStaticMarkup(
+      <AgentsPanel
+        model={{ ...model, directAgents: [detached] }}
+        environmentId={"env" as never}
+        threadId={"thread" as never}
+        canCancelAgent={(candidate) =>
+          candidate.source === "relay" && candidate.cancellable === true
+        }
+        canMessageAgents
+        canWatchAgentActivity
+        onCancelAgent={async () => undefined}
+        onMessageAgent={async () => "delivered"}
+      />,
+    );
+    expect(markup).toContain('aria-label="Stop Relay reviewer"');
+    expect(markup).toContain("sonnet-5 · high");
+    expect(markup).not.toContain('aria-label="Message Relay reviewer"');
+    expect(markup).not.toContain('aria-label="Open live activity for Relay reviewer"');
+  });
+
   it("offers messaging only for provider-marked active agents when enabled", () => {
     const unmessageable = {
       ...active,

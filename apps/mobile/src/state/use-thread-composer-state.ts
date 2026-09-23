@@ -46,9 +46,9 @@ import {
 } from "@t3tools/client-runtime/state/session-input-queue";
 import { deriveCurrentSessionResources } from "@t3tools/client-runtime/state/session-resources";
 import {
+  canCancelSessionAgent,
   canMessageSessionAgent,
   foldSubagentActivities,
-  isActiveSubagentStatus,
   isSessionAgentMessageDeliveryUnknown,
   supportsSessionAgentCancel,
   supportsSessionAgentMessage,
@@ -1092,11 +1092,14 @@ export function useThreadComposerState() {
       const agent = selectedThreadAgents.find((candidate) => candidate.id === agentId);
       if (
         !selectedThreadShell ||
-        session?.runtimeMode !== "full-access" ||
-        (session.status !== "ready" && session.status !== "running") ||
-        !supportsSessionAgentCancel(provider) ||
         agent === undefined ||
-        !isActiveSubagentStatus(agent.status)
+        !canCancelSessionAgent(
+          agent,
+          session?.runtimeMode === "full-access" &&
+            (session.status === "ready" || session.status === "running") &&
+            supportsSessionAgentCancel(provider),
+          selectedEnvironmentRuntime?.connectionState === "connected",
+        )
       ) {
         return false;
       }
@@ -1118,6 +1121,7 @@ export function useThreadComposerState() {
       selectedThreadDetail?.session,
       selectedThreadServerConfig?.providers,
       selectedThreadShell,
+      selectedEnvironmentRuntime?.connectionState,
     ],
   );
 

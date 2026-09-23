@@ -553,6 +553,8 @@ export function deriveWorkLogEntries(
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of foldUserInputActivities(ordered)) {
+    // Ownership receipts feed Relay recovery and control routing, not the transcript.
+    if (activity.kind === "relay.binding" || activity.kind === "relay.activation") continue;
     if (
       activity.kind === "interaction.requested" ||
       activity.kind === "interaction.resolved" ||
@@ -765,6 +767,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
  */
 function agentSpawnGroupKey(entry: DerivedWorkLogEntry): string {
   const taskId = entry.taskId ?? "";
+  const relayMemberSlot = taskId.startsWith("relay-panel:") ? taskId.indexOf(":member:") : -1;
+  if (relayMemberSlot !== -1) {
+    return `wf:${taskId.slice(0, relayMemberSlot)}`;
+  }
   const workflowSlot = taskId.indexOf(":wf:");
   if (workflowSlot !== -1) {
     return `wf:${taskId.slice(0, workflowSlot)}`;

@@ -58,6 +58,12 @@ export interface SubagentRunHandles {
 
 export interface RuntimeSubagent {
   readonly id: string;
+  /** Detached workers retain their identity and lifetime beyond the parent session. */
+  readonly source?: "relay" | undefined;
+  /** Explicit worker control support; native rows use provider capabilities. */
+  readonly cancellable?: boolean | undefined;
+  /** Explicit per-agent live transcript capability. */
+  readonly watchable?: boolean | undefined;
   readonly kind: "subagent" | "subagent_batch" | "workflow" | "workflow_agent";
   readonly title: string;
   readonly role: string | null;
@@ -120,6 +126,18 @@ export function supportsSessionAgentMessage(
   return agents?.support === "read-write" && agents.operations.includes("message");
 }
 
+/** Resolve cancellation for the specific agent, not just its parent provider. */
+export function canCancelSessionAgent(
+  agent: Pick<RuntimeSubagent, "kind" | "status" | "source" | "cancellable">,
+  nativeControlsAvailable: boolean,
+  detachedControlsAvailable: boolean,
+): boolean {
+  if (agent.kind === "workflow" || !isActiveSubagentStatus(agent.status)) return false;
+  return agent.source === "relay"
+    ? agent.cancellable === true && detachedControlsAvailable
+    : agent.cancellable !== false && nativeControlsAvailable;
+}
+
 /**
  * Direct messages are provider-neutral control operations. Workflow
  * coordinators are never addressable, while direct and nested child agents
@@ -128,9 +146,10 @@ export function supportsSessionAgentMessage(
  */
 export function canMessageSessionAgent(
   provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
-  agent: Pick<RuntimeSubagent, "kind" | "messageable" | "status">,
+  agent: Pick<RuntimeSubagent, "kind" | "messageable" | "status" | "source">,
 ): boolean {
   return (
+    agent.source !== "relay" &&
     supportsSessionAgentMessage(provider) &&
     agent.kind !== "workflow" &&
     agent.messageable &&
@@ -268,8 +287,39 @@ function mergeUsageMax(
   return merged;
 }
 
+function addUsage(first: SubagentUsage | null, second: SubagentUsage | null): SubagentUsage | null {
+  if (!first) return second;
+  if (!second) return first;
+  const sum: {
+    totalTokens: number;
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    outputTokens?: number;
+    reasoningOutputTokens?: number;
+    toolUses?: number;
+    durationMs?: number;
+  } = { totalTokens: first.totalTokens + second.totalTokens };
+  const fields = [
+    "inputTokens",
+    "cachedInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+    "toolUses",
+    "durationMs",
+  ] as const;
+  for (const field of fields) {
+    const a = first[field];
+    const b = second[field];
+    if (a !== undefined || b !== undefined) sum[field] = (a ?? 0) + (b ?? 0);
+  }
+  return sum;
+}
+
 interface MutableAgent {
   id: string;
+  source: "relay" | undefined;
+  cancellable: boolean | undefined;
+  watchable: boolean | undefined;
   kind: RuntimeSubagent["kind"];
   title: string;
   role: string | null;
@@ -328,6 +378,9 @@ function getOrCreate(
   }
   const created: MutableAgent = {
     id,
+    source: payload.source === "relay" ? "relay" : undefined,
+    cancellable: typeof payload.cancellable === "boolean" ? payload.cancellable : undefined,
+    watchable: typeof payload.watchable === "boolean" ? payload.watchable : undefined,
     kind: kindFromPayload(payload, id),
     title: asString(payload.title) ?? asString(payload.detail) ?? id,
     role: asString(payload.role) ?? null,
@@ -367,6 +420,9 @@ function getOrCreate(
  */
 function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): boolean {
   let attemptBumped = false;
+  if (payload.source === "relay") agent.source = "relay";
+  if (typeof payload.cancellable === "boolean") agent.cancellable = payload.cancellable;
+  if (typeof payload.watchable === "boolean") agent.watchable = payload.watchable;
   if (payload.taskType === "subagent_batch") agent.kind = "subagent_batch";
   const title = asString(payload.title);
   if (title) agent.title = title;
@@ -500,6 +556,7 @@ function applySnapshotStatus(
 const TASK_COMPLETED_STATUS: ReadonlyMap<string, RuntimeSubagentStatus> = new Map([
   ["completed", "completed"],
   ["failed", "failed"],
+  ["cancelled", "cancelled"],
   ["stopped", "interrupted"],
 ]);
 
@@ -544,6 +601,78 @@ export function foldSubagentActivities(
   // MutableAgent and the public RuntimeSubagent are 1:1 (the fold returns
   // `{ ...agent }`), and no consumer reads this.
   const activationToolUseIds = new Map<string, string>();
+  const relaySequences = new Map<string, number>();
+  const relayUsage = new Map<
+    string,
+    { attempt: number; prior: SubagentUsage | null; current: SubagentUsage | null }
+  >();
+
+  const acceptRelayEvent = (
+    taskId: string,
+    payload: Record<string, unknown>,
+    kind: OrchestrationThreadActivity["kind"],
+  ): boolean => {
+    const existing = agents.get(taskId);
+    if (payload.source !== "relay" && existing?.source !== "relay") return true;
+    const attempt = asCount(payload.attempt);
+    if (attempt === undefined || !Number.isInteger(attempt)) return false;
+    if (
+      existing?.attempt !== null &&
+      existing?.attempt !== undefined &&
+      attempt < existing.attempt
+    ) {
+      return false;
+    }
+    const eventSequence = asCount(payload.relaySequence);
+    if (eventSequence === undefined || !Number.isInteger(eventSequence)) return false;
+    if (attempt === existing?.attempt) {
+      const lastSequence = relaySequences.get(taskId);
+      if (lastSequence !== undefined && eventSequence < lastSequence) return false;
+      // A worker can settle without writing another output line. The final
+      // receipt therefore shares its output cursor with its last progress row.
+      // Once settled, only a matching completion may enrich result and usage.
+      if (existing && isTerminalSubagentStatus(existing.status) && kind !== "task.completed") {
+        return false;
+      }
+    }
+    if (attempt > (existing?.attempt ?? -1)) relaySequences.delete(taskId);
+    relaySequences.set(taskId, eventSequence);
+    return true;
+  };
+
+  const updateUsage = (agent: MutableAgent, payload: Record<string, unknown>): void => {
+    const incoming = asUsage(payload.typedUsage);
+    if (agent.source !== "relay") {
+      agent.usage = mergeUsageMax(agent.usage, incoming);
+      return;
+    }
+    if (!incoming || agent.attempt === null) return;
+    let state = relayUsage.get(agent.id);
+    if (!state) {
+      state = { attempt: agent.attempt, prior: null, current: null };
+      relayUsage.set(agent.id, state);
+    } else if (agent.attempt > state.attempt) {
+      state.prior = addUsage(state.prior, state.current);
+      state.current = null;
+      state.attempt = agent.attempt;
+    }
+    state.current = mergeUsageMax(state.current, incoming);
+    agent.usage = addUsage(state.prior, state.current);
+  };
+
+  const resetRelayAttempt = (agent: MutableAgent, attemptBumped: boolean): void => {
+    if (!attemptBumped || agent.source !== "relay") return;
+    agent.activationCount += 1;
+    agent.status = "pending";
+    agent.startedAt = null;
+    agent.completedAt = null;
+    agent.result = null;
+    agent.error = null;
+    agent.progress = null;
+    agent.lastToolName = null;
+    agent.outputFile = null;
+    agent.recentActivity = [];
+  };
 
   for (const activity of activities) {
     if (typeof activity.payload !== "object" || activity.payload === null) {
@@ -560,8 +689,10 @@ export function foldSubagentActivities(
         // tasks are background work — they render in the ordinary work log,
         // not the Agents surface (a "Run 12s stall" shell is not a subagent).
         if (isBackgroundTaskActivity(payload)) break;
+        if (!acceptRelayEvent(taskId, payload, activity.kind)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
-        fillMetadata(agent, payload);
+        const attemptBumped = fillMetadata(agent, payload);
+        resetRelayAttempt(agent, attemptBumped);
         // Order-robustness: a start row arriving after a terminal state only
         // reopens the identity when its toolUseId proves a new invocation.
         // Guard on the status itself, not activationCount: a task first seen
@@ -573,7 +704,7 @@ export function foldSubagentActivities(
           agent.startedAt = agent.startedAt ?? at;
           agent.status = "running";
           if (toolUseId) activationToolUseIds.set(taskId, toolUseId);
-        } else if (agent.status === "idle") {
+        } else if (agent.status === "idle" || attemptBumped) {
           applyStatus(agent, "running", at);
           if (toolUseId) activationToolUseIds.set(taskId, toolUseId);
         } else if (
@@ -601,8 +732,10 @@ export function foldSubagentActivities(
         // first row's classification instead of being re-judged.
         const existed = agents.has(taskId);
         if (!existed && isBackgroundTaskActivity(payload)) break;
+        if (!acceptRelayEvent(taskId, payload, activity.kind)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         const attemptBumped = fillMetadata(agent, payload);
+        resetRelayAttempt(agent, attemptBumped);
         if (agent.activationCount === 0) agent.activationCount = 1;
         const explicitStatus = asRuntimeStatus(payload.status);
         if (explicitStatus) {
@@ -642,7 +775,7 @@ export function foldSubagentActivities(
         }
         const error = asString(payload.error);
         if (error) agent.error = bounded(error);
-        agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));
+        updateUsage(agent, payload);
         agent.updatedAt = at;
         break;
       }
@@ -653,8 +786,10 @@ export function foldSubagentActivities(
         // rows often carry only taskId+status, no marker fields) inherit the
         // first row's classification instead of being re-judged.
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
+        if (!acceptRelayEvent(taskId, payload, activity.kind)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         const attemptBumped = fillMetadata(agent, payload);
+        resetRelayAttempt(agent, attemptBumped);
         if (agent.kind === "subagent_batch" && asString(payload.status) === "idle") {
           // The parent turn ended, so the batch cannot report child progress.
           // Replace the stale running summary with the explanation rather than
@@ -698,8 +833,9 @@ export function foldSubagentActivities(
         // rows often carry only taskId+status, no marker fields) inherit the
         // first row's classification instead of being re-judged.
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
+        if (!acceptRelayEvent(taskId, payload, activity.kind)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
-        fillMetadata(agent, payload);
+        resetRelayAttempt(agent, fillMetadata(agent, payload));
         const toolUseId = asString(payload.toolUseId);
         if (toolUseId) activationToolUseIds.set(taskId, toolUseId);
         if (agent.activationCount === 0) agent.activationCount = 1;
@@ -719,7 +855,7 @@ export function foldSubagentActivities(
               agent.result = agent.result ?? bounded(summary);
             }
           }
-          agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));
+          updateUsage(agent, payload);
           break;
         }
         const status = TASK_COMPLETED_STATUS.get(asString(payload.status) ?? "") ?? "completed";
@@ -731,7 +867,7 @@ export function foldSubagentActivities(
             agent.result = bounded(summary);
           }
         }
-        agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));
+        updateUsage(agent, payload);
         agent.updatedAt = at;
         break;
       }
@@ -741,6 +877,7 @@ export function foldSubagentActivities(
         if (!taskId) break;
         const agent = agents.get(taskId);
         if (!agent) break;
+        if (!acceptRelayEvent(taskId, payload, activity.kind)) break;
         const toolName = asString(payload.toolName);
         if (toolName) {
           agent.lastToolName = toolName;
@@ -760,7 +897,11 @@ export function foldSubagentActivities(
   // don't read as working forever (live-test finding: statuses drifted
   // whenever member terminal rows were lost or never emitted).
   for (const agent of agents.values()) {
-    if (agent.kind !== "workflow" || !isTerminalSubagentStatus(agent.status)) {
+    if (
+      agent.kind !== "workflow" ||
+      agent.source === "relay" ||
+      !isTerminalSubagentStatus(agent.status)
+    ) {
       continue;
     }
     for (const member of agents.values()) {
@@ -781,7 +922,7 @@ export function foldSubagentActivities(
   // session.exited, so panel and sidebar can never disagree.
   if (options?.sessionLive === false) {
     for (const agent of agents.values()) {
-      if (isActiveSubagentStatus(agent.status)) {
+      if (agent.source !== "relay" && isActiveSubagentStatus(agent.status)) {
         agent.status = "interrupted";
         agent.completedAt = agent.completedAt ?? agent.updatedAt;
       }

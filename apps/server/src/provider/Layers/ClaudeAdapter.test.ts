@@ -2131,6 +2131,27 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("exposes the configured Relay CLI as an optional MCP server", () => {
+    const cli = "/tmp/pylon-relay-cli.mjs";
+    const harness = makeHarness({ environment: { ...process.env, PYLON_RELAY_CLI: cli } });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      assert.deepEqual(harness.getLastCreateQueryInput()?.options.mcpServers?.relay, {
+        command: process.execPath,
+        args: [cli, "mcp"],
+      });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("leaves Claude Code's own default alone when the task list is off", () => {
     const harness = makeHarness({ claudeConfig: { taskTools: false } });
     return Effect.gen(function* () {

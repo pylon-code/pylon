@@ -60,6 +60,7 @@ import { ProjectionThreadProposedPlanRepository } from "../../persistence/Servic
 import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/Layers/ProjectionThreadProposedPlans.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ThreadBackgroundLivenessService } from "../ThreadBackgroundLiveness.ts";
+import { RelayWorkerBridge } from "../RelayWorkerBridge.ts";
 import { ThreadPlanProgressService } from "../ThreadPlanProgress.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -419,6 +420,10 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
     "outputFile",
     "agentPath",
     "messageable",
+    "source",
+    "cancellable",
+    "watchable",
+    "relaySequence",
     "timelineBypass",
     "typedUsage",
     "status",
@@ -1555,6 +1560,7 @@ const make = Effect.gen(function* () {
   };
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
+  const relayBridge = Option.getOrUndefined(yield* Effect.serviceOption(RelayWorkerBridge));
   const recoveryLedger = Option.getOrUndefined(
     yield* Effect.serviceOption(PrimeAgentRecoveryLedger),
   );
@@ -3244,6 +3250,12 @@ const make = Effect.gen(function* () {
           ),
         ),
       ).pipe(Effect.asVoid);
+      // The direct MCP result is the only trustworthy source for a Relay job's
+      // owning thread, turn and tool call. Persist the binding after the
+      // provider event passed its ordinary incarnation and turn fences.
+      if (relayBridge !== undefined) {
+        yield* relayBridge.recordToolResult(event);
+      }
     });
     const scopedProcess =
       runtimeFence === undefined

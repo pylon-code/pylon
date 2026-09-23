@@ -139,6 +139,17 @@ them together.
 ## Inspect agent work
 
 On web and desktop, use **Agents** to follow work delegated to subagents.
+When a Pylon session delegates through Relay Orchestrator, its detached workers also appear here.
+They keep their status after the parent turn ends or disconnects. You can stop an active Relay worker
+from its agent row; Relay keeps the worker's partial work and evidence. Relay workers do not accept
+direct messages or expose a live private transcript in Pylon. A panel groups its members together,
+including members still waiting to dispatch.
+
+To enable Relay workers in Agents, install Relay Orchestrator on the computer running the Pylon
+environment server and set `PYLON_RELAY_CLI` to the absolute path of Relay's `scripts/relay.mjs`
+before starting that server. Relay and Pylon must run under the same local account and use the same
+Relay home. A remote Pylon client reads the server's agent status; it does not need local access to
+Relay's worker files.
 
 Expand a tool group in the conversation to see its calls, and expand a call to see its full command
 and output. Summaries show the program inside a shell wrapper, such as "Running vp", and the live

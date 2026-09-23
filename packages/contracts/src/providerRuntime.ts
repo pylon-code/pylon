@@ -731,6 +731,14 @@ const taskAgentLinkageFields = {
   outputFile: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Whether this live agent currently has a provider-owned direct-message endpoint. */
   messageable: Schema.optional(Schema.Boolean),
+  /** External worker source. Omitted for native provider agents. */
+  source: Schema.optional(Schema.Literal("relay")),
+  /** Whether the source exposes a working cancellation endpoint. */
+  cancellable: Schema.optional(Schema.Boolean),
+  /** Whether the source exposes a live activity watch endpoint. */
+  watchable: Schema.optional(Schema.Boolean),
+  /** Monotonic observation sequence within a Relay worker attempt. */
+  relaySequence: Schema.optional(NonNegativeInt),
   /** Codex agent hierarchy path, e.g. "/root/marlow". */
   agentPath: Schema.optional(TrimmedNonEmptyStringSchema),
   /**

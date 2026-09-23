@@ -6,8 +6,8 @@
  * workflow runs, Monitor watch loops); the shell previously showed nothing.
  * Ingestion records task lifecycle transitions and the shell query reads the
  * derived state at mapping time — no persistence, no migration. After a
- * server restart the registry is empty until new task events arrive, which
- * matches reality: orphaned background work is not live.
+ * server restart the registry is empty until new task events arrive. External
+ * Relay observers replay surviving worker liveness after recovery.
  *
  * "monitoring" is reserved for watch loops (monitor tasks and background
  * shells) when they are the ONLY live work; any agent work presents as
@@ -61,7 +61,7 @@ export class ThreadBackgroundLivenessService extends Context.Service<
       readonly agentId?: string | undefined;
     }) => void;
 
-    /** Session death orphans all of a thread's background work. */
+    /** Session death orphans provider-owned work; detached Relay workers survive. */
     readonly clearThreadLiveness: (threadId: string) => void;
 
     /**
@@ -152,7 +152,15 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
     },
 
     clearThreadLiveness: (threadId) => {
-      stateByThreadId.delete(threadId);
+      const state = stateByThreadId.get(threadId);
+      if (!state) return;
+      for (const id of state.agents) {
+        if (!id.startsWith("relay:") && !id.startsWith("relay-panel:")) state.agents.delete(id);
+      }
+      for (const id of state.monitors) {
+        if (!id.startsWith("relay:") && !id.startsWith("relay-panel:")) state.monitors.delete(id);
+      }
+      if (state.agents.size === 0 && state.monitors.size === 0) stateByThreadId.delete(threadId);
     },
 
     getThreadBackgroundLiveness: (threadId) => {

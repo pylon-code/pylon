@@ -423,6 +423,8 @@ function deriveWorkLogEntries(
   const ordered = Arr.sort(activities, activityOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of foldUserInputActivities(ordered)) {
+    // Ownership receipts feed Relay recovery and control routing, not the transcript.
+    if (activity.kind === "relay.binding" || activity.kind === "relay.activation") continue;
     // The setup card owns its snapshot, including failed and cancelled outcomes.
     if (
       isWorktreeSetupActivity(activity.kind) &&

@@ -236,6 +236,7 @@ import { WizardPopup } from "./ui/wizard";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import {
+  canCancelSessionAgent,
   canMessageSessionAgent,
   deriveAgentPanelModel,
   foldSubagentActivities,
@@ -243,6 +244,7 @@ import {
   isSessionAgentMessageDeliveryUnknown,
   supportsSessionAgentCancel,
   supportsSessionAgentMessage,
+  type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { canWatchSessionAgentLiveActivity } from "@t3tools/client-runtime/state/session-agent-live-activity";
 import { BranchToolbar, type BranchToolbarHandle } from "./BranchToolbar";
@@ -3074,6 +3076,15 @@ export default function ChatView(props: ChatViewProps) {
     activeThread?.session?.runtimeMode === "full-access" &&
     (activeThread.session.status === "ready" || activeThread.session.status === "running") &&
     supportsSessionAgentCancel(activeSessionProviderStatus);
+  const canCancelAgent = useCallback(
+    (agent: RuntimeSubagent) =>
+      canCancelSessionAgent(
+        agent,
+        canCancelSessionAgents,
+        activeEnvironmentConnectionPhase === "connected",
+      ),
+    [activeEnvironmentConnectionPhase, canCancelSessionAgents],
+  );
   const canMessageSessionAgents =
     agentSessionLive &&
     activeThread?.session?.runtimeMode === "full-access" &&
@@ -8714,12 +8725,7 @@ export default function ChatView(props: ChatViewProps) {
   const onCancelSessionAgent = useCallback(
     async (agentId: string) => {
       const agent = runtimeSubagents.find((candidate) => candidate.id === agentId);
-      if (
-        !activeThreadId ||
-        !canCancelSessionAgents ||
-        agent === undefined ||
-        !isActiveSubagentStatus(agent.status)
-      ) {
+      if (!activeThreadId || agent === undefined || !canCancelAgent(agent)) {
         throw new Error("The agent is no longer cancellable.");
       }
       setCancellingAgentIds((current) => new Set(current).add(agentId));
@@ -8747,13 +8753,13 @@ export default function ChatView(props: ChatViewProps) {
             : `${agent.title} already stopped`,
         description:
           result.value.disposition === "cancel-requested"
-            ? "The provider accepted the request. Status will update when cancellation is confirmed."
-            : "The provider confirmed that this agent is no longer active.",
+            ? "Stop requested. Status will update when cancellation is confirmed."
+            : "This agent is no longer active.",
       });
     },
     [
       activeThreadId,
-      canCancelSessionAgents,
+      canCancelAgent,
       cancelThreadSessionAgent,
       environmentId,
       runtimeSubagents,
@@ -10260,6 +10266,7 @@ export default function ChatView(props: ChatViewProps) {
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
         canCancelAgents={canCancelSessionAgents}
+        canCancelAgent={canCancelAgent}
         canMessageAgents={canMessageSessionAgents}
         canWatchAgentActivity={canWatchSessionAgentActivity}
         agentMessageScopeKey={sessionAgentMessageScopeKey}
