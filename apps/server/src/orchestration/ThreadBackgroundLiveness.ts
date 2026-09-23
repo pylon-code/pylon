@@ -25,6 +25,7 @@ export type ThreadBackgroundLiveness = "working" | "monitoring" | null;
 interface ThreadLivenessState {
   readonly agents: Set<string>;
   readonly monitors: Set<string>;
+  readonly relay: Set<string>;
 }
 
 // Classification sets are the shared contracts copies (MONITOR_TASK_TYPES:
@@ -59,6 +60,7 @@ export class ThreadBackgroundLivenessService extends Context.Service<
       readonly status: string | undefined;
       readonly kind: "started" | "progress" | "updated" | "completed";
       readonly agentId?: string | undefined;
+      readonly source?: "relay" | undefined;
     }) => void;
 
     /** Session death orphans provider-owned work; detached Relay workers survive. */
@@ -69,6 +71,8 @@ export class ThreadBackgroundLivenessService extends Context.Service<
      * "monitoring" only when watch loops are the ONLY live work.
      */
     readonly getThreadBackgroundLiveness: (threadId: string) => ThreadBackgroundLiveness;
+    /** Source-aware stop routing for the client; includes native monitors. */
+    readonly hasNativeBackgroundWork: (threadId: string) => boolean;
   }
 >()("t3/orchestration/ThreadBackgroundLiveness/ThreadBackgroundLivenessService") {}
 
@@ -80,7 +84,11 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
     if (existing) {
       return existing;
     }
-    const created: ThreadLivenessState = { agents: new Set(), monitors: new Set() };
+    const created: ThreadLivenessState = {
+      agents: new Set(),
+      monitors: new Set(),
+      relay: new Set(),
+    };
     stateByThreadId.set(threadId, created);
     return created;
   };
@@ -96,6 +104,7 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
     }
     state.agents.delete(taskId);
     state.monitors.delete(taskId);
+    state.relay.delete(taskId);
     if (state.agents.size === 0 && state.monitors.size === 0) {
       stateByThreadId.delete(threadId);
     }
@@ -149,16 +158,17 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
       const bucket =
         taskType !== undefined && MONITOR_TASK_TYPES.has(taskType) ? state.monitors : state.agents;
       bucket.add(input.taskId);
+      if (input.source === "relay") state.relay.add(input.taskId);
     },
 
     clearThreadLiveness: (threadId) => {
       const state = stateByThreadId.get(threadId);
       if (!state) return;
       for (const id of state.agents) {
-        if (!id.startsWith("relay:") && !id.startsWith("relay-panel:")) state.agents.delete(id);
+        if (!state.relay.has(id)) state.agents.delete(id);
       }
       for (const id of state.monitors) {
-        if (!id.startsWith("relay:") && !id.startsWith("relay-panel:")) state.monitors.delete(id);
+        if (!state.relay.has(id)) state.monitors.delete(id);
       }
       if (state.agents.size === 0 && state.monitors.size === 0) stateByThreadId.delete(threadId);
     },
@@ -175,6 +185,18 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
         return "monitoring";
       }
       return null;
+    },
+
+    hasNativeBackgroundWork: (threadId) => {
+      const state = stateByThreadId.get(threadId);
+      if (!state) return false;
+      for (const id of state.agents) {
+        if (!state.relay.has(id)) return true;
+      }
+      for (const id of state.monitors) {
+        if (!state.relay.has(id)) return true;
+      }
+      return false;
     },
   };
 }

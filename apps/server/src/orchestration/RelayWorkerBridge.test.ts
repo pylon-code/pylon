@@ -498,12 +498,34 @@ persistence("Relay persisted observer and controls", (it) => {
             result: { structuredContent: { schemaVersion: 1, kind: "job", jobId, attempt: 2 } },
           }),
         );
+        // A completed prior attempt must not retire a resumed worker when
+        // observe is unavailable before the first new task.started receipt.
+        cli.setState({});
         // The attempt origin survives a server restart before the next poll.
         const resumedBridge = yield* makeWithCliPath(cli.path).pipe(
           Effect.provideService(OrchestrationEngineService, engine),
           Effect.provideService(ServerEnvironment, fakeEnvironment),
           Effect.provideService(ThreadBackgroundLivenessService, liveness),
         );
+        yield* resumedBridge.reconcile;
+        yield* resumedBridge.reconcile;
+        yield* resumedBridge.reconcile;
+        const pendingResume = yield* sql`
+          SELECT turn_id AS turnId, payload_json AS payload FROM projection_thread_activities
+          WHERE kind = 'task.progress' AND activity_id LIKE 'relay-observer-unavailable:%'
+          ORDER BY sequence DESC LIMIT 1
+        `;
+        expect(pendingResume).toHaveLength(1);
+        expect(pendingResume[0]?.turnId).toBe("turn-resume");
+        expect(decodeJson(pendingResume[0]?.payload)).toMatchObject({
+          taskId: `relay:${jobId}`,
+          attempt: 2,
+          relaySequence: 0,
+          status: "idle",
+          toolUseId: "tool-resume",
+          relayPriorUsage: { totalTokens: 18, inputTokens: 12, outputTokens: 6 },
+        });
+        cli.setState({ [jobId]: { ...job, attempt: 2, sequence: 1, status: "running" } });
         yield* resumedBridge.reconcile;
         const resumed =
           yield* sql`SELECT turn_id AS turnId, payload_json AS payload FROM projection_thread_activities WHERE kind = 'task.started' ORDER BY created_at`;
@@ -512,6 +534,7 @@ persistence("Relay persisted observer and controls", (it) => {
           taskId: `relay:${jobId}`,
           attempt: 2,
           toolUseId: "tool-resume",
+          relayPriorUsage: { totalTokens: 18, inputTokens: 12, outputTokens: 6 },
         });
         expect(resumed[1]?.turnId).toBe("turn-resume");
         const activations = yield* sql`

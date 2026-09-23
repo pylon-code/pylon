@@ -101,7 +101,7 @@ it.effect("reads project shells without loading threads or resolving excluded pr
 
 const projectionSnapshotLayer = it.layer(
   OrchestrationProjectionSnapshotQueryLive.pipe(
-    Layer.provide(ThreadBackgroundLiveness.layer),
+    Layer.provideMerge(ThreadBackgroundLiveness.layer),
     Layer.provide(ThreadPlanProgress.layer),
     Layer.provideMerge(RepositoryIdentityResolver.layer),
     Layer.provideMerge(SqlitePersistenceMemory),
@@ -664,6 +664,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
           backgroundLiveness: null,
+          nativeBackgroundWork: false,
           planProgress: null,
         },
       ]);
@@ -3077,6 +3078,50 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
     }),
   );
 
+  it.effect("projects native background work separately from detached Relay workers", () =>
+    Effect.gen(function* () {
+      yield* seedFanOutThread();
+      const query = yield* ProjectionSnapshotQuery;
+      const liveness = yield* ThreadBackgroundLiveness.ThreadBackgroundLivenessService;
+      const sql = yield* SqlClient.SqlClient;
+      liveness.recordTaskLiveness({
+        threadId: threadW,
+        taskId: "relay:job-11111111-1111-4111-8111-111111111111",
+        taskType: "subagent",
+        source: "relay",
+        status: "running",
+        kind: "started",
+      });
+      const relayShell = Option.getOrThrow(yield* query.getThreadShellById(threadW));
+      assert.equal(relayShell.backgroundLiveness, "working");
+      assert.equal(relayShell.nativeBackgroundWork, false);
+      assert.equal(
+        (yield* query.getShellSnapshot()).threads.find((thread) => thread.id === threadW)
+          ?.nativeBackgroundWork,
+        false,
+      );
+
+      liveness.recordTaskLiveness({
+        threadId: threadW,
+        taskId: "native-agent",
+        taskType: "subagent",
+        status: "running",
+        kind: "started",
+      });
+      assert.equal(
+        (yield* query.getShellSnapshot()).threads.find((thread) => thread.id === threadW)
+          ?.nativeBackgroundWork,
+        true,
+      );
+      yield* sql`UPDATE projection_threads SET archived_at = '2026-03-02T00:00:00.000Z' WHERE thread_id = ${threadW}`;
+      assert.equal(
+        (yield* query.getArchivedShellSnapshot()).threads.find((thread) => thread.id === threadW)
+          ?.nativeBackgroundWork,
+        true,
+      );
+    }),
+  );
+
   it.effect("pins a detached Relay agent beyond the 500 activity window until it settles", () =>
     Effect.gen(function* () {
       yield* seedFanOutThread();
@@ -3086,16 +3131,23 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
       yield* sql`
         INSERT INTO projection_thread_activities (
           activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
-        ) VALUES (
+        ) VALUES
+        (
+          'relay-prior-complete', 'thread-w', 'turn-1', 'info', 'task.completed',
+          'Relay worker completed',
+          '{"taskId":"relay:job-11111111-1111-4111-8111-111111111111","taskType":"subagent","agentKind":"agent","source":"relay","attempt":1,"relaySequence":2,"status":"completed","typedUsage":{"totalTokens":150,"inputTokens":100}}',
+          1, '2026-03-01T00:00:00.000Z'
+        ),
+        (
           'relay-old-progress', 'thread-w', 'turn-1', 'info', 'task.progress',
           'Relay worker',
-          '{"taskId":"relay:job-11111111-1111-4111-8111-111111111111","taskType":"subagent","agentKind":"agent","source":"relay","attempt":1,"relaySequence":1,"status":"running"}',
-          1, '2026-03-01T00:00:00.000Z'
+          '{"taskId":"relay:job-11111111-1111-4111-8111-111111111111","taskType":"subagent","agentKind":"agent","source":"relay","attempt":2,"relaySequence":1,"status":"running","typedUsage":{"totalTokens":40,"inputTokens":25},"relayPriorUsage":{"totalTokens":150,"inputTokens":100}}',
+          2, '2026-03-01T00:00:01.000Z'
         )
       `;
       yield* sql`
         WITH RECURSIVE activity_rows(sequence) AS (
-          SELECT 2 UNION ALL SELECT sequence + 1 FROM activity_rows WHERE sequence < 502
+          SELECT 3 UNION ALL SELECT sequence + 1 FROM activity_rows WHERE sequence < 503
         )
         INSERT INTO projection_thread_activities (
           activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
@@ -3113,6 +3165,11 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
         assert.ok(
           raw.value.activities.some((activity) => activity.id === asEventId("relay-old-progress")),
         );
+        assert.ok(
+          !raw.value.activities.some(
+            (activity) => activity.id === asEventId("relay-prior-complete"),
+          ),
+        );
       }
       const client = yield* snapshotQuery.getThreadDetailSnapshot(threadW, { turnLimit: 1 });
       assert.equal(client._tag, "Some");
@@ -3122,11 +3179,16 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
             (activity) => activity.id === asEventId("relay-old-progress"),
           ),
         );
+        assert.ok(
+          !client.value.thread.activities.some(
+            (activity) => activity.id === asEventId("relay-prior-complete"),
+          ),
+        );
       }
 
       yield* sql`
         UPDATE projection_thread_activities SET kind = 'task.completed',
-          payload_json = '{"taskId":"relay:job-11111111-1111-4111-8111-111111111111","taskType":"subagent","agentKind":"agent","source":"relay","attempt":1,"relaySequence":2,"status":"completed"}'
+          payload_json = '{"taskId":"relay:job-11111111-1111-4111-8111-111111111111","taskType":"subagent","agentKind":"agent","source":"relay","attempt":2,"relaySequence":2,"status":"completed","typedUsage":{"totalTokens":60},"relayPriorUsage":{"totalTokens":150,"inputTokens":100}}'
         WHERE activity_id = 'relay-old-progress'
       `;
       const settled = yield* snapshotQuery.getThreadDetailById(threadW);

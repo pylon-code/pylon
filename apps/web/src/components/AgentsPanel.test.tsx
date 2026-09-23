@@ -62,7 +62,7 @@ describe("background agent stop routing", () => {
   const canCancel = (candidate: RuntimeSubagent) => candidate.source === "relay";
 
   it("interrupts native background work through the parent session", () => {
-    expect(planBackgroundAgentStop([active], canCancel, true)).toEqual({
+    expect(planBackgroundAgentStop([active], canCancel, true, true)).toEqual({
       relayAgentIds: [],
       interruptParent: true,
       canStopAll: true,
@@ -70,12 +70,12 @@ describe("background agent stop routing", () => {
   });
 
   it("cancels a detached Relay worker after the parent session ends", () => {
-    expect(planBackgroundAgentStop([relay, completed], canCancel, false)).toEqual({
+    expect(planBackgroundAgentStop([relay, completed], canCancel, false, false)).toEqual({
       relayAgentIds: [relay.id],
       interruptParent: false,
       canStopAll: true,
     });
-    expect(planBackgroundAgentStop([relay], canCancel, true)).toEqual({
+    expect(planBackgroundAgentStop([relay], canCancel, true, false)).toEqual({
       relayAgentIds: [relay.id],
       interruptParent: false,
       canStopAll: true,
@@ -83,15 +83,25 @@ describe("background agent stop routing", () => {
   });
 
   it("addresses both sources and disables Stop when a live worker cannot be controlled", () => {
-    expect(planBackgroundAgentStop([active, relay], canCancel, true)).toEqual({
+    expect(planBackgroundAgentStop([active, relay], canCancel, true, true)).toEqual({
       relayAgentIds: [relay.id],
       interruptParent: true,
       canStopAll: true,
     });
-    expect(planBackgroundAgentStop([{ ...relay, cancellable: false }], () => false, true)).toEqual({
+    expect(
+      planBackgroundAgentStop([{ ...relay, cancellable: false }], () => false, true, false),
+    ).toEqual({
       relayAgentIds: [],
       interruptParent: false,
       canStopAll: false,
+    });
+  });
+
+  it("also interrupts a native monitor that has no agent row beside Relay", () => {
+    expect(planBackgroundAgentStop([relay], canCancel, true, true)).toEqual({
+      relayAgentIds: [relay.id],
+      interruptParent: true,
+      canStopAll: true,
     });
   });
 });

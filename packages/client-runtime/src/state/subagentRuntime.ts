@@ -649,7 +649,8 @@ export function foldSubagentActivities(
       agent.usage = mergeUsageMax(agent.usage, incoming);
       return;
     }
-    if (!incoming || agent.attempt === null) return;
+    const priorSnapshot = asUsage(payload.relayPriorUsage);
+    if ((!incoming && !priorSnapshot) || agent.attempt === null) return;
     let state = relayUsage.get(agent.id);
     if (!state) {
       state = { attempt: agent.attempt, prior: null, current: null };
@@ -659,6 +660,7 @@ export function foldSubagentActivities(
       state.current = null;
       state.attempt = agent.attempt;
     }
+    state.prior = mergeUsageMax(state.prior, priorSnapshot);
     state.current = mergeUsageMax(state.current, incoming);
     agent.usage = addUsage(state.prior, state.current);
   };
@@ -724,6 +726,7 @@ export function foldSubagentActivities(
         }
         const detail = asString(payload.detail);
         if (detail && agent.title === agent.id) agent.title = detail;
+        if (agent.source === "relay") updateUsage(agent, payload);
         agent.updatedAt = at;
         break;
       }

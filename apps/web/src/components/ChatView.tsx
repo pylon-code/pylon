@@ -6585,10 +6585,12 @@ export default function ChatView(props: ChatViewProps) {
         activeEnvironmentConnectionPhase === "connected" &&
           (activeThread?.session?.status === "ready" ||
             activeThread?.session?.status === "running"),
+        activeThreadShell?.nativeBackgroundWork === true,
       ),
     [
       activeEnvironmentConnectionPhase,
       activeThread?.session?.status,
+      activeThreadShell?.nativeBackgroundWork,
       canCancelAgent,
       runtimeSubagents,
     ],

@@ -739,6 +739,8 @@ const taskAgentLinkageFields = {
   watchable: Schema.optional(Schema.Boolean),
   /** Monotonic observation sequence within a Relay worker attempt. */
   relaySequence: Schema.optional(NonNegativeInt),
+  /** Cumulative usage from earlier Relay attempts, repeated on the current row for bounded snapshots. */
+  relayPriorUsage: Schema.optional(RuntimeTaskUsage),
   /** Codex agent hierarchy path, e.g. "/root/marlow". */
   agentPath: Schema.optional(TrimmedNonEmptyStringSchema),
   /**

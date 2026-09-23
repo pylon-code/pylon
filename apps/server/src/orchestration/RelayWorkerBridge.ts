@@ -105,6 +105,13 @@ interface RelayPanelObservation {
   }>;
 }
 
+interface RelayUsageRollup {
+  readonly totalTokens: number;
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly cachedInputTokens?: number;
+}
+
 const record = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -347,6 +354,10 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
   const failedObservations = new Map<string, number>();
   const unavailable = new Set<string>();
   const outageEpochs = new Map<string, number>();
+  const priorUsageCache = new Map<
+    string,
+    { attempt: number; usage: RelayUsageRollup | undefined }
+  >();
 
   const append = Effect.fn("RelayWorkerBridge.append")(function* (
     binding: RelayBinding,
@@ -377,6 +388,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
       liveness.recordTaskLiveness({
         threadId: binding.threadId,
         taskId: bindingTaskId(binding),
+        source: "relay",
         taskType: binding.kind === "panel" ? "local_workflow" : "subagent",
         status: typeof payload.status === "string" ? payload.status : undefined,
         kind:
@@ -720,6 +732,66 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     return activations.length > 0;
   });
 
+  const pendingGenerationAfter = Effect.fn("RelayWorkerBridge.pendingGenerationAfter")(function* (
+    binding: RelayBinding,
+    completedRowId: number,
+    completedAttempt: number,
+  ) {
+    const activations = yield* sql`
+      SELECT turn_id AS turnId, payload_json AS payload
+      FROM projection_thread_activities
+      WHERE rowid > ${completedRowId} AND thread_id = ${binding.threadId}
+        AND kind = 'relay.activation'
+        AND json_extract(payload_json, '$.environmentId') = ${environmentId}
+        AND (
+          json_extract(payload_json, '$.id') = ${binding.id}
+          OR (
+            json_extract(payload_json, '$.id') = ${binding.panelId ?? ""}
+            AND EXISTS (
+              SELECT 1 FROM json_each(json_extract(payload_json, '$.jobIds'))
+              WHERE value = ${binding.id}
+            )
+          )
+        )
+      ORDER BY rowid DESC LIMIT 1
+    `;
+    const activation = record(activations[0]);
+    const decoded =
+      typeof activation?.payload === "string" ? decodeJson(activation.payload) : Option.none();
+    const payload = Option.isSome(decoded) ? record(decoded.value) : undefined;
+    const jobAttempt = payload?.kind === "job" ? nonNegativeInteger(payload.attempt) : undefined;
+    const attempt =
+      binding.slotAttempt === undefined
+        ? jobAttempt
+        : binding.slotAttempt * 1_000_000 + (jobAttempt ?? 1);
+    if (
+      attempt !== undefined &&
+      Number.isSafeInteger(attempt) &&
+      attempt > completedAttempt &&
+      typeof payload?.toolCallId === "string"
+    ) {
+      return {
+        attempt,
+        origin: {
+          ...binding,
+          turnId: typeof activation?.turnId === "string" ? activation.turnId : null,
+          toolCallId: payload.toolCallId,
+        },
+      };
+    }
+    if (binding.slotAttempt === undefined) return undefined;
+    const rows = yield* sql`
+      SELECT rowid AS rowId FROM projection_thread_activities
+      WHERE activity_id = ${`relay-binding:${binding.id}`} AND kind = 'relay.binding'
+      LIMIT 1
+    `;
+    const bindingRowId = nonNegativeInteger(record(rows[0])?.rowId) ?? 0;
+    const firstAttempt = binding.slotAttempt * 1_000_000 + 1;
+    return bindingRowId > completedRowId && firstAttempt > completedAttempt
+      ? { attempt: firstAttempt, origin: binding }
+      : undefined;
+  });
+
   const getOutageEpoch = Effect.fn("RelayWorkerBridge.getOutageEpoch")(function* (
     binding: RelayBinding,
   ) {
@@ -737,6 +809,53 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     return epoch;
   });
 
+  // A single bounded prefix replaces all prior usage rows in the client fold.
+  // Each attempt contributes its maximum observed cumulative usage once.
+  const readPriorUsage = Effect.fn("RelayWorkerBridge.readPriorUsage")(function* (
+    binding: RelayBinding,
+    attempt: number,
+  ) {
+    const cached = priorUsageCache.get(binding.id);
+    if (cached?.attempt === attempt) return cached.usage;
+    const rows = yield* sql`
+      WITH prior_attempts AS (
+        SELECT
+          MAX(json_extract(payload_json, '$.typedUsage.totalTokens')) AS totalTokens,
+          MAX(json_extract(payload_json, '$.typedUsage.inputTokens')) AS inputTokens,
+          MAX(json_extract(payload_json, '$.typedUsage.outputTokens')) AS outputTokens,
+          MAX(json_extract(payload_json, '$.typedUsage.cachedInputTokens')) AS cachedInputTokens
+        FROM projection_thread_activities
+        WHERE thread_id = ${binding.threadId}
+          AND kind IN ('task.progress', 'task.completed')
+          AND json_extract(payload_json, '$.source') = 'relay'
+          AND json_extract(payload_json, '$.taskId') = ${bindingTaskId(binding)}
+          AND json_type(payload_json, '$.attempt') = 'integer'
+          AND json_extract(payload_json, '$.attempt') < ${attempt}
+          AND json_type(payload_json, '$.typedUsage.totalTokens') = 'integer'
+        GROUP BY json_extract(payload_json, '$.attempt')
+      )
+      SELECT SUM(totalTokens) AS totalTokens, SUM(inputTokens) AS inputTokens,
+        SUM(outputTokens) AS outputTokens, SUM(cachedInputTokens) AS cachedInputTokens
+      FROM prior_attempts
+    `;
+    const row = record(rows[0]);
+    const totalTokens = nonNegativeInteger(row?.totalTokens);
+    const inputTokens = nonNegativeInteger(row?.inputTokens);
+    const outputTokens = nonNegativeInteger(row?.outputTokens);
+    const cachedInputTokens = nonNegativeInteger(row?.cachedInputTokens);
+    const usage: RelayUsageRollup | undefined =
+      totalTokens === undefined
+        ? undefined
+        : {
+            totalTokens,
+            ...(inputTokens === undefined ? {} : { inputTokens }),
+            ...(outputTokens === undefined ? {} : { outputTokens }),
+            ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+          };
+    priorUsageCache.set(binding.id, { attempt, usage });
+    return usage;
+  });
+
   const markObserverUnavailable = Effect.fn("RelayWorkerBridge.markObserverUnavailable")(function* (
     binding: RelayBinding,
   ) {
@@ -746,21 +865,32 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     const taskId = bindingTaskId(binding);
     const latest = yield* readLatestTaskActivity(binding);
     const payload = latest.payload;
-    const attempt = nonNegativeInteger(payload?.attempt);
-    const relaySequence = nonNegativeInteger(payload?.relaySequence);
-    if (attempt === undefined || relaySequence === undefined) return;
+    const completedAttempt = nonNegativeInteger(payload?.attempt);
+    const completedSequence = nonNegativeInteger(payload?.relaySequence);
+    if (completedAttempt === undefined || completedSequence === undefined) return;
+    const pending =
+      latest.kind === "task.completed"
+        ? yield* pendingGenerationAfter(binding, latest.rowId, completedAttempt)
+        : undefined;
     if (latest.kind === "task.completed") {
-      active.delete(binding.id);
-      seen.delete(binding.id);
-      failedObservations.delete(binding.id);
-      unavailable.delete(binding.id);
-      outageEpochs.delete(binding.id);
-      return;
+      if (!pending) {
+        active.delete(binding.id);
+        seen.delete(binding.id);
+        failedObservations.delete(binding.id);
+        unavailable.delete(binding.id);
+        outageEpochs.delete(binding.id);
+        priorUsageCache.delete(binding.id);
+        return;
+      }
     }
+    const attempt = pending?.attempt ?? completedAttempt;
+    const relaySequence = pending ? 0 : completedSequence;
+    const origin = pending?.origin ?? binding;
+    const relayPriorUsage = yield* readPriorUsage(binding, attempt);
     const outageEpoch = (yield* getOutageEpoch(binding)) + 1;
     outageEpochs.set(binding.id, outageEpoch);
     yield* append(
-      binding,
+      origin,
       "task.progress",
       {
         taskId,
@@ -771,7 +901,8 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         status: "idle",
         summary: "Relay observer unavailable",
         detail: "Relay observer unavailable",
-        ...bindingPayload(binding),
+        ...bindingPayload(origin),
+        ...(relayPriorUsage ? { relayPriorUsage } : {}),
         cancellable: false,
       },
       "Relay observer unavailable",
@@ -908,6 +1039,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         failedObservations.delete(binding.id);
         unavailable.delete(binding.id);
         outageEpochs.delete(binding.id);
+        priorUsageCache.delete(binding.id);
       }
       return;
     }
@@ -921,6 +1053,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         ? observation.attempt
         : binding.slotAttempt * 1_000_000 + observation.attempt;
     if (!Number.isSafeInteger(displayAttempt)) return;
+    const relayPriorUsage = yield* readPriorUsage(binding, displayAttempt);
     if (
       previous &&
       (displayAttempt < previous.attempt ||
@@ -937,6 +1070,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
       attempt: displayAttempt,
       relaySequence: observation.sequence,
       ...bindingPayload(origin),
+      ...(relayPriorUsage ? { relayPriorUsage } : {}),
     };
     if (!previous || previous.attempt !== displayAttempt) {
       yield* append(
@@ -1030,6 +1164,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
       failedObservations.delete(binding.id);
       unavailable.delete(binding.id);
       outageEpochs.delete(binding.id);
+      priorUsageCache.delete(binding.id);
     }
   });
 

@@ -545,6 +545,7 @@ export function planBackgroundAgentStop(
   agents: ReadonlyArray<RuntimeSubagent>,
   canCancelAgent: (agent: RuntimeSubagent) => boolean,
   canInterruptParent: boolean,
+  nativeBackgroundWork: boolean,
 ): {
   readonly relayAgentIds: ReadonlyArray<string>;
   readonly interruptParent: boolean;
@@ -559,7 +560,8 @@ export function planBackgroundAgentStop(
   );
   // A provider interrupt can close the parent session, so Relay-only work
   // must never send one merely because that session is still connected.
-  const interruptParent = canInterruptParent && (hasNativeAgent || relayWorkers.length === 0);
+  const interruptParent =
+    canInterruptParent && (nativeBackgroundWork || hasNativeAgent || relayWorkers.length === 0);
   return {
     relayAgentIds: relayWorkers.filter(canCancelAgent).map((agent) => agent.id),
     interruptParent,

@@ -1178,6 +1178,7 @@ describe("Relay workers in the native agent fold", () => {
         relay("relay:job-2", 2, 2, {
           status: "running",
           summary: "Retrying",
+          relayPriorUsage: { totalTokens: 150, inputTokens: 100 },
           typedUsage: { totalTokens: 40, inputTokens: 25 },
         }),
       ),
@@ -1216,6 +1217,52 @@ describe("Relay workers in the native agent fold", () => {
       usage: { totalTokens: 210, inputTokens: 140 },
     });
     expect(worker?.recentActivity.some((entry) => entry.summary === "Duplicate frame")).toBe(false);
+  });
+
+  it("retains cumulative usage when an earlier Relay completion aged out of the activity window", () => {
+    const [worker] = fold([
+      activity(
+        "task.progress",
+        relay("relay:job-aged", 2, 1, {
+          status: "running",
+          relayPriorUsage: { totalTokens: 150, inputTokens: 100, outputTokens: 50 },
+          typedUsage: { totalTokens: 40, inputTokens: 25, outputTokens: 15 },
+        }),
+      ),
+    ]);
+    expect(worker).toMatchObject({
+      id: "relay:job-aged",
+      attempt: 2,
+      status: "running",
+      usage: { totalTokens: 190, inputTokens: 125, outputTokens: 65 },
+    });
+  });
+
+  it("shows a resumed worker as idle while its observer is unavailable before the first start", () => {
+    const [worker] = fold([
+      activity(
+        "task.completed",
+        relay("relay:job-resume-outage", 1, 2, {
+          status: "completed",
+          typedUsage: { totalTokens: 150 },
+        }),
+      ),
+      activity(
+        "task.progress",
+        relay("relay:job-resume-outage", 2, 0, {
+          status: "idle",
+          cancellable: false,
+          relayPriorUsage: { totalTokens: 150 },
+          summary: "Relay observer unavailable",
+        }),
+      ),
+    ]);
+    expect(worker).toMatchObject({
+      attempt: 2,
+      status: "idle",
+      cancellable: false,
+      usage: { totalTokens: 150 },
+    });
   });
 
   it("keeps one Relay run when observation recovers within the same attempt", () => {

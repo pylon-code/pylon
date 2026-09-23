@@ -116,6 +116,49 @@ describe("ThreadBackgroundLiveness", () => {
     expect(liveness.getThreadBackgroundLiveness(threadId)).toBeNull();
   });
 
+  it("identifies parent-owned monitors alongside a detached Relay worker", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    const threadId = "mixed-thread";
+    liveness.recordTaskLiveness({
+      threadId,
+      taskId: "relay:job-1",
+      taskType: "subagent",
+      status: "running",
+      kind: "started",
+      source: "relay",
+    });
+    expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("working");
+    expect(liveness.hasNativeBackgroundWork(threadId)).toBe(false);
+
+    liveness.recordTaskLiveness({
+      threadId,
+      taskId: "native-monitor",
+      taskType: "local_bash",
+      status: "running",
+      kind: "started",
+    });
+    expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("working");
+    expect(liveness.hasNativeBackgroundWork(threadId)).toBe(true);
+
+    liveness.clearThreadLiveness(threadId);
+    expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("working");
+    expect(liveness.hasNativeBackgroundWork(threadId)).toBe(false);
+  });
+
+  it("uses trusted source metadata instead of task ID spelling", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    liveness.recordTaskLiveness({
+      threadId: "native-thread",
+      taskId: "relay:provider-owned-id",
+      taskType: "subagent",
+      status: "running",
+      kind: "started",
+    });
+    expect(liveness.hasNativeBackgroundWork("native-thread")).toBe(true);
+    liveness.clearThreadLiveness("native-thread");
+    expect(liveness.getThreadBackgroundLiveness("native-thread")).toBeNull();
+  });
+
   it("terminal rows without a taskType still clear monitor entries", () => {
     const liveness = ThreadBackgroundLiveness.make();
     const threadId = "t-live-2";
