@@ -36,6 +36,18 @@
       "environment": "preview",
       "distribution": "internal"
     },
+    "preview:embedded": {
+      "corepack": true,
+      "env": {
+        "APP_VARIANT": "preview",
+        "MOBILE_VERSION_POLICY": "appVersion",
+        "T3CODE_MOBILE_UPDATES_ENABLED": "0",
+        "NODE_OPTIONS": "--max-old-space-size=4096"
+      },
+      "channel": "preview",
+      "environment": "preview",
+      "distribution": "internal"
+    },
     "preview:dev": {
       "corepack": true,
       "env": {

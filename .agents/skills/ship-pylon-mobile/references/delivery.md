@@ -39,6 +39,21 @@ Use `preview:local`, not `preview` or `preview:dev`. Those two use the
 the Linux EAS builder computes, so laptop builds on those profiles error out.
 `preview:local` exists specifically to be laptop-buildable.
 
+If the `preview` channel contains an older update with the same app-version
+runtime as the new binary, that update can replace the new embedded bundle
+after installation. For a private test binary, use `preview:embedded` instead:
+
+```bash
+cd apps/mobile
+eas build --profile preview:embedded -p ios
+```
+
+It uses the same preview app and signing credentials, but disables OTA in the
+binary. Testers get its embedded bundle on every launch; further code changes
+require another build. Do not publish a new OTA to the shared `preview` channel
+just to make one test binary current when older binaries have different native
+fingerprints.
+
 ### OTA — only when the verdict says `OTA SAFE`
 
 ```bash
