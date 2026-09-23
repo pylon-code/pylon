@@ -116,6 +116,22 @@ describe("RelayWorkerBridge direct receipts", () => {
       { kind: "job", id: jobId, threadId: "thread-a", turnId: "turn-a", toolCallId: "tool-a" },
     ]);
 
+    const largePanelResult = toolEvent({
+      toolName: "mcp__relay__relay_panel",
+      result: {
+        type: "tool_result",
+        content: JSON.stringify({
+          content: [
+            { type: "text", text: "Private prompt: " + "x".repeat(20_000) },
+            { type: "text", text: JSON.stringify({ schemaVersion: 1, kind: "panel", panelId }) },
+          ],
+        }),
+      },
+    });
+    expect(relayBindingFromToolEvent(largePanelResult)).toEqual([
+      { kind: "panel", id: panelId, threadId: "thread-a", turnId: "turn-a", toolCallId: "tool-a" },
+    ]);
+
     const codex = toolEvent({
       provider: "codex",
       toolName: "relay_panel",
@@ -129,6 +145,30 @@ describe("RelayWorkerBridge direct receipts", () => {
         turnId: "turn-a",
         toolCallId: "tool-a",
       },
+    ]);
+  });
+
+  it("finds the short receipt after a 100k escaped prompt in Claude's nested MCP wrapper", () => {
+    const prompt = "\n\\".repeat(50_000);
+    const firstText = JSON.stringify({ prompt });
+    const wrapper = JSON.stringify({
+      content: [
+        { type: "text", text: firstText },
+        { type: "text", text: JSON.stringify({ schemaVersion: 1, kind: "panel", panelId }) },
+      ],
+    });
+    expect(prompt).toHaveLength(100_000);
+    expect(wrapper.length).toBeGreaterThan(256 * 1024);
+    expect(wrapper.length).toBeLessThan(1024 * 1024);
+    expect(
+      relayBindingFromToolEvent(
+        toolEvent({
+          toolName: "mcp__relay__relay_panel",
+          result: { type: "tool_result", content: wrapper },
+        }),
+      ),
+    ).toEqual([
+      { kind: "panel", id: panelId, threadId: "thread-a", turnId: "turn-a", toolCallId: "tool-a" },
     ]);
   });
 
@@ -301,9 +341,10 @@ persistence("Relay persisted observer and controls", (it) => {
                   activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
                 ) VALUES (
                   ${activity.id}, ${command.threadId}, ${activity.turnId}, ${activity.tone},
-                  ${activity.kind}, ${activity.summary}, ${encodeJson(activity.payload)}, NULL, ${activity.createdAt}
+                  ${activity.kind}, ${activity.summary}, ${encodeJson(activity.payload)}, ${commands.size}, ${activity.createdAt}
                 ) ON CONFLICT(activity_id) DO UPDATE SET
-                  payload_json = excluded.payload_json, created_at = excluded.created_at
+                  payload_json = excluded.payload_json, sequence = excluded.sequence,
+                  created_at = excluded.created_at
               `;
               return { sequence: commands.size, eventCount: 1 };
             }),
@@ -375,6 +416,37 @@ persistence("Relay persisted observer and controls", (it) => {
           taskId: `relay:${jobId}`,
           status: "idle",
           cancellable: false,
+          outageEpoch: 1,
+        });
+
+        const reconnected = yield* makeWithCliPath(cli.path).pipe(
+          Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provideService(ServerEnvironment, fakeEnvironment),
+          Effect.provideService(ThreadBackgroundLivenessService, liveness),
+        );
+        yield* reconnected.reconcile;
+        const recoveredProgress = yield* sql`
+          SELECT payload_json AS payload FROM projection_thread_activities
+          WHERE activity_id = ${`relay-progress:${jobId}`}
+        `;
+        expect(decodeJson(recoveredProgress[0]?.payload)).toMatchObject({
+          status: "running",
+          relaySequence: 1,
+        });
+        cli.setState({});
+        yield* reconnected.reconcile;
+        yield* reconnected.reconcile;
+        yield* reconnected.reconcile;
+        const repeatedOutage = yield* sql`
+          SELECT payload_json AS payload FROM projection_thread_activities
+          WHERE kind = 'task.progress' AND summary = 'Relay observer unavailable'
+          ORDER BY sequence
+        `;
+        expect(repeatedOutage).toHaveLength(2);
+        expect(decodeJson(repeatedOutage[1]?.payload)).toMatchObject({
+          status: "idle",
+          relaySequence: 1,
+          outageEpoch: 2,
         });
 
         cli.setState({
@@ -390,7 +462,7 @@ persistence("Relay persisted observer and controls", (it) => {
             },
           },
         });
-        yield* bridge.reconcile;
+        yield* reconnected.reconcile;
         const completed =
           yield* sql`SELECT payload_json AS payload FROM projection_thread_activities WHERE kind = 'task.completed'`;
         expect(completed).toHaveLength(1);
@@ -496,6 +568,23 @@ persistence("Relay persisted observer and controls", (it) => {
             },
           }),
         );
+        // A continuation can arrive before the first panel observation. Its
+        // cumulative jobIds must not steal the initial member's origin.
+        yield* resumedBridge.recordToolResult(
+          toolEvent({
+            toolName: "mcp__relay__relay_panel_continue",
+            turnId: "turn-continue",
+            itemId: "tool-continue",
+            result: {
+              structuredContent: {
+                schemaVersion: 1,
+                kind: "panel",
+                panelId,
+                jobIds: [panelInitialJobId, replacementJobId],
+              },
+            },
+          }),
+        );
         yield* resumedBridge.reconcile;
         const slotId = `relay-panel:${panelId}:member:0`;
         const slotRows =
@@ -509,6 +598,26 @@ persistence("Relay persisted observer and controls", (it) => {
         const unstarted =
           yield* sql`SELECT COUNT(*) AS count FROM projection_thread_activities WHERE kind = 'task.started' AND json_extract(payload_json, '$.taskId') = ${`relay-panel:${panelId}:member:1`}`;
         expect(unstarted[0]?.count).toBe(0);
+
+        cli.setState({
+          [panelInitialJobId]: { ...panelJob, status: "failed", sequence: 2 },
+          [replacementJobId]: replacementJob,
+          [panelId]: {
+            ...panel,
+            members: [
+              { ...panel.members[0], job: { ...panelJob, status: "failed", sequence: 2 } },
+              panel.members[1],
+            ],
+          },
+        });
+        yield* resumedBridge.reconcile;
+        const completedMemberObserveCount = cli
+          .calls()
+          .filter((args) => args[0] === "observe" && args[1] === panelInitialJobId).length;
+        yield* resumedBridge.reconcile;
+        expect(
+          cli.calls().filter((args) => args[0] === "observe" && args[1] === panelInitialJobId),
+        ).toHaveLength(completedMemberObserveCount);
 
         cli.setState({
           [panelInitialJobId]: { ...panelJob, status: "failed", sequence: 3 },
@@ -527,21 +636,6 @@ persistence("Relay persisted observer and controls", (it) => {
             ],
           },
         });
-        yield* resumedBridge.recordToolResult(
-          toolEvent({
-            toolName: "mcp__relay__relay_panel_continue",
-            turnId: "turn-continue",
-            itemId: "tool-continue",
-            result: {
-              structuredContent: {
-                schemaVersion: 1,
-                kind: "panel",
-                panelId,
-                jobIds: [replacementJobId],
-              },
-            },
-          }),
-        );
         yield* resumedBridge.reconcile;
         const replaced =
           yield* sql`SELECT turn_id AS turnId, payload_json AS payload FROM projection_thread_activities WHERE kind = 'task.started' AND json_extract(payload_json, '$.taskId') = ${slotId} ORDER BY created_at`;
@@ -557,6 +651,50 @@ persistence("Relay persisted observer and controls", (it) => {
         expect(
           cli.calls().some((args) => args[0] === "cancel" && args[1] === replacementJobId),
         ).toBe(true);
+
+        // Startup pages historical bindings without observing settled jobs or
+        // retaining a terminal seen entry for each completed worker.
+        yield* sql`
+          WITH RECURSIVE jobs(n) AS (
+            SELECT 1 UNION ALL SELECT n + 1 FROM jobs WHERE n < 300
+          )
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+          )
+          SELECT
+            'relay-binding:' || printf('job-00000000-0000-4000-8000-%012d', n),
+            'thread-a', 'turn-a', 'info', 'relay.binding', 'Relay worker bound',
+            json_object('kind', 'job', 'id', printf('job-00000000-0000-4000-8000-%012d', n),
+              'toolCallId', 'tool-old', 'environmentId', 'test-environment'),
+            n, '2026-09-22T00:00:00.000Z'
+          FROM jobs
+        `;
+        yield* sql`
+          WITH RECURSIVE jobs(n) AS (
+            SELECT 1 UNION ALL SELECT n + 1 FROM jobs WHERE n < 300
+          )
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+          )
+          SELECT
+            'relay-complete:' || printf('job-00000000-0000-4000-8000-%012d', n),
+            'thread-a', 'turn-a', 'info', 'task.completed', 'Relay worker completed',
+            json_object('taskId', 'relay:' || printf('job-00000000-0000-4000-8000-%012d', n),
+              'source', 'relay', 'attempt', 1, 'relaySequence', 1, 'status', 'completed'),
+            n + 1000, '2026-09-22T00:00:01.000Z'
+          FROM jobs
+        `;
+        const bootAfterChurn = yield* makeWithCliPath(cli.path).pipe(
+          Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provideService(ServerEnvironment, fakeEnvironment),
+          Effect.provideService(ThreadBackgroundLivenessService, liveness),
+        );
+        yield* bootAfterChurn.reconcile;
+        expect(
+          cli
+            .calls()
+            .filter((args) => args[0] === "observe" && args[1]?.startsWith("job-00000000-")),
+        ).toHaveLength(0);
       }).pipe(Effect.ensuring(Effect.sync(() => cli.cleanup())));
     },
   );

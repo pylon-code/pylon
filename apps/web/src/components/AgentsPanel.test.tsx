@@ -8,6 +8,7 @@ import type {
 import type { ProviderSessionAgentActivitySnapshot } from "@t3tools/contracts";
 import { AgentLiveActivitySnapshot } from "./AgentLiveActivity";
 import { AgentsPanel } from "./AgentsPanel";
+import { planBackgroundAgentStop } from "./ChatView.logic";
 
 function agent(id: string, title: string, status: RuntimeSubagent["status"]): RuntimeSubagent {
   return {
@@ -55,6 +56,45 @@ const model: AgentPanelModel = {
   hasAgents: true,
   liveCount: 1,
 };
+
+describe("background agent stop routing", () => {
+  const relay = { ...active, id: "relay:job-1", source: "relay" as const, cancellable: true };
+  const canCancel = (candidate: RuntimeSubagent) => candidate.source === "relay";
+
+  it("interrupts native background work through the parent session", () => {
+    expect(planBackgroundAgentStop([active], canCancel, true)).toEqual({
+      relayAgentIds: [],
+      interruptParent: true,
+      canStopAll: true,
+    });
+  });
+
+  it("cancels a detached Relay worker after the parent session ends", () => {
+    expect(planBackgroundAgentStop([relay, completed], canCancel, false)).toEqual({
+      relayAgentIds: [relay.id],
+      interruptParent: false,
+      canStopAll: true,
+    });
+    expect(planBackgroundAgentStop([relay], canCancel, true)).toEqual({
+      relayAgentIds: [relay.id],
+      interruptParent: false,
+      canStopAll: true,
+    });
+  });
+
+  it("addresses both sources and disables Stop when a live worker cannot be controlled", () => {
+    expect(planBackgroundAgentStop([active, relay], canCancel, true)).toEqual({
+      relayAgentIds: [relay.id],
+      interruptParent: true,
+      canStopAll: true,
+    });
+    expect(planBackgroundAgentStop([{ ...relay, cancellable: false }], () => false, true)).toEqual({
+      relayAgentIds: [],
+      interruptParent: false,
+      canStopAll: false,
+    });
+  });
+});
 
 describe("AgentsPanel agent cancellation", () => {
   it("offers cancellation only for active agents when the capability is enabled", () => {
@@ -162,6 +202,42 @@ describe("AgentsPanel agent cancellation", () => {
     expect(markup).toContain("sonnet-5 · high");
     expect(markup).not.toContain('aria-label="Message Relay reviewer"');
     expect(markup).not.toContain('aria-label="Open live activity for Relay reviewer"');
+  });
+
+  it("shows the coordinator's total when a Relay panel only partly dispatched", () => {
+    const coordinator = {
+      ...agent("relay-panel:panel-1", "Relay panel", "idle"),
+      kind: "workflow" as const,
+      source: "relay" as const,
+      progress: "2 of 3 members dispatched",
+    };
+    const members = [0, 1].map((index) => ({
+      ...agent(`relay-panel:panel-1:member:${index}`, `Worker ${index + 1}`, "completed"),
+      source: "relay" as const,
+      parentAgentId: coordinator.id,
+      agentIndex: index,
+    }));
+    const panelModel: AgentPanelModel = {
+      ...model,
+      workflows: [{ workflow: coordinator, phases: [], unphasedMembers: members }],
+      directAgents: [],
+    };
+
+    const expanded = renderToStaticMarkup(<AgentsPanel model={panelModel} />);
+    expect(expanded).toContain("2/2 settled · 2 of 3 members dispatched");
+
+    const collapsed = renderToStaticMarkup(
+      <AgentsPanel
+        model={{
+          ...panelModel,
+          workflows: [
+            { ...panelModel.workflows[0]!, workflow: { ...coordinator, status: "failed" } },
+          ],
+        }}
+      />,
+    );
+    expect(collapsed).toContain("2 agents");
+    expect(collapsed).toContain("2 of 3 members dispatched");
   });
 
   it("offers messaging only for provider-marked active agents when enabled", () => {

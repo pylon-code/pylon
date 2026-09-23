@@ -3745,6 +3745,43 @@ describe("quiet timeline: nested agents", () => {
     expect(rows[0]?.getFullDetail()).toBe("Reviewer 0 · completed\nReviewer 1 · completed");
   });
 
+  it("groups Relay panel members with their coordinator in one mobile spawn card", () => {
+    const panel = "relay-panel:panel-22222222-2222-4222-8222-222222222222";
+    const turnId = TurnId.make("turn-relay-panel");
+    const activities = [panel, `${panel}:member:0`, `${panel}:member:1`].map((taskId, index) =>
+      makeActivity({
+        id: EventId.make(`relay-panel-${index}`),
+        kind: "task.started",
+        summary: index === 0 ? "Relay panel started" : "Relay worker started",
+        createdAt: `2026-04-01T00:00:0${index}.000Z`,
+        turnId,
+        payload: {
+          taskId,
+          taskType: index === 0 ? "local_workflow" : "subagent",
+          workflowName: "Relay panel",
+          agentKind: "agent",
+          source: "relay",
+          status: "running",
+          timelineBypass: true,
+        },
+      }),
+    );
+    const thread = makeThread({
+      id: ThreadId.make("thread-relay-panel"),
+      projectId: ProjectId.make("project-1"),
+      title: "Relay panel",
+      activities,
+    });
+    const rows = buildThreadFeed(thread).flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.workEntry.agentSpawn).toMatchObject({
+      workflowId: panel,
+      agentTaskIds: [panel, `${panel}:member:0`, `${panel}:member:1`],
+    });
+  });
+
   it("summarizes a spawn card from the newest member report and the batch outcome", () => {
     type Member = NonNullable<WorkLogEntry["agentSpawn"]>["agents"][number];
     const member = (title: string, status: Member["status"], detail: string, seconds: number) =>

@@ -27,6 +27,10 @@ import { getProviderAdmissionAvailability } from "@t3tools/client-runtime/provid
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import {
+  isActiveSubagentStatus,
+  type RuntimeSubagent,
+} from "@t3tools/client-runtime/state/subagentRuntime";
+import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
@@ -533,6 +537,33 @@ export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "sessi
   return {
     threadId: thread.id,
     ...(runningTurnId !== null ? { turnId: runningTurnId } : {}),
+  };
+}
+
+/** The background Stop action must address detached workers as well as the parent session. */
+export function planBackgroundAgentStop(
+  agents: ReadonlyArray<RuntimeSubagent>,
+  canCancelAgent: (agent: RuntimeSubagent) => boolean,
+  canInterruptParent: boolean,
+): {
+  readonly relayAgentIds: ReadonlyArray<string>;
+  readonly interruptParent: boolean;
+  readonly canStopAll: boolean;
+} {
+  const relayWorkers = agents.filter(
+    (agent) =>
+      agent.source === "relay" && agent.kind !== "workflow" && isActiveSubagentStatus(agent.status),
+  );
+  const hasNativeAgent = agents.some(
+    (agent) => agent.source !== "relay" && isActiveSubagentStatus(agent.status),
+  );
+  // A provider interrupt can close the parent session, so Relay-only work
+  // must never send one merely because that session is still connected.
+  const interruptParent = canInterruptParent && (hasNativeAgent || relayWorkers.length === 0);
+  return {
+    relayAgentIds: relayWorkers.filter(canCancelAgent).map((agent) => agent.id),
+    interruptParent,
+    canStopAll: relayWorkers.every(canCancelAgent) && (interruptParent || relayWorkers.length > 0),
   };
 }
 

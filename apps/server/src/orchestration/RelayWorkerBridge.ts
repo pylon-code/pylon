@@ -36,6 +36,9 @@ const decodeJson = Schema.decodeOption(Schema.fromJsonString(Schema.Unknown));
 const JOB_ID = /^job-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PANEL_ID = /^panel-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_OBSERVE_BYTES = 128 * 1024;
+// Claude can JSON-serialize a Relay result that already contains JSON-escaped
+// prompt text. Keep the wrapper bounded while allowing Relay's 100k prompt cap.
+const MAX_MCP_RECEIPT_CODE_UNITS = 1024 * 1024;
 const MAX_LABEL = 300;
 
 interface RelayBinding {
@@ -187,7 +190,7 @@ function relayStructuredResult(value: unknown, depth = 0): Record<string, unknow
   if (depth > 4) return undefined;
   const object = record(value);
   if (!object) {
-    if (typeof value !== "string" || value.length > 16_384) return undefined;
+    if (typeof value !== "string" || value.length > MAX_MCP_RECEIPT_CODE_UNITS) return undefined;
     try {
       return relayStructuredResult(JSON.parse(value), depth + 1);
     } catch {
@@ -203,7 +206,10 @@ function relayStructuredResult(value: unknown, depth = 0): Record<string, unknow
     return relayStructuredResult(object.content, depth + 1);
   }
   if (Array.isArray(object.content)) {
-    for (const block of object.content.slice(0, 4)) {
+    // Relay appends a short versioned receipt after its human-readable result.
+    // Inspect the tail first so large prompt/result text is never interpreted
+    // as an origin receipt or copied into a task projection.
+    for (const block of object.content.slice(-4).toReversed()) {
       const nested = record(block);
       const parsed = relayStructuredResult(nested?.text ?? nested?.content, depth + 1);
       if (parsed) return parsed;
@@ -340,6 +346,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
   const currentPanelJobs = new Map<string, ReadonlyMap<number, string>>();
   const failedObservations = new Map<string, number>();
   const unavailable = new Set<string>();
+  const outageEpochs = new Map<string, number>();
 
   const append = Effect.fn("RelayWorkerBridge.append")(function* (
     binding: RelayBinding,
@@ -382,45 +389,63 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     }
   });
 
-  const readBindings = Effect.fn("RelayWorkerBridge.readBindings")(function* () {
+  const decodeBindingRow = (raw: unknown): RelayBinding | undefined => {
+    const row = record(raw);
+    if (!row || typeof row.payload !== "string" || typeof row.threadId !== "string")
+      return undefined;
+    const decoded = decodeJson(row.payload);
+    const payload = Option.isSome(decoded) ? record(decoded.value) : undefined;
+    if (
+      !payload ||
+      !(
+        (payload.kind === "job" && typeof payload.id === "string" && JOB_ID.test(payload.id)) ||
+        (payload.kind === "panel" && typeof payload.id === "string" && PANEL_ID.test(payload.id))
+      ) ||
+      typeof payload.toolCallId !== "string" ||
+      typeof payload.environmentId !== "string"
+    )
+      return undefined;
+    return {
+      kind: payload.kind as "job" | "panel",
+      id: payload.id as string,
+      threadId: ThreadId.make(row.threadId),
+      turnId: typeof row.turnId === "string" ? row.turnId : null,
+      toolCallId: payload.toolCallId,
+      environmentId: payload.environmentId,
+      ...(typeof payload.panelId === "string" ? { panelId: payload.panelId } : {}),
+      ...(nonNegativeInteger(payload.agentIndex) !== undefined
+        ? { agentIndex: payload.agentIndex as number }
+        : {}),
+      ...(nonNegativeInteger(payload.slotAttempt) !== undefined
+        ? { slotAttempt: payload.slotAttempt as number }
+        : {}),
+    };
+  };
+
+  const readBinding = Effect.fn("RelayWorkerBridge.readBinding")(function* (id: string) {
     const rows = yield* sql`
       SELECT thread_id AS threadId, turn_id AS turnId, payload_json AS payload
-      FROM projection_thread_activities WHERE kind = 'relay.binding'
-        AND json_extract(payload_json, '$.environmentId') = ${environmentId}
+      FROM projection_thread_activities
+      WHERE activity_id = ${`relay-binding:${id}`} AND kind = 'relay.binding'
+      LIMIT 1
     `;
-    const bindings: RelayBinding[] = [];
-    for (const raw of rows) {
-      const row = record(raw);
-      if (!row || typeof row.payload !== "string" || typeof row.threadId !== "string") continue;
-      const decoded = decodeJson(row.payload);
-      const payload = Option.isSome(decoded) ? record(decoded.value) : undefined;
-      if (
-        !payload ||
-        !(
-          (payload.kind === "job" && typeof payload.id === "string" && JOB_ID.test(payload.id)) ||
-          (payload.kind === "panel" && typeof payload.id === "string" && PANEL_ID.test(payload.id))
-        ) ||
-        typeof payload.toolCallId !== "string"
-      )
-        continue;
-      if (payload.environmentId !== environmentId) continue;
-      bindings.push({
-        kind: payload.kind as "job" | "panel",
-        id: payload.id as string,
-        threadId: ThreadId.make(row.threadId),
-        turnId: typeof row.turnId === "string" ? row.turnId : null,
-        toolCallId: payload.toolCallId,
-        environmentId,
-        ...(typeof payload.panelId === "string" ? { panelId: payload.panelId } : {}),
-        ...(nonNegativeInteger(payload.agentIndex) !== undefined
-          ? { agentIndex: payload.agentIndex as number }
-          : {}),
-        ...(nonNegativeInteger(payload.slotAttempt) !== undefined
-          ? { slotAttempt: payload.slotAttempt as number }
-          : {}),
-      });
-    }
-    return bindings;
+    return decodeBindingRow(rows[0]);
+  });
+
+  const readBindingPage = Effect.fn("RelayWorkerBridge.readBindingPage")(function* (
+    afterRowId: number,
+  ) {
+    const rows = yield* sql`
+      SELECT rowid AS rowId, thread_id AS threadId, turn_id AS turnId, payload_json AS payload
+      FROM projection_thread_activities
+      WHERE rowid > ${afterRowId} AND kind = 'relay.binding'
+        AND json_extract(payload_json, '$.environmentId') = ${environmentId}
+      ORDER BY rowid ASC LIMIT 256
+    `;
+    return rows.map((raw) => ({
+      rowId: nonNegativeInteger(record(raw)?.rowId) ?? 0,
+      binding: decodeBindingRow(raw),
+    }));
   });
 
   const readActivation = Effect.fn("RelayWorkerBridge.readActivation")(function* (
@@ -463,7 +488,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
           SELECT 1 FROM json_each(json_extract(payload_json, '$.jobIds'))
           WHERE value = ${jobId}
         )
-      ORDER BY created_at DESC, activity_id DESC LIMIT 1
+      ORDER BY rowid ASC LIMIT 1
     `;
     const row = record(rows[0]);
     const decoded = typeof row?.payload === "string" ? decodeJson(row.payload) : Option.none();
@@ -476,19 +501,20 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
       : undefined;
   });
 
-  const register = Effect.fn("RelayWorkerBridge.register")(function* (binding: RelayBinding) {
-    const existing = (yield* readBindings()).find((candidate) => candidate.id === binding.id);
-    if (existing && (existing.threadId !== binding.threadId || existing.kind !== binding.kind)) {
+  const register = Effect.fn("RelayWorkerBridge.register")(function* (
+    binding: RelayBinding,
+    activate = true,
+  ) {
+    const existing = yield* readBinding(binding.id);
+    if (
+      existing &&
+      (existing.threadId !== binding.threadId ||
+        existing.kind !== binding.kind ||
+        existing.environmentId !== binding.environmentId)
+    ) {
       yield* Effect.logWarning("Relay ID already belongs to another thread", { id: binding.id });
       return false;
     }
-    const foreign = yield* sql`
-      SELECT 1 FROM projection_thread_activities WHERE kind = 'relay.binding'
-        AND json_extract(payload_json, '$.id') = ${binding.id}
-        AND json_extract(payload_json, '$.environmentId') != ${environmentId}
-      LIMIT 1
-    `;
-    if (foreign.length > 0) return false;
     if (!existing) {
       yield* append(
         binding,
@@ -507,15 +533,16 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         "v1",
       );
     }
-    active.set(binding.id, existing ?? binding);
+    if (activate) active.set(binding.id, existing ?? binding);
     return true;
   });
 
   const recordReceipt = Effect.fn("RelayWorkerBridge.recordReceipt")(function* (
     receipt: RelayToolReceipt,
+    activate = true,
   ) {
     const binding = { ...receipt.binding, environmentId };
-    if (!(yield* register(binding))) return;
+    if (!(yield* register(binding, activate))) return;
     if (receipt.toolName === "relay_resume" && receipt.attempt !== undefined) {
       if (yield* readActivation(binding, receipt.attempt)) return;
       yield* append(
@@ -558,7 +585,6 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
   // receipt can still establish the same exact thread/turn/tool-call binding.
   const recoverPersistedToolReceipts = Effect.fn("RelayWorkerBridge.recoverPersistedToolReceipts")(
     function* () {
-      const bound = new Set((yield* readBindings()).map((binding) => binding.id));
       let offset = 0;
       for (;;) {
         const rows = yield* sql`
@@ -615,15 +641,27 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
           } as ProviderRuntimeEvent;
           const receipt = relayReceiptFromToolEvent(event);
           if (!receipt) continue;
+          const existing = yield* readBinding(receipt.binding.id);
+          if (existing && receipt.toolName === "relay_delegate") continue;
           if (
-            !bound.has(receipt.binding.id) ||
-            receipt.toolName === "relay_resume" ||
-            receipt.toolName === "relay_panel" ||
-            receipt.toolName === "relay_panel_continue"
-          ) {
-            yield* recordReceipt(receipt);
-            bound.add(receipt.binding.id);
-          }
+            existing &&
+            receipt.toolName === "relay_resume" &&
+            receipt.attempt !== undefined &&
+            (yield* readActivation(existing, receipt.attempt))
+          )
+            continue;
+          if (
+            existing &&
+            (receipt.toolName === "relay_panel" || receipt.toolName === "relay_panel_continue") &&
+            (!receipt.jobIds?.length ||
+              (yield* sql`
+                SELECT 1 FROM projection_thread_activities
+                WHERE activity_id = ${`relay-activation:${existing.id}:${receipt.binding.toolCallId}`}
+                  AND kind = 'relay.activation' LIMIT 1
+              `).length > 0)
+          )
+            continue;
+          yield* recordReceipt(receipt, false);
         }
         if (rows.length < 256) break;
         offset += rows.length;
@@ -644,6 +682,61 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     }).pipe(Effect.option);
   });
 
+  const readLatestTaskActivity = Effect.fn("RelayWorkerBridge.readLatestTaskActivity")(function* (
+    binding: RelayBinding,
+  ) {
+    const rows = yield* sql`
+      SELECT rowid AS rowId, kind, payload_json AS payload FROM projection_thread_activities
+      WHERE thread_id = ${binding.threadId}
+        AND kind IN ('task.started', 'task.progress', 'task.updated', 'task.completed')
+        AND CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.taskId') END = ${bindingTaskId(binding)}
+      ORDER BY sequence DESC, created_at DESC, rowid DESC LIMIT 1
+    `;
+    const row = record(rows[0]);
+    const decoded = typeof row?.payload === "string" ? decodeJson(row.payload) : Option.none();
+    return {
+      kind: row?.kind,
+      rowId: nonNegativeInteger(row?.rowId) ?? 0,
+      payload: Option.isSome(decoded) ? record(decoded.value) : undefined,
+    };
+  });
+
+  const shouldObserveOnBoot = Effect.fn("RelayWorkerBridge.shouldObserveOnBoot")(function* (
+    binding: RelayBinding,
+    bindingRowId: number,
+  ) {
+    const latest = yield* readLatestTaskActivity(binding);
+    if (latest.kind !== "task.completed" || bindingRowId > latest.rowId) return true;
+    // A resume or panel continuation accepted after the terminal row must be
+    // reconciled even if the process stopped before emitting task.started.
+    const activations = yield* sql`
+      SELECT 1 FROM projection_thread_activities
+      WHERE rowid > ${latest.rowId} AND thread_id = ${binding.threadId}
+        AND kind = 'relay.activation'
+        AND json_extract(payload_json, '$.environmentId') = ${environmentId}
+        AND json_extract(payload_json, '$.id') = ${binding.panelId ?? binding.id}
+      LIMIT 1
+    `;
+    return activations.length > 0;
+  });
+
+  const getOutageEpoch = Effect.fn("RelayWorkerBridge.getOutageEpoch")(function* (
+    binding: RelayBinding,
+  ) {
+    const cached = outageEpochs.get(binding.id);
+    if (cached !== undefined) return cached;
+    const rows = yield* sql`
+      SELECT MAX(CAST(json_extract(payload_json, '$.outageEpoch') AS INTEGER)) AS epoch
+      FROM projection_thread_activities
+      WHERE thread_id = ${binding.threadId} AND kind = 'task.progress'
+        AND json_extract(payload_json, '$.taskId') = ${bindingTaskId(binding)}
+        AND json_type(payload_json, '$.outageEpoch') = 'integer'
+    `;
+    const epoch = nonNegativeInteger(record(rows[0])?.epoch) ?? 0;
+    outageEpochs.set(binding.id, epoch);
+    return epoch;
+  });
+
   const markObserverUnavailable = Effect.fn("RelayWorkerBridge.markObserverUnavailable")(function* (
     binding: RelayBinding,
   ) {
@@ -651,25 +744,21 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     failedObservations.set(binding.id, failures);
     if (failures < 3 || unavailable.has(binding.id)) return;
     const taskId = bindingTaskId(binding);
-    const rows = yield* sql`
-      SELECT kind, payload_json AS payload FROM projection_thread_activities
-      WHERE thread_id = ${binding.threadId}
-        AND kind IN ('task.started', 'task.progress', 'task.updated', 'task.completed')
-        AND CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.taskId') END = ${taskId}
-      ORDER BY created_at DESC, activity_id DESC LIMIT 1
-    `;
-    const latest = record(rows[0]);
-    if (!latest || typeof latest.payload !== "string") return;
-    const decoded = decodeJson(latest.payload);
-    const payload = Option.isSome(decoded) ? record(decoded.value) : undefined;
+    const latest = yield* readLatestTaskActivity(binding);
+    const payload = latest.payload;
     const attempt = nonNegativeInteger(payload?.attempt);
     const relaySequence = nonNegativeInteger(payload?.relaySequence);
     if (attempt === undefined || relaySequence === undefined) return;
     if (latest.kind === "task.completed") {
-      seen.set(binding.id, { attempt, sequence: relaySequence, state: "terminal" });
       active.delete(binding.id);
+      seen.delete(binding.id);
+      failedObservations.delete(binding.id);
+      unavailable.delete(binding.id);
+      outageEpochs.delete(binding.id);
       return;
     }
+    const outageEpoch = (yield* getOutageEpoch(binding)) + 1;
+    outageEpochs.set(binding.id, outageEpoch);
     yield* append(
       binding,
       "task.progress",
@@ -678,6 +767,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         title: binding.kind === "panel" ? "Relay panel" : "Relay worker",
         attempt,
         relaySequence,
+        outageEpoch,
         status: "idle",
         summary: "Relay observer unavailable",
         detail: "Relay observer unavailable",
@@ -685,8 +775,8 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         cancellable: false,
       },
       "Relay observer unavailable",
-      `relay-observer-unavailable:${binding.id}`,
-      `${attempt}:${relaySequence}`,
+      `relay-observer-unavailable:${binding.id}:${outageEpoch}`,
+      `${attempt}:${relaySequence}:${outageEpoch}`,
     );
     unavailable.add(binding.id);
   });
@@ -702,10 +792,17 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
       binding.id,
     );
     if (!observation) return yield* markObserverUnavailable(binding);
-    const wasUnavailable = unavailable.delete(binding.id);
+    const wasUnavailableInMemory = unavailable.delete(binding.id);
+    const lastPersisted = seen.has(binding.id) ? undefined : yield* readLatestTaskActivity(binding);
+    const wasUnavailable =
+      wasUnavailableInMemory ||
+      (lastPersisted?.payload?.status === "idle" &&
+        lastPersisted.payload.summary === "Relay observer unavailable");
+    const recoveryEpoch = wasUnavailable ? yield* getOutageEpoch(binding) : 0;
     failedObservations.delete(binding.id);
     const taskId = bindingTaskId(binding);
     if (observation.kind === "panel") {
+      const priorPanelJobs = currentPanelJobs.get(binding.id);
       currentPanelJobs.set(
         binding.id,
         new Map(
@@ -745,6 +842,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
           !JOB_ID.test(member.jobId)
         )
           continue;
+        if (priorPanelJobs?.get(member.index) === member.jobId) continue;
         const origin = yield* readPanelJobOrigin(binding, member.jobId);
         yield* register({
           kind: "job",
@@ -785,7 +883,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
           },
           "Relay panel",
           `relay-panel-progress:${binding.id}`,
-          fingerprint,
+          wasUnavailable ? `${fingerprint}:recovered:${recoveryEpoch}` : fingerprint,
         );
       }
       seen.set(binding.id, { attempt: 0, sequence: 0, state: fingerprint });
@@ -806,6 +904,10 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
           fingerprint,
         );
         active.delete(binding.id);
+        seen.delete(binding.id);
+        failedObservations.delete(binding.id);
+        unavailable.delete(binding.id);
+        outageEpochs.delete(binding.id);
       }
       return;
     }
@@ -885,7 +987,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         },
         "Relay worker",
         `relay-progress:${binding.id}`,
-        fingerprint,
+        wasUnavailable ? `${fingerprint}:recovered:${recoveryEpoch}` : fingerprint,
       );
     }
     seen.set(binding.id, {
@@ -924,18 +1026,32 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         fingerprint,
       );
       active.delete(binding.id);
+      seen.delete(binding.id);
+      failedObservations.delete(binding.id);
+      unavailable.delete(binding.id);
+      outageEpochs.delete(binding.id);
     }
   });
 
-  let sweepCount = 0;
+  let bootstrapped = false;
   const sweep = Effect.fn("RelayWorkerBridge.sweep")(function* () {
-    // Direct receipts register immediately. The periodic persisted scan closes
+    // Direct receipts register immediately. This bounded startup scan closes
     // the crash window after command dispatch and before observer registration.
-    if (sweepCount++ % 10 === 0) {
-      if (sweepCount === 1) yield* recoverPersistedToolReceipts();
-      for (const binding of yield* readBindings()) {
-        if (!seen.has(binding.id) && !active.has(binding.id)) active.set(binding.id, binding);
+    if (!bootstrapped) {
+      yield* recoverPersistedToolReceipts();
+      let afterRowId = 0;
+      for (;;) {
+        const page = yield* readBindingPage(afterRowId);
+        if (page.length === 0) break;
+        for (const { rowId, binding } of page) {
+          afterRowId = Math.max(afterRowId, rowId);
+          if (binding && !active.has(binding.id) && (yield* shouldObserveOnBoot(binding, rowId))) {
+            active.set(binding.id, binding);
+          }
+        }
+        if (page.length < 256) break;
       }
+      bootstrapped = true;
     }
     const observeBound = (binding: RelayBinding) =>
       poll(binding).pipe(
@@ -957,6 +1073,11 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         }
       }
       yield* observeBound(binding);
+    }
+    for (const panelId of currentPanelJobs.keys()) {
+      if (active.has(panelId)) continue;
+      if ([...active.values()].some((binding) => binding.panelId === panelId)) continue;
+      currentPanelJobs.delete(panelId);
     }
   });
 
@@ -985,19 +1106,23 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     agentId: string,
   ) {
     if (!enabled) return yield* new ProviderCancelSessionAgentError({ reason: "unsupported" });
-    const bindings = yield* readBindings().pipe(
-      Effect.mapError(() => new ProviderCancelSessionAgentError({ reason: "request-failed" })),
-    );
+    const readAuthorizedBinding = (id: string) =>
+      readBinding(id).pipe(
+        Effect.mapError(() => new ProviderCancelSessionAgentError({ reason: "request-failed" })),
+      );
     const slot = /^relay-panel:(panel-[0-9a-f-]{36}):member:([0-7])$/i.exec(agentId);
     let binding: RelayBinding | undefined;
     if (slot && PANEL_ID.test(slot[1] ?? "")) {
       const panelId = slot[1]!;
       const index = Number(slot[2]);
-      const panel = bindings.find(
-        (candidate) =>
-          candidate.kind === "panel" && candidate.id === panelId && candidate.threadId === threadId,
-      );
-      if (!panel) return yield* new ProviderCancelSessionAgentError({ reason: "agent-not-active" });
+      const panel = yield* readAuthorizedBinding(panelId);
+      if (
+        !panel ||
+        panel.kind !== "panel" ||
+        panel.threadId !== threadId ||
+        panel.environmentId !== environmentId
+      )
+        return yield* new ProviderCancelSessionAgentError({ reason: "agent-not-active" });
       const current = yield* runCli(["observe", "--panel", panelId]);
       if (Option.isNone(current))
         return yield* new ProviderCancelSessionAgentError({ reason: "request-failed" });
@@ -1011,25 +1136,27 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
       const member = observedPanel.members.find((candidate) => candidate.index === index);
       if (!member?.jobId || !JOB_ID.test(member.jobId))
         return yield* new ProviderCancelSessionAgentError({ reason: "agent-not-active" });
-      binding = bindings.find(
-        (candidate) =>
-          candidate.kind === "job" &&
-          candidate.id === member.jobId &&
-          candidate.panelId === panelId &&
-          candidate.agentIndex === index &&
-          candidate.threadId === threadId,
-      );
+      const currentBinding = yield* readAuthorizedBinding(member.jobId);
+      binding =
+        currentBinding?.kind === "job" &&
+        currentBinding.panelId === panelId &&
+        currentBinding.agentIndex === index &&
+        currentBinding.threadId === threadId &&
+        currentBinding.environmentId === environmentId
+          ? currentBinding
+          : undefined;
     } else {
       const id = agentId.startsWith("relay:") ? agentId.slice("relay:".length) : "";
       if (!JOB_ID.test(id))
         return yield* new ProviderCancelSessionAgentError({ reason: "unsupported" });
-      binding = bindings.find(
-        (candidate) =>
-          candidate.kind === "job" &&
-          candidate.id === id &&
-          candidate.panelId === undefined &&
-          candidate.threadId === threadId,
-      );
+      const directBinding = yield* readAuthorizedBinding(id);
+      binding =
+        directBinding?.kind === "job" &&
+        directBinding.panelId === undefined &&
+        directBinding.threadId === threadId &&
+        directBinding.environmentId === environmentId
+          ? directBinding
+          : undefined;
     }
     if (!binding) return yield* new ProviderCancelSessionAgentError({ reason: "agent-not-active" });
     const id = binding.id;

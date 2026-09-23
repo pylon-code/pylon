@@ -3077,6 +3077,71 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
     }),
   );
 
+  it.effect("pins a detached Relay agent beyond the 500 activity window until it settles", () =>
+    Effect.gen(function* () {
+      yield* seedFanOutThread();
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        ) VALUES (
+          'relay-old-progress', 'thread-w', 'turn-1', 'info', 'task.progress',
+          'Relay worker',
+          '{"taskId":"relay:job-11111111-1111-4111-8111-111111111111","taskType":"subagent","agentKind":"agent","source":"relay","attempt":1,"relaySequence":1,"status":"running"}',
+          1, '2026-03-01T00:00:00.000Z'
+        )
+      `;
+      yield* sql`
+        WITH RECURSIVE activity_rows(sequence) AS (
+          SELECT 2 UNION ALL SELECT sequence + 1 FROM activity_rows WHERE sequence < 502
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        )
+        SELECT printf('newer-%04d', sequence), 'thread-w', 'turn-5', 'info',
+          'tool.completed', 'Newer parent activity', '{}', sequence,
+          '2026-03-01T00:04:00.000Z'
+        FROM activity_rows
+      `;
+
+      const raw = yield* snapshotQuery.getThreadDetailById(threadW);
+      assert.equal(raw._tag, "Some");
+      if (raw._tag === "Some") {
+        assert.equal(raw.value.activities.length, 501);
+        assert.ok(
+          raw.value.activities.some((activity) => activity.id === asEventId("relay-old-progress")),
+        );
+      }
+      const client = yield* snapshotQuery.getThreadDetailSnapshot(threadW, { turnLimit: 1 });
+      assert.equal(client._tag, "Some");
+      if (client._tag === "Some") {
+        assert.ok(
+          client.value.thread.activities.some(
+            (activity) => activity.id === asEventId("relay-old-progress"),
+          ),
+        );
+      }
+
+      yield* sql`
+        UPDATE projection_thread_activities SET kind = 'task.completed',
+          payload_json = '{"taskId":"relay:job-11111111-1111-4111-8111-111111111111","taskType":"subagent","agentKind":"agent","source":"relay","attempt":1,"relaySequence":2,"status":"completed"}'
+        WHERE activity_id = 'relay-old-progress'
+      `;
+      const settled = yield* snapshotQuery.getThreadDetailById(threadW);
+      assert.equal(settled._tag, "Some");
+      if (settled._tag === "Some") {
+        assert.equal(settled.value.activities.length, 500);
+        assert.ok(
+          !settled.value.activities.some(
+            (activity) => activity.id === asEventId("relay-old-progress"),
+          ),
+        );
+      }
+    }),
+  );
+
   it.effect("bounds activity hydration and preserves unresolved requests", () =>
     Effect.gen(function* () {
       yield* seedFanOutThread();

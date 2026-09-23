@@ -653,6 +653,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
  */
 function agentSpawnGroupKey(entry: DerivedWorkLogEntry): string {
   const taskId = entry.taskId ?? "";
+  const relayMemberSlot = taskId.startsWith("relay-panel:") ? taskId.indexOf(":member:") : -1;
+  if (relayMemberSlot !== -1) return `wf:${taskId.slice(0, relayMemberSlot)}`;
   const workflowSlot = taskId.indexOf(":wf:");
   if (workflowSlot !== -1) return `wf:${taskId.slice(0, workflowSlot)}`;
   if (entry.isWorkflowCoordinator) return `wf:${taskId}`;

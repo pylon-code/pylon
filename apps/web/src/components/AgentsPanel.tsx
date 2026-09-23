@@ -559,6 +559,9 @@ function ExpandedWorkflowSection({
         ) : null}
         <span className="ml-auto font-mono normal-case text-muted-foreground/80">
           {settled}/{members.length} settled
+          {group.workflow.source === "relay" && group.workflow.progress
+            ? ` · ${group.workflow.progress}`
+            : null}
         </span>
         <Button
           size="icon-micro"
@@ -647,6 +650,9 @@ function CollapsedWorkflowSection({
         <span className="ml-auto flex items-center gap-1.5 font-mono text-[.7rem] text-muted-foreground/80">
           {failed > 0 ? <span className="text-destructive-foreground">{failed} failed</span> : null}
           <span>{members.length} agents</span>
+          {group.workflow.source === "relay" && group.workflow.progress ? (
+            <span>· {group.workflow.progress}</span>
+          ) : null}
           <span className="tabular-nums">· {formatSubagentTokenCount(totalTokens)} tok</span>
           {elapsed ? <span className="tabular-nums">· {elapsed}</span> : null}
           <ChevronRight aria-hidden className="size-3" />

@@ -509,7 +509,10 @@ function applyStatus(
     // Duplicate terminal events remain first-write-wins too.
     return;
   }
-  if ((wasTerminal || agent.status === "idle") && isActiveSubagentStatus(status)) {
+  if (
+    (wasTerminal || (agent.status === "idle" && agent.source !== "relay")) &&
+    isActiveSubagentStatus(status)
+  ) {
     // Reactivation: same identity, new run. Clear the previous run's terminal
     // detail so a live card never shows the prior run's output.
     agent.activationCount += 1;

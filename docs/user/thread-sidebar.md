@@ -142,8 +142,8 @@ On web and desktop, use **Agents** to follow work delegated to subagents.
 When a Pylon session delegates through Relay Orchestrator, its detached workers also appear here.
 They keep their status after the parent turn ends or disconnects. You can stop an active Relay worker
 from its agent row; Relay keeps the worker's partial work and evidence. Relay workers do not accept
-direct messages or expose a live private transcript in Pylon. A panel groups its members together,
-including members still waiting to dispatch.
+direct messages or expose a live private transcript in Pylon. A panel groups dispatched members
+and shows how many have not yet dispatched.
 
 To enable Relay workers in Agents, install Relay Orchestrator on the computer running the Pylon
 environment server and set `PYLON_RELAY_CLI` to the absolute path of Relay's `scripts/relay.mjs`

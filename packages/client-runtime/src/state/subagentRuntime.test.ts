@@ -1218,6 +1218,36 @@ describe("Relay workers in the native agent fold", () => {
     expect(worker?.recentActivity.some((entry) => entry.summary === "Duplicate frame")).toBe(false);
   });
 
+  it("keeps one Relay run when observation recovers within the same attempt", () => {
+    const [worker] = fold([
+      activity("task.started", relay("relay:job-observer", 1, 0)),
+      activity("task.progress", relay("relay:job-observer", 1, 1, { status: "running" })),
+      activity(
+        "task.progress",
+        relay("relay:job-observer", 1, 1, {
+          status: "idle",
+          cancellable: false,
+          summary: "Relay observer unavailable",
+        }),
+      ),
+      activity(
+        "task.progress",
+        relay("relay:job-observer", 1, 2, {
+          status: "running",
+          cancellable: true,
+          summary: "Running command",
+        }),
+      ),
+    ]);
+    expect(worker).toMatchObject({
+      status: "running",
+      attempt: 1,
+      activationCount: 1,
+      cancellable: true,
+      progress: "Running command",
+    });
+  });
+
   it("keeps partially dispatched panel workers independent of a failed coordinator", () => {
     const agents = fold([
       activity("task.started", {
