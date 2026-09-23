@@ -287,6 +287,17 @@ function observationFingerprint(observation: RelayJobObservation | RelayPanelObs
     .slice(0, 16);
 }
 
+// A completed panel can reopen when a member resumes. Its coordinator needs
+// an attempt that advances with either a resumed job or a replaced slot, so a
+// previous terminal coordinator cannot mask the new run in the client fold.
+function panelAttempt(observation: RelayPanelObservation): number | undefined {
+  const attempt = observation.members.reduce((sum, member) => {
+    const jobAttempt = nonNegativeInteger(record(member.job)?.attempt) ?? 1;
+    return sum + member.slotAttempt - 1 + jobAttempt - 1;
+  }, 1);
+  return Number.isSafeInteger(attempt) && attempt > 0 ? attempt : undefined;
+}
+
 const relayStatus = (
   status: string,
 ): "pending" | "running" | "idle" | "completed" | "failed" | "cancelled" | "interrupted" => {
@@ -354,6 +365,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
   const failedObservations = new Map<string, number>();
   const unavailable = new Set<string>();
   const outageEpochs = new Map<string, number>();
+  const pendingPanelDispatchPolls = new Map<string, number>();
   const priorUsageCache = new Map<
     string,
     { attempt: number; usage: RelayUsageRollup | undefined }
@@ -513,6 +525,29 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
       : undefined;
   });
 
+  const hasUnobservedPanelDispatch = Effect.fn("RelayWorkerBridge.hasUnobservedPanelDispatch")(
+    function* (panel: RelayBinding) {
+      const rows = yield* sql`
+        SELECT payload_json AS payload FROM projection_thread_activities
+        WHERE thread_id = ${panel.threadId} AND kind = 'relay.activation'
+          AND json_extract(payload_json, '$.environmentId') = ${environmentId}
+          AND json_extract(payload_json, '$.id') = ${panel.id}
+        ORDER BY rowid DESC LIMIT 1
+      `;
+      const raw = record(rows[0])?.payload;
+      const decoded = typeof raw === "string" ? decodeJson(raw) : Option.none();
+      const jobIds = Option.isSome(decoded) ? record(decoded.value)?.jobIds : undefined;
+      if (!Array.isArray(jobIds)) return false;
+      for (const id of jobIds.slice(0, 8)) {
+        if (typeof id !== "string" || !JOB_ID.test(id)) continue;
+        const existing = yield* readBinding(id);
+        if (!existing || existing.panelId !== panel.id || existing.threadId !== panel.threadId)
+          return true;
+      }
+      return false;
+    },
+  );
+
   const register = Effect.fn("RelayWorkerBridge.register")(function* (
     binding: RelayBinding,
     activate = true,
@@ -555,6 +590,19 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
   ) {
     const binding = { ...receipt.binding, environmentId };
     if (!(yield* register(binding, activate))) return;
+    if (activate && receipt.toolName === "relay_resume") {
+      const member = yield* readBinding(binding.id);
+      if (member?.panelId) {
+        const panel = yield* readBinding(member.panelId);
+        if (
+          panel?.kind === "panel" &&
+          panel.threadId === member.threadId &&
+          panel.environmentId === member.environmentId
+        ) {
+          active.set(panel.id, panel);
+        }
+      }
+    }
     if (receipt.toolName === "relay_resume" && receipt.attempt !== undefined) {
       if (yield* readActivation(binding, receipt.attempt)) return;
       yield* append(
@@ -726,7 +774,16 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
       WHERE rowid > ${latest.rowId} AND thread_id = ${binding.threadId}
         AND kind = 'relay.activation'
         AND json_extract(payload_json, '$.environmentId') = ${environmentId}
-        AND json_extract(payload_json, '$.id') = ${binding.panelId ?? binding.id}
+        AND (
+          json_extract(payload_json, '$.id') = ${binding.id}
+          OR (
+            json_extract(payload_json, '$.id') = ${binding.panelId ?? ""}
+            AND EXISTS (
+              SELECT 1 FROM json_each(json_extract(payload_json, '$.jobIds'))
+              WHERE value = ${binding.id}
+            )
+          )
+        )
       LIMIT 1
     `;
     return activations.length > 0;
@@ -737,6 +794,46 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     completedRowId: number,
     completedAttempt: number,
   ) {
+    if (binding.kind === "panel") {
+      // A resumed member reopens its completed panel even though the direct
+      // relay_resume receipt names the job, not the panel. Resolve that ID
+      // through the persisted owner binding before considering the receipt.
+      const rows = yield* sql`
+        SELECT activation.turn_id AS turnId, activation.payload_json AS payload
+        FROM projection_thread_activities AS activation
+        WHERE activation.rowid > ${completedRowId}
+          AND activation.thread_id = ${binding.threadId}
+          AND activation.kind = 'relay.activation'
+          AND json_extract(activation.payload_json, '$.environmentId') = ${environmentId}
+          AND (
+            json_extract(activation.payload_json, '$.id') = ${binding.id}
+            OR EXISTS (
+              SELECT 1 FROM projection_thread_activities AS child
+              WHERE child.activity_id = 'relay-binding:' || json_extract(activation.payload_json, '$.id')
+                AND child.kind = 'relay.binding'
+                AND child.thread_id = ${binding.threadId}
+                AND json_extract(child.payload_json, '$.environmentId') = ${environmentId}
+                AND json_extract(child.payload_json, '$.panelId') = ${binding.id}
+            )
+          )
+        ORDER BY activation.rowid DESC LIMIT 1
+      `;
+      const activation = record(rows[0]);
+      const decoded =
+        typeof activation?.payload === "string" ? decodeJson(activation.payload) : Option.none();
+      const payload = Option.isSome(decoded) ? record(decoded.value) : undefined;
+      const attempt = completedAttempt + 1;
+      return activation && Number.isSafeInteger(attempt) && typeof payload?.toolCallId === "string"
+        ? {
+            attempt,
+            origin: {
+              ...binding,
+              turnId: typeof activation.turnId === "string" ? activation.turnId : null,
+              toolCallId: payload.toolCallId,
+            },
+          }
+        : undefined;
+    }
     const activations = yield* sql`
       SELECT turn_id AS turnId, payload_json AS payload
       FROM projection_thread_activities
@@ -933,6 +1030,17 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     failedObservations.delete(binding.id);
     const taskId = bindingTaskId(binding);
     if (observation.kind === "panel") {
+      const derivedAttempt = panelAttempt(observation);
+      if (derivedAttempt === undefined) return;
+      const previous = seen.get(binding.id);
+      const latest = previous ? undefined : yield* readLatestTaskActivity(binding);
+      // A retry can replace a member whose previous job was itself resumed.
+      // The new job's attempt resets to one, but the coordinator must never
+      // move backwards relative to its persisted generation.
+      const attempt = Math.max(
+        derivedAttempt,
+        previous?.attempt ?? nonNegativeInteger(latest?.payload?.attempt) ?? 0,
+      );
       const priorPanelJobs = currentPanelJobs.get(binding.id);
       currentPanelJobs.set(
         binding.id,
@@ -945,8 +1053,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         ),
       );
       const fingerprint = observationFingerprint(observation);
-      const previous = seen.get(binding.id);
-      if (!previous) {
+      if (!previous || previous.attempt !== attempt) {
         yield* append(
           binding,
           "task.started",
@@ -954,12 +1061,12 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
             taskId,
             title: "Relay panel",
             detail: "Relay panel",
-            attempt: 1,
+            attempt,
             relaySequence: 0,
             ...bindingPayload(binding),
           },
           "Relay panel started",
-          `relay-start:${binding.id}`,
+          attempt === 1 ? `relay-start:${binding.id}` : `relay-start:${binding.id}:${attempt}`,
           "v1",
         );
       }
@@ -987,12 +1094,11 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
           slotAttempt: member.slotAttempt,
         });
       }
+      const hasRunningMember = observation.members.some(
+        (member) =>
+          member.job && ["starting", "queued", "running", "cancelling"].includes(member.job.status),
+      );
       if (previous?.state !== fingerprint || wasUnavailable) {
-        const hasRunningMember = observation.members.some(
-          (member) =>
-            member.job &&
-            ["starting", "queued", "running", "cancelling"].includes(member.job.status),
-        );
         const panelStatus = observation.complete
           ? "completed"
           : hasRunningMember
@@ -1005,7 +1111,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
           {
             taskId,
             title: "Relay panel",
-            attempt: 1,
+            attempt,
             relaySequence: 0,
             status: panelStatus,
             summary,
@@ -1013,11 +1119,22 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
             ...bindingPayload(binding),
           },
           "Relay panel",
-          `relay-panel-progress:${binding.id}`,
+          attempt === 1
+            ? `relay-panel-progress:${binding.id}`
+            : `relay-panel-progress:${binding.id}:${attempt}`,
           wasUnavailable ? `${fingerprint}:recovered:${recoveryEpoch}` : fingerprint,
         );
       }
-      seen.set(binding.id, { attempt: 0, sequence: 0, state: fingerprint });
+      seen.set(binding.id, { attempt, sequence: 0, state: fingerprint });
+      const hasPendingDispatch =
+        !observation.complete && !hasRunningMember
+          ? yield* hasUnobservedPanelDispatch(binding)
+          : false;
+      const pendingPolls = hasPendingDispatch
+        ? (pendingPanelDispatchPolls.get(binding.id) ?? 0) + 1
+        : 0;
+      if (pendingPolls > 0) pendingPanelDispatchPolls.set(binding.id, pendingPolls);
+      else pendingPanelDispatchPolls.delete(binding.id);
       if (observation.complete) {
         yield* append(
           binding,
@@ -1026,12 +1143,14 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
             taskId,
             status: "completed",
             title: "Relay panel",
-            attempt: 1,
+            attempt,
             relaySequence: 0,
             ...bindingPayload(binding),
           },
           "Relay panel completed",
-          `relay-panel-complete:${binding.id}`,
+          attempt === 1
+            ? `relay-panel-complete:${binding.id}`
+            : `relay-panel-complete:${binding.id}:${attempt}`,
           fingerprint,
         );
         active.delete(binding.id);
@@ -1039,7 +1158,18 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         failedObservations.delete(binding.id);
         unavailable.delete(binding.id);
         outageEpochs.delete(binding.id);
+        pendingPanelDispatchPolls.delete(binding.id);
         priorUsageCache.delete(binding.id);
+      } else if (!hasRunningMember && (!hasPendingDispatch || pendingPolls >= 3)) {
+        // Failed/cancelled members and unstarted slots remain visible as an
+        // idle panel. A new continuation or member resume receipt reactivates
+        // observation; polling this unchanged snapshot forever is needless.
+        active.delete(binding.id);
+        seen.delete(binding.id);
+        failedObservations.delete(binding.id);
+        unavailable.delete(binding.id);
+        outageEpochs.delete(binding.id);
+        pendingPanelDispatchPolls.delete(binding.id);
       }
       return;
     }
@@ -1194,6 +1324,21 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
           Effect.logWarning("Relay observation failed", { id: binding.id, cause }),
         ),
       );
+    // A member may be resumed after its completed panel was evicted. On boot
+    // and in-process, confirm the original parent binding before observing
+    // the panel again; its snapshot is the authority for the current slot.
+    for (const binding of Array.from(active.values())) {
+      if (binding.kind !== "job" || !binding.panelId) continue;
+      if (active.has(binding.panelId) || currentPanelJobs.has(binding.panelId)) continue;
+      const panel = yield* readBinding(binding.panelId);
+      if (
+        panel?.kind === "panel" &&
+        panel.threadId === binding.threadId &&
+        panel.environmentId === binding.environmentId
+      ) {
+        active.set(panel.id, panel);
+      }
+    }
     for (const binding of active.values()) {
       if (binding.kind === "panel") yield* observeBound(binding);
     }

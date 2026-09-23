@@ -103,6 +103,24 @@ describe("background agent stop routing", () => {
       interruptParent: true,
       canStopAll: true,
     });
+    expect(planBackgroundAgentStop([relay], canCancel, false, true)).toEqual({
+      relayAgentIds: [relay.id],
+      interruptParent: false,
+      canStopAll: false,
+    });
+  });
+
+  it("trusts explicit server liveness over stale native rows from a previous session", () => {
+    expect(planBackgroundAgentStop([active, relay], canCancel, true, false)).toEqual({
+      relayAgentIds: [relay.id],
+      interruptParent: false,
+      canStopAll: true,
+    });
+    expect(planBackgroundAgentStop([active, relay], canCancel, true, undefined)).toEqual({
+      relayAgentIds: [relay.id],
+      interruptParent: true,
+      canStopAll: true,
+    });
   });
 });
 

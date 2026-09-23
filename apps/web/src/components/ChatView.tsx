@@ -6585,7 +6585,7 @@ export default function ChatView(props: ChatViewProps) {
         activeEnvironmentConnectionPhase === "connected" &&
           (activeThread?.session?.status === "ready" ||
             activeThread?.session?.status === "running"),
-        activeThreadShell?.nativeBackgroundWork === true,
+        activeThreadShell?.nativeBackgroundWork,
       ),
     [
       activeEnvironmentConnectionPhase,

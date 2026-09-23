@@ -33,6 +33,8 @@ const jobId = "job-11111111-1111-4111-8111-111111111111";
 const panelInitialJobId = "job-44444444-4444-4444-8444-444444444444";
 const replacementJobId = "job-33333333-3333-4333-8333-333333333333";
 const panelId = "panel-22222222-2222-4222-8222-222222222222";
+const completedPanelId = "panel-55555555-5555-4555-8555-555555555555";
+const completedPanelJobId = "job-66666666-6666-4666-8666-666666666666";
 const encodeJson = (value: unknown) => JSON.stringify(value);
 const decodeJson = (value: unknown): unknown => JSON.parse(String(value));
 
@@ -674,6 +676,236 @@ persistence("Relay persisted observer and controls", (it) => {
         expect(
           cli.calls().some((args) => args[0] === "cancel" && args[1] === replacementJobId),
         ).toBe(true);
+
+        // An incomplete panel with no active members remains visible as idle,
+        // while the observer parks until a continuation or resume receipt.
+        const failedReplacement = { ...replacementJob, status: "failed", sequence: 2 };
+        const idlePanel = {
+          ...panel,
+          members: [
+            {
+              ...panel.members[0],
+              slotAttempt: 2,
+              jobId: replacementJobId,
+              job: failedReplacement,
+            },
+            panel.members[1],
+          ],
+        };
+        cli.setState({ [panelId]: idlePanel, [replacementJobId]: failedReplacement });
+        yield* resumedBridge.reconcile;
+        const idlePanelObserveCount = cli
+          .calls()
+          .filter(
+            (args) => args[0] === "observe" && args[1] === "--panel" && args[2] === panelId,
+          ).length;
+        yield* resumedBridge.reconcile;
+        expect(
+          cli
+            .calls()
+            .filter(
+              (args) => args[0] === "observe" && args[1] === "--panel" && args[2] === panelId,
+            ),
+        ).toHaveLength(idlePanelObserveCount);
+        const idlePanelProgress = yield* sql`
+          SELECT payload_json AS payload FROM projection_thread_activities
+          WHERE kind = 'task.progress' AND json_extract(payload_json, '$.taskId') = ${`relay-panel:${panelId}`}
+          ORDER BY sequence DESC LIMIT 1
+        `;
+        expect(decodeJson(idlePanelProgress[0]?.payload)).toMatchObject({ status: "idle" });
+
+        // Relay recalculates panel.complete from current member jobs. A
+        // resumed member keeps its slot and job ID, while job.attempt grows.
+        const completedPanelJob = {
+          ...job,
+          id: completedPanelJobId,
+          status: "completed",
+          sequence: 2,
+        };
+        const completedPanel = {
+          schemaVersion: 1,
+          kind: "panel",
+          id: completedPanelId,
+          complete: true,
+          members: [
+            {
+              index: 0,
+              slotAttempt: 1,
+              state: "started",
+              jobId: completedPanelJobId,
+              job: completedPanelJob,
+            },
+          ],
+        };
+        cli.setState({
+          [completedPanelId]: completedPanel,
+          [completedPanelJobId]: completedPanelJob,
+        });
+        yield* resumedBridge.recordToolResult(
+          toolEvent({
+            toolName: "mcp__relay__relay_panel",
+            turnId: "turn-completed-panel",
+            itemId: "tool-completed-panel",
+            result: {
+              structuredContent: {
+                schemaVersion: 1,
+                kind: "panel",
+                panelId: completedPanelId,
+                jobIds: [completedPanelJobId],
+              },
+            },
+          }),
+        );
+        yield* resumedBridge.reconcile;
+        const completedPanelMemberId = `relay-panel:${completedPanelId}:member:0`;
+        const completedPanelRows = yield* sql`
+          SELECT payload_json AS payload FROM projection_thread_activities
+          WHERE kind = 'task.completed' AND json_extract(payload_json, '$.taskId') = ${completedPanelMemberId}
+        `;
+        expect(completedPanelRows).toHaveLength(1);
+        const resumedPanelJob = {
+          ...completedPanelJob,
+          attempt: 2,
+          sequence: 1,
+          status: "running",
+        };
+        cli.setState({
+          [completedPanelId]: {
+            ...completedPanel,
+            complete: false,
+            members: [{ ...completedPanel.members[0], job: resumedPanelJob }],
+          },
+          [completedPanelJobId]: resumedPanelJob,
+        });
+        yield* resumedBridge.recordToolResult(
+          toolEvent({
+            toolName: "mcp__relay__relay_resume",
+            turnId: "turn-panel-resume",
+            itemId: "tool-panel-resume",
+            result: {
+              structuredContent: {
+                schemaVersion: 1,
+                kind: "job",
+                jobId: completedPanelJobId,
+                attempt: 2,
+              },
+            },
+          }),
+        );
+        yield* resumedBridge.reconcile;
+        const resumedPanelRows = yield* sql`
+          SELECT turn_id AS turnId, payload_json AS payload FROM projection_thread_activities
+          WHERE kind = 'task.started' AND json_extract(payload_json, '$.taskId') = ${completedPanelMemberId}
+          ORDER BY sequence
+        `;
+        expect(resumedPanelRows).toHaveLength(2);
+        expect(decodeJson(resumedPanelRows[1]?.payload)).toMatchObject({
+          attempt: 1_000_002,
+          toolUseId: "tool-panel-resume",
+          cancellable: true,
+        });
+        expect(resumedPanelRows[1]?.turnId).toBe("turn-panel-resume");
+        const panelCoordinatorRows = yield* sql`
+          SELECT payload_json AS payload FROM projection_thread_activities
+          WHERE kind = 'task.started' AND json_extract(payload_json, '$.taskId') = ${`relay-panel:${completedPanelId}`}
+          ORDER BY sequence
+        `;
+        expect(panelCoordinatorRows).toHaveLength(2);
+        expect(decodeJson(panelCoordinatorRows[1]?.payload)).toMatchObject({ attempt: 2 });
+        expect(
+          (yield* resumedBridge.cancel(ThreadId.make("thread-a"), completedPanelMemberId))
+            .disposition,
+        ).toBe("cancel-requested");
+        expect(
+          cli.calls().some((args) => args[0] === "cancel" && args[1] === completedPanelJobId),
+        ).toBe(true);
+
+        // Crash after a later resume receipt but before observation: startup
+        // must reactivate the completed parent from its active child binding.
+        const completedSecondAttempt = {
+          ...resumedPanelJob,
+          status: "completed",
+          sequence: 2,
+        };
+        cli.setState({
+          [completedPanelId]: {
+            ...completedPanel,
+            members: [{ ...completedPanel.members[0], job: completedSecondAttempt }],
+          },
+          [completedPanelJobId]: completedSecondAttempt,
+        });
+        yield* resumedBridge.reconcile;
+        const thirdAttempt = { ...resumedPanelJob, attempt: 3 };
+        cli.setState({
+          [completedPanelId]: {
+            ...completedPanel,
+            complete: false,
+            members: [{ ...completedPanel.members[0], job: thirdAttempt }],
+          },
+          [completedPanelJobId]: thirdAttempt,
+        });
+        yield* resumedBridge.recordToolResult(
+          toolEvent({
+            toolName: "mcp__relay__relay_resume",
+            turnId: "turn-panel-resume-after-restart",
+            itemId: "tool-panel-resume-after-restart",
+            result: {
+              structuredContent: {
+                schemaVersion: 1,
+                kind: "job",
+                jobId: completedPanelJobId,
+                attempt: 3,
+              },
+            },
+          }),
+        );
+        const restartedPanelBridge = yield* makeWithCliPath(cli.path).pipe(
+          Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provideService(ServerEnvironment, fakeEnvironment),
+          Effect.provideService(ThreadBackgroundLivenessService, liveness),
+        );
+        // Three failed observations must park the reactivated coordinator as
+        // idle at its new attempt, not discard the resumed child binding.
+        cli.setState({});
+        yield* restartedPanelBridge.reconcile;
+        yield* restartedPanelBridge.reconcile;
+        yield* restartedPanelBridge.reconcile;
+        const unavailablePanel = yield* sql`
+          SELECT payload_json AS payload FROM projection_thread_activities
+          WHERE kind = 'task.progress' AND summary = 'Relay observer unavailable'
+            AND json_extract(payload_json, '$.taskId') = ${`relay-panel:${completedPanelId}`}
+          ORDER BY sequence DESC LIMIT 1
+        `;
+        expect(unavailablePanel).toHaveLength(1);
+        expect(decodeJson(unavailablePanel[0]?.payload)).toMatchObject({
+          attempt: 3,
+          status: "idle",
+          toolUseId: "tool-panel-resume-after-restart",
+        });
+        cli.setState({
+          [completedPanelId]: {
+            ...completedPanel,
+            complete: false,
+            members: [{ ...completedPanel.members[0], job: thirdAttempt }],
+          },
+          [completedPanelJobId]: thirdAttempt,
+        });
+        yield* restartedPanelBridge.reconcile;
+        const thirdStart = yield* sql`
+          SELECT turn_id AS turnId, payload_json AS payload FROM projection_thread_activities
+          WHERE kind = 'task.started' AND json_extract(payload_json, '$.taskId') = ${completedPanelMemberId}
+            AND json_extract(payload_json, '$.attempt') = 1000003
+        `;
+        expect(thirdStart).toHaveLength(1);
+        expect(thirdStart[0]?.turnId).toBe("turn-panel-resume-after-restart");
+        expect(decodeJson(thirdStart[0]?.payload)).toMatchObject({
+          taskId: completedPanelMemberId,
+          toolUseId: "tool-panel-resume-after-restart",
+        });
+        expect(
+          (yield* restartedPanelBridge.cancel(ThreadId.make("thread-a"), completedPanelMemberId))
+            .disposition,
+        ).toBe("cancel-requested");
 
         // Startup pages historical bindings without observing settled jobs or
         // retaining a terminal seen entry for each completed worker.
