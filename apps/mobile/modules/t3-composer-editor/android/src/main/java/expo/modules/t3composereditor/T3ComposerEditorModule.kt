@@ -99,12 +99,8 @@ class T3ComposerEditorModule : Module() {
       Prop("singleLineCentered") { view: T3ComposerEditorView, singleLineCentered: Boolean ->
         view.setSingleLineCentered(singleLineCentered)
       }
-      Prop("editable") { view: T3ComposerEditorView, editable: Boolean ->
-        view.setEditable(editable)
-      }
-      Prop("readOnly") { view: T3ComposerEditorView, readOnly: Boolean ->
-        view.setReadOnly(readOnly)
-      }
+      Prop("editable") { view: T3ComposerEditorView, editable: Boolean -> view.setEditable(editable) }
+      Prop("readOnly") { view: T3ComposerEditorView, readOnly: Boolean -> view.setReadOnly(readOnly) }
       Prop("scrollEnabled") { view: T3ComposerEditorView, scrollEnabled: Boolean ->
         view.setScrollEnabled(scrollEnabled)
       }
@@ -120,9 +116,7 @@ class T3ComposerEditorModule : Module() {
       Prop("textPasteThresholdBytes") { view: T3ComposerEditorView, threshold: Int ->
         view.setTextPasteThresholdBytes(threshold)
       }
-      Prop("maxInputChars") { view: T3ComposerEditorView, maxInputChars: Int ->
-        view.setMaxInputChars(maxInputChars)
-      }
+      Prop("maxInputChars") { view: T3ComposerEditorView, maxInputChars: Int -> view.setMaxInputChars(maxInputChars) }
 
       Events(
         "onComposerChange",
