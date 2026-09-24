@@ -295,6 +295,8 @@ describe.each([
         {...(target ? { composerDraftTarget: target, threadRef } : {})}
         shortcutsEnabled={false}
         getShortcutContext={() => ({
+          isWeb: true,
+          isDesktop: false,
           terminalFocus: false,
           terminalOpen: false,
           previewFocus: false,
