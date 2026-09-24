@@ -147,6 +147,52 @@ describe("mergeUsage", () => {
     ).toEqual({ claude: 1, codex: 1 });
   });
 
+  it("uses the newest scan when environments share the same transcript directory", () => {
+    const source = { provider: "claude" as const, hostId: "mac", homePath: "/home/theo/.claude" };
+    const environments = [
+      environment("env-a", summary([bucket({ costUsd: 4, records: 2 })], [source])),
+      environment("env-b", {
+        ...summary([bucket()], [source]),
+        readAt: "2026-08-07T01:00:00.000Z",
+      }),
+    ];
+
+    for (const ordered of [environments, environments.toReversed()]) {
+      const merged = mergeUsage(ordered, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(10);
+      expect(merged.records).toBe(5);
+      expect(merged.sessions).toBe(1);
+      expect(merged.contributingEnvironments).toEqual(["env-b"]);
+      expect(merged.duplicateSources).toEqual(["env-a: /home/theo/.claude"]);
+    }
+  });
+
+  it("uses stable environment ids for equal or invalid scan timestamps", () => {
+    const source = { provider: "claude" as const, hostId: "mac", homePath: "/shared/.claude" };
+    const invalid = environment("env-a", {
+      ...summary([bucket({ costUsd: 4 })], [source]),
+      readAt: "invalid",
+    });
+    const equallyNew = [
+      environment("env-b", summary([bucket({ costUsd: 10 })], [source])),
+      environment("env-c", summary([bucket({ costUsd: 20 })], [source])),
+    ];
+    for (const ordered of [[invalid, ...equallyNew], [...equallyNew, invalid].toReversed()]) {
+      const merged = mergeUsage(ordered, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(10);
+      expect(merged.contributingEnvironments).toEqual(["env-b"]);
+    }
+    const bothInvalid = mergeUsage(
+      [
+        environment("env-z", { ...summary([bucket({ costUsd: 9 })], [source]), readAt: "bad" }),
+        invalid,
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+    expect(bothInvalid.costUsd).toBe(4);
+    expect(bothInvalid.contributingEnvironments).toEqual(["env-a"]);
+  });
+
   it("excludes an environment reporting an older contract version", () => {
     const merged = mergeUsage(
       [
