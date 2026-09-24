@@ -41,6 +41,8 @@ export const PullRequestFileViewedMark = Schema.Struct({
    * `docs/internals/pull-request-file-revisions.md`.
    */
   revision: Schema.NullOr(Schema.String),
+  /** Digest of the exact file section shown when this mark was made. */
+  displayDigest: Schema.NullOr(Schema.String),
 });
 export type PullRequestFileViewedMark = typeof PullRequestFileViewedMark.Type;
 
@@ -99,7 +101,8 @@ const make = Effect.gen(function* () {
       sql`
         SELECT
           path AS "path",
-          revision AS "revision"
+          revision AS "revision",
+          display_digest AS "displayDigest"
         FROM pull_request_files_viewed
         WHERE provider = ${provider}
           AND host = ${host}
@@ -146,6 +149,7 @@ const make = Effect.gen(function* () {
                   viewer,
                   path,
                   revision,
+                  display_digest,
                   viewed_at
                 )
                 VALUES (
@@ -156,10 +160,13 @@ const make = Effect.gen(function* () {
                   ${input.viewer},
                   ${file.path},
                   ${file.revision},
+                  ${file.displayDigest},
                   ${input.viewedAt}
                 )
                 ON CONFLICT (provider, host, repository, number, viewer, path)
-                DO UPDATE SET revision = excluded.revision, viewed_at = excluded.viewed_at
+                DO UPDATE SET revision = excluded.revision,
+                  display_digest = excluded.display_digest,
+                  viewed_at = excluded.viewed_at
               `
                 : sql`
                 DELETE FROM pull_request_files_viewed

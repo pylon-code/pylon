@@ -918,6 +918,10 @@ export type PullRequestOmittedFileStat = typeof PullRequestOmittedFileStat.Type;
 
 export const PullRequestDiffResult = Schema.Struct({
   patch: Schema.String,
+  /** Exact complete file sections in this slice, bound to this host and pull request. */
+  fileDigests: Schema.optional(
+    Schema.Array(Schema.Struct({ path: Schema.String, digest: Schema.String })),
+  ),
   /**
    * Something inside this slice could not be shown — a binary file, or a hunk the host declined
    * to inline. Not the same as there being more slices, which `nextCursor` answers.
@@ -972,6 +976,8 @@ export type PullRequestFileViewedState = typeof PullRequestFileViewedState.Type;
 export const PullRequestFileViewed = Schema.Struct({
   path: FilePath,
   state: PullRequestFileViewedState,
+  /** Displayed file-section digest for environment-kept marks, if known. */
+  digest: Schema.optional(Schema.String),
 });
 export type PullRequestFileViewed = typeof PullRequestFileViewed.Type;
 
@@ -1005,6 +1011,10 @@ export const PullRequestSetFilesViewedInput = Schema.Struct({
     Schema.Struct({
       path: FilePath,
       viewed: Schema.Boolean,
+      /** Required for a viewed press; absent for an untick. */
+      digest: Schema.optional(Schema.String),
+      /** Slice shown when pressed, for a host-managed preflight comparison. */
+      cursor: Schema.optional(Schema.String),
     }),
   ).check(Schema.isMaxLength(MAX_FILES_VIEWED_PRESSES)),
 });

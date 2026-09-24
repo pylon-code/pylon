@@ -117,6 +117,7 @@ interface DiffSlice {
   readonly truncated: boolean;
   readonly nextCursor: string | null;
   readonly omittedFileStats: ReadonlyArray<PullRequestOmittedFileStat>;
+  readonly fileDigests: ReadonlyArray<{ readonly path: string; readonly digest: string }>;
 }
 
 /**
@@ -303,6 +304,7 @@ function PullRequestCodeTab({
         truncated: data.truncated,
         nextCursor: data.nextCursor,
         omittedFileStats: data.omittedFileStats ?? [],
+        fileDigests: data.fileDigests ?? [],
       };
       const index = slices.findIndex((slice) => slice.cursor === cursor);
       if (index === -1) {
@@ -414,6 +416,20 @@ function PullRequestCodeTab({
     [parsedSlices],
   );
   const filePaths = useMemo(() => files.map((file) => resolveFileDiffPath(file)), [files]);
+  const fileEvidence = useMemo(() => {
+    const found = new Map<string, { readonly digest: string; readonly cursor: string | null }>();
+    const ambiguous = new Set<string>();
+    for (const slice of loadedSlices) {
+      for (const { path, digest } of slice.fileDigests) {
+        if (ambiguous.has(path)) continue;
+        if (found.has(path)) {
+          found.delete(path);
+          ambiguous.add(path);
+        } else found.set(path, { digest, cursor: slice.cursor });
+      }
+    }
+    return found;
+  }, [loadedSlices]);
   // Offered under a commit scope as well as from the whole change, because reading a change one
   // commit at a time is what the scope is for. The tick is kept against the change request rather
   // than the scope it was made in, so clearing a file here clears it everywhere.
@@ -421,11 +437,13 @@ function PullRequestCodeTab({
   const filesViewed = usePullRequestFilesViewed({
     environmentId,
     reference,
-    enabled: viewedFilesStore !== undefined,
+    enabled: viewedFilesStore !== undefined && selectedCommitOid === null,
     paths: filePaths,
+    evidence: fileEvidence,
   });
   const {
     setViewed,
+    isTrackable: isFileTrackable,
     refresh: refreshFilesViewed,
     enabled: filesViewedEnabled,
     isViewed: isFileViewed,
@@ -656,12 +674,13 @@ function PullRequestCodeTab({
   // than derived from what has been ticked, so folding everything ticks nothing off.
   const setFileViewed = useCallback(
     (fileKey: string, path: string, viewed: boolean) => {
+      if (!isFileTrackable(path)) return;
       setViewed(path, viewed);
       setToggledFiles((current) =>
         toggleFileDiffFoldForViewed(fileKey, viewed, effectiveFoldOverride, current),
       );
     },
-    [effectiveFoldOverride, setViewed],
+    [effectiveFoldOverride, isFileTrackable, setViewed],
   );
 
   const requestTreeReveal = useCodeViewFileReveal(viewer, scopeKey);
@@ -837,7 +856,7 @@ function PullRequestCodeTab({
         />
       );
       const viewedFiles = filesViewedRef.current;
-      if (!viewedFiles.enabled) return stat;
+      if (!viewedFiles.enabled || !viewedFiles.isTrackable(path)) return stat;
       const viewed = viewedFiles.isViewed(path);
       const stale = viewedFiles.isStale(path);
       return (

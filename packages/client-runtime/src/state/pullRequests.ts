@@ -277,7 +277,13 @@ export function createPullRequestEnvironmentAtoms<R, E>(
       concurrency: {
         mode: "serial",
         key: ({ environmentId, input }) =>
-          JSON.stringify([environmentId, input.projectId, input.repository, input.number]),
+          JSON.stringify([
+            environmentId,
+            input.projectId,
+            input.host ?? null,
+            input.repository,
+            input.number,
+          ]),
       },
     }),
     runAction: createEnvironmentRpcCommand(runtime, {

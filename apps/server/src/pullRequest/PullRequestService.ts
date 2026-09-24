@@ -82,6 +82,7 @@ import {
 import * as PullRequestReadCache from "./PullRequestReadCache.ts";
 import { PullRequestProviderRegistry } from "./PullRequestProviderRegistry.ts";
 import * as ViewedFiles from "./pullRequestViewedFiles.ts";
+import { fileDigestsFromPatch } from "./pullRequestPatchDigests.ts";
 
 export interface PullRequestMergeEvent extends PullRequestRef {
   readonly mergedAt: string;
@@ -135,7 +136,6 @@ const LIST_STATS_CACHE_TTL = Duration.seconds(60);
  * press that changes it is the same press the page is already showing optimistically. Held at
  * all only so opening a change request on two devices costs one read.
  */
-const FILES_VIEWED_CACHE_TTL = Duration.seconds(15);
 /** A diff can stay interactive while its next cached value is fetched off the critical path. */
 const DIFF_STALE_WINDOW = Duration.minutes(10);
 /** How long one host's signed-in login is believed without asking its CLI again. */
@@ -151,7 +151,6 @@ const DIFF_CACHE_CAPACITY = 128;
 const MAX_CACHED_DIFF_PATCH_BYTES = 512 * 1024;
 const canCacheDiff = (value: PullRequestDiffResult) =>
   value.patch.length * 2 <= MAX_CACHED_DIFF_PATCH_BYTES;
-const FILES_VIEWED_CACHE_CAPACITY = 128;
 const VIEWER_CACHE_CAPACITY = 32;
 
 export type PullRequestError = PullRequestUnavailableError | PullRequestOperationError;
@@ -1261,21 +1260,19 @@ export const make = Effect.gen(function* () {
               }),
               // One unreachable repository must not blank the page. A host-level failure is
               // already reported through `providers`, so it degrades the same way here.
-              Effect.orElseSucceed(
-                (): RepositoryBatch => ({
-                  key,
-                  entries: [],
-                  errors: [
-                    {
-                      projectId: project.project.id,
-                      projectTitle: project.project.title,
-                      message: `${project.repository} could not be read.`,
-                    },
-                  ],
-                  truncated: false,
-                  nextCursor: null,
-                }),
-              ),
+              Effect.orElseSucceed((): RepositoryBatch => ({
+                key,
+                entries: [],
+                errors: [
+                  {
+                    projectId: project.project.id,
+                    projectTitle: project.project.title,
+                    message: `${project.repository} could not be read.`,
+                  },
+                ],
+                truncated: false,
+                nextCursor: null,
+              })),
             );
         }
       };
@@ -1458,43 +1455,41 @@ export const make = Effect.gen(function* () {
         return read.pipe(
           Effect.mapError(toPullRequestError("summary")),
           observeRead,
-          Effect.map(
-            ({ value: changeRequest, observedAt }): PullRequestSummary => ({
-              provider: project.api.kind,
-              projectId: project.project.id,
-              repository: project.repository,
-              number: changeRequest.number,
-              title: changeRequest.title,
-              url: changeRequest.url,
-              state: changeRequest.state,
-              headBranch: changeRequest.headBranch,
-              baseBranch: changeRequest.baseBranch,
-              closedAt: changeRequest.closedAt ?? null,
-              mergedAt: changeRequest.mergedAt ?? null,
-              updatedAt: changeRequest.updatedAt,
-              observedAt,
-              ...(changeRequest.isDraft === undefined ? {} : { isDraft: changeRequest.isDraft }),
-              ...(changeRequest.author === undefined ? {} : { author: changeRequest.author }),
-              ...(changeRequest.additions === undefined
-                ? {}
-                : { additions: changeRequest.additions }),
-              ...(changeRequest.deletions === undefined
-                ? {}
-                : { deletions: changeRequest.deletions }),
-              ...(changeRequest.changedFiles === undefined
-                ? {}
-                : { changedFiles: changeRequest.changedFiles }),
-              ...(changeRequest.reviewDecision === undefined
-                ? {}
-                : { reviewDecision: changeRequest.reviewDecision }),
-              ...(changeRequest.checksState === undefined
-                ? {}
-                : { checksState: changeRequest.checksState }),
-              ...(changeRequest.mergeability === undefined
-                ? {}
-                : { mergeability: changeRequest.mergeability }),
-            }),
-          ),
+          Effect.map(({ value: changeRequest, observedAt }): PullRequestSummary => ({
+            provider: project.api.kind,
+            projectId: project.project.id,
+            repository: project.repository,
+            number: changeRequest.number,
+            title: changeRequest.title,
+            url: changeRequest.url,
+            state: changeRequest.state,
+            headBranch: changeRequest.headBranch,
+            baseBranch: changeRequest.baseBranch,
+            closedAt: changeRequest.closedAt ?? null,
+            mergedAt: changeRequest.mergedAt ?? null,
+            updatedAt: changeRequest.updatedAt,
+            observedAt,
+            ...(changeRequest.isDraft === undefined ? {} : { isDraft: changeRequest.isDraft }),
+            ...(changeRequest.author === undefined ? {} : { author: changeRequest.author }),
+            ...(changeRequest.additions === undefined
+              ? {}
+              : { additions: changeRequest.additions }),
+            ...(changeRequest.deletions === undefined
+              ? {}
+              : { deletions: changeRequest.deletions }),
+            ...(changeRequest.changedFiles === undefined
+              ? {}
+              : { changedFiles: changeRequest.changedFiles }),
+            ...(changeRequest.reviewDecision === undefined
+              ? {}
+              : { reviewDecision: changeRequest.reviewDecision }),
+            ...(changeRequest.checksState === undefined
+              ? {}
+              : { checksState: changeRequest.checksState }),
+            ...(changeRequest.mergeability === undefined
+              ? {}
+              : { mergeability: changeRequest.mergeability }),
+          })),
         );
       }),
     );
@@ -1549,56 +1544,54 @@ export const make = Effect.gen(function* () {
           ],
           { concurrency: 2 },
         ).pipe(
-          Effect.map(
-            ([{ value: changeRequest, observedAt }, viewer]): PullRequestDetail => ({
-              provider: project.api.kind,
-              capabilities: project.api.capabilities,
-              projectId: project.project.id,
-              projectTitle: project.project.title,
-              workspaceRoot: project.project.workspaceRoot,
-              repository: project.repository,
-              number: changeRequest.number,
-              title: changeRequest.title,
-              body: changeRequest.body,
-              url: changeRequest.url,
-              author: changeRequest.author,
-              state: changeRequest.state,
-              isDraft: changeRequest.isDraft,
-              mergeability: changeRequest.mergeability,
-              additions: changeRequest.additions,
-              deletions: changeRequest.deletions,
-              changedFiles: changeRequest.changedFiles,
-              headBranch: changeRequest.headBranch,
-              ...(changeRequest.headRepositoryNameWithOwner === undefined
-                ? {}
-                : { headRepositoryNameWithOwner: changeRequest.headRepositoryNameWithOwner }),
-              baseBranch: changeRequest.baseBranch,
-              createdAt: changeRequest.createdAt,
-              updatedAt: changeRequest.updatedAt,
-              observedAt,
-              mergedAt: changeRequest.mergedAt,
-              closedAt: changeRequest.closedAt,
-              reviewers: changeRequest.reviewers,
-              labels: changeRequest.labels,
-              checks: changeRequest.checks,
-              mergeCapabilities: changeRequest.mergeCapabilities,
-              viewerPermissions: changeRequest.viewerPermissions,
-              ...(viewer === null || viewer.trim().length === 0 ? {} : { viewer }),
-              ...(changeRequest.baseComparison === undefined
-                ? {}
-                : { baseComparison: changeRequest.baseComparison }),
-              ...(changeRequest.behindBy === undefined ? {} : { behindBy: changeRequest.behindBy }),
-              ...(changeRequest.autoMergeEnabled === undefined
-                ? {}
-                : { autoMergeEnabled: changeRequest.autoMergeEnabled }),
-              ...(changeRequest.autoMergeMethod === undefined
-                ? {}
-                : { autoMergeMethod: changeRequest.autoMergeMethod }),
-              ...(changeRequest.workflowApprovalsRequired === undefined
-                ? {}
-                : { workflowApprovalsRequired: changeRequest.workflowApprovalsRequired }),
-            }),
-          ),
+          Effect.map(([{ value: changeRequest, observedAt }, viewer]): PullRequestDetail => ({
+            provider: project.api.kind,
+            capabilities: project.api.capabilities,
+            projectId: project.project.id,
+            projectTitle: project.project.title,
+            workspaceRoot: project.project.workspaceRoot,
+            repository: project.repository,
+            number: changeRequest.number,
+            title: changeRequest.title,
+            body: changeRequest.body,
+            url: changeRequest.url,
+            author: changeRequest.author,
+            state: changeRequest.state,
+            isDraft: changeRequest.isDraft,
+            mergeability: changeRequest.mergeability,
+            additions: changeRequest.additions,
+            deletions: changeRequest.deletions,
+            changedFiles: changeRequest.changedFiles,
+            headBranch: changeRequest.headBranch,
+            ...(changeRequest.headRepositoryNameWithOwner === undefined
+              ? {}
+              : { headRepositoryNameWithOwner: changeRequest.headRepositoryNameWithOwner }),
+            baseBranch: changeRequest.baseBranch,
+            createdAt: changeRequest.createdAt,
+            updatedAt: changeRequest.updatedAt,
+            observedAt,
+            mergedAt: changeRequest.mergedAt,
+            closedAt: changeRequest.closedAt,
+            reviewers: changeRequest.reviewers,
+            labels: changeRequest.labels,
+            checks: changeRequest.checks,
+            mergeCapabilities: changeRequest.mergeCapabilities,
+            viewerPermissions: changeRequest.viewerPermissions,
+            ...(viewer === null || viewer.trim().length === 0 ? {} : { viewer }),
+            ...(changeRequest.baseComparison === undefined
+              ? {}
+              : { baseComparison: changeRequest.baseComparison }),
+            ...(changeRequest.behindBy === undefined ? {} : { behindBy: changeRequest.behindBy }),
+            ...(changeRequest.autoMergeEnabled === undefined
+              ? {}
+              : { autoMergeEnabled: changeRequest.autoMergeEnabled }),
+            ...(changeRequest.autoMergeMethod === undefined
+              ? {}
+              : { autoMergeMethod: changeRequest.autoMergeMethod }),
+            ...(changeRequest.workflowApprovalsRequired === undefined
+              ? {}
+              : { workflowApprovalsRequired: changeRequest.workflowApprovalsRequired }),
+          })),
         ),
       ),
     );
@@ -1615,18 +1608,16 @@ export const make = Effect.gen(function* () {
           })
           .pipe(
             Effect.mapError(toPullRequestError("activity")),
-            Effect.map(
-              (activity): PullRequestActivity => ({
-                ...(activity.author === undefined ? {} : { author: activity.author }),
-                ...(activity.reviewers === undefined ? {} : { reviewers: activity.reviewers }),
-                comments: activity.comments,
-                commentCount: activity.commentCount,
-                commentsTruncated: activity.commentsTruncated,
-                reviewThreads: activity.reviewThreads,
-                commits: activity.commits,
-                ...(activity.reactions === undefined ? {} : { reactions: activity.reactions }),
-              }),
-            ),
+            Effect.map((activity): PullRequestActivity => ({
+              ...(activity.author === undefined ? {} : { author: activity.author }),
+              ...(activity.reviewers === undefined ? {} : { reviewers: activity.reviewers }),
+              comments: activity.comments,
+              commentCount: activity.commentCount,
+              commentsTruncated: activity.commentsTruncated,
+              reviewThreads: activity.reviewThreads,
+              commits: activity.commits,
+              ...(activity.reactions === undefined ? {} : { reactions: activity.reactions }),
+            })),
           ),
       ),
     );
@@ -1669,7 +1660,23 @@ export const make = Effect.gen(function* () {
                 ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
                 ...(input.commit === undefined ? {} : { commit: input.commit }),
               })
-              .pipe(Effect.mapError(toPullRequestError("diff")))
+              .pipe(
+                Effect.map((slice) => ({
+                  ...slice,
+                  fileDigests: fileDigestsFromPatch(
+                    slice.patch,
+                    slice.truncated,
+                    {
+                      provider: project.api.kind,
+                      host: project.host,
+                      remote: project.remote,
+                      number: input.number,
+                    },
+                    new Set(slice.omittedFileStats?.map((file) => file.path) ?? []),
+                  ),
+                })),
+                Effect.mapError(toPullRequestError("diff")),
+              )
           : Effect.fail(
               new PullRequestOperationError({
                 operation: "diff",
@@ -1718,27 +1725,37 @@ export const make = Effect.gen(function* () {
   const requiredViewerOf = (
     project: SupportedProject,
     operation: string,
-  ): Effect.Effect<string | null, PullRequestError> =>
-    resolveViewers([project], new Map(), { allowPaused: true }).pipe(
-      Effect.flatMap(([resolved]) => {
-        const error = resolved?.error ?? null;
-        return error === null
-          ? Effect.succeed(resolved?.viewer ?? null)
-          : Effect.fail(toPullRequestError(operation)(error));
-      }),
-    );
+  ): Effect.Effect<string, PullRequestError> => {
+    const registered = registry.get(project.api.kind);
+    if (registered === null) {
+      return Effect.fail(
+        new PullRequestOperationError({
+          operation,
+          detail: "The pull request host is unavailable in this environment.",
+        }),
+      );
+    }
+    // The display cache is keyed by host, not by account. Persisted marks need the current
+    // account on every operation, including after a credential switch on the same host.
+    return withRateLimitBackoff(registered, project.host, rateLimits, true)
+      .getViewer({ cwd: project.project.workspaceRoot, host: project.host })
+      .pipe(
+        Effect.mapError(toPullRequestError(operation)),
+        Effect.flatMap((viewer) =>
+          viewer === null
+            ? Effect.fail(
+                new PullRequestOperationError({
+                  operation,
+                  detail: "The signed-in account could not be verified for viewed files.",
+                }),
+              )
+            : Effect.succeed(viewer),
+        ),
+      );
+  };
 
   const setFilesViewed: PullRequestService["Service"]["setFilesViewed"] = (input) =>
-    canonicalRef(input).pipe(
-      Effect.flatMap((ref) =>
-        viewedFiles.setFilesViewed(input).pipe(
-          // Deliberately not `invalidatedByMutation`: ticking a file off says nothing about the
-          // change request, and dropping a 300-file diff on every checkbox is the whole cost of
-          // the feature. Only this reader's own bookkeeping is forgotten.
-          Effect.tap(() => Effect.sync(() => bumpFilesViewedEpoch(ref))),
-        ),
-      ),
-    );
+    canonicalRef(input).pipe(Effect.flatMap(() => viewedFiles.setFilesViewed(input)));
 
   const runAction = (input: PullRequestActionInput): Effect.Effect<string, PullRequestError> =>
     requireProject(input).pipe(
@@ -2264,23 +2281,22 @@ export const make = Effect.gen(function* () {
           );
         }
         return viewerPermissionsOf(project, input, "setLabels").pipe(
-          Effect.flatMap(
-            (viewer): Effect.Effect<void, PullRequestError> =>
-              viewer.labels === false
-                ? Effect.fail(
-                    new PullRequestOperationError({
-                      operation: "setLabels",
-                      detail: LABEL_CHANGE_REFUSAL,
-                    }),
-                  )
-                : change({
-                    cwd: project.project.workspaceRoot,
-                    repository: project.repository,
-                    host: project.host,
-                    number: input.number,
-                    labels: input.labels,
-                    applied: input.applied,
-                  }).pipe(Effect.mapError(toPullRequestError("setLabels"))),
+          Effect.flatMap((viewer): Effect.Effect<void, PullRequestError> =>
+            viewer.labels === false
+              ? Effect.fail(
+                  new PullRequestOperationError({
+                    operation: "setLabels",
+                    detail: LABEL_CHANGE_REFUSAL,
+                  }),
+                )
+              : change({
+                  cwd: project.project.workspaceRoot,
+                  repository: project.repository,
+                  host: project.host,
+                  number: input.number,
+                  labels: input.labels,
+                  applied: input.applied,
+                }).pipe(Effect.mapError(toPullRequestError("setLabels"))),
           ),
         );
       }),
@@ -2536,12 +2552,6 @@ export const make = Effect.gen(function* () {
     epochs.set(scope, ++epochCounter);
   };
   const bumpRefEpoch = (ref: PullRequestRef) => bumpEpoch(refEpochs, ref);
-  // Its own scope, so a press forgets the reader's ticks and nothing else. The read's key
-  // carries both epochs, which is what makes an ordinary refresh re-ask for these too.
-  const filesViewedEpochs = new Map<string, number>();
-  const filesViewedEpoch = (ref: PullRequestRef) => filesViewedEpochs.get(refScope(ref)) ?? 0;
-  const bumpFilesViewedEpoch = (ref: PullRequestRef) => bumpEpoch(filesViewedEpochs, ref);
-
   /** Bumped by a whole-workspace refresh, the one drop no single reference's epoch covers. */
   let everyFileRevisionEpoch = 0;
   // Built after the epochs because it reads two of them: taken as an argument any higher,
@@ -2858,24 +2868,10 @@ export const make = Effect.gen(function* () {
     return staleDiff(key, read);
   };
 
-  const filesViewedCache = yield* Cache.makeWith(
-    (key: string) => {
-      const [referenceKey] = JSON.parse(key) as [string, number];
-      return viewedFiles.filesViewed(refOfCacheKey(referenceKey));
-    },
-    {
-      capacity: FILES_VIEWED_CACHE_CAPACITY,
-      timeToLive: (exit) => (Exit.isSuccess(exit) ? FILES_VIEWED_CACHE_TTL : Duration.zero),
-    },
-  );
-  // Canonicalised before it is keyed: both epochs are bumped against the remote's own spelling,
-  // so a reference keyed as the client spelled it would never see a refresh or a press.
+  // An account can switch without the repository or host changing. Recheck the current reader
+  // on every request rather than serving another account's marks from a reference-only cache.
   const filesViewed: PullRequestService["Service"]["filesViewed"] = (input) =>
-    canonicalRef(input).pipe(
-      Effect.flatMap((ref) =>
-        Cache.get(filesViewedCache, JSON.stringify([refCacheKey(ref), filesViewedEpoch(ref)])),
-      ),
-    );
+    canonicalRef(input).pipe(Effect.flatMap((ref) => viewedFiles.filesViewed(ref)));
 
   const listStatsCache = yield* Cache.makeWith(
     (key: string) => {
@@ -2937,12 +2933,7 @@ export const make = Effect.gen(function* () {
   const invalidate: PullRequestService["Service"]["invalidate"] = (input) => {
     const reference = input.reference;
     if (input.filesViewedOnly === true) {
-      return reference === undefined
-        ? Cache.invalidateAll(filesViewedCache)
-        : canonicalRef(reference).pipe(
-            Effect.flatMap((ref) => Effect.sync(() => bumpFilesViewedEpoch(ref))),
-            Effect.ignore,
-          );
+      return reference === undefined ? Effect.void : canonicalRef(reference).pipe(Effect.ignore);
     }
     if (reference !== undefined) {
       return canonicalRef(reference).pipe(

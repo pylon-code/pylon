@@ -32,6 +32,7 @@ export interface PullRequestFilesViewedView {
   /** Whether anything remembers this at all, which is what hides the whole control. */
   readonly enabled: boolean;
   readonly isViewed: (path: string) => boolean;
+  readonly isTrackable: (path: string) => boolean;
   /** This file has been pushed to since it was cleared. */
   readonly isStale: (path: string) => boolean;
   readonly setViewed: (path: string, viewed: boolean) => void;
@@ -61,8 +62,12 @@ export function usePullRequestFilesViewed(options: {
   readonly enabled: boolean;
   /** The paths on screen, which is what the counter counts. */
   readonly paths: ReadonlyArray<string>;
+  readonly evidence: ReadonlyMap<
+    string,
+    { readonly digest: string; readonly cursor: string | null }
+  >;
 }): PullRequestFilesViewedView {
-  const { environmentId, reference, enabled, paths } = options;
+  const { environmentId, reference, enabled, paths, evidence } = options;
   const query = useEnvironmentQuery(
     enabled ? pullRequestEnvironment.filesViewed({ environmentId, input: reference }) : null,
   );
@@ -70,10 +75,33 @@ export function usePullRequestFilesViewed(options: {
   // `query.data` holds the last answer through a failure, so the boxes stay where the host last
   // put them rather than emptying under the reader; the error travels with them, because ticks
   // that stopped being refreshed look exactly like ticks that are current.
-  const states = useMemo(() => toFileViewedStates(query.data), [query.data]);
+  const states = useMemo(
+    () =>
+      toFileViewedStates(
+        query.data === null
+          ? null
+          : {
+              ...query.data,
+              files: query.data.files.map((file) =>
+                file.digest !== undefined && file.digest !== evidence.get(file.path)?.digest
+                  ? { ...file, state: "dismissed" as const }
+                  : file,
+              ),
+            },
+      ),
+    [query.data, evidence],
+  );
   const truncated = query.data?.truncated === true;
   const error = query.error;
   const [overlay, setOverlay] = useState<FileViewedOverlay>(NO_OVERLAY);
+  const [overlayDigests, setOverlayDigests] = useState<ReadonlyMap<string, string>>(new Map());
+  const visibleOverlay = useMemo(
+    () =>
+      new Map(
+        [...overlay].filter(([path]) => overlayDigests.get(path) === evidence.get(path)?.digest),
+      ),
+    [overlay, overlayDigests, evidence],
+  );
   const setFilesViewed = useAtomCommand(pullRequestEnvironment.setFilesViewed, {
     reportFailure: false,
   });
@@ -82,7 +110,9 @@ export function usePullRequestFilesViewed(options: {
   // request that is. A path pressed again while its request is out belongs to the later request
   // from then on, and the earlier one stops answering for it. Both are refs rather than state:
   // nothing on screen reads them, and the flush must see the latest.
-  const queued = useRef<Map<string, boolean>>(new Map());
+  const queued = useRef<
+    Map<string, { readonly viewed: boolean; readonly digest: string; readonly cursor?: string }>
+  >(new Map());
   const sentBy = useRef<Map<string, number>>(new Map());
   const requests = useRef(0);
   const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -90,7 +120,13 @@ export function usePullRequestFilesViewed(options: {
   // Everything held here belongs to one change request on one environment. The environment is
   // part of that: two of them can hand out the same project id, and a press made against one
   // must never be answered for by the other.
-  const scopeKey = `${environmentId} ${reference.projectId} ${reference.repository} ${reference.number}`;
+  const scopeKey = JSON.stringify([
+    environmentId,
+    reference.projectId,
+    reference.host ?? null,
+    reference.repository,
+    reference.number,
+  ]);
   const scope = useRef(scopeKey);
 
   // The host's answer as it stood when a completed write was acknowledged, per path. The first
@@ -166,6 +202,7 @@ export function usePullRequestFilesViewed(options: {
       queued.current = new Map();
       sentBy.current = new Map();
       answeredFrom.current = new Map();
+      setOverlayDigests(new Map());
       setOverlay(NO_OVERLAY);
     };
   }, [scopeKey]);
@@ -174,24 +211,36 @@ export function usePullRequestFilesViewed(options: {
   refreshRef.current = refresh;
   const refreshFromHost = useCallback(() => refreshRef.current(), []);
 
-  const setViewed = useCallback((path: string, viewed: boolean) => {
-    setOverlay((current) => new Map(current).set(path, viewed));
-    queued.current.set(path, viewed);
-    if (flushTimer.current !== null) clearTimeout(flushTimer.current);
-    flushTimer.current = setTimeout(() => flushRef.current(), FLUSH_DELAY_MS);
-  }, []);
+  const setViewed = useCallback(
+    (path: string, viewed: boolean) => {
+      const shown = evidence.get(path);
+      if (shown === undefined) return;
+      setOverlayDigests((current) => new Map(current).set(path, shown.digest));
+      setOverlay((current) => new Map(current).set(path, viewed));
+      queued.current.set(path, {
+        viewed,
+        digest: shown.digest,
+        ...(shown.cursor === null ? {} : { cursor: shown.cursor }),
+      });
+      if (flushTimer.current !== null) clearTimeout(flushTimer.current);
+      flushTimer.current = setTimeout(() => flushRef.current(), FLUSH_DELAY_MS);
+    },
+    [evidence],
+  );
+
+  const isTrackable = useCallback((path: string) => evidence.has(path), [evidence]);
 
   const isViewed = useCallback(
-    (path: string) => isFileViewed(path, states, overlay),
-    [overlay, states],
+    (path: string) => isFileViewed(path, states, visibleOverlay),
+    [visibleOverlay, states],
   );
   const isStale = useCallback(
-    (path: string) => !overlay.has(path) && isStaleViewedState(states?.get(path)),
-    [overlay, states],
+    (path: string) => !visibleOverlay.has(path) && isStaleViewedState(states?.get(path)),
+    [visibleOverlay, states],
   );
   const viewedCount = useMemo(
-    () => countViewedFiles(paths, states, overlay),
-    [overlay, paths, states],
+    () => countViewedFiles(paths, states, visibleOverlay),
+    [visibleOverlay, paths, states],
   );
 
   // One identity per change of what it says: the viewer keys every file it draws off this.
@@ -199,6 +248,7 @@ export function usePullRequestFilesViewed(options: {
     () => ({
       enabled,
       isViewed,
+      isTrackable,
       isStale,
       setViewed,
       viewedCount,
@@ -206,6 +256,16 @@ export function usePullRequestFilesViewed(options: {
       error,
       refresh: refreshFromHost,
     }),
-    [enabled, error, isStale, isViewed, refreshFromHost, setViewed, truncated, viewedCount],
+    [
+      enabled,
+      error,
+      isStale,
+      isViewed,
+      isTrackable,
+      refreshFromHost,
+      setViewed,
+      truncated,
+      viewedCount,
+    ],
   );
 }

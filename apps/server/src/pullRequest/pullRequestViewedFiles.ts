@@ -18,6 +18,7 @@ import {
 import type * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
 import type { ProviderFileRevisions, PullRequestProviderError } from "./PullRequestProvider.ts";
 import type { PullRequestError, SupportedProject } from "./PullRequestService.ts";
+import { fileDigestsFromPatch } from "./pullRequestPatchDigests.ts";
 
 /**
  * How long the head's version of a file is believed, and how long a held answer stands while the
@@ -34,6 +35,8 @@ export const FILE_REVISIONS_CACHE_CAPACITY = 64;
  * otherwise.
  */
 export const MAX_FILE_REVISION_PATHS = 1_000;
+const MAX_HOST_MARK_PREFLIGHT_SLICES = 8;
+const DISPLAY_DIGEST = /^[0-9a-f]{64}$/;
 
 interface FileRevisionsDependencies {
   readonly runFork: (effect: Effect.Effect<void>) => unknown;
@@ -58,6 +61,8 @@ const makeFileRevisions = (dependencies: FileRevisionsDependencies) => {
   }
   const heldFileRevisions = new Map<string, HeldFileRevisions>();
   const refreshingFileRevisions = new Set<string>();
+  const inFlightRevisionReads = new Map<string, number>();
+  let revisionReadSequence = 0;
 
   /**
    * Carries the reference's epoch, so whatever moved the head strands what was held (or in
@@ -66,13 +71,16 @@ const makeFileRevisions = (dependencies: FileRevisionsDependencies) => {
    * remote's own spelling.
    */
   const fileRevisionsKey = (project: SupportedProject, ref: PullRequestRef) =>
-    [
+    JSON.stringify([
       refEpoch({ ...ref, host: project.host, repository: project.repository }),
       fileRevisionsEpoch(),
       ref.projectId,
+      project.api.kind,
+      project.host,
+      project.remote,
       project.repository.trim().toLowerCase(),
       ref.number,
-    ].join(" ");
+    ]);
 
   /**
    * `paths` are what was asked about, and are held as answered for whether the host had a version
@@ -162,6 +170,8 @@ const makeFileRevisions = (dependencies: FileRevisionsDependencies) => {
     // the request is built rather than as the effect is run.
     const fetch = Effect.suspend(() => {
       const key = fileRevisionsKey(project, ref);
+      const readId = ++revisionReadSequence;
+      inFlightRevisionReads.set(key, readId);
       return read({
         cwd: project.project.workspaceRoot,
         repository: project.repository,
@@ -170,16 +180,25 @@ const makeFileRevisions = (dependencies: FileRevisionsDependencies) => {
         paths,
       }).pipe(
         Effect.mapError(toPullRequestError(operation)),
-        Effect.flatMap((answer) => recordFileRevisions(key, paths, answer)),
+        Effect.flatMap((answer) =>
+          inFlightRevisionReads.get(key) === readId
+            ? recordFileRevisions(key, paths, answer)
+            : Effect.succeed(answer.revisions),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (inFlightRevisionReads.get(key) === readId) inFlightRevisionReads.delete(key);
+          }),
+        ),
       );
     });
+    if (freshness === "fresh") return fetch;
     return Effect.flatMap(Clock.currentTimeMillis, (now) => {
       const key = fileRevisionsKey(project, ref);
       const held = heldFileRevisionsFor(key, paths, now);
       if (held === null) return fetch;
       if (now - held.at <= Duration.toMillis(FILE_REVISIONS_CACHE_TTL))
         return Effect.succeed(held.revisions);
-      if (freshness === "fresh") return fetch;
       if (refreshingFileRevisions.has(key)) return Effect.succeed(held.revisions);
       // Its own fiber rather than a child: the caller has been answered and is gone before this
       // lands. One at a time per change request, so a page of files costs one host read.
@@ -205,7 +224,7 @@ export interface Dependencies extends FileRevisionsDependencies {
   readonly requiredViewerOf: (
     project: SupportedProject,
     operation: string,
-  ) => Effect.Effect<string | null, PullRequestError>;
+  ) => Effect.Effect<string, PullRequestError>;
 }
 
 // A plain factory rather than a `Context.Service` (against the preference in
@@ -215,17 +234,44 @@ export interface Dependencies extends FileRevisionsDependencies {
 export const make = (dependencies: Dependencies) => {
   const { filesViewedStore, requireProject, requiredViewerOf, toPullRequestError } = dependencies;
   const { fileRevisionsOf } = makeFileRevisions(dependencies);
+  const confirmViewer = (project: SupportedProject, expected: string, operation: string) =>
+    requiredViewerOf(project, operation).pipe(
+      Effect.flatMap((current) =>
+        current === expected
+          ? Effect.void
+          : Effect.fail(
+              new PullRequestOperationError({
+                operation,
+                detail:
+                  "The signed-in account changed while viewed files were being read or updated. Refresh and try again.",
+              }),
+            ),
+      ),
+    );
+  const invalidDisplayedFiles = (files: PullRequestSetFilesViewedInput["files"]) =>
+    files.some((file) => file.viewed && !DISPLAY_DIGEST.test(file.digest ?? ""));
+
+  const requireDisplayedFiles = (files: PullRequestSetFilesViewedInput["files"]) =>
+    invalidDisplayedFiles(files)
+      ? Effect.fail(
+          new PullRequestOperationError({
+            operation: "setFilesViewed",
+            detail:
+              "Refresh the diff before marking files viewed; its file revision is unavailable.",
+          }),
+        )
+      : Effect.void;
   /**
    * Which change request's marks, and whose. Provider and host lead the key because the same
    * repository can exist on more than one install; the reader is part of it because a host's own
-   * record is per-account. A host that names no reader is one reader, not none.
+   * record is per-account. An unverified reader cannot access persisted marks.
    */
-  const filesViewedScope = (project: SupportedProject, number: number, viewer: string | null) => ({
+  const filesViewedScope = (project: SupportedProject, number: number, viewer: string) => ({
     provider: project.api.kind,
     host: project.host,
     repository: project.remote,
     number,
-    viewer: viewer ?? "",
+    viewer,
   });
 
   const toFilesViewedStoreError = (operation: string) => (cause: unknown) =>
@@ -267,15 +313,22 @@ export const make = (dependencies: Dependencies) => {
           }).pipe(Effect.as(null)),
         ),
       );
+      yield* confirmViewer(project, viewer, "filesViewed");
       return {
         files: marks.map((mark) => {
           // A mark stamped with no baseline holds until the reader presses it again.
-          if (mark.revision === null) return { path: mark.path, state: "viewed" as const };
+          if (mark.revision === null)
+            return {
+              path: mark.path,
+              ...(mark.displayDigest === null ? {} : { digest: mark.displayDigest }),
+              state: "viewed" as const,
+            };
           const revision = revisions?.get(mark.path);
           // A deleted file is answered as the empty revision, matching its stamp, so it stays
           // cleared; a path the host had no answer for (`undefined`) also holds as cleared.
           return {
             path: mark.path,
+            ...(mark.displayDigest === null ? {} : { digest: mark.displayDigest }),
             state:
               revision === undefined || revision === mark.revision
                 ? ("viewed" as const)
@@ -288,9 +341,9 @@ export const make = (dependencies: Dependencies) => {
     });
 
   /**
-   * One environment-backed write at a time per change request. A tick's host round trip is
-   * slower than an untick's, so unordered presses could finish out of order and leave a stale
-   * tick standing over a later untick.
+   * One write at a time per change request, whether marks live on the host or in this
+   * environment. A tick's host round trip can be slower than an untick's, so unordered presses
+   * could finish out of order and leave an older tick standing over a later untick.
    */
   const filesViewedGates = new Map<
     string,
@@ -306,7 +359,13 @@ export const make = (dependencies: Dependencies) => {
     // its queue are one step: yielding for `Semaphore.make` between the lookup and the insert
     // lets two presses each make a gate of their own and neither wait on the other.
     Effect.suspend(() => {
-      const key = `${project.project.id} ${project.remote} ${number}`;
+      const key = JSON.stringify([
+        project.project.id,
+        project.api.kind,
+        project.host,
+        project.remote,
+        number,
+      ]);
       const held = filesViewedGates.get(key);
       const entry = held ?? { gate: Semaphore.makeUnsafe(1), pending: 0 };
       if (held === undefined) filesViewedGates.set(key, entry);
@@ -330,6 +389,7 @@ export const make = (dependencies: Dependencies) => {
     input: PullRequestSetFilesViewedInput,
   ): Effect.Effect<void, PullRequestError> =>
     Effect.gen(function* () {
+      yield* requireDisplayedFiles(input.files);
       const viewer = yield* requiredViewerOf(project, "setFilesViewed");
       // Only the files being cleared need a revision. An unticked one is about to lose its row,
       // and what the head has of it changes nothing about deleting it.
@@ -348,6 +408,7 @@ export const make = (dependencies: Dependencies) => {
               ),
             );
       const viewedAt = DateTime.formatIso(yield* DateTime.now);
+      yield* confirmViewer(project, viewer, "setFilesViewed");
       yield* filesViewedStore
         .set({
           ...filesViewedScope(project, input.number, viewer),
@@ -357,11 +418,13 @@ export const make = (dependencies: Dependencies) => {
           files: input.files.map((file) => ({
             path: file.path,
             revision: revisions?.get(file.path) ?? null,
+            displayDigest: file.digest ?? null,
             viewed: file.viewed,
           })),
           viewedAt,
         })
         .pipe(Effect.mapError(toFilesViewedStoreError("setFilesViewed")));
+      yield* confirmViewer(project, viewer, "setFilesViewed");
     });
 
   const filesViewed = (input: PullRequestRef) =>
@@ -395,13 +458,63 @@ export const make = (dependencies: Dependencies) => {
       Effect.flatMap((project): Effect.Effect<void, PullRequestError> => {
         const write = project.api.setFilesViewed;
         if (project.api.capabilities.viewedFiles === "host" && write) {
-          return write({
-            cwd: project.project.workspaceRoot,
-            repository: project.repository,
-            host: project.host,
-            number: input.number,
-            files: input.files,
-          }).pipe(Effect.mapError(toPullRequestError("setFilesViewed")));
+          return inFilesViewedOrder(
+            project,
+            input.number,
+            Effect.gen(function* () {
+              yield* requireDisplayedFiles(input.files);
+              const marked = input.files.filter((file) => file.viewed);
+              const cursors = [...new Set(marked.map((file) => file.cursor ?? null))];
+              if (cursors.length > MAX_HOST_MARK_PREFLIGHT_SLICES) {
+                return yield* new PullRequestOperationError({
+                  operation: "setFilesViewed",
+                  detail: "Refresh the diff and mark fewer files at once.",
+                });
+              }
+              for (const cursor of cursors) {
+                const slice = yield* project.api
+                  .getDiff({
+                    cwd: project.project.workspaceRoot,
+                    repository: project.repository,
+                    host: project.host,
+                    number: input.number,
+                    ...(cursor === null ? {} : { cursor }),
+                  })
+                  .pipe(Effect.mapError(toPullRequestError("setFilesViewed")));
+                const current = new Map(
+                  fileDigestsFromPatch(
+                    slice.patch,
+                    slice.truncated,
+                    {
+                      provider: project.api.kind,
+                      host: project.host,
+                      remote: project.remote,
+                      number: input.number,
+                    },
+                    new Set(slice.omittedFileStats?.map((file) => file.path) ?? []),
+                  ).map(({ path, digest }) => [path, digest]),
+                );
+                if (
+                  marked.some(
+                    (file) =>
+                      (file.cursor ?? null) === cursor && current.get(file.path) !== file.digest,
+                  )
+                ) {
+                  return yield* new PullRequestOperationError({
+                    operation: "setFilesViewed",
+                    detail: "The displayed diff changed. Refresh it before marking files viewed.",
+                  });
+                }
+              }
+              yield* write({
+                cwd: project.project.workspaceRoot,
+                repository: project.repository,
+                host: project.host,
+                number: input.number,
+                files: input.files,
+              }).pipe(Effect.mapError(toPullRequestError("setFilesViewed")));
+            }),
+          );
         }
         if (project.api.capabilities.viewedFiles === "environment") {
           return inFilesViewedOrder(

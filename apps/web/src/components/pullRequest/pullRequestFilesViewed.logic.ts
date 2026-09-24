@@ -94,7 +94,17 @@ export function revertFileViewedOverlay(
 
 /** The presses in an overlay as the batch the host is told about. */
 export function toFileViewedBatch(
-  overlay: FileViewedOverlay,
-): ReadonlyArray<{ readonly path: string; readonly viewed: boolean }> {
-  return [...overlay].map(([path, viewed]) => ({ path, viewed }));
+  overlay: ReadonlyMap<
+    string,
+    boolean | { readonly viewed: boolean; readonly digest?: string; readonly cursor?: string }
+  >,
+): ReadonlyArray<{
+  readonly path: string;
+  readonly viewed: boolean;
+  readonly digest?: string;
+  readonly cursor?: string;
+}> {
+  return [...overlay].map(([path, value]) =>
+    typeof value === "boolean" ? { path, viewed: value } : { path, ...value },
+  );
 }

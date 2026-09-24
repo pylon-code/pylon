@@ -42,6 +42,7 @@ const reference: PullRequestRef = {
   number: 42,
 };
 const paths = ["a.ts"];
+let evidence = new Map([["a.ts", { digest: "a".repeat(64), cursor: null }]]);
 
 /** What the host answers, as a fresh object each time: a read is only a read if it is a new one. */
 function answer(state: "unviewed" | "viewed" | "dismissed"): PullRequestFilesViewedResult {
@@ -55,7 +56,13 @@ function Probe(_props: { readonly view: PullRequestFilesViewedView }) {
 }
 
 function Surface() {
-  const view = usePullRequestFilesViewed({ environmentId, reference, enabled: true, paths });
+  const view = usePullRequestFilesViewed({
+    environmentId,
+    reference,
+    enabled: true,
+    paths,
+    evidence,
+  });
   return <Probe view={view} />;
 }
 
@@ -79,6 +86,7 @@ beforeEach(async () => {
   vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   host.data = answer("unviewed");
+  evidence = new Map([["a.ts", { digest: "a".repeat(64), cursor: null }]]);
   host.refresh.mockReset();
   toastAdd.mockReset();
   setFilesViewed.mockReset().mockResolvedValue(AsyncResult.success(undefined));
@@ -104,7 +112,7 @@ describe("a mark whose file was pushed to before the read that followed it", () 
     await act(async () => vi.advanceTimersByTimeAsync(500));
     expect(setFilesViewed).toHaveBeenCalledExactlyOnceWith({
       environmentId,
-      input: { ...reference, files: [{ path: "a.ts", viewed: true }] },
+      input: { ...reference, files: [{ path: "a.ts", viewed: true, digest: "a".repeat(64) }] },
     });
     expect(host.refresh).toHaveBeenCalled();
 
@@ -158,4 +166,32 @@ describe("a mark the host has not answered for yet", () => {
     expect(view().isViewed("a.ts")).toBe(true);
     expect(view().isStale("a.ts")).toBe(false);
   });
+});
+
+it("never shows the old mark or pending press as viewed over a newly displayed file", async () => {
+  host.data = {
+    files: [{ path: "a.ts", state: "viewed", digest: "a".repeat(64) }],
+    truncated: false,
+  } satisfies PullRequestFilesViewedResult;
+  await act(async () =>
+    renderer!.update(
+      <StrictMode>
+        <Surface />
+      </StrictMode>,
+    ),
+  );
+  expect(view().isViewed("a.ts")).toBe(true);
+
+  view().setViewed("a.ts", true);
+  evidence = new Map([["a.ts", { digest: "b".repeat(64), cursor: null }]]);
+  await act(async () =>
+    renderer!.update(
+      <StrictMode>
+        <Surface />
+      </StrictMode>,
+    ),
+  );
+  expect(view().isViewed("a.ts")).toBe(false);
+  expect(view().isStale("a.ts")).toBe(true);
+  expect(view().viewedCount).toBe(0);
 });

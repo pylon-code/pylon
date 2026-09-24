@@ -18,6 +18,7 @@ export default Effect.gen(function* () {
       viewer TEXT NOT NULL,
       path TEXT NOT NULL,
       revision TEXT,
+      display_digest TEXT,
       viewed_at TEXT NOT NULL,
       PRIMARY KEY (provider, host, repository, number, viewer, path)
     ) WITHOUT ROWID
