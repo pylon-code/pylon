@@ -73,6 +73,7 @@ interface ClientConnection {
   readonly environmentId: PreviewAutomationHost["environmentId"];
   readonly supportedOperations: ReadonlySet<PreviewAutomationOperation>;
   readonly focused: boolean;
+  readonly liveTabs: NonNullable<PreviewAutomationHostFocus["liveTabs"]>;
   readonly focusOrder: number;
   readonly queue: Queue.Queue<PreviewAutomationStreamEvent, Cause.Done>;
 }
@@ -376,6 +377,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       environmentId: host.environmentId,
       supportedOperations: new Set(host.supportedOperations ?? PREVIEW_AUTOMATION_V1_OPERATIONS),
       focused: false,
+      liveTabs: [],
       focusOrder: 0,
       queue,
     };
@@ -432,6 +434,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       clients.set(host.clientId, {
         ...currentHost,
         focused: host.focused,
+        liveTabs: host.liveTabs ?? currentHost.liveTabs,
         focusOrder: host.focused ? focusSequence : currentHost.focusOrder,
       });
       return { ...current, clients, focusSequence };
@@ -492,19 +495,33 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       // operation is not silently moved to a newer client: the caller gets a
       // capability failure and can deliberately start a fresh provider
       // session. A dead lease is pruned above and may fail over.
+      const ownsTargetTab = (host: ClientConnection, visibleOnly = false) =>
+        host.liveTabs.some(
+          (tab) =>
+            tab.threadId === input.scope.threadId &&
+            (!visibleOnly || tab.visible === true) &&
+            (input.tabId === undefined || tab.tabId === input.tabId),
+        );
+      const environmentHosts = Array.from(current.clients.values()).filter(
+        (host) => host.environmentId === input.scope.environmentId,
+      );
+      const explicitTabOwners =
+        input.tabId === undefined ? [] : environmentHosts.filter((host) => ownsTargetTab(host));
+      // A named tab with a reporting owner must stay on an owning host. If
+      // none of those owners supports the operation, fail instead of sending
+      // the request to a different browser with unrelated cookies and DOM.
+      const candidateHosts = explicitTabOwners.length > 0 ? explicitTabOwners : environmentHosts;
       const connection =
         hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
           ? assignedConnection
           : hasLiveAssignment
             ? undefined
-            : Array.from(current.clients.values())
-                .filter(
-                  (host) =>
-                    host.environmentId === input.scope.environmentId &&
-                    supportsOperation(host, input.operation),
-                )
+            : candidateHosts
+                .filter((host) => supportsOperation(host, input.operation))
                 .sort(
                   (left, right) =>
+                    Number(ownsTargetTab(right, true)) - Number(ownsTargetTab(left, true)) ||
+                    Number(ownsTargetTab(right)) - Number(ownsTargetTab(left)) ||
                     right.supportedOperations.size - left.supportedOperations.size ||
                     Number(right.focused) - Number(left.focused) ||
                     right.focusOrder - left.focusOrder,
