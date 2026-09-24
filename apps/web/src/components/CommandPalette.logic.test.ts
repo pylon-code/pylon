@@ -11,6 +11,7 @@ import {
   filterPinnedBrowseEntries,
   filterCommandPaletteGroups,
   reduceCommandPaletteUiState,
+  type CommandPaletteActionItem,
   type CommandPaletteGroup,
 } from "./CommandPalette.logic";
 
@@ -583,6 +584,38 @@ describe("buildThreadActionItems", () => {
     expect(item?.description).toBe("Pylon · #feat/search");
   });
 
+  it("finds a thread by pasted ID while ranking a title match first", () => {
+    const byId = makeThread({
+      id: ThreadId.make("thread-alpha-1234"),
+      title: "Unrelated work",
+      updatedAt: "2026-03-05T00:00:00.000Z",
+    });
+    const byTitle = makeThread({
+      id: ThreadId.make("thread-other-9999"),
+      title: "Fix thread-alpha-1234 flakes",
+      updatedAt: "2026-03-04T00:00:00.000Z",
+    });
+    const items = buildThreadActionItems({
+      threads: [byId, byTitle],
+      projectTitleById: new Map([[PROJECT_ID, "Pylon"]]),
+      sortOrder: "updated_at",
+      icon: null,
+      runThread: async () => undefined,
+    });
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [],
+      query: "  THREAD-ALPHA-1234  ",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      settingsSearchItems: [],
+      threadSearchItems: items,
+    });
+    expect(groups.flatMap((group) => group.items.map((item) => item.value))).toEqual([
+      `thread:${byTitle.id}`,
+      `thread:${byId.id}`,
+    ]);
+  });
+
   it("prefers renderDescription when provided", () => {
     const [item] = buildThreadActionItems({
       threads: [makeThread({ branch: "feat/search", worktreePath: "/tmp/wt" })],
@@ -736,5 +769,32 @@ it.each([
   });
   expect(groups.flatMap((group) => group.items.map((item) => item.title))).toEqual([
     "Implementation",
+  ]);
+});
+
+it("ranks secondary keybinding settings after primary settings matches", () => {
+  const item = (value: string, title: string, secondary = false): CommandPaletteActionItem => ({
+    kind: "action",
+    value,
+    title,
+    searchTerms: [title, "General"],
+    icon: null,
+    run: async () => undefined,
+    secondary,
+  });
+  const groups = filterCommandPaletteGroups({
+    activeGroups: [],
+    query: "model",
+    isInSubmenu: false,
+    projectSearchItems: [],
+    settingsSearchItems: [
+      item("setting:keybinding-modelPicker.toggle", "Model Picker: Toggle", true),
+      item("setting:default-model", "Default model"),
+    ],
+    threadSearchItems: [],
+  });
+  expect(groups.flatMap((group) => group.items.map((entry) => entry.value))).toEqual([
+    "setting:default-model",
+    "setting:keybinding-modelPicker.toggle",
   ]);
 });

@@ -139,6 +139,8 @@ export interface CommandPaletteItem {
   /** Optional content rendered inline after the title text (before the timestamp). */
   readonly titleTrailingContent?: ReactNode;
   readonly shortcutCommand?: KeybindingCommand;
+  /** Keep detailed settings rows after primary matches in their group. */
+  readonly secondary?: boolean;
 }
 
 export interface CommandPaletteActionItem extends CommandPaletteItem {
@@ -302,6 +304,8 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
           projectTitle ?? ``,
           thread.branch ?? ``,
           contentMatch?.snippet ?? ``,
+          // Keep IDs after human-readable terms so a shared substring favors titles.
+          thread.id,
         ],
         title: thread.title,
         description,
@@ -431,7 +435,12 @@ export function filterCommandPaletteGroups(input: {
         rank: rankCommandPaletteItemMatch(item, normalizedQuery, queryTokens),
       });
     })
-      .toSorted((left, right) => right.rank - left.rank || left.index - right.index)
+      .toSorted(
+        (left, right) =>
+          Number(left.item.secondary ?? false) - Number(right.item.secondary ?? false) ||
+          right.rank - left.rank ||
+          left.index - right.index,
+      )
       .map((entry) => entry.item);
 
     if (items.length === 0) {
