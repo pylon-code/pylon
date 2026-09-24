@@ -57,6 +57,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
+import * as Scheduler from "effect/Scheduler";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -6916,6 +6917,34 @@ class RuntimeReaper extends Context.Service<RuntimeReaper, {}>()(
 
 describe("agent browser access", () => {
   const projectId = ProjectId.make("project-browser-access");
+
+  it.effect("subscribes to adapter events before exposing the provider service", () =>
+    Effect.gen(function* () {
+      const codex = makeFakeCodexAdapter();
+      const events = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+      let subscribed = false;
+      const adapter: ProviderAdapterShape<ProviderAdapterError> = {
+        ...codex.adapter,
+        streamEvents: Stream.unwrap(
+          Effect.map(PubSub.subscribe(events), (subscription) => {
+            // This runs only after PubSub has registered the subscription, not merely when
+            // the stream wrapper is constructed.
+            subscribed = true;
+            return Stream.fromSubscription(subscription);
+          }),
+        ),
+      };
+      yield* Effect.gen(function* () {
+        yield* ProviderService.ProviderService;
+        assert.isTrue(subscribed);
+      }).pipe(Effect.provide(makeAgentBrowserProviderLayer(false, { ...codex, adapter }, {})));
+    }).pipe(
+      // Keep this one fiber from yielding before the assertion. The old deferred fork then
+      // reproducibly leaves `subscribed` false; immediate startup passes without a timer.
+      Effect.provideService(Scheduler.PreventSchedulerYield, true),
+      Effect.provide(NodeServices.layer),
+    ),
+  );
 
   const makeBrowserAccessProjectionLayer = (
     threadId: ThreadId,
