@@ -10,6 +10,7 @@ import type {
   SshDeviceHostConfig,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { randomUUID } from "../../lib/utils";
 import { useState } from "react";
 import { deviceEnvironment, useDeviceState } from "../../state/device";
@@ -22,7 +23,7 @@ import { Menu, MenuTrigger, MenuPopup, MenuItem } from "../ui/menu";
 import { SettingsRow } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { useHostConnectionChecks } from "./useHostConnectionChecks";
-import { deviceHostConnectionKey } from "./deviceHostConnectionChecks";
+import { deviceHostChecksKey, parseDeviceHostDraft } from "./deviceHostConnectionChecks";
 
 /** Host names and identity paths belong to the selected environment, never all environments. */
 export function DeviceHostsSettings(props: {
@@ -42,10 +43,10 @@ export function DeviceHostsSettings(props: {
   const { checks: environmentChecks, testConnection: testAcrossEnvironments } =
     useHostConnectionChecks(targets);
   const [editing, setEditing] = useState<SshDeviceHostConfig | null>(null);
+  const parsedEditing = editing ? parseDeviceHostDraft(editing) : Option.none();
+  const validEditing = Option.isSome(parsedEditing) && editing?.label.trim() !== "";
   const [busy, setBusy] = useState(false);
   const [retrying, setRetrying] = useState<string | null>(null);
-  const validPort = (port: number | undefined) =>
-    port === undefined || (Number.isInteger(port) && port >= 1 && port <= 65535);
   const [checks, setChecks] = useState<
     Record<
       string,
@@ -261,7 +262,12 @@ export function DeviceHostsSettings(props: {
                 className="space-y-3 border-t border-border/50 py-3"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void save([...props.hosts.filter((host) => host.id !== editing.id), editing]);
+                  if (Option.isSome(parsedEditing)) {
+                    void save([
+                      ...props.hosts.filter((host) => host.id !== editing.id),
+                      parsedEditing.value,
+                    ]);
+                  }
                 }}
               >
                 <label className="block space-y-1 text-sm">
@@ -316,29 +322,18 @@ export function DeviceHostsSettings(props: {
                   />
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    type="submit"
-                    disabled={
-                      busy ||
-                      !editing.label.trim() ||
-                      !editing.target.trim() ||
-                      !validPort(editing.port)
-                    }
-                  >
+                  <Button size="sm" type="submit" disabled={busy || !validEditing}>
                     Save host
                   </Button>
                   <Button
                     size="sm"
                     type="button"
                     variant="outline"
-                    disabled={
-                      busy ||
-                      !editing.label.trim() ||
-                      !editing.target.trim() ||
-                      !validPort(editing.port)
-                    }
-                    onClick={() => void testAcrossEnvironments(editing)}
+                    disabled={busy || !validEditing}
+                    onClick={() => {
+                      if (Option.isSome(parsedEditing))
+                        void testAcrossEnvironments(parsedEditing.value);
+                    }}
                   >
                     Test connection
                   </Button>
@@ -356,7 +351,9 @@ export function DeviceHostsSettings(props: {
                 </div>
                 {targets.map((target) => {
                   const result =
-                    environmentChecks[deviceHostConnectionKey(editing)]?.[target.environmentId];
+                    environmentChecks[deviceHostChecksKey(editing, targets)]?.[
+                      target.environmentId
+                    ];
                   if (!result) return null;
                   return (
                     <div key={target.environmentId} className="text-xs" role="status">

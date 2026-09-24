@@ -31,6 +31,16 @@ export function deviceHostConnectionKey(host: SshDeviceHostConfig) {
   return JSON.stringify([host.target.trim(), host.port, host.identityFile?.trim() || undefined]);
 }
 
+export function deviceHostChecksKey(
+  host: SshDeviceHostConfig,
+  targets: ReadonlyArray<DeviceHostCheckTarget>,
+) {
+  return JSON.stringify([
+    deviceHostConnectionKey(host),
+    targets.map((target) => [target.environmentId, target.connected]),
+  ]);
+}
+
 /** Each environment settles independently so one failure cannot hide the other results. */
 export async function checkDeviceHostConnections(
   targets: ReadonlyArray<DeviceHostCheckTarget>,

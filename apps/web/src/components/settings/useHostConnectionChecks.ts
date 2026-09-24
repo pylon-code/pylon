@@ -5,7 +5,7 @@ import { deviceEnvironment } from "../../state/device";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   checkDeviceHostConnections,
-  deviceHostConnectionKey,
+  deviceHostChecksKey,
   type DeviceHostCheck,
   type DeviceHostCheckTarget,
 } from "./deviceHostConnectionChecks";
@@ -15,7 +15,7 @@ export function useHostConnectionChecks(targets: ReadonlyArray<DeviceHostCheckTa
   const [checks, setChecks] = useState<Record<string, Record<string, DeviceHostCheck>>>({});
   const running = useRef(new Set<string>());
   const testConnection = async (host: SshDeviceHostConfig) => {
-    const key = deviceHostConnectionKey(host);
+    const key = deviceHostChecksKey(host, targets);
     if (running.current.has(key)) return;
     running.current.add(key);
     setChecks((current) => ({ ...current, [key]: {} }));

@@ -5,6 +5,7 @@ import {
   checkDeviceHostConnections,
   parseDeviceHostDraft,
   deviceHostConnectionKey,
+  deviceHostChecksKey,
   type DeviceHostCheck,
 } from "./deviceHostConnectionChecks";
 
@@ -67,6 +68,16 @@ describe("device host connection checks", () => {
     expect(
       deviceHostConnectionKey({ ...host, id: "another-environment-id", label: "Renamed" }),
     ).toBe(key);
+  });
+  it("does not reuse results when selected environments or connectivity change", () => {
+    const key = deviceHostChecksKey(host, targets);
+    expect(deviceHostChecksKey(host, targets.slice(0, 2))).not.toBe(key);
+    expect(
+      deviceHostChecksKey(
+        host,
+        targets.map((target) => ({ ...target, connected: true })),
+      ),
+    ).not.toBe(key);
   });
   it("validates SSH targets and normalizes optional identity files through the host contract", () => {
     for (const target of ["-invalid", "user@bad host", "  "]) {
