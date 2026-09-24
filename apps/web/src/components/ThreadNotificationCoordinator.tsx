@@ -2,6 +2,12 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import {
+  CircleAlertIcon,
+  CircleCheckIcon,
+  MessageCircleQuestionIcon,
+  ShieldQuestionIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
 
 import { getClientSettings, useClientSettings } from "../hooks/useSettings";
@@ -167,7 +173,28 @@ function EnvironmentNotifications({
           type: kind === "completion" ? "success" : state.phase === "failed" ? "error" : "warning",
           title,
           description: state.threadTitle,
-          data: { hideCopyButton: true },
+          data: {
+            hideCopyButton: true,
+            leadingIcon:
+              state.phase === "completed" ? (
+                <CircleCheckIcon
+                  aria-hidden
+                  className="size-4 text-emerald-700 dark:text-emerald-300"
+                />
+              ) : state.phase === "waiting_for_approval" ? (
+                <ShieldQuestionIcon
+                  aria-hidden
+                  className="size-4 text-amber-700 dark:text-amber-300"
+                />
+              ) : state.phase === "failed" ? (
+                <CircleAlertIcon aria-hidden className="size-4 text-red-700 dark:text-red-300" />
+              ) : (
+                <MessageCircleQuestionIcon
+                  aria-hidden
+                  className="size-4 text-indigo-600 dark:text-indigo-300"
+                />
+              ),
+          },
           actionProps: {
             children: "Open thread",
             onClick: () => {
