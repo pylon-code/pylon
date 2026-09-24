@@ -1,8 +1,11 @@
 import * as NodeAssert from "node:assert/strict";
 
 import { it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vite-plus/test";
 import { DEFAULT_MODEL, ThreadId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -14,6 +17,7 @@ import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
   codexSkillNamesForCwd,
+  resolveCodexSkillNamesForPrompt,
   describeMcpElicitation,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
@@ -155,6 +159,52 @@ function makeThreadOpenResponse(
 }
 
 describe("buildTurnStartParams", () => {
+  it.effect("cancels a stalled catalog lookup and preserves the Unicode prompt", () =>
+    Effect.gen(function* () {
+      const response = yield* Deferred.make<{
+        readonly data: ReadonlyArray<{
+          readonly cwd: string;
+          readonly skills: ReadonlyArray<{ readonly name: string; readonly enabled: boolean }>;
+        }>;
+      }>();
+      let interrupted = false;
+      const request = Deferred.await(response).pipe(
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            interrupted = true;
+          }),
+        ),
+      );
+      const lookup = yield* resolveCodexSkillNamesForPrompt("€review", "/project", request).pipe(
+        Effect.forkScoped,
+      );
+      yield* TestClock.adjust("2 seconds");
+      NodeAssert.equal(yield* Fiber.join(lookup), undefined);
+      NodeAssert.equal(interrupted, true);
+      yield* Deferred.succeed(response, {
+        data: [{ cwd: "/project", skills: [{ name: "review", enabled: true }] }],
+      });
+      NodeAssert.equal(yield* Fiber.join(lookup), undefined);
+
+      const turn = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "€review",
+      });
+      NodeAssert.deepEqual(turn.input, [{ type: "text", text: "€review" }]);
+    }),
+  );
+
+  it.effect("leaves literal text when the catalog request fails", () =>
+    Effect.gen(function* () {
+      const names = yield* resolveCodexSkillNamesForPrompt(
+        "€review",
+        "/project",
+        Effect.fail(new Error("catalog unavailable")),
+      );
+      NodeAssert.equal(names, undefined);
+    }),
+  );
   it("uses only the requested Codex cwd, allowing a sole canonicalized response cwd", () => {
     NodeAssert.deepEqual(
       [

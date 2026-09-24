@@ -665,6 +665,39 @@ export function codexSkillNamesForCwd(
   return new Set((entry?.skills ?? []).filter((skill) => skill.enabled).map((skill) => skill.name));
 }
 
+export function resolveCodexSkillNamesForPrompt<E>(
+  prompt: string | undefined,
+  cwd: string,
+  request: Effect.Effect<
+    {
+      readonly data: ReadonlyArray<{
+        readonly cwd: string;
+        readonly skills: ReadonlyArray<{ readonly name: string; readonly enabled: boolean }>;
+      }>;
+    },
+    E
+  >,
+): Effect.Effect<ReadonlySet<string> | undefined> {
+  if (!prompt || !hasUnicodeSkillMention(prompt)) return Effect.succeed(undefined);
+  return request.pipe(
+    Effect.timeoutOption("2 seconds"),
+    Effect.flatMap(
+      Option.match({
+        onNone: () =>
+          Effect.logWarning("Timed out resolving Codex skill aliases before turn.").pipe(
+            Effect.as(undefined),
+          ),
+        onSome: (response) => Effect.succeed(codexSkillNamesForCwd(response, cwd)),
+      }),
+    ),
+    Effect.catch((cause) =>
+      Effect.logWarning("Failed to resolve Codex skill aliases before turn.", { cause }).pipe(
+        Effect.as(undefined),
+      ),
+    ),
+  );
+}
+
 export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
@@ -2933,27 +2966,11 @@ export const makeCodexSessionRuntime = (
           );
           // Resolve aliases through this session's app server. Unknown words and
           // failed catalog reads must remain the user's literal prompt text.
-          const skillNames =
-            input.input && hasUnicodeSkillMention(input.input)
-              ? yield* client.request("skills/list", { cwds: [options.cwd] }).pipe(
-                  Effect.timeoutOption("2 seconds"),
-                  Effect.flatMap(
-                    Option.match({
-                      onNone: () =>
-                        Effect.logWarning(
-                          "Timed out resolving Codex skill aliases before turn.",
-                        ).pipe(Effect.as(undefined)),
-                      onSome: (response) =>
-                        Effect.succeed(codexSkillNamesForCwd(response, options.cwd)),
-                    }),
-                  ),
-                  Effect.catch((cause) =>
-                    Effect.logWarning("Failed to resolve Codex skill aliases before turn.", {
-                      cause,
-                    }).pipe(Effect.as(undefined)),
-                  ),
-                )
-              : undefined;
+          const skillNames = yield* resolveCodexSkillNamesForPrompt(
+            input.input,
+            options.cwd,
+            client.request("skills/list", { cwds: [options.cwd] }),
+          );
           const params = yield* buildTurnStartParams({
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
