@@ -17,6 +17,7 @@ import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { LegendListRef, MaintainScrollAtEndOptions } from "@legendapp/list/react";
 import { shouldUseRestingComposerLayout } from "../composerFooterLayout";
 import { useComposerFocusState } from "./useComposerFocusState";
+import { formatDayAwareTimestamp } from "../../timestampFormat";
 
 vi.mock("@legendapp/list/react", async () => {
   const legendListTestId = "legend-list";
@@ -560,6 +561,35 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Worked for 8.0s");
     expect(markup).toContain("px-1 text-sm leading-relaxed text-muted-foreground");
+    expect(markup).toContain(formatDayAwareTimestamp("2026-03-17T19:12:22.000Z", "locale"));
+  });
+
+  it("shows the creation time on a standalone work row", () => {
+    const createdAt = "2026-03-17T19:12:22.000Z";
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "timed-work-entry",
+            kind: "work",
+            createdAt,
+            entry: {
+              id: "timed-work",
+              createdAt,
+              label: "Read files",
+              tone: "tool",
+              toolLifecycleStatus: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    const row = markup.slice(markup.indexOf('data-timeline-row-id="timed-work-entry"'));
+    expect(row).toContain(formatDayAwareTimestamp(createdAt, "locale"));
+    // This row has no focus target when collapsed, so touch layouts must reveal it directly.
+    expect(row).toContain("pointer-coarse:static pointer-coarse:opacity-100");
   });
 
   it("uses the larger leading inset only when the top fade is enabled", () => {
