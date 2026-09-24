@@ -109,6 +109,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadRestartContinuation: Schema.optionalKey(Schema.Boolean),
   /** Server resolves `projectSettingsOverrides`; older servers ignore the key. */
   projectSettingsOverrides: Schema.optionalKey(Schema.Boolean),
+  /** Server preserves explicit custom project monograms; old servers drop their legacy wire hint. */
+  projectMonogramIcons: Schema.optionalKey(Schema.Boolean),
   /** Server accepts and applies the default permission mode for new threads. */
   defaultRuntimeMode: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.snooze / thread.unsnooze commands. Same

@@ -5238,6 +5238,32 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
 
       yield* engine.dispatch({
         type: "project.meta.update",
+        commandId: CommandId.make("cmd-scripts-project-monogram"),
+        projectId: ProjectId.make("project-scripts"),
+        projectIcon: { kind: "monogram", text: "PX", color: "violet" },
+      });
+      const monogramRow = yield* sql<{ readonly icon: string | null }>`
+        SELECT project_icon_json AS icon FROM projection_projects WHERE project_id = 'project-scripts'
+      `;
+      assert.deepEqual(monogramRow, [
+        { icon: '{"kind":"lucide","name":"folder-code","color":"violet","monogramText":"PX"}' },
+      ]);
+      const eventIcon = yield* sql<{ readonly icon: string | null }>`
+        SELECT json_extract(payload_json, '$.projectIcon') AS icon FROM orchestration_events
+        WHERE command_id = ${CommandId.make("cmd-scripts-project-monogram")}
+      `;
+      assert.deepEqual(eventIcon, monogramRow);
+      const monogramProject = (yield* snapshotQuery.getSnapshot()).projects.find(
+        (project) => project.id === "project-scripts",
+      );
+      assert.deepEqual(monogramProject?.projectIcon, {
+        kind: "monogram",
+        text: "PX",
+        color: "violet",
+      });
+
+      yield* engine.dispatch({
+        type: "project.meta.update",
         commandId: CommandId.make("cmd-scripts-project-clear-icon"),
         projectId: ProjectId.make("project-scripts"),
         projectIcon: null,
