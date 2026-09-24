@@ -7,6 +7,7 @@ import IconAlertTriangle from "@tabler/icons-react-native/IconAlertTriangle";
 import IconApps from "@tabler/icons-react-native/IconApps";
 import IconArchive from "@tabler/icons-react-native/IconArchive";
 import IconArrowBackUp from "@tabler/icons-react-native/IconArrowBackUp";
+import IconArrowDown from "@tabler/icons-react-native/IconArrowDown";
 import IconArrowDownCircle from "@tabler/icons-react-native/IconArrowDownCircle";
 import IconArrowRightCircle from "@tabler/icons-react-native/IconArrowRightCircle";
 import IconArrowUp from "@tabler/icons-react-native/IconArrowUp";
@@ -96,6 +97,7 @@ import { withUniwind } from "uniwind";
 const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "arrow.branch": IconGitBranch,
   "arrow.clockwise": IconRefresh,
+  "arrow.down": IconArrowDown,
   "arrow.down.circle": IconArrowDownCircle,
   "arrow.right.circle": IconArrowRightCircle,
   "arrow.triangle.branch": IconGitBranch,
