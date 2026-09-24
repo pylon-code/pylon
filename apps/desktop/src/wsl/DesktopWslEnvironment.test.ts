@@ -739,6 +739,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         // the flock; a shell subshell can leave a child inheriting fd 9.
         `flock -x -F "$runtime_parent/.${fixture.runtimeId}.install.lock" sleep 30 >/dev/null 2>&1 &`,
         "lock_pid=$!",
+        'trap \'kill "$lock_pid" 2>/dev/null || true; wait "$lock_pid" 2>/dev/null || true\' EXIT',
         "sleep 0.1",
         `HOME=${sh(`${fixture.work}/home`)}`,
         "export HOME",
@@ -746,6 +747,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         'test -d "$scratch"',
         "kill $lock_pid",
         "wait $lock_pid 2>/dev/null || true",
+        "trap - EXIT",
         buildWslRuntimePruneScript(fixture.runtimeId, "pylon-code"),
         'test ! -e "$scratch"',
       ].join("\n"),
