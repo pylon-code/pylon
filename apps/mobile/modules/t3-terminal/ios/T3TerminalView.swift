@@ -137,6 +137,7 @@ private enum TerminalInputSequence {
 private final class TerminalInputField: UITextField {
   var onDeleteBackward: (() -> Void)?
   var onInsert: ((String) -> Void)?
+  private let deletionRouter = TerminalDeletionRouter()
 
   private static let hardwareKeyCommands = TerminalHardwareKeyEncoder.makeKeyCommands(
     action: #selector(handleHardwareKeyCommand(_:))
@@ -147,8 +148,14 @@ private final class TerminalInputField: UITextField {
   }
 
   override func deleteBackward() {
-    onDeleteBackward?()
-    super.deleteBackward()
+    deletionRouter.deleteBackward(
+      emit: { [weak self] in self?.onDeleteBackward?() },
+      performSystemDelete: { super.deleteBackward() }
+    )
+  }
+
+  func reportEmptyReplacement() {
+    deletionRouter.emptyReplacement { [weak self] in self?.onDeleteBackward?() }
   }
 
   @objc
@@ -410,6 +417,11 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
       return false
     }
 
+    // Some software keyboards report deletion here without calling deleteBackward.
+    // The field suppresses a duplicate if UIKit also calls this delegate from super.deleteBackward.
+    if textField === inputField {
+      inputField.reportEmptyReplacement()
+    }
     return false
   }
 
