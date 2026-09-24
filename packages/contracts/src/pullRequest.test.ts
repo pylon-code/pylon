@@ -1,12 +1,16 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
+import { VcsStatusInput } from "./git.ts";
+import { ThreadPullRequestLink } from "./orchestration.ts";
 
 import {
   PullRequestActionInput,
   PullRequestCapabilities,
   PullRequestListInput,
   PullRequestListResult,
+  PullRequestRef,
   PullRequestReviewerRequestInput,
+  pullRequestHostOf,
   resolvePullRequestAuthorFilter,
 } from "./pullRequest.ts";
 
@@ -14,6 +18,54 @@ const decodeListResult = Schema.decodeUnknownSync(PullRequestListResult);
 const decodeListInput = Schema.decodeUnknownSync(PullRequestListInput);
 const decodeReviewerRequest = Schema.decodeUnknownSync(PullRequestReviewerRequestInput);
 const decodeAction = Schema.decodeUnknownSync(PullRequestActionInput);
+const { supportsForgejo: _listCapability, ...oldListFields } = PullRequestListInput.fields;
+const { supportsForgejo: _statusCapability, ...oldStatusFields } = VcsStatusInput.fields;
+const { supportsForgejo: _refCapability, ...oldRefFields } = PullRequestRef.fields;
+const decodeOldListInput = Schema.decodeUnknownSync(Schema.Struct(oldListFields));
+const decodeOldStatusInput = Schema.decodeUnknownSync(Schema.Struct(oldStatusFields));
+const decodeOldRef = Schema.decodeUnknownSync(Schema.Struct(oldRefFields));
+const decodeOldDiscoveryInput = Schema.decodeUnknownSync(Schema.Struct({}));
+const decodeLegacyThreadLink = Schema.decodeUnknownSync(ThreadPullRequestLink);
+
+it("lets the prior server request schemas discard Forgejo capability fields", () => {
+  expect(
+    decodeOldListInput({
+      state: "open",
+      supportsForgejo: true,
+    }),
+  ).toEqual({ state: "open" });
+  expect(
+    decodeOldStatusInput({
+      cwd: "/repo",
+      supportsForgejo: true,
+    }),
+  ).toEqual({ cwd: "/repo" });
+  expect(
+    decodeOldRef({
+      projectId: "project-1",
+      repository: "team/app",
+      number: 3,
+      supportsForgejo: true,
+    }),
+  ).toEqual({ projectId: "project-1", repository: "team/app", number: 3 });
+  expect(decodeOldDiscoveryInput({ supportsForgejo: true })).toEqual({
+    supportsForgejo: true,
+  });
+});
+
+it("keeps an already-linked Forgejo thread decodable by the prior provider-neutral schema", () => {
+  const link = {
+    host: "code.example",
+    repository: "team/app",
+    number: 3,
+    url: "https://code.example/team/app/pulls/3",
+    source: "manual",
+    linkedAt: "2026-09-24T00:00:00Z",
+    snapshot: null,
+    stack: null,
+  };
+  expect(decodeLegacyThreadLink(link)).toMatchObject(link);
+});
 
 const LIST_RESULT: PullRequestListResult = {
   viewers: { "github.com": "bilal", "gitlab.com": "bilal.hassan" },
@@ -65,6 +117,20 @@ const LIST_RESULT: PullRequestListResult = {
 };
 
 describe("PullRequestListResult", () => {
+  it("separates Forgejo HTTP ports while preserving other provider host identities", () => {
+    const identity = {
+      canonicalKey: "forge.example/team/repo",
+      locator: { remoteUrl: "http://forge.example:3000/team/repo.git" },
+    };
+    expect(pullRequestHostOf(identity, "forgejo")).toBe("forge.example:3000");
+    expect(pullRequestHostOf(identity, "gitlab")).toBe("forge.example");
+    expect(
+      pullRequestHostOf(
+        { ...identity, locator: { remoteUrl: "ssh://git@forge.example:2222/team/repo.git" } },
+        "forgejo",
+      ),
+    ).toBe("forge.example");
+  });
   /**
    * The RPC builds this codec at call time, so a shape it cannot lower — an open-keyed record
    * with an optional value, for one — fails as an interrupted request rather than as a schema
