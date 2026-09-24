@@ -1472,8 +1472,8 @@ const make = Effect.gen(function* () {
         Effect.catchCause((cause) =>
           Effect.logWarning("provider command reactor failed to generate or rename thread title", {
             threadId: input.threadId,
-            cwd: input.cwd,
-            cause: Cause.pretty(cause),
+            failureKind: Cause.hasDies(cause) ? "defect" : "failure",
+            reasonCount: cause.reasons.length,
           }),
         ),
       );
@@ -1578,7 +1578,8 @@ const make = Effect.gen(function* () {
               "provider command reactor failed to clear interrupted title regeneration",
               {
                 threadId,
-                cause: Cause.pretty(cause),
+                failureKind: Cause.hasDies(cause) ? "defect" : "failure",
+                reasonCount: cause.reasons.length,
               },
             );
           }),
@@ -1604,7 +1605,8 @@ const make = Effect.gen(function* () {
           }
           return Effect.logWarning("provider command reactor failed to regenerate thread title", {
             threadId: event.payload.threadId,
-            cause: Cause.pretty(cause),
+            failureKind: Cause.hasDies(cause) ? "defect" : "failure",
+            reasonCount: cause.reasons.length,
           }).pipe(Effect.as({ _tag: "Completed", title: undefined } as const));
         }),
       );
@@ -1626,7 +1628,8 @@ const make = Effect.gen(function* () {
             "provider command reactor retrying title regeneration completion",
             {
               threadId: event.payload.threadId,
-              cause: Cause.pretty(cause),
+              failureKind: Cause.hasDies(cause) ? "defect" : "failure",
+              reasonCount: cause.reasons.length,
             },
           ).pipe(Effect.andThen(dispatchThreadTitleRegenerationCompletion(completion)));
         }),
@@ -1642,7 +1645,8 @@ const make = Effect.gen(function* () {
             "provider command reactor failed to complete title regeneration",
             {
               threadId: event.payload.threadId,
-              cause: Cause.pretty(cause),
+              failureKind: Cause.hasDies(cause) ? "defect" : "failure",
+              reasonCount: cause.reasons.length,
             },
           );
         }),
@@ -2757,7 +2761,10 @@ const make = Effect.gen(function* () {
         }
         return Effect.logWarning(
           "provider command reactor failed to find interrupted title regenerations",
-          { cause: Cause.pretty(cause) },
+          {
+            failureKind: Cause.hasDies(cause) ? "defect" : "failure",
+            reasonCount: cause.reasons.length,
+          },
         ).pipe(Effect.as([]));
       }),
     );
@@ -2795,7 +2802,8 @@ const make = Effect.gen(function* () {
         return Effect.logWarning(
           "provider command reactor failed to clear interrupted title regenerations",
           {
-            cause: Cause.pretty(cause),
+            failureKind: Cause.hasDies(cause) ? "defect" : "failure",
+            reasonCount: cause.reasons.length,
           },
         );
       }),
