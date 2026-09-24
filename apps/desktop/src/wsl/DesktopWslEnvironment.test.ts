@@ -735,11 +735,9 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         `scratch="$runtime_parent/.${fixture.runtimeId}.tmp.test"`,
         'mkdir -p "$scratch"',
         'touch -d "180 minutes ago" "$scratch"',
-        "(",
-        `  exec 9> "$runtime_parent/.${fixture.runtimeId}.install.lock"`,
-        "  flock -x 9",
-        "  sleep 30",
-        ") >/dev/null 2>&1 &",
+        // -F execs sleep in the lock holder, so killing this exact PID releases
+        // the flock; a shell subshell can leave a child inheriting fd 9.
+        `flock -x -F "$runtime_parent/.${fixture.runtimeId}.install.lock" sleep 30 >/dev/null 2>&1 &`,
         "lock_pid=$!",
         "sleep 0.1",
         `HOME=${sh(`${fixture.work}/home`)}`,
