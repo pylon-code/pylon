@@ -201,6 +201,7 @@ function NavigationHistoryShortcuts() {
             ) !== null,
           modelPickerOpen: isModelPickerOpen(),
           isDesktop: isElectron,
+          isWeb: !isElectron,
         },
         router.history.location.state.__TSR_index,
         observedHistory.current.minIndex,

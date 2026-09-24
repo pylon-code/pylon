@@ -20,6 +20,7 @@ const context: ShortcutMatchContext = {
   editableFocus: false,
   modelPickerOpen: false,
   isDesktop: true,
+  isWeb: false,
 };
 
 function keyEvent(key: string, code: string, overrides: Record<string, unknown> = {}) {
@@ -83,7 +84,7 @@ describe("navigation history shortcuts", () => {
       handleNavigationHistoryShortcut(
         native.event,
         DEFAULT_RESOLVED_KEYBINDINGS,
-        { ...context, isDesktop: false },
+        { ...context, isDesktop: false, isWeb: true },
         2,
         1,
         2,
@@ -102,7 +103,7 @@ describe("navigation history shortcuts", () => {
       handleNavigationHistoryShortcut(
         customEvent.event,
         custom,
-        { ...context, isDesktop: false },
+        { ...context, isDesktop: false, isWeb: true },
         2,
         1,
         2,
