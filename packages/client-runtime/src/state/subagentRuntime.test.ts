@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { classifyTaskAgentKind, type OrchestrationThreadActivity } from "@t3tools/contracts";
 import {
   canCancelSessionAgent,
+  collectBackgroundTaskIds,
   canMessageSessionAgent,
   deriveAgentPanelModel,
   foldSubagentActivities,
@@ -1470,5 +1471,60 @@ describe("session agent messaging", () => {
     expect(isSessionAgentMessageDeliveryUnknown({ reason: "delivery-unknown" })).toBe(true);
     expect(isSessionAgentMessageDeliveryUnknown({ reason: "request-failed" })).toBe(false);
     expect(isSessionAgentMessageDeliveryUnknown(new Error("failed"))).toBe(false);
+  });
+});
+
+describe("task classification is resolved per task, not per row", () => {
+  // A watcher orphaned by a provider process exit is settled by the NEXT
+  // process, which knows only the task id and status. Ingestion stamps that
+  // bare row "agent", and judging it alone turned shell watchers into phantom
+  // subagents in the transcript (live finding, thread 459f4e04).
+  const orphanSettlement = [
+    activity("task.started", {
+      taskId: "watcher-1",
+      taskType: "local_bash",
+      title: "Run the parallel merge queue dispatcher",
+    }),
+    activity("task.completed", {
+      taskId: "watcher-1",
+      status: "stopped",
+      title: "Run the parallel merge queue dispatcher",
+      summary: "Orphaned by a previous Claude Code process exit",
+      agentKind: "agent",
+    }),
+  ];
+
+  it("keeps an orphaned shell watcher off the Agents surface", () => {
+    expect(collectBackgroundTaskIds(orphanSettlement)).toEqual(new Set(["watcher-1"]));
+    expect(foldSubagentActivities(orphanSettlement)).toEqual([]);
+  });
+
+  it("resolves the same way when the bare terminal row folds first", () => {
+    expect(foldSubagentActivities([...orphanSettlement].reverse())).toEqual([]);
+  });
+
+  it("still admits a worker that never carries a task type", () => {
+    // Relay workers and native subagents legitimately have no taskType; the
+    // stamp is the only evidence, so it must keep deciding for them.
+    const relay = [
+      activity("task.started", {
+        taskId: "relay:job-1",
+        title: "Relay worker",
+        agentKind: "agent",
+      }),
+      activity("task.completed", { taskId: "relay:job-1", status: "completed" }),
+    ];
+    expect(collectBackgroundTaskIds(relay)).toEqual(new Set());
+    expect(foldSubagentActivities(relay).map((agent) => agent.id)).toEqual(["relay:job-1"]);
+  });
+
+  it("does not let an unstamped row demote a real subagent", () => {
+    // Absence of a stamp is absence of evidence, not background evidence.
+    const subagent = [
+      activity("task.started", { taskId: "task-1", taskType: "subagent", title: "Reviewer" }),
+      activity("task.completed", { taskId: "task-1", status: "completed", agentKind: undefined }),
+    ];
+    expect(collectBackgroundTaskIds(subagent)).toEqual(new Set());
+    expect(foldSubagentActivities(subagent).map((agent) => agent.id)).toEqual(["task-1"]);
   });
 });
