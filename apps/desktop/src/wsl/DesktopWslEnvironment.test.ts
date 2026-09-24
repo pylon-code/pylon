@@ -729,27 +729,31 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     const fixture = createFixture();
     const result = runShell(
       [
-        "set -eux",
+        "set -eu",
         `runtime_parent=${sh(fixture.runtimeParent)}`,
         'mkdir -p "$runtime_parent"',
-        `scratch="$runtime_parent/.${fixture.runtimeId}.tmp.test"`,
-        'mkdir -p "$scratch"',
-        'touch -d "180 minutes ago" "$scratch"',
-        // -F execs sleep in the lock holder, so killing this exact PID releases
-        // the flock; a shell subshell can leave a child inheriting fd 9.
-        `flock -x -F "$runtime_parent/.${fixture.runtimeId}.install.lock" sleep 30 >/dev/null 2>&1 &`,
+        `held_scratch="$runtime_parent/.${fixture.runtimeId}.tmp.test"`,
+        'mkdir -p "$held_scratch"',
+        'touch -d "180 minutes ago" "$held_scratch"',
+        // The writer signals only after flock has acquired the lock. -F and
+        // exec keep $! as the exact lock-owning sleep process for cleanup.
+        'lock_ready="$runtime_parent/lock-ready.pipe"',
+        'mkfifo "$lock_ready"',
+        `flock -x -F "$runtime_parent/.${fixture.runtimeId}.install.lock" sh -c 'printf "ready\\n" > "$1"; exec sleep 30' sh "$lock_ready" >/dev/null 2>&1 &`,
         "lock_pid=$!",
         'trap \'kill "$lock_pid" 2>/dev/null || true; wait "$lock_pid" 2>/dev/null || true\' EXIT',
-        "sleep 0.1",
+        'locked=$(timeout 5 cat "$lock_ready")',
+        'test "$locked" = ready',
+        'rm "$lock_ready"',
         `HOME=${sh(`${fixture.work}/home`)}`,
         "export HOME",
         buildWslRuntimePruneScript(fixture.runtimeId, "pylon-code"),
-        'test -d "$scratch"',
+        'test -d "$held_scratch"',
         "kill $lock_pid",
         "wait $lock_pid 2>/dev/null || true",
         "trap - EXIT",
         buildWslRuntimePruneScript(fixture.runtimeId, "pylon-code"),
-        'test ! -e "$scratch"',
+        'test ! -e "$held_scratch"',
       ].join("\n"),
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
