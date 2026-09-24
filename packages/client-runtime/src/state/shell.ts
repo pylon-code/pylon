@@ -20,8 +20,9 @@ import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
-import { subscribeDynamic } from "../rpc/client.ts";
+import { subscribeDynamicWithSession } from "../rpc/client.ts";
 import type { RpcSession } from "../rpc/session.ts";
+import { rpcSessionOwner } from "../rpc/sessionOwner.ts";
 import { ShellSnapshotLoader } from "./shellSnapshotHttp.ts";
 import { applyShellStreamEvent } from "./shellReducer.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
@@ -50,6 +51,48 @@ function shellStatusForSnapshot(
 }
 
 const SHELL_SYNCHRONIZATION_ERROR_MESSAGE = "Could not synchronize environment data.";
+
+/** Reduce a tagged batch; values buffered from a retired session cannot enter the new shell. */
+export function reduceShellSessionBatch(
+  initial: EnvironmentShellState,
+  activeSession: RpcSession | null,
+  initialWaiting: boolean,
+  items: ReadonlyArray<readonly [RpcSession, OrchestrationShellStreamItem]>,
+) {
+  let waiting = initialWaiting;
+  let next = initial;
+  let receivedSnapshot = false;
+  for (const [sourceSession, item] of items) {
+    if (sourceSession !== activeSession) continue;
+    const sessionOwner = rpcSessionOwner(sourceSession);
+    if (item.kind === "synchronized") {
+      waiting = false;
+      if (Option.isSome(next.snapshot)) {
+        next = { snapshot: next.snapshot, status: "live", error: Option.none(), sessionOwner };
+      }
+      continue;
+    }
+    const nextSnapshot =
+      item.kind === "snapshot"
+        ? item.snapshot
+        : Option.match(next.snapshot, {
+            onNone: () => null,
+            onSome: (snapshot) =>
+              item.sequence > snapshot.snapshotSequence
+                ? applyShellStreamEvent(snapshot, item)
+                : snapshot,
+          });
+    if (nextSnapshot === null) continue;
+    receivedSnapshot ||= item.kind === "snapshot";
+    next = {
+      snapshot: Option.some(nextSnapshot),
+      status: waiting ? "synchronizing" : "live",
+      sessionOwner: waiting ? null : sessionOwner,
+      error: Option.none(),
+    };
+  }
+  return { next, waiting, receivedSnapshot };
+}
 
 export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")(function* () {
   const supervisor = yield* EnvironmentSupervisor;
@@ -144,48 +187,23 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   // buffer can split a server chunk, so a bulk action can still need several
   // writes, but each write includes every event in that batch.
   const applyItems = Effect.fn("EnvironmentShellState.applyItems")(function* (
-    items: ReadonlyArray<OrchestrationShellStreamItem>,
+    items: ReadonlyArray<readonly [RpcSession, OrchestrationShellStreamItem]>,
   ) {
     const initial = yield* SubscriptionRef.get(state);
-    const sessionOwner = yield* Ref.get(activeSubscriptionSession);
-    let waiting = yield* Ref.get(awaitingCompletion);
-    let next = initial;
-    let receivedSnapshot = false;
-    for (const item of items) {
-      if (item.kind === "synchronized") {
-        waiting = false;
-        if (Option.isSome(next.snapshot)) {
-          next = { snapshot: next.snapshot, status: "live", error: Option.none(), sessionOwner };
-        }
-        continue;
-      }
-      const nextSnapshot =
-        item.kind === "snapshot"
-          ? item.snapshot
-          : Option.match(next.snapshot, {
-              onNone: () => null,
-              onSome: (snapshot) =>
-                item.sequence > snapshot.snapshotSequence
-                  ? applyShellStreamEvent(snapshot, item)
-                  : snapshot,
-            });
-      if (nextSnapshot === null) continue;
-      receivedSnapshot ||= item.kind === "snapshot";
-      next = {
-        snapshot: Option.some(nextSnapshot),
-        status: waiting ? "synchronizing" : "live",
-        sessionOwner: waiting ? null : sessionOwner,
-        error: Option.none(),
-      };
-    }
+    const activeSession = yield* Ref.get(activeSubscriptionSession);
+    const { next, waiting, receivedSnapshot } = reduceShellSessionBatch(
+      initial,
+      activeSession,
+      yield* Ref.get(awaitingCompletion),
+      items,
+    );
+    if ((yield* Ref.get(activeSubscriptionSession)) !== activeSession) return;
     yield* Ref.set(awaitingCompletion, waiting);
     if (next === initial) return;
     yield* SubscriptionRef.set(state, next);
-    if (receivedSnapshot) {
-      const session = yield* Ref.get(activeSubscriptionSession);
-      if (session !== null) {
-        yield* Ref.set(lastAuthoritativeSession, session);
-      }
+    if ((yield* Ref.get(activeSubscriptionSession)) !== activeSession) return;
+    if (receivedSnapshot && activeSession !== null) {
+      yield* Ref.set(lastAuthoritativeSession, activeSession);
     }
     if (next.snapshot !== initial.snapshot && Option.isSome(next.snapshot)) {
       yield* Queue.offer(persistence, next.snapshot.value);
@@ -200,7 +218,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
 
   yield* setSynchronizing;
   yield* Effect.forkScoped(
-    subscribeDynamic(
+    subscribeDynamicWithSession(
       ORCHESTRATION_WS_METHODS.subscribeShell,
       Effect.fn("EnvironmentShellState.makeSubscribeInput")(function* (session) {
         yield* Ref.set(activeSubscriptionSession, session);
@@ -234,7 +252,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           );
           const httpSnapshot = yield* snapshotLoader.load(prepared);
           if (Option.isSome(httpSnapshot)) {
-            yield* applyItems([{ kind: "snapshot", snapshot: httpSnapshot.value }]);
+            yield* applyItems([[session, { kind: "snapshot", snapshot: httpSnapshot.value }]]);
             canResume = true;
             current = yield* SubscriptionRef.get(state);
           }
@@ -251,7 +269,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           yield* SubscriptionRef.update(state, (value) => ({
             ...value,
             status: "live" as const,
-            sessionOwner: session,
+            sessionOwner: rpcSessionOwner(session),
             error: Option.none(),
           }));
         }

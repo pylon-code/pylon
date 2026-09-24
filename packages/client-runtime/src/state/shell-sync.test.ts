@@ -22,8 +22,13 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as RpcSession from "../rpc/session.ts";
+import { rpcSessionOwner } from "../rpc/sessionOwner.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
-import { makeEnvironmentShellState, ShellSnapshotLoader } from "./shell.ts";
+import {
+  makeEnvironmentShellState,
+  reduceShellSessionBatch,
+  ShellSnapshotLoader,
+} from "./shell.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -60,6 +65,35 @@ function session(client: WsRpcProtocolClient): RpcSession.RpcSession {
 }
 
 describe("environment shell synchronization", () => {
+  it("discards a buffered retired-session batch before it can relabel the new shell", () => {
+    const client = {
+      [ORCHESTRATION_WS_METHODS.subscribeShell]: () => Stream.never,
+    } as unknown as WsRpcProtocolClient;
+    const oldSession = session(client);
+    const newSession = session(client);
+    const initial = {
+      snapshot: Option.some({ ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 2 }),
+      status: "live" as const,
+      error: Option.none<string>(),
+      sessionOwner: rpcSessionOwner(newSession),
+    };
+    const reduced = reduceShellSessionBatch(initial, newSession, false, [
+      [
+        oldSession,
+        { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 999 } },
+      ],
+      [oldSession, { kind: "synchronized" }],
+    ]);
+    expect(reduced.next).toBe(initial);
+    expect(reduced.waiting).toBe(false);
+    expect(reduced.receivedSnapshot).toBe(false);
+    const accepted = reduceShellSessionBatch(initial, newSession, false, [
+      [newSession, { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 3 } }],
+    ]);
+    expect(Option.getOrThrow(accepted.next.snapshot).snapshotSequence).toBe(3);
+    expect(accepted.next.sessionOwner).toBe(rpcSessionOwner(newSession));
+  });
+
   it.effect("publishes live state before persistence and preserves it when ready", () =>
     Effect.gen(function* () {
       const events = yield* Queue.unbounded<OrchestrationShellStreamItem>();
@@ -325,7 +359,7 @@ describe("environment shell synchronization", () => {
         Stream.runHead,
       );
       const firstSession = Option.getOrThrow(yield* SubscriptionRef.get(activeSession));
-      expect(Option.getOrThrow(firstLive).sessionOwner).toBe(firstSession);
+      expect(Option.getOrThrow(firstLive).sessionOwner).toBe(rpcSessionOwner(firstSession));
 
       const live = yield* SubscriptionRef.get(shellState);
       expect(Option.getOrThrow(live.snapshot)).toEqual(resetSnapshot);
@@ -409,7 +443,7 @@ describe("environment shell synchronization", () => {
         Stream.runHead,
       );
       const firstSession = Option.getOrThrow(yield* SubscriptionRef.get(activeSession));
-      expect(Option.getOrThrow(initialLive).sessionOwner).toBe(firstSession);
+      expect(Option.getOrThrow(initialLive).sessionOwner).toBe(rpcSessionOwner(firstSession));
 
       // A newer snapshot arrives on the stream and advances the cursor.
       yield* Queue.offer(events, {
@@ -458,11 +492,14 @@ describe("environment shell synchronization", () => {
       yield* Queue.offer(events, { kind: "synchronized" });
       const replacementLive = yield* SubscriptionRef.changes(shellState).pipe(
         Stream.filter(
-          (value) => value.status === "live" && value.sessionOwner === replacementSession,
+          (value) =>
+            value.status === "live" && value.sessionOwner === rpcSessionOwner(replacementSession),
         ),
         Stream.runHead,
       );
-      expect(Option.getOrThrow(replacementLive).sessionOwner).toBe(replacementSession);
+      expect(Option.getOrThrow(replacementLive).sessionOwner).toBe(
+        rpcSessionOwner(replacementSession),
+      );
     }),
   );
 });

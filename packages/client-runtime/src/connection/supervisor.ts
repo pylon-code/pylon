@@ -25,6 +25,7 @@ import {
   type SupervisorConnectionState,
 } from "./model.ts";
 import * as RpcSession from "../rpc/session.ts";
+import { rpcSessionOwner } from "../rpc/sessionOwner.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { NETWORK_BLOCKING_HINT } from "../errors/network.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
@@ -575,7 +576,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       stage: null,
       attempt,
       generation,
-      sessionOwner: active.lease.session,
+      sessionOwner: rpcSessionOwner(active.lease.session),
       lastFailure: null,
       retryAt: null,
     });
