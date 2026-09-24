@@ -13,6 +13,7 @@ import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitHubCli from "./GitHubCli.ts";
+import * as GitHubPullRequestCli from "../pullRequest/GitHubPullRequestCli.ts";
 import * as GitHubGraphQlBudget from "./githubGraphQlBudget.ts";
 import * as SourceControlRateLimit from "./SourceControlRateLimit.ts";
 
@@ -85,6 +86,25 @@ it.effect("snapshots one credential with tracing suppressed and never exposes to
       .pipe(Effect.flip);
     expect(JSON.stringify(failure)).not.toContain("snapshot-secret");
     expect(yield* encodeGitHubCliError(failure)).not.toContain("snapshot-secret");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("resolves the viewed-files viewer through the pinned host-aware GitHub driver", () =>
+  Effect.gen(function* () {
+    mockRun.mockReturnValueOnce(Effect.succeed(processOutput("the-reader\n")));
+    const driver = yield* GitHubPullRequestCli.make;
+    const viewer = yield* driver.getViewerLogin({ cwd: "/repo", host: "github.example.test" }).pipe(
+      Effect.provideService(GitHubCli.PinnedGitHubCredential, {
+        host: "github.example.test",
+        token: Redacted.make("pinned-secret"),
+        credentialFingerprint: "fingerprint",
+      }),
+    );
+    expect(viewer).toBe("the-reader");
+    expect(mockRun.mock.calls[0]?.[0]).toMatchObject({
+      args: ["api", "user", "--hostname", "github.example.test", "--jq", ".login"],
+      env: { GH_TOKEN: "pinned-secret", GH_DEBUG: "" },
+    });
   }).pipe(Effect.provide(layer)),
 );
 

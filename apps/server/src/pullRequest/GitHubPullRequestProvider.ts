@@ -226,7 +226,9 @@ export const make = Effect.gen(function* () {
       cli.snapshotViewedFilesCredential(input).pipe(Effect.mapError(fail("snapshotViewedFilesCredential"))),
 
     getViewer: (input) =>
-      cli.getViewerLogin({ cwd: input.cwd }).pipe(Effect.mapError(fail("getViewer"))),
+      cli.getViewerLogin({ cwd: input.cwd, ...(input.host === undefined ? {} : { host: input.host }) }).pipe(
+        Effect.mapError(fail("getViewer")),
+      ),
 
     listChangeRequests: (input) =>
       cli

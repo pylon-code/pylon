@@ -1231,6 +1231,28 @@ function PullRequestCodeTab({
             {files.length} {files.length === 1 ? "file" : "files"}
             {nextCursor === null ? "" : "+"}
           </span>
+          {filesViewed.error !== null ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    className="flex shrink-0 items-center"
+                    onClick={filesViewed.refresh}
+                  />
+                }
+              >
+                <TriangleAlertIcon
+                  aria-label="Retry reading viewed files"
+                  className="size-3.5 text-amber-600 dark:text-amber-500"
+                />
+              </TooltipTrigger>
+              <TooltipPopup side="bottom">
+                Viewed-file controls are unavailable until the signed-in account can be checked.{" "}
+                {filesViewed.error} Select this icon to retry.
+              </TooltipPopup>
+            </Tooltip>
+          ) : null}
           {filesViewed.enabled && files.length > 0 ? (
             <span className="flex min-w-0 items-center gap-1 tabular-nums">
               {/* Named on a host that keeps no record of its own, so the reader is told whose
@@ -1254,20 +1276,6 @@ function PullRequestCodeTab({
                     This host keeps no shared record of which files you have read, so these ticks
                     are kept by this environment. They follow you between the apps connected to it,
                     but the host's own web UI will not show them.
-                  </TooltipPopup>
-                </Tooltip>
-              ) : null}
-              {filesViewed.error !== null ? (
-                <Tooltip>
-                  <TooltipTrigger render={<span className="flex shrink-0 items-center" />}>
-                    <TriangleAlertIcon
-                      aria-label="Your ticks could not be read"
-                      className="size-3.5 text-amber-600 dark:text-amber-500"
-                    />
-                  </TooltipTrigger>
-                  <TooltipPopup side="bottom">
-                    The boxes below are whatever was last read, and empty if nothing has been read
-                    yet. {filesViewed.error}
                   </TooltipPopup>
                 </Tooltip>
               ) : null}
