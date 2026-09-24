@@ -238,6 +238,52 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
     }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
+  it.effect("preserves a partial hand-written browser jump set", () =>
+    Effect.gen(function* () {
+      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+      yield* writeKeybindingsConfig(keybindingsConfigPath, [
+        { key: "mod+1", command: "thread.jump.1" },
+        { key: "mod+2", command: "thread.jump.2" },
+      ]);
+
+      const keybindings = yield* Keybindings.Keybindings;
+      yield* keybindings.syncDefaultKeybindingsOnStartup;
+      const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
+      assert.deepEqual(persisted.slice(0, 2), [
+        { key: "mod+1", command: "thread.jump.1" },
+        { key: "mod+2", command: "thread.jump.2" },
+      ]);
+    }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+
+  it.effect.skipIf(HostProcessPlatform.defaultValue() === "win32")(
+    "does not mark numbered defaults migrated when config write fails",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+        const { dirname } = yield* Path.Path;
+        const legacy = Keybindings.DEFAULT_KEYBINDINGS.map((rule) => {
+          if (rule.command.startsWith("thread.jump.")) {
+            return { key: rule.key, command: rule.command };
+          }
+          if (rule.command.startsWith("modelPicker.jump.")) {
+            return { key: rule.key, command: rule.command, when: "modelPickerOpen" };
+          }
+          return rule;
+        });
+        yield* writeKeybindingsConfig(keybindingsConfigPath, legacy);
+        yield* fs.chmod(dirname(keybindingsConfigPath), 0o500);
+
+        const keybindings = yield* Keybindings.Keybindings;
+        const result = yield* keybindings.syncDefaultKeybindingsOnStartup.pipe(toDetailResult);
+        yield* fs.chmod(dirname(keybindingsConfigPath), 0o700);
+        assertFailure(result, "failed to write keybindings config");
+        assert.isFalse(yield* fs.exists(`${keybindingsConfigPath}.desktop-numbered-defaults-v1`));
+        assert.deepEqual(yield* readKeybindingsConfig(keybindingsConfigPath), legacy);
+      }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+
   it.effect("uses defaults in runtime when config is malformed without overriding file", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
