@@ -1194,7 +1194,7 @@ persistence("Relay persisted observer and controls", (it) => {
   );
 });
 
-function recordingEngine(sql: SqlClient.SqlClient["Service"]) {
+function recordingEngine(sql: SqlClient.SqlClient) {
   const commands = new Set<string>();
   return {
     dispatch: (command: {
