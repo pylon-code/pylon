@@ -252,6 +252,16 @@ describe("PrimeAgentDaemonBridge", () => {
     }),
   );
 
+  it.effect("identifies a compiled distribution with an advertised but absent SDK entry", () =>
+    Effect.gen(function* () {
+      const pkg = makePackage({ name: "@earendil-works/pi-coding-agent" });
+      NodeFS.rmSync(pkg.entryPath);
+      const error = yield* Effect.flip(loadPrimeAgentDaemonBridge(pkg.cliPath));
+
+      expect(error.reason).toBe("missing-public-entry");
+    }),
+  );
+
   it.effect("does not infer negotiated daemon proof support from accessor presence", () =>
     Effect.gen(function* () {
       const pkg = makePackage();
