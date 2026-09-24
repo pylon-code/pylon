@@ -917,6 +917,18 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     };
   });
 
+  const hasProjectedStart = Effect.fn("RelayWorkerBridge.hasProjectedStart")(function* (
+    binding: RelayBinding,
+  ) {
+    const rows = yield* sql`
+      SELECT 1 FROM projection_thread_activities
+      WHERE thread_id = ${binding.threadId} AND kind = 'task.started'
+        AND CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.taskId') END = ${bindingTaskId(binding)}
+      LIMIT 1
+    `;
+    return rows.length > 0;
+  });
+
   const shouldObserveOnBoot = Effect.fn("RelayWorkerBridge.shouldObserveOnBoot")(function* (
     binding: RelayBinding,
     bindingRowId: number,
@@ -1114,38 +1126,31 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
   ) {
     const failures = (failedObservations.get(binding.id) ?? 0) + 1;
     failedObservations.set(binding.id, failures);
-    if (failures < 3 || unavailable.has(binding.id)) return;
+    if (failures < 3) return;
+    if (unavailable.has(binding.id)) {
+      // An announced outage is not re-announced, but the binding still owns a
+      // CLI spawn on every sweep until its recheck is pushed back out.
+      missingObservationRetryAt.set(binding.id, (yield* Clock.currentTimeMillis) + 60_000);
+      return;
+    }
     const taskId = bindingTaskId(binding);
+    // An outage row explains a worker the thread already shows. The startup
+    // receipt scan also adopts long-finished historical jobs whose Relay
+    // files are gone; those never projected a row, so announcing them turns
+    // every reopened thread into a wall of idle workers. Retain the binding
+    // for a later return, but do not recheck every missing historical job on
+    // every sweep ahead of live workers.
+    if (!(yield* hasProjectedStart(binding))) {
+      unavailable.add(binding.id);
+      missingObservationRetryAt.set(binding.id, (yield* Clock.currentTimeMillis) + 60_000);
+      return;
+    }
     const latest = yield* readLatestTaskActivity(binding);
     const payload = latest.payload;
     const completedAttempt = nonNegativeInteger(payload?.attempt);
     const completedSequence = nonNegativeInteger(payload?.relaySequence);
     if (completedAttempt === undefined || completedSequence === undefined) {
-      // A recovered receipt may outlive its Relay files. Retain the binding
-      // for a later return, but do not recheck every missing historical job
-      // on every sweep ahead of live workers.
-      if (!unavailable.has(binding.id)) {
-        yield* append(
-          binding,
-          "task.progress",
-          {
-            taskId,
-            title: binding.kind === "panel" ? "Relay panel" : "Relay worker",
-            attempt: 1,
-            relaySequence: 0,
-            outageEpoch: 1,
-            status: "idle",
-            summary: "Relay observer unavailable",
-            detail: "Relay observer unavailable",
-            ...bindingPayload(binding),
-            cancellable: false,
-          },
-          "Relay observer unavailable",
-          `relay-observer-unavailable:${binding.id}:1`,
-          "1:0:1",
-        );
-        unavailable.add(binding.id);
-      }
+      unavailable.add(binding.id);
       missingObservationRetryAt.set(binding.id, (yield* Clock.currentTimeMillis) + 60_000);
       return;
     }
