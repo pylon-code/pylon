@@ -267,8 +267,44 @@ export function resolveAgentAwarenessRelayPublishSnapshot(input: {
   };
 }
 
+type FreshLifecycleProof = {
+  readonly phase: "running" | "completed" | "failed";
+  readonly sequence: number;
+  readonly sessionStatus: "ready" | "idle" | "error" | null;
+  readonly sessionUpdatedAt: string;
+  readonly sessionIncarnationId: string | undefined;
+};
+
+function terminalWorkSinceStart(
+  thread: OrchestrationThreadShell,
+  startedAt: number,
+  phase: "completed" | "failed",
+  freshLifecycle?: FreshLifecycleProof,
+): boolean {
+  // An observed new lifecycle takes precedence over a checkpoint from the
+  // previous turn, which can remain in the shell during admission.
+  if (freshLifecycle === undefined) {
+    return Date.parse(thread.latestTurn?.completedAt ?? "") > startedAt;
+  }
+  if (freshLifecycle.phase === "running") return false;
+  // For an observed terminal transition, the projected shell must have caught
+  // up to that same session even when an older checkpoint is still present.
+  const session = thread.session;
+  return (
+    session !== null &&
+    ((phase === "completed" && freshLifecycle.phase === "completed") ||
+      (phase === "failed" && freshLifecycle.phase === "failed")) &&
+    session.status === freshLifecycle.sessionStatus &&
+    session.sessionIncarnationId === freshLifecycle.sessionIncarnationId &&
+    Date.parse(session.updatedAt) >= Date.parse(freshLifecycle.sessionUpdatedAt)
+  );
+}
+
 export function resolveAgentAwarenessRelayActiveThreadIds(input: {
   readonly environmentId: EnvironmentId;
+  readonly startedAt: number;
+  readonly freshLifecycleThreads?: ReadonlyMap<ThreadId, FreshLifecycleProof>;
+  readonly pendingAdmissionThreads?: ReadonlySet<ThreadId>;
   readonly projects: ReadonlyArray<Pick<OrchestrationProjectShell, "id" | "title">>;
   readonly threads: ReadonlyArray<OrchestrationThreadShell>;
 }): ReadonlyArray<ThreadId> {
@@ -279,12 +315,22 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
       if (!project) {
         return false;
       }
+      const state = projectThreadAwareness({
+        environmentId: input.environmentId,
+        project,
+        thread,
+      });
       return (
-        projectThreadAwareness({
-          environmentId: input.environmentId,
-          project,
-          thread,
-        }) !== null
+        state !== null &&
+        (state.phase !== "completed" && state.phase !== "failed"
+          ? true
+          : !input.pendingAdmissionThreads?.has(thread.id) &&
+            terminalWorkSinceStart(
+              thread,
+              input.startedAt,
+              state.phase,
+              input.freshLifecycleThreads?.get(thread.id),
+            ))
       );
     })
     .map((thread) => thread.id);
@@ -298,8 +344,12 @@ export const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
   const cloudLinkKeyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
+  const startedAt = (yield* DateTime.now).epochMilliseconds;
   const activeSnapshotPublishedRef = yield* Ref.make(false);
   const publishedStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
+  const publishedNonNullThreads = new Set<ThreadId>();
+  const freshLifecycleThreads = new Map<ThreadId, FreshLifecycleProof>();
+  const pendingAdmissionThreads = new Set<ThreadId>();
 
   const readSecretString = (name: string) =>
     secrets
@@ -417,6 +467,19 @@ export const make = Effect.gen(function* () {
     });
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
+    if (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") {
+      // A new admission can leave the previous completed checkpoint projected
+      // until its running shell arrives. This fence applies even when the
+      // thread has an older published state.
+      if (pendingAdmissionThreads.has(threadId)) return;
+      const proof = freshLifecycleThreads.get(threadId);
+      if (
+        (proof !== undefined || !publishedNonNullThreads.has(threadId)) &&
+        (Option.isNone(thread) ||
+          !terminalWorkSinceStart(thread.value, startedAt, snapshot.state.phase, proof))
+      )
+        return;
+    }
     if (publishedStateByThread.get(threadId) === publishIdentity) {
       // The projection is back at (or never left) the last published state, so
       // any pending deferred confirmation is moot. Leaving the deadline in
@@ -444,7 +507,7 @@ export const make = Effect.gen(function* () {
     const requiresConfirmation =
       (snapshot.state === null &&
         publishedStateByThread.get(threadId) !== agentAwarenessPublishIdentity(null)) ||
-      (snapshot.state?.phase === "completed" && !publishedStateByThread.has(threadId));
+      (snapshot.state?.phase === "completed" && !publishedNonNullThreads.has(threadId));
     if (requiresConfirmation) {
       const nowMs = (yield* DateTime.now).epochMilliseconds;
       const deadline = publishConfirmDeadlines.get(threadId);
@@ -498,6 +561,15 @@ export const make = Effect.gen(function* () {
       nextPublishedStates.set(threadId, publishIdentity);
       return nextPublishedStates;
     });
+    if (snapshot.state === null) {
+      freshLifecycleThreads.delete(threadId);
+      pendingAdmissionThreads.delete(threadId);
+    } else {
+      publishedNonNullThreads.add(threadId);
+      if (snapshot.state.phase === "completed" || snapshot.state.phase === "failed") {
+        freshLifecycleThreads.delete(threadId);
+      }
+    }
   });
 
   const publishThread: AgentAwarenessRelay["Service"]["publishThread"] = (threadId) =>
@@ -529,6 +601,9 @@ export const make = Effect.gen(function* () {
     const snapshot = yield* snapshotQuery.getShellSnapshot();
     const activeThreadIds = resolveAgentAwarenessRelayActiveThreadIds({
       environmentId,
+      startedAt,
+      freshLifecycleThreads,
+      pendingAdmissionThreads,
       projects: snapshot.projects,
       threads: snapshot.threads,
     });
@@ -615,6 +690,65 @@ export const make = Effect.gen(function* () {
             return Effect.logDebug("agent activity publishing ignored event without thread id", {
               eventType: event.type,
             });
+          }
+          if (
+            (event.type === "thread.turn-start-requested" ||
+              event.type === "thread.message-sent") &&
+            event.metadata.historyImport !== true &&
+            Date.parse(event.occurredAt) > startedAt
+          ) {
+            freshLifecycleThreads.delete(threadId);
+            pendingAdmissionThreads.add(threadId);
+            publishConfirmDeadlines.delete(threadId);
+          }
+          if (
+            event.type === "thread.session-set" &&
+            event.metadata.historyImport !== true &&
+            Date.parse(event.occurredAt) > startedAt
+          ) {
+            const session = event.payload.session;
+            const previous = freshLifecycleThreads.get(threadId);
+            if (session.status === "running") {
+              pendingAdmissionThreads.delete(threadId);
+              publishConfirmDeadlines.delete(threadId);
+              freshLifecycleThreads.set(threadId, {
+                phase: "running",
+                sequence: event.sequence,
+                sessionStatus: null,
+                sessionUpdatedAt: session.updatedAt,
+                sessionIncarnationId: session.sessionIncarnationId,
+              });
+            } else if (session.status === "error") {
+              pendingAdmissionThreads.delete(threadId);
+              publishConfirmDeadlines.delete(threadId);
+              freshLifecycleThreads.set(threadId, {
+                phase: "failed",
+                sequence: event.sequence,
+                sessionStatus: "error",
+                sessionUpdatedAt: session.updatedAt,
+                sessionIncarnationId: session.sessionIncarnationId,
+              });
+            } else if (session.status === "ready" || session.status === "idle") {
+              if (
+                previous?.phase === "running" &&
+                event.sequence > previous.sequence &&
+                session.sessionIncarnationId === previous.sessionIncarnationId
+              ) {
+                freshLifecycleThreads.set(threadId, {
+                  phase: "completed",
+                  sequence: event.sequence,
+                  sessionStatus: session.status,
+                  sessionUpdatedAt: session.updatedAt,
+                  sessionIncarnationId: session.sessionIncarnationId,
+                });
+              }
+            } else {
+              // A new admission or stop invalidates an older completion proof
+              // even while the projector still serves the prior ready shell.
+              freshLifecycleThreads.delete(threadId);
+              pendingAdmissionThreads.add(threadId);
+              publishConfirmDeadlines.delete(threadId);
+            }
           }
           if (!shouldPublishAgentAwarenessEvent(event)) {
             return Effect.logDebug(
