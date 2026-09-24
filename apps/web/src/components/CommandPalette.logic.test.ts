@@ -10,6 +10,7 @@ import {
   enumerateCommandPaletteItems,
   filterPinnedBrowseEntries,
   filterCommandPaletteGroups,
+  getExistingThreadForProjectAdd,
   reduceCommandPaletteUiState,
   type CommandPaletteActionItem,
   type CommandPaletteGroup,
@@ -343,6 +344,55 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     ...overrides,
   };
 }
+
+describe("adding an existing project", () => {
+  it("starts a new thread when the latest unarchived thread is settled", () => {
+    const olderActive = makeThread({
+      id: ThreadId.make("older-active"),
+      updatedAt: "2026-03-01T00:00:00.000Z",
+    });
+    const newestSettled = makeThread({
+      id: ThreadId.make("newest-settled"),
+      updatedAt: "2026-03-02T00:00:00.000Z",
+      settledOverride: "settled",
+      settledAt: "2026-03-02T00:00:00.000Z",
+    });
+    expect(
+      getExistingThreadForProjectAdd([olderActive, newestSettled], PROJECT_ID, "updated_at"),
+    ).toBeNull();
+
+    expect(
+      getExistingThreadForProjectAdd(
+        [olderActive, { ...newestSettled, settledOverride: "active", settledAt: null }],
+        PROJECT_ID,
+        "updated_at",
+      )?.id,
+    ).toBe(newestSettled.id);
+  });
+
+  it("ignores archived threads while leaving ordinary active threads available", () => {
+    const active = makeThread({ id: ThreadId.make("active") });
+    const archived = makeThread({
+      id: ThreadId.make("archived"),
+      updatedAt: "2026-03-03T00:00:00.000Z",
+      archivedAt: "2026-03-03T00:00:00.000Z",
+    });
+    expect(getExistingThreadForProjectAdd([active, archived], PROJECT_ID, "updated_at")?.id).toBe(
+      active.id,
+    );
+  });
+
+  it("keeps snoozed threads eligible because snoozing does not settle them", () => {
+    const snoozed = makeThread({
+      id: ThreadId.make("snoozed"),
+      snoozedAt: "2026-03-01T00:00:00.000Z",
+      snoozedUntil: "2026-03-04T00:00:00.000Z",
+    });
+    expect(getExistingThreadForProjectAdd([snoozed], PROJECT_ID, "updated_at")?.id).toBe(
+      snoozed.id,
+    );
+  });
+});
 
 describe("buildProjectActionItems", () => {
   it("shows the grouped display name but keeps the real title for icons", () => {

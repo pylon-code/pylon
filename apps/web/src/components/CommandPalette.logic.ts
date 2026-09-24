@@ -2,6 +2,7 @@ import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests
 import type { CommandPaletteLinkedThreads } from "../commandPaletteBus";
 import {
   type EnvironmentId,
+  type ProjectId,
   type FilesystemBrowseEntry,
   type KeybindingCommand,
   THREAD_JUMP_KEYBINDING_COMMANDS,
@@ -11,7 +12,7 @@ import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { type ReactNode } from "react";
-import { sortThreads } from "../lib/threadSort";
+import { getLatestThreadForProject, sortThreads, type ThreadSortInput } from "../lib/threadSort";
 import { normalizeSearchText } from "../lib/utils";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
@@ -19,6 +20,19 @@ import { type Project, type SidebarThreadSummary, type Thread } from "../types";
 export const RECENT_THREAD_LIMIT = 12;
 export const ITEM_ICON_CLASS = "size-4 text-icon-muted";
 export const ADDON_ICON_CLASS = "size-4";
+
+/** Adding an existing project should open its latest thread only while it remains active. */
+export function getExistingThreadForProjectAdd<
+  T extends {
+    readonly id: string;
+    readonly projectId: ProjectId;
+    readonly archivedAt: string | null;
+    readonly settledOverride: string | null;
+  } & ThreadSortInput,
+>(threads: readonly T[], projectId: ProjectId, sortOrder: SidebarThreadSortOrder): T | null {
+  const latestThread = getLatestThreadForProject(threads, projectId, sortOrder);
+  return latestThread?.settledOverride === "settled" ? null : latestThread;
+}
 
 /** A PR's relations include archived threads that normal palette search omits. */
 export function buildLinkedThreadActionItems(
