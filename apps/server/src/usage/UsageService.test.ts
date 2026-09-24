@@ -877,6 +877,68 @@ describe("UsageService", () => {
       ),
   );
 
+  it.live("retains Antigravity usage after conversation cleanup and service restart", () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const config = yield* ServerConfig.ServerConfig;
+      const instanceId = ProviderInstanceId.make("antigravity-retained");
+      const profileDir = resolveAntigravityProfileDirectory(config.stateDir, instanceId);
+      const convDir = NodePath.join(profileDir, "antigravity-acp", "conversations");
+      yield* Effect.promise(() => NodeFSP.mkdir(convDir, { recursive: true }));
+      const dbPath = NodePath.join(convDir, "retained.db");
+      seedAntigravityDb(dbPath, [
+        {
+          idx: 0,
+          blob: encodeSyntheticGenMetadataBlob({
+            modelName: "gemini-2.5-pro",
+            timestampSeconds: 1785578400n,
+            inputTokens: 100,
+            outputTokens: 40,
+          }),
+        },
+      ]);
+
+      const service = yield* UsageService.make;
+      const first = yield* service.readSummary(WINDOW);
+      yield* Effect.promise(() => NodeFSP.rm(convDir, { recursive: true }));
+      const afterCleanup = yield* service.readSummary(WINDOW);
+      const restarted = yield* UsageService.make;
+      const afterRestart = yield* restarted.readSummary(WINDOW);
+
+      for (const [phase, summary] of [
+        ["cleanup", afterCleanup],
+        ["restart", afterRestart],
+      ] as const) {
+        assert.deepStrictEqual(summary.buckets, first.buckets, phase);
+        const source = summary.sources.find(
+          (item) =>
+            item.fingerprint.provider === "antigravity" &&
+            item.fingerprint.resolvedHomePath === convDir,
+        );
+        assert.isDefined(source);
+        assert.strictEqual(source.status, "ok");
+        assert.strictEqual(source.scannedFiles, 1);
+      }
+    }).pipe(
+      Effect.provide(
+        serviceLayers({
+          prefix: "usage-service-antigravity-retained-test",
+          home: "",
+          settings: {
+            providers: {},
+            providerInstances: {
+              [ProviderInstanceId.make("antigravity-retained")]: {
+                driver: "antigravity",
+                enabled: true,
+              },
+            },
+          },
+        }),
+      ),
+      Effect.scoped,
+    ),
+  );
+
   it.live(
     "reports honest missing status when configured Antigravity instance has no conversations dir on disk",
     () =>

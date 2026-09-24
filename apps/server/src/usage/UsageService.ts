@@ -90,6 +90,9 @@ const MAX_HOURLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** Longest window the UI offers, plus slack. Older entries are pruned. */
 const CACHE_RETENTION_DAYS = 90;
+const MAX_ANTIGRAVITY_FILES_PER_DIR = 500;
+const MAX_ANTIGRAVITY_BYTES_PER_DIR = 256 * 1024 * 1024;
+const MAX_ANTIGRAVITY_RECORDS_PER_DIR = 50_000;
 
 const decodeCodexSettings = Schema.decodeOption(CodexSettings);
 const decodeClaudeSettings = Schema.decodeOption(ClaudeSettings);
@@ -384,9 +387,9 @@ export const make = Effect.gen(function* () {
       const directory = path.resolve(root);
       const sourceKey = "antigravity\0" + directory;
       const previous = sourceCache.get(sourceKey);
-      const dir = yield* fileSystem
-        .realPath(directory)
-        .pipe(Effect.orElseSucceed(() => previous?.dir ?? directory));
+      // Pylon's Antigravity profile fingerprint is the configured profile
+      // path, not its realpath. Keep it stable across profile cleanup.
+      const dir = directory;
       const currentVolumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
       const hasRetainedHistory = fileCache
         .entries()
@@ -528,6 +531,11 @@ export const make = Effect.gen(function* () {
     readonly status?: "ok" | "missing" | "partial" | "failed";
     readonly malformedRecords?: number;
     readonly message?: string | null;
+    readonly nativeBudget?: {
+      readonly files: number;
+      readonly bytes: number;
+      readonly records: number;
+    };
   }
 
   const collectDirs = Effect.fn("UsageService.collectDirs")(function* (
@@ -541,10 +549,6 @@ export const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
     const scanned: ScannedDir[] = [];
-    // Bound native SQLite work across all instance roots, including warm-cache records.
-    let nativeFiles = 0;
-    let nativeBytes = 0;
-    let nativeRecords = 0;
     for (const { provider, dir, volumeId, fileName } of dirs) {
       const exists = yield* fileSystem
         .exists(dir)
@@ -555,6 +559,10 @@ export const make = Effect.gen(function* () {
       }
 
       if (provider === "antigravity") {
+        // Native SQLite limits apply to each profile directory independently.
+        let nativeFiles = 0;
+        let nativeBytes = 0;
+        let nativeRecords = 0;
         const dirEntries = yield* fileSystem
           .readDirectory(dir)
           .pipe(Effect.catchCause(() => Effect.succeed<readonly string[] | null>(null)));
@@ -572,10 +580,6 @@ export const make = Effect.gen(function* () {
         }
 
         const dbFileNames = dirEntries.filter((name) => name.endsWith(".db")).sort();
-
-        const MAX_ANTIGRAVITY_FILES_PER_DIR = 500;
-        const MAX_ANTIGRAVITY_BYTES_PER_DIR = 256 * 1024 * 1024;
-        const MAX_ANTIGRAVITY_RECORDS_PER_DIR = 50_000;
 
         const parsedFiles: { path: string; records: readonly UsageRecord[] }[] = [];
         let dirMalformedRows = 0;
@@ -759,6 +763,7 @@ export const make = Effect.gen(function* () {
           status,
           malformedRecords: dirMalformedRows,
           message,
+          nativeBudget: { files: nativeFiles, bytes: nativeBytes, records: nativeRecords },
         });
         continue;
       }
@@ -855,8 +860,13 @@ export const make = Effect.gen(function* () {
       status,
       malformedRecords,
       message,
+      nativeBudget,
     } of scannedDirs) {
       const retainedFiles = [...(files ?? [])];
+      let retainedTruncated = false;
+      let retainedNativeFiles = nativeBudget?.files ?? 0;
+      let retainedNativeBytes = nativeBudget?.bytes ?? 0;
+      let retainedNativeRecords = nativeBudget?.records ?? 0;
       const livePaths = new Set(retainedFiles.map((file) => file.path));
       // Cleanup may remove transcripts, but the usage we already saved still
       // contributes to this source. Keep the normal aggregation and dedupe path.
@@ -868,6 +878,20 @@ export const make = Effect.gen(function* () {
           !isWithinDirectory(filePath, dir)
         )
           continue;
+        if (provider === "antigravity") {
+          const recordCount = entry.records.length + entry.tailRecords.length;
+          if (
+            retainedNativeFiles + 1 > MAX_ANTIGRAVITY_FILES_PER_DIR ||
+            retainedNativeBytes + entry.size > MAX_ANTIGRAVITY_BYTES_PER_DIR ||
+            retainedNativeRecords + recordCount > MAX_ANTIGRAVITY_RECORDS_PER_DIR
+          ) {
+            retainedTruncated = true;
+            continue;
+          }
+          retainedNativeFiles++;
+          retainedNativeBytes += entry.size;
+          retainedNativeRecords += recordCount;
+        }
         retainedFiles.push({ path: filePath, records: [...entry.records, ...entry.tailRecords] });
       }
       let scannedFiles = 0;
@@ -911,8 +935,9 @@ export const make = Effect.gen(function* () {
         fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
         // Saved records remain available after cleanup. Preserve Pylon's native
         // partial/failed scan status when an Antigravity read was incomplete.
-        status:
-          files === null
+        status: retainedTruncated
+          ? "partial"
+          : files === null
             ? scannedFiles === 0
               ? "missing"
               : "ok"
