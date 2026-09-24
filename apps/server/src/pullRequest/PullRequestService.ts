@@ -507,6 +507,11 @@ function withRateLimitBackoff(
   const wrapped = {
     kind: api.kind,
     capabilities: api.capabilities,
+    ...(api.snapshotViewedFilesCredential === undefined
+      ? {}
+      : {
+          snapshotViewedFilesCredential: api.snapshotViewedFilesCredential,
+        }),
     getViewer: wrap("getViewer", api.getViewer, allowPausedViewer),
     listChangeRequests: wrap("listChangeRequests", api.listChangeRequests),
     ...(api.listChangeRequestsAcross === undefined

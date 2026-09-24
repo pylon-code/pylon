@@ -42,6 +42,52 @@ const layer = GitHubCli.layer.pipe(
   ),
 );
 
+it.effect("snapshots one credential with tracing suppressed and never exposes token failures", () =>
+  Effect.gen(function* () {
+    mockRun.mockImplementationOnce(() => Effect.succeed(processOutput("snapshot-secret\n")));
+    const gh = yield* GitHubCli.GitHubCli;
+    const credential = yield* gh.snapshotCredential({ cwd: "/repo", host: "github.com" });
+    expect(mockRun.mock.calls[0]?.[0]).toMatchObject({
+      args: ["auth", "token", "--hostname", "github.com"],
+      env: { GH_DEBUG: "", GIT_TRACE: "0", GIT_CURL_VERBOSE: "0" },
+    });
+    expect(JSON.stringify(credential)).not.toContain("snapshot-secret");
+    mockRun.mockImplementationOnce((input) =>
+      Effect.succeed(processOutput(input.env?.GH_TOKEN ?? "ambient")),
+    );
+    const result = yield* gh
+      .execute({
+        cwd: "/repo",
+        args: ["api", "user", "--hostname", "github.com"],
+        env: { GH_DEBUG: "api", GH_TOKEN: "ambient-secret" },
+      })
+      .pipe(Effect.provideService(GitHubCli.PinnedGitHubCredential, credential));
+    expect(result.stdout).toBe("snapshot-secret");
+    expect(mockRun.mock.calls[1]?.[0].env).toMatchObject({
+      GH_DEBUG: "",
+      GH_TOKEN: "snapshot-secret",
+      GITHUB_TOKEN: "snapshot-secret",
+    });
+    mockRun.mockImplementationOnce(() =>
+      Effect.fail(
+        new VcsProcessExitError({
+          operation: "GitHubCli.snapshotCredential",
+          command: "gh auth token",
+          cwd: "/repo",
+          exitCode: 1,
+          failureKind: "authentication",
+          detail: "snapshot-secret in stderr",
+        }),
+      ),
+    );
+    const failure = yield* gh
+      .snapshotCredential({ cwd: "/repo", host: "github.com" })
+      .pipe(Effect.flip);
+    expect(JSON.stringify(failure)).not.toContain("snapshot-secret");
+    expect(yield* encodeGitHubCliError(failure)).not.toContain("snapshot-secret");
+  }).pipe(Effect.provide(layer)),
+);
+
 afterEach(() => {
   mockRun.mockReset();
 });

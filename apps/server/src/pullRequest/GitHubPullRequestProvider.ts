@@ -222,6 +222,8 @@ export const make = Effect.gen(function* () {
   const provider: PullRequestProviderApi = {
     kind: "github",
     capabilities: CAPABILITIES,
+    snapshotViewedFilesCredential: (input) =>
+      cli.snapshotViewedFilesCredential(input).pipe(Effect.mapError(fail("snapshotViewedFilesCredential"))),
 
     getViewer: (input) =>
       cli.getViewerLogin({ cwd: input.cwd }).pipe(Effect.mapError(fail("getViewer"))),

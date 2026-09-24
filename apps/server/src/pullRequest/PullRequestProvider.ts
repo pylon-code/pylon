@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import type { GitHubCredentialSnapshot } from "../sourceControl/GitHubCli.ts";
 import type {
   PullRequestStackMembership,
   PullRequestAction,
@@ -305,6 +306,12 @@ export interface ProviderRepositoryRef {
 export interface PullRequestProviderApi {
   readonly kind: SourceControlProviderKind;
   readonly capabilities: PullRequestCapabilities;
+
+  /** A host-owned mark uses the same authenticated account for every CLI call in one request. */
+  readonly snapshotViewedFilesCredential?: (input: {
+    readonly cwd: string;
+    readonly host: string;
+  }) => Effect.Effect<GitHubCredentialSnapshot, PullRequestProviderError>;
 
   /** The signed-in account, which is what involvement filtering compares against. */
   readonly getViewer: (input: {

@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import type {
@@ -148,6 +149,12 @@ function fakeProvider(
 ): PullRequestProviderApi {
   return {
     kind,
+    snapshotViewedFilesCredential: ({ host }) =>
+      Effect.succeed({
+        host,
+        token: Redacted.make("fixture-token"),
+        credentialFingerprint: "fixture-credential",
+      }),
     capabilities: {
       diff: true,
       comment: true,

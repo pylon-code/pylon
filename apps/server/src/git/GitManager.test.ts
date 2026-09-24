@@ -508,6 +508,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
 
   return {
     service: {
+      snapshotCredential: () => Effect.die("Unexpected credential snapshot in GitManager test"),
       execute,
       listOpenPullRequests: (input) =>
         execute({

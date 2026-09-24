@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 
 import type * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
+import * as GitHubCli from "../sourceControl/GitHubCli.ts";
 import type { ProviderFileRevisions, PullRequestProviderError } from "./PullRequestProvider.ts";
 import type { PullRequestError, SupportedProject } from "./PullRequestService.ts";
 import { fileDigestsFromPatch } from "./pullRequestPatchDigests.ts";
@@ -248,6 +249,27 @@ export const make = (dependencies: Dependencies) => {
             ),
       ),
     );
+  const withPinnedHostCredential = <A>(
+    project: SupportedProject,
+    operation: string,
+    action: Effect.Effect<A, PullRequestError>,
+  ): Effect.Effect<A, PullRequestError> => {
+    const snapshot = project.api.snapshotViewedFilesCredential;
+    if (snapshot === undefined) {
+      return Effect.fail(
+        new PullRequestOperationError({
+          operation,
+          detail: "This host cannot bind viewed-file actions to one signed-in account.",
+        }),
+      );
+    }
+    return snapshot({ cwd: project.project.workspaceRoot, host: project.host }).pipe(
+      Effect.mapError(toPullRequestError(operation)),
+      Effect.flatMap((credential) =>
+        action.pipe(Effect.provideService(GitHubCli.PinnedGitHubCredential, credential)),
+      ),
+    );
+  };
   const invalidDisplayedFiles = (files: PullRequestSetFilesViewedInput["files"]) =>
     files.some((file) => !DISPLAY_DIGEST.test(file.digest ?? ""));
 
@@ -447,17 +469,21 @@ export const make = (dependencies: Dependencies) => {
       Effect.flatMap((project): Effect.Effect<PullRequestFilesViewedResult, PullRequestError> => {
         const read = project.api.getFilesViewed;
         if (project.api.capabilities.viewedFiles === "host" && read) {
-          return Effect.gen(function* () {
-            const viewer = yield* requiredViewerOf(project, "filesViewed");
-            const result = yield* read({
-              cwd: project.project.workspaceRoot,
-              repository: project.repository,
-              host: project.host,
-              number: input.number,
-            }).pipe(Effect.mapError(toPullRequestError("filesViewed")));
-            yield* confirmViewer(project, viewer, "filesViewed");
-            return { ...result, viewer };
-          });
+          return withPinnedHostCredential(
+            project,
+            "filesViewed",
+            Effect.gen(function* () {
+              const viewer = yield* requiredViewerOf(project, "filesViewed");
+              const result = yield* read({
+                cwd: project.project.workspaceRoot,
+                repository: project.repository,
+                host: project.host,
+                number: input.number,
+              }).pipe(Effect.mapError(toPullRequestError("filesViewed")));
+              yield* confirmViewer(project, viewer, "filesViewed");
+              return { ...result, viewer };
+            }),
+          );
         }
         if (project.api.capabilities.viewedFiles === "environment") {
           return environmentFilesViewed(project, input);
@@ -478,65 +504,69 @@ export const make = (dependencies: Dependencies) => {
       Effect.flatMap((project): Effect.Effect<void, PullRequestError> => {
         const write = project.api.setFilesViewed;
         if (project.api.capabilities.viewedFiles === "host" && write) {
-          return inFilesViewedOrder(
+          return withPinnedHostCredential(
             project,
-            input.number,
-            Effect.gen(function* () {
-              yield* requireDisplayedFiles(input.files);
-              const viewer = yield* requiredViewerOf(project, "setFilesViewed");
-              yield* requireExpectedViewer(input, viewer);
-              const cursors = [...new Set(input.files.map((file) => file.cursor ?? null))];
-              if (cursors.length > MAX_HOST_MARK_PREFLIGHT_SLICES) {
-                return yield* new PullRequestOperationError({
-                  operation: "setFilesViewed",
-                  detail: "Refresh the diff and mark fewer files at once.",
-                });
-              }
-              for (const cursor of cursors) {
-                const slice = yield* project.api
-                  .getDiff({
-                    cwd: project.project.workspaceRoot,
-                    repository: project.repository,
-                    host: project.host,
-                    number: input.number,
-                    ...(cursor === null ? {} : { cursor }),
-                  })
-                  .pipe(Effect.mapError(toPullRequestError("setFilesViewed")));
-                const current = new Map(
-                  fileDigestsFromPatch(
-                    slice.patch,
-                    slice.truncated,
-                    {
-                      provider: project.api.kind,
-                      host: project.host,
-                      remote: project.remote,
-                      number: input.number,
-                    },
-                    new Set(slice.omittedFileStats?.map((file) => file.path) ?? []),
-                  ).map(({ path, digest }) => [path, digest]),
-                );
-                if (
-                  input.files.some(
-                    (file) =>
-                      (file.cursor ?? null) === cursor && current.get(file.path) !== file.digest,
-                  )
-                ) {
+            "setFilesViewed",
+            inFilesViewedOrder(
+              project,
+              input.number,
+              Effect.gen(function* () {
+                yield* requireDisplayedFiles(input.files);
+                const viewer = yield* requiredViewerOf(project, "setFilesViewed");
+                yield* requireExpectedViewer(input, viewer);
+                const cursors = [...new Set(input.files.map((file) => file.cursor ?? null))];
+                if (cursors.length > MAX_HOST_MARK_PREFLIGHT_SLICES) {
                   return yield* new PullRequestOperationError({
                     operation: "setFilesViewed",
-                    detail: "The displayed diff changed. Refresh it before marking files viewed.",
+                    detail: "Refresh the diff and mark fewer files at once.",
                   });
                 }
-              }
-              yield* confirmViewer(project, viewer, "setFilesViewed");
-              yield* write({
-                cwd: project.project.workspaceRoot,
-                repository: project.repository,
-                host: project.host,
-                number: input.number,
-                files: input.files,
-              }).pipe(Effect.mapError(toPullRequestError("setFilesViewed")));
-              yield* confirmViewer(project, viewer, "setFilesViewed");
-            }),
+                for (const cursor of cursors) {
+                  const slice = yield* project.api
+                    .getDiff({
+                      cwd: project.project.workspaceRoot,
+                      repository: project.repository,
+                      host: project.host,
+                      number: input.number,
+                      ...(cursor === null ? {} : { cursor }),
+                    })
+                    .pipe(Effect.mapError(toPullRequestError("setFilesViewed")));
+                  const current = new Map(
+                    fileDigestsFromPatch(
+                      slice.patch,
+                      slice.truncated,
+                      {
+                        provider: project.api.kind,
+                        host: project.host,
+                        remote: project.remote,
+                        number: input.number,
+                      },
+                      new Set(slice.omittedFileStats?.map((file) => file.path) ?? []),
+                    ).map(({ path, digest }) => [path, digest]),
+                  );
+                  if (
+                    input.files.some(
+                      (file) =>
+                        (file.cursor ?? null) === cursor && current.get(file.path) !== file.digest,
+                    )
+                  ) {
+                    return yield* new PullRequestOperationError({
+                      operation: "setFilesViewed",
+                      detail: "The displayed diff changed. Refresh it before marking files viewed.",
+                    });
+                  }
+                }
+                yield* confirmViewer(project, viewer, "setFilesViewed");
+                yield* write({
+                  cwd: project.project.workspaceRoot,
+                  repository: project.repository,
+                  host: project.host,
+                  number: input.number,
+                  files: input.files,
+                }).pipe(Effect.mapError(toPullRequestError("setFilesViewed")));
+                yield* confirmViewer(project, viewer, "setFilesViewed");
+              }),
+            ),
           );
         }
         if (project.api.capabilities.viewedFiles === "environment") {
