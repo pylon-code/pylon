@@ -20,6 +20,9 @@ import { Input } from "../ui/input";
 import { MoreVertical, PlusIcon } from "lucide-react";
 import { Menu, MenuTrigger, MenuPopup, MenuItem } from "../ui/menu";
 import { SettingsRow } from "./settingsLayout";
+import { useSettingsScope } from "./SettingsScopeContext";
+import { useHostConnectionChecks } from "./useHostConnectionChecks";
+import { deviceHostConnectionKey } from "./deviceHostConnectionChecks";
 
 /** Host names and identity paths belong to the selected environment, never all environments. */
 export function DeviceHostsSettings(props: {
@@ -30,6 +33,14 @@ export function DeviceHostsSettings(props: {
   const test = useAtomCommand(deviceEnvironment.testHost, { reportFailure: false });
   const retry = useAtomCommand(deviceEnvironment.list);
   const { state } = useDeviceState(props.environmentId);
+  const { environments } = useSettingsScope();
+  const targets = environments.map((environment) => ({
+    environmentId: environment.environmentId,
+    label: environment.label,
+    connected: environment.connection.phase === "connected",
+  }));
+  const { checks: environmentChecks, testConnection: testAcrossEnvironments } =
+    useHostConnectionChecks(targets);
   const [editing, setEditing] = useState<SshDeviceHostConfig | null>(null);
   const [busy, setBusy] = useState(false);
   const [retrying, setRetrying] = useState<string | null>(null);
@@ -327,7 +338,7 @@ export function DeviceHostsSettings(props: {
                       !editing.target.trim() ||
                       !validPort(editing.port)
                     }
-                    onClick={() => void testConnection(editing)}
+                    onClick={() => void testAcrossEnvironments(editing)}
                   >
                     Test connection
                   </Button>
@@ -343,23 +354,22 @@ export function DeviceHostsSettings(props: {
                     Cancel
                   </Button>
                 </div>
-                {checks[editing.id]?.pending ? (
-                  <span
-                    role="status"
-                    className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
-                  >
-                    <Spinner className="size-3" />
-                    Checking connection…
-                  </span>
-                ) : null}
-                {checks[editing.id]?.platforms ? (
-                  <DeviceHostAvailability platforms={checks[editing.id]?.platforms ?? []} />
-                ) : null}
-                {checks[editing.id]?.error ? (
-                  <p role="alert" className="text-xs text-destructive">
-                    {checks[editing.id]?.error}
-                  </p>
-                ) : null}
+                {targets.map((target) => {
+                  const result =
+                    environmentChecks[deviceHostConnectionKey(editing)]?.[target.environmentId];
+                  if (!result) return null;
+                  return (
+                    <div key={target.environmentId} className="text-xs" role="status">
+                      <span className="font-medium">{target.label}: </span>
+                      {result.status === "pending" ? "Checking…" : null}
+                      {result.status === "local" ? "Already available locally" : null}
+                      {result.status === "failed" ? result.error : null}
+                      {result.status === "connected" ? (
+                        <DeviceHostAvailability platforms={result.platforms} />
+                      ) : null}
+                    </div>
+                  );
+                })}
               </form>
             ) : null}
           </>

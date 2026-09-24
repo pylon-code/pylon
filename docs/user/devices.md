@@ -82,7 +82,11 @@ so use the SSH configuration and keys available there. Password prompts are
 not supported.
 
 **Test connection** checks SSH, Node, npm, and platform tools without installing
-anything. The first device listing installs pinned device tools on the host.
+anything. When adding or editing a host, the check reports a result for each environment
+selected in Settings; saving changes the host list on the environment shown in
+the Devices section. An SSH alias that resolves to the environment server's own
+machine is skipped, unless it uses a forwarded port or SSH proxy. The first
+device listing installs pinned device tools on the host.
 Node 22 or newer and npm must be available to non-interactive SSH commands.
 Pylon checks common Homebrew and Android SDK locations; custom installations need
 the appropriate PATH and ANDROID_HOME on the host.
