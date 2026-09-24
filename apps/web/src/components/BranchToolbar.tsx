@@ -187,29 +187,58 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
 
   if (isLocked) {
     return (
-      <span
-        className="inline-flex h-7 min-w-0 max-w-[48%] flex-initial items-center justify-start gap-1 rounded-md border border-transparent px-[calc(--spacing(2)-1px)] font-normal text-muted-foreground/70 text-xs sm:h-6"
-        data-composer-context-control
-      >
-        {triggerContent}
-      </span>
+      <Tooltip>
+        <TooltipTrigger
+          render={<span tabIndex={0} />}
+          className="inline-flex h-7 min-w-0 max-w-[48%] flex-initial items-center justify-start gap-1 rounded-md border border-transparent px-[calc(--spacing(2)-1px)] font-normal text-muted-foreground/70 text-xs sm:h-6"
+          data-composer-context-control
+          aria-label={
+            showEnvironmentIndicator
+              ? `Run on ${autoEnvironmentLabel ?? activeEnvironment?.label ?? "Run on"}; Workspace ${workspaceLabel}`
+              : `Workspace ${workspaceLabel}`
+          }
+        >
+          {triggerContent}
+        </TooltipTrigger>
+        <TooltipPopup>
+          {showEnvironmentIndicator
+            ? `${autoEnvironmentLabel ?? activeEnvironment?.label ?? "Run on"} · ${workspaceLabel}`
+            : workspaceLabel}
+        </TooltipPopup>
+      </Tooltip>
     );
   }
 
   return (
     <Menu>
-      <MenuTrigger
-        render={<Button variant="ghost" size="xs" />}
-        className="min-w-0 max-w-[48%] flex-initial justify-start font-normal text-muted-foreground/70 text-xs! hover:text-foreground/80"
-        data-composer-context-control
-        data-composer-shortcut={[
-          showEnvironmentPicker && !envLocked ? "composer.host" : "",
-          !envModeLocked ? "composer.workspace" : "",
-        ].join(" ")}
-      >
-        {triggerContent}
-        <ChevronDownIcon className="size-3 shrink-0 opacity-50" />
-      </MenuTrigger>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <MenuTrigger
+              render={<Button variant="ghost" size="xs" />}
+              className="min-w-0 max-w-[48%] flex-initial justify-start font-normal text-muted-foreground/70 text-xs! hover:text-foreground/80"
+              data-composer-context-control
+              aria-label={
+                showEnvironmentIndicator
+                  ? `Run on ${autoEnvironmentLabel ?? activeEnvironment?.label ?? "Run on"}; Workspace ${workspaceLabel}`
+                  : `Workspace ${workspaceLabel}`
+              }
+              data-composer-shortcut={[
+                showEnvironmentPicker && !envLocked ? "composer.host" : "",
+                !envModeLocked ? "composer.workspace" : "",
+              ].join(" ")}
+            />
+          }
+        >
+          {triggerContent}
+          <ChevronDownIcon className="size-3 shrink-0 opacity-50" />
+        </TooltipTrigger>
+        <TooltipPopup>
+          {showEnvironmentIndicator
+            ? `${autoEnvironmentLabel ?? activeEnvironment?.label ?? "Run on"} · ${workspaceLabel}`
+            : workspaceLabel}
+        </TooltipPopup>
+      </Tooltip>
       <MenuPopup align="start" side="top" className="w-64" {...composerFloatingLayerProps}>
         {showEnvironmentPicker && availableEnvironments && onEnvironmentChange ? (
           <>
