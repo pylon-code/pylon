@@ -450,6 +450,9 @@ export const make = Effect.gen(function* () {
       Effect.catchCause(() => Effect.succeed(null)),
     );
     if (fetched === null) return manifest;
+    // The hosted catalog can lag behind a newly shipped bundle. Do not
+    // downgrade the live model list or persist that older copy across restarts.
+    if (manifestUpdatedAtMs(fetched) < manifestUpdatedAtMs(manifest)) return manifest;
 
     manifest = fetched;
     fetchedAtMs = now;

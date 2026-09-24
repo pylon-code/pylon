@@ -389,6 +389,24 @@ describe("ModelManifest service", () => {
     ),
   );
 
+  it.live("keeps a newer bundled manifest when the hosted catalog lags behind", () =>
+    Effect.gen(function* () {
+      const service = yield* make;
+      assert.deepStrictEqual(yield* service.refresh, BUNDLED_MODEL_MANIFEST);
+      const rebooted = yield* make;
+      assert.deepStrictEqual(yield* rebooted.current, BUNDLED_MODEL_MANIFEST);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        serviceLayers({
+          prefix: "model-manifest-older-remote-test",
+          response: () =>
+            Response.json({ ...REMOTE_MANIFEST, updatedAt: "2020-01-01T00:00:00.000Z" }),
+        }),
+      ),
+    ),
+  );
+
   it.live("keeps the bundled manifest when the remote payload is malformed", () =>
     Effect.gen(function* () {
       const service = yield* make;

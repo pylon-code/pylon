@@ -63,36 +63,14 @@ async function withToolMaintenance(root, operation) {
   }
 }
 function pruneTools(root, specs, flat) {
-  return withToolMaintenance(root, () => {
-    // Keep installs used by any running helper, including older T3 releases.
-    const scan = process.platform === 'win32'
-      ? require('node:child_process').spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | Select-Object -ExpandProperty CommandLine'], { encoding: 'utf8', timeout: 10000 })
-      : require('node:child_process').spawnSync('ps', ['-ax', '-o', 'command='], { encoding: 'utf8', timeout: 10000 });
-    if (scan.status !== 0 || !scan.stdout) return;
-    for (const [name, required] of specs) {
-      const parent = flat ? root : maintenancePath.join(root, name);
-      let names;
-      try { names = maintenanceFs.readdirSync(parent); } catch { continue; }
-      const completed = [];
-      for (const item of names) {
-        const version = flat ? (item.startsWith(name + '@') ? item.slice(name.length + 1) : '') : item;
-        if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) continue;
-        const directory = maintenancePath.join(parent, item);
-        try {
-          if (!maintenanceFs.lstatSync(directory).isDirectory()) continue;
-          if (maintenanceFs.readFileSync(maintenancePath.join(directory, '.install-complete'), 'utf8').trim() !== version) continue;
-          completed.push({ version, directory, modified: maintenanceFs.statSync(maintenancePath.join(directory, '.install-complete')).mtimeMs });
-        } catch {}
-      }
-      // Never prune until the required install has completed. Retain the last other successful install.
-      if (!completed.some(value => value.version === required)) continue;
-      const previous = completed.filter(value => value.version !== required).sort((a, b) => b.modified - a.modified || b.version.localeCompare(a.version, 'en', { numeric: true }))[0]?.version;
-      for (const { version, directory } of completed) {
-        if (version === required || version === previous || scan.stdout.includes(directory + maintenancePath.sep)) continue;
-        maintenanceFs.rmSync(directory, { recursive: true, force: true });
-      }
-    }
-  });
+  // A completed tool can be selected by another host after its install lock
+  // is released but before the helper appears in the process list. Process
+  // scanning cannot prove non-use in that interval. Keep every completed
+  // version until installation and spawn share a cross-host lease.
+  void root;
+  void specs;
+  void flat;
+  return Promise.resolve();
 }
 `;
 

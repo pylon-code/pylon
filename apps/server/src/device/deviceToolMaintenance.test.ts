@@ -14,7 +14,7 @@ import { pruneLocalDeviceTools, deviceToolMaintenanceScript } from "./deviceTool
 const exec = NodeUtil.promisify(NodeChildProcess.execFile);
 
 describe.each([false, true])("device tool cleanup, flat=%s", (flat) => {
-  it("keeps current, previous, active and incomplete installs, pruning unused completed versions", async () => {
+  it("retains all completed installs across the install-to-spawn handoff", async () => {
     const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tool-cleanup-"));
     const name = "expo-device-hub";
     const directory = (version: string) =>
@@ -43,35 +43,8 @@ describe.each([false, true])("device tool cleanup, flat=%s", (flat) => {
         script,
         NodePath.join(directory("0.2.0"), "active-helper.cjs"),
       ]);
-      await expect(NodeFSP.stat(directory("0.1.0"))).rejects.toThrow();
-      await expect(NodeFSP.stat(directory("0.3.0"))).rejects.toThrow();
-      for (const version of ["0.2.0", "0.4.0", "0.5.0", "0.6.0"])
+      for (const version of ["0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0"])
         expect((await NodeFSP.stat(directory(version))).isDirectory()).toBe(true);
-    } finally {
-      await NodeFSP.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps every install when the process scan fails", async () => {
-    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tool-scan-"));
-    try {
-      for (const version of ["0.1.0", "0.2.0", "0.3.0"]) {
-        const dir = flat
-          ? NodePath.join(root, `expo-device-hub@${version}`)
-          : NodePath.join(root, "expo-device-hub", version);
-        await NodeFSP.mkdir(dir, { recursive: true });
-        await NodeFSP.writeFile(NodePath.join(dir, ".install-complete"), version);
-      }
-      await exec(process.execPath, [
-        "-e",
-        deviceToolMaintenanceScript +
-          `
-        require('node:child_process').spawnSync = () => ({ status: 1, stdout: '' });
-        pruneTools(${JSON.stringify(root)}, [['expo-device-hub', '0.3.0']], ${flat}).catch(() => process.exitCode = 1);
-      `,
-      ]);
-      const parent = flat ? root : NodePath.join(root, "expo-device-hub");
-      expect((await NodeFSP.readdir(parent)).length).toBe(3);
     } finally {
       await NodeFSP.rm(root, { recursive: true, force: true });
     }
