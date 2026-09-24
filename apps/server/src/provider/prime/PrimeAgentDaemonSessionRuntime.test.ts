@@ -12668,6 +12668,111 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     }),
   );
 
+  it.effect("rejects a private leaf response from before daemon reconnect", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let releaseOldState!: (value: unknown) => void;
+        let observeOldRequest!: () => void;
+        let currentLeaf = "leaf-source-private";
+        let firstRequest = true;
+        const oldRequestStarted = new Promise<void>((resolve) => {
+          observeOldRequest = resolve;
+        });
+        const test = fixture({
+          rawSnapshot: {
+            ...snapshot(),
+            state: { ...snapshot().state, leafId: "leaf-source-private" },
+          },
+          getStateImpl: () => {
+            if (firstRequest) {
+              firstRequest = false;
+              observeOldRequest();
+              return new Promise<unknown>((resolve) => {
+                releaseOldState = resolve;
+              });
+            }
+            return Promise.resolve({
+              sessionId: "session-1",
+              activeSessionId: "active-secret-1",
+              leafId: currentLeaf,
+            });
+          },
+        });
+        const runtime = yield* test.make();
+        const inspection = yield* runtime.inspectConversationLeaf.pipe(
+          Effect.result,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() => oldRequestStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() => test.emit({ type: "session_resynced", snapshot: snapshot(9) }));
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Effect.promise(() => test.emit({ type: "connection_status", status: "connected" }));
+        releaseOldState({
+          sessionId: "session-1",
+          activeSessionId: "active-secret-1",
+          leafId: "leaf-target-private",
+        });
+        const result = yield* Fiber.join(inspection);
+        expect(result._tag).toBe("Failure");
+        expect(yield* runtime.inspectConversationLeaf).toBe("leaf-source-private");
+        currentLeaf = "leaf-third-private";
+        expect(yield* runtime.inspectConversationLeaf).toBe("leaf-third-private");
+      }),
+    ),
+  );
+
+  it.effect("rejects a private navigation response from before daemon reconnect", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let releaseOldNavigation!: (value: unknown) => void;
+        let observeOldNavigation!: () => void;
+        let currentLeaf = "leaf-source-private";
+        const oldNavigationStarted = new Promise<void>((resolve) => {
+          observeOldNavigation = resolve;
+        });
+        const test = fixture({
+          rawSnapshot: {
+            ...snapshot(),
+            state: { ...snapshot().state, leafId: currentLeaf },
+          },
+          getStateImpl: () =>
+            Promise.resolve({
+              sessionId: "session-1",
+              activeSessionId: "active-secret-1",
+              leafId: currentLeaf,
+            }),
+          navigateTreeImpl: () => {
+            observeOldNavigation();
+            return new Promise<unknown>((resolve) => {
+              releaseOldNavigation = resolve;
+            });
+          },
+        });
+        const runtime = yield* test.make();
+        const navigation = yield* runtime
+          .navigateConversationLeaf({
+            desiredLeafId: "leaf-target-private",
+            allowedSourceLeafId: "leaf-source-private",
+          })
+          .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => oldNavigationStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() => test.emit({ type: "session_resynced", snapshot: snapshot(9) }));
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Effect.promise(() => test.emit({ type: "connection_status", status: "connected" }));
+        currentLeaf = "leaf-third-private";
+        releaseOldNavigation({ cancelled: false });
+        expect((yield* Fiber.join(navigation))._tag).toBe("Failure");
+        expect(yield* runtime.inspectConversationLeaf).toBe("leaf-third-private");
+      }),
+    ),
+  );
+
   it.effect("rejects a third leaf and keeps response-loss target proof inspectable", () =>
     Effect.gen(function* () {
       let leafId = "leaf-source-private";
