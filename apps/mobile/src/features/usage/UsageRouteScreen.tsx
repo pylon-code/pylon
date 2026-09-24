@@ -286,6 +286,19 @@ export function UsageRouteScreen() {
                   {merged.duplicateSources.join(", ")}
                 </Text>
               ) : null}
+              {merged.approximateEnvironments.length > 0 ? (
+                <Text className="text-sm text-foreground-muted">
+                  Totals may count shared usage more than once because these environments run older
+                  servers or have directories whose filesystem identity could not be read:{" "}
+                  {selectedEnvironments
+                    .filter((environment) =>
+                      merged.approximateEnvironments.includes(environment.environmentId),
+                    )
+                    .map((environment) => environment.label)
+                    .join(", ")}
+                  .
+                </Text>
+              ) : null}
               {isPending ? (
                 <Text className="py-16 text-center text-base text-foreground-muted">
                   Scanning provider transcripts…

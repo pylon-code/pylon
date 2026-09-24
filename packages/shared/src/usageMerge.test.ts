@@ -41,6 +41,7 @@ function summary(
     homePath: string;
     volumeId?: string;
     distinctSessions?: number;
+    buckets?: readonly UsageBucket[];
   }[],
   contractVersion: number = USAGE_CONTRACT_VERSION,
 ): UsageSummary {
@@ -63,6 +64,7 @@ function summary(
       skippedFiles: 0,
       malformedRecords: 0,
       distinctSessions: source.distinctSessions ?? 1,
+      ...(source.buckets === undefined ? {} : { buckets: source.buckets }),
       message: null,
     })),
     pricing: { status: "fresh", source: "litellm", fetchedAt: null, knownModels: 10 },
@@ -75,6 +77,183 @@ function environment(id: string, usageSummary: UsageSummary): EnvironmentUsage {
 }
 
 describe("mergeUsage", () => {
+  it("keeps unique older homes while taking a newer shared-home scan", () => {
+    const shared = { provider: "claude" as const, hostId: "mac", homePath: "/shared" };
+    const old = summary(
+      [bucket({ costUsd: 10 })],
+      [
+        { ...shared, buckets: [bucket({ costUsd: 4 })] },
+        { ...shared, homePath: "/unique-a", buckets: [bucket({ costUsd: 6 })] },
+      ],
+    );
+    const latest = summary(
+      [bucket({ costUsd: 16 })],
+      [
+        { ...shared, buckets: [bucket({ costUsd: 5 })] },
+        { ...shared, homePath: "/unique-b", buckets: [bucket({ costUsd: 11 })] },
+      ],
+    );
+    const merged = mergeUsage(
+      [
+        environment("env-a", { ...old, readAt: "2026-08-07T00:00:00.000Z" }),
+        environment("env-b", { ...latest, readAt: "2026-08-08T00:00:00.000Z" }),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(22);
+    expect(merged.approximateEnvironments).toEqual([]);
+  });
+
+  it("counts overlapping Claude homes once while retaining both unique homes", () => {
+    const shared = { provider: "claude" as const, hostId: "mac", homePath: "/shared" };
+    const uniqueA = { provider: "claude" as const, hostId: "mac", homePath: "/unique-a" };
+    const uniqueB = { provider: "claude" as const, hostId: "mac", homePath: "/unique-b" };
+    const four = bucket({ costUsd: 4, records: 1 });
+    const six = bucket({ costUsd: 6, records: 1 });
+    const eleven = bucket({ costUsd: 11, records: 1 });
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [bucket({ costUsd: 10, records: 2 })],
+            [
+              { ...shared, buckets: [four] },
+              { ...uniqueA, buckets: [six] },
+            ],
+          ),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ costUsd: 15, records: 2 })],
+            [
+              { ...shared, buckets: [four] },
+              { ...uniqueB, buckets: [eleven] },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(21);
+    expect(merged.records).toBe(3);
+    expect(merged.sessions).toBe(3);
+    expect(merged.duplicateSources).toHaveLength(1);
+    expect(merged.approximateEnvironments).toEqual([]);
+  });
+
+  it("does not collapse identical paths on different hosts or filesystems", () => {
+    const source = { provider: "claude" as const, hostId: "mac", homePath: "/same" };
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary([bucket({ costUsd: 4 })], [{ ...source, buckets: [bucket({ costUsd: 4 })] }]),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ costUsd: 6 })],
+            [{ ...source, hostId: "other", buckets: [bucket({ costUsd: 6 })] }],
+          ),
+        ),
+        environment(
+          "env-c",
+          summary(
+            [bucket({ costUsd: 11 })],
+            [{ ...source, volumeId: "moved-volume", buckets: [bucket({ costUsd: 11 })] }],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(21);
+    expect(merged.duplicateSources).toEqual([]);
+  });
+
+  it("keeps unknown filesystem identities separate and reports uncertain overlap", () => {
+    const source = { provider: "claude" as const, hostId: "mac", homePath: "/same" };
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [bucket({ costUsd: 4 })],
+            [{ ...source, volumeId: "", buckets: [bucket({ costUsd: 4 })] }],
+          ),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ costUsd: 6 })],
+            [{ ...source, volumeId: "vol-mac", buckets: [bucket({ costUsd: 6 })] }],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(10);
+    expect(merged.duplicateSources).toEqual([]);
+    expect(merged.approximateEnvironments).toEqual(["env-a", "env-b"]);
+  });
+
+  it("marks legacy mixed-home totals approximate without dropping their unique usage", () => {
+    const shared = { provider: "claude" as const, hostId: "mac", homePath: "/shared" };
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary([bucket({ costUsd: 4 })], [{ ...shared, buckets: [bucket({ costUsd: 4 })] }]),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ costUsd: 15 })],
+            [shared, { ...shared, homePath: "/unique-b" }],
+            USAGE_CONTRACT_VERSION - 1,
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(19);
+    expect(merged.approximateEnvironments).toEqual(["env-b"]);
+    expect(merged.staleEnvironments).toEqual([]);
+  });
+
+  it("falls back to flat provider totals when a source claims buckets for another provider", () => {
+    const shared = { provider: "claude" as const, hostId: "mac", homePath: "/shared" };
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary([bucket({ costUsd: 4 })], [{ ...shared, buckets: [bucket({ costUsd: 4 })] }]),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ costUsd: 15 })],
+            [
+              { ...shared, buckets: [bucket({ provider: "codex", costUsd: 4 })] },
+              { ...shared, homePath: "/unique-b", buckets: [bucket({ costUsd: 11 })] },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(19);
+    expect(merged.providers.map((provider) => provider.provider)).toEqual(["claude"]);
+    expect(merged.approximateEnvironments).toEqual(["env-b"]);
+  });
+
   it("sums environments that read different transcript directories", () => {
     const merged = mergeUsage(
       [
