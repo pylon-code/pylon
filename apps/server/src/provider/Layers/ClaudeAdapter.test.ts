@@ -35,6 +35,7 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Random from "effect/Random";
@@ -990,6 +991,110 @@ describe("ClaudeAdapterLive", () => {
           text: "What's in this image?",
         },
       ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not strand a running turn when an attachment cannot be read", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const eventsFiber = yield* Stream.take(adapter.streamEvents, 4).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const rejected = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          input: "Read the missing image",
+          attachments: [
+            {
+              type: "image",
+              id: "thread-claude-attachment-12345678-1234-1234-1234-123456789abc",
+              name: "missing.png",
+              mimeType: "image/png",
+              sizeBytes: 4,
+            },
+          ],
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(rejected), true);
+
+      const accepted = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Continue without the image",
+        attachments: [],
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.deepEqual(
+        events.map((event) => event.type),
+        ["session.started", "session.configured", "session.state.changed", "turn.started"],
+      );
+      assert.equal(events[3]?.type, "turn.started");
+      if (events[3]?.type === "turn.started") {
+        assert.equal(String(events[3].turnId), String(accepted.turnId));
+      }
+      const prompt = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.deepEqual(prompt?.message.content, [
+        { type: "text", text: "Continue without the image" },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("rejects a send whose Claude session stops during provider setup", () => {
+    const harness = makeHarness();
+    let enteredResolve: (() => void) | undefined;
+    let releaseResolve: (() => void) | undefined;
+    const entered = new Promise<void>((resolve) => {
+      enteredResolve = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseResolve = resolve;
+    });
+    Object.assign(harness.query, {
+      setModel: async () => {
+        enteredResolve?.();
+        await release;
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const sending = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          input: "Do the work",
+          attachments: [],
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+          ),
+        })
+        .pipe(Effect.result, Effect.forkChild);
+      yield* Effect.promise(() => entered);
+      yield* adapter.stopSession(session.threadId);
+      releaseResolve?.();
+      const result = yield* Fiber.join(sending);
+      assert.equal(result._tag, "Failure");
+      assert.equal(yield* adapter.hasSession(session.threadId), false);
+      assert.equal(harness.query.closeCalls, 1);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
