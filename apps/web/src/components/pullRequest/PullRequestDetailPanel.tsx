@@ -74,7 +74,6 @@ import {
 import {
   changeRequestRepositoryUrl,
   fallbackPullRequestBrowserUrl,
-  gitHubPullRequestBrowserUrl,
 } from "~/lib/openPullRequestLink";
 import { usePreparePullRequestThreadAction } from "~/lib/sourceControlActions";
 import { cn } from "~/lib/utils";
@@ -149,12 +148,11 @@ import {
   handoffPrompt,
   handoffReviewComments,
   latestPullRequestReviewOutcomes,
-  loadingPullRequestCheckoutCommand,
   isStackedPullRequestBase,
   pullRequestActionMenuHasGroup,
   pullRequestActionNeedsHostRefresh,
   pullRequestComposerTarget,
-  pullRequestCheckoutCommand,
+  panelPullRequestCheckoutCommand,
   pullRequestFindingKey,
   pullRequestHandoffLabels,
   PULL_REQUEST_MERGE_METHOD_LABELS,
@@ -765,15 +763,13 @@ export function PullRequestDetailPanel({
     repositoryUrl !== null
       ? new URL(`/${encodeURIComponent(detail.author.login)}`, repositoryUrl).toString()
       : null;
-  const checkoutCommand = detail
-    ? pullRequestCheckoutCommand(
-        detail.provider,
-        detail.number,
-        detail.headBranch,
-        detail.headRepositoryNameWithOwner,
-        repositoryUrl,
-      )
-    : null;
+  const checkoutCommand = panelPullRequestCheckoutCommand({
+    reference,
+    identity: repositoryIdentity,
+    summary: handoffSummary,
+    headRepositoryNameWithOwner: detail?.headRepositoryNameWithOwner,
+    repositoryUrl,
+  });
   const onCheckoutCommandError = useCallback((error: Error) => {
     toastManager.add({
       type: "error",

@@ -150,6 +150,25 @@ export function loadingPullRequestCheckoutCommand(
   return pullRequestCheckoutCommand(provider, reference.number, "");
 }
 
+/** Keep the checkout affordance stable while richer PR detail is loading. */
+export function panelPullRequestCheckoutCommand(input: {
+  readonly reference: PullRequestRef;
+  readonly identity: RepositoryIdentity | null | undefined;
+  readonly summary: Pick<PullRequestDetail, "provider" | "number" | "headBranch"> | null;
+  readonly headRepositoryNameWithOwner?: string | null | undefined;
+  readonly repositoryUrl?: string | null | undefined;
+}): string | null {
+  return input.summary
+    ? pullRequestCheckoutCommand(
+        input.summary.provider,
+        input.summary.number,
+        input.summary.headBranch,
+        input.headRepositoryNameWithOwner,
+        input.repositoryUrl,
+      )
+    : loadingPullRequestCheckoutCommand(input.reference, input.identity);
+}
+
 /** Activity changes only when the same host resource reports a newer revision. */
 export function shouldRefreshPullRequestActivity(
   previous: { readonly key: string; readonly updatedAt: string } | null,
