@@ -6508,7 +6508,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           ),
         );
         assert.isTrue(probed);
-      }).pipe(Effect.provide(NodeHttpServer.layerTest));
+      }).pipe(Effect.provide(loopbackHttpServerTest));
     });
   }
 
