@@ -575,6 +575,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       stage: null,
       attempt,
       generation,
+      sessionOwner: active.lease.session,
       lastFailure: null,
       retryAt: null,
     });

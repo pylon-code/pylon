@@ -199,8 +199,13 @@ const threadActionProjectionAtom = Atom.family((environmentId: EnvironmentId) =>
       return null;
     }
     if (Option.isNone(shell.snapshot)) return null;
+    // The two atoms may briefly describe different sessions during reconnect.
+    // A stale live A shell must never satisfy a receipt dispatched on B.
+    if (connection.sessionOwner === undefined || shell.sessionOwner !== connection.sessionOwner) {
+      return null;
+    }
     return {
-      owner: entry,
+      owner: connection.sessionOwner,
       generation: connection.generation,
       sequence: shell.snapshot.value.snapshotSequence,
     };

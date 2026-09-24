@@ -33,6 +33,8 @@ export interface EnvironmentShellState {
   readonly snapshot: Option.Option<OrchestrationShellSnapshot>;
   readonly status: EnvironmentShellStatus;
   readonly error: Option.Option<string>;
+  /** Local session that supplied the live snapshot; absent for cached/synchronizing data. */
+  readonly sessionOwner?: object | null;
 }
 
 const EMPTY_SHELL_STATE: EnvironmentShellState = {
@@ -102,12 +104,14 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       SubscriptionRef.update(state, (current) => ({
         ...current,
         status: shellStatusForSnapshot(current.snapshot),
+        sessionOwner: null,
       })),
     ),
   );
   const setSynchronizing = SubscriptionRef.update(state, (current) => ({
     ...current,
     status: "synchronizing" as const,
+    sessionOwner: null,
     error: Option.none(),
   }));
   const setReady = SubscriptionRef.update(state, (current) =>
@@ -130,6 +134,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         SubscriptionRef.update(state, (current) => ({
           ...current,
           status: shellStatusForSnapshot(current.snapshot),
+          sessionOwner: null,
           error: Option.some(SHELL_SYNCHRONIZATION_ERROR_MESSAGE),
         })),
       ),
@@ -142,6 +147,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     items: ReadonlyArray<OrchestrationShellStreamItem>,
   ) {
     const initial = yield* SubscriptionRef.get(state);
+    const sessionOwner = yield* Ref.get(activeSubscriptionSession);
     let waiting = yield* Ref.get(awaitingCompletion);
     let next = initial;
     let receivedSnapshot = false;
@@ -149,7 +155,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       if (item.kind === "synchronized") {
         waiting = false;
         if (Option.isSome(next.snapshot)) {
-          next = { snapshot: next.snapshot, status: "live", error: Option.none() };
+          next = { snapshot: next.snapshot, status: "live", error: Option.none(), sessionOwner };
         }
         continue;
       }
@@ -168,6 +174,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       next = {
         snapshot: Option.some(nextSnapshot),
         status: waiting ? "synchronizing" : "live",
+        sessionOwner: waiting ? null : sessionOwner,
         error: Option.none(),
       };
     }
@@ -244,6 +251,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           yield* SubscriptionRef.update(state, (value) => ({
             ...value,
             status: "live" as const,
+            sessionOwner: session,
             error: Option.none(),
           }));
         }

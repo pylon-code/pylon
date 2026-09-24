@@ -61,6 +61,7 @@ const shellState = vi.hoisted(() => ({
   available: true,
   current: null as typeof threadShell | null,
   owner: {},
+  shellOwner: null as object | null,
   generation: 1,
   sequence: 0,
 }));
@@ -72,7 +73,7 @@ vi.mock("../state/entities", async (original) => ({
   readEnvironmentSupportsSnooze: () => true,
   readThreadShell: () => (shellState.available ? shellState.current : null),
   readThreadActionProjection: () =>
-    shellState.available
+    shellState.available && shellState.shellOwner === shellState.owner
       ? {
           owner: shellState.owner,
           generation: shellState.generation,
@@ -172,6 +173,7 @@ beforeEach(() => {
   shellState.available = true;
   shellState.current = threadShell;
   shellState.owner = {};
+  shellState.shellOwner = shellState.owner;
   shellState.generation = 1;
   shellState.sequence = 0;
 });
@@ -238,13 +240,18 @@ describe("unpin Undo", () => {
     await useThreadActions().unpinThread(target);
     const oldUndo = undoOf(add, 0);
     // A reconnected server may reuse lower sequence values for the same ID.
-    shellState.generation += 1;
+    shellState.owner = {};
+    // The connection can be replaced while catalog entry and generation are reused.
     shellState.sequence = 0;
     shellState.current = { ...threadShell };
     await oldUndo();
     expect(commands.pin).not.toHaveBeenCalled();
+    // The old A shell may still appear live while B has connected.
     await useThreadActions().unpinThread(target);
     expect(commands.unpin).toHaveBeenCalledTimes(2);
+    shellState.shellOwner = shellState.owner;
+    await useThreadActions().unpinThread(target);
+    expect(commands.unpin).toHaveBeenCalledTimes(3);
   });
 
   it("ignores an old toast across hook instances and still restores the latest unpin", async () => {

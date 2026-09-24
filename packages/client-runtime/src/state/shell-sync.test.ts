@@ -320,10 +320,12 @@ describe("environment shell synchronization", () => {
 
       yield* Queue.offer(events, { kind: "snapshot", snapshot: resetSnapshot });
       yield* Queue.offer(events, { kind: "synchronized" });
-      yield* SubscriptionRef.changes(shellState).pipe(
+      const firstLive = yield* SubscriptionRef.changes(shellState).pipe(
         Stream.filter((value) => value.status === "live"),
         Stream.runHead,
       );
+      const firstSession = Option.getOrThrow(yield* SubscriptionRef.get(activeSession));
+      expect(Option.getOrThrow(firstLive).sessionOwner).toBe(firstSession);
 
       const live = yield* SubscriptionRef.get(shellState);
       expect(Option.getOrThrow(live.snapshot)).toEqual(resetSnapshot);
@@ -402,10 +404,12 @@ describe("environment shell synchronization", () => {
       }
       expect(yield* Ref.get(capturedAfterSequences)).toEqual([10]);
       yield* Queue.offer(events, { kind: "synchronized" });
-      yield* SubscriptionRef.changes(shellState).pipe(
+      const initialLive = yield* SubscriptionRef.changes(shellState).pipe(
         Stream.filter((value) => value.status === "live"),
         Stream.runHead,
       );
+      const firstSession = Option.getOrThrow(yield* SubscriptionRef.get(activeSession));
+      expect(Option.getOrThrow(initialLive).sessionOwner).toBe(firstSession);
 
       // A newer snapshot arrives on the stream and advances the cursor.
       yield* Queue.offer(events, {
@@ -449,6 +453,16 @@ describe("environment shell synchronization", () => {
       }
       expect(yield* Ref.get(capturedAfterSequences)).toEqual([10, 40, 40, 20]);
       expect(yield* Ref.get(loaderCalls)).toBe(2);
+      const replacementSession = Option.getOrThrow(yield* SubscriptionRef.get(activeSession));
+      expect(replacementSession).not.toBe(firstSession);
+      yield* Queue.offer(events, { kind: "synchronized" });
+      const replacementLive = yield* SubscriptionRef.changes(shellState).pipe(
+        Stream.filter(
+          (value) => value.status === "live" && value.sessionOwner === replacementSession,
+        ),
+        Stream.runHead,
+      );
+      expect(Option.getOrThrow(replacementLive).sessionOwner).toBe(replacementSession);
     }),
   );
 });
