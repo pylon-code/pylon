@@ -99,12 +99,14 @@ const requestActivityKinds = new Set([
 // A failed reply with any other text stays open so the user can retry.
 const staleRequestFailureDetails = {
   "provider.approval.respond.failed": [
+    "no active provider session is bound to this thread",
     "stale pending approval request",
     "unknown pending approval request",
     "unknown pending permission request",
     "unknown pending codex approval request",
   ],
   "provider.user-input.respond.failed": [
+    "no active provider session is bound to this thread",
     "stale pending user-input request",
     "unknown pending user-input request",
     "unknown pending user input request",

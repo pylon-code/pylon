@@ -1707,12 +1707,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             kind IN ('approval.requested', 'approval.resolved', 'user-input.requested',
               'user-input.resolved', 'interaction.requested', 'interaction.resolved')
             OR (kind = 'provider.approval.respond.failed' AND (
+              lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%no active provider session is bound to this thread%'
+              OR
               lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%stale pending approval request%'
               OR lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%unknown pending approval request%'
               OR lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%unknown pending permission request%'
               OR lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%unknown pending codex approval request%'
             ))
             OR (kind = 'provider.user-input.respond.failed' AND (
+              lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%no active provider session is bound to this thread%'
+              OR
               lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%stale pending user-input request%'
               OR lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%unknown pending user-input request%'
               OR lower(COALESCE(json_extract(payload_json, '$.detail'), '')) LIKE '%unknown pending user input request%'
@@ -2186,6 +2190,9 @@ pending_approval_requests AS (
               OR (
                 activity.kind = 'provider.user-input.respond.failed'
                 AND (
+                  lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                    LIKE '%no active provider session is bound to this thread%'
+                  OR
                   lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
                     LIKE '%stale pending user-input request%'
                   OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))

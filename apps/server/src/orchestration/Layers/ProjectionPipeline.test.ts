@@ -3888,6 +3888,41 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         WHERE thread_id = 'thread-stale-user-input'
       `;
       assert.deepEqual(threadRows, [{ pendingUserInputCount: 1 }]);
+
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-stale-user-input-session-stopped"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-stale-user-input"),
+        occurredAt: "2026-02-26T12:35:09.000Z",
+        commandId: CommandId.make("cmd-stale-user-input-session-stopped"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-stale-user-input-session-stopped"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-stale-user-input"),
+          activity: {
+            id: EventId.make("activity-user-input-session-stopped"),
+            tone: "error",
+            kind: "provider.user-input.respond.failed",
+            summary: "Provider user input response failed",
+            payload: {
+              requestId: "user-input-active",
+              detail: "No active provider session is bound to this thread.",
+            },
+            turnId: null,
+            createdAt: "2026-02-26T12:35:09.000Z",
+          },
+        },
+      });
+      assert.deepEqual(
+        yield* sql<{ readonly pendingUserInputCount: number }>`
+        SELECT pending_user_input_count AS "pendingUserInputCount"
+        FROM projection_threads
+        WHERE thread_id = 'thread-stale-user-input'
+      `,
+        [{ pendingUserInputCount: 0 }],
+      );
     }),
   );
 

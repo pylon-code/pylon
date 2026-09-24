@@ -69,6 +69,7 @@ function isStaleRequestFailureDetail(payload: Record<string, unknown> | null): b
   const detail = typeof payload?.detail === "string" ? payload.detail.toLowerCase() : null;
   if (detail === null) return false;
   return (
+    detail.includes("no active provider session is bound to this thread") ||
     detail.includes("stale pending approval request") ||
     detail.includes("unknown pending approval request") ||
     detail.includes("unknown pending permission request") ||

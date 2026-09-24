@@ -489,6 +489,23 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
       const settledEvents = Array.isArray(settled) ? settled : [settled];
       expect(settledEvents[0]?.type).toBe("thread.settled");
 
+      const stoppedSession = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.settle",
+          commandId: CommandId.make("cmd-settle-stopped-session-input"),
+          threadId: ThreadId.make("thread-1"),
+        },
+        readModel: makeReadModel(null, null, makeSession("stopped"), [
+          activity("user-input.requested", "orphaned-input", {}),
+          activity("provider.user-input.respond.failed", "orphaned-input", {
+            detail: "No active provider session is bound to this thread.",
+          }),
+        ]),
+      });
+      expect((Array.isArray(stoppedSession) ? stoppedSession[0] : stoppedSession).type).toBe(
+        "thread.settled",
+      );
+
       // A non-stale respond failure (transient provider error) keeps the
       // request open: the user can retry, so it is still blocked-on-you.
       const stillOpen = yield* decideOrchestrationCommand({
