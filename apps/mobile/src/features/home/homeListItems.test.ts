@@ -15,7 +15,7 @@ import {
   type HomeListItem,
 } from "./homeListItems";
 import type { HomeThreadGroup } from "./homeThreadList";
-import { threadJumpTarget } from "../keyboard/threadKeyboardShortcuts";
+import { threadJumpTarget, visibleThreadJumpCommands } from "../keyboard/threadKeyboardShortcuts";
 
 const environmentId = EnvironmentId.make("environment-1");
 
@@ -89,6 +89,21 @@ function displayStates(
 }
 
 describe("threadJumpTarget", () => {
+  it("lets the visible split sidebar own shortcuts when Home and sidebar order differ", () => {
+    const home = buildHomeListLayout({
+      groups: [makeGroup("home", 2)],
+      displayStates: displayStates({}),
+    });
+    const sidebar = buildHomeListLayout({
+      groups: [makeGroup("sidebar", 2)],
+      displayStates: displayStates({}),
+    });
+    expect(threadJumpTarget(home.items, "thread.jump.1")?.id).toBe("home-thread-0");
+    expect(threadJumpTarget(sidebar.items, "thread.jump.1")?.id).toBe("sidebar-thread-0");
+    expect(visibleThreadJumpCommands(false)).toEqual([]);
+    expect(visibleThreadJumpCommands(true)).toContain("thread.jump.1");
+  });
+
   it("numbers only displayed threads across groups, skipping collapsed groups and pagination rows", () => {
     const layout = buildHomeListLayout({
       groups: [makeGroup("collapsed", 3), makeGroup("alpha", 8), makeGroup("beta", 3)],

@@ -38,6 +38,7 @@ import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/
 import { useThreadSearch } from "../../state/queries";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useThreadJumpShortcuts } from "../keyboard/threadKeyboardShortcuts";
+import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { useThreadListV2Enabled } from "../threads/use-thread-list-v2-enabled";
 import { usePendingThreadOrder } from "../../state/thread-order";
 import { environmentServerConfigsAtom } from "../../state/server";
@@ -219,6 +220,7 @@ function HomeTopContentSpacer() {
 /* ─── Main screen ────────────────────────────────────────────────────── */
 
 export function HomeScreen(props: HomeScreenProps) {
+  const { layout } = useAdaptiveWorkspaceLayout();
   const { materialYouStyleLayoutActive } = useAppearancePreferences();
   const [groupDisplayStates, setGroupDisplayStates] = useState<
     ReadonlyMap<string, HomeGroupDisplayState>
@@ -812,6 +814,7 @@ export function HomeScreen(props: HomeScreenProps) {
   useThreadJumpShortcuts(
     threadListV2Enabled ? threadListV2Items : listLayout.items,
     props.onSelectThread,
+    !layout.usesSplitView,
   );
 
   const renderV2Item = useCallback(

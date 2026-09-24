@@ -380,7 +380,11 @@ export function CommandPalette(props: {
       visible={visible}
       transparent
       animationType="fade"
-      onShow={() => inputRef.current?.focus()}
+      onShow={() => {
+        // UIKit can deliver onShow after Cmd-K has already started dismissal.
+        if (closing.current || !visible) return;
+        inputRef.current?.focus();
+      }}
       onRequestClose={() => close()}
       onDismiss={handleDismissed}
     >

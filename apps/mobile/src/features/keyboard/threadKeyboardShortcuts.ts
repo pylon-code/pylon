@@ -14,6 +14,14 @@ type ThreadShortcutListItem =
   | ThreadListV2ListItem
   | { readonly type: "v2-show-more" };
 
+const NO_THREAD_JUMP_COMMANDS: ReadonlyArray<HardwareKeyboardCommand> = [];
+
+export function visibleThreadJumpCommands(
+  visible: boolean,
+): ReadonlyArray<HardwareKeyboardCommand> {
+  return visible ? THREAD_JUMP_KEYBINDING_COMMANDS : NO_THREAD_JUMP_COMMANDS;
+}
+
 export function threadJumpIndex(command: HardwareKeyboardCommand) {
   return THREAD_JUMP_KEYBINDING_COMMANDS.findIndex((candidate) => candidate === command);
 }
@@ -36,6 +44,7 @@ export function threadJumpTarget(
 export function useThreadJumpShortcuts(
   items: ReadonlyArray<ThreadShortcutListItem>,
   onSelectThread: (thread: EnvironmentThreadShell) => void,
+  visible = true,
 ) {
   const jumpToThread = useCallback(
     (command: HardwareKeyboardCommand) => {
@@ -45,5 +54,5 @@ export function useThreadJumpShortcuts(
     },
     [items, onSelectThread],
   );
-  useHardwareKeyboardCommand(THREAD_JUMP_KEYBINDING_COMMANDS, jumpToThread);
+  useHardwareKeyboardCommand(visibleThreadJumpCommands(visible), jumpToThread);
 }
