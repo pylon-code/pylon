@@ -7,6 +7,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import {
   PullRequestOperationError,
@@ -38,6 +39,7 @@ export const FILE_REVISIONS_CACHE_CAPACITY = 64;
 export const MAX_FILE_REVISION_PATHS = 1_000;
 const MAX_HOST_MARK_PREFLIGHT_SLICES = 8;
 const DISPLAY_DIGEST = /^[0-9a-f]{64}$/;
+const encodeFilesViewedKey = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 interface FileRevisionsDependencies {
   readonly runFork: (effect: Effect.Effect<void>) => unknown;
@@ -395,7 +397,7 @@ export const make = (dependencies: Dependencies) => {
     // its queue are one step: yielding for `Semaphore.make` between the lookup and the insert
     // lets two presses each make a gate of their own and neither wait on the other.
     Effect.suspend(() => {
-      const key = JSON.stringify([
+      const key = encodeFilesViewedKey([
         project.project.id,
         project.api.kind,
         project.host,

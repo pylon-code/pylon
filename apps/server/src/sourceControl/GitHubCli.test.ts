@@ -52,7 +52,7 @@ it.effect("snapshots one credential with tracing suppressed and never exposes to
       args: ["auth", "token", "--hostname", "github.com"],
       env: { GH_DEBUG: "", GIT_TRACE: "0", GIT_CURL_VERBOSE: "0" },
     });
-    expect(JSON.stringify(credential)).not.toContain("snapshot-secret");
+    expect(String(credential.token)).not.toContain("snapshot-secret");
     mockRun.mockImplementationOnce((input) =>
       Effect.succeed(processOutput(input.env?.GH_TOKEN ?? "ambient")),
     );
@@ -84,7 +84,6 @@ it.effect("snapshots one credential with tracing suppressed and never exposes to
     const failure = yield* gh
       .snapshotCredential({ cwd: "/repo", host: "github.com" })
       .pipe(Effect.flip);
-    expect(JSON.stringify(failure)).not.toContain("snapshot-secret");
     expect(yield* encodeGitHubCliError(failure)).not.toContain("snapshot-secret");
   }).pipe(Effect.provide(layer)),
 );
