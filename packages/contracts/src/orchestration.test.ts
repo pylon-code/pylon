@@ -653,6 +653,39 @@ it.effect("decodes thread.created runtime mode for historical events", () =>
   }),
 );
 
+it.effect("keeps title intent optional for older event payload consumers", () =>
+  Effect.gen(function* () {
+    const { titleState: _createdTitleState, ...legacyCreatedFields } = ThreadCreatedPayload.fields;
+    const { titleState: _updatedTitleState, ...legacyUpdatedFields } =
+      ThreadMetaUpdatedPayload.fields;
+    const legacyCreated = Schema.decodeUnknownEffect(Schema.Struct(legacyCreatedFields));
+    const legacyUpdated = Schema.decodeUnknownEffect(Schema.Struct(legacyUpdatedFields));
+    const created = yield* legacyCreated({
+      threadId: "thread-1",
+      projectId: "project-1",
+      title: "Seed title",
+      titleState: { source: "provisional", version: "command-create" },
+      modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const updated = yield* legacyUpdated({
+      threadId: "thread-1",
+      title: "Generated title",
+      titleState: { source: "generated", version: "command-generation" },
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+    assert.strictEqual(created.title, "Seed title");
+    assert.strictEqual(updated.title, "Generated title");
+    assert.strictEqual("titleState" in created, false);
+    assert.strictEqual("titleState" in updated, false);
+  }),
+);
+
 it.effect("decodes thread.meta-updated payloads with explicit provider", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadMetaUpdatedPayload({

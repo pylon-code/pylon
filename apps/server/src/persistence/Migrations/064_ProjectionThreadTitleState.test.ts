@@ -11,6 +11,10 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))("064_ProjectionThreadTi
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 63 });
+      const viewedTables = yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pull_request_files_viewed'
+      `;
+      assert.equal(viewedTables.length, 1);
       yield* runMigrations({ toMigrationInclusive: 64 });
       const columns = yield* sql<{ readonly name: string; readonly notnull: number }>`
           PRAGMA table_info(projection_threads)

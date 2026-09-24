@@ -493,7 +493,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           projectId: command.projectId,
           title: command.title,
-          titleState: { source: "provisional" as const, version: command.commandId },
+          titleState: {
+            source: command.historyImport === true ? ("manual" as const) : ("provisional" as const),
+            version: command.commandId,
+          },
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
@@ -1384,7 +1387,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      const requestIsCurrent = thread.titleRegeneration?.requestId === command.requestId;
+      const requestIsCurrent =
+        thread.deletedAt === null &&
+        thread.archivedAt === null &&
+        thread.titleRegeneration?.requestId === command.requestId;
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({

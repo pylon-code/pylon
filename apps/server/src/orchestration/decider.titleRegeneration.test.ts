@@ -108,7 +108,10 @@ it.layer(NodeServices.layer)("title regeneration decider", (it) => {
         { titleRegeneration: { requestId: CommandId.make("cmd-regen"), startedAt: UPDATED_AT } },
       ]) {
         const result = yield* generatedCompletion(
-          { ...readModel, threads: [{ ...thread, titleState: current.threads[0]!.titleState, ...changed }] },
+          {
+            ...readModel,
+            threads: [{ ...thread, titleState: current.threads[0]!.titleState, ...changed }],
+          },
           version,
         );
         const event = Array.isArray(result) ? result[0] : result;
@@ -172,6 +175,35 @@ it.layer(NodeServices.layer)("title regeneration decider", (it) => {
           threadId: ThreadId.make("thread-1"),
           updatedAt: UPDATED_AT,
         });
+      }
+    }),
+  );
+
+  it.effect("ignores regeneration completion after archive or deletion", () =>
+    Effect.gen(function* () {
+      const requestId = CommandId.make("cmd-regenerate-pending");
+      const thread = {
+        ...readModel.threads[0]!,
+        titleRegeneration: { requestId, startedAt: UPDATED_AT },
+      };
+      for (const inactive of [{ archivedAt: UPDATED_AT }, { deletedAt: UPDATED_AT }]) {
+        const result = yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.title.regeneration.complete",
+            commandId: CommandId.make("cmd-regeneration-late"),
+            threadId: thread.id,
+            requestId,
+            title: "Generated title",
+          },
+          readModel: { ...readModel, threads: [{ ...thread, ...inactive }] },
+        });
+        const event = Array.isArray(result) ? result[0] : result;
+        expect(event.type).toBe("thread.meta-updated");
+        if (event.type === "thread.meta-updated") {
+          expect(event.payload.title).toBeUndefined();
+          expect(event.payload.titleState).toBeUndefined();
+          expect(event.payload.updatedAt).toBe(UPDATED_AT);
+        }
       }
     }),
   );
