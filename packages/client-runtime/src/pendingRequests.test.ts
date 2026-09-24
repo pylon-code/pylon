@@ -513,4 +513,15 @@ describe.each(["approval", "user-input"])("%s request completion", (requestKind)
       userInputs: [],
     });
   });
+
+  it("closes a request when its provider session has stopped", () => {
+    const failed = makeActivity({
+      kind: `provider.${requestKind}.respond.failed`,
+      payload: {
+        requestId: "request-1",
+        detail: "No active provider session is bound to this thread.",
+      },
+    });
+    expect(derivePendingRequests([requested, failed])).toEqual({ approvals: [], userInputs: [] });
+  });
 });

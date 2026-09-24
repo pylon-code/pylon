@@ -2670,6 +2670,27 @@ it.effect(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) => {
+  it.effect("does not return an orphaned question after a stopped-session reply failure", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        ) VALUES
+          ('orphaned-question', 'thread-orphaned', NULL, 'approval', 'user-input.requested',
+            'Question', '{"requestId":"request-orphaned"}', '2026-09-24T00:00:00.000Z'),
+          ('orphaned-failure', 'thread-orphaned', NULL, 'error',
+            'provider.user-input.respond.failed', 'Reply failed',
+            '{"requestId":"request-orphaned","detail":"No active provider session is bound to this thread."}',
+            '2026-09-24T00:00:01.000Z')
+      `;
+      const pending = yield* snapshotQuery.getPendingRequestActivities({
+        threadId: ThreadId.make("thread-orphaned"),
+      });
+      assert.deepStrictEqual(pending, []);
+    }),
+  );
   // A thread shaped like real fan-out usage: user turns interleaved with
   // subagent turns (no user pending message), plus a turnless straggler user
   // message and a turnless activity anchored between turns.
