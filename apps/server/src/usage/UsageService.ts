@@ -936,6 +936,18 @@ export const make = Effect.gen(function* () {
       // Distinct per directory. Buckets carry per-cell session counts, but a
       // session spans days and models, so clients total this figure instead.
       const sessionIds = new Set<string>();
+      // Keep attribution at the physical directory boundary. The primary
+      // aggregator decides scan-wide de-duplication first, so source buckets
+      // partition the same accepted records as the legacy flat buckets.
+      const sourceAggregator = new UsageAggregator({
+        timeZone: input.timeZone,
+        sinceDay: input.sinceDay,
+        untilDay: input.untilDay,
+        resolution: input.resolution ?? "day",
+        ...hourlyWindow,
+        rates,
+        priceOverrides: createOverrideRateTable(settings.usagePriceOverrides),
+      });
 
       for (const file of retainedFiles) {
         if (file.records.length === 0) {
@@ -962,8 +974,9 @@ export const make = Effect.gen(function* () {
           }
           // Only sessions contributing in-window count; the mtime slack can
           // admit boundary files whose records fall outside the range.
-          if (aggregator.add(usageRecord) && record.sessionId.length > 0) {
-            sessionIds.add(record.sessionId);
+          if (aggregator.add(usageRecord)) {
+            sourceAggregator.add(usageRecord);
+            if (record.sessionId.length > 0) sessionIds.add(record.sessionId);
           }
         }
       }
@@ -981,6 +994,7 @@ export const make = Effect.gen(function* () {
             : status === "failed" && scannedFiles > 0
               ? "partial"
               : (status ?? "ok"),
+        buckets: sourceAggregator.finish().buckets,
         scannedFiles,
         skippedFiles,
         malformedRecords: malformedRecords ?? 0,
