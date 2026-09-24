@@ -685,6 +685,9 @@ export const make = Effect.gen(function* () {
       );
       yield* forkParked(
         Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
+          // This PubSub stream starts with the subscription and does not replay
+          // past events. A timestamp fence would discard valid events emitted
+          // later in the same millisecond as startup.
           const threadId = eventThreadId(event);
           if (threadId === null) {
             return Effect.logDebug("agent activity publishing ignored event without thread id", {
@@ -694,18 +697,13 @@ export const make = Effect.gen(function* () {
           if (
             (event.type === "thread.turn-start-requested" ||
               event.type === "thread.message-sent") &&
-            event.metadata.historyImport !== true &&
-            Date.parse(event.occurredAt) > startedAt
+            event.metadata.historyImport !== true
           ) {
             freshLifecycleThreads.delete(threadId);
             pendingAdmissionThreads.add(threadId);
             publishConfirmDeadlines.delete(threadId);
           }
-          if (
-            event.type === "thread.session-set" &&
-            event.metadata.historyImport !== true &&
-            Date.parse(event.occurredAt) > startedAt
-          ) {
+          if (event.type === "thread.session-set" && event.metadata.historyImport !== true) {
             const session = event.payload.session;
             const previous = freshLifecycleThreads.get(threadId);
             if (session.status === "running") {

@@ -83,7 +83,8 @@ describe.sequential("AgentAwarenessRelay startup", () => {
         const secrets = makeMemorySecretStore();
         const now = yield* DateTime.now;
         const old = DateTime.formatIso(DateTime.add(now, { days: -7 }));
-        const afterStartup = DateTime.formatIso(DateTime.add(now, { minutes: 1 }));
+        // Live PubSub events can share the startup millisecond and are still new.
+        const afterStartup = DateTime.formatIso(now);
         const threadId = "thread-old" as ThreadId;
         const freshDoneThreadId = "thread-new-done" as ThreadId;
         const invalidatedThreadId = "thread-new-admission" as ThreadId;
