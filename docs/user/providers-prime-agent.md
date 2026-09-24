@@ -44,6 +44,10 @@ models.
 
 Stock Prime Agent runs in ACP compatibility mode with these limits: one account, Full access only, no
 approvals, model change requires a new thread, and no Goal/Harness/queue/resources controls.
+The stock 0.9.5 standalone installer contains an executable but no public JavaScript SDK. Pylon
+attempts ACP compatibility with that executable, but native mode and Prime-based title and source-control text
+generation require an installation with a compatible public SDK. Select the Pylon-managed Prime build
+for native mode, or choose another text-generation provider for titles and source-control writing.
 
 To enable native mode, open **Settings → Providers → Prime Agent** and choose **Install stable** under
 **Pylon-managed Prime**. If a managed build is already selected, the button is **Update stable**.

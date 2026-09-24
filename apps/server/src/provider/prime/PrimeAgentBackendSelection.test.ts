@@ -14,6 +14,7 @@ import {
   negotiatePrimeAgentBackend,
   type PrimeAgentBackendNegotiationInput,
 } from "./PrimeAgentBackendSelection.ts";
+import { PrimeAgentDaemonBridgeError } from "./PrimeAgentDaemonBridge.ts";
 import {
   PrimeAgentDaemonManagerError,
   type PrimeAgentDaemonManagerInput,
@@ -312,8 +313,35 @@ it.layer(NodeServices.layer)("negotiatePrimeAgentBackend", (it) => {
         runtime: "acp",
         fallbackCategory: "sdk-contract",
         fallbackMessage:
-          "The installed Prime Agent is a stock build, so Pylon is using ACP compatibility mode: one account, Full access only, and model changes need a new thread. Install the Pylon Prime build to enable native mode.",
+          "The installed Prime Agent does not expose the public SDK required for native mode, so Pylon is using ACP compatibility mode: one account, Full access only, and model changes need a new thread. Install or repair the Pylon Prime build to enable native mode.",
       });
+    }),
+  );
+
+  it.effect("routes a compiled stock build without a public SDK to ACP", () =>
+    Effect.gen(function* () {
+      const makeManager = () =>
+        Effect.fail(
+          new PrimeAgentDaemonBridgeError({
+            binaryPath: "/secret/compiled/prime-agent",
+            reason: "missing-public-entry",
+            detail: "The advertised public entry is absent.",
+          }),
+        );
+      const dependencies = {
+        resolveExecutable: () => Effect.succeed("/secret/compiled/prime-agent"),
+        makeManager,
+      };
+      const selection = yield* negotiatePrimeAgentBackend(baseInput, dependencies);
+      expect(selection).toMatchObject({ runtime: "acp", fallbackCategory: "sdk-contract" });
+      const native = yield* negotiatePrimeAgentBackend(
+        { ...baseInput, requireNative: true },
+        dependencies,
+      );
+      expect(native).toMatchObject({ runtime: "unavailable", reason: "sdk-contract" });
+      expect(selection.runtime === "acp" ? selection.fallbackMessage : undefined).not.toContain(
+        "/secret/",
+      );
     }),
   );
 
