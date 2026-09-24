@@ -124,31 +124,17 @@ const legacyNumberedDefaults = [
 function migrateLegacyNumberedDefaults(
   rules: readonly KeybindingRule[],
 ): readonly KeybindingRule[] {
-  // Startup formerly persisted the whole defaults file. Require that
-  // fingerprint before treating identical numbered rows as inherited:
-  // a partial hand-written set of browser bindings is user configuration.
-  const numberedCommands = new Set<KeybindingRule["command"]>(
-    legacyNumberedDefaults.map((rule) => rule.command),
-  );
-  const nonNumberedDefaults = DEFAULT_KEYBINDINGS.filter(
-    (rule) => !numberedCommands.has(rule.command),
-  );
-  const matchingNonNumbered = nonNumberedDefaults.filter((defaultRule) =>
-    rules.some((rule) => isSameKeybindingRule(rule, defaultRule)),
-  );
-  const presentNumberedCommands = new Set(
-    rules.filter((rule) => numberedCommands.has(rule.command)).map((rule) => rule.command),
-  );
+  // Only the complete, unmodified legacy numbered block proves that these
+  // are inherited defaults. A partial block or a duplicate command may be a
+  // deliberate custom set; leave it alone even if many rows look identical.
   if (
-    matchingNonNumbered.length < Math.ceil(nonNumberedDefaults.length * 0.75) ||
-    presentNumberedCommands.size < Math.ceil(legacyNumberedDefaults.length / 2)
+    !legacyNumberedDefaults.every((legacy) => {
+      const matchingCommand = rules.filter((rule) => rule.command === legacy.command);
+      return matchingCommand.length === 1 && isSameKeybindingRule(matchingCommand[0]!, legacy);
+    })
   ) {
     return rules;
   }
-  const matching = rules.filter((rule) =>
-    legacyNumberedDefaults.some((legacy) => isSameKeybindingRule(rule, legacy)),
-  );
-  if (matching.length === 0) return rules;
 
   return rules.map((rule) => {
     const legacy = legacyNumberedDefaults.find((entry) => isSameKeybindingRule(entry, rule));

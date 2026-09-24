@@ -188,54 +188,45 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
     }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
-  it.effect("migrates persisted numbered defaults once and preserves later browser opt-in", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
-      const legacy = Keybindings.DEFAULT_KEYBINDINGS.map((rule) => {
-        if (rule.command.startsWith("thread.jump.")) {
-          return { key: rule.key, command: rule.command };
-        }
-        if (rule.command.startsWith("modelPicker.jump.")) {
-          return { key: rule.key, command: rule.command, when: "modelPickerOpen" };
-        }
-        return rule;
-      });
-      const customBrowserRule: KeybindingRule = {
-        key: "mod+shift+1",
-        command: "thread.jump.1",
-        when: "isWeb",
-      };
-      const legacyWithOverride = legacy.map((rule) =>
-        rule.command === customBrowserRule.command ? customBrowserRule : rule,
-      );
-      yield* writeKeybindingsConfig(keybindingsConfigPath, legacyWithOverride);
+  it.effect(
+    "migrates the complete legacy numbered block once and preserves later browser opt-in",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+        const legacy = Keybindings.DEFAULT_KEYBINDINGS.map((rule) => {
+          if (rule.command.startsWith("thread.jump.")) {
+            return { key: rule.key, command: rule.command };
+          }
+          if (rule.command.startsWith("modelPicker.jump.")) {
+            return { key: rule.key, command: rule.command, when: "modelPickerOpen" };
+          }
+          return rule;
+        });
+        yield* writeKeybindingsConfig(keybindingsConfigPath, legacy);
 
-      const keybindings = yield* Keybindings.Keybindings;
-      yield* keybindings.syncDefaultKeybindingsOnStartup;
-      const migrated = yield* readKeybindingsConfig(keybindingsConfigPath);
-      assert.deepEqual(
-        migrated.find((rule) => rule.command === "thread.jump.1"),
-        customBrowserRule,
-      );
-      assert.equal(migrated.find((rule) => rule.command === "thread.jump.2")?.when, "isDesktop");
-      assert.equal(
-        migrated.find((rule) => rule.command === "modelPicker.jump.2")?.when,
-        "modelPickerOpen && isDesktop",
-      );
-      assert.isTrue(yield* fs.exists(`${keybindingsConfigPath}.desktop-numbered-defaults-v1`));
+        const keybindings = yield* Keybindings.Keybindings;
+        yield* keybindings.syncDefaultKeybindingsOnStartup;
+        const migrated = yield* readKeybindingsConfig(keybindingsConfigPath);
+        assert.equal(migrated.find((rule) => rule.command === "thread.jump.1")?.when, "isDesktop");
+        assert.equal(migrated.find((rule) => rule.command === "thread.jump.2")?.when, "isDesktop");
+        assert.equal(
+          migrated.find((rule) => rule.command === "modelPicker.jump.2")?.when,
+          "modelPickerOpen && isDesktop",
+        );
+        assert.isTrue(yield* fs.exists(`${keybindingsConfigPath}.desktop-numbered-defaults-v1`));
 
-      // Removing the condition after migration is a deliberate browser opt-in.
-      yield* writeKeybindingsConfig(
-        keybindingsConfigPath,
-        migrated.map((rule) =>
-          rule.command === "thread.jump.2" ? { key: rule.key, command: rule.command } : rule,
-        ),
-      );
-      yield* keybindings.syncDefaultKeybindingsOnStartup;
-      const optedIn = yield* readKeybindingsConfig(keybindingsConfigPath);
-      assert.isUndefined(optedIn.find((rule) => rule.command === "thread.jump.2")?.when);
-    }).pipe(Effect.provide(makeKeybindingsLayer())),
+        // Removing the condition after migration is a deliberate browser opt-in.
+        yield* writeKeybindingsConfig(
+          keybindingsConfigPath,
+          migrated.map((rule) =>
+            rule.command === "thread.jump.2" ? { key: rule.key, command: rule.command } : rule,
+          ),
+        );
+        yield* keybindings.syncDefaultKeybindingsOnStartup;
+        const optedIn = yield* readKeybindingsConfig(keybindingsConfigPath);
+        assert.isUndefined(optedIn.find((rule) => rule.command === "thread.jump.2")?.when);
+      }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
   it.effect("preserves a partial hand-written browser jump set", () =>
@@ -253,6 +244,34 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
         { key: "mod+1", command: "thread.jump.1" },
         { key: "mod+2", command: "thread.jump.2" },
       ]);
+    }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+
+  it.effect("preserves a mostly-default file with one custom numbered binding", () =>
+    Effect.gen(function* () {
+      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+      const legacy = Keybindings.DEFAULT_KEYBINDINGS.map((rule) => {
+        if (rule.command.startsWith("thread.jump.")) {
+          return { key: rule.key, command: rule.command };
+        }
+        if (rule.command.startsWith("modelPicker.jump.")) {
+          return { key: rule.key, command: rule.command, when: "modelPickerOpen" };
+        }
+        return rule;
+      });
+      const customBrowserRule: KeybindingRule = {
+        key: "mod+shift+1",
+        command: "thread.jump.1",
+        when: "isWeb",
+      };
+      const partlyCustomized = legacy.map((rule) =>
+        rule.command === customBrowserRule.command ? customBrowserRule : rule,
+      );
+      yield* writeKeybindingsConfig(keybindingsConfigPath, partlyCustomized);
+
+      const keybindings = yield* Keybindings.Keybindings;
+      yield* keybindings.syncDefaultKeybindingsOnStartup;
+      assert.deepEqual(yield* readKeybindingsConfig(keybindingsConfigPath), partlyCustomized);
     }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
