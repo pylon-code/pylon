@@ -134,6 +134,7 @@ vi.mock("../lib/uuid", () => ({ uuidv4: () => "uuid", randomHex: () => "0000" })
 vi.mock("./assets", () => ({ assetEnvironment: {} }));
 vi.mock("./attachments", () => ({ attachmentEnvironment: {} }));
 vi.mock("./session", () => ({ environmentSession: {} }));
+vi.mock("./pasted-text-capability", () => ({ connectedPastedTextAttachmentLease: () => null }));
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({
   createEnvironmentRpcCommand: () => Symbol("rpc-command"),
   executeAtomQuery: () => {
@@ -172,10 +173,12 @@ import {
   getComposerDraftAfterSelection,
   archiveCloudComposerDrafts,
   clearComposerDraftContent,
+  clearComposerDraft,
   clearComposerDraftContentState,
   clearComposerDraftsEnvironment,
   ComposerDraftPersistenceError,
   composerDraftsAtom,
+  composerDraftIncarnation,
   composerContextImportsAtom,
   beginComposerContextImport,
   composerCloudDraftsAtom,
@@ -203,6 +206,7 @@ import {
   setComposerDraftText,
   insertComposerDraftContext,
   insertComposerDraftText,
+  insertComposerDraftTextIfIncarnation,
   rememberComposerDraftSelection,
   setComposerDraftAttachmentUpload,
   waitForComposerDraftsLoaded,
@@ -902,6 +906,40 @@ describe("mobile composer drafts", () => {
     write.resolve();
     await pending;
     expect(getComposerDraftSnapshot(key).text).toBe("keep newly typed text pasted");
+  });
+
+  it("completes an intercepted paste in its original draft after navigation and intervening typing", async () => {
+    const key = "environment-1:paste-owner";
+    setComposerDraftText(key, "before after");
+    const target = captureComposerDraftInsertion(key, { start: 7, end: 7 });
+    const incarnation = composerDraftIncarnation(key);
+    const write = Promise.withResolvers<void>();
+    const pending = write.promise.then(() =>
+      insertComposerDraftTextIfIncarnation(key, incarnation, "pasted ", target),
+    );
+    // Another editor can become active while the captured draft keeps changing.
+    setComposerDraftText("environment-2:other", "other draft");
+    setComposerDraftText(key, "newly typed text");
+    write.resolve();
+    expect(await pending).toBe(true);
+    expect(getComposerDraftSnapshot(key).text).toBe("newly typed textpasted ");
+    expect(getComposerDraftSnapshot("environment-2:other").text).toBe("other draft");
+  });
+
+  it("does not resurrect a discarded draft when a delayed paste finishes after same-key recreation", async () => {
+    const key = "environment-1:discarded-paste";
+    setComposerDraftText(key, "old draft");
+    const target = captureComposerDraftInsertion(key);
+    const incarnation = composerDraftIncarnation(key);
+    const write = Promise.withResolvers<void>();
+    const pending = write.promise.then(() =>
+      insertComposerDraftTextIfIncarnation(key, incarnation, "pasted", target),
+    );
+    clearComposerDraft(key);
+    setComposerDraftText(key, "new draft");
+    write.resolve();
+    expect(await pending).toBe(false);
+    expect(getComposerDraftSnapshot(key).text).toBe("new draft");
   });
 
   it.each(["attachment", "context", "imported context"])(

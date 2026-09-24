@@ -243,10 +243,9 @@ describe("composerStripAttachments", () => {
 
   it("keeps media beside a document rather than dropping the whole strip", async () => {
     const { composerStripAttachments } = await import("./composerImages");
-    expect(composerStripAttachments([doc, image, video] as never, new Set([doc.id])).map((a) => a.id)).toEqual([
-      "img-1",
-      "vid-1",
-    ]);
+    expect(
+      composerStripAttachments([doc, image, video] as never, new Set([doc.id])).map((a) => a.id),
+    ).toEqual(["img-1", "vid-1"]);
   });
 
   it("treats a picture picked through the document picker as media", async () => {
@@ -260,7 +259,9 @@ describe("composerStripAttachments", () => {
       sizeBytes: 30,
       fileUri: "file:///photo.png",
     };
-    expect(composerStripAttachments([pickedImage] as never, new Set()).map((a) => a.id)).toEqual(["pick-1"]);
+    expect(composerStripAttachments([pickedImage] as never, new Set()).map((a) => a.id)).toEqual([
+      "pick-1",
+    ]);
   });
 });
 

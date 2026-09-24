@@ -59,6 +59,22 @@ const COMPOSER_DRAFTS_DIRECTORY = "composer-drafts";
 const COMPOSER_DRAFTS_FILE = "drafts.json";
 const PERSIST_DEBOUNCE_MS = 200;
 
+const draftIncarnations = new Map<string, symbol>();
+
+/** A retained draft keeps its identity across edits and navigation, but not discard. */
+export function composerDraftIncarnation(draftKey: string): symbol {
+  let incarnation = draftIncarnations.get(draftKey);
+  if (!incarnation) {
+    incarnation = Symbol(draftKey);
+    draftIncarnations.set(draftKey, incarnation);
+  }
+  return incarnation;
+}
+
+function retireComposerDraftIncarnation(draftKey: string): void {
+  draftIncarnations.delete(draftKey);
+}
+
 export const composerContextImportsAtom = Atom.make<Record<string, boolean>>({}).pipe(
   Atom.keepAlive,
 );
@@ -266,6 +282,9 @@ export function insertComposerDraftContext(
   let removed: ReadonlyArray<DraftComposerAttachment> = [];
   updateComposerDrafts((current) => {
     const draft = normalizeDraft(current[draftKey]);
+    // An import replacing a captured selection cannot safely retarget that
+    // selection after intervening edits. Reject the whole import instead.
+    if (target && target.start !== target.end && target.text !== draft.text) return current;
     const attachments = content.attachments ?? [];
     const retained = draftWithoutInsertionSelection(draftKey, draft, target);
     if (
@@ -1308,6 +1327,18 @@ export function insertComposerDraftText(
   });
 }
 
+/** Complete an intercepted paste only into the draft that originally owned it. */
+export function insertComposerDraftTextIfIncarnation(
+  draftKey: string,
+  incarnation: symbol | null,
+  value: string,
+  target: ComposerDraftInsertion,
+): boolean {
+  if (incarnation === null || draftIncarnations.get(draftKey) !== incarnation) return false;
+  insertComposerDraftText(draftKey, value, target);
+  return true;
+}
+
 export function appendComposerDraftText(draftKey: string, value: string): void {
   updateComposerDrafts((current) => {
     const existing = normalizeDraft(current[draftKey]);
@@ -1886,6 +1917,7 @@ export function clearComposerDraftContent(
     readonly deferAttachmentCleanup?: boolean;
   },
 ): void {
+  retireComposerDraftIncarnation(draftKey);
   const previousAttachments = getComposerDraftSnapshot(draftKey).attachments;
   updateComposerDrafts((current) => clearComposerDraftContentState(current, draftKey, options));
   if (!options?.deferAttachmentCleanup) {
@@ -1897,6 +1929,7 @@ export function clearComposerDraft(
   draftKey: string,
   options?: { readonly deferAttachmentCleanup?: boolean },
 ): void {
+  retireComposerDraftIncarnation(draftKey);
   const previousAttachments = getComposerDraftSnapshot(draftKey).attachments;
   updateComposerDrafts((current) => {
     if (!current[draftKey]) {
@@ -2021,6 +2054,9 @@ export async function clearComposerDraftsEnvironment(environmentId: EnvironmentI
   const removedAttachments = Object.entries(current)
     .filter(([draftKey]) => next[draftKey] === undefined)
     .flatMap(([, draft]) => draft.attachments);
+  for (const draftKey of Object.keys(current)) {
+    if (next[draftKey] === undefined) retireComposerDraftIncarnation(draftKey);
+  }
 
   if (persistTimer !== null) {
     clearTimeout(persistTimer);

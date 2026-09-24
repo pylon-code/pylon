@@ -167,8 +167,10 @@ export function preparedPastedTextLeaseCurrent(
   environmentId: EnvironmentId,
   prepared: PreparedTurnAttachments,
 ): boolean {
-  return prepared.pastedTextLeaseState === undefined ||
-    connectedPastedTextAttachmentLease(environmentId)?.state === prepared.pastedTextLeaseState;
+  return (
+    prepared.pastedTextLeaseState === undefined ||
+    connectedPastedTextAttachmentLease(environmentId)?.state === prepared.pastedTextLeaseState
+  );
 }
 
 export type PrepareTurnAttachmentsResult =
@@ -343,9 +345,14 @@ export async function prepareTurnAttachments(input: {
   );
   const pasteLease = hasPastedText ? connectedPastedTextAttachmentLease(environmentId) : null;
   const assertPasteLease = () => {
-    if (hasPastedText &&
-        (pasteLease === null || connectedPastedTextAttachmentLease(environmentId)?.state !== pasteLease.state))
-      throw new Error("Pasted-text attachments require the connected server that supports them. Reconnect before sending.");
+    if (
+      hasPastedText &&
+      (pasteLease === null ||
+        connectedPastedTextAttachmentLease(environmentId)?.state !== pasteLease.state)
+    )
+      throw new Error(
+        "Pasted-text attachments require the connected server that supports them. Reconnect before sending.",
+      );
   };
   assertPasteLease();
   const files = input.attachments.filter((attachment) => attachment.type === "file");

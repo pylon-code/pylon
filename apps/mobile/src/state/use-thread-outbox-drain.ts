@@ -25,7 +25,11 @@ import { createQueuedModelCatalogRefresh } from "./queued-model-catalog-refresh"
 
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
-import { prepareTurnAttachments, preparedPastedTextLeaseCurrent, type PreparedTurnAttachments } from "../lib/attachmentUpload";
+import {
+  prepareTurnAttachments,
+  preparedPastedTextLeaseCurrent,
+  type PreparedTurnAttachments,
+} from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
 import {
   retainAcknowledgedThreadMessage,

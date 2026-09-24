@@ -1,12 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-const native = vi.hoisted(() => ({ module: null as null | { textPasteAttachmentRevision?: number } }));
+const native = vi.hoisted(() => ({
+  module: null as null | { textPasteAttachmentRevision?: number },
+}));
 vi.mock("expo", () => ({ requireOptionalNativeModule: () => native.module }));
 
 import { supportsNativePastedTextAttachments } from "./composerPasteCapability";
 
 describe("installed composer native paste capability", () => {
-  beforeEach(() => { native.module = null; });
+  beforeEach(() => {
+    native.module = null;
+  });
 
   it("keeps an old installed binary on ordinary native paste", () => {
     expect(supportsNativePastedTextAttachments()).toBe(false);

@@ -397,6 +397,7 @@ describe("prepareTurnAttachments", () => {
   });
 
   it("uploads generic file bytes directly and keeps mixed attachment order", async () => {
+    mocks.pastedTextLease = { state: {} };
     const pastedFile = {
       ...file,
       source: { _tag: "pasted-text" as const },

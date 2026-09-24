@@ -418,7 +418,9 @@ export function ComposerSurface(props: {
 }
 
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
-  const pastedTextAttachmentsAvailable = useConnectedPastedTextAttachmentCapability(props.environmentId);
+  const pastedTextAttachmentsAvailable = useConnectedPastedTextAttachmentCapability(
+    props.environmentId,
+  );
   const project = useProject(scopeProjectRef(props.environmentId, props.selectedThread.projectId));
   const { materialYouStyleLayoutActive, themeVariables: materialTheme } =
     useAppearancePreferences();
@@ -444,9 +446,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
   const hasContent = props.draftMessage.trim().length > 0 || props.draftAttachments.length > 0;
   const composerOwnerKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
-  const pasteOwner = useMemo(() => Symbol("composer-paste"), [composerOwnerKey, props.selectedThread.sourceEpoch]);
-  const [pendingPastedTextState, setPendingPastedTextState] = useState<{owner: symbol; count: number}>(() => ({owner: pasteOwner, count: 0}));
-  const pendingPastedTextCount = pendingPastedTextState.owner === pasteOwner ? pendingPastedTextState.count : 0;
+  const pasteOwner = useMemo(
+    () => Symbol("composer-paste"),
+    [composerOwnerKey, props.selectedThread.sourceEpoch],
+  );
+  const [pendingPastedTextState, setPendingPastedTextState] = useState<{
+    owner: symbol;
+    count: number;
+  }>(() => ({ owner: pasteOwner, count: 0 }));
+  const pendingPastedTextCount =
+    pendingPastedTextState.owner === pasteOwner ? pendingPastedTextState.count : 0;
   useLayoutEffect(() => {
     return () => {
       pendingPastedTextRef.current.delete(pasteOwner);
@@ -1395,7 +1404,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const handleSend = useCallback(async () => {
     // canSend is derived above voiceInput, so the block lives here.
     // Reachable via a hardware-keyboard Return while recording.
-    if (voiceInput.blocksSubmission || (pendingPastedTextRef.current.get(pasteOwner) ?? 0) > 0) return;
+    if (voiceInput.blocksSubmission || (pendingPastedTextRef.current.get(pasteOwner) ?? 0) > 0)
+      return;
     if (!canSend) return;
     if (handleLocalUsageLimits()) return;
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
@@ -1828,16 +1838,24 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 onSelectionChange={composerMenu.onSelectionChange}
                 onPasteImages={(uris) => void props.onNativePasteImages(uris)}
                 onPasteText={
-                  pastedTextAttachmentsAvailable &&
-                  !voiceInput.freezesEditor
+                  pastedTextAttachmentsAvailable && !voiceInput.freezesEditor
                     ? (paste) => {
-                        pendingPastedTextRef.current.set(pasteOwner, (pendingPastedTextRef.current.get(pasteOwner) ?? 0) + 1);
-                        setPendingPastedTextState({ owner: pasteOwner, count: pendingPastedTextRef.current.get(pasteOwner) ?? 0 });
+                        pendingPastedTextRef.current.set(
+                          pasteOwner,
+                          (pendingPastedTextRef.current.get(pasteOwner) ?? 0) + 1,
+                        );
+                        setPendingPastedTextState({
+                          owner: pasteOwner,
+                          count: pendingPastedTextRef.current.get(pasteOwner) ?? 0,
+                        });
                         void props.onNativePasteText(paste).finally(() => {
                           const remaining = pendingPastedTextRef.current.get(pasteOwner);
                           if (remaining === undefined) return;
                           pendingPastedTextRef.current.set(pasteOwner, Math.max(0, remaining - 1));
-                          setPendingPastedTextState({ owner: pasteOwner, count: pendingPastedTextRef.current.get(pasteOwner) ?? 0 });
+                          setPendingPastedTextState({
+                            owner: pasteOwner,
+                            count: pendingPastedTextRef.current.get(pasteOwner) ?? 0,
+                          });
                         });
                       }
                     : undefined

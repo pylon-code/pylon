@@ -362,22 +362,26 @@ export function ComposerEditor({
         setMostRecentEventCount(acknowledgedEventCount);
         forceNativeEventRender((sequence) => sequence + 1);
       }}
-      {...(supportsTextPaste ? { onComposerPasteText: (event: NativePasteTextEvent) => {
-        const paste = event.nativeEvent;
-        const acknowledgedEventCount = acceptNativeEvent(
-          paste.eventCount,
-          paste.value,
-          paste.selection,
-        );
-        if (acknowledgedEventCount === false) return;
-        // Synchronize the draft before an async paste captures its insertion target.
-        // React props can still precede the last native keystroke.
-        onChangeText(paste.value);
-        onSelectionChange?.(paste.selection);
-        onPasteText?.(paste);
-        setMostRecentEventCount(acknowledgedEventCount);
-        forceNativeEventRender((sequence) => sequence + 1);
-      }} : {})}
+      {...(supportsTextPaste
+        ? {
+            onComposerPasteText: (event: NativePasteTextEvent) => {
+              const paste = event.nativeEvent;
+              const acknowledgedEventCount = acceptNativeEvent(
+                paste.eventCount,
+                paste.value,
+                paste.selection,
+              );
+              if (acknowledgedEventCount === false) return;
+              // Synchronize the draft before an async paste captures its insertion target.
+              // React props can still precede the last native keystroke.
+              onChangeText(paste.value);
+              onSelectionChange?.(paste.selection);
+              onPasteText?.(paste);
+              setMostRecentEventCount(acknowledgedEventCount);
+              forceNativeEventRender((sequence) => sequence + 1);
+            },
+          }
+        : {})}
       onComposerFocus={onFocus}
       onComposerBlur={onBlur}
       onComposerSubmit={onSubmit}
