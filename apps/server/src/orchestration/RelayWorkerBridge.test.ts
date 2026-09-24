@@ -213,6 +213,65 @@ describe("RelayWorkerBridge direct receipts", () => {
       ),
     ).toEqual([]);
   });
+
+  it("binds the installed Claude plugin's unversioned job result", () => {
+    const result = {
+      type: "tool_result",
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            id: jobId,
+            status: "queued",
+            providerType: "codex",
+            createdAt: "2026-09-24T00:00:00.000Z",
+          }),
+        },
+      ],
+    };
+    expect(
+      relayBindingFromToolEvent(
+        toolEvent({
+          toolName: "mcp__plugin_relay-orchestrator_relay__relay_delegate",
+          result,
+        }),
+      ),
+    ).toEqual([
+      { kind: "job", id: jobId, threadId: "thread-a", turnId: "turn-a", toolCallId: "tool-a" },
+    ]);
+    expect(
+      relayBindingFromToolEvent(
+        toolEvent({
+          toolName: "mcp__relay__relay_delegate",
+          result,
+        }),
+      ),
+    ).toEqual([
+      { kind: "job", id: jobId, threadId: "thread-a", turnId: "turn-a", toolCallId: "tool-a" },
+    ]);
+    expect(
+      relayBindingFromToolEvent(
+        toolEvent({
+          toolName: "mcp__plugin_relay-orchestrator_relay__relay_panel",
+          result: {
+            type: "tool_result",
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  id: panelId,
+                  jobs: [jobId],
+                  unstarted: [{ index: 1 }],
+                }),
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual([
+      { kind: "panel", id: panelId, threadId: "thread-a", turnId: "turn-a", toolCallId: "tool-a" },
+    ]);
+  });
 });
 
 describe("Relay observe v1", () => {
@@ -267,7 +326,10 @@ const args = process.argv.slice(2);
 calls.push(args);
 fs.writeFileSync(callsPath, JSON.stringify(calls));
 const id = args[0] === "observe" && args[1] === "--panel" ? args[2] : args[1];
-if (args[0] === "observe" && state[id]) console.log(JSON.stringify(state[id]));
+if (args[0] === "observe" && state[id]?.schemaVersion === 1) console.log(JSON.stringify(state[id]));
+else if (args[0] === "observe" && state[id]) console.log(JSON.stringify({ usage: "relay init | status [id]", request: "JSON from --request file" }));
+else if (args[0] === "status" && state[id]) console.log(JSON.stringify(state[id]));
+else if (args[0] === "panel-result" && state[id]) console.log(JSON.stringify(state[id]));
 else if (args[0] === "cancel" && state[id]) console.log(JSON.stringify({id, status: "cancelling"}));
 else process.exit(1);
 `,
@@ -362,14 +424,11 @@ persistence("Relay persisted observer and controls", (it) => {
           toolCallId: "tool-a",
           status: "completed",
           data: {
-            toolName: "mcp__relay__relay_delegate",
+            toolName: "mcp__plugin_relay-orchestrator_relay__relay_delegate",
             result: {
               type: "tool_result",
               tool_use_id: "tool-a",
-              content: encodeJson({
-                content: [{ type: "text", text: "Worker dispatched" }],
-                structuredContent: { schemaVersion: 1, kind: "job", jobId, attempt: 1 },
-              }),
+              content: [{ type: "text", text: encodeJson({ id: jobId, status: "queued" }) }],
             },
           },
         };
@@ -395,6 +454,55 @@ persistence("Relay persisted observer and controls", (it) => {
           effort: "high",
           cancellable: true,
         });
+        const legacyJobId = "job-77777777-7777-4777-8777-777777777777";
+        cli.setState({
+          [jobId]: job,
+          [legacyJobId]: {
+            id: legacyJobId,
+            status: "running",
+            providerType: "codex",
+            model: "gpt-6-sol",
+            effort: "low",
+            createdAt: "2026-09-24T00:00:00.000Z",
+            updatedAt: "2026-09-24T00:00:01.000Z",
+          },
+        });
+        yield* bridge.recordToolResult(
+          toolEvent({
+            toolName: "mcp__plugin_relay-orchestrator_relay__relay_delegate",
+            itemId: "legacy-tool",
+            turnId: "legacy-turn",
+            result: {
+              type: "tool_result",
+              content: [
+                {
+                  type: "text",
+                  text: encodeJson({
+                    id: legacyJobId,
+                    status: "queued",
+                    providerType: "codex",
+                  }),
+                },
+              ],
+            },
+          }),
+        );
+        yield* bridge.reconcile;
+        const legacyRows = yield* sql`
+          SELECT turn_id AS turnId, payload_json AS payload
+          FROM projection_thread_activities
+          WHERE kind = 'task.started'
+            AND json_extract(payload_json, '$.taskId') = ${`relay:${legacyJobId}`}
+        `;
+        expect(legacyRows).toHaveLength(1);
+        expect(legacyRows[0]?.turnId).toBe("legacy-turn");
+        expect(decodeJson(legacyRows[0]?.payload)).toMatchObject({
+          taskId: `relay:${legacyJobId}`,
+          source: "relay",
+          model: "gpt-6-sol",
+          effort: "low",
+          toolUseId: "legacy-tool",
+        });
         const wrongThread = yield* Effect.result(
           bridge.cancel(ThreadId.make("thread-b"), `relay:${jobId}`),
         );
@@ -412,7 +520,7 @@ persistence("Relay persisted observer and controls", (it) => {
         yield* unavailable.reconcile;
         yield* unavailable.reconcile;
         const idleRows =
-          yield* sql`SELECT payload_json AS payload FROM projection_thread_activities WHERE kind = 'task.progress' AND summary = 'Relay observer unavailable'`;
+          yield* sql`SELECT payload_json AS payload FROM projection_thread_activities WHERE kind = 'task.progress' AND summary = 'Relay observer unavailable' AND json_extract(payload_json, '$.taskId') = ${`relay:${jobId}`}`;
         expect(idleRows).toHaveLength(1);
         expect(decodeJson(idleRows[0]?.payload)).toMatchObject({
           taskId: `relay:${jobId}`,
@@ -442,6 +550,7 @@ persistence("Relay persisted observer and controls", (it) => {
         const repeatedOutage = yield* sql`
           SELECT payload_json AS payload FROM projection_thread_activities
           WHERE kind = 'task.progress' AND summary = 'Relay observer unavailable'
+            AND json_extract(payload_json, '$.taskId') = ${`relay:${jobId}`}
           ORDER BY sequence
         `;
         expect(repeatedOutage).toHaveLength(2);
@@ -466,7 +575,7 @@ persistence("Relay persisted observer and controls", (it) => {
         });
         yield* reconnected.reconcile;
         const completed =
-          yield* sql`SELECT payload_json AS payload FROM projection_thread_activities WHERE kind = 'task.completed'`;
+          yield* sql`SELECT payload_json AS payload FROM projection_thread_activities WHERE kind = 'task.completed' AND json_extract(payload_json, '$.taskId') = ${`relay:${jobId}`}`;
         expect(completed).toHaveLength(1);
         expect(decodeJson(completed[0]?.payload)).toMatchObject({
           taskId: `relay:${jobId}`,
@@ -515,6 +624,7 @@ persistence("Relay persisted observer and controls", (it) => {
         const pendingResume = yield* sql`
           SELECT turn_id AS turnId, payload_json AS payload FROM projection_thread_activities
           WHERE kind = 'task.progress' AND activity_id LIKE 'relay-observer-unavailable:%'
+            AND json_extract(payload_json, '$.taskId') = ${`relay:${jobId}`}
           ORDER BY sequence DESC LIMIT 1
         `;
         expect(pendingResume).toHaveLength(1);
@@ -530,7 +640,7 @@ persistence("Relay persisted observer and controls", (it) => {
         cli.setState({ [jobId]: { ...job, attempt: 2, sequence: 1, status: "running" } });
         yield* resumedBridge.reconcile;
         const resumed =
-          yield* sql`SELECT turn_id AS turnId, payload_json AS payload FROM projection_thread_activities WHERE kind = 'task.started' ORDER BY created_at`;
+          yield* sql`SELECT turn_id AS turnId, payload_json AS payload FROM projection_thread_activities WHERE kind = 'task.started' AND json_extract(payload_json, '$.taskId') = ${`relay:${jobId}`} ORDER BY created_at`;
         expect(resumed).toHaveLength(2);
         expect(decodeJson(resumed[1]?.payload)).toMatchObject({
           taskId: `relay:${jobId}`,
@@ -944,12 +1054,143 @@ persistence("Relay persisted observer and controls", (it) => {
           Effect.provideService(ServerEnvironment, fakeEnvironment),
           Effect.provideService(ThreadBackgroundLivenessService, liveness),
         );
+        const callsBeforeBoot = cli.calls().length;
         yield* bootAfterChurn.reconcile;
+        const bootCalls = cli.calls().slice(callsBeforeBoot);
+        const observed = (id: string) =>
+          bootCalls.findIndex((args) => args[0] === "observe" && args[1] === id);
+        expect(observed(legacyJobId)).toBeGreaterThan(-1);
+        expect(observed(completedPanelJobId)).toBeGreaterThan(-1);
+        expect(observed(completedPanelJobId)).toBeLessThan(observed(legacyJobId));
         expect(
           cli
             .calls()
             .filter((args) => args[0] === "observe" && args[1]?.startsWith("job-00000000-")),
         ).toHaveLength(0);
+
+        const missingId = "job-cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+          ) VALUES (
+            ${`relay-binding:${missingId}`}, 'thread-a', 'turn-missing', 'info',
+            'relay.binding', 'Relay worker bound',
+            ${encodeJson({ kind: "job", id: missingId, toolCallId: "tool-missing", environmentId: "test-environment" })},
+            9999, '2026-09-24T00:00:00.000Z'
+          )
+        `;
+        const missingBridge = yield* makeWithCliPath(cli.path).pipe(
+          Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provideService(ServerEnvironment, fakeEnvironment),
+          Effect.provideService(ThreadBackgroundLivenessService, liveness),
+        );
+        yield* missingBridge.reconcile;
+        yield* missingBridge.reconcile;
+        yield* missingBridge.reconcile;
+        const missingRows = yield* sql`
+          SELECT payload_json AS payload FROM projection_thread_activities
+          WHERE kind = 'task.progress' AND json_extract(payload_json, '$.taskId') = ${`relay:${missingId}`}
+        `;
+        expect(missingRows).toHaveLength(1);
+        expect(decodeJson(missingRows[0]?.payload)).toMatchObject({
+          status: "idle",
+          summary: "Relay observer unavailable",
+          cancellable: false,
+        });
+        const missingPolls = cli
+          .calls()
+          .filter((args) => args[0] === "observe" && args[1] === missingId).length;
+        yield* missingBridge.reconcile;
+        expect(
+          cli.calls().filter((args) => args[0] === "observe" && args[1] === missingId),
+        ).toHaveLength(missingPolls);
+
+        const legacyPanelId = "panel-88888888-8888-4888-8888-888888888888";
+        const priorId = "job-99999999-9999-4999-8999-999999999999";
+        const currentId = "job-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const otherId = "job-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        const legacyDate = "2026-09-24T00:00:01.000Z";
+        const legacyJobs = [
+          {
+            id: currentId,
+            status: "running",
+            panelId: legacyPanelId,
+            panelMemberIndex: 0,
+            providerType: "codex",
+            createdAt: legacyDate,
+            updatedAt: legacyDate,
+          },
+          {
+            id: otherId,
+            status: "running",
+            panelId: legacyPanelId,
+            panelMemberIndex: 1,
+            providerType: "claude-alt",
+            createdAt: legacyDate,
+            updatedAt: legacyDate,
+          },
+        ];
+        cli.setState({
+          [legacyPanelId]: {
+            id: legacyPanelId,
+            request: { members: [{}, {}] },
+            jobs: legacyJobs,
+            previousJobs: [priorId],
+            unstarted: [],
+            complete: false,
+            createdAt: legacyDate,
+          },
+          [priorId]: {
+            id: priorId,
+            status: "failed",
+            panelId: legacyPanelId,
+            panelMemberIndex: 0,
+            createdAt: legacyDate,
+            updatedAt: legacyDate,
+          },
+          [currentId]: legacyJobs[0],
+          [otherId]: legacyJobs[1],
+        });
+        yield* bootAfterChurn.recordToolResult(
+          toolEvent({
+            toolName: "mcp__plugin_relay-orchestrator_relay__relay_panel",
+            itemId: "legacy-panel-tool",
+            turnId: "legacy-panel-turn",
+            result: {
+              type: "tool_result",
+              content: [
+                {
+                  type: "text",
+                  text: encodeJson({
+                    id: legacyPanelId,
+                    jobs: [currentId, otherId],
+                    unstarted: [],
+                  }),
+                },
+              ],
+            },
+          }),
+        );
+        yield* bootAfterChurn.reconcile;
+        const legacyMemberId = `relay-panel:${legacyPanelId}:member:0`;
+        const legacyMember = yield* sql`
+          SELECT turn_id AS turnId, payload_json AS payload
+          FROM projection_thread_activities WHERE kind = 'task.started'
+            AND json_extract(payload_json, '$.taskId') = ${legacyMemberId}
+        `;
+        expect(legacyMember).toHaveLength(1);
+        expect(legacyMember[0]?.turnId).toBe("legacy-panel-turn");
+        expect(decodeJson(legacyMember[0]?.payload)).toMatchObject({
+          taskId: legacyMemberId,
+          attempt: 2_000_001,
+          parentAgentId: `relay-panel:${legacyPanelId}`,
+        });
+        expect(
+          (yield* bootAfterChurn.cancel(ThreadId.make("thread-a"), legacyMemberId)).disposition,
+        ).toBe("cancel-requested");
+        expect(cli.calls().some((args) => args[0] === "cancel" && args[1] === currentId)).toBe(
+          true,
+        );
       }).pipe(Effect.ensuring(Effect.sync(() => cli.cleanup())));
     },
   );
