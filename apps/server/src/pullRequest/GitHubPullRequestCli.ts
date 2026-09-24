@@ -5,7 +5,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
-import * as Redacted from "effect/Redacted";
 import * as Request from "effect/Request";
 import * as RequestResolver from "effect/RequestResolver";
 import * as Result from "effect/Result";
