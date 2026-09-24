@@ -246,6 +246,12 @@ function projectEntriesFailureContext(error: WorkspaceEntries.WorkspaceEntriesEr
   readonly detail?: string;
 } {
   switch (error._tag) {
+    case "WorkspaceEntriesReadDirectoryError":
+      return {
+        failure: "directory_list_failed",
+        ...(error.cwd === undefined ? {} : { normalizedCwd: error.cwd }),
+        detail: error.message,
+      };
     case "WorkspaceRootNotExistsError":
       return {
         failure: "workspace_root_not_found",

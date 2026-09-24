@@ -259,6 +259,7 @@ export function useProjectPathSearch(
 
   return {
     entries: result.data?.entries ?? [],
+    truncated: result.data?.truncated ?? false,
     error: result.error,
     isPending:
       !areProjectPathSearchTargetsEqual(normalizedTarget, debouncedTarget) || result.isPending,
