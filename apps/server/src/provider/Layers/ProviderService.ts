@@ -1758,6 +1758,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     // Publish the new adapter set before any replacement stream can emit.
     yield* Ref.set(subscribedAdapters, next);
     for (const [id, adapter] of newSubscriptions) {
+      // A provider can emit a receipt synchronously during an API call. Subscribe before
+      // returning from reconciliation so that first receipt cannot outrun a deferred fork.
       yield* Stream.runForEach(adapter.streamEvents, (event) =>
         processRuntimeEvent(
           {
@@ -1767,7 +1769,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           },
           event,
         ),
-      ).pipe(Effect.forkScoped);
+      ).pipe(Effect.forkScoped({ startImmediately: true }));
     }
   });
 
