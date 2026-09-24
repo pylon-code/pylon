@@ -200,7 +200,12 @@ describe("buildTurnStartParams", () => {
       const names = yield* resolveCodexSkillNamesForPrompt(
         "€review",
         "/project",
-        Effect.fail(new Error("catalog unavailable")),
+        Effect.fail(
+          new CodexErrors.CodexAppServerRequestError({
+            code: -32603,
+            errorMessage: "catalog unavailable",
+          }),
+        ),
       );
       NodeAssert.equal(names, undefined);
     }),
