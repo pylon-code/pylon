@@ -169,6 +169,18 @@ describe("unpin Undo", () => {
     expect(add).not.toHaveBeenCalled();
   });
 
+  it("keeps a silent successful receipt authoritative until the observed pin changes", async () => {
+    threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
+    const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
+    await useThreadActions().unpinThread(target, { undoToast: false });
+    await useThreadActions().unpinThread(target);
+    expect(commands.unpin).toHaveBeenCalledOnce();
+    expect(add).not.toHaveBeenCalled();
+    await useThreadActions().pinThread(target, { orderKey: "a1" });
+    await useThreadActions().unpinThread(target);
+    expect(commands.unpin).toHaveBeenCalledTimes(2);
+  });
+
   it("ignores an old toast across hook instances and still restores the latest unpin", async () => {
     threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
     const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
