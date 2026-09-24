@@ -1,4 +1,4 @@
-import { act, createElement } from "react";
+import { Suspense, act, createElement } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -8,8 +8,11 @@ import { useComposerAliasPolicyReaders } from "./useComposerAliasPolicyReaders";
 let renderer: ReactTestRenderer | undefined;
 let readers: ReturnType<typeof useComposerAliasPolicyReaders>;
 
-function Harness(props: { policy: ComposerAliasPolicy }) {
+const pendingRender = new Promise<void>(() => {});
+
+function Harness(props: { policy: ComposerAliasPolicy; suspend?: boolean }) {
   readers = useComposerAliasPolicyReaders(props.policy);
+  if (props.suspend) throw pendingRender;
   return null;
 }
 
@@ -21,6 +24,31 @@ afterEach(async () => {
 });
 
 describe("useComposerAliasPolicyReaders", () => {
+  it("does not expose a provider policy from a suspended render", async () => {
+    const enabled = { allowUnicodeSkillAliases: true, unicodeSkillNames: new Set(["review"]) };
+    await act(() => {
+      renderer = create(
+        createElement(Suspense, { fallback: null }, createElement(Harness, { policy: enabled })),
+      );
+    });
+    const capturedTrigger = readers.detectComposerTrigger;
+    expect(capturedTrigger("€review", "€review".length)?.kind).toBe("skill");
+
+    await act(() => {
+      renderer?.update(
+        createElement(
+          Suspense,
+          { fallback: null },
+          createElement(Harness, {
+            policy: { allowUnicodeSkillAliases: false, unicodeSkillNames: new Set(["review"]) },
+            suspend: true,
+          }),
+        ),
+      );
+    });
+    expect(capturedTrigger("€review", "€review".length)?.kind).toBe("skill");
+  });
+
   it("updates captured composer callbacks across provider switches and catalog removal", async () => {
     const prompt = "Use 𑿝review and $review ";
     const render = async (policy: ComposerAliasPolicy) => {
