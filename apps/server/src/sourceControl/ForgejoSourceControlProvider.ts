@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
+import * as Option from "effect/Option";
 import { SourceControlProviderError } from "@t3tools/contracts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ForgejoCli from "./ForgejoCli.ts";
@@ -15,6 +16,8 @@ import {
 import { ForgejoPullRequestSchema, toForgejoChangeRequest } from "./forgejoPullRequests.ts";
 
 const isForgejoCliError = Schema.is(ForgejoCli.ForgejoCliError);
+const MAX_BRANCH_PULL_SCAN_PAGES = 20;
+const BRANCH_PULL_SCAN_TIMEOUT_MS = 20_000;
 
 export const discovery = {
   type: "cli",
@@ -235,7 +238,10 @@ export const make = Effect.gen(function* () {
         const branch = SourceControlProvider.sourceBranch(input);
         const results: ReturnType<typeof toForgejoChangeRequest>[] = [];
         const limit = input.limit ?? 20;
-        for (let page = 1; results.length < limit; page++) {
+        // Gitea's list-pulls API has no head-branch filter. Bound both the number
+        // of pages and total time so an unrelated large repository cannot hold
+        // a branch lookup indefinitely or exhaust the host's API allowance.
+        for (let page = 1; page <= MAX_BRANCH_PULL_SCAN_PAGES; page++) {
           const items = yield* request(
             {
               ...input,
@@ -253,10 +259,29 @@ export const make = Effect.gen(function* () {
             const normalized = toForgejoChangeRequest(item);
             if (input.state === "all" || normalized.state === input.state) results.push(normalized);
           }
-          if (items.length === 0) break;
+          if (results.length >= limit) return results.slice(0, limit);
+          if (items.length === 0) return results;
         }
-        return results.slice(0, limit);
-      }).pipe(mapError("listChangeRequests", input.cwd)),
+        return yield* new ForgejoCli.ForgejoCliError({
+          command: "fj",
+          cwd: input.cwd,
+          detail: "Forgejo pull request search reached its page limit before finding the branch.",
+        });
+      }).pipe(
+        Effect.timeoutOption(BRANCH_PULL_SCAN_TIMEOUT_MS),
+        Effect.flatMap((result) =>
+          Option.isSome(result)
+            ? Effect.succeed(result.value)
+            : Effect.fail(
+                new ForgejoCli.ForgejoCliError({
+                  command: "fj",
+                  cwd: input.cwd,
+                  detail: "Forgejo pull request search timed out before finding the branch.",
+                }),
+              ),
+        ),
+        mapError("listChangeRequests", input.cwd),
+      ),
     getChangeRequest: (input) =>
       getPull(input).pipe(
         Effect.map(toForgejoChangeRequest),

@@ -1,6 +1,8 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import type * as Context from "effect/Context";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -24,6 +26,36 @@ import * as ForgejoPullRequestProvider from "../pullRequest/ForgejoPullRequestPr
 import * as SourceControlDiscovery from "./SourceControlDiscovery.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
 import { firstNonEmptyLine } from "./SourceControlProviderDiscovery.ts";
+
+const forgejoPullRow = (head: string, number: number) => ({
+  number,
+  title: `Pull ${number}`,
+  html_url: `https://code.example/team/app/pulls/${number}`,
+  state: "open",
+  merged: false,
+  base: { ref: "main", sha: "base", repo: null },
+  head: { ref: head, sha: `head-${number}`, repo: null },
+});
+
+const makeForgejoListingProvider = (api: ForgejoCli.ForgejoCli["Service"]["api"]) =>
+  ForgejoSourceControlProvider.make.pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.succeed(FileSystem.FileSystem, FileSystem.makeNoop({})),
+        Layer.mock(VcsProcess.VcsProcess)({}),
+        Layer.mock(ForgejoCli.ForgejoCli)({
+          resolveRepository: () =>
+            Effect.succeed({
+              command: "fj",
+              login: "work",
+              repository: "team/app",
+              baseUrl: "https://code.example",
+            }),
+          api,
+        }),
+      ),
+    ),
+  );
 
 const sourceControlProviderRegistryTestLayer = (input: {
   readonly bitbucket: Partial<BitbucketApi.BitbucketApi["Service"]>;
@@ -207,6 +239,89 @@ it.effect("loads Forgejo pull request references from files and commits views", 
       ),
     ),
   ),
+);
+
+it.effect("bounds Forgejo branch searches that only find unrelated pull requests", () =>
+  Effect.gen(function* () {
+    const pages: number[] = [];
+    const provider = yield* makeForgejoListingProvider((input) => {
+      const page = Number(/(?:\?|&)page=(\d+)/.exec(input.path)?.[1]);
+      pages.push(page);
+      return Effect.succeed(
+        processOutput(
+          JSON.stringify(
+            Array.from({ length: 50 }, (_, index) => forgejoPullRow("other", page * 50 + index)),
+          ),
+        ),
+      );
+    });
+    const error = yield* Effect.flip(
+      provider.listChangeRequests({ cwd: "/repo", headSelector: "topic", state: "open", limit: 1 }),
+    );
+    assert.strictEqual(error._tag, "SourceControlProviderError");
+    assert.include(error.detail, "page limit");
+    assert.deepStrictEqual(
+      pages,
+      Array.from({ length: 20 }, (_, index) => index + 1),
+    );
+  }),
+);
+
+it.effect("finds a Forgejo branch match after an unrelated first page", () =>
+  Effect.gen(function* () {
+    const pages: number[] = [];
+    const provider = yield* makeForgejoListingProvider((input) => {
+      const page = Number(/(?:\?|&)page=(\d+)/.exec(input.path)?.[1]);
+      pages.push(page);
+      const rows =
+        page === 1
+          ? Array.from({ length: 50 }, (_, index) => forgejoPullRow("other", index + 1))
+          : [forgejoPullRow("topic", 51)];
+      return Effect.succeed(processOutput(JSON.stringify(rows)));
+    });
+    const result = yield* provider.listChangeRequests({
+      cwd: "/repo",
+      headSelector: "topic",
+      state: "open",
+      limit: 1,
+    });
+    assert.deepStrictEqual(
+      result.map((entry) => entry.number),
+      [51],
+    );
+    assert.deepStrictEqual(pages, [1, 2]);
+  }),
+);
+
+it.effect("cancels an in-flight Forgejo branch scan before requesting another page", () =>
+  Effect.gen(function* () {
+    const secondPage = yield* Deferred.make<void>();
+    const pages: number[] = [];
+    const provider = yield* makeForgejoListingProvider((input) => {
+      const page = Number(/(?:\?|&)page=(\d+)/.exec(input.path)?.[1]);
+      pages.push(page);
+      return page === 1
+        ? Effect.succeed(
+            processOutput(
+              JSON.stringify(
+                Array.from({ length: 50 }, (_, index) => forgejoPullRow("other", index + 1)),
+              ),
+            ),
+          )
+        : Deferred.succeed(secondPage, undefined).pipe(Effect.andThen(Effect.never));
+    });
+    const fiber = yield* provider
+      .listChangeRequests({
+        cwd: "/repo",
+        headSelector: "topic",
+        state: "open",
+        limit: 1,
+      })
+      .pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(secondPage);
+    yield* Fiber.interrupt(fiber);
+    assert.deepStrictEqual(pages, [1, 2]);
+  }),
 );
 
 it.effect(
