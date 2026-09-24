@@ -6,6 +6,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import {
   getMobileRollbackStatusPresentation,
   currentMobileRollbackSessionOwner,
+  mobileRollbackDetailIsCurrent,
   resolveMobileRollbackStatus,
 } from "./rollback-status-presentation";
 
@@ -132,7 +133,7 @@ describe("mobile rollback status presentation", () => {
         shell: { status: newStatus, sequence: 1, sessionOwner: newOwner, live: true },
         currentSessionOwner: newOwner,
       }),
-    ).toEqual({ status: { ...newStatus, allowedActions: [] }, uncertain: false });
+    ).toEqual({ status: { ...newStatus, allowedActions: [] }, uncertain: true });
     expect(
       resolveMobileRollbackStatus({
         detail: { status: oldStatus, sequence: 100, sessionOwner: oldOwner, live: true },
@@ -140,6 +141,72 @@ describe("mobile rollback status presentation", () => {
         currentSessionOwner: newOwner,
       }),
     ).toEqual({ status: undefined, uncertain: true });
+  });
+
+  it("blocks stale detail targets and sends while a replacement shell is the only current view", () => {
+    const oldOwner = {};
+    const newOwner = {};
+    const oldDetail = {
+      status: { state: "completed" as const, updatedAt },
+      sequence: 99,
+      sessionOwner: oldOwner,
+      live: true,
+    };
+    const newShell = {
+      status: null,
+      sequence: 1,
+      sessionOwner: newOwner,
+      live: true,
+    };
+    const resolved = resolveMobileRollbackStatus({
+      detail: oldDetail,
+      shell: newShell,
+      currentSessionOwner: newOwner,
+      rollbackStatusStreaming: true,
+    });
+    expect(resolved).toEqual({ status: null, uncertain: true });
+    expect(
+      resolveMobileRollbackStatus({
+        detail: oldDetail,
+        shell: newShell,
+        currentSessionOwner: newOwner,
+        rollbackStatusStreaming: false,
+      }).uncertain,
+    ).toBe(true);
+    expect(
+      mobileRollbackDetailIsCurrent({
+        detail: oldDetail,
+        currentSessionOwner: newOwner,
+        uncertain: resolved.uncertain,
+      }),
+    ).toBe(false);
+    expect(
+      resolveMobileRollbackStatus({
+        detail: { ...newShell, status: { state: "pending", updatedAt } },
+        shell: { ...oldDetail, status: null },
+        currentSessionOwner: newOwner,
+        rollbackStatusStreaming: true,
+      }).uncertain,
+    ).toBe(true);
+  });
+
+  it("allows an old peer's fresh no-status view without waiting for unsupported metadata", () => {
+    const owner = {};
+    const detail = { status: null, sequence: 5, sessionOwner: owner, live: true };
+    const resolved = resolveMobileRollbackStatus({
+      detail,
+      shell: { status: undefined, sequence: undefined, sessionOwner: null, live: false },
+      currentSessionOwner: owner,
+      rollbackStatusStreaming: false,
+    });
+    expect(resolved).toEqual({ status: null, uncertain: false });
+    expect(
+      mobileRollbackDetailIsCurrent({
+        detail,
+        currentSessionOwner: owner,
+        uncertain: resolved.uncertain,
+      }),
+    ).toBe(true);
   });
 
   it("fails closed on same-sequence disagreement and preserves old-peer absence", () => {

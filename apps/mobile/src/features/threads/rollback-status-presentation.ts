@@ -27,16 +27,31 @@ export function currentMobileRollbackSessionOwner(
     : null;
 }
 
+/** Revert targets and idle session state must come from this live connection. */
+export function mobileRollbackDetailIsCurrent(input: {
+  readonly detail: Pick<RollbackStatusSource, "sessionOwner" | "live">;
+  readonly currentSessionOwner: object | null;
+  readonly uncertain: boolean;
+}): boolean {
+  return (
+    !input.uncertain &&
+    input.currentSessionOwner !== null &&
+    input.detail.live &&
+    input.detail.sessionOwner === input.currentSessionOwner
+  );
+}
+
 /** Both streams use the server's global event sequence, scoped to one RPC session. */
 export function resolveMobileRollbackStatus(input: {
   readonly detail: RollbackStatusSource;
   readonly shell: RollbackStatusSource;
   readonly currentSessionOwner: object | null;
+  readonly rollbackStatusStreaming?: boolean | undefined;
 }): {
   readonly status: OrchestrationRollbackStatus | null | undefined;
   readonly uncertain: boolean;
 } {
-  const { detail, shell, currentSessionOwner } = input;
+  const { detail, shell, currentSessionOwner, rollbackStatusStreaming } = input;
   if (currentSessionOwner === null) {
     // Keep a cached status visible offline, but never enable recovery actions
     // or sends using state from a session whose authority is no longer live.
@@ -51,7 +66,11 @@ export function resolveMobileRollbackStatus(input: {
   const withoutUnprovedActions = (status: OrchestrationRollbackStatus | null | undefined) =>
     status == null ? status : { ...status, allowedActions: [] };
   if (current.length === 1) {
-    return { status: withoutUnprovedActions(current[0]!.status), uncertain: false };
+    // Legacy peers cannot stream rollback status. An absent status on their
+    // fresh live source remains usable, but modern peers must await both views.
+    const legacyNoStatus =
+      rollbackStatusStreaming === false && current[0] === detail && current[0]!.status == null;
+    return { status: withoutUnprovedActions(current[0]!.status), uncertain: !legacyNoStatus };
   }
   if (detail.sequence === undefined || shell.sequence === undefined) {
     return { status: undefined, uncertain: true };

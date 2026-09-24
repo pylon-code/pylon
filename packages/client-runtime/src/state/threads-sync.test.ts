@@ -670,6 +670,7 @@ describe("EnvironmentThreads", () => {
       // full snapshot over HTTP.
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
       expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+      expect((yield* Ref.get(harness.latest)).rollbackStatusStreaming).toBe(false);
     }),
   );
 
@@ -701,6 +702,7 @@ describe("EnvironmentThreads", () => {
           state.data.value.rollbackStatus?.state === "pending",
       );
       expect(live.snapshotSequence).toBe(8);
+      expect(live.rollbackStatusStreaming).toBe(true);
       expect(live.sessionOwner).not.toBeNull();
       expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBeUndefined();

@@ -46,6 +46,7 @@ import {
 } from "@t3tools/client-runtime/rollback";
 import {
   currentMobileRollbackSessionOwner,
+  mobileRollbackDetailIsCurrent,
   resolveMobileRollbackStatus,
 } from "./rollback-status-presentation";
 import { environmentCatalog } from "../../connection/catalog";
@@ -793,6 +794,7 @@ function ThreadRouteContent(
       live: rollbackShellState.status === "live" && rollbackShell !== undefined,
     },
     currentSessionOwner: rollbackSessionOwner,
+    rollbackStatusStreaming: selectedThreadDetailState.rollbackStatusStreaming,
   });
   const rollbackStatus = resolvedRollback.status;
   const rollbackActive = resolvedRollback.uncertain || isRollbackActive(rollbackStatus);
@@ -807,6 +809,14 @@ function ThreadRouteContent(
     selectedThreadDetail.session.compactionQueue === undefined &&
     selectedThreadDetail.latestTurn?.state !== "running" &&
     !rollbackActive &&
+    mobileRollbackDetailIsCurrent({
+      detail: {
+        live: selectedThreadDetailState.status === "live",
+        sessionOwner: selectedThreadDetailState.sessionOwner,
+      },
+      currentSessionOwner: rollbackSessionOwner,
+      uncertain: resolvedRollback.uncertain,
+    }) &&
     composer.selectedThreadQueueCount === 0 &&
     !composer.activeThreadBusy &&
     !rollbackCommandPending;

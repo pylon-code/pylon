@@ -404,6 +404,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     const waiting = yield* Ref.get(awaitingCompletion);
     const session = yield* Ref.get(activeSubscriptionSession);
     const sequence = yield* SubscriptionRef.get(lastSequence);
+    const rollbackStatusStreaming = yield* Ref.get(rollbackStatusSupported);
     yield* SubscriptionRef.update(state, (current) => ({
       data: Option.some(thread),
       // Buffered values from the failed attempt can still arrive after its error.
@@ -416,6 +417,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       page: page === "keep" ? current.page : page,
       snapshotSequence: sequence,
       sessionOwner: waiting || session === null ? null : rpcSessionOwner(session),
+      rollbackStatusStreaming,
     }));
     // Active threads can update many times per second and retain large tool
     // payloads. The server remains the source of truth while a turn is active;
@@ -436,6 +438,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       page: Option.none(),
       snapshotSequence: yield* SubscriptionRef.get(lastSequence),
       sessionOwner: null,
+      rollbackStatusStreaming: yield* Ref.get(rollbackStatusSupported),
     });
     yield* remember;
     if (resumeCache !== undefined && resumeCache.owner !== owner) return;
@@ -810,6 +813,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         const supportsPagination = config.threadSnapshotPagination === true;
         const supportsRollbackStatusStreaming = config.rollbackStatusStreaming === true;
         yield* Ref.set(rollbackStatusSupported, supportsRollbackStatusStreaming);
+        yield* SubscriptionRef.update(state, (current) => ({
+          ...current,
+          rollbackStatusStreaming: supportsRollbackStatusStreaming,
+        }));
         yield* Ref.set(paginationSupported, supportsPagination);
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* markSynchronizing;
