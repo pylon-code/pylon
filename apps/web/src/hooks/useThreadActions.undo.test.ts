@@ -109,12 +109,13 @@ function undoOf(
 }
 
 const success = { _tag: "Success" as const, value: undefined };
-function deferredSuccess() {
-  let resolve!: (value: typeof success) => void;
-  const promise = new Promise<typeof success>((ready) => {
+const failure = { _tag: "Failure" as const, cause: new Error("rejected") };
+function deferredResult() {
+  let resolve!: (value: typeof success | typeof failure) => void;
+  const promise = new Promise<typeof success | typeof failure>((ready) => {
     resolve = ready;
   });
-  return { promise, resolve: () => resolve(success) };
+  return { promise, resolve };
 }
 
 async function expectDuplicateReceiptHasOneInverse(
@@ -124,15 +125,14 @@ async function expectDuplicateReceiptHasOneInverse(
 ) {
   const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
   vi.spyOn(toastManager, "close").mockImplementation(() => {});
-  const first = deferredSuccess();
+  const first = deferredResult();
   command.mockImplementationOnce(() => first.promise);
   const firstAttempt = run();
   const duplicateAttempt = run();
-  await duplicateAttempt;
   expect(command).toHaveBeenCalledOnce();
   expect(add).not.toHaveBeenCalled();
-  first.resolve();
-  await firstAttempt;
+  first.resolve(success);
+  expect(await Promise.all([firstAttempt, duplicateAttempt])).toEqual([success, success]);
   expect(add).toHaveBeenCalledTimes(1);
   await run();
   expect(command).toHaveBeenCalledOnce();
@@ -141,6 +141,7 @@ async function expectDuplicateReceiptHasOneInverse(
 }
 
 beforeEach(() => {
+  ThreadUndo.invalidateThread(scopedThreadKey(target));
   for (const command of Object.values(commands)) {
     command.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
   }
@@ -275,6 +276,21 @@ describe("archive Undo", () => {
 });
 
 describe("settle and snooze Undo", () => {
+  it("shares a failed receipt across duplicate hook instances without reporting success", async () => {
+    threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
+    const pending = deferredResult();
+    commands.unpin.mockImplementationOnce(() => pending.promise);
+    const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
+    const first = useThreadActions().unpinThread(target);
+    const duplicate = useThreadActions().unpinThread(target);
+    expect(commands.unpin).toHaveBeenCalledOnce();
+    pending.resolve(failure);
+    expect(await Promise.all([first, duplicate])).toEqual([failure, failure]);
+    expect(add).not.toHaveBeenCalled();
+    await useThreadActions().unpinThread(target);
+    expect(commands.unpin).toHaveBeenCalledTimes(2);
+  });
+
   it("does not let a duplicate settle no-op own the inverse", async () => {
     await expectDuplicateReceiptHasOneInverse(
       commands.settle,

@@ -627,33 +627,32 @@ export function useThreadActions() {
       }
       const thread = readThreadShell(target);
       const orderKey = thread?.pinOrderKey ?? undefined;
-      const action =
-        thread?.pinnedAt != null
-          ? ThreadUndo.beginIfNew(
-              "pin",
-              scopedThreadKey(target),
-              JSON.stringify([thread.pinnedAt, orderKey]),
-            )
-          : null;
-      // The first receipt owns the observed transition. A duplicate callback
-      // against that same shell must not send another command behind its Undo.
-      if (thread?.pinnedAt != null && action === null) return AsyncResult.success(undefined);
-      const result = await unpinThreadMutation({
-        environmentId: target.environmentId,
-        input: { threadId: target.threadId },
-      });
-      if (result._tag === "Success" && action?.isCurrent() && opts.undoToast !== false) {
-        showUndoToast({
-          title: "Thread unpinned",
-          description: thread?.title,
-          claim: action,
-          undo: () => pinThread(target, orderKey === undefined ? {} : { orderKey }),
-          failureTitle: "Failed to undo unpin",
+      const perform = async (action: ReturnType<typeof ThreadUndo.begin> | null) => {
+        const result = await unpinThreadMutation({
+          environmentId: target.environmentId,
+          input: { threadId: target.threadId },
         });
-      } else {
-        action?.finish();
-      }
-      return result;
+        if (result._tag === "Success" && action?.isCurrent() && opts.undoToast !== false) {
+          showUndoToast({
+            title: "Thread unpinned",
+            description: thread?.title,
+            claim: action,
+            undo: () => pinThread(target, orderKey === undefined ? {} : { orderKey }),
+            failureTitle: "Failed to undo unpin",
+          });
+        } else {
+          action?.finish();
+        }
+        return result;
+      };
+      return thread?.pinnedAt != null
+        ? ThreadUndo.runOnce(
+            "pin",
+            scopedThreadKey(target),
+            JSON.stringify([thread.pinnedAt, orderKey]),
+            perform,
+          )
+        : perform(null);
     },
     [pinThread, unpinThreadMutation],
   );
@@ -685,68 +684,62 @@ export function useThreadActions() {
       const pinOrderKey = resolved?.thread.pinnedAt != null ? resolved.thread.pinOrderKey : null;
       const wasPinned = resolved?.thread.pinnedAt != null;
       const snoozedUntil = resolved?.thread.snoozedUntil ?? null;
-      // A no-op receipt from an already-settled thread earned no inverse.
-      const action =
-        resolved &&
-        !(resolved.thread.settledOverride === "settled" && resolved.thread.settledAt !== null)
-          ? ThreadUndo.beginIfNew(
-              "settle",
-              scopedThreadKey(target),
-              JSON.stringify([
-                resolved.thread.settledOverride,
-                resolved.thread.settledAt,
-                resolved.thread.pinnedAt,
-                resolved.thread.snoozedUntil,
-              ]),
-            )
-          : null;
-      if (
-        resolved &&
-        !(resolved.thread.settledOverride === "settled" && resolved.thread.settledAt !== null) &&
-        action === null
-      )
-        return AsyncResult.success(undefined);
-      const result = await settleThreadMutation({
-        environmentId: target.environmentId,
-        input: { threadId: target.threadId },
-      });
-      if (result._tag !== "Success") {
-        action?.finish();
-        return result;
-      }
-      if (wokeAt !== null) {
-        markThreadVisited(scopedThreadKey(target), wokeAt);
-      }
-      if (opts.undoToast === false) {
-        action?.finish();
-        return result;
-      }
-      if (action)
-        showUndoToast({
-          title: "Thread settled",
-          description: resolved?.thread.title,
-          claim: action,
-          undo: async () => {
-            const unsettled = await unsettleThread(target);
-            if (unsettled._tag !== "Success") return unsettled;
-            if (wasPinned) {
-              const pinned = await pinThread(
-                target,
-                pinOrderKey == null ? {} : { orderKey: pinOrderKey },
-              );
-              if (pinned._tag !== "Success") return pinned;
-            }
-            if (snoozedUntil !== null) {
-              return snoozeThreadMutation({
-                environmentId: target.environmentId,
-                input: { threadId: target.threadId, snoozedUntil },
-              });
-            }
-            return unsettled;
-          },
-          failureTitle: "Failed to undo settle",
+      const perform = async (action: ReturnType<typeof ThreadUndo.begin> | null) => {
+        const result = await settleThreadMutation({
+          environmentId: target.environmentId,
+          input: { threadId: target.threadId },
         });
-      return result;
+        if (result._tag !== "Success") {
+          action?.finish();
+          return result;
+        }
+        if (wokeAt !== null) markThreadVisited(scopedThreadKey(target), wokeAt);
+        if (opts.undoToast === false) {
+          action?.finish();
+          return result;
+        }
+        if (action)
+          showUndoToast({
+            title: "Thread settled",
+            description: resolved?.thread.title,
+            claim: action,
+            undo: async () => {
+              const unsettled = await unsettleThread(target);
+              if (unsettled._tag !== "Success") return unsettled;
+              if (wasPinned) {
+                const pinned = await pinThread(
+                  target,
+                  pinOrderKey == null ? {} : { orderKey: pinOrderKey },
+                );
+                if (pinned._tag !== "Success") return pinned;
+              }
+              if (snoozedUntil !== null) {
+                return snoozeThreadMutation({
+                  environmentId: target.environmentId,
+                  input: { threadId: target.threadId, snoozedUntil },
+                });
+              }
+              return unsettled;
+            },
+            failureTitle: "Failed to undo settle",
+          });
+        return result;
+      };
+      // A no-op receipt from an already-settled thread earned no inverse.
+      return resolved &&
+        !(resolved.thread.settledOverride === "settled" && resolved.thread.settledAt !== null)
+        ? ThreadUndo.runOnce(
+            "settle",
+            scopedThreadKey(target),
+            JSON.stringify([
+              resolved.thread.settledOverride,
+              resolved.thread.settledAt,
+              resolved.thread.pinnedAt,
+              resolved.thread.snoozedUntil,
+            ]),
+            perform,
+          )
+        : perform(null);
     },
     [
       markThreadVisited,
@@ -875,43 +868,35 @@ export function useThreadActions() {
           ),
         );
       }
-      const action =
-        resolved &&
-        !(resolved.thread.snoozedUntil === snoozedUntil && resolved.thread.snoozedAt != null)
-          ? ThreadUndo.beginIfNew(
-              "snooze",
-              scopedThreadKey(target),
-              JSON.stringify([
-                resolved.thread.snoozedAt,
-                resolved.thread.snoozedUntil,
-                snoozedUntil,
-              ]),
-            )
-          : null;
-      if (
-        resolved &&
-        !(resolved.thread.snoozedUntil === snoozedUntil && resolved.thread.snoozedAt != null) &&
-        action === null
-      )
-        return AsyncResult.success(undefined);
-      const result = await snoozeThreadMutation({
-        environmentId: target.environmentId,
-        input: { threadId: target.threadId, snoozedUntil },
-      });
-      if (result._tag !== "Success" || opts.undoToast === false) {
-        action?.finish();
-        return result;
-      }
-      // Snooze hides the row, so the toast is the only confirmation.
-      if (action)
-        showUndoToast({
-          title: `Snoozed until ${snoozeWakeDescription(snoozedUntil, new Date(), timestampFormat)}`,
-          description: resolved?.thread.title,
-          claim: action,
-          undo: () => unsnoozeThread(target),
-          failureTitle: "Failed to wake thread",
+      const perform = async (action: ReturnType<typeof ThreadUndo.begin> | null) => {
+        const result = await snoozeThreadMutation({
+          environmentId: target.environmentId,
+          input: { threadId: target.threadId, snoozedUntil },
         });
-      return result;
+        if (result._tag !== "Success" || opts.undoToast === false) {
+          action?.finish();
+          return result;
+        }
+        // Snooze hides the row, so the toast is the only confirmation.
+        if (action)
+          showUndoToast({
+            title: `Snoozed until ${snoozeWakeDescription(snoozedUntil, new Date(), timestampFormat)}`,
+            description: resolved?.thread.title,
+            claim: action,
+            undo: () => unsnoozeThread(target),
+            failureTitle: "Failed to wake thread",
+          });
+        return result;
+      };
+      return resolved &&
+        !(resolved.thread.snoozedUntil === snoozedUntil && resolved.thread.snoozedAt != null)
+        ? ThreadUndo.runOnce(
+            "snooze",
+            scopedThreadKey(target),
+            JSON.stringify([resolved.thread.snoozedAt, resolved.thread.snoozedUntil, snoozedUntil]),
+            perform,
+          )
+        : perform(null);
     },
     [resolveThreadTarget, snoozeThreadMutation, timestampFormat, unsnoozeThread],
   );
