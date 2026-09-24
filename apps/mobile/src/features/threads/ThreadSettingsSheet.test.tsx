@@ -43,6 +43,10 @@ vi.mock("../../native/StackHeader", () => ({
 }));
 vi.mock("../../native/native-glass", () => ({ NATIVE_LIQUID_GLASS_SUPPORTED: true }));
 vi.mock("../../state/server", () => ({ serverEnvironment: {} }));
+vi.mock("../../state/preferences", () => ({
+  mobilePreferencesAtom: {},
+  updateMobilePreferencesAtom: {},
+}));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: vi.fn() }));
 vi.mock("./new-task-flow-provider", () => ({ useNewTaskFlow: vi.fn() }));
 vi.mock("../settings/appearance/AppearancePreferencesProvider", () => ({
@@ -59,6 +63,11 @@ import { ModelRow } from "./ThreadSettingsSheet";
 type ElementProps = {
   readonly children?: ReactNode;
   readonly numberOfLines?: number;
+  readonly accessibilityRole?: string;
+  readonly accessibilityLabel?: string;
+  readonly accessibilityHint?: string;
+  readonly accessibilityState?: { readonly disabled?: boolean; readonly selected?: boolean };
+  readonly onPress?: () => void;
 };
 function elements(node: ReactNode): ReadonlyArray<ReactElement<ElementProps>> {
   if (node === null || node === undefined || typeof node !== "object") return [];
@@ -80,7 +89,20 @@ const option: ModelOption = {
   capabilities: null,
   selection: { instanceId: ProviderInstanceId.make("primeAgent"), model: "default" },
 };
-const rowProps = { option, selected: false, isFirst: true, isLast: true, onPress: vi.fn() };
+const rowProps = {
+  option,
+  selected: false,
+  isFirst: true,
+  isLast: true,
+  onPress: vi.fn(),
+  isFavorite: false,
+  favoritesLoaded: true,
+  onToggleFavorite: vi.fn(),
+};
+
+function modelChoice(row: ReactElement) {
+  return elements(row).find((element) => element.props.accessibilityRole === "radio")!;
+}
 
 describe("ThreadSettingsSheet model row", () => {
   it.each([PRIME_AGENT_DEFAULT_MODEL_CHANGE_DESCRIPTION, STARTED_THREAD_MODEL_CHANGE_DESCRIPTION])(
@@ -92,19 +114,19 @@ describe("ThreadSettingsSheet model row", () => {
       expect(captions).toHaveLength(1);
       // The native Text must be allowed to measure all lines of the new-thread remedy.
       expect(captions[0]?.props.numberOfLines).toBeUndefined();
-      expect(row.props).toMatchObject({
+      expect(modelChoice(row).props).toMatchObject({
         accessibilityLabel: `${option.label}, ${option.subtitle}, ${disabledReason}`,
         accessibilityRole: "radio",
         accessibilityState: { checked: false, disabled: true },
         disabled: true,
       });
-      expect(row.props.accessibilityHint).toBeUndefined();
+      expect(modelChoice(row).props.accessibilityHint).toBeUndefined();
     },
   );
 
   it("keeps the selected allowed row selectable without a stale reason", () => {
     const row = ModelRow({ ...rowProps, selected: true });
-    expect(row.props).toMatchObject({
+    expect(modelChoice(row).props).toMatchObject({
       accessibilityLabel: `${option.label}, ${option.subtitle}`,
       accessibilityRole: "radio",
       accessibilityState: { checked: true, disabled: false },
@@ -117,7 +139,22 @@ describe("ThreadSettingsSheet model row", () => {
     expect(text).toContain(option.label);
     expect(text).toContain(option.subtitle);
     expect(text.join(" ")).not.toContain("Start a new thread");
-    row.props.onPress();
+    modelChoice(row).props.onPress?.();
     expect(rowProps.onPress).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the favorite action separate from selecting a model", () => {
+    rowProps.onPress.mockClear();
+    rowProps.onToggleFavorite.mockClear();
+    const row = ModelRow(rowProps);
+    const favorite = elements(row).find(
+      (element) =>
+        element.props.accessibilityLabel ===
+        `Add to favorites: ${option.providerLabel}, ${option.label}`,
+    )!;
+    expect(favorite.props.accessibilityState).toMatchObject({ disabled: false, selected: false });
+    favorite.props.onPress?.();
+    expect(rowProps.onToggleFavorite).toHaveBeenCalledOnce();
+    expect(rowProps.onPress).not.toHaveBeenCalled();
   });
 });
