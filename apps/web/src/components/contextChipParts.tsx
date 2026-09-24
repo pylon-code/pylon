@@ -1,7 +1,7 @@
 import type { EnvironmentId, PullRequestContextMetadata } from "@t3tools/contracts";
 import { CircleDashedIcon, FilmIcon, ImageIcon } from "lucide-react";
 import { createContext, use, type ComponentProps, type MouseEvent, type ReactNode } from "react";
-import { composerFloatingLayerProps } from "./chat/composerEventScope";
+import { useComposerMenuProps } from "./chat/composerEventScope";
 
 export const ComposerContextScope = createContext(false);
 
@@ -79,6 +79,7 @@ export function ContextChipPopover(props: {
   popupClassName?: string;
   viewportClassName?: string;
 }) {
+  const composerFloatingLayerProps = useComposerMenuProps();
   const composerOwned = use(ComposerContextScope);
   return (
     <Popover>
