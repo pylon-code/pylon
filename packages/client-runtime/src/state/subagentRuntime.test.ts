@@ -71,6 +71,29 @@ function fold(rows: ReadonlyArray<OrchestrationThreadActivity>) {
 }
 
 describe("foldSubagentActivities", () => {
+  it("shows a Prime child note while active and its outcome after completion", () => {
+    const [agent] = fold([
+      activity("task.progress", {
+        taskId: "prime-child-1",
+        taskType: "subagent",
+        title: "Review tests",
+        status: "running",
+        summary: "Checking the failing test",
+      }),
+      activity("task.completed", {
+        taskId: "prime-child-1",
+        taskType: "subagent",
+        status: "completed",
+        summary: "Completed",
+      }),
+    ]);
+    expect(agent).toMatchObject({
+      status: "completed",
+      progress: "Checking the failing test",
+      result: "Completed",
+    });
+  });
+
   it("shows the batch status limit after its parent turn ends without claiming a result", () => {
     const running = activity("task.progress", {
       taskId: "batch-1",
