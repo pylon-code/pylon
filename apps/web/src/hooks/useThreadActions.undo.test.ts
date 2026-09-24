@@ -20,7 +20,10 @@ const commands = vi.hoisted(() => ({
 }));
 const router = vi.hoisted(() => ({
   navigate: vi.fn(async () => {}),
-  state: { matches: [{ params: {} as Record<string, string> }], location: { href: "/initial" } },
+  state: {
+    matches: [{ params: {} as Record<string, string> }],
+    location: { href: "/initial", state: { __TSR_key: "initial" } },
+  },
 }));
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
@@ -34,6 +37,7 @@ vi.mock("./useHandleNewThread", () => ({
   useNewThreadHandler: () =>
     vi.fn(async () => {
       router.state.location.href = "/draft/new";
+      router.state.location.state.__TSR_key = "draft-created-by-archive";
       return { draftId: "new", threadId: null };
     }),
 }));
@@ -111,6 +115,7 @@ beforeEach(() => {
   router.navigate.mockClear();
   router.state.matches[0]!.params = {};
   router.state.location.href = "/initial";
+  router.state.location.state.__TSR_key = "initial";
   threadShell.pinnedAt = null;
   threadShell.snoozedUntil = null;
   threadShell.snoozedAt = null;
@@ -198,6 +203,23 @@ describe("archive Undo", () => {
     };
     await useThreadActions().archiveThread(target);
     router.state.location.href = "/another-thread";
+    await undoOf(add, 0)();
+    expect(commands.unarchive).toHaveBeenCalledOnce();
+    expect(router.navigate).not.toHaveBeenCalled();
+  });
+
+  it("does not hijack a later visit to the same draft URL", async () => {
+    const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
+    vi.spyOn(toastManager, "close").mockImplementation(() => {});
+    router.state.matches[0]!.params = {
+      environmentId: target.environmentId,
+      threadId: target.threadId,
+    };
+    await useThreadActions().archiveThread(target);
+    router.state.location.href = "/another-thread";
+    router.state.location.state.__TSR_key = "another-thread";
+    router.state.location.href = "/draft/new";
+    router.state.location.state.__TSR_key = "later-draft-visit";
     await undoOf(add, 0)();
     expect(commands.unarchive).toHaveBeenCalledOnce();
     expect(router.navigate).not.toHaveBeenCalled();

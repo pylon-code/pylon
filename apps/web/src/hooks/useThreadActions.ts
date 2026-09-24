@@ -320,13 +320,16 @@ export function useThreadActions() {
       }
       refreshArchivedThreadsForEnvironment(threadRef.environmentId);
       opts.onArchived?.();
-      let archivedDraftHref: string | null = null;
+      let archivedDraftRoute: { href: string; key: string | undefined } | null = null;
       if (shouldNavigateToDraft) {
         const navigationResult = await settlePromise(() =>
           handleNewThreadRef.current(scopeProjectRef(thread.environmentId, thread.projectId)),
         );
         if (navigationResult._tag === "Success" && navigationResult.value != null) {
-          archivedDraftHref = router.state.location.href;
+          archivedDraftRoute = {
+            href: router.state.location.href,
+            key: router.state.location.state.__TSR_key,
+          };
         }
         showUndoToast({
           title: "Thread archived",
@@ -336,7 +339,9 @@ export function useThreadActions() {
           undo: () =>
             unarchiveThread(threadRef, {
               navigate:
-                archivedDraftHref !== null && router.state.location.href === archivedDraftHref,
+                archivedDraftRoute !== null &&
+                router.state.location.href === archivedDraftRoute.href &&
+                router.state.location.state.__TSR_key === archivedDraftRoute.key,
             }),
           failureTitle: "Failed to undo archive",
         });
