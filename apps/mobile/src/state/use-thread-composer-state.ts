@@ -96,9 +96,12 @@ import {
   countComposerDraftAttachmentsAfterSelection,
   insertComposerDraftText,
   insertComposerDraftTextIfIncarnation,
+  isComposerDraftIncarnationCurrent,
+  mayCommitPastedTextAttachment,
   insertComposerDraftContext,
   clearComposerDraftContent,
   captureComposerDraftInsertion,
+  bindComposerDraftSourceEpoch,
   composerDraftIncarnation,
   composerDraftsAtom,
   composerContextImportsAtom,
@@ -257,20 +260,24 @@ export function useThreadComposerState() {
     () => ({
       key: selectedThreadKey,
       incarnation: Symbol("thread-paste"),
-      draftIncarnation: null as symbol | null,
     }),
     [selectedThreadKey, selectedThreadShell?.sourceEpoch],
   );
   const committedPasteOwner = useRef<typeof pasteOwner | null>(null);
+  const pasteOwnerDraftIncarnations = useRef(new WeakMap<typeof pasteOwner, symbol>());
   const pendingPasteWrites = useRef(new Map<symbol, number>());
   useLayoutEffect(() => {
-    pasteOwner.draftIncarnation = pasteOwner.key ? composerDraftIncarnation(pasteOwner.key) : null;
+    if (pasteOwner.key)
+      pasteOwnerDraftIncarnations.current.set(
+        pasteOwner,
+        bindComposerDraftSourceEpoch(pasteOwner.key, selectedThreadShell?.sourceEpoch ?? 0),
+      );
     committedPasteOwner.current = pasteOwner;
     return () => {
       if (committedPasteOwner.current === pasteOwner) committedPasteOwner.current = null;
       pendingPasteWrites.current.delete(pasteOwner.incarnation);
     };
-  }, [pasteOwner]);
+  }, [pasteOwner, selectedThreadShell?.sourceEpoch]);
   const pastedTextNames = useRef<{ owner: symbol | null; names: Set<string> }>({
     owner: null,
     names: new Set(),
@@ -1417,7 +1424,7 @@ export function useThreadComposerState() {
         existingCount: countComposerDraftAttachmentsAfterSelection(threadKey, target),
       });
       if (committedPasteOwner.current !== pasteOwner) {
-        if (composerDraftIncarnation(threadKey) === draftIncarnation) {
+        if (isComposerDraftIncarnationCurrent(threadKey, draftIncarnation)) {
           if (result.text)
             insertComposerDraftTextIfIncarnation(threadKey, draftIncarnation, result.text, target);
           if (result.images.length > 0)
@@ -1483,6 +1490,7 @@ export function useThreadComposerState() {
             });
             if (
               committedPasteOwner.current !== pasteOwner ||
+              !mayCommitPastedTextAttachment(threadKey, draftIncarnation) ||
               connectedPastedTextAttachmentLease(selectedThreadShell.environmentId)?.state !==
                 connectedLease?.state
             ) {
@@ -1577,7 +1585,7 @@ export function useThreadComposerState() {
       const threadKey = pasteOwner.key;
       if (!threadKey || !selectedThreadShell) return;
       const target = { text: paste.value, ...paste.selection };
-      const draftIncarnation = pasteOwner.draftIncarnation;
+      const draftIncarnation = pasteOwnerDraftIncarnations.current.get(pasteOwner) ?? null;
       const preserveCapturedPaste = () => {
         if (!insertComposerDraftTextIfIncarnation(threadKey, draftIncarnation, paste.text, target))
           Alert.alert(
@@ -1651,6 +1659,7 @@ export function useThreadComposerState() {
         });
         if (
           committedPasteOwner.current !== pasteOwner ||
+          !mayCommitPastedTextAttachment(threadKey, draftIncarnation) ||
           connectedPastedTextAttachmentLease(selectedThreadShell.environmentId)?.state !==
             connectedLease?.state
         ) {

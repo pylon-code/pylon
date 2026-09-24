@@ -101,6 +101,7 @@ import {
   countComposerDraftAttachmentsAfterSelection,
   insertComposerDraftText,
   insertComposerDraftTextIfIncarnation,
+  mayCommitPastedTextAttachment,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
   restoreComposerDraftSnapshot,
@@ -421,7 +422,6 @@ export function NewTaskDraftScreen(props: {
       key: flow.draftKey,
       environmentId: flow.selectedEnvironmentId,
       incarnation: Symbol("new-task-paste"),
-      draftIncarnation: null as symbol | null,
     }),
     [
       flow.draftKey,
@@ -431,8 +431,10 @@ export function NewTaskDraftScreen(props: {
     ],
   );
   const committedPasteOwner = useRef<typeof pasteOwner | null>(null);
+  const pasteOwnerDraftIncarnations = useRef(new WeakMap<typeof pasteOwner, symbol>());
   useLayoutEffect(() => {
-    pasteOwner.draftIncarnation = pasteOwner.key ? composerDraftIncarnation(pasteOwner.key) : null;
+    if (pasteOwner.key)
+      pasteOwnerDraftIncarnations.current.set(pasteOwner, composerDraftIncarnation(pasteOwner.key));
     committedPasteOwner.current = pasteOwner;
     return () => {
       if (committedPasteOwner.current === pasteOwner) committedPasteOwner.current = null;
@@ -1141,7 +1143,7 @@ export function NewTaskDraftScreen(props: {
         if (
           !insertComposerDraftTextIfIncarnation(
             draftKey,
-            pasteOwner.draftIncarnation,
+            pasteOwnerDraftIncarnations.current.get(pasteOwner) ?? null,
             paste.text,
             target,
           )
@@ -1222,6 +1224,10 @@ export function NewTaskDraftScreen(props: {
         });
         if (
           committedPasteOwner.current !== pasteOwner ||
+          !mayCommitPastedTextAttachment(
+            draftKey,
+            pasteOwnerDraftIncarnations.current.get(pasteOwner) ?? null,
+          ) ||
           pasteOwner.environmentId == null ||
           connectedPastedTextAttachmentLease(pasteOwner.environmentId)?.state !==
             connectedLease?.state

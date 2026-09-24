@@ -168,6 +168,7 @@ import { threadOutboxManager } from "./thread-outbox";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 import {
   appendComposerDraftAttachments,
+  bindComposerDraftSourceEpoch,
   captureComposerDraftInsertion,
   countComposerDraftAttachmentsAfterSelection,
   getComposerDraftAfterSelection,
@@ -207,6 +208,8 @@ import {
   insertComposerDraftContext,
   insertComposerDraftText,
   insertComposerDraftTextIfIncarnation,
+  isComposerDraftIncarnationCurrent,
+  mayCommitPastedTextAttachment,
   rememberComposerDraftSelection,
   setComposerDraftAttachmentUpload,
   waitForComposerDraftsLoaded,
@@ -933,14 +936,69 @@ describe("mobile composer drafts", () => {
     const incarnation = composerDraftIncarnation(key);
     const write = Promise.withResolvers<void>();
     const pending = write.promise.then(() =>
-      insertComposerDraftTextIfIncarnation(key, incarnation, "pasted", target),
+      isComposerDraftIncarnationCurrent(key, incarnation)
+        ? insertComposerDraftTextIfIncarnation(key, incarnation, "pasted", target)
+        : false,
     );
     clearComposerDraft(key);
+    expect(isComposerDraftIncarnationCurrent(key, incarnation)).toBe(false);
     setComposerDraftText(key, "new draft");
     write.resolve();
     expect(await pending).toBe(false);
     expect(getComposerDraftSnapshot(key).text).toBe("new draft");
   });
+
+  it("rejects an old source epoch paste while keeping a same-epoch navigation paste", async () => {
+    const key = "environment-1:epoch-paste";
+    setComposerDraftText(key, "draft");
+    const target = captureComposerDraftInsertion(key);
+    const oldEpoch = bindComposerDraftSourceEpoch(key, 4);
+    const write = Promise.withResolvers<void>();
+    const pending = write.promise.then(() =>
+      insertComposerDraftTextIfIncarnation(key, oldEpoch, " old", target),
+    );
+    expect(bindComposerDraftSourceEpoch(key, 4)).toBe(oldEpoch);
+    const newEpoch = bindComposerDraftSourceEpoch(key, 5);
+    expect(newEpoch).not.toBe(oldEpoch);
+    expect(isComposerDraftIncarnationCurrent(key, oldEpoch)).toBe(false);
+    write.resolve();
+    expect(await pending).toBe(false);
+    expect(getComposerDraftSnapshot(key).text).toBe("draft");
+  });
+
+  it.each([
+    ["existing thread", "environment-1:thread-paste-discard"],
+    ["new task", "new-task:environment-1:task-paste-discard"],
+  ])(
+    "does not append a completed %s pasted file after its draft is discarded",
+    async (_kind, key) => {
+      setComposerDraftText(key, "old draft");
+      const incarnation = composerDraftIncarnation(key);
+      const write = Promise.withResolvers<void>();
+      const attachment = {
+        id: "completed-paste",
+        type: "file" as const,
+        name: "pasted-text.txt",
+        mimeType: "text/plain",
+        sizeBytes: 6,
+        fileUri: "file:///documents/t3-composer-attachments/pasted-text.txt",
+        source: { _tag: "pasted-text" as const },
+      };
+      const pending = write.promise.then(() =>
+        mayCommitPastedTextAttachment(key, incarnation)
+          ? appendComposerDraftAttachments(key, [attachment], { appendReference: true })
+          : null,
+      );
+      clearComposerDraft(key);
+      setComposerDraftText(key, "replacement draft");
+      write.resolve();
+      expect(await pending).toBeNull();
+      expect(getComposerDraftSnapshot(key)).toMatchObject({
+        text: "replacement draft",
+        attachments: [],
+      });
+    },
+  );
 
   it.each(["attachment", "context", "imported context"])(
     "releases a selected file when replaced by %s",

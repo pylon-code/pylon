@@ -60,6 +60,7 @@ const COMPOSER_DRAFTS_FILE = "drafts.json";
 const PERSIST_DEBOUNCE_MS = 200;
 
 const draftIncarnations = new Map<string, symbol>();
+const draftSourceEpochs = new Map<string, number>();
 
 /** A retained draft keeps its identity across edits and navigation, but not discard. */
 export function composerDraftIncarnation(draftKey: string): symbol {
@@ -71,8 +72,32 @@ export function composerDraftIncarnation(draftKey: string): symbol {
   return incarnation;
 }
 
+export function isComposerDraftIncarnationCurrent(
+  draftKey: string,
+  incarnation: symbol | null,
+): boolean {
+  return incarnation !== null && draftIncarnations.get(draftKey) === incarnation;
+}
+
+/** Gate a completed async paste write before it can append to a durable draft. */
+export function mayCommitPastedTextAttachment(
+  draftKey: string,
+  incarnation: symbol | null,
+): boolean {
+  return isComposerDraftIncarnationCurrent(draftKey, incarnation);
+}
+
 function retireComposerDraftIncarnation(draftKey: string): void {
   draftIncarnations.delete(draftKey);
+  draftSourceEpochs.delete(draftKey);
+}
+
+/** A server source-history replacement cannot inherit an older paste completion. */
+export function bindComposerDraftSourceEpoch(draftKey: string, sourceEpoch: number): symbol {
+  const previous = draftSourceEpochs.get(draftKey);
+  if (previous !== undefined && previous !== sourceEpoch) retireComposerDraftIncarnation(draftKey);
+  draftSourceEpochs.set(draftKey, sourceEpoch);
+  return composerDraftIncarnation(draftKey);
 }
 
 export const composerContextImportsAtom = Atom.make<Record<string, boolean>>({}).pipe(
@@ -1334,7 +1359,7 @@ export function insertComposerDraftTextIfIncarnation(
   value: string,
   target: ComposerDraftInsertion,
 ): boolean {
-  if (incarnation === null || draftIncarnations.get(draftKey) !== incarnation) return false;
+  if (!isComposerDraftIncarnationCurrent(draftKey, incarnation)) return false;
   insertComposerDraftText(draftKey, value, target);
   return true;
 }
