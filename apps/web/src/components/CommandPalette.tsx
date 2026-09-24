@@ -155,6 +155,7 @@ import {
   filterPinnedBrowseEntries,
   getCommandPaletteInputPlaceholder,
   getCommandPaletteMode,
+  getExistingThreadForProjectAdd,
   ITEM_ICON_CLASS,
   RECENT_THREAD_LIMIT,
   reduceCommandPaletteUiState,
@@ -2086,7 +2087,7 @@ function OpenCommandPaletteDialog(props: {
         cwd,
       );
       if (existing) {
-        const latestThread = getLatestThreadForProject(
+        const latestThread = getExistingThreadForProjectAdd(
           threads.filter((thread) => thread.environmentId === existing.environmentId),
           existing.id,
           clientSettings.sidebarThreadSortOrder,
