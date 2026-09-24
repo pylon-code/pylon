@@ -13,7 +13,9 @@ Usage includes each configured account's history, including disabled accounts. C
 the account's home setting or its `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `GROK_HOME` environment
 variable. Use absolute paths in the account's environment settings; relative
 environment paths depend on each project's working directory and cannot be reliably discovered
-by Usage. Accounts sharing a history directory count once.
+by Usage. Accounts sharing an identifiable history directory count once, while distinct directories
+keep their own totals. If an older server cannot separate those totals, or a directory's filesystem
+identity is unavailable, Usage warns that shared history may be counted more than once.
 
 Antigravity totals come from saved native conversations, including standalone CLI history when
 available. Models without known prices still contribute tokens; set a custom model price to include

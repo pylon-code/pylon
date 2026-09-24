@@ -784,6 +784,7 @@ export const make = Effect.gen(function* () {
         sources.push({
           fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
           status: "missing",
+          buckets: [],
           scannedFiles: 0,
           skippedFiles: 0,
           malformedRecords: 0,
@@ -799,6 +800,18 @@ export const make = Effect.gen(function* () {
       // Distinct per directory. Buckets carry per-cell session counts, but a
       // session spans days and models, so clients total this figure instead.
       const sessionIds = new Set<string>();
+      // Keep attribution at the physical directory boundary. The primary
+      // aggregator decides scan-wide de-duplication first, so source buckets
+      // partition the same accepted records as the legacy flat buckets.
+      const sourceAggregator = new UsageAggregator({
+        timeZone: input.timeZone,
+        sinceDay: input.sinceDay,
+        untilDay: input.untilDay,
+        resolution: input.resolution ?? "day",
+        ...hourlyWindow,
+        rates,
+        priceOverrides: createOverrideRateTable(settings.usagePriceOverrides),
+      });
 
       for (const file of files) {
         livePaths.add(file.path);
@@ -810,8 +823,9 @@ export const make = Effect.gen(function* () {
         for (const record of file.records) {
           // Only sessions that contributed in-window count: the mtime slack
           // admits boundary files whose records fall outside the range.
-          if (aggregator.add(record) && record.sessionId.length > 0) {
-            sessionIds.add(record.sessionId);
+          if (aggregator.add(record)) {
+            sourceAggregator.add(record);
+            if (record.sessionId.length > 0) sessionIds.add(record.sessionId);
           }
         }
       }
@@ -819,6 +833,7 @@ export const make = Effect.gen(function* () {
       sources.push({
         fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
         status: status ?? "ok",
+        buckets: sourceAggregator.finish().buckets,
         scannedFiles,
         skippedFiles,
         malformedRecords: malformedRecords ?? 0,

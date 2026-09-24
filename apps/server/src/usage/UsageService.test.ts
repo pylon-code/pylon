@@ -139,7 +139,7 @@ describe("UsageService", () => {
         await NodeFSP.mkdir(NodePath.join(claudeHome, "projects"), { recursive: true });
         await NodeFSP.writeFile(
           NodePath.join(claudeHome, "projects", "session.jsonl"),
-          claudeLine(2, 7),
+          claudeLine(1, 5) + claudeLine(2, 7),
         );
         await NodeFSP.mkdir(NodePath.join(codexHome, "sessions"), { recursive: true });
         await NodeFSP.symlink(codexHome, alias, "junction");
@@ -225,6 +225,20 @@ describe("UsageService", () => {
       assert.strictEqual(
         sources.filter((source) => source.fingerprint.provider === "codex").length,
         1,
+      );
+      assert.strictEqual(
+        sources.reduce(
+          (sum, source) =>
+            sum +
+            (source.buckets ?? []).reduce((total, bucket) => total + bucket.totals.outputTokens, 0),
+          0,
+        ),
+        totalOutputTokens(summary),
+      );
+      assert.isTrue(
+        sources.every((source) =>
+          source.buckets?.every((bucket) => bucket.provider === source.fingerprint.provider),
+        ),
       );
     }).pipe(Effect.scoped),
   );
