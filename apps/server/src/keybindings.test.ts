@@ -188,6 +188,56 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
     }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
+  it.effect("migrates persisted numbered defaults once and preserves later browser opt-in", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+      const legacy = Keybindings.DEFAULT_KEYBINDINGS.map((rule) => {
+        if (rule.command.startsWith("thread.jump.")) {
+          return { key: rule.key, command: rule.command };
+        }
+        if (rule.command.startsWith("modelPicker.jump.")) {
+          return { key: rule.key, command: rule.command, when: "modelPickerOpen" };
+        }
+        return rule;
+      });
+      const customBrowserRule: KeybindingRule = {
+        key: "mod+shift+1",
+        command: "thread.jump.1",
+        when: "isWeb",
+      };
+      const legacyWithOverride = legacy.map((rule) =>
+        rule.command === customBrowserRule.command ? customBrowserRule : rule,
+      );
+      yield* writeKeybindingsConfig(keybindingsConfigPath, legacyWithOverride);
+
+      const keybindings = yield* Keybindings.Keybindings;
+      yield* keybindings.syncDefaultKeybindingsOnStartup;
+      const migrated = yield* readKeybindingsConfig(keybindingsConfigPath);
+      assert.deepEqual(
+        migrated.find((rule) => rule.command === "thread.jump.1"),
+        customBrowserRule,
+      );
+      assert.equal(migrated.find((rule) => rule.command === "thread.jump.2")?.when, "isDesktop");
+      assert.equal(
+        migrated.find((rule) => rule.command === "modelPicker.jump.2")?.when,
+        "modelPickerOpen && isDesktop",
+      );
+      assert.isTrue(yield* fs.exists(`${keybindingsConfigPath}.desktop-numbered-defaults-v1`));
+
+      // Removing the condition after migration is a deliberate browser opt-in.
+      yield* writeKeybindingsConfig(
+        keybindingsConfigPath,
+        migrated.map((rule) =>
+          rule.command === "thread.jump.2" ? { key: rule.key, command: rule.command } : rule,
+        ),
+      );
+      yield* keybindings.syncDefaultKeybindingsOnStartup;
+      const optedIn = yield* readKeybindingsConfig(keybindingsConfigPath);
+      assert.isUndefined(optedIn.find((rule) => rule.command === "thread.jump.2")?.when);
+    }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+
   it.effect("uses defaults in runtime when config is malformed without overriding file", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

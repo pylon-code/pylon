@@ -63,8 +63,13 @@ and Control elsewhere. Other modifiers are `cmd` / `meta`, `ctrl` / `control`, `
 
 ## When conditions
 
-Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`, `previewOpen`, and
-`modelPickerOpen`. Unknown keys evaluate to `false`.
+Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`, `previewOpen`,
+`modelPickerOpen`, `isWeb`, and `isDesktop`. `isWeb` is true in a browser tab; `isDesktop` is true in
+the desktop app. Unknown keys evaluate to `false`.
+
+The default `mod+1` through `mod+9` thread and model jumps run only in the desktop app so a
+browser tab keeps its own numbered-tab shortcuts. Remove the `isDesktop` condition in Settings if
+you want those jumps in a browser.
 
 Combine keys with `!` for not, `&&` for and, `||` for or, and parentheses:
 
