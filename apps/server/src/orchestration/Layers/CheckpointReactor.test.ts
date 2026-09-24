@@ -11,6 +11,7 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  type OrchestrationEvent,
 } from "@t3tools/contracts";
 import {
   CommandId,
@@ -50,6 +51,7 @@ import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { RuntimeReceiptBusTest } from "./RuntimeReceiptBus.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
+import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import {
@@ -343,6 +345,14 @@ describe("CheckpointReactor", () => {
       options?.providerName ?? ProviderDriverKind.make("codex"),
       options?.conversationRollback ?? "relative",
     );
+    const historicalRollbackEvents = Effect.runSync(PubSub.unbounded<OrchestrationEvent>());
+    const historicalSubscriptionReady = Effect.runSync(Deferred.make<void>());
+    const historicalRollbackStream = Stream.unwrap(
+      PubSub.subscribe(historicalRollbackEvents).pipe(
+        Effect.tap(() => Deferred.succeed(historicalSubscriptionReady, undefined)),
+        Effect.map(Stream.fromSubscription),
+      ),
+    );
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(ThreadBackgroundLiveness.layer),
@@ -353,6 +363,16 @@ describe("CheckpointReactor", () => {
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const historicalEngineLayer = Layer.effect(
+      OrchestrationEngineService,
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        return OrchestrationEngineService.of({
+          ...engine,
+          streamDomainEvents: Stream.merge(engine.streamDomainEvents, historicalRollbackStream),
+        });
+      }),
+    ).pipe(Layer.provide(orchestrationLayer));
     const projectionSnapshotLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
       Layer.provide(ThreadBackgroundLiveness.layer),
       Layer.provide(ThreadPlanProgress.layer),
@@ -404,7 +424,7 @@ describe("CheckpointReactor", () => {
     );
 
     const layer = CheckpointReactorLive.pipe(
-      Layer.provideMerge(orchestrationLayer),
+      Layer.provideMerge(historicalEngineLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(RuntimeReceiptBusTest),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
@@ -433,6 +453,42 @@ describe("CheckpointReactor", () => {
 
     runtime = ManagedRuntime.make(layer);
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    const eventStore = await runtime.runPromise(
+      Effect.service(OrchestrationEventStore).pipe(
+        Effect.provide(OrchestrationEventStoreLive.pipe(Layer.provide(SqlitePersistenceMemory))),
+      ),
+    );
+    const publishLegacyRevert = (command: {
+      readonly type: "thread.checkpoint.revert" | "thread.conversation.revert";
+      readonly commandId: CommandId;
+      readonly threadId: ThreadId;
+      readonly turnCount: number;
+      readonly createdAt: string;
+    }) =>
+      Effect.gen(function* () {
+        const event = yield* eventStore.append({
+          eventId: EventId.make(`legacy-${command.commandId}`),
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          causationEventId: null,
+          correlationId: command.commandId,
+          metadata: {},
+          type: "thread.checkpoint-revert-requested",
+          payload: {
+            threadId: command.threadId,
+            turnCount: command.turnCount,
+            ...(command.type === "thread.conversation.revert" ? { restoreFiles: false } : {}),
+            createdAt: command.createdAt,
+          },
+        });
+        const stored = yield* Stream.runCollect(engine.readEvents(event.sequence - 1));
+        expect(Array.from(stored).some((candidate) => candidate.eventId === event.eventId)).toBe(
+          true,
+        );
+        yield* PubSub.publish(historicalRollbackEvents, event);
+      });
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const reactor = await runtime.runPromise(Effect.service(CheckpointReactor));
     const checkpointStore = await runtime.runPromise(
@@ -450,6 +506,7 @@ describe("CheckpointReactor", () => {
           Queue.offer(receipts, receipt),
         ).pipe(Effect.forkIn(testScope, { startImmediately: true }));
         yield* reactor.start().pipe(Scope.provide(testScope));
+        yield* Deferred.await(historicalSubscriptionReady);
         return receipts;
       }),
     );
@@ -539,6 +596,7 @@ describe("CheckpointReactor", () => {
 
     return {
       engine,
+      publishLegacyRevert,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       provider,
       workspaceRefresh,
@@ -599,7 +657,7 @@ describe("CheckpointReactor", () => {
         "sibling-work.txt",
       );
       NodeFS.writeFileSync(siblingFile, "sibling work\n");
-      yield* harness.engine.dispatch({
+      yield* harness.publishLegacyRevert({
         type: "thread.checkpoint.revert",
         commandId: CommandId.make("cmd-shared-revert"),
         threadId: ThreadId.make("thread-1"),
@@ -631,7 +689,7 @@ describe("CheckpointReactor", () => {
           }),
         );
         const createdAt = "2026-01-01T00:00:02.000Z";
-        yield* harness.engine.dispatch({
+        yield* harness.publishLegacyRevert({
           type: "thread.conversation.revert",
           commandId: CommandId.make("cmd-revert-conv-shared"),
           threadId: ThreadId.make("thread-1"),
@@ -663,7 +721,7 @@ describe("CheckpointReactor", () => {
           }),
         );
         const createdAt = "2026-01-01T00:00:02.000Z";
-        yield* harness.engine.dispatch({
+        yield* harness.publishLegacyRevert({
           type: "thread.checkpoint.revert",
           commandId: CommandId.make("cmd-revert-restore-shared"),
           threadId: ThreadId.make("thread-1"),
@@ -692,7 +750,7 @@ describe("CheckpointReactor", () => {
           }),
         );
         const createdAt = "2026-01-01T00:00:02.000Z";
-        yield* harness.engine.dispatch({
+        yield* harness.publishLegacyRevert({
           type: "thread.checkpoint.revert",
           commandId: CommandId.make("cmd-revert-restore-isolated"),
           threadId: ThreadId.make("thread-1"),
@@ -1200,7 +1258,7 @@ describe("CheckpointReactor", () => {
         });
         expect(yield* harness.nextReceipt).toMatchObject({ type: "turn.processing.quiesced" });
 
-        yield* harness.engine.dispatch({
+        yield* harness.publishLegacyRevert({
           type: "thread.checkpoint.revert",
           commandId: CommandId.make("cmd-nested-revert"),
           threadId,
@@ -2038,7 +2096,7 @@ describe("CheckpointReactor", () => {
       harness.workspaceRefresh.mockClear();
 
       await Effect.runPromise(
-        harness.engine.dispatch({
+        harness.publishLegacyRevert({
           type: "thread.checkpoint.revert",
           commandId: CommandId.make(`cmd-revert-${mode}`),
           threadId: ThreadId.make("thread-1"),
@@ -2079,7 +2137,7 @@ describe("CheckpointReactor", () => {
     const createdAt = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
-      harness.engine.dispatch({
+      harness.publishLegacyRevert({
         type: "thread.checkpoint.revert",
         commandId: CommandId.make("cmd-revert-no-session"),
         threadId: ThreadId.make("thread-1"),
