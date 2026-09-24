@@ -1435,6 +1435,8 @@ const make = Effect.gen(function* () {
       readonly messageText: string;
       readonly attachments?: ReadonlyArray<ChatAttachment>;
       readonly titleSeed?: string;
+      readonly expectedTitle: string;
+      readonly expectedVersion: CommandId;
     }) {
       const attachments = input.attachments ?? [];
       yield* Effect.gen(function* () {
@@ -1457,17 +1459,14 @@ const make = Effect.gen(function* () {
           );
         if (!generated) return;
 
-        const thread = yield* resolveThreadShell(input.threadId);
-        if (!thread) return;
-        if (!canReplaceThreadTitle(thread.title, input.titleSeed)) {
-          return;
-        }
-
+        if (generated.title === DEFAULT_THREAD_TITLE) return;
         yield* orchestrationEngine.dispatch({
-          type: "thread.meta.update",
+          type: "thread.title.generate.complete",
           commandId: yield* serverCommandId("thread-title-rename"),
           threadId: input.threadId,
           title: generated.title,
+          expectedTitle: input.expectedTitle,
+          expectedVersion: input.expectedVersion,
         });
       }).pipe(
         Effect.catchCause((cause) =>
@@ -1952,10 +1951,16 @@ const make = Effect.gen(function* () {
           worktreePath: thread.worktreePath,
           ...generationInput,
         }).pipe(Effect.forkScoped);
-        if (canReplaceThreadTitle(thread.title, event.payload.titleSeed)) {
+        if (
+          thread.titleState != null &&
+          thread.titleState.source !== "manual" &&
+          canReplaceThreadTitle(thread.title, event.payload.titleSeed)
+        ) {
           yield* maybeGenerateThreadTitleForFirstTurn({
             threadId: event.payload.threadId,
             cwd: generationCwd,
+            expectedTitle: thread.title,
+            expectedVersion: thread.titleState.version,
             ...generationInput,
           }).pipe(Effect.forkScoped);
         }

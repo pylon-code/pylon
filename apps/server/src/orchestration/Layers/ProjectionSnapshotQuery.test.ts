@@ -510,6 +510,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pinOrderKey: "gm",
           activeOrderKey: "hq",
           titleRegeneration: null,
+          titleState: null,
           continuedFromThreadId: null,
           deletedAt: null,
           messages: [
@@ -646,6 +647,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pinOrderKey: "gm",
           activeOrderKey: "hq",
           titleRegeneration: null,
+          titleState: null,
           continuedFromThreadId: null,
           session: {
             threadId: ThreadId.make("thread-1"),

@@ -493,6 +493,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           projectId: command.projectId,
           title: command.title,
+          titleState: { source: "provisional" as const, version: command.commandId },
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
@@ -530,7 +531,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.archive": {
-      yield* requireThreadNotArchived({
+      const thread = yield* requireThreadNotArchived({
         readModel,
         command,
         threadId: command.threadId,
@@ -548,6 +549,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           archivedAt: occurredAt,
           updatedAt: occurredAt,
+          titleState: {
+            source: thread.titleState?.source ?? "manual",
+            version: command.commandId,
+          },
         },
       };
     }
@@ -1120,7 +1125,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.meta-updated",
         payload: {
           threadId: command.threadId,
-          ...(command.title !== undefined ? { title: command.title } : {}),
+          ...(command.title !== undefined
+            ? {
+                title: command.title,
+                titleState: { source: "manual" as const, version: command.commandId },
+              }
+            : {}),
           ...(command.regenerateTitle === true
             ? {
                 regenerateTitle: true as const,
@@ -1336,6 +1346,38 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.title.generate.complete": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const current =
+        thread.deletedAt === null &&
+        thread.archivedAt === null &&
+        thread.titleRegeneration == null &&
+        thread.titleState != null &&
+        thread.titleState.source !== "manual" &&
+        thread.title === command.expectedTitle &&
+        thread.titleState.version === command.expectedVersion;
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: command.threadId,
+          ...(current
+            ? {
+                title: command.title,
+                titleState: { source: "generated" as const, version: command.commandId },
+              }
+            : {}),
+          updatedAt: thread.updatedAt,
+        },
+      };
+    }
+
     case "thread.title.regeneration.complete": {
       const thread = yield* requireThread({
         readModel,
@@ -1354,7 +1396,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.meta-updated",
         payload: {
           threadId: command.threadId,
-          ...(requestIsCurrent && command.title !== undefined ? { title: command.title } : {}),
+          ...(requestIsCurrent && command.title !== undefined
+            ? {
+                title: command.title,
+                titleState: { source: "generated" as const, version: command.commandId },
+              }
+            : {}),
           ...(requestIsCurrent ? { titleRegeneration: null } : {}),
           updatedAt: requestIsCurrent ? occurredAt : thread.updatedAt,
         },
