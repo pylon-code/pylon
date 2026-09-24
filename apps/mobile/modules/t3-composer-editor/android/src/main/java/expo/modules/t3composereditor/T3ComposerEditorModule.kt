@@ -2,6 +2,7 @@ package expo.modules.t3composereditor
 
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.views.ViewDefinitionBuilder
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -61,6 +62,18 @@ internal object T3ComposerClipboard {
   }
 }
 
+private fun ViewDefinitionBuilder<T3ComposerEditorView>.registerPasteConfiguration() {
+  Prop("clipboardFragment") { view: T3ComposerEditorView, fragment: String ->
+    view.setClipboardFragment(fragment)
+  }
+  Prop("textPasteThresholdBytes") { view: T3ComposerEditorView, threshold: Int ->
+    view.setTextPasteThresholdBytes(threshold)
+  }
+  Prop("maxInputChars") { view: T3ComposerEditorView, maxInputChars: Int ->
+    view.setMaxInputChars(maxInputChars)
+  }
+}
+
 class T3ComposerEditorModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("T3ComposerEditor")
@@ -77,9 +90,7 @@ class T3ComposerEditorModule : Module() {
       Prop("themeJson") { view: T3ComposerEditorView, themeJson: String ->
         view.setThemeJson(themeJson)
       }
-      Prop("clipboardFragment") { view: T3ComposerEditorView, fragment: String ->
-        view.setClipboardFragment(fragment)
-      }
+      registerPasteConfiguration()
       Prop("placeholder") { view: T3ComposerEditorView, placeholder: String ->
         view.setPlaceholder(placeholder)
       }
@@ -99,8 +110,12 @@ class T3ComposerEditorModule : Module() {
       Prop("singleLineCentered") { view: T3ComposerEditorView, singleLineCentered: Boolean ->
         view.setSingleLineCentered(singleLineCentered)
       }
-      Prop("editable") { view: T3ComposerEditorView, editable: Boolean -> view.setEditable(editable) }
-      Prop("readOnly") { view: T3ComposerEditorView, readOnly: Boolean -> view.setReadOnly(readOnly) }
+      Prop("editable") { view: T3ComposerEditorView, editable: Boolean ->
+        view.setEditable(editable)
+      }
+      Prop("readOnly") { view: T3ComposerEditorView, readOnly: Boolean ->
+        view.setReadOnly(readOnly)
+      }
       Prop("scrollEnabled") { view: T3ComposerEditorView, scrollEnabled: Boolean ->
         view.setScrollEnabled(scrollEnabled)
       }
@@ -113,11 +128,6 @@ class T3ComposerEditorModule : Module() {
       Prop("spellCheck") { view: T3ComposerEditorView, spellCheck: Boolean ->
         view.setSpellCheck(spellCheck)
       }
-      Prop("textPasteThresholdBytes") { view: T3ComposerEditorView, threshold: Int ->
-        view.setTextPasteThresholdBytes(threshold)
-      }
-      Prop("maxInputChars") { view: T3ComposerEditorView, maxInputChars: Int -> view.setMaxInputChars(maxInputChars) }
-
       Events(
         "onComposerChange",
         "onComposerSelectionChange",
