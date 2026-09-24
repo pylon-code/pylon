@@ -417,12 +417,12 @@ describe("ThreadSettlementReactor", () => {
               makeThread("reused-detected", { branch: "reused", branchPullRequest: previous }),
               makeThread("foreign-branch-pr", { branch: "foreign", linkedPullRequest: previous }),
               makeThread("resumed-manual", {
-                branch: "main",
+                branch: "resumed",
                 linkedPullRequest: previous,
                 latestUserMessageAt: "2026-08-28T00:00:00.000Z",
               }),
               makeThread("resumed-detected", {
-                branch: "main",
+                branch: "resumed",
                 branchPullRequest: previous,
                 latestUserMessageAt: "2026-08-28T00:00:00.000Z",
               }),
@@ -457,6 +457,9 @@ describe("ThreadSettlementReactor", () => {
           assert.deepStrictEqual(
             new Set((yield* Ref.get(fixture.commands)).map((command) => command.threadId)),
             new Set([ThreadId.make("retained-terminal"), ThreadId.make("foreign-branch-pr")]),
+          );
+          assert.isFalse(
+            (yield* Ref.get(fixture.branchCalls)).some(({ branch }) => branch === "resumed"),
           );
         }).pipe(Effect.provide(fixture.layer));
       }),
