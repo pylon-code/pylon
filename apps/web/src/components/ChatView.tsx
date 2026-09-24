@@ -109,7 +109,7 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
-import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate, useRouter } from "@tanstack/react-router";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { assistantCitationFromLocation } from "../lib/assistantCitationNavigation";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
@@ -360,6 +360,13 @@ import {
 } from "../lib/composerContextRecords";
 import { type ReviewCommentContext } from "../reviewCommentContext";
 import { environmentCatalog } from "../connection/catalog";
+import { environmentPresentations } from "../state/presentation";
+import { canManuallyDisconnectEnvironment } from "../lib/environmentDisconnectEligibility";
+import { useEnvironmentDisconnectDelay } from "../hooks/useEnvironmentDisconnectDelay";
+import {
+  disconnectEnvironmentAndNavigate,
+  disconnectIfStillEligible,
+} from "../lib/environmentDisconnectNavigation";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { projectEnvironment } from "../state/projects";
@@ -1634,6 +1641,10 @@ export default function ChatView(props: ChatViewProps) {
   const { environments } = useEnvironments();
   const primaryEnvironment = usePrimaryEnvironment();
   const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, { reportFailure: false });
+  const router = useRouter();
+  const setEnvironmentEnabled = useAtomCommand(environmentCatalog.setEnabled, {
+    reportFailure: false,
+  });
   const environmentById = useMemo(
     () => new Map(environments.map((environment) => [environment.environmentId, environment])),
     [environments],
@@ -2499,6 +2510,61 @@ export default function ChatView(props: ChatViewProps) {
     },
     [retryEnvironment],
   );
+  const disconnectDelayElapsed = useEnvironmentDisconnectDelay(
+    activeEnvironmentUnavailable ? activeEnvironment.environmentId : null,
+  );
+  const canDisconnectActiveEnvironment =
+    disconnectDelayElapsed && canManuallyDisconnectEnvironment(activeEnvironment);
+  const [disconnectingEnvironmentId, setDisconnectingEnvironmentId] =
+    useState<EnvironmentId | null>(null);
+  const disconnectingEnvironmentRef = useRef<EnvironmentId | null>(null);
+  const handleDisconnectActiveEnvironment = useCallback(
+    async (environmentId: EnvironmentId) => {
+      if (disconnectingEnvironmentRef.current !== null) return;
+      disconnectingEnvironmentRef.current = environmentId;
+      setDisconnectingEnvironmentId(environmentId);
+      try {
+        const result = await disconnectIfStillEligible({
+          isEligibleNow: () =>
+            disconnectDelayElapsed &&
+            canManuallyDisconnectEnvironment(
+              appAtomRegistry.get(environmentPresentations.presentationAtom(environmentId)),
+            ),
+          disconnect: () =>
+            disconnectEnvironmentAndNavigate({
+              disconnect: () => setEnvironmentEnabled({ environmentId, enabled: false }),
+              readLocation: () => ({
+                href: router.state.location.href,
+                key: router.state.location.state.__TSR_key,
+              }),
+              navigateHome: () => {
+                void navigate({ to: "/", replace: true });
+              },
+            }),
+        });
+        if (result === null) return;
+        if (result._tag === "Failure") {
+          if (!isAtomCommandInterrupted(result)) {
+            const error = squashAtomCommandFailure(result);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Could not disconnect server",
+                description: error instanceof Error ? error.message : "Failed to disconnect.",
+              }),
+            );
+          }
+          return;
+        }
+      } finally {
+        if (disconnectingEnvironmentRef.current === environmentId) {
+          disconnectingEnvironmentRef.current = null;
+          setDisconnectingEnvironmentId(null);
+        }
+      }
+    },
+    [disconnectDelayElapsed, navigate, router, setEnvironmentEnabled],
+  );
   const logicalProjectEnvironments = useMemo(() => {
     if (!activeProject) return [];
     const logicalKey = deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings);
@@ -2766,6 +2832,20 @@ export default function ChatView(props: ChatViewProps) {
     const items: ComposerBannerStackItem[] = [];
     const updateRunning = serverUpdateState.status === "running";
     const unavailableConnection = activeEnvironmentUnavailableState?.connection ?? null;
+    const disconnectAction =
+      canDisconnectActiveEnvironment && activeEnvironmentUnavailableState ? (
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={disconnectingEnvironmentId === activeEnvironmentUnavailableState.environmentId}
+          title="Hide this server's threads. Switch it on again in Connections."
+          onClick={() =>
+            void handleDisconnectActiveEnvironment(activeEnvironmentUnavailableState.environmentId)
+          }
+        >
+          Disconnect server
+        </Button>
+      ) : null;
     const environmentReconnecting =
       unavailableConnection !== null &&
       (unavailableConnection.phase === "connecting" ||
@@ -2799,6 +2879,7 @@ export default function ChatView(props: ChatViewProps) {
           ),
           title: `${unavailableConnection.phase === "connecting" ? "Connecting" : "Reconnecting"} to ${activeEnvironmentUnavailableState.label}`,
           description: "Finishing an update",
+          actions: disconnectAction,
           compact: true,
         });
       } else {
@@ -2831,6 +2912,7 @@ export default function ChatView(props: ChatViewProps) {
               >
                 Connections
               </Button>
+              {disconnectAction}
             </>
           ),
         });
@@ -2885,22 +2967,24 @@ export default function ChatView(props: ChatViewProps) {
           (versionMismatchSelfUpdate !== "desktop-managed" || !versionMismatchDesktopAppUpdate)
             ? serverUpdateGuidance(versionMismatchSelfUpdate)
             : undefined,
-        actions:
-          updateInProgress ||
-          !versionMismatch ||
+        actions: updateInProgress ? (
+          suppressUnavailableBanner ? (
+            disconnectAction
+          ) : undefined
+        ) : !versionMismatch ||
           (versionMismatchSelfUpdate === "desktop-managed" &&
             !versionMismatchDesktopAppUpdate) ? undefined : (
-            <ServerUpdateAction
-              environmentId={serverUpdateEnvironmentId}
-              serverLabel={versionMismatchServerLabel}
-              selfUpdate={versionMismatchSelfUpdate}
-              desktopAppUpdate={versionMismatchDesktopAppUpdate}
-              threadContinuation={versionMismatchThreadContinuation}
-              targetVersion={versionMismatch.clientVersion}
-              label={updateFailed ? "Retry" : "Update"}
-              variant="ghost"
-            />
-          ),
+          <ServerUpdateAction
+            environmentId={serverUpdateEnvironmentId}
+            serverLabel={versionMismatchServerLabel}
+            selfUpdate={versionMismatchSelfUpdate}
+            desktopAppUpdate={versionMismatchDesktopAppUpdate}
+            threadContinuation={versionMismatchThreadContinuation}
+            targetVersion={versionMismatch.clientVersion}
+            label={updateFailed ? "Retry" : "Update"}
+            variant="ghost"
+          />
+        ),
         ...(updateInProgress || (!updateFailed && !versionMismatchDismissKey)
           ? {}
           : {
@@ -2928,6 +3012,9 @@ export default function ChatView(props: ChatViewProps) {
     activeEnvironmentUnavailableState,
     reconnectWarningGraceElapsed,
     handleReconnectActiveEnvironment,
+    canDisconnectActiveEnvironment,
+    disconnectingEnvironmentId,
+    handleDisconnectActiveEnvironment,
     navigate,
     setDismissedVersionMismatchKey,
     showVersionMismatchBanner,
