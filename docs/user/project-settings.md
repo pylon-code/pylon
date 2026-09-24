@@ -43,14 +43,17 @@ Browser access changes apply when an agent session next starts.
 
 ## Project icons
 
-Select the project and open Project to choose an icon, emoji, or image. The choice applies to
+Select the project and open Project to choose an icon, emoji, custom one- or two-character monogram,
+or image. The choice applies to
 every checkout in the project group and appears on connected clients. Choose **Automatic** to let
 Pylon detect an icon again.
 
 Icon and image choices apply to the selected checkouts in a project group and appear on connected
 clients. Every environment in the group must support saved icons before custom icons are available.
+The monogram option appears only when every environment in the group supports it.
 Pylon supports SVG, PNG, ICO, JPEG, GIF, AVIF, and WebP images. Custom icons and emoji show on web and
-desktop; mobile uses the project's image when one is available. Mobile **Client storage** includes
+desktop; mobile shows saved emoji and custom monograms, and otherwise uses the project's image when
+one is available. Mobile **Client storage** includes
 cached project images and can clear them.
 
 When no custom icon or image is found, web and desktop show a two-character monogram with colors

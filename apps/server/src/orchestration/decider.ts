@@ -49,6 +49,9 @@ import {
 import { projectEvent } from "./projector.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
 
+// This boundary runs on Node. Contracts stay Hermes-safe and only validate the wire shape.
+const monogramSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -388,6 +391,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           command,
           workspaceRoot: command.workspaceRoot,
           exceptProjectId: command.projectId,
+        });
+      }
+      if (
+        command.projectIcon?.kind === "monogram" &&
+        Array.from(monogramSegmenter.segment(command.projectIcon.text)).length > 2
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Project monograms must contain at most two characters.",
         });
       }
       const occurredAt = yield* nowIso;

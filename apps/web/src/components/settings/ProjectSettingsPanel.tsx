@@ -183,6 +183,11 @@ function ProjectDetail({
   const supportsProjectIcons = group.memberProjects.every(
     (member) => member.projectIcon !== undefined,
   );
+  const supportsMonogramIcons = group.memberProjects.every(
+    (member) =>
+      environmentById.get(member.environmentId)?.serverConfig?.environment.capabilities
+        .projectMonogramIcons === true,
+  );
   const pickProjectFavicon =
     typeof window !== "undefined" &&
     group.memberProjects.every(
@@ -289,6 +294,13 @@ function ProjectDetail({
         });
         return;
       }
+      if (input.projectIcon?.kind === "monogram" && !supportsMonogramIcons) {
+        toastManager.add({
+          type: "warning",
+          title: "Update every environment in this project group to save a monogram.",
+        });
+        return;
+      }
       savingFaviconRef.current = true;
       setIsSavingFavicon(true);
       try {
@@ -298,7 +310,7 @@ function ProjectDetail({
         setIsSavingFavicon(false);
       }
     },
-    [supportsProjectIcons, updateAllMembers],
+    [supportsMonogramIcons, supportsProjectIcons, updateAllMembers],
   );
 
   const hasMultipleCheckouts = group.memberProjects.length > 1;
@@ -447,9 +459,11 @@ function ProjectDetail({
             description={
               projectIcon?.kind === "lucide"
                 ? `${projectIcon.name} · ${projectIcon.color}`
-                : projectIcon?.kind === "emoji"
-                  ? projectIcon.emoji
-                  : (faviconPath ?? "Automatic")
+                : projectIcon?.kind === "monogram"
+                  ? `${projectIcon.text} · ${projectIcon.color}`
+                  : projectIcon?.kind === "emoji"
+                    ? projectIcon.emoji
+                    : (faviconPath ?? "Automatic")
             }
             resetAction={
               group.memberProjects.some(
@@ -546,6 +560,8 @@ function ProjectDetail({
         <Suspense fallback={null}>
           <ProjectIconPickerDialog
             current={projectIcon}
+            projectName={group.displayName}
+            monogramSupported={supportsMonogramIcons}
             open
             onOpenChange={setIconPickerOpen}
             onSelect={(icon) => void setProjectIcon({ faviconPath: null, projectIcon: icon })}
