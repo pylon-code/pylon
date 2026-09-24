@@ -50,6 +50,7 @@ import {
   decodePullRequestStacksJson,
   decodePullRequestStatsJson,
   decodePullRequestSummariesJson,
+  GitHubSummaryBatchUnavailableError,
   decodeReactionSubjectScopeJson,
   decodeRepositoryAccessJson,
   decodeReviewerCandidatesJson,
@@ -1581,7 +1582,13 @@ export const make = Effect.gen(function* () {
           (cause) =>
             !Cause.hasInterruptsOnly(cause) &&
             !Cause.findErrorOption(cause).pipe(
-              Option.exists((error) => error._tag === "SourceControlRateLimitPausedError"),
+              Option.exists(
+                (error) =>
+                  error._tag === "SourceControlRateLimitPausedError" ||
+                  error._tag === "GitHubCliRateLimitError" ||
+                  (error._tag === "GitHubPullRequestReadError" &&
+                    error.cause instanceof GitHubSummaryBatchUnavailableError),
+              ),
             ),
           (cause) =>
             Effect.logDebug("batched pull request summary read failed", { cause }).pipe(

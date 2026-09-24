@@ -336,6 +336,46 @@ layer("GitHubPullRequestCli.layer", (it) => {
     }),
   );
 
+  it.effect("does not fan out summary reads after a rejected GraphQL batch", () =>
+    Effect.gen(function* () {
+      for (const response of [
+        Effect.succeed(output('{"data":null,"errors":[{"message":"API rate limit exceeded"}]}')),
+        Effect.fail(
+          new GitHubCli.GitHubCliRateLimitError({
+            command: "gh",
+            cwd: "/w",
+            cause: new Error("API rate limit exceeded"),
+          }),
+        ),
+      ]) {
+        mockedExecute.mockReset().mockReturnValueOnce(response);
+        const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+        const reads = yield* Effect.all([
+          cli
+            .getPullRequestSummary({
+              cwd: "/w",
+              repository: "acme/web",
+              host: "github.com",
+              number: 7,
+            })
+            .pipe(Effect.forkChild),
+          cli
+            .getPullRequestSummary({
+              cwd: "/w",
+              repository: "acme/web",
+              host: "github.com",
+              number: 8,
+            })
+            .pipe(Effect.forkChild),
+        ]);
+        yield* TestClock.adjust("10 millis");
+        const exits = yield* Effect.forEach(reads, (read) => Fiber.await(read));
+        expect(exits.every((exit) => exit._tag === "Failure")).toBe(true);
+        expect(mockedExecute).toHaveBeenCalledOnce();
+      }
+    }),
+  );
+
   it.effect("reads the stack a pull request is in through the stacks preview, on its host", () =>
     Effect.gen(function* () {
       mockedExecute.mockReturnValueOnce(

@@ -1768,6 +1768,7 @@ const RawSummarySchema = Schema.Struct({
 });
 const decodeSummaries = decodeJsonResult(
   Schema.Struct({
+    errors: Schema.optional(Schema.Array(Schema.Unknown)),
     data: Schema.optional(
       Schema.NullOr(
         Schema.Record(
@@ -1779,6 +1780,9 @@ const decodeSummaries = decodeJsonResult(
   }),
 );
 const decodeSummaryEntry = Schema.decodeUnknownExit(RawSummarySchema);
+
+/** A failed GraphQL document is not a set of missing aliases to retry individually. */
+export class GitHubSummaryBatchUnavailableError extends Error {}
 
 export interface GitHubPullRequestSummary {
   readonly number: number;
@@ -1806,9 +1810,15 @@ export interface GitHubPullRequestSummary {
  */
 export function decodePullRequestSummariesJson(
   raw: string,
-): Result.Result<ReadonlyMap<number, GitHubPullRequestSummary>, DecodeFailure> {
+): Result.Result<
+  ReadonlyMap<number, GitHubPullRequestSummary>,
+  DecodeFailure | GitHubSummaryBatchUnavailableError
+> {
   const decoded = decodeSummaries(raw);
   if (!Result.isSuccess(decoded)) return Result.fail(decoded.failure);
+  if (decoded.success.data == null && (decoded.success.errors?.length ?? 0) > 0) {
+    return Result.fail(new GitHubSummaryBatchUnavailableError("GitHub rejected the summary batch"));
+  }
   const summaries = new Map<number, GitHubPullRequestSummary>();
   for (const [alias, value] of Object.entries(decoded.success.data ?? {})) {
     const index = /^s(\d+)$/.exec(alias)?.[1];
