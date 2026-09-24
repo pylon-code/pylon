@@ -18,13 +18,11 @@ import {
   Columns2Icon,
   FolderTreeIcon,
   InfoIcon,
-  MessageSquareIcon,
   MessageSquareOffIcon,
   PilcrowIcon,
   Rows3Icon,
   TextWrapIcon,
   TriangleAlertIcon,
-  XIcon,
 } from "lucide-react";
 import { useAtomRefresh } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
@@ -77,7 +75,6 @@ import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { PendingReviewCommentCard, ReviewThreadCard } from "./PullRequestReviewAnnotation";
-import { PullRequestReviewBar } from "./PullRequestReviewBar";
 import {
   isFileDiffCollapsed,
   isLineInFileDiff,
@@ -251,9 +248,6 @@ function PullRequestCodeTab({
   const [draft, setDraft] = useState<DraftAnchor | null>(null);
   const [threadPending, setThreadPending] = useState(false);
   const [orphansOpen, setOrphansOpen] = useState(false);
-  // Closed by default so the review form does not permanently eat vertical space below the
-  // diff; opened on demand as a floating overlay instead.
-  const [reviewOpen, setReviewOpen] = useState(false);
   // Which pull request the slices belong to travels with them, so a render taken before the
   // reset below cannot read the previous one's slices — or send its cursor to the host.
   const [sliceState, setSliceState] = useState<{
@@ -264,7 +258,7 @@ function PullRequestCodeTab({
   const parseCache = useRef(new Map<string, RenderablePatch>());
   const [viewer, setViewer] = useState<CodeViewHandle<ReviewAnnotationGroup> | null>(null);
 
-  const referenceKey = pullRequestReviewKey(reference);
+  const referenceKey = pullRequestReviewKey(environmentId, reference);
   const commit = selectedCommitOid;
   // One commit's own changes and the whole change are two different diffs, paged separately, so
   // everything below is keyed by both.
@@ -346,7 +340,7 @@ function PullRequestCodeTab({
     }),
   );
   const reviewKey = referenceKey;
-  const pendingComments = usePendingReviewComments(reference);
+  const pendingComments = usePendingReviewComments(environmentId, reference);
   const addComment = usePullRequestReviewStore((store) => store.addComment);
   const removeComment = usePullRequestReviewStore((store) => store.removeComment);
   const replyToThread = useAtomCommand(pullRequestEnvironment.replyToThread, {
@@ -383,7 +377,6 @@ function PullRequestCodeTab({
       inlineComment: hostReview.inlineComment && viewer.comment,
       reply: hostReview.reply && viewer.comment,
       resolve: hostReview.resolve && viewer.resolve,
-      verdicts: hostReview.verdicts.filter((verdict) => viewer.verdicts.includes(verdict)),
     };
   }, [detail.capabilities.review, detail.viewerPermissions]);
   // A comment is posted against the pull request's head diff, so a line number taken from one
@@ -1030,70 +1023,6 @@ function PullRequestCodeTab({
     ],
   );
 
-  /**
-   * The review overlay belongs to the pull request, not to the patch: a change whose diff
-   * cannot be structured — or read at all — is still one a reviewer can approve or reject, so
-   * it survives every branch below. It floats over the scroll area rather than sitting in the
-   * layout flow, so the diff keeps the full height instead of permanently losing a strip to a
-   * footer most reviews never touch. Hidden entirely where the host offers no verdicts, same as
-   * the bar it wraps did.
-   */
-  const reviewOverlay =
-    review.verdicts.length === 0 ? null : (
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
-        {reviewOpen ? (
-          <div
-            className={cn(
-              "surface-glass pointer-events-auto absolute inset-x-3 rounded-xl border border-border/60 shadow-lg",
-              detail.capabilities.comment && detail.viewerPermissions.comment
-                ? "bottom-16"
-                : "bottom-3",
-            )}
-          >
-            <Button
-              type="button"
-              size="icon-sm"
-              variant="ghost"
-              aria-label="Close review"
-              className="absolute right-2 top-2"
-              onClick={() => setReviewOpen(false)}
-            >
-              <XIcon className="size-3.5" />
-            </Button>
-            <PullRequestReviewBar
-              environmentId={environmentId}
-              reference={reference}
-              verdicts={review.verdicts}
-              requestChangesSummaryRequired={detail.provider === "forgejo"}
-              onSubmitted={() => {
-                onRefresh();
-                setReviewOpen(false);
-              }}
-            />
-          </div>
-        ) : (
-          <Button
-            className={cn(
-              "pointer-events-auto absolute bottom-3 rounded-full shadow-lg",
-              detail.capabilities.comment && detail.viewerPermissions.comment
-                ? "right-16"
-                : "right-4",
-            )}
-            onClick={() => setReviewOpen(true)}
-            size="compact"
-            variant="glass"
-          >
-            <MessageSquareIcon className="size-3.5" />
-            Review
-            {pendingComments.length > 0 ? (
-              <span className="flex size-4 items-center justify-center rounded-full bg-accent text-[10px] tabular-nums text-accent-foreground">
-                {pendingComments.length}
-              </span>
-            ) : null}
-          </Button>
-        )}
-      </div>
-    );
   // A rebase or a force-push can take the scoped commit out of the change. Its diff may still
   // be reachable on the host, but it is no longer part of what is being reviewed, so the scope
   // goes back to the whole change rather than sitting under a name nothing matches.
@@ -1376,29 +1305,23 @@ function PullRequestCodeTab({
   );
   // The toolbar rides above every branch below, not just the one with a patch in it: a commit
   // whose diff is empty or unreadable still needs the scope dropdown that got the reader there.
-  const withReviewBar = (body: ReactNode) => (
+  const withToolbar = (body: ReactNode) => (
     <div className="flex h-full min-h-0 flex-col">
       {toolbar}
-      {/* The overlay is anchored to this wrapper, not the scroller: absolute positioning
-          inside an overflowing element tracks the content's bottom edge, which would carry
-          the trigger away with the first scroll. */}
-      <div className="relative min-h-0 flex-1">
-        <div className="h-full overflow-auto">{body}</div>
-        {reviewOverlay}
-      </div>
+      <div className="min-h-0 flex-1 overflow-auto">{body}</div>
     </div>
   );
 
   // Under the toolbar rather than in place of it, so choosing a commit does not take the
   // dropdown that was just used off the screen while its diff loads.
   if (diffQuery.isPending && loadedSlices.length === 0) {
-    return withReviewBar(<DiffPanelLoadingState label="Loading pull request diff..." />);
+    return withToolbar(<DiffPanelLoadingState label="Loading pull request diff..." />);
   }
 
   // A slice that fails once there are files on screen is reported at the end of them instead:
   // the diff already read is worth more than the error that stopped it growing.
   if (diffQuery.error && loadedSlices.length === 0) {
-    return withReviewBar(
+    return withToolbar(
       <p className="px-4 py-5 text-sm text-muted-foreground">{diffQuery.error}</p>,
     );
   }
@@ -1412,7 +1335,7 @@ function PullRequestCodeTab({
       ? parsedSlices.flatMap((parsed) => (parsed?.kind === "raw" ? [parsed] : []))
       : [];
   if (files.length === 0 && rawSlices.length > 0) {
-    return withReviewBar(
+    return withToolbar(
       <div className="space-y-4 px-4 py-5">
         {rawSlices.map((slice) => (
           <div key={`${slice.reason}:${slice.text.slice(0, 64)}`} className="space-y-2">
@@ -1425,7 +1348,7 @@ function PullRequestCodeTab({
   }
 
   if (items.length === 0 && nextCursor === null) {
-    return withReviewBar(
+    return withToolbar(
       <p className="px-4 py-5 text-sm text-muted-foreground">
         {commit === null
           ? "This pull request has no file changes."
@@ -1579,7 +1502,6 @@ function PullRequestCodeTab({
               renderAnnotation={renderAnnotation}
               unsafeCSSExtra={REPLACE_FILE_COUNTS_CSS}
             />
-            {reviewOverlay}
           </div>
           {fileTreeOpen ? (
             <aside className="flex h-40 min-h-0 w-full shrink-0 border-t border-border/60 @min-[32rem]/diff-layout:h-auto @min-[32rem]/diff-layout:w-[min(20rem,40%)] @min-[32rem]/diff-layout:border-t-0 @min-[32rem]/diff-layout:border-l">

@@ -1,5 +1,5 @@
 import { EnvironmentId, ProjectId, type PullRequestDetailView } from "@t3tools/contracts";
-import { act, type ReactNode } from "react";
+import { act, createRef, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
@@ -17,7 +17,7 @@ vi.mock("../ui/popover", () => {
     PopoverClose: Container,
   };
 });
-import { PullRequestCommentComposer } from "./PullRequestCommentComposer";
+import { PullRequestCommentForm } from "./PullRequestCommentForm";
 
 const detail: PullRequestDetailView = {
   provider: "github",
@@ -74,6 +74,7 @@ const detail: PullRequestDetailView = {
 let renderer: ReactTestRenderer;
 const onCommentAction = vi.fn();
 const onCommented = vi.fn();
+const onClose = vi.fn();
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.clearAllMocks();
@@ -86,7 +87,7 @@ afterEach(async () => {
 async function render(actionPending = false) {
   await act(async () => {
     renderer = create(
-      <PullRequestCommentComposer
+      <PullRequestCommentForm
         environmentId={EnvironmentId.make("isolated")}
         reference={detail}
         detail={{
@@ -95,6 +96,8 @@ async function render(actionPending = false) {
           viewerPermissions: { ...detail.viewerPermissions, actions: ["close"] },
         }}
         actionPending={actionPending}
+        textareaRef={createRef<HTMLTextAreaElement>()}
+        onClose={onClose}
         onCommentAction={onCommentAction}
         onCommented={onCommented}
       />,
