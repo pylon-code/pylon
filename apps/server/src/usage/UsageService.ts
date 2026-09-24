@@ -14,6 +14,8 @@
  * @module UsageService
  */
 import * as NodeOS from "node:os";
+// @effect-diagnostics nodeBuiltinImport:off - Context.Reference defaults cannot request Path.
+import * as NodePath from "node:path";
 
 import {
   ClaudeSettings,
@@ -93,6 +95,15 @@ const CACHE_RETENTION_DAYS = 90;
 const MAX_ANTIGRAVITY_FILES_PER_DIR = 500;
 const MAX_ANTIGRAVITY_BYTES_PER_DIR = 256 * 1024 * 1024;
 const MAX_ANTIGRAVITY_RECORDS_PER_DIR = 50_000;
+
+/** The standalone Antigravity home belongs to this server environment. */
+export const StandaloneAntigravityConversations = Context.Reference<string>(
+  "StandaloneAntigravityConversations",
+  {
+    defaultValue: () =>
+      NodePath.join(NodeOS.homedir(), ".gemini", "antigravity-cli", "conversations"),
+  },
+);
 
 const decodeCodexSettings = Schema.decodeOption(CodexSettings);
 const decodeClaudeSettings = Schema.decodeOption(ClaudeSettings);
@@ -370,16 +381,20 @@ export const make = Effect.gen(function* () {
     }
 
     // Standalone ~/.gemini/antigravity-cli/conversations when present
-    const standaloneDir = path.join(
-      NodeOS.homedir(),
-      ".gemini",
-      "antigravity-cli",
-      "conversations",
-    );
+    const standaloneDir = yield* StandaloneAntigravityConversations;
     const standaloneExists = yield* fileSystem
       .exists(standaloneDir)
       .pipe(Effect.catchCause(() => Effect.succeed(false)));
-    if (standaloneExists) {
+    const hasStandaloneHistory = fileCache
+      .entries()
+      .some(
+        ([filePath, entry]) =>
+          entry.provider === "antigravity" &&
+          entry.mtimeMs >= retentionCutoffMs &&
+          entry.records.length + entry.tailRecords.length > 0 &&
+          isWithinDirectory(filePath, standaloneDir),
+      );
+    if (standaloneExists || hasStandaloneHistory) {
       antigravityRoots.add(standaloneDir);
     }
 

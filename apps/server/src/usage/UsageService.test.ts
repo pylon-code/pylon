@@ -940,6 +940,58 @@ describe("UsageService", () => {
   );
 
   it.live(
+    "retains standalone Antigravity history after its directory is removed and service restarts",
+    () =>
+      Effect.gen(function* () {
+        yield* setup;
+        const config = yield* ServerConfig.ServerConfig;
+        const convDir = NodePath.join(config.stateDir, "standalone-antigravity", "conversations");
+        yield* Effect.promise(() => NodeFSP.mkdir(convDir, { recursive: true }));
+        seedAntigravityDb(NodePath.join(convDir, "session.db"), [
+          {
+            idx: 0,
+            blob: encodeSyntheticGenMetadataBlob({
+              modelName: "gemini-2.5-pro",
+              timestampSeconds: 1785578400n,
+              inputTokens: 100,
+              outputTokens: 40,
+            }),
+          },
+        ]);
+
+        yield* Effect.gen(function* () {
+          const firstService = yield* UsageService.make;
+          const first = yield* firstService.readSummary(WINDOW);
+          assert.isTrue(first.buckets.some((bucket) => bucket.provider === "antigravity"));
+          yield* Effect.promise(() => NodeFSP.rm(convDir, { recursive: true }));
+
+          for (const summary of [
+            yield* firstService.readSummary(WINDOW),
+            yield* (yield* UsageService.make).readSummary(WINDOW),
+          ]) {
+            assert.deepStrictEqual(summary.buckets, first.buckets);
+            const source = summary.sources.find(
+              (item) =>
+                item.fingerprint.provider === "antigravity" &&
+                item.fingerprint.resolvedHomePath === convDir,
+            );
+            assert.isDefined(source);
+            assert.strictEqual(source.status, "ok");
+          }
+        }).pipe(Effect.provideService(UsageService.StandaloneAntigravityConversations, convDir));
+      }).pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-standalone-antigravity-retained-test",
+            home: "",
+            settings: { providers: {}, providerInstances: {} },
+          }),
+        ),
+        Effect.scoped,
+      ),
+  );
+
+  it.live(
     "reports honest missing status when configured Antigravity instance has no conversations dir on disk",
     () =>
       Effect.gen(function* () {
