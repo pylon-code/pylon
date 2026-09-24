@@ -12,6 +12,7 @@ export function updateDeviceHosts(
   remove: boolean,
   identityFileChanged: boolean,
 ): ReadonlyArray<SshDeviceHostConfig> {
+  const { identityFile: _representativeIdentityFile, ...portableHost } = host;
   const destination = original ?? host;
   const byId = hosts.find((candidate) => candidate.id === destination.id);
   const matches = hosts.filter((candidate) => sameDestination(candidate, destination));
@@ -34,18 +35,21 @@ export function updateDeviceHosts(
     if (
       newMatches.length === 1 &&
       newMatches[0]?.label === host.label &&
+      newMatches[0]?.target === host.target &&
+      newMatches[0]?.port === host.port &&
+      (!identityFileChanged || newMatches[0]?.identityFile === host.identityFile) &&
       (byId === undefined || byId === newMatches[0])
     )
       return hosts;
     if (byId !== undefined || newMatches.length > 0) {
       throw new Error("A different device host already uses this ID or destination.");
     }
-    const added = identityFileChanged ? host : { ...host, identityFile: undefined };
+    const added = identityFileChanged ? host : portableHost;
     return [...hosts, added];
   }
   const identityFile = identityFileChanged ? host.identityFile : existing.identityFile;
   const replacement: SshDeviceHostConfig = {
-    ...host,
+    ...portableHost,
     id: existing.id,
     ...(identityFile === undefined ? {} : { identityFile }),
   };

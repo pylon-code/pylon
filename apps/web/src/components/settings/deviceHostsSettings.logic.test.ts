@@ -37,10 +37,9 @@ describe("device hosts in selected environments", () => {
   it("preserves target-local identity paths unless the editor explicitly changes them", () => {
     const representative = { ...host, identityFile: "/primary/key" };
     const remote = { ...host, id: "remote", identityFile: "/remote/key" };
-    expect(updateDeviceHosts([], representative, null, false, false)).toEqual([
-      { ...representative, identityFile: undefined },
-    ]);
+    expect(updateDeviceHosts([], representative, null, false, false)).toEqual([host]);
     expect(updateDeviceHosts([remote], representative, host, false, false)).toEqual([remote]);
+    expect(updateDeviceHosts([host], representative, host, false, false)).toEqual([host]);
     expect(updateDeviceHosts([remote], representative, host, false, true)).toEqual([
       { ...representative, id: "remote" },
     ]);
@@ -51,6 +50,9 @@ describe("device hosts in selected environments", () => {
     expect(() => updateDeviceHosts(ambiguous, host, host, true, true)).toThrow("Multiple");
     const unrelated = { ...sibling, id: host.id };
     expect(() => updateDeviceHosts([unrelated], host, null, false, true)).toThrow("ID");
+    const edited = { ...host, label: "Renamed", target: "dev@new-mac", identityFile: "/new/key" };
+    const conflict = { ...edited, id: "remote", identityFile: "/someone-else/key" };
+    expect(() => updateDeviceHosts([conflict], edited, host, false, true)).toThrow("destination");
   });
 
   it("plans local, remote, and mixed selections without replacing local paths or hiding offline targets", () => {

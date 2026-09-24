@@ -225,6 +225,19 @@ describe("scoped settings writes", () => {
     expect(persistServer).toHaveBeenCalledTimes(1);
   });
 
+  it("scopes agent device access to projects while keeping hub and hosts environment-wide", () => {
+    const access = planScopedSettingsPatch(project, [laptop, server], {
+      enableAgentDeviceAccess: true,
+    });
+    expect(access.serverWrites.map((write) => write.patch)).toEqual([
+      { projectSettingsOverrides: { [projectId]: { enableAgentDeviceAccess: true } } },
+      { projectSettingsOverrides: { [laptopProjectId]: { enableAgentDeviceAccess: true } } },
+    ]);
+    for (const patch of [{ enableDeviceSupport: true }, { deviceHosts: [] }]) {
+      expect(planScopedSettingsPatch(project, environments, patch).serverWrites).toEqual([]);
+    }
+  });
+
   it.each([
     "defaultModelSelection",
     "sourceControlWriterModelSelection",

@@ -28,8 +28,9 @@ vi.mock("../../state/environments", () => ({
 }));
 vi.mock("../../hooks/useSettings", () => ({
   PRIMARY_SETTINGS_UNAVAILABLE_MESSAGE: "Connect to an environment",
-  useClientSettings: (selector: (settings: typeof DEFAULT_CLIENT_SETTINGS) => unknown) =>
-    selector(DEFAULT_CLIENT_SETTINGS),
+  mergeEnvironmentSettings: (server: object, client: object) => ({ ...server, ...client }),
+  useClientSettings: (selector?: (settings: typeof DEFAULT_CLIENT_SETTINGS) => unknown) =>
+    selector ? selector(DEFAULT_CLIENT_SETTINGS) : DEFAULT_CLIENT_SETTINGS,
   useClientSettingsHydrated: () => true,
   usePrimarySettingsAvailable: () => true,
   usePrimarySettings: () => DEFAULT_UNIFIED_SETTINGS,
@@ -44,6 +45,7 @@ vi.mock("./settingsLayout", async (importOriginal) => ({
 vi.mock("./ProjectDefaultsSettings", () => ({ ProjectDefaultsSettings: () => null }));
 vi.mock("./SettingsScopeContext", () => ({
   useSettingsScope: () => ({
+    search: {},
     scope: {
       kind: selectedDeviceEnvironment.projectScope ? "project" : "all",
       environmentIds: selectedDeviceEnvironment.aggregate ? ["remote", "other"] : [],
@@ -56,7 +58,20 @@ vi.mock("./SettingsScopeContext", () => ({
           serverConfig: { settings: DEFAULT_UNIFIED_SETTINGS },
         }
       : null,
-    connectedEnvironments: selectedDeviceEnvironment.aggregate ? [{}, {}] : [],
+    connectedEnvironments: selectedDeviceEnvironment.aggregate
+      ? [
+          {
+            environmentId: "remote",
+            label: "Selected remote",
+            serverConfig: { settings: DEFAULT_UNIFIED_SETTINGS },
+          },
+          {
+            environmentId: "other",
+            label: "Other",
+            serverConfig: { settings: DEFAULT_UNIFIED_SETTINGS },
+          },
+        ]
+      : [],
     environments: selectedDeviceEnvironment.aggregate
       ? [
           { environmentId: "remote", label: "Selected remote", connection: { phase: "connected" } },
@@ -121,7 +136,7 @@ describe("Integrations browser discovery", () => {
     expect(sections.indexOf("devices")).toBeGreaterThan(sections.indexOf("browser"));
   });
 
-  it("names the header's representative device environment without a second selector", async () => {
+  it("shows the selected device settings without a second selector", async () => {
     selectedDeviceEnvironment.id = "selected-remote";
     selectedDeviceEnvironment.aggregate = true;
     await openSettings();
@@ -130,13 +145,13 @@ describe("Integrations browser discovery", () => {
     )[0]!;
     expect(
       section.findAll((node) => node.type === "h2").map((node) => node.children.join("")),
-    ).toContain("Devices · Selected remote");
+    ).toContain("Devices");
     expect(
       section.findAll((node) => node.props["aria-label"] === "Device environment"),
     ).toHaveLength(0);
   });
 
-  it("keeps environment device helpers but removes their permission switch at a project scope", async () => {
+  it("keeps environment device helpers and the project-scoped permission switch", async () => {
     selectedDeviceEnvironment.projectScope = true;
     await openSettings();
     const section = renderer!.root.findAll(
@@ -144,7 +159,7 @@ describe("Integrations browser discovery", () => {
     )[0]!;
     expect(
       section.findAll((node) => node.props["aria-label"] === "Agent device access"),
-    ).toHaveLength(0);
+    ).not.toHaveLength(0);
     expect(
       section.findAll((node) => node.props["aria-label"] === "Device hub").length,
     ).toBeGreaterThan(0);
