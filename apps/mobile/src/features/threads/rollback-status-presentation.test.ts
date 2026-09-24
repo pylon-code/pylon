@@ -27,7 +27,7 @@ describe("mobile rollback status presentation", () => {
       currentMobileRollbackSessionOwner(AsyncResult.success({ ...connected, phase: "connecting" })),
     ).toBeNull();
   });
-  it("uses the newer authoritative event sequence in either stream", () => {
+  it("shows the newer status in either stream but holds actions until projections agree", () => {
     const owner = {};
     const detail: OrchestrationRollbackStatus = {
       state: "manual-recovery",
@@ -48,21 +48,77 @@ describe("mobile rollback status presentation", () => {
         shell: source(shell, 11),
         currentSessionOwner: owner,
       }),
-    ).toEqual({ status: detail, uncertain: false });
+    ).toEqual({ status: { ...detail, allowedActions: [] }, uncertain: true });
     expect(
       resolveMobileRollbackStatus({
         detail: source(detail, 11),
         shell: source(shell, 12),
         currentSessionOwner: owner,
       }),
-    ).toEqual({ status: shell, uncertain: false });
+    ).toEqual({ status: { ...shell, allowedActions: [] }, uncertain: true });
     expect(
       resolveMobileRollbackStatus({
         detail: source({ state: "completed", updatedAt }, 12),
         shell: source(shell, 13),
         currentSessionOwner: owner,
       }),
-    ).toEqual({ status: shell, uncertain: false });
+    ).toEqual({ status: { ...shell, allowedActions: [] }, uncertain: true });
+  });
+
+  it("retains rich detail through unrelated shell sequence progress when operation tokens agree", () => {
+    const owner = {};
+    const detail = {
+      state: "manual-recovery" as const,
+      updatedAt,
+      operationId: "rollback-a",
+      detail: "Repair the provider transcript.",
+      allowedActions: ["retry-verification" as const],
+    };
+    const shell = { state: "manual-recovery" as const, updatedAt, operationId: "rollback-a" };
+    expect(
+      resolveMobileRollbackStatus({
+        detail: { status: detail, sequence: 12, sessionOwner: owner, live: true },
+        shell: { status: shell, sequence: 30, sessionOwner: owner, live: true },
+        currentSessionOwner: owner,
+      }),
+    ).toEqual({ status: detail, uncertain: false });
+    const legacyDetail = {
+      state: "manual-recovery" as const,
+      updatedAt,
+      detail: "Repair the provider transcript.",
+      allowedActions: ["retry-verification" as const],
+    };
+    expect(
+      resolveMobileRollbackStatus({
+        detail: { status: legacyDetail, sequence: 12, sessionOwner: owner, live: true },
+        shell: {
+          status: { state: "manual-recovery", updatedAt },
+          sequence: 30,
+          sessionOwner: owner,
+          live: true,
+        },
+        currentSessionOwner: owner,
+      }),
+    ).toEqual({
+      status: { ...legacyDetail, allowedActions: [] },
+      uncertain: false,
+    });
+    const otherOperationShell = { ...shell, operationId: "rollback-b" };
+    expect(
+      resolveMobileRollbackStatus({
+        detail: { status: detail, sequence: 12, sessionOwner: owner, live: true },
+        shell: {
+          status: otherOperationShell,
+          sequence: 30,
+          sessionOwner: owner,
+          live: true,
+        },
+        currentSessionOwner: owner,
+      }),
+    ).toEqual({
+      status: { ...shell, operationId: "rollback-b", allowedActions: [] },
+      uncertain: true,
+    });
   });
 
   it("rejects an old session after replacement even when its sequence is higher", () => {
@@ -76,7 +132,7 @@ describe("mobile rollback status presentation", () => {
         shell: { status: newStatus, sequence: 1, sessionOwner: newOwner, live: true },
         currentSessionOwner: newOwner,
       }),
-    ).toEqual({ status: newStatus, uncertain: false });
+    ).toEqual({ status: { ...newStatus, allowedActions: [] }, uncertain: false });
     expect(
       resolveMobileRollbackStatus({
         detail: { status: oldStatus, sequence: 100, sessionOwner: oldOwner, live: true },
@@ -101,7 +157,7 @@ describe("mobile rollback status presentation", () => {
       live: true,
     };
     expect(resolveMobileRollbackStatus({ detail, shell, currentSessionOwner: owner })).toEqual({
-      status: undefined,
+      status: { ...shell.status, allowedActions: [] },
       uncertain: true,
     });
     expect(
@@ -112,11 +168,18 @@ describe("mobile rollback status presentation", () => {
         },
         shell: {
           ...shell,
-          status: { state: "manual-recovery", updatedAt, allowedActions: [] },
+          status: { state: "manual-recovery", updatedAt },
         },
         currentSessionOwner: owner,
       }),
-    ).toEqual({ status: undefined, uncertain: true });
+    ).toEqual({
+      status: {
+        state: "manual-recovery",
+        updatedAt,
+        allowedActions: [],
+      },
+      uncertain: false,
+    });
     expect(
       resolveMobileRollbackStatus({
         detail: { ...detail, status: undefined },

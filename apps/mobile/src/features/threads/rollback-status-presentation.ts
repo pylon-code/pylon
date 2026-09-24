@@ -48,16 +48,49 @@ export function resolveMobileRollbackStatus(input: {
     (source) => source.live && source.sessionOwner === currentSessionOwner,
   );
   if (current.length === 0) return { status: undefined, uncertain: true };
-  if (current.length === 1) return { status: current[0]!.status, uncertain: false };
+  const withoutUnprovedActions = (status: OrchestrationRollbackStatus | null | undefined) =>
+    status == null ? status : { ...status, allowedActions: [] };
+  if (current.length === 1) {
+    return { status: withoutUnprovedActions(current[0]!.status), uncertain: false };
+  }
   if (detail.sequence === undefined || shell.sequence === undefined) {
     return { status: undefined, uncertain: true };
   }
-  if (detail.sequence > shell.sequence) return { status: detail.status, uncertain: false };
-  if (shell.sequence > detail.sequence) return { status: shell.status, uncertain: false };
-  if (JSON.stringify(detail.status) !== JSON.stringify(shell.status)) {
-    return { status: undefined, uncertain: true };
+  const detailStatus = detail.status;
+  const shellStatus = shell.status;
+  // Shell snapshots deliberately omit the detail's explanation, revisions,
+  // and recovery actions. An unrelated global event can advance shell's
+  // sequence without changing this thread's rollback state.
+  const sameProjectedStatus =
+    detailStatus == null || shellStatus == null
+      ? detailStatus == null && shellStatus == null
+      : detailStatus.state === shellStatus.state &&
+        detailStatus.updatedAt === shellStatus.updatedAt;
+  if (!sameProjectedStatus) {
+    const newer = detail.sequence > shell.sequence ? detailStatus : shellStatus;
+    return { status: withoutUnprovedActions(newer), uncertain: true };
   }
-  return { status: detail.status ?? shell.status, uncertain: false };
+  // UpdatedAt identifies the projected display state, not the durable saga.
+  // Recovery requires the exact operation identity on both projections.
+  const detailOperationId =
+    detailStatus != null && "operationId" in detailStatus ? detailStatus.operationId : undefined;
+  const shellOperationId =
+    shellStatus != null && "operationId" in shellStatus ? shellStatus.operationId : undefined;
+  if (
+    typeof detailOperationId === "string" &&
+    typeof shellOperationId === "string" &&
+    detailOperationId !== shellOperationId
+  ) {
+    return { status: withoutUnprovedActions(shellStatus), uncertain: true };
+  }
+  const sameOperation =
+    typeof detailOperationId === "string" &&
+    detailOperationId.length > 0 &&
+    detailOperationId === shellOperationId;
+  return {
+    status: sameOperation ? detailStatus : withoutUnprovedActions(detailStatus ?? shellStatus),
+    uncertain: false,
+  };
 }
 
 export function getMobileRollbackStatusPresentation(
