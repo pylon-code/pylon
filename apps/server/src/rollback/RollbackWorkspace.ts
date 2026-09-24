@@ -9,6 +9,8 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
+import type { ThreadId } from "@t3tools/contracts";
+import { checkpointRefPrefixForThread } from "../checkpointing/Utils.ts";
 import { ServerConfig } from "../config.ts";
 
 const execFileAsync = NodeUtil.promisify(NodeChildProcess.execFile);
@@ -63,10 +65,12 @@ export interface RollbackWorkspaceShape {
   readonly capturePreimage: (input: {
     readonly operationId: string;
     readonly cwd: string;
+    readonly threadId: ThreadId;
     readonly targetCheckpointOid: string;
   }) => Effect.Effect<RollbackWorkspacePreimage, RollbackWorkspaceError>;
   readonly restorePreimage: (input: {
     readonly cwd: string;
+    readonly threadId: ThreadId;
     readonly preimage: RollbackWorkspacePreimage;
   }) => Effect.Effect<RollbackWorkspaceReceipt, RollbackWorkspaceError>;
   readonly applyCheckpoint: (input: {
@@ -229,37 +233,43 @@ async function clearMutablePaths(
   }
 }
 
-async function restoreCheckpointRefs(
+async function assertCheckpointRefsUnchanged(
   cwd: string,
-  ownedRefs: ReadonlyArray<{ readonly ref: string; readonly oid: string }>,
+  threadId: ThreadId,
+  savedRefs: ReadonlyArray<{ readonly ref: string; readonly oid: string }>,
 ): Promise<void> {
-  const currentRaw = await git(cwd, [
-    "for-each-ref",
-    "--format=%(refname)%00%(objectname)",
-    "refs/t3/checkpoints",
-  ]);
-  const currentRefs = currentRaw
+  if (!Array.isArray(savedRefs)) throw new Error("invalid-checkpoint-preimage");
+  const prefix = checkpointRefPrefixForThread(threadId);
+  const expected = new Map<string, string>();
+  for (const entry of savedRefs) {
+    if (typeof entry?.ref !== "string" || typeof entry.oid !== "string")
+      throw new Error("invalid-checkpoint-preimage");
+    // Older durable preimages contain every repository ref. Their only authority
+    // comes from the saga's persisted thread identity, never from this list.
+    if (!entry.ref.startsWith(prefix)) continue;
+    if (!/^[0-9a-f]{40,64}$/u.test(entry.oid) || expected.has(entry.ref))
+      throw new Error("invalid-checkpoint-preimage");
+    expected.set(entry.ref, entry.oid);
+  }
+  const current = await listThreadCheckpointRefs(cwd, threadId);
+  if (current.length !== expected.size || current.some(({ ref, oid }) => expected.get(ref) !== oid))
+    throw new Error("checkpoint-ref-drift");
+}
+
+async function listThreadCheckpointRefs(
+  cwd: string,
+  threadId: ThreadId,
+): Promise<ReadonlyArray<{ readonly ref: string; readonly oid: string }>> {
+  const prefix = checkpointRefPrefixForThread(threadId);
+  const raw = await git(cwd, ["for-each-ref", "--format=%(refname)%00%(objectname)", prefix]);
+  return raw
     .split("\n")
     .filter(Boolean)
-    .map((line) => line.split("\0")[0] ?? "");
-  const desired = new Map(ownedRefs.map((entry) => [entry.ref, entry.oid]));
-  const commands = [
-    ...currentRefs.filter((ref) => !desired.has(ref)).map((ref) => `delete ${ref}`),
-    ...ownedRefs.map((entry) => `update ${entry.ref} ${entry.oid}`),
-  ];
-  if (commands.length === 0) return;
-  await new Promise<void>((resolve, reject) => {
-    const child = NodeChildProcess.execFile(
-      "git",
-      ["update-ref", "--stdin"],
-      { cwd, timeout: 30_000, windowsHide: true },
-      (error) => {
-        if (error) reject(error);
-        else resolve();
-      },
-    );
-    child.stdin?.end(`${commands.join("\n")}\n`);
-  });
+    .map((line) => {
+      const [ref = "", oid = ""] = line.split("\0");
+      return { ref, oid };
+    })
+    .filter(({ ref }) => ref.startsWith(prefix));
 }
 
 async function resolveHead(cwd: string): Promise<{ symbolic: string | null; oid: string | null }> {
@@ -407,18 +417,7 @@ const make = Effect.gen(function* () {
       );
       if (indexExisted) await NodeFSP.copyFile(indexPath, NodePath.join(backupPath, "index"));
       const head = await resolveHead(identity.cwd);
-      const refsRaw = await git(identity.cwd, [
-        "for-each-ref",
-        "--format=%(refname)%00%(objectname)",
-        "refs/t3/checkpoints",
-      ]);
-      const ownedRefs = refsRaw
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => {
-          const [ref = "", oid = ""] = line.split("\0");
-          return { ref, oid };
-        });
+      const ownedRefs = await listThreadCheckpointRefs(identity.cwd, input.threadId);
       const receipt = await inspectWorkspace(identity.cwd, mutablePaths);
       return {
         backupPath,
@@ -443,6 +442,7 @@ const make = Effect.gen(function* () {
         beforeHead.oid !== input.preimage.headOid
       )
         throw new Error("head-drift");
+      await assertCheckpointRefsUnchanged(identity.cwd, input.threadId, input.preimage.ownedRefs);
       await clearMutablePaths(identity.cwd, input.preimage.paths);
       await copyBackup(NodePath.join(input.preimage.backupPath, "workspace"), identity.cwd);
       if (input.preimage.indexExisted) {
@@ -454,7 +454,7 @@ const make = Effect.gen(function* () {
       } else {
         await NodeFSP.rm(input.preimage.indexPath, { force: true });
       }
-      await restoreCheckpointRefs(identity.cwd, input.preimage.ownedRefs);
+      await assertCheckpointRefsUnchanged(identity.cwd, input.threadId, input.preimage.ownedRefs);
       const receipt = await inspectWorkspace(identity.cwd, input.preimage.paths);
       if (receipt.digest !== input.preimage.digest) throw new Error("preimage-postcondition");
       return receipt;
