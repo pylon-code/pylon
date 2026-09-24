@@ -41,6 +41,7 @@ const appLinking = {
   // schemes `app.config.ts` registers, because iOS never delivers an
   // unregistered scheme to the app.
   prefixes: [Linking.createURL("/"), "pylon-code://", "pylon-code-dev://", "pylon-code-preview://"],
+  config: { initialRouteName: "Home" },
   // The Expo dev client launches the app via
   // <scheme>://expo-development-client/?url=<packager> — that URL addresses
   // the launcher, not app navigation. Without this filter it falls through
