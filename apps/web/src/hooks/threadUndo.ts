@@ -1,5 +1,15 @@
 // Shared across hook instances so sidebar, header and menu actions invalidate each other.
-const currentActions = new Map<string, { threadKey: string; token: symbol }>();
+interface ActionClaim {
+  readonly sessionOwner: object | null;
+  readonly isCurrent: () => boolean;
+  readonly finish: () => void;
+  readonly offerToBatch: (receiptSequence: number) => void;
+}
+
+const currentActions = new Map<
+  string,
+  { threadKey: string; token: symbol; claim: ActionClaim; batchReceiptSequence: number | null }
+>();
 export interface ActionProjection {
   readonly owner: object;
   readonly generation: number;
@@ -35,16 +45,34 @@ export function begin(
   invalidateThread(threadKey);
   const key = JSON.stringify([kind, threadKey]);
   const token = Symbol();
-  currentActions.set(key, { threadKey, token });
   const isCurrent = () =>
     currentActions.get(key)?.token === token &&
     (owner === undefined || sameOwner(owner.projection, owner.read()));
-  return {
+  const claim = {
+    sessionOwner: owner?.projection?.owner ?? null,
     isCurrent,
     finish: () => {
       if (currentActions.get(key)?.token === token) currentActions.delete(key);
     },
+    offerToBatch: (receiptSequence: number) => {
+      const current = currentActions.get(key);
+      if (isCurrent() && current) current.batchReceiptSequence = receiptSequence;
+    },
   };
+  currentActions.set(key, { threadKey, token, claim, batchReceiptSequence: null });
+  return claim;
+}
+
+/** Transfer a confirmed silent action's claim to one aggregate toast. */
+export function takeBatchClaim(
+  kind: string,
+  threadKey: string,
+  receiptSequence: number,
+): ActionClaim | null {
+  const action = currentActions.get(JSON.stringify([kind, threadKey]));
+  if (action?.batchReceiptSequence !== receiptSequence || !action.claim.isCurrent()) return null;
+  action.batchReceiptSequence = null;
+  return action.claim;
 }
 
 /** Join an intent until its receipt has reached this connection's live shell. */

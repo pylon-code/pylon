@@ -271,7 +271,11 @@ describe("unpin Undo", () => {
     expect(commands.pin).toHaveBeenCalledTimes(2);
     expect(commands.pin).toHaveBeenLastCalledWith({
       environmentId: target.environmentId,
-      input: { threadId: target.threadId, orderKey: "a0" },
+      input: {
+        threadId: target.threadId,
+        orderKey: "a0",
+        expectedSessionOwner: expect.any(Object),
+      },
     });
     await latestUndo();
     expect(commands.pin).toHaveBeenCalledTimes(2);
@@ -301,7 +305,7 @@ describe("archive Undo", () => {
     await undoOf(add, 0)();
     expect(commands.unarchive).toHaveBeenCalledExactlyOnceWith({
       environmentId: target.environmentId,
-      input: { threadId: target.threadId },
+      input: { threadId: target.threadId, expectedSessionOwner: expect.any(Object) },
     });
     expect(router.navigate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -415,11 +419,15 @@ describe("settle and snooze Undo", () => {
     expect(commands.unsettle).toHaveBeenCalledOnce();
     expect(commands.pin).toHaveBeenCalledExactlyOnceWith({
       environmentId: target.environmentId,
-      input: { threadId: target.threadId, orderKey: "a0" },
+      input: {
+        threadId: target.threadId,
+        orderKey: "a0",
+        expectedSessionOwner: expect.any(Object),
+      },
     });
     expect(commands.snooze).toHaveBeenCalledExactlyOnceWith({
       environmentId: target.environmentId,
-      input: { threadId: target.threadId, snoozedUntil },
+      input: { threadId: target.threadId, snoozedUntil, expectedSessionOwner: expect.any(Object) },
     });
   });
 
@@ -495,6 +503,47 @@ describe("settle and snooze Undo", () => {
     expect(add).not.toHaveBeenCalled();
   });
 
+  it("keeps a bulk snooze receipt coalesced while its aggregate Undo owns the claim", async () => {
+    const snoozedUntil = new Date(Date.now() + 60_000).toISOString();
+    const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
+    await useThreadActions().snoozeThread(target, snoozedUntil, {
+      undoToast: false,
+      claimForBatch: true,
+    });
+    // Sidebar claims the confirmed member for its one aggregate toast.
+    const bulkClaim = ThreadUndo.takeBatchClaim(
+      "snooze",
+      scopedThreadKey(target),
+      success.value.sequence,
+    );
+    expect(bulkClaim?.isCurrent()).toBe(true);
+    expect(
+      ThreadUndo.takeBatchClaim("snooze", scopedThreadKey(target), success.value.sequence),
+    ).toBeNull();
+    await useThreadActions().snoozeThread(target, snoozedUntil);
+    expect(commands.snooze).toHaveBeenCalledOnce();
+    expect(add).not.toHaveBeenCalled();
+    // A later projected remote wake permits a genuinely new snooze.
+    shellState.sequence = 2;
+    shellState.current = { ...threadShell };
+    await useThreadActions().snoozeThread(target, snoozedUntil);
+    expect(commands.snooze).toHaveBeenCalledTimes(2);
+    expect(bulkClaim?.isCurrent()).toBe(false);
+  });
+
+  it("does not transfer a failed batch member into the aggregate Undo", async () => {
+    const snoozedUntil = new Date(Date.now() + 60_000).toISOString();
+    commands.snooze.mockResolvedValueOnce(failure);
+    const result = await useThreadActions().snoozeThread(target, snoozedUntil, {
+      undoToast: false,
+      claimForBatch: true,
+    });
+    expect(result).toBe(failure);
+    expect(
+      ThreadUndo.takeBatchClaim("snooze", scopedThreadKey(target), success.value.sequence),
+    ).toBeNull();
+  });
+
   it("wakes the thread from the snooze toast", async () => {
     const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
     vi.spyOn(toastManager, "close").mockImplementation(() => {});
@@ -506,7 +555,11 @@ describe("settle and snooze Undo", () => {
     await undoOf(add, 0)();
     expect(commands.unsnooze).toHaveBeenCalledExactlyOnceWith({
       environmentId: target.environmentId,
-      input: { threadId: target.threadId, reason: "user" },
+      input: {
+        threadId: target.threadId,
+        reason: "user",
+        expectedSessionOwner: expect.any(Object),
+      },
     });
   });
 });

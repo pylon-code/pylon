@@ -4173,6 +4173,7 @@ export default function Sidebar() {
         const navigateAfterSnooze = planForwardNavigation(threadKey, opts.coSnoozingKeys);
         const result = await snoozeThread(threadRef, preset.snoozedUntil, {
           undoToast: opts.coSnoozingKeys === undefined,
+          claimForBatch: opts.coSnoozingKeys !== undefined,
         });
         if (result._tag === "Failure") {
           // Never navigate away from a thread that did not snooze.
@@ -4180,7 +4181,11 @@ export default function Sidebar() {
             ? ({ status: "interrupted" } as const)
             : ({ status: "failure", error: squashAtomCommandFailure(result) } as const);
         }
-        const undoClaim = opts.coSnoozingKeys ? ThreadUndo.begin("snooze", threadKey) : undefined;
+        const undoClaim = opts.coSnoozingKeys
+          ? ThreadUndo.takeBatchClaim("snooze", threadKey, result.value.sequence)
+          : undefined;
+        // A successful no-op or superseded receipt did not earn an inverse.
+        if (opts.coSnoozingKeys && !undoClaim) return { status: "skipped" } as const;
         // Only move forward if the user is still on the snoozed thread —
         // a navigation made during the await wins over ours.
         if (routeThreadKeyRef.current === threadKey) {
@@ -4309,9 +4314,12 @@ export default function Sidebar() {
               return { outcome, threadRef };
             }),
           );
-          const snoozedThreadRefs = outcomes.flatMap(({ outcome, threadRef }) =>
-            outcome.status === "success" ? [threadRef] : [],
+          const snoozedMembers = outcomes.flatMap(({ outcome, threadRef }) =>
+            outcome.status === "success" && outcome.undoClaim?.sessionOwner
+              ? [{ threadRef, claim: outcome.undoClaim }]
+              : [],
           );
+          const snoozedThreadRefs = snoozedMembers.map(({ threadRef }) => threadRef);
           const failures = outcomes.flatMap(({ outcome }) =>
             outcome.status === "failure" ? [outcome.error] : [],
           );
@@ -4340,7 +4348,11 @@ export default function Sidebar() {
                 finish: () => claims.forEach((claim) => claim.finish()),
               },
               undo: async () => {
-                const results = await Promise.all(snoozedThreadRefs.map(unsnoozeThread));
+                const results = await Promise.all(
+                  snoozedMembers.map(({ threadRef, claim }) =>
+                    unsnoozeThread(threadRef, claim.sessionOwner ?? undefined),
+                  ),
+                );
                 return (
                   results.find((result) => result._tag === "Failure") ??
                   AsyncResult.success(undefined)

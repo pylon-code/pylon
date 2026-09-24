@@ -1,6 +1,8 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  ORCHESTRATION_WS_METHODS,
+  CommandId,
   PreviewTabId,
   ThreadId,
   type PreviewAutomationStreamEvent,
@@ -15,6 +17,8 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Latch from "effect/Latch";
+import * as Layer from "effect/Layer";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
@@ -23,6 +27,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
+import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { RpcClientError } from "effect/unstable/rpc";
 
 import {
@@ -34,6 +39,8 @@ import {
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
+import { createAtomCommandScheduler, createRuntimeCommand } from "../state/runtime.ts";
+import { rpcSessionOwner } from "./sessionOwner.ts";
 import {
   EnvironmentRpcRequestObserver,
   request,
@@ -94,6 +101,68 @@ const makeHarness = Effect.fn("TestEnvironmentRpc.makeHarness")(function* () {
 });
 
 describe("environment RPC", () => {
+  it.effect("rejects a queued A-owned inverse after same-ID session B replaces A", () =>
+    Effect.gen(function* () {
+      let bDispatches = 0;
+      const clientA = {
+        [ORCHESTRATION_WS_METHODS.dispatchCommand]: () => Effect.succeed({ sequence: 1 }),
+      } as unknown as WsRpcProtocolClient;
+      const clientB = {
+        [ORCHESTRATION_WS_METHODS.dispatchCommand]: () => {
+          bDispatches += 1;
+          return Effect.succeed({ sequence: 1 });
+        },
+      } as unknown as WsRpcProtocolClient;
+      const harness = yield* makeHarness();
+      const sessionA = session(clientA);
+      yield* SubscriptionRef.set(harness.activeSession, Option.some(sessionA));
+      const runtime = Atom.runtime(
+        Layer.succeed(EnvironmentSupervisor.EnvironmentSupervisor, harness.supervisor),
+      );
+      const scheduler = createAtomCommandScheduler();
+      const concurrency = { mode: "serial" as const, key: () => "thread-1" };
+      const gate = Latch.makeUnsafe();
+      const blocker = createRuntimeCommand(runtime, {
+        label: "test.blocking-command",
+        scheduler,
+        concurrency,
+        execute: () => gate.await,
+      });
+      const inverse = createRuntimeCommand(runtime, {
+        label: "test.queued-inverse",
+        scheduler,
+        concurrency,
+        execute: () =>
+          request(
+            ORCHESTRATION_WS_METHODS.dispatchCommand,
+            {
+              type: "thread.unarchive",
+              commandId: CommandId.make("undo-queued-under-A"),
+              threadId: ThreadId.make("thread-1"),
+            },
+            {
+              expectedSessionOwner: rpcSessionOwner(sessionA),
+            },
+          ),
+      });
+      const registry = AtomRegistry.make();
+      try {
+        const first = blocker.run(registry, undefined);
+        const second = inverse.run(registry, undefined);
+        yield* Effect.promise(() => Promise.resolve());
+        yield* SubscriptionRef.set(harness.activeSession, Option.some(session(clientB)));
+        gate.openUnsafe();
+        yield* Effect.promise(() => first);
+        const result = yield* Effect.promise(() => second);
+        expect(result._tag).toBe("Failure");
+        expect(bDispatches).toBe(0);
+      } finally {
+        gate.openUnsafe();
+        registry.dispose();
+      }
+    }),
+  );
+
   it.effect("registers a fresh preview host after completion without replaying requests", () =>
     Effect.gen(function* () {
       const firstCompleted = yield* Deferred.make<void>();

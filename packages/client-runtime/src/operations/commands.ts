@@ -34,12 +34,13 @@ export type DeleteProjectInput = CommandInput<"project.delete">;
 export type CreateThreadInput = CommandInput<"thread.create">;
 export type DeleteThreadInput = CommandInput<"thread.delete">;
 export type ArchiveThreadInput = CommandInput<"thread.archive">;
-export type UnarchiveThreadInput = CommandInput<"thread.unarchive">;
+type UndoBound<T> = T & { readonly expectedSessionOwner?: object | undefined };
+export type UnarchiveThreadInput = UndoBound<CommandInput<"thread.unarchive">>;
 export type SettleThreadInput = CommandInput<"thread.settle">;
-export type UnsettleThreadInput = CommandInput<"thread.unsettle">;
-export type SnoozeThreadInput = CommandInput<"thread.snooze">;
-export type UnsnoozeThreadInput = CommandInput<"thread.unsnooze">;
-export type PinThreadInput = CommandInput<"thread.pin">;
+export type UnsettleThreadInput = UndoBound<CommandInput<"thread.unsettle">>;
+export type SnoozeThreadInput = UndoBound<CommandInput<"thread.snooze">>;
+export type UnsnoozeThreadInput = UndoBound<CommandInput<"thread.unsnooze">>;
+export type PinThreadInput = UndoBound<CommandInput<"thread.pin">>;
 export type UnpinThreadInput = CommandInput<"thread.unpin">;
 export type ReorderPinnedThreadInput = CommandInput<"thread.pin.reorder">;
 export type ReorderActiveThreadInput = CommandInput<"thread.active.reorder">;
@@ -89,8 +90,12 @@ function timestampedCommandMetadata(input: {
   });
 }
 
-function dispatch(command: ClientOrchestrationCommand) {
-  return request(ORCHESTRATION_WS_METHODS.dispatchCommand, command);
+function dispatch(command: ClientOrchestrationCommand, expectedSessionOwner?: object) {
+  return request(
+    ORCHESTRATION_WS_METHODS.dispatchCommand,
+    command,
+    expectedSessionOwner === undefined ? undefined : { expectedSessionOwner },
+  );
 }
 
 export const createProject: (input: CreateProjectInput) => CommandEffect = Effect.fn(
@@ -160,11 +165,15 @@ export const archiveThread: (input: ArchiveThreadInput) => CommandEffect = Effec
 export const unarchiveThread: (input: UnarchiveThreadInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.unarchiveThread",
 )(function* (input) {
-  return yield* dispatch({
-    ...input,
-    type: "thread.unarchive",
-    commandId: yield* commandId(input),
-  });
+  const { expectedSessionOwner, ...commandInput } = input;
+  return yield* dispatch(
+    {
+      ...commandInput,
+      type: "thread.unarchive",
+      commandId: yield* commandId(input),
+    },
+    expectedSessionOwner,
+  );
 });
 
 export const settleThread: (input: SettleThreadInput) => CommandEffect = Effect.fn(
@@ -180,41 +189,57 @@ export const settleThread: (input: SettleThreadInput) => CommandEffect = Effect.
 export const unsettleThread: (input: UnsettleThreadInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.unsettleThread",
 )(function* (input) {
-  return yield* dispatch({
-    ...input,
-    type: "thread.unsettle",
-    commandId: yield* commandId(input),
-  });
+  const { expectedSessionOwner, ...commandInput } = input;
+  return yield* dispatch(
+    {
+      ...commandInput,
+      type: "thread.unsettle",
+      commandId: yield* commandId(input),
+    },
+    expectedSessionOwner,
+  );
 });
 
 export const snoozeThread: (input: SnoozeThreadInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.snoozeThread",
 )(function* (input) {
-  return yield* dispatch({
-    ...input,
-    type: "thread.snooze",
-    commandId: yield* commandId(input),
-  });
+  const { expectedSessionOwner, ...commandInput } = input;
+  return yield* dispatch(
+    {
+      ...commandInput,
+      type: "thread.snooze",
+      commandId: yield* commandId(input),
+    },
+    expectedSessionOwner,
+  );
 });
 
 export const unsnoozeThread: (input: UnsnoozeThreadInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.unsnoozeThread",
 )(function* (input) {
-  return yield* dispatch({
-    ...input,
-    type: "thread.unsnooze",
-    commandId: yield* commandId(input),
-  });
+  const { expectedSessionOwner, ...commandInput } = input;
+  return yield* dispatch(
+    {
+      ...commandInput,
+      type: "thread.unsnooze",
+      commandId: yield* commandId(input),
+    },
+    expectedSessionOwner,
+  );
 });
 
 export const pinThread: (input: PinThreadInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.pinThread",
 )(function* (input) {
-  return yield* dispatch({
-    ...input,
-    type: "thread.pin",
-    commandId: yield* commandId(input),
-  });
+  const { expectedSessionOwner, ...commandInput } = input;
+  return yield* dispatch(
+    {
+      ...commandInput,
+      type: "thread.pin",
+      commandId: yield* commandId(input),
+    },
+    expectedSessionOwner,
+  );
 });
 
 export const unpinThread: (input: UnpinThreadInput) => CommandEffect = Effect.fn(

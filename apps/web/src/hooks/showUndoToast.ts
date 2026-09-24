@@ -5,7 +5,6 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
-import type * as ThreadUndo from "./threadUndo";
 
 // Undo toasts still on screen, oldest first, so the `thread.undo` shortcut
 // mirrors the newest toast's button without knowing which action it was.
@@ -35,9 +34,15 @@ export function showUndoToast({
   description: string | undefined;
   undo: () => Promise<AtomCommandResult<unknown, unknown>>;
   failureTitle: string;
-  claim: ReturnType<typeof ThreadUndo.begin>;
+  claim: {
+    readonly isCurrent: () => boolean;
+    readonly finish: () => void;
+    readonly sessionOwner?: object | null;
+  };
 }) {
-  if (!claim.isCurrent()) return;
+  // A successful command can race the first live shell projection. Without a
+  // session owner its inverse cannot be safely bound to that connection.
+  if (!claim.isCurrent() || claim.sessionOwner === null) return;
   let undoStarted = false;
   let toastId: string | undefined;
   const reportFailure = (error: unknown) => {
