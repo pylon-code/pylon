@@ -57,6 +57,12 @@ vi.mock("./SettingsScopeContext", () => ({
         }
       : null,
     connectedEnvironments: selectedDeviceEnvironment.aggregate ? [{}, {}] : [],
+    environments: selectedDeviceEnvironment.aggregate
+      ? [
+          { environmentId: "remote", label: "Selected remote", connection: { phase: "connected" } },
+          { environmentId: "other", label: "Other", connection: { phase: "connected" } },
+        ]
+      : [],
     targets: [],
   }),
   useOptionalSettingsScope: () => null,

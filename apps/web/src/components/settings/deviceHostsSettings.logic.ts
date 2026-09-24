@@ -77,10 +77,12 @@ export function planDeviceHostUpdates(
       continue;
     }
     try {
+      const next = updateDeviceHosts(target.hosts, host, original, remove, identityFileEdited);
+      if (next === target.hosts) continue;
       writes.push({
         environmentId: target.environmentId,
         label: target.label,
-        hosts: updateDeviceHosts(target.hosts, host, original, remove, identityFileEdited),
+        hosts: next,
       });
     } catch {
       failed.push(target.label);

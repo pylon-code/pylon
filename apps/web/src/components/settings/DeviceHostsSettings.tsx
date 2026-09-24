@@ -10,6 +10,7 @@ import type {
   SshDeviceHostConfig,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { randomUUID } from "../../lib/utils";
 import { useState } from "react";
 import { deviceEnvironment, useDeviceState } from "../../state/device";
@@ -23,6 +24,8 @@ import { SettingsRow } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { planDeviceHostUpdates } from "./deviceHostsSettings.logic";
 import { toastManager } from "../ui/toast";
+import { useHostConnectionChecks } from "./useHostConnectionChecks";
+import { deviceHostChecksKey, parseDeviceHostDraft } from "./deviceHostConnectionChecks";
 
 /** Host names and identity paths belong to the selected environment, never all environments. */
 export function DeviceHostsSettings(props: {
@@ -35,14 +38,20 @@ export function DeviceHostsSettings(props: {
   const test = useAtomCommand(deviceEnvironment.testHost, { reportFailure: false });
   const retry = useAtomCommand(deviceEnvironment.list);
   const { state } = useDeviceState(props.environmentId);
+  const targets = environments.map((environment) => ({
+    environmentId: environment.environmentId,
+    label: environment.label,
+    connected: environment.connection.phase === "connected",
+  }));
+  const { checks: environmentChecks, testConnection: testAcrossEnvironments } =
+    useHostConnectionChecks(targets);
   const [editing, setEditing] = useState<SshDeviceHostConfig | null>(null);
   const [originalHost, setOriginalHost] = useState<SshDeviceHostConfig | null>(null);
   const [identityFileEdited, setIdentityFileEdited] = useState(false);
-  const [editingEnvironmentId, setEditingEnvironmentId] = useState<EnvironmentId | null>(null);
+  const parsedEditing = editing ? parseDeviceHostDraft(editing) : Option.none();
+  const validEditing = Option.isSome(parsedEditing) && editing?.label.trim() !== "";
   const [busy, setBusy] = useState(false);
   const [retrying, setRetrying] = useState<string | null>(null);
-  const validPort = (port: number | undefined) =>
-    port === undefined || (Number.isInteger(port) && port >= 1 && port <= 65535);
   const [checks, setChecks] = useState<
     Record<
       string,
@@ -99,7 +108,6 @@ export function DeviceHostsSettings(props: {
         setEditing(null);
         setOriginalHost(null);
         setIdentityFileEdited(false);
-        setEditingEnvironmentId(null);
       } else {
         toastManager.add({
           type: "error",
@@ -142,7 +150,6 @@ export function DeviceHostsSettings(props: {
           onClick={() => {
             setOriginalHost(null);
             setIdentityFileEdited(false);
-            setEditingEnvironmentId(props.environmentId);
             setEditing({ id: randomUUID(), label: "", target: "" });
           }}
         >
@@ -264,7 +271,6 @@ export function DeviceHostsSettings(props: {
                         onClick={() => {
                           setOriginalHost(host);
                           setIdentityFileEdited(false);
-                          setEditingEnvironmentId(props.environmentId);
                           setEditing(host);
                         }}
                       >
@@ -313,35 +319,55 @@ export function DeviceHostsSettings(props: {
                   <p className="pb-1 text-xs font-medium text-muted-foreground">
                     {environment.label}
                   </p>
-                  {(environment.serverConfig?.settings.deviceHosts ?? []).map((host) => (
-                    <div key={host.id} className="flex items-center gap-2 py-2">
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">{host.label}</p>
-                        <p className="truncate text-xs text-muted-foreground">{host.target}</p>
+                  {(environment.serverConfig?.settings.deviceHosts ?? []).map((host) => {
+                    const check = checks[checkKey(environment.environmentId, host.id)];
+                    return (
+                      <div key={host.id} className="py-2">
+                        <div className="flex items-center gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium">{host.label}</p>
+                            <p className="truncate text-xs text-muted-foreground">{host.target}</p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy || check?.pending}
+                            onClick={() => void testConnection(host, environment.environmentId)}
+                          >
+                            {check?.pending ? "Checking…" : "Test"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy || projectScope}
+                            onClick={() => {
+                              setOriginalHost(host);
+                              setIdentityFileEdited(false);
+                              setEditing(host);
+                            }}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy || projectScope}
+                            onClick={() => void save(host, host, true)}
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                        {check?.platforms ? (
+                          <DeviceHostAvailability platforms={check.platforms} />
+                        ) : null}
+                        {check?.error ? (
+                          <p role="alert" className="text-xs text-destructive">
+                            {check.error}
+                          </p>
+                        ) : null}
                       </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy || projectScope}
-                        onClick={() => {
-                          setOriginalHost(host);
-                          setIdentityFileEdited(false);
-                          setEditingEnvironmentId(environment.environmentId);
-                          setEditing(host);
-                        }}
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={busy || projectScope}
-                        onClick={() => void save(host, host, true)}
-                      >
-                        Remove
-                      </Button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ))}
             {editing ? (
@@ -349,7 +375,9 @@ export function DeviceHostsSettings(props: {
                 className="space-y-3 border-t border-border/50 py-3"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void save(editing, originalHost);
+                  if (validEditing && Option.isSome(parsedEditing)) {
+                    void save(parsedEditing.value, originalHost);
+                  }
                 }}
               >
                 <label className="block space-y-1 text-sm">
@@ -408,32 +436,17 @@ export function DeviceHostsSettings(props: {
                   />
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    type="submit"
-                    disabled={
-                      projectScope ||
-                      busy ||
-                      !editing.label.trim() ||
-                      !editing.target.trim() ||
-                      !validPort(editing.port)
-                    }
-                  >
+                  <Button size="sm" type="submit" disabled={projectScope || busy || !validEditing}>
                     Save host
                   </Button>
                   <Button
                     size="sm"
                     type="button"
                     variant="outline"
-                    disabled={
-                      projectScope ||
-                      busy ||
-                      !editing.label.trim() ||
-                      !editing.target.trim() ||
-                      !validPort(editing.port)
-                    }
+                    disabled={projectScope || busy || !validEditing}
                     onClick={() => {
-                      if (editingEnvironmentId) void testConnection(editing, editingEnvironmentId);
+                      if (Option.isSome(parsedEditing))
+                        void testAcrossEnvironments(parsedEditing.value);
                     }}
                   >
                     Test connection
@@ -450,28 +463,24 @@ export function DeviceHostsSettings(props: {
                     Cancel
                   </Button>
                 </div>
-                {editingEnvironmentId &&
-                checks[checkKey(editingEnvironmentId, editing.id)]?.pending ? (
-                  <span
-                    role="status"
-                    className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
-                  >
-                    <Spinner className="size-3" />
-                    Checking connection…
-                  </span>
-                ) : null}
-                {editingEnvironmentId &&
-                checks[checkKey(editingEnvironmentId, editing.id)]?.platforms ? (
-                  <DeviceHostAvailability
-                    platforms={checks[checkKey(editingEnvironmentId, editing.id)]?.platforms ?? []}
-                  />
-                ) : null}
-                {editingEnvironmentId &&
-                checks[checkKey(editingEnvironmentId, editing.id)]?.error ? (
-                  <p role="alert" className="text-xs text-destructive">
-                    {checks[checkKey(editingEnvironmentId, editing.id)]?.error}
-                  </p>
-                ) : null}
+                {targets.map((target) => {
+                  const result =
+                    environmentChecks[deviceHostChecksKey(editing, targets)]?.[
+                      target.environmentId
+                    ];
+                  if (!result) return null;
+                  return (
+                    <div key={target.environmentId} className="text-xs" role="status">
+                      <span className="font-medium">{target.label}: </span>
+                      {result.status === "pending" ? "Checking…" : null}
+                      {result.status === "local" ? "Already available locally" : null}
+                      {result.status === "failed" ? result.error : null}
+                      {result.status === "connected" ? (
+                        <DeviceHostAvailability platforms={result.platforms} />
+                      ) : null}
+                    </div>
+                  );
+                })}
               </form>
             ) : null}
           </>

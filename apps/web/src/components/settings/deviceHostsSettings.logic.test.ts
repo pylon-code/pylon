@@ -85,4 +85,17 @@ describe("device hosts in selected environments", () => {
       },
     ]);
   });
+
+  it("does not write a target where the host is already absent on removal", () => {
+    const primary = EnvironmentId.make("local");
+    expect(
+      planDeviceHostUpdates(
+        [{ environmentId: primary, label: "Local", connected: true, hosts: [sibling] }],
+        host,
+        host,
+        true,
+        false,
+      ),
+    ).toEqual({ writes: [], failed: [] });
+  });
 });
