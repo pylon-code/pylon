@@ -12,7 +12,12 @@ import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { type ReactNode } from "react";
-import { getLatestThreadForProject, sortThreads, type ThreadSortInput } from "../lib/threadSort";
+import {
+  getLatestThreadForProject,
+  getThreadSortTimestamp,
+  sortThreads,
+  type ThreadSortInput,
+} from "../lib/threadSort";
 import { normalizeSearchText } from "../lib/utils";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
@@ -146,6 +151,8 @@ export interface CommandPaletteItem {
   readonly description?: ReactNode;
   readonly threadContentMatch?: CommandPaletteThreadContentMatch;
   readonly timestamp?: string;
+  /** Activity time used only to break equally relevant search matches. */
+  readonly searchRecency?: number;
   readonly icon: ReactNode;
   readonly disabled?: boolean;
   /** Optional content rendered inline before the title text. */
@@ -326,6 +333,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
         timestamp: formatRelativeTimeLabel(
           thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
         ),
+        searchRecency: getThreadSortTimestamp(thread, "updated_at"),
         icon: input.icon,
       },
       leadingContent ? { titleLeadingContent: leadingContent } : {},
@@ -449,12 +457,16 @@ export function filterCommandPaletteGroups(input: {
         rank: rankCommandPaletteItemMatch(item, normalizedQuery, queryTokens),
       });
     })
-      .toSorted(
-        (left, right) =>
-          Number(left.item.secondary ?? false) - Number(right.item.secondary ?? false) ||
-          right.rank - left.rank ||
-          left.index - right.index,
-      )
+      .toSorted((left, right) => {
+        const secondaryOrder =
+          Number(left.item.secondary ?? false) - Number(right.item.secondary ?? false);
+        if (secondaryOrder !== 0) return secondaryOrder;
+        if (left.rank !== right.rank) return right.rank - left.rank;
+        const leftRecency = left.item.searchRecency ?? Number.NEGATIVE_INFINITY;
+        const rightRecency = right.item.searchRecency ?? Number.NEGATIVE_INFINITY;
+        if (leftRecency !== rightRecency) return rightRecency > leftRecency ? 1 : -1;
+        return left.index - right.index;
+      })
       .map((entry) => entry.item);
 
     if (items.length === 0) {
