@@ -23,6 +23,7 @@ const bridgeErrorReason = Schema.Literals([
   "wrong-package",
   "invalid-package-manifest",
   "invalid-public-entry",
+  "missing-public-entry",
   "module-import-failed",
   "incompatible-version",
   "incompatible-protocol",
@@ -579,6 +580,24 @@ async function resolvePublicEntry(binaryPath: string, located: LocatedPackage): 
     }
     return canonicalEntry;
   } catch (cause) {
+    if (Predicate.isObject(cause) && "code" in cause && cause.code === "ENOENT") {
+      try {
+        await NodeFSP.lstat(candidate);
+      } catch (entryCause) {
+        if (
+          Predicate.isObject(entryCause) &&
+          "code" in entryCause &&
+          entryCause.code === "ENOENT"
+        ) {
+          throw bridgeError(
+            binaryPath,
+            "missing-public-entry",
+            `The prime-agent package advertises '${relativeEntry}' but does not include it.`,
+            cause,
+          );
+        }
+      }
+    }
     throw bridgeError(
       binaryPath,
       "invalid-public-entry",

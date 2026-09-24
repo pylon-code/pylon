@@ -5582,8 +5582,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const sendTurnUnlocked: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
     if (context.quarantined) return yield* exactUnavailable();
-    invalidateExactHistory(context);
-    yield* updateResumeCursor(context);
+    const lifecycleToken = sessionLifecycleTokens.get(input.threadId);
+    const requireCurrentContext = Effect.suspend(() =>
+      sessions.get(input.threadId) === context && !context.stopped && lifecycleToken
+        ? requireLifecycleToken(input.threadId, lifecycleToken)
+        : Effect.fail(staleSessionOperation()),
+    );
     const modelCatalog = yield* modelCatalogEffect;
     const selectedModel =
       input.modelSelection !== undefined && input.modelSelection.instanceId === boundInstanceId
@@ -5592,6 +5596,31 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const modelSelection = selectedModel
       ? { ...selectedModel, model: resolveClaudeModelSlug(modelCatalog, selectedModel.model) }
       : undefined;
+    // Re-scan on every send: skills can change mid-session. Prepare the prompt
+    // before publishing a turn boundary or changing recovery state, since an
+    // attachment read can fail without any input reaching the SDK.
+    const skills = yield* discoverClaudeSkills(
+      claudeSettings,
+      context.session.cwd,
+      claudeEnvironment,
+    ).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+    const message = yield* buildUserMessageEffect(input, {
+      fileSystem,
+      attachmentsDir: serverConfig.attachmentsDir,
+      boundInstanceId,
+      modelCatalog,
+      skillNames: new Set(
+        skills
+          .filter((skill) => skill.enabled && skill.userInvocable !== false)
+          .map((skill) => skill.name),
+      ),
+    });
+    yield* requireCurrentContext;
+    invalidateExactHistory(context);
+    yield* updateResumeCursor(context);
     if (modelSelection) {
       context.startInput = { ...context.startInput, modelSelection };
     }
@@ -5646,6 +5675,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
+    yield* requireCurrentContext;
     const turnId = steeringTurnState?.turnId ?? TurnId.make(yield* randomUUIDv4);
     if (steeringTurnState === null) {
       const turnState: ClaudeTurnState = {
@@ -5665,6 +5695,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
 
       const updatedAt = yield* nowIso;
+      yield* requireCurrentContext;
       context.turnState = turnState;
       context.session = {
         ...context.session,
@@ -5677,6 +5708,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
 
       const turnStartedStamp = yield* makeEventStamp();
+      yield* requireCurrentContext;
       yield* offerRuntimeEvent(context.sessionIncarnationId, {
         type: "turn.started",
         eventId: turnStartedStamp.eventId,
@@ -5695,33 +5727,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
-    // Re-scan on every send: skills are added and switched off mid-session,
-    // and the scan is a few directory reads. A skill switched off via
-    // skillOverrides, or reserved for the agent with `user-invocable: false`,
-    // is left as prose: the CLI would answer `/name` with a notice instead of
-    // running it.
-    const skills = yield* discoverClaudeSkills(
-      claudeSettings,
-      context.session.cwd,
-      claudeEnvironment,
-    ).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-    );
-    const message = yield* buildUserMessageEffect(input, {
-      fileSystem,
-      attachmentsDir: serverConfig.attachmentsDir,
-      boundInstanceId,
-      modelCatalog,
-      skillNames: new Set(
-        skills
-          .filter((skill) => skill.enabled && skill.userInvocable !== false)
-          .map((skill) => skill.name),
-      ),
-    });
-
     if (steeringTurnState === null) context.turnStartMessageIds.push(turnId);
     yield* updateResumeCursor(context);
+    yield* requireCurrentContext;
     yield* Queue.offer(context.promptQueue, {
       type: "message",
       message:

@@ -9,8 +9,10 @@ import {
   PrimeAgentDaemonManagerError,
   type PrimeAgentDaemonManagerInput,
 } from "./PrimeAgentDaemonManager.ts";
+import { PrimeAgentDaemonBridgeError } from "./PrimeAgentDaemonBridge.ts";
 
 const isPrimeAgentDaemonManagerError = Schema.is(PrimeAgentDaemonManagerError);
+const isPrimeAgentDaemonBridgeError = Schema.is(PrimeAgentDaemonBridgeError);
 
 const FALLBACK_MESSAGES = {
   launchArgs:
@@ -19,7 +21,7 @@ const FALLBACK_MESSAGES = {
     "Prime Agent daemon mode could not resolve the configured CLI; using ACP compatibility mode.",
   manager: "Prime Agent daemon integration is unavailable; using ACP compatibility mode.",
   sdkContract:
-    "The installed Prime Agent is a stock build, so Pylon is using ACP compatibility mode: one account, Full access only, and model changes need a new thread. Install the Pylon Prime build to enable native mode.",
+    "The installed Prime Agent does not expose the public SDK required for native mode, so Pylon is using ACP compatibility mode: one account, Full access only, and model changes need a new thread. Install or repair the Pylon Prime build to enable native mode.",
 } as const;
 
 const NATIVE_ONLY_MESSAGES = {
@@ -167,20 +169,22 @@ export function negotiatePrimeAgentBackend<
       }),
     );
     if (Result.isFailure(manager)) {
-      const isStockSdkContract =
-        isPrimeAgentDaemonManagerError(manager.failure) &&
-        manager.failure.reason === "incompatible-hello" &&
-        manager.failure.detail.includes("caller-owned session contract");
+      const isMissingNativeSdkContract =
+        (isPrimeAgentDaemonManagerError(manager.failure) &&
+          manager.failure.reason === "incompatible-hello" &&
+          manager.failure.detail.includes("caller-owned session contract")) ||
+        (isPrimeAgentDaemonBridgeError(manager.failure) &&
+          manager.failure.reason === "missing-public-entry");
       return input.requireNative === true
         ? ({
             runtime: "unavailable",
-            reason: isStockSdkContract ? "sdk-contract" : "daemon-setup",
+            reason: isMissingNativeSdkContract ? "sdk-contract" : "daemon-setup",
             message: NATIVE_ONLY_MESSAGES.manager,
           } as const)
         : ({
             runtime: "acp",
-            fallbackCategory: isStockSdkContract ? "sdk-contract" : "daemon-setup",
-            fallbackMessage: isStockSdkContract
+            fallbackCategory: isMissingNativeSdkContract ? "sdk-contract" : "daemon-setup",
+            fallbackMessage: isMissingNativeSdkContract
               ? FALLBACK_MESSAGES.sdkContract
               : FALLBACK_MESSAGES.manager,
           } as const);
