@@ -10,6 +10,7 @@ import {
   type PullRequestRef,
   type PullRequestReviewThread,
   type RepositoryIdentity,
+  type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { formatInlineContextReference } from "~/lib/composerContextReferences";
@@ -29,7 +30,8 @@ import {
   isPullRequestVerdictStale,
   isStackedPullRequestBase,
   loadingPullRequestCheckoutCommand,
-  isThreadOwnPullRequest,
+  pullRequestPanelContext,
+  pullRequestPanelHost,
   latestPullRequestReviewOutcomes,
   newestPullRequestCommitAt,
   mergePullRequestThreadComments,
@@ -37,7 +39,6 @@ import {
   pullRequestActionMenuHasGroup,
   pullRequestActionNeedsHostRefresh,
   pullRequestCheckoutCommand,
-  pullRequestComposerTarget,
   pullRequestFindingKey,
   pullRequestHandoffLabels,
   pullRequestReviewOutcome,
@@ -284,15 +285,6 @@ describe("pull request handoff labels", () => {
       fixCheck: "Fix",
       fixFindings: "Fix findings in a thread",
     });
-  });
-});
-
-describe("pull request composer target", () => {
-  it("rejects a page composer so agent comments cannot open another thread", () => {
-    const target = { environmentId: "env-1", threadId: "thread-1" };
-
-    expect(pullRequestComposerTarget("page", target)).toBeNull();
-    expect(pullRequestComposerTarget("thread", target)).toBe(target);
   });
 });
 
@@ -1420,39 +1412,97 @@ describe("how the branch stands against its base", () => {
 });
 
 describe("whether the panel is showing the thread's own pull request", () => {
-  const surface = { projectId: "proj-a", repository: "acme/app", number: 7 };
-
-  it("matches on project, repository and number together", () => {
-    expect(
-      isThreadOwnPullRequest({ projectId: "proj-a", repository: "acme/app", number: 7 }, surface),
-    ).toBe(true);
+  const surface = { projectId: "proj-a", host: "github.com", repository: "acme/app", number: 7 };
+  const link = (overrides: Partial<ThreadPullRequestLink> = {}): ThreadPullRequestLink => ({
+    host: "github.com",
+    repository: "acme/app",
+    number: 7,
+    url: "https://github.com/acme/app/pull/7",
+    source: "manual",
+    linkedAt: "2026-09-24T00:00:00.000Z",
+    snapshot: null,
+    stack: null,
+    ...overrides,
   });
 
-  it("rejects a second checkout of the same repository under another project", () => {
+  it("recognizes every visible linked PR, including a lower stack layer", () => {
     expect(
-      isThreadOwnPullRequest({ projectId: "proj-b", repository: "acme/app", number: 7 }, surface),
-    ).toBe(false);
-  });
-
-  it("rejects another repository or another number", () => {
-    expect(
-      isThreadOwnPullRequest({ projectId: "proj-a", repository: "acme/web", number: 7 }, surface),
-    ).toBe(false);
-    expect(
-      isThreadOwnPullRequest({ projectId: "proj-a", repository: "acme/app", number: 8 }, surface),
-    ).toBe(false);
-  });
-
-  it("rejects a thread with no project or no pull request of its own", () => {
-    expect(
-      isThreadOwnPullRequest({ projectId: null, repository: "acme/app", number: 7 }, surface),
-    ).toBe(false);
-    expect(
-      isThreadOwnPullRequest(
-        { projectId: "proj-a", repository: "acme/app", number: null },
+      pullRequestPanelContext(
+        { projectId: "proj-a", pullRequests: [link({ number: 8 }), link()] },
         surface,
       ),
-    ).toBe(false);
+    ).toBe("thread");
+  });
+
+  it("rejects tombstones, another host, and another project for checkout context", () => {
+    expect(
+      pullRequestPanelContext(
+        {
+          projectId: "proj-a",
+          pullRequests: [link({ source: "stack-dismissed" })],
+          linkedPullRequest: { repository: "acme/app", number: 7 },
+        },
+        surface,
+      ),
+    ).toBe("page");
+    expect(
+      pullRequestPanelContext(
+        { projectId: "proj-a", pullRequests: [link({ host: "forge.example" })] },
+        surface,
+      ),
+    ).toBe("page");
+    expect(pullRequestPanelContext({ projectId: "proj-b", pullRequests: [link()] }, surface)).toBe(
+      "page",
+    );
+  });
+
+  it("does not confuse identical repository and number on two hosts", () => {
+    const github = link();
+    const forgejo = link({
+      host: "forge.example",
+      url: "https://forge.example/acme/app/pulls/7",
+    });
+    const thread = { projectId: "proj-a", pullRequests: [github, forgejo] };
+    expect(
+      pullRequestPanelContext(thread, {
+        projectId: surface.projectId,
+        repository: surface.repository,
+        number: surface.number,
+      }),
+    ).toBe("page");
+    expect(pullRequestPanelContext(thread, { ...surface, host: "forge.example" })).toBe("thread");
+    expect(
+      pullRequestPanelHost({
+        links: thread.pullRequests,
+        repository: surface.repository,
+        number: 7,
+        linkedUrl: forgejo.url,
+        projectHost: "github.com",
+      }),
+    ).toBe("forge.example");
+    expect(
+      pullRequestPanelHost({
+        links: thread.pullRequests,
+        repository: surface.repository,
+        number: 7,
+      }),
+    ).toBeNull();
+  });
+
+  it("uses legacy slots when a server has no link list", () => {
+    expect(
+      pullRequestPanelContext(
+        {
+          projectId: "proj-a",
+          linkedPullRequest: { repository: "acme/app", number: 8 },
+          branchPullRequest: { repository: "acme/app", number: 7 },
+        },
+        surface,
+      ),
+    ).toBe("thread");
+    expect(pullRequestPanelContext({ projectId: "proj-a", linkedPullRequest: null }, surface)).toBe(
+      "page",
+    );
   });
 });
 
