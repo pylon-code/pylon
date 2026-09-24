@@ -314,6 +314,54 @@ export function composerStateAtPromptEnd(
   };
 }
 
+export interface ComposerAliasPolicy {
+  readonly allowUnicodeSkillAliases: boolean;
+  readonly unicodeSkillNames: ReadonlySet<string>;
+}
+
+/** Stable readers for callbacks that outlive a provider or skill-catalog selection. */
+export function createComposerAliasPolicyReaders(getPolicy: () => ComposerAliasPolicy) {
+  return {
+    clampCollapsedComposerCursor: (text: string, cursor: number) => {
+      const policy = getPolicy();
+      return clampCollapsedComposerCursor(
+        text,
+        cursor,
+        policy.allowUnicodeSkillAliases,
+        policy.unicodeSkillNames,
+      );
+    },
+    collapseExpandedComposerCursor: (text: string, cursor: number) => {
+      const policy = getPolicy();
+      return collapseExpandedComposerCursor(
+        text,
+        cursor,
+        policy.allowUnicodeSkillAliases,
+        policy.unicodeSkillNames,
+      );
+    },
+    expandCollapsedComposerCursor: (text: string, cursor: number) => {
+      const policy = getPolicy();
+      return expandCollapsedComposerCursor(
+        text,
+        cursor,
+        policy.allowUnicodeSkillAliases,
+        policy.unicodeSkillNames,
+      );
+    },
+    detectComposerTrigger: (text: string, cursor: number) =>
+      detectComposerTrigger(text, cursor, getPolicy().allowUnicodeSkillAliases),
+    composerStateAtPromptEnd: (text: string) => {
+      const policy = getPolicy();
+      return composerStateAtPromptEnd(
+        text,
+        policy.allowUnicodeSkillAliases,
+        policy.unicodeSkillNames,
+      );
+    },
+  };
+}
+
 export function parseStandaloneComposerSlashCommand(
   text: string,
 ): Exclude<ComposerSlashCommand, "model"> | null {
