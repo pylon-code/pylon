@@ -1294,9 +1294,11 @@ persistence("Relay startup receipt adoption", (it) => {
         WHERE kind LIKE 'task.%'
       `;
       expect(noise).toEqual([]);
-      // Each adopted job is rechecked on a backoff instead of owning a CLI
-      // spawn on every sweep for the life of the process.
+      // Relay answered that these jobs are gone and nothing about them ever
+      // reached the thread, so they are retired instead of holding a CLI spawn
+      // for the life of the process.
       const settledPolls = cli.calls().filter((args) => args[0] === "observe").length;
+      expect(settledPolls).toBeGreaterThan(0);
       yield* bridge.reconcile;
       yield* bridge.reconcile;
       expect(cli.calls().filter((args) => args[0] === "observe")).toHaveLength(settledPolls);

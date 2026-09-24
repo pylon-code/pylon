@@ -489,6 +489,19 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
   >();
   const legacyPriorJobSlots = new Map<string, Map<string, number>>();
 
+  /** Drop every trace of a binding this process has stopped observing. */
+  const retire = (id: string): void => {
+    active.delete(id);
+    legacyPriorJobSlots.delete(id);
+    seen.delete(id);
+    failedObservations.delete(id);
+    missingObservationRetryAt.delete(id);
+    unavailable.delete(id);
+    outageEpochs.delete(id);
+    pendingPanelDispatchPolls.delete(id);
+    priorUsageCache.delete(id);
+  };
+
   const append = Effect.fn("RelayWorkerBridge.append")(function* (
     binding: RelayBinding,
     kind: string,
@@ -1137,12 +1150,20 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     // An outage row explains a worker the thread already shows. The startup
     // receipt scan also adopts long-finished historical jobs whose Relay
     // files are gone; those never projected a row, so announcing them turns
-    // every reopened thread into a wall of idle workers. Retain the binding
-    // for a later return, but do not recheck every missing historical job on
-    // every sweep ahead of live workers.
+    // every reopened thread into a wall of idle workers.
     if (!(yield* hasProjectedStart(binding))) {
-      unavailable.add(binding.id);
-      missingObservationRetryAt.set(binding.id, (yield* Clock.currentTimeMillis) + 60_000);
+      // Relay itself answered that this job is gone, and nothing about it ever
+      // reached the thread, so there is no observation left to resume. Retire
+      // it rather than let every adopted historical job hold a CLI spawn a
+      // minute for the life of the process. A worker that does come back
+      // re-registers through its own receipt, and boot re-checks it once.
+      // When Relay is absent entirely the silence says nothing about the job,
+      // so keep the binding and just slow the recheck down.
+      if (enabled && cliPath) retire(binding.id);
+      else {
+        unavailable.add(binding.id);
+        missingObservationRetryAt.set(binding.id, (yield* Clock.currentTimeMillis) + 60_000);
+      }
       return;
     }
     const latest = yield* readLatestTaskActivity(binding);
@@ -1160,13 +1181,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         : undefined;
     if (latest.kind === "task.completed") {
       if (!pending) {
-        active.delete(binding.id);
-        legacyPriorJobSlots.delete(binding.id);
-        seen.delete(binding.id);
-        failedObservations.delete(binding.id);
-        unavailable.delete(binding.id);
-        outageEpochs.delete(binding.id);
-        priorUsageCache.delete(binding.id);
+        retire(binding.id);
         return;
       }
     }
@@ -1354,25 +1369,12 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
             : `relay-panel-complete:${binding.id}:${attempt}`,
           fingerprint,
         );
-        active.delete(binding.id);
-        legacyPriorJobSlots.delete(binding.id);
-        seen.delete(binding.id);
-        failedObservations.delete(binding.id);
-        unavailable.delete(binding.id);
-        outageEpochs.delete(binding.id);
-        pendingPanelDispatchPolls.delete(binding.id);
-        priorUsageCache.delete(binding.id);
+        retire(binding.id);
       } else if (!hasRunningMember && (!hasPendingDispatch || pendingPolls >= 3)) {
         // Failed/cancelled members and unstarted slots remain visible as an
         // idle panel. A new continuation or member resume receipt reactivates
         // observation; polling this unchanged snapshot forever is needless.
-        active.delete(binding.id);
-        legacyPriorJobSlots.delete(binding.id);
-        seen.delete(binding.id);
-        failedObservations.delete(binding.id);
-        unavailable.delete(binding.id);
-        outageEpochs.delete(binding.id);
-        pendingPanelDispatchPolls.delete(binding.id);
+        retire(binding.id);
       }
       return;
     }
@@ -1492,12 +1494,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         `relay-complete:${binding.id}:${observation.attempt}`,
         fingerprint,
       );
-      active.delete(binding.id);
-      seen.delete(binding.id);
-      failedObservations.delete(binding.id);
-      unavailable.delete(binding.id);
-      outageEpochs.delete(binding.id);
-      priorUsageCache.delete(binding.id);
+      retire(binding.id);
     }
   });
 
