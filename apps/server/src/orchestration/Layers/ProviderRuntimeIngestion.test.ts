@@ -1663,6 +1663,27 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread?.session?.pendingTurnRequestId).toBe(requestId);
     expect(thread?.messages.some((message) => message.role === "assistant")).toBe(false);
 
+    // The prior turn can finish on the same provider session after the new
+    // admission is reserved. Its terminal event must not clear that pending
+    // admission before the matching turn.started arrives.
+    await harness.emitAndDrain([
+      {
+        type: "turn.completed",
+        eventId: asEventId("evt-runtime-session-b-prior-turn-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        threadId,
+        turnId: asTurnId("turn-runtime-session-b-prior"),
+        admissionRequestId: CommandId.make("cmd-runtime-session-b-prior"),
+        sessionIncarnationId: sessionB,
+        createdAt: "2026-01-01T00:00:02.500Z",
+        payload: { state: "completed" },
+      },
+    ]);
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("starting");
+    expect(thread?.session?.pendingTurnRequestId).toBe(requestId);
+
     const currentTurnId = asTurnId("turn-runtime-session-b");
     harness.emit({
       type: "turn.started",

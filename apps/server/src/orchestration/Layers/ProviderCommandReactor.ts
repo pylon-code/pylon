@@ -1048,10 +1048,23 @@ const make = Effect.gen(function* () {
             detail: `Provider session '${session.threadId}' started without a provider instance or session incarnation id.`,
           });
         }
+        if (
+          options?.pendingTurnStart === true &&
+          (session.status === "error" || session.status === "closed")
+        ) {
+          return yield* new ProviderAdapterRequestError({
+            provider: providerErrorLabel(session.provider),
+            method: "thread.turn.start",
+            detail: `Provider session '${session.threadId}' is ${session.status}; it cannot accept a new turn.`,
+          });
+        }
         const sessionBinding: OrchestrationSession = {
           threadId,
+          // The provider can still report the previous turn as running while
+          // a new exact admission is reserved. The reservation owns the
+          // projected lifecycle until its matching turn.started is accepted.
           status:
-            options?.pendingTurnStart === true && session.status === "ready"
+            options?.pendingTurnStart === true
               ? "starting"
               : mapProviderSessionStatusToOrchestrationStatus(session.status),
           providerName: session.provider,
