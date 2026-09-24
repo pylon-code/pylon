@@ -7,16 +7,28 @@ import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {
   useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 
 import { isElectron } from "../env";
 import { getLocalStorageItem, removeLocalStorageItem } from "../hooks/useLocalStorage";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
+import { isPreviewFocused } from "../lib/previewFocus";
+import { isTerminalFocused } from "../lib/terminalFocus";
+import { isModelPickerOpen } from "../modelPickerVisibility";
+import {
+  handleNavigationHistoryShortcut,
+  observeNavigationHistory,
+  type ObservedNavigationHistory,
+} from "../navigationHistoryShortcuts";
+import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
+import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
+import { resolveThreadRouteRef } from "../threadRoutes";
 import { cn, isMacPlatform } from "../lib/utils";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import {
@@ -135,6 +147,74 @@ function SidebarControl() {
       </Tooltip>
     </div>
   );
+}
+
+function NavigationHistoryShortcuts() {
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const router = useRouter();
+  const historyEntry = router.history.location;
+  const observedHistory = useRef<ObservedNavigationHistory>({
+    keys: new Map([
+      [historyEntry.state.__TSR_index, historyEntry.state.__TSR_key ?? historyEntry.href],
+    ]),
+    minIndex: historyEntry.state.__TSR_index,
+    maxIndex: historyEntry.state.__TSR_index,
+  });
+  const routeThreadRef = useParams({
+    strict: false,
+    select: (params) => resolveThreadRouteRef(params),
+  });
+
+  useEffect(() => {
+    return router.history.subscribe(({ location, action }) => {
+      observedHistory.current = observeNavigationHistory(
+        observedHistory.current,
+        location.state.__TSR_index,
+        location.state.__TSR_key ?? location.href,
+        action.type,
+      );
+    });
+  }, [router]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      handleNavigationHistoryShortcut(
+        event,
+        keybindings,
+        {
+          terminalFocus: isTerminalFocused(),
+          terminalOpen: routeThreadRef
+            ? selectThreadTerminalUiState(
+                useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+                routeThreadRef,
+              ).terminalOpen
+            : false,
+          previewFocus: isPreviewFocused(),
+          previewOpen: routeThreadRef
+            ? selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, routeThreadRef) ===
+              "preview"
+            : false,
+          editableFocus:
+            event.target instanceof HTMLElement &&
+            event.target.closest(
+              'input, textarea, select, [contenteditable]:not([contenteditable="false"])',
+            ) !== null,
+          modelPickerOpen: isModelPickerOpen(),
+          isDesktop: isElectron,
+        },
+        router.history.location.state.__TSR_index,
+        observedHistory.current.minIndex,
+        observedHistory.current.maxIndex,
+        router.history,
+        isElectron,
+      );
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [keybindings, routeThreadRef, router]);
+
+  return null;
 }
 
 // Settings swaps the thread sidebar out of the tree. Keep the lightweight
@@ -271,6 +351,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         </Sidebar>
         {children}
         <SidebarControl />
+        <NavigationHistoryShortcuts />
       </SidebarProvider>
     </PanelAnimationSuppressionProvider>
   );
