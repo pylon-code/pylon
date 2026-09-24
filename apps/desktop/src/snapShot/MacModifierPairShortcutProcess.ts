@@ -12,6 +12,9 @@ const MAC_MODIFIER_PAIR_DEVICE_MASKS: Record<SnapShotModifier, readonly [number,
 };
 
 const POLLER_SCRIPT = `
+// Apply background-only policy before CoreGraphics connects to the window server.
+ObjC.import("AppKit");
+$.NSApplication.sharedApplication.setActivationPolicy($.NSApplicationActivationPolicyProhibited);
 ObjC.import("CoreGraphics");
 ObjC.import("unistd");
 function run(argv) {
