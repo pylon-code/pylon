@@ -19,9 +19,16 @@ export function supportsNativeThreadSanitizer(compiler: "clang" | "swiftc"): boo
         ? ["-fsanitize=thread", source, "-o", executable]
         : ["-sanitize=thread", source, "-o", executable];
     const compile = NodeChildProcess.spawnSync(compiler, args, { timeout: 30_000 });
-    if (compile.status !== 0) return false;
+    if (compile.status !== 0) {
+      console.info(`Native ${compiler} ThreadSanitizer unavailable; running behavioral fixture`);
+      return false;
+    }
     const run = NodeChildProcess.spawnSync(executable, { timeout: 15_000 });
-    return run.status === 0;
+    const supported = run.status === 0;
+    console.info(
+      `Native ${compiler} ThreadSanitizer ${supported ? "enabled" : "unavailable; running behavioral fixture"}`,
+    );
+    return supported;
   } finally {
     NodeFS.rmSync(directory, { recursive: true, force: true });
   }
