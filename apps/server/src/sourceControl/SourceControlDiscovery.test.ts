@@ -293,6 +293,47 @@ it.effect("finds a Forgejo branch match after an unrelated first page", () =>
   }),
 );
 
+it.effect("filters Forgejo fork repository identity before applying the result limit", () =>
+  Effect.gen(function* () {
+    const provider = yield* makeForgejoListingProvider((input) => {
+      const page = Number(/(?:\?|&)page=(\d+)/.exec(input.path)?.[1]);
+      const rows =
+        page === 1
+          ? [
+              {
+                ...forgejoPullRow("topic", 1),
+                head: {
+                  ref: "topic",
+                  sha: "wrong",
+                  repo: { full_name: "alice/other", owner: { login: "alice" } },
+                },
+              },
+              {
+                ...forgejoPullRow("topic", 2),
+                head: {
+                  ref: "topic",
+                  sha: "right",
+                  repo: { full_name: "alice/project", owner: { login: "alice" } },
+                },
+              },
+            ]
+          : [];
+      return Effect.succeed(processOutput(JSON.stringify(rows)));
+    });
+    const result = yield* provider.listChangeRequests({
+      cwd: "/repo",
+      headSelector: "alice:topic",
+      source: { owner: "alice", repository: "alice/project", refName: "topic" },
+      state: "open",
+      limit: 1,
+    });
+    assert.deepStrictEqual(
+      result.map((entry) => entry.number),
+      [2],
+    );
+  }),
+);
+
 it.effect("cancels an in-flight Forgejo branch scan before requesting another page", () =>
   Effect.gen(function* () {
     const secondPage = yield* Deferred.make<void>();
