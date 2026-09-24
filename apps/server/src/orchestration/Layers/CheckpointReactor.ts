@@ -46,6 +46,30 @@ import { RollbackWorkspace } from "../../rollback/RollbackWorkspace.ts";
 import * as PullRequestService from "../../pullRequest/PullRequestService.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+// VCS errors can carry absolute paths and command diagnostics in `message`.
+// Only these fixed categories may enter public activities or server logs.
+const checkpointFailureKind = (error: unknown) => {
+  if (typeof error !== "object" || error === null || !("_tag" in error)) return "unknown";
+  switch (error._tag) {
+    case "VcsProcessSpawnError":
+      return "git-spawn";
+    case "VcsProcessExitError":
+      return "git-exit";
+    case "VcsProcessTimeoutError":
+      return "git-timeout";
+    case "VcsProcessStdinWriteError":
+    case "VcsProcessOutputReadError":
+    case "VcsProcessOutputLimitError":
+    case "VcsProcessMissingExitCodeError":
+      return "git-io";
+    case "VcsRepositoryDetectionError":
+      return "repository-detection";
+    case "VcsUnsupportedOperationError":
+      return "unsupported";
+    default:
+      return "unknown";
+  }
+};
 const rollbackUnavailable = {
   state: "unavailable" as const,
   reason:
@@ -126,7 +150,7 @@ export const make = Effect.gen(function* () {
         Cause.hasInterruptsOnly(cause)
           ? Effect.failCause(cause)
           : Effect.logWarning("failed to refresh checkpoint workspace entries", {
-              cwd,
+              failureKind: "workspace-entry-refresh",
             }),
       ),
     ),
@@ -365,8 +389,8 @@ export const make = Effect.gen(function* () {
         Effect.catch((error) =>
           Effect.logWarning("checkpoint capture previous ref lookup failed", {
             threadId: input.threadId,
-            checkpointRef: fromCheckpointRef,
-            category: error._tag,
+            fromTurnCount,
+            category: checkpointFailureKind(error),
           }).pipe(Effect.as(false)),
         ),
       );
@@ -429,7 +453,7 @@ export const make = Effect.gen(function* () {
         appendCaptureFailureActivity({
           threadId: input.threadId,
           turnId: input.turnId,
-          detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
+          detail: `Checkpoint captured, but turn diff summary is unavailable (${checkpointFailureKind(error)}).`,
           createdAt: input.createdAt,
         }),
       ),
@@ -438,7 +462,7 @@ export const make = Effect.gen(function* () {
           threadId: input.threadId,
           turnId: input.turnId,
           turnCount: input.turnCount,
-          detail: error.message,
+          failureKind: checkpointFailureKind(error),
         }).pipe(Effect.as([])),
       ),
     );
@@ -642,8 +666,7 @@ export const make = Effect.gen(function* () {
         Effect.logWarning("failed to refresh local git status after turn completion", {
           threadId: event.threadId,
           turnId: event.turnId ?? null,
-          cwd: sessionRuntime.value.cwd,
-          detail: error.message,
+          failureKind: checkpointFailureKind(error),
         }).pipe(Effect.as(null)),
       ),
     );
@@ -682,8 +705,7 @@ export const make = Effect.gen(function* () {
       Effect.catch((error) =>
         Effect.logWarning("failed to refresh pull request status after turn completion", {
           threadId: input.threadId,
-          cwd: input.cwd,
-          detail: error.message,
+          failureKind: checkpointFailureKind(error),
         }),
       ),
     );
@@ -752,7 +774,7 @@ export const make = Effect.gen(function* () {
         }
         return Effect.logWarning("failed to follow worktree branch drift", {
           threadId: input.threadId,
-          cause: Cause.pretty(cause),
+          failureKind: "unexpected",
         });
       }),
     );
@@ -769,7 +791,7 @@ export const make = Effect.gen(function* () {
             ? Effect.failCause(cause)
             : Effect.logWarning("failed to refresh git status after turn completion", {
                 threadId: event.threadId,
-                cause: Cause.pretty(cause),
+                failureKind: "unexpected",
               }),
         ),
       ),
@@ -994,7 +1016,7 @@ export const make = Effect.gen(function* () {
             appendRevertFailureActivity({
               threadId: event.payload.threadId,
               turnCount: event.payload.turnCount,
-              detail: error.message,
+              detail: `Checkpoint revert could not be verified (${checkpointFailureKind(error)}).`,
               createdAt,
             }),
           ),
@@ -1063,7 +1085,7 @@ export const make = Effect.gen(function* () {
             appendCaptureFailureActivity({
               threadId: event.threadId,
               turnId,
-              detail: error.message,
+              detail: `Checkpoint capture failed (${checkpointFailureKind(error)}).`,
               createdAt,
             }).pipe(Effect.catch(() => Effect.void)),
           ),
@@ -1106,7 +1128,7 @@ export const make = Effect.gen(function* () {
         return Effect.logWarning("checkpoint reactor failed to process input", {
           source: input.source,
           eventType: input.source === "saga" ? "rollback.saga.reconcile" : input.event.type,
-          cause: input.source === "saga" ? "rollback saga step failed" : Cause.pretty(cause),
+          failureKind: input.source === "saga" ? "rollback-saga" : "unexpected",
         });
       }),
     );
