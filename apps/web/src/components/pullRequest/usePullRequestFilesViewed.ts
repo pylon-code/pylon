@@ -41,9 +41,8 @@ export interface PullRequestFilesViewedView {
   /** The host had more files than the read covered, so the count above may be short. */
   readonly truncated: boolean;
   /**
-   * Why the marks could not be read, when they could not. The boxes fall back to the last answer
-   * there was, or to empty when there has not been one, and neither of those says so on its own:
-   * a reader who sees every box unticked has no way to tell a fresh review from a failed read.
+   * Why the marks could not be read. Until the account is verified again, controls and cached
+   * marks stay hidden; the failure remains visible so a reader can retry.
    */
   readonly error: string | null;
   /** Re-ask the host, for the page's refresh button, which goes around the host's cache. */
