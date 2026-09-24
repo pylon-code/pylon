@@ -227,7 +227,9 @@ describe("Integrations browser discovery", () => {
     const project = renderer!.root.findAll(
       (node) => node.type === "section" && node.props.id === "devices",
     )[0]!;
-    expect(project.findAll((node) => node.props["aria-label"] === "Agent device access")).not.toHaveLength(0);
+    expect(
+      project.findAll((node) => node.props["aria-label"] === "Agent device access"),
+    ).not.toHaveLength(0);
     expect(project.findAll((node) => node.children.includes("Check versions"))).not.toHaveLength(0);
     expect(project.findAll((node) => node.children.includes("Update to v2"))).toHaveLength(0);
 
@@ -237,7 +239,9 @@ describe("Integrations browser discovery", () => {
     const environment = renderer!.root.findAll(
       (node) => node.type === "section" && node.props.id === "devices",
     )[0]!;
-    expect(environment.findAll((node) => node.children.includes("Update to v2"))).not.toHaveLength(0);
+    expect(environment.findAll((node) => node.children.includes("Update to v2"))).not.toHaveLength(
+      0,
+    );
   });
 });
 
