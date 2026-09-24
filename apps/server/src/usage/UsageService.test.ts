@@ -566,6 +566,37 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("drops stale source identities after an empty account home is replaced", () =>
+    Effect.gen(function* () {
+      const { home, settings } = yield* setup;
+      const replacement = NodePath.join(home, "replacement-claude");
+      yield* Effect.promise(() =>
+        NodeFSP.mkdir(NodePath.join(replacement, "projects"), { recursive: true }),
+      );
+      yield* Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const settingsService = yield* ServerSettings.ServerSettingsService;
+        const service = yield* UsageService.make;
+        yield* service.readSummary(WINDOW);
+        const cachePath = NodePath.join(config.stateDir, "usage-scan-cache.json");
+        const oldDir = NodePath.join(home, "claude", "projects");
+        assert.include(yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8")), oldDir);
+
+        yield* settingsService.updateSettings({
+          providers: { claudeAgent: { homePath: replacement } },
+        });
+        yield* service.readSummary(WINDOW);
+        const persisted = yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8"));
+        assert.notInclude(persisted, oldDir);
+        assert.include(persisted, NodePath.join(replacement, "projects"));
+      }).pipe(
+        Effect.provide(
+          serviceLayers({ prefix: "usage-service-source-prune-test", home, settings }),
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.live("does not share an in-flight scan after custom prices change", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

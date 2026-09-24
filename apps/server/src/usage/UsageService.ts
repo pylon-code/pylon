@@ -283,6 +283,7 @@ export const make = Effect.gen(function* () {
       fileName?: string;
     }> = [];
     const seen = new Set<string>();
+    const activeSourceKeys = new Set<string>();
     for (const driver of ["claudeAgent", "codex", "grok"] as const) {
       // Disabled accounts still have history. Explicit default slots replace
       // the legacy settings, just as they do in the provider registry.
@@ -346,6 +347,7 @@ export const make = Effect.gen(function* () {
           cacheDirty = true;
         }
         const key = `${provider}\0${dir}`;
+        activeSourceKeys.add(sourceKey);
         if (seen.has(key)) continue;
         seen.add(key);
         dirs.push({
@@ -423,7 +425,27 @@ export const make = Effect.gen(function* () {
         sourceCache.set(sourceKey, { dir, volumeId });
         cacheDirty = true;
       }
+      activeSourceKeys.add(sourceKey);
       dirs.push({ provider: "antigravity", dir, volumeId });
+    }
+
+    // Old configured homes can disappear from settings. Keep their identity
+    // only while an in-retention cached transcript could use it again.
+    for (const [sourceKey, source] of sourceCache) {
+      if (activeSourceKeys.has(sourceKey)) continue;
+      const provider = sourceKey.split("\0", 1)[0];
+      const hasRetainedHistory = fileCache
+        .entries()
+        .some(
+          ([filePath, entry]) =>
+            entry.provider === provider &&
+            entry.mtimeMs >= retentionCutoffMs &&
+            entry.records.length + entry.tailRecords.length > 0 &&
+            isWithinDirectory(filePath, source.dir),
+        );
+      if (hasRetainedHistory) continue;
+      sourceCache.delete(sourceKey);
+      cacheDirty = true;
     }
 
     return dirs;
