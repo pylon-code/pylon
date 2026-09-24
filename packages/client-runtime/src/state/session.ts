@@ -228,6 +228,7 @@ export function createEnvironmentSessionAtoms<R, E>(
     initialConfigValueAtom,
     preparedConnectionAtom,
     preparedConnectionValueAtom,
+    rpcSessionOwnerAtom,
     sessionStateAtom,
     sessionStateValueAtom,
   };

@@ -444,7 +444,16 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
             (Option.isNone(current) || current.value.sessionOwner !== rpcSessionOwner(eventSession))
           )
             return;
-          const next = applyServerConfigProjection(current, event);
+          // A snapshot starts this session's source/theme history. Carrying a
+          // prior session's values would relabel them as current before this
+          // session has published its own updates.
+          const prior =
+            event.type === "snapshot" &&
+            Option.isSome(current) &&
+            current.value.sessionOwner !== rpcSessionOwner(eventSession)
+              ? Option.none<ServerConfigProjection>()
+              : current;
+          const next = applyServerConfigProjection(prior, event);
           if (Option.isNone(next)) {
             return;
           }

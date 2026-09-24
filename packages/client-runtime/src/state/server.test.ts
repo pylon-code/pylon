@@ -887,7 +887,14 @@ describe("server state projection", () => {
           expect(Option.getOrThrow(yield* SubscriptionRef.get(state)).config).toEqual(CONFIG);
 
           const providers: ServerConfig["providers"] = [];
-          yield* Queue.offer(firstEvents, snapshotEvent(CONFIG));
+          const sourceCapableConfig = {
+            ...CONFIG,
+            environment: {
+              ...CONFIG.environment,
+              capabilities: { ...CONFIG.environment.capabilities, usageLimitSources: true },
+            },
+          };
+          yield* Queue.offer(firstEvents, snapshotEvent(sourceCapableConfig));
           yield* Queue.offer(firstEvents, {
             version: 1,
             type: "providerStatuses",
@@ -906,6 +913,33 @@ describe("server state projection", () => {
           expect(Option.getOrThrow(Option.getOrThrow(projected)).sessionOwner).toBe(
             rpcSessionOwner(firstSession),
           );
+          const sourcePublished = yield* SubscriptionRef.changes(state).pipe(
+            Stream.filter(
+              (value) =>
+                Option.isSome(value) && value.value.latestEvent.type === "usageLimitSourcesUpdated",
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* Queue.offer(firstEvents, {
+            version: 1,
+            type: "usageLimitSourcesUpdated",
+            payload: {
+              sources: [
+                {
+                  id: UsageLimitSourceId.make("first-session"),
+                  kind: "cliproxy",
+                  label: "First session",
+                  checkedAt: "2026-09-07T00:00:00.000Z",
+                  accounts: [],
+                },
+              ],
+            },
+          });
+          expect(
+            Option.getOrThrow(Option.getOrThrow(yield* Fiber.join(sourcePublished))).config
+              .usageLimitSources,
+          ).toHaveLength(1);
 
           // A's live result remains readable for ordinary cached UI, but it
           // cannot claim generation B before B publishes its own snapshot.
@@ -937,10 +971,12 @@ describe("server state projection", () => {
               Stream.runHead,
             )
             .pipe(Effect.forkChild);
-          yield* Queue.offer(secondEvents, snapshotEvent(CONFIG));
-          expect(
-            Option.getOrThrow(Option.getOrThrow(yield* Fiber.join(secondProjection))).sessionOwner,
-          ).toBe(rpcSessionOwner(secondSession));
+          yield* Queue.offer(secondEvents, snapshotEvent(sourceCapableConfig));
+          const newSessionProjection = Option.getOrThrow(
+            Option.getOrThrow(yield* Fiber.join(secondProjection)),
+          );
+          expect(newSessionProjection.sessionOwner).toBe(rpcSessionOwner(secondSession));
+          expect(newSessionProjection.config.usageLimitSources).toBeUndefined();
         }),
       );
 

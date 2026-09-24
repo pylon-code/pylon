@@ -32,6 +32,9 @@ const publish = createSubscriptionUsagePublisher(publishSubscriptionUsage, (erro
 const widgetSessionOwnerAtom = Atom.family((environmentId: EnvironmentId) =>
   connectionAtomRuntime.atom((get) => {
     get(environmentCatalog.catalogValueAtom);
+    // Connection generations may be reused by a replacement supervisor.
+    // Session admission and replacement must invalidate the live owner read.
+    get(environmentSession.rpcSessionOwnerAtom(environmentId));
     const connection = Option.getOrNull(
       AsyncResult.value(get(environmentCatalog.stateAtom(environmentId))),
     );
