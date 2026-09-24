@@ -121,6 +121,8 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ModelManifest from "./provider/ModelManifest.ts";
+import * as ProviderMaintenance from "./provider/providerMaintenance.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
@@ -560,6 +562,8 @@ const makeWsRpcLayer = (
       const deviceService = yield* DeviceService.DeviceService;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const modelManifest = yield* ModelManifest.ModelManifest;
+      const providerVersionCache = yield* ProviderMaintenance.ProviderVersionCache;
       const providerService = yield* ProviderService.ProviderService;
       const relayWorkerBridge = Option.getOrUndefined(
         yield* Effect.serviceOption(RelayWorkerBridge),
@@ -2345,6 +2349,29 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverRefreshProviders,
             Effect.gen(function* () {
+              if (input.refreshModels) {
+                // Explicit refresh bypasses Pylon-owned caches; background probes
+                // keep their normal freshness windows.
+                yield* modelManifest.forceRefresh;
+                const instances = yield* providerInstances.listInstances;
+                yield* Effect.forEach(
+                  instances.filter(
+                    (instance) =>
+                      input.instanceId === undefined || input.instanceId === instance.instanceId,
+                  ),
+                  (instance) =>
+                    Effect.gen(function* () {
+                      yield* instance.invalidateCaches ?? Effect.void;
+                      const maintenance = yield* instance.snapshot.resolveMaintenance({
+                        fresh: true,
+                      });
+                      if (maintenance.packageName) {
+                        providerVersionCache.delete(maintenance.packageName);
+                      }
+                    }),
+                  { concurrency: "unbounded", discard: true },
+                );
+              }
               let providers = yield* input.cwd !== undefined && input.instanceId !== undefined
                 ? providerRegistry.refreshWorkspaceSnapshot({
                     instanceId: input.instanceId,

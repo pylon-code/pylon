@@ -567,7 +567,8 @@ const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, 
      */
     instanceId: Schema.optional(ProviderInstanceId),
     cwd: Schema.optional(TrimmedNonEmptyString),
-    /** Explicit user request. Background status refreshes must not open agent sessions. */
+    /** Explicit user request: bypass provider discovery caches and rediscover models.
+     * Background status refreshes must not open agent sessions. */
     refreshModels: Schema.optional(Schema.Boolean),
   }),
   success: ServerProviderUpdatedPayload,
