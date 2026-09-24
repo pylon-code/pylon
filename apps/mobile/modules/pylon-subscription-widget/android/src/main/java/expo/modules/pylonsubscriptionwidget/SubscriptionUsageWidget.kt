@@ -142,8 +142,12 @@ class SubscriptionUsageWidget : AppWidgetProvider() {
       val remaining = window?.optInt("remaining")?.coerceIn(0, 100)
       val expired = provider.optLong("expiresAt") > 0 &&
         provider.optLong("expiresAt") <= System.currentTimeMillis()
-      val detail = if (expired) context.getString(R.string.pylon_subscription_widget_refresh)
-        else provider.optString("detail")
+      val detail =
+        if (expired) {
+          context.getString(R.string.pylon_subscription_widget_refresh)
+        } else {
+          provider.optString("detail")
+        }
       val label = provider.optString("name")
       val windowLabel = window?.optString("label") ?: detail
       child.setTextViewText(R.id.pylon_widget_label, label)

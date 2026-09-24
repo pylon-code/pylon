@@ -798,7 +798,7 @@ describe("RpcSessionFactory", () => {
   );
 
   it.effect.each([{ failure: "defect" as const }, { failure: "typed" as const }])(
-    "keeps durable config state alive after an owned $failure failure",
+    "reconnects after an owned $failure failure without relabeling prior live themes",
     ({ failure }) =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -926,7 +926,10 @@ describe("RpcSessionFactory", () => {
             (config) => config.environment.label === "Recovered environment",
           ).pipe(Effect.forkChild);
           yield* SubscriptionRef.set(activeSession, Option.some(secondSession));
-          expect((yield* Fiber.join(recoveredState)).environmentThemes).toEqual(firstThemes);
+          // The recovered snapshot is authoritative for the new RPC session.
+          // Its themes arrive separately; the old session's live set is not
+          // stamped onto the new session while that update is pending.
+          expect((yield* Fiber.join(recoveredState)).environmentThemes).toBeUndefined();
 
           const recoveredThemes = [
             {
