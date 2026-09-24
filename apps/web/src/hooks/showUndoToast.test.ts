@@ -8,11 +8,16 @@ import * as ThreadUndo from "./threadUndo";
 
 afterEach(() => vi.restoreAllMocks());
 
+const projection = { owner: Object.freeze({}), generation: 1, sequence: 1 };
+function ownedClaim(kind: string, threadKey: string) {
+  return ThreadUndo.begin(kind, threadKey, { projection, read: () => projection });
+}
+
 function setup() {
   const add = vi.spyOn(toastManager, "add").mockReturnValue("undo-toast");
   const close = vi.spyOn(toastManager, "close").mockImplementation(() => {});
   const undo = vi.fn(async () => AsyncResult.success(undefined));
-  const claim = ThreadUndo.begin("pin", "env/thread");
+  const claim = ownedClaim("pin", "env/thread");
   const options = {
     title: "Thread unpinned",
     description: "Thread",
@@ -30,11 +35,22 @@ function click(add: ReturnType<typeof setup>["add"], index = 0) {
 }
 
 describe("showUndoToast", () => {
+  it("retires a real Undo claim when no live session owner was observed", () => {
+    const { add, options } = setup();
+    const claim = ThreadUndo.begin("pin", "env/unowned", {
+      projection: null,
+      read: () => null,
+    });
+    showUndoToast({ ...options, claim });
+    expect(add).not.toHaveBeenCalled();
+    expect(claim.isCurrent()).toBe(false);
+  });
+
   it("ignores a stale toast and lets the latest action run only once", async () => {
     const { add, close, undo, options } = setup();
     showUndoToast(options);
     ThreadUndo.invalidate("pin", "env/thread");
-    showUndoToast({ ...options, claim: ThreadUndo.begin("pin", "env/thread") });
+    showUndoToast({ ...options, claim: ownedClaim("pin", "env/thread") });
     await click(add);
     expect(undo).not.toHaveBeenCalled();
     await click(add, 1);
@@ -97,8 +113,8 @@ describe("showUndoToast", () => {
 describe("undoLatestThreadAction", () => {
   it("does not wake a partly superseded snooze batch", () => {
     const { options } = setup();
-    const first = ThreadUndo.begin("snooze", "env/first");
-    const second = ThreadUndo.begin("snooze", "env/second");
+    const first = ownedClaim("snooze", "env/first");
+    const second = ownedClaim("snooze", "env/second");
     const undo = vi.fn(async () => AsyncResult.success(undefined));
     showUndoToast({
       ...options,
@@ -122,8 +138,8 @@ describe("undoLatestThreadAction", () => {
     const { options } = setup();
     const older = vi.fn(async () => AsyncResult.success(undefined));
     const newer = vi.fn(async () => AsyncResult.success(undefined));
-    showUndoToast({ ...options, undo: older, claim: ThreadUndo.begin("settle", "env/a") });
-    showUndoToast({ ...options, undo: newer, claim: ThreadUndo.begin("snooze", "env/b") });
+    showUndoToast({ ...options, undo: older, claim: ownedClaim("settle", "env/a") });
+    showUndoToast({ ...options, undo: newer, claim: ownedClaim("snooze", "env/b") });
     expect(undoLatestThreadAction()).toBe(true);
     expect(newer).toHaveBeenCalledOnce();
     expect(older).not.toHaveBeenCalled();
@@ -137,10 +153,10 @@ describe("undoLatestThreadAction", () => {
     const superseded = vi.fn(async () => AsyncResult.success(undefined));
     const closed = vi.fn(async () => AsyncResult.success(undefined));
     const live = vi.fn(async () => AsyncResult.success(undefined));
-    showUndoToast({ ...options, undo: live, claim: ThreadUndo.begin("archive", "env/live") });
-    showUndoToast({ ...options, undo: closed, claim: ThreadUndo.begin("archive", "env/closed") });
+    showUndoToast({ ...options, undo: live, claim: ownedClaim("archive", "env/live") });
+    showUndoToast({ ...options, undo: closed, claim: ownedClaim("archive", "env/closed") });
     add.mock.calls[1]?.[0].onClose?.();
-    showUndoToast({ ...options, undo: superseded, claim: ThreadUndo.begin("pin", "env/stale") });
+    showUndoToast({ ...options, undo: superseded, claim: ownedClaim("pin", "env/stale") });
     ThreadUndo.invalidate("pin", "env/stale");
     expect(undoLatestThreadAction()).toBe(true);
     expect(superseded).not.toHaveBeenCalled();
