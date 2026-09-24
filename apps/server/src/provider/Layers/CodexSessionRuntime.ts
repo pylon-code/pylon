@@ -650,6 +650,21 @@ function hasUnicodeSkillMention(prompt: string): boolean {
   });
 }
 
+export function codexSkillNamesForCwd(
+  response: {
+    readonly data: ReadonlyArray<{
+      readonly cwd: string;
+      readonly skills: ReadonlyArray<{ readonly name: string; readonly enabled: boolean }>;
+    }>;
+  },
+  cwd: string,
+): ReadonlySet<string> {
+  const entry =
+    response.data.find((item) => item.cwd === cwd) ??
+    (response.data.length === 1 ? response.data[0] : undefined);
+  return new Set((entry?.skills ?? []).filter((skill) => skill.enabled).map((skill) => skill.name));
+}
+
 export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
@@ -2921,14 +2936,17 @@ export const makeCodexSessionRuntime = (
           const skillNames =
             input.input && hasUnicodeSkillMention(input.input)
               ? yield* client.request("skills/list", { cwds: [options.cwd] }).pipe(
-                  Effect.map((response) => {
-                    const entry = response.data.find((item) => item.cwd === options.cwd);
-                    return new Set(
-                      (entry?.skills ?? [])
-                        .filter((skill) => skill.enabled)
-                        .map((skill) => skill.name),
-                    );
-                  }),
+                  Effect.timeoutOption("2 seconds"),
+                  Effect.flatMap(
+                    Option.match({
+                      onNone: () =>
+                        Effect.logWarning(
+                          "Timed out resolving Codex skill aliases before turn.",
+                        ).pipe(Effect.as(undefined)),
+                      onSome: (response) =>
+                        Effect.succeed(codexSkillNamesForCwd(response, options.cwd)),
+                    }),
+                  ),
                   Effect.catch((cause) =>
                     Effect.logWarning("Failed to resolve Codex skill aliases before turn.", {
                       cause,

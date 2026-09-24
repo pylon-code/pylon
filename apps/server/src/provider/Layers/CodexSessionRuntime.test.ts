@@ -13,6 +13,7 @@ import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.t
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
+  codexSkillNamesForCwd,
   describeMcpElicitation,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
@@ -154,6 +155,45 @@ function makeThreadOpenResponse(
 }
 
 describe("buildTurnStartParams", () => {
+  it("uses only the requested Codex cwd, allowing a sole canonicalized response cwd", () => {
+    NodeAssert.deepEqual(
+      [
+        ...codexSkillNamesForCwd(
+          { data: [{ cwd: "/canonical/project", skills: [{ name: "review", enabled: true }] }] },
+          "/symlink/project",
+        ),
+      ],
+      ["review"],
+    );
+    NodeAssert.deepEqual(
+      [
+        ...codexSkillNamesForCwd(
+          {
+            data: [
+              { cwd: "/other", skills: [{ name: "private", enabled: true }] },
+              { cwd: "/requested", skills: [{ name: "review", enabled: true }] },
+            ],
+          },
+          "/requested",
+        ),
+      ],
+      ["review"],
+    );
+    NodeAssert.deepEqual(
+      [
+        ...codexSkillNamesForCwd(
+          {
+            data: [
+              { cwd: "/other", skills: [{ name: "private", enabled: true }] },
+              { cwd: "/different", skills: [{ name: "review", enabled: true }] },
+            ],
+          },
+          "/requested",
+        ),
+      ],
+      [],
+    );
+  });
   it.effect("sends currency skill aliases in Codex's canonical dollar form", () =>
     Effect.gen(function* () {
       for (const symbol of ["€", "£", "¥", "₹", "₩", "₿", "𑿝"]) {

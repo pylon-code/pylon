@@ -325,6 +325,7 @@ describe("nativeMarkdownDocumentRuns", () => {
         {
           text: `${prefix}ui`,
           role: "body",
+          sourceText: `${prefix}ui`,
           skillName: "ui",
           skillLabel: "UI",
         },
@@ -332,6 +333,20 @@ describe("nativeMarkdownDocumentRuns", () => {
       ]);
     },
   );
+
+  it("copies a decorated astral currency alias without replacing its prefix", () => {
+    const node: MarkdownNode = {
+      type: "document",
+      children: [{ type: "paragraph", children: [{ type: "text", content: "Use 𑿝ui now" }] }],
+    };
+    const skillRun = nativeMarkdownDocumentRuns(node, [{ name: "ui" }]).find(
+      (run) => run.skillName === "ui",
+    );
+    expect(skillRun).toBeDefined();
+    expect(
+      nativeMarkdownContextCopyRanges([{ run: skillRun!, text: "\uFFFC", inlineImageLength: 0 }]),
+    ).toEqual([{ start: 0, end: 1, text: "𑿝ui" }]);
+  });
 
   it("decorates known skill references that begin with a digit", () => {
     const node: MarkdownNode = {
@@ -349,6 +364,7 @@ describe("nativeMarkdownDocumentRuns", () => {
       {
         text: "$2spec",
         role: "body",
+        sourceText: "$2spec",
         skillName: "2spec",
         skillLabel: "2Spec",
       },
@@ -370,6 +386,7 @@ describe("nativeMarkdownDocumentRuns", () => {
     expect(nativeMarkdownDocumentRuns(node, [{ name: "ui", displayName: "UI" }])).toContainEqual({
       text: "$ui",
       role: "body",
+      sourceText: "$ui",
       skillName: "ui",
       skillLabel: "UI",
     });

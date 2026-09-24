@@ -114,7 +114,7 @@ export function nativeMarkdownContextCopyRanges(
     const source = reference
       ? formatComposerContextReference({ ...reference, label: run.text })
       : run.skillName
-        ? `$${run.skillName}`
+        ? (run.sourceText ?? `$${run.skillName}`)
         : run.fileIcon && run.href
           ? (run.sourceText ?? `[${run.text}](<${run.href}>)`)
           : null;
@@ -267,6 +267,7 @@ function sameRunStyle(left: NativeMarkdownTextRun, right: NativeMarkdownTextRun)
     left.externalHost === right.externalHost &&
     left.fileIcon === right.fileIcon &&
     left.skillName === right.skillName &&
+    left.sourceText === right.sourceText &&
     left.skillLabel === right.skillLabel &&
     left.role === right.role &&
     left.headingLevel === right.headingLevel &&
@@ -366,6 +367,7 @@ function decorateSkillRuns(
       decorated.push({
         ...run,
         text: run.text.slice(start, end),
+        sourceText: run.text.slice(start, end),
         skillName: name,
         skillLabel: formatSkillLabel(skill),
       });
