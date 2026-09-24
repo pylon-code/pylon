@@ -108,6 +108,38 @@ function undoOf(
   return () => onClick?.(event);
 }
 
+const success = { _tag: "Success" as const, value: undefined };
+function deferredSuccess() {
+  let resolve!: (value: typeof success) => void;
+  const promise = new Promise<typeof success>((ready) => {
+    resolve = ready;
+  });
+  return { promise, resolve: () => resolve(success) };
+}
+
+async function expectDuplicateReceiptHasOneInverse(
+  command: (typeof commands)["unpin"],
+  run: () => Promise<unknown>,
+  inverse: (typeof commands)["pin"],
+) {
+  const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
+  vi.spyOn(toastManager, "close").mockImplementation(() => {});
+  const first = deferredSuccess();
+  command.mockImplementationOnce(() => first.promise);
+  const firstAttempt = run();
+  const duplicateAttempt = run();
+  await duplicateAttempt;
+  expect(command).toHaveBeenCalledOnce();
+  expect(add).not.toHaveBeenCalled();
+  first.resolve();
+  await firstAttempt;
+  expect(add).toHaveBeenCalledTimes(1);
+  await run();
+  expect(command).toHaveBeenCalledOnce();
+  await undoOf(add, 0)();
+  expect(inverse).toHaveBeenCalledOnce();
+}
+
 beforeEach(() => {
   for (const command of Object.values(commands)) {
     command.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
@@ -157,6 +189,15 @@ describe("unpin Undo", () => {
     });
     await latestUndo();
     expect(commands.pin).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a duplicate unpin no-op own the inverse", async () => {
+    threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
+    await expectDuplicateReceiptHasOneInverse(
+      commands.unpin,
+      () => useThreadActions().unpinThread(target),
+      commands.pin,
+    );
   });
 });
 
@@ -234,6 +275,21 @@ describe("archive Undo", () => {
 });
 
 describe("settle and snooze Undo", () => {
+  it("does not let a duplicate settle no-op own the inverse", async () => {
+    await expectDuplicateReceiptHasOneInverse(
+      commands.settle,
+      () => useThreadActions().settleThread(target),
+      commands.unsettle,
+    );
+  });
+
+  it("does not let a duplicate snooze no-op own the inverse", async () => {
+    await expectDuplicateReceiptHasOneInverse(
+      commands.snooze,
+      () => useThreadActions().snoozeThread(target, "2030-01-01T00:00:00.000Z"),
+      commands.unsnooze,
+    );
+  });
   it("un-settles from the toast and expires the Undo after a manual un-settle", async () => {
     const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
     vi.spyOn(toastManager, "close").mockImplementation(() => {});

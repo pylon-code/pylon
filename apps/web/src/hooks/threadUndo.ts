@@ -1,5 +1,8 @@
 // Shared across hook instances so sidebar, header and menu actions invalidate each other.
-const currentActions = new Map<string, { threadKey: string; token: symbol }>();
+const currentActions = new Map<
+  string,
+  { threadKey: string; token: symbol; fingerprint?: string }
+>();
 
 /** Claims a thread action; any later lifecycle action on that thread expires its Undo. */
 export function begin(kind: string, threadKey: string) {
@@ -14,6 +17,16 @@ export function begin(kind: string, threadKey: string) {
       if (isCurrent()) currentActions.delete(key);
     },
   };
+}
+
+/** A second callback against the same observed state cannot claim a no-op receipt. */
+export function beginIfNew(kind: string, threadKey: string, fingerprint: string) {
+  const key = JSON.stringify([kind, threadKey]);
+  if (currentActions.get(key)?.fingerprint === fingerprint) return null;
+  const claim = begin(kind, threadKey);
+  const action = currentActions.get(key);
+  if (action) action.fingerprint = fingerprint;
+  return claim;
 }
 
 /** Expires one action kind; use invalidateThread for lifecycle changes. */

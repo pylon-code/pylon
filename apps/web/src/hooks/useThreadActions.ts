@@ -628,7 +628,16 @@ export function useThreadActions() {
       const thread = readThreadShell(target);
       const orderKey = thread?.pinOrderKey ?? undefined;
       const action =
-        thread?.pinnedAt != null ? ThreadUndo.begin("pin", scopedThreadKey(target)) : null;
+        thread?.pinnedAt != null
+          ? ThreadUndo.beginIfNew(
+              "pin",
+              scopedThreadKey(target),
+              JSON.stringify([thread.pinnedAt, orderKey]),
+            )
+          : null;
+      // The first receipt owns the observed transition. A duplicate callback
+      // against that same shell must not send another command behind its Undo.
+      if (thread?.pinnedAt != null && action === null) return AsyncResult.success(undefined);
       const result = await unpinThreadMutation({
         environmentId: target.environmentId,
         input: { threadId: target.threadId },
@@ -680,8 +689,23 @@ export function useThreadActions() {
       const action =
         resolved &&
         !(resolved.thread.settledOverride === "settled" && resolved.thread.settledAt !== null)
-          ? ThreadUndo.begin("settle", scopedThreadKey(target))
+          ? ThreadUndo.beginIfNew(
+              "settle",
+              scopedThreadKey(target),
+              JSON.stringify([
+                resolved.thread.settledOverride,
+                resolved.thread.settledAt,
+                resolved.thread.pinnedAt,
+                resolved.thread.snoozedUntil,
+              ]),
+            )
           : null;
+      if (
+        resolved &&
+        !(resolved.thread.settledOverride === "settled" && resolved.thread.settledAt !== null) &&
+        action === null
+      )
+        return AsyncResult.success(undefined);
       const result = await settleThreadMutation({
         environmentId: target.environmentId,
         input: { threadId: target.threadId },
@@ -854,8 +878,22 @@ export function useThreadActions() {
       const action =
         resolved &&
         !(resolved.thread.snoozedUntil === snoozedUntil && resolved.thread.snoozedAt != null)
-          ? ThreadUndo.begin("snooze", scopedThreadKey(target))
+          ? ThreadUndo.beginIfNew(
+              "snooze",
+              scopedThreadKey(target),
+              JSON.stringify([
+                resolved.thread.snoozedAt,
+                resolved.thread.snoozedUntil,
+                snoozedUntil,
+              ]),
+            )
           : null;
+      if (
+        resolved &&
+        !(resolved.thread.snoozedUntil === snoozedUntil && resolved.thread.snoozedAt != null) &&
+        action === null
+      )
+        return AsyncResult.success(undefined);
       const result = await snoozeThreadMutation({
         environmentId: target.environmentId,
         input: { threadId: target.threadId, snoozedUntil },
