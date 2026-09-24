@@ -1418,6 +1418,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             addFiles: (files) => {
               onFileDropThreads(threadRef, files);
             },
+            addFolders: () =>
+              toastManager.add({
+                type: "error",
+                title: "Drop folders into an open local thread composer",
+              }),
           })
         : null,
     [onFileDropThreads, threadRef],
@@ -2473,6 +2478,11 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
         addFiles: (files) => {
           props.onFileDropThreads(threadRef, files);
         },
+        addFolders: () =>
+          toastManager.add({
+            type: "error",
+            title: "Drop folders into an open local thread composer",
+          }),
       }),
     [props.onFileDropThreads, threadRef],
   );
