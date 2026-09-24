@@ -3,12 +3,16 @@ import { describe, expect, it } from "vite-plus/test";
 import * as ThreadUndo from "./threadUndo";
 
 describe("thread action ownership", () => {
-  it("keeps claims for different action kinds independent", () => {
+  it("invalidates an older inverse when another action changes the same thread", () => {
     const pin = ThreadUndo.begin("pin", "env/shared");
     const archive = ThreadUndo.begin("archive", "env/shared");
+    expect(pin.isCurrent()).toBe(false);
+    expect(archive.isCurrent()).toBe(true);
     ThreadUndo.invalidate("pin", "env/shared");
     expect(pin.isCurrent()).toBe(false);
     expect(archive.isCurrent()).toBe(true);
+    ThreadUndo.invalidateThread("env/shared");
+    expect(archive.isCurrent()).toBe(false);
     archive.finish();
   });
 
