@@ -96,10 +96,10 @@ import {
 } from "../../lib/composerImages";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import {
+  appendComposerDraftAttachments,
   clearComposerDraftContent,
   composerDraftIncarnation,
   countComposerDraftAttachmentsAfterSelection,
-  insertComposerDraftText,
   insertComposerDraftTextIfIncarnation,
   mayCommitPastedTextAttachment,
   getComposerDraftSnapshot,
@@ -1109,25 +1109,36 @@ export function NewTaskDraftScreen(props: {
 
   const handleNativePasteImages = useCallback(
     async (uris: ReadonlyArray<string>) => {
+      const draftKey = pasteOwner.key;
+      const draftIncarnation = pasteOwnerDraftIncarnations.current.get(pasteOwner) ?? null;
+      if (!draftKey || !mayCommitPastedTextAttachment(draftKey, draftIncarnation)) return;
       try {
         const images = await convertPastedImagesToAttachments({
           uris,
           existingCount: flow.attachments.length,
         });
-        if (images.length > 0) {
-          flow.appendAttachments(images);
+        if (images.length > 0 && mayCommitPastedTextAttachment(draftKey, draftIncarnation)) {
+          appendComposerDraftAttachments(draftKey, images, { appendReference: true });
         }
       } catch (error) {
         console.error("[native paste] error converting images", error);
       }
     },
-    [flow],
+    [flow.attachments.length, pasteOwner],
   );
 
   const handleNativePasteText = useCallback(
     async (paste: ComposerTextPaste) => {
       const draftKey = pasteOwner.key;
       if (!draftKey) return;
+      const draftIncarnation = pasteOwnerDraftIncarnations.current.get(pasteOwner) ?? null;
+      if (!mayCommitPastedTextAttachment(draftKey, draftIncarnation)) {
+        Alert.alert(
+          "Paste was not added",
+          "The original draft was discarded. Paste again to add the text to the current draft.",
+        );
+        return;
+      }
       const insertPaste = () => {
         const insertion = replaceTextSelection({
           value: paste.value,
@@ -1138,16 +1149,8 @@ export function NewTaskDraftScreen(props: {
         composerMenu.onSelectionChange({ start: insertion.cursor, end: insertion.cursor });
       };
       const target = { text: paste.value, ...paste.selection };
-      const insertPasteAfterWrite = () => insertComposerDraftText(draftKey, paste.text, target);
       const preserveCapturedPaste = () => {
-        if (
-          !insertComposerDraftTextIfIncarnation(
-            draftKey,
-            pasteOwnerDraftIncarnations.current.get(pasteOwner) ?? null,
-            paste.text,
-            target,
-          )
-        )
+        if (!insertComposerDraftTextIfIncarnation(draftKey, draftIncarnation, paste.text, target))
           Alert.alert(
             "Paste was not added",
             "The original draft was discarded. Paste again to add the text to the current draft.",
@@ -1224,10 +1227,7 @@ export function NewTaskDraftScreen(props: {
         });
         if (
           committedPasteOwner.current !== pasteOwner ||
-          !mayCommitPastedTextAttachment(
-            draftKey,
-            pasteOwnerDraftIncarnations.current.get(pasteOwner) ?? null,
-          ) ||
+          !mayCommitPastedTextAttachment(draftKey, draftIncarnation) ||
           pasteOwner.environmentId == null ||
           connectedPastedTextAttachmentLease(pasteOwner.environmentId)?.state !==
             connectedLease?.state
@@ -1241,7 +1241,7 @@ export function NewTaskDraftScreen(props: {
         if (flow.appendAttachments([attachment], target) > 0) {
           await removePersistedComposerAttachmentFile(attachment.fileUri);
           if (!wouldExceedInputLimit) {
-            insertPasteAfterWrite();
+            insertComposerDraftTextIfIncarnation(draftKey, draftIncarnation, paste.text, target);
           } else
             Alert.alert(
               "Could not attach pasted text",

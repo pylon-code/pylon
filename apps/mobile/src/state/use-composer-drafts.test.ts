@@ -872,6 +872,43 @@ describe("mobile composer drafts", () => {
     expect(getComposerDraftSnapshot(key)).toEqual(before);
     await cleanup.promise;
   });
+
+  it.each(["text", "image"])(
+    "does not apply %s returned by a delayed clipboard read after draft discard",
+    async (kind) => {
+      const key = `environment-1:clipboard-${kind}`;
+      setComposerDraftText(key, "original");
+      const target = captureComposerDraftInsertion(key);
+      const incarnation = composerDraftIncarnation(key);
+      const clipboardRead = Promise.withResolvers<void>();
+      const pending = clipboardRead.promise.then(() => {
+        if (!mayCommitPastedTextAttachment(key, incarnation)) return false;
+        if (kind === "text") insertComposerDraftText(key, " pasted", target);
+        else
+          appendComposerDraftAttachments(
+            key,
+            [
+              {
+                id: "clipboard-image",
+                type: "image",
+                name: "pasted-image.png",
+                mimeType: "image/png",
+                sizeBytes: 3,
+                dataUrl: "data:image/png;base64,YWJj",
+                previewUri: "data:image/png;base64,YWJj",
+              },
+            ],
+            { appendReference: true, insertion: target },
+          );
+        return true;
+      });
+      clearComposerDraft(key);
+      setComposerDraftText(key, "replacement");
+      clipboardRead.resolve();
+      expect(await pending).toBe(false);
+      expect(getComposerDraftSnapshot(key)).toMatchObject({ text: "replacement", attachments: [] });
+    },
+  );
   it.each(["environment-1:thread", "environment-1:new-task:draft"])(
     "preserves the captured paste selection across async writes in %s",
     async (key) => {
