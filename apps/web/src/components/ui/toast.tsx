@@ -6,6 +6,7 @@ import { Toast } from "@base-ui/react/toast";
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type ComponentPropsWithoutRef,
@@ -540,6 +541,19 @@ function ToastProvider({ children, position = "top-right", ...props }: ToastProv
 
 function Toasts({ position }: { position: ToastPosition }) {
   const { toasts } = Toast.useToastManager<ThreadToastData>();
+  const previousCloseCallbacks = useRef(new Map<ToastId, () => void>());
+  useEffect(() => {
+    // Base UI can remove a toast by timeout or swipe without using our
+    // dismiss button. Release action ownership when it leaves the manager.
+    const current = new Map<ToastId, () => void>();
+    for (const toast of toasts) {
+      if (toast.data?.onClose) current.set(toast.id, toast.data.onClose);
+    }
+    for (const [id, onClose] of previousCloseCallbacks.current) {
+      if (!current.has(id)) onClose();
+    }
+    previousCloseCallbacks.current = current;
+  }, [toasts]);
   const activeThreadRef = useActiveThreadRefFromRoute();
   const isTop = position.startsWith("top");
   const visibleToasts = toasts.filter((toast) =>

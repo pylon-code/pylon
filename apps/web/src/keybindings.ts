@@ -33,6 +33,8 @@ export interface ShortcutMatchContext {
   terminalOpen: boolean;
   previewFocus: boolean;
   previewOpen: boolean;
+  /** Native text editing owns chords such as Mod+Z. */
+  editableFocus?: boolean;
   [key: string]: boolean;
 }
 
@@ -144,6 +146,7 @@ function resolveContext(options: ShortcutMatchOptions | undefined): ShortcutMatc
     terminalOpen: false,
     previewFocus: false,
     previewOpen: false,
+    editableFocus: false,
     ...options?.context,
   };
 }
