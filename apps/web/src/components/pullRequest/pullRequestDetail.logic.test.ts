@@ -29,6 +29,7 @@ import {
   isPullRequestVerdictStale,
   isStackedPullRequestBase,
   loadingPullRequestCheckoutCommand,
+  panelPullRequestCheckoutCommand,
   isThreadOwnPullRequest,
   latestPullRequestReviewOutcomes,
   newestPullRequestCommitAt,
@@ -60,6 +61,7 @@ describe("pull request checkout commands", () => {
   it.each([
     ["github", "feature", null, "gh pr checkout 42"],
     ["gitlab", "feature", null, "glab mr checkout 42"],
+    ["forgejo", "feature", null, null],
     ["azure-devops", "feature", null, "az repos pr checkout --id 42"],
     [
       "bitbucket",
@@ -71,7 +73,6 @@ describe("pull request checkout commands", () => {
   ] as const)("builds the %s command", (provider, branch, repository, expected) => {
     expect(pullRequestCheckoutCommand(provider, 42, branch, repository)).toBe(expected);
   });
-
   const reference = (host?: string): PullRequestRef => ({
     projectId: ProjectId.make("project-1"),
     ...(host === undefined ? {} : { host }),
@@ -113,6 +114,99 @@ describe("pull request checkout commands", () => {
         identity("gitlab", "gitlab.com/acme/web"),
       ),
     ).toBeNull();
+  });
+
+  it("keeps a checkout command available from the list summary while detail loads", () => {
+    const pullRequest = reference("github.com");
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: pullRequest,
+        identity: undefined,
+        summary: { provider: "github", number: 42, headBranch: "topic" },
+      }),
+    ).toBe("gh pr checkout 42");
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: pullRequest,
+        identity: undefined,
+        summary: null,
+      }),
+    ).toBe("gh pr checkout 42");
+  });
+
+  it("does not invent a checkout command for an unknown host or incomplete Bitbucket detail", () => {
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: reference("forge.example"),
+        identity: undefined,
+        summary: null,
+      }),
+    ).toBeNull();
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: reference("bitbucket.org"),
+        identity: undefined,
+        summary: { provider: "bitbucket", number: 42, headBranch: "topic" },
+      }),
+    ).toBeNull();
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: reference("bitbucket.org"),
+        identity: undefined,
+        summary: { provider: "bitbucket", number: 42, headBranch: "topic" },
+        headRepositoryNameWithOwner: "acme/web",
+      }),
+    ).toBe(
+      "git clone --single-branch --branch topic https://bitbucket.org/acme/web.git t3code-pr-42",
+    );
+  });
+
+  it("fetches Forgejo pull refs from the actual repository, including a mounted host and port", () => {
+    expect(
+      pullRequestCheckoutCommand(
+        "forgejo",
+        42,
+        "feature",
+        null,
+        "https://forgejo.local:3000/git/maria/repo",
+      ),
+    ).toBe(
+      "git fetch 'https://forgejo.local:3000/git/maria/repo' refs/pull/42/head && git checkout -B pulls/42 FETCH_HEAD",
+    );
+  });
+  it("quotes shell metacharacters in Forgejo repository URLs", () => {
+    expect(
+      pullRequestCheckoutCommand(
+        "forgejo",
+        42,
+        "feature",
+        null,
+        "https://forgejo.local/maria/repo'$(echo nope)",
+      ),
+    ).toBe(
+      "git fetch 'https://forgejo.local/maria/repo'\\''$(echo nope)' refs/pull/42/head && git checkout -B pulls/42 FETCH_HEAD",
+    );
+  });
+  it("keeps Forgejo checkout unavailable until a trusted detail repository URL arrives", () => {
+    const forgejoReference = reference("forgejo.local:3000");
+    const summary = { provider: "forgejo" as const, number: 42, headBranch: "feature" };
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: forgejoReference,
+        identity: undefined,
+        summary,
+      }),
+    ).toBeNull();
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: forgejoReference,
+        identity: undefined,
+        summary,
+        repositoryUrl: "https://forgejo.local:3000/git/maria/repo",
+      }),
+    ).toBe(
+      "git fetch 'https://forgejo.local:3000/git/maria/repo' refs/pull/42/head && git checkout -B pulls/42 FETCH_HEAD",
+    );
   });
 });
 

@@ -1,7 +1,7 @@
 # Source control
 
-Pylon integrates with GitHub, GitLab, Bitbucket, and Azure DevOps to clone and publish repositories,
-create pull requests, and review changes.
+Pylon integrates with GitHub, GitLab, Forgejo, Gitea, Bitbucket, and Azure DevOps to clone and
+publish repositories, create pull requests, and review changes.
 
 ## Connect an account
 
@@ -16,6 +16,26 @@ Install [GitHub CLI](https://cli.github.com/) 2.81.0 or newer, then sign in:
 ```bash
 gh auth login
 ```
+
+### Forgejo and Gitea
+
+Install [Forgejo CLI (`fj`)](https://codeberg.org/forgejo-contrib/forgejo-cli) or
+[Gitea CLI (`tea`)](https://gitea.com/gitea/tea) 0.16 or later on your Pylon server.
+Sign in with `fj --host https://your-server auth add-token` or `tea login add`.
+Repeat for each server you use, including Codeberg.
+
+Pylon prefers a matching `fj` login and falls back to `tea` when `fj` is unavailable
+or has no login for that server. Once an account is selected, failed actions stay on that
+account. Settings shows the detected CLI. Forgejo and Gitea share one integration entry.
+Servers hosted under a URL subpath, such as `https://example.com/forgejo`, use `tea` because
+fj 0.6 does not preserve the subpath when checking its account.
+
+When cloning or publishing, use a full repository URL to select a specific server.
+You can use `owner/repo` when only one fj server is configured, or with your default `tea`
+login when fj is unavailable or unconfigured. With multiple fj servers, use the full URL.
+If you have multiple `tea` accounts on one server, select one with
+`tea login default <login-name>`. Git push and clone also need Git credentials or an SSH key
+for that server.
 
 ### GitLab
 
@@ -113,8 +133,22 @@ Enable **Settings → General → Proactive panels** to open linked pull request
 no linked review, completed changes to at least three files or 50 lines can open the working-tree
 diff automatically. Manual panel choices take priority.
 
-For Azure DevOps, use the host website to view diffs or change comments. Bitbucket does not support
-reopening a declined pull request.
+For Azure DevOps, use the host website to change comments. Bitbucket does not support reopening a
+declined pull request.
+
+### Mark files as viewed
+
+Tick a file off in the **Code** tab once you have read it and it collapses; the toolbar keeps a
+running count. A tick belongs to the pull request rather than to a commit, so scoping the tab to a
+single commit keeps them. A file pushed to after you cleared it comes back marked **Changed**.
+
+On GitHub these are GitHub's own viewed marks, so a review carries between T3 Code and github.com
+in either direction. Forgejo, GitLab, Bitbucket, and Azure DevOps expose no record T3 Code can read, so the
+server you are connected to keeps them instead: they follow you across the apps connected to that
+server, but the host's own site will not show them, and the count reads **viewed in T3 Code**.
+
+The **Code** tab is a web and desktop surface. The mobile app reports a pull request's status but
+does not show its diff, so marks are made and read on web and desktop.
 
 ## Troubleshooting
 
