@@ -1,59 +1,116 @@
 // Shared across hook instances so sidebar, header and menu actions invalidate each other.
 const currentActions = new Map<string, { threadKey: string; token: symbol }>();
+export interface ActionProjection {
+  readonly owner: object;
+  readonly generation: number;
+  readonly sequence: number;
+}
+
+function sameOwner(a: ActionProjection | null, b: ActionProjection | null): boolean {
+  return a !== null && b !== null && a.owner === b.owner && a.generation === b.generation;
+}
+
 const observedResults = new Map<
   string,
   {
     threadKey: string;
-    observed: object;
+    projection: ActionProjection | null;
     intent: string;
     inFlight: boolean;
+    receiptSequence: number | null;
+    stopWatching: (() => void) | null;
     result: Promise<{ readonly _tag: string }>;
   }
 >();
 
 /** Claims a thread action; any later lifecycle action on that thread expires its Undo. */
-export function begin(kind: string, threadKey: string) {
+export function begin(
+  kind: string,
+  threadKey: string,
+  owner?: {
+    readonly projection: ActionProjection | null;
+    readonly read: () => ActionProjection | null;
+  },
+) {
   invalidateThread(threadKey);
   const key = JSON.stringify([kind, threadKey]);
   const token = Symbol();
   currentActions.set(key, { threadKey, token });
-  const isCurrent = () => currentActions.get(key)?.token === token;
+  const isCurrent = () =>
+    currentActions.get(key)?.token === token &&
+    (owner === undefined || sameOwner(owner.projection, owner.read()));
   return {
     isCurrent,
     finish: () => {
-      if (isCurrent()) currentActions.delete(key);
+      if (currentActions.get(key)?.token === token) currentActions.delete(key);
     },
   };
 }
 
-/** Join one in-flight intent, then dedupe only while its projected shell is unchanged. */
+/** Join an intent until its receipt has reached this connection's live shell. */
 export function runOnce<T extends { readonly _tag: string }>(
   kind: string,
   threadKey: string,
-  observed: object,
   intent: string,
+  readProjection: () => ActionProjection | null,
+  watchProjection: (onChange: () => void) => () => void,
+  receiptSequence: (result: T) => number | null,
   run: (claim: ReturnType<typeof begin>) => Promise<T>,
 ): Promise<T> {
   const key = JSON.stringify([kind, threadKey]);
+  const projection = readProjection();
   const existing = observedResults.get(key);
-  // An unrelated projection may replace the shell before this receipt settles.
-  if (existing?.intent === intent && (existing.inFlight || existing.observed === observed)) {
-    // Follow the latest unrelated shell projection while the receipt is
-    // pending, so projection lag after receipt still joins this outcome.
-    if (existing.inFlight) existing.observed = observed;
+  if (
+    existing?.intent === intent &&
+    sameOwner(existing.projection, projection) &&
+    (existing.inFlight ||
+      existing.receiptSequence === null ||
+      (projection !== null && projection.sequence < existing.receiptSequence))
+  ) {
     return existing.result as Promise<T>;
   }
-  const claim = begin(kind, threadKey);
+  const claim = begin(kind, threadKey, { projection, read: readProjection });
   const result = run(claim);
-  const outcome = { threadKey, observed, intent, inFlight: true, result };
+  const outcome = {
+    threadKey,
+    projection,
+    intent,
+    inFlight: true,
+    receiptSequence: null as number | null,
+    stopWatching: null as (() => void) | null,
+    result,
+  };
   observedResults.set(key, outcome);
   const forget = () => {
+    outcome.stopWatching?.();
+    outcome.stopWatching = null;
     if (observedResults.get(key)?.result === result) observedResults.delete(key);
   };
+  const checkProjection = () => {
+    const current = readProjection();
+    if (!sameOwner(projection, current)) {
+      claim.finish();
+      forget();
+    } else if (
+      !outcome.inFlight &&
+      outcome.receiptSequence !== null &&
+      current !== null &&
+      current.sequence >= outcome.receiptSequence
+    ) {
+      forget();
+    }
+  };
+  outcome.stopWatching = watchProjection(checkProjection);
+  checkProjection();
   void result.then(
     (receipt) => {
       outcome.inFlight = false;
-      if (receipt._tag !== "Success") forget();
+      if (receipt._tag !== "Success") {
+        forget();
+      } else {
+        outcome.receiptSequence = receiptSequence(receipt);
+        checkProjection();
+      }
     },
     () => {
       outcome.inFlight = false;
@@ -67,6 +124,7 @@ export function runOnce<T extends { readonly _tag: string }>(
 export function invalidate(kind: string, threadKey: string) {
   const key = JSON.stringify([kind, threadKey]);
   currentActions.delete(key);
+  observedResults.get(key)?.stopWatching?.();
   observedResults.delete(key);
 }
 
@@ -76,6 +134,9 @@ export function invalidateThread(threadKey: string) {
     if (action.threadKey === threadKey) currentActions.delete(key);
   }
   for (const [key, outcome] of observedResults) {
-    if (outcome.threadKey === threadKey) observedResults.delete(key);
+    if (outcome.threadKey === threadKey) {
+      outcome.stopWatching?.();
+      observedResults.delete(key);
+    }
   }
 }

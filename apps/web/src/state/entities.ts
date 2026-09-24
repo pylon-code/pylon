@@ -11,13 +11,17 @@ import {
 import type { ScopedProjectRef, ScopedThreadRef, ServerConfig } from "@t3tools/contracts";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/unstable/reactivity";
+import * as Option from "effect/Option";
 import { useMemo } from "react";
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { environmentCatalog } from "../connection/catalog";
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom } from "./server";
 import {
   allEnvironmentProjectSnapshotsReadyAtom,
   allEnvironmentShellsBootstrappedAtom,
+  environmentShell,
 } from "./shell";
 import { environmentThreadDetails, environmentThreadShells } from "./threads";
 
@@ -181,6 +185,34 @@ export function waitForProject(
 
 export function readThreadShell(ref: ScopedThreadRef): EnvironmentThreadShell | null {
   return appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
+}
+
+/** The same live connection and ordered shell sequence that owns a command receipt. */
+const threadActionProjectionAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make((get) => {
+    const entry = get(environmentCatalog.catalogValueAtom).entries.get(environmentId);
+    const connection = Option.getOrNull(
+      AsyncResult.value(get(environmentCatalog.stateAtom(environmentId))),
+    );
+    const shell = get(environmentShell.stateValueAtom(environmentId));
+    if (!entry?.enabled || connection?.phase !== "connected" || shell.status !== "live") {
+      return null;
+    }
+    if (Option.isNone(shell.snapshot)) return null;
+    return {
+      owner: entry,
+      generation: connection.generation,
+      sequence: shell.snapshot.value.snapshotSequence,
+    };
+  }).pipe(Atom.withLabel(`thread-action-projection:${environmentId}`)),
+);
+
+export function readThreadActionProjection(environmentId: EnvironmentId) {
+  return appAtomRegistry.get(threadActionProjectionAtom(environmentId));
+}
+
+export function watchThreadActionProjection(environmentId: EnvironmentId, onChange: () => void) {
+  return appAtomRegistry.subscribe(threadActionProjectionAtom(environmentId), onChange);
 }
 
 /** Whether the environment's server understands thread.settle/unsettle.

@@ -60,6 +60,9 @@ const threadShell = vi.hoisted(() => ({
 const shellState = vi.hoisted(() => ({
   available: true,
   current: null as typeof threadShell | null,
+  owner: {},
+  generation: 1,
+  sequence: 0,
 }));
 vi.mock("../state/entities", async (original) => ({
   ...(await original<typeof import("../state/entities")>()),
@@ -68,6 +71,15 @@ vi.mock("../state/entities", async (original) => ({
   readEnvironmentSupportsSettlement: () => true,
   readEnvironmentSupportsSnooze: () => true,
   readThreadShell: () => (shellState.available ? shellState.current : null),
+  readThreadActionProjection: () =>
+    shellState.available
+      ? {
+          owner: shellState.owner,
+          generation: shellState.generation,
+          sequence: shellState.sequence,
+        }
+      : null,
+  watchThreadActionProjection: () => () => {},
 }));
 vi.mock("../state/use-atom-command", () => ({
   useAtomCommand: (command: unknown) => {
@@ -111,7 +123,7 @@ function undoOf(
   return () => onClick?.(event);
 }
 
-const success = { _tag: "Success" as const, value: undefined };
+const success = { _tag: "Success" as const, value: { sequence: 1 } };
 const failure = { _tag: "Failure" as const, cause: new Error("rejected") };
 function deferredResult() {
   let resolve!: (value: typeof success | typeof failure) => void;
@@ -146,7 +158,7 @@ async function expectDuplicateReceiptHasOneInverse(
 beforeEach(() => {
   ThreadUndo.invalidateThread(scopedThreadKey(target));
   for (const command of Object.values(commands)) {
-    command.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
+    command.mockReset().mockResolvedValue(success);
   }
   router.navigate.mockClear();
   router.state.matches[0]!.params = {};
@@ -159,6 +171,9 @@ beforeEach(() => {
   threadShell.settledAt = null;
   shellState.available = true;
   shellState.current = threadShell;
+  shellState.owner = {};
+  shellState.generation = 1;
+  shellState.sequence = 0;
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -190,8 +205,8 @@ describe("unpin Undo", () => {
     const actions = useThreadActions();
     await actions.unpinThread(target, { undoToast: false });
     expect(commands.unpin).toHaveBeenCalledOnce();
-    // A remote unpin then repin can restore the same timestamp/slot values,
-    // but the projected shell is a new generation of the read model.
+    // The receipt and a subsequent remote reverse have both been projected.
+    shellState.sequence = 2;
     shellState.current = { ...threadShell };
     await actions.unpinThread(target, { undoToast: false });
     expect(commands.unpin).toHaveBeenCalledTimes(2);
@@ -207,8 +222,29 @@ describe("unpin Undo", () => {
     expect(commands.unpin).toHaveBeenCalledOnce();
     pending.resolve(success);
     expect(await Promise.all([first, duplicate])).toEqual([success, success]);
+    shellState.current = { ...threadShell, title: "Another title before lifecycle projection" };
     await useThreadActions().unpinThread(target, { undoToast: false });
     expect(commands.unpin).toHaveBeenCalledOnce();
+    shellState.sequence = 1;
+    shellState.current = { ...threadShell, pinnedAt: null };
+    await useThreadActions().unpinThread(target, { undoToast: false });
+    expect(commands.unpin).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not carry a completed receipt or Undo into a replacement connection", async () => {
+    threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
+    const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
+    vi.spyOn(toastManager, "close").mockImplementation(() => {});
+    await useThreadActions().unpinThread(target);
+    const oldUndo = undoOf(add, 0);
+    // A reconnected server may reuse lower sequence values for the same ID.
+    shellState.generation += 1;
+    shellState.sequence = 0;
+    shellState.current = { ...threadShell };
+    await oldUndo();
+    expect(commands.pin).not.toHaveBeenCalled();
+    await useThreadActions().unpinThread(target);
+    expect(commands.unpin).toHaveBeenCalledTimes(2);
   });
 
   it("ignores an old toast across hook instances and still restores the latest unpin", async () => {

@@ -32,6 +32,8 @@ import {
   readEnvironmentThreadRefs,
   readProject,
   readThreadShell,
+  readThreadActionProjection,
+  watchThreadActionProjection,
   readThreadShells,
 } from "../state/entities";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
@@ -646,7 +648,15 @@ export function useThreadActions() {
         return result;
       };
       return thread?.pinnedAt != null
-        ? ThreadUndo.runOnce("pin", scopedThreadKey(target), thread, "unpin", perform)
+        ? ThreadUndo.runOnce(
+            "pin",
+            scopedThreadKey(target),
+            "unpin",
+            () => readThreadActionProjection(target.environmentId),
+            (onChange) => watchThreadActionProjection(target.environmentId, onChange),
+            (receipt) => (receipt._tag === "Success" ? receipt.value.sequence : null),
+            perform,
+          )
         : perform(null);
     },
     [pinThread, unpinThreadMutation],
@@ -723,7 +733,15 @@ export function useThreadActions() {
       // A no-op receipt from an already-settled thread earned no inverse.
       return resolved &&
         !(resolved.thread.settledOverride === "settled" && resolved.thread.settledAt !== null)
-        ? ThreadUndo.runOnce("settle", scopedThreadKey(target), resolved.thread, "settle", perform)
+        ? ThreadUndo.runOnce(
+            "settle",
+            scopedThreadKey(target),
+            "settle",
+            () => readThreadActionProjection(target.environmentId),
+            (onChange) => watchThreadActionProjection(target.environmentId, onChange),
+            (receipt) => (receipt._tag === "Success" ? receipt.value.sequence : null),
+            perform,
+          )
         : perform(null);
     },
     [
@@ -878,8 +896,10 @@ export function useThreadActions() {
         ? ThreadUndo.runOnce(
             "snooze",
             scopedThreadKey(target),
-            resolved.thread,
             snoozedUntil,
+            () => readThreadActionProjection(target.environmentId),
+            (onChange) => watchThreadActionProjection(target.environmentId, onChange),
+            (receipt) => (receipt._tag === "Success" ? receipt.value.sequence : null),
             perform,
           )
         : perform(null);
