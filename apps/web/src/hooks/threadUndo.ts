@@ -2,7 +2,12 @@
 const currentActions = new Map<string, { threadKey: string; token: symbol }>();
 const observedResults = new Map<
   string,
-  { threadKey: string; fingerprint: string; result: Promise<{ readonly _tag: string }> }
+  {
+    threadKey: string;
+    observed: object;
+    intent: string;
+    result: Promise<{ readonly _tag: string }>;
+  }
 >();
 
 /** Claims a thread action; any later lifecycle action on that thread expires its Undo. */
@@ -20,19 +25,21 @@ export function begin(kind: string, threadKey: string) {
   };
 }
 
-/** Join a duplicate observed intent to its real receipt, including failures. */
+/** Join callbacks against one projected shell to its real receipt, including failures. */
 export function runOnce<T extends { readonly _tag: string }>(
   kind: string,
   threadKey: string,
-  fingerprint: string,
+  observed: object,
+  intent: string,
   run: (claim: ReturnType<typeof begin>) => Promise<T>,
 ): Promise<T> {
   const key = JSON.stringify([kind, threadKey]);
   const existing = observedResults.get(key);
-  if (existing?.fingerprint === fingerprint) return existing.result as Promise<T>;
+  if (existing?.observed === observed && existing.intent === intent)
+    return existing.result as Promise<T>;
   const claim = begin(kind, threadKey);
   const result = run(claim);
-  observedResults.set(key, { threadKey, fingerprint, result });
+  observedResults.set(key, { threadKey, observed, intent, result });
   const forget = () => {
     if (observedResults.get(key)?.result === result) observedResults.delete(key);
   };

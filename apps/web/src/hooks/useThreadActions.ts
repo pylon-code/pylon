@@ -646,12 +646,7 @@ export function useThreadActions() {
         return result;
       };
       return thread?.pinnedAt != null
-        ? ThreadUndo.runOnce(
-            "pin",
-            scopedThreadKey(target),
-            JSON.stringify([thread.pinnedAt, orderKey]),
-            perform,
-          )
+        ? ThreadUndo.runOnce("pin", scopedThreadKey(target), thread, "unpin", perform)
         : perform(null);
     },
     [pinThread, unpinThreadMutation],
@@ -728,17 +723,7 @@ export function useThreadActions() {
       // A no-op receipt from an already-settled thread earned no inverse.
       return resolved &&
         !(resolved.thread.settledOverride === "settled" && resolved.thread.settledAt !== null)
-        ? ThreadUndo.runOnce(
-            "settle",
-            scopedThreadKey(target),
-            JSON.stringify([
-              resolved.thread.settledOverride,
-              resolved.thread.settledAt,
-              resolved.thread.pinnedAt,
-              resolved.thread.snoozedUntil,
-            ]),
-            perform,
-          )
+        ? ThreadUndo.runOnce("settle", scopedThreadKey(target), resolved.thread, "settle", perform)
         : perform(null);
     },
     [
@@ -893,7 +878,8 @@ export function useThreadActions() {
         ? ThreadUndo.runOnce(
             "snooze",
             scopedThreadKey(target),
-            JSON.stringify([resolved.thread.snoozedAt, resolved.thread.snoozedUntil, snoozedUntil]),
+            resolved.thread,
+            snoozedUntil,
             perform,
           )
         : perform(null);

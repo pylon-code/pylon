@@ -57,14 +57,17 @@ const threadShell = vi.hoisted(() => ({
   environmentId: "undo-env",
   session: null,
 }));
-const shellState = vi.hoisted(() => ({ available: true }));
+const shellState = vi.hoisted(() => ({
+  available: true,
+  current: null as typeof threadShell | null,
+}));
 vi.mock("../state/entities", async (original) => ({
   ...(await original<typeof import("../state/entities")>()),
   readEnvironmentSupportsPinning: () => true,
   readEnvironmentSupportsPinReorder: () => true,
   readEnvironmentSupportsSettlement: () => true,
   readEnvironmentSupportsSnooze: () => true,
-  readThreadShell: () => (shellState.available ? threadShell : null),
+  readThreadShell: () => (shellState.available ? shellState.current : null),
 }));
 vi.mock("../state/use-atom-command", () => ({
   useAtomCommand: (command: unknown) => {
@@ -155,6 +158,7 @@ beforeEach(() => {
   threadShell.settledOverride = null;
   threadShell.settledAt = null;
   shellState.available = true;
+  shellState.current = threadShell;
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -178,6 +182,18 @@ describe("unpin Undo", () => {
     expect(add).not.toHaveBeenCalled();
     await useThreadActions().pinThread(target, { orderKey: "a1" });
     await useThreadActions().unpinThread(target);
+    expect(commands.unpin).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows a fresh unpin after a remote reverse projection returns the same fields", async () => {
+    threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
+    const actions = useThreadActions();
+    await actions.unpinThread(target, { undoToast: false });
+    expect(commands.unpin).toHaveBeenCalledOnce();
+    // A remote unpin then repin can restore the same timestamp/slot values,
+    // but the projected shell is a new generation of the read model.
+    shellState.current = { ...threadShell };
+    await actions.unpinThread(target, { undoToast: false });
     expect(commands.unpin).toHaveBeenCalledTimes(2);
   });
 
