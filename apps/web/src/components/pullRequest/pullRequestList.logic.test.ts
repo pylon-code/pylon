@@ -32,6 +32,11 @@ import {
   resolveQueryEnvironmentIds,
   resolveSelectedEnvironmentId,
   type EnvironmentPullRequestEntry,
+  applyPullRequestOverrides,
+  confirmPullRequestOverride,
+  pullRequestOverrideAfterAction,
+  reusePullRequestEntries,
+  settlePullRequestOverrides,
 } from "./pullRequestList.logic";
 import {
   pullRequestListPreferences,
@@ -1598,5 +1603,132 @@ describe("the priority groups against a paginated feed", () => {
     expect(
       groups.find((group) => group.key === "others")?.entries.map((row) => row.number),
     ).toEqual([6123]);
+  });
+});
+
+describe("pull request list overrides", () => {
+  const entry = (
+    number: number,
+    state: "open" | "closed" | "merged",
+    overrides: Partial<PullRequestListEntry> & { environmentId?: string } = {},
+  ) =>
+    ({
+      environmentId: "env-1",
+      host: "github.com",
+      repository: "pingdotgg/t3code",
+      number,
+      state,
+      isDraft: false,
+      updatedAt: "2026-07-01T00:00:00Z",
+      labels: [],
+      ...overrides,
+    }) as unknown as EnvironmentPullRequestEntry;
+  const key = (row: { number: number }) => `#${row.number}`;
+
+  it("maps the actions that change a row's state and nothing else", () => {
+    const now = new Date("2026-07-02T00:00:00Z");
+    expect(pullRequestOverrideAfterAction(entry(1, "open"), "close", now, 7)).toEqual({
+      state: "closed",
+      updatedAt: "2026-07-02T00:00:00.000Z",
+      token: 7,
+      at: now.getTime(),
+    });
+    expect(pullRequestOverrideAfterAction(entry(1, "closed"), "reopen", now, 1)?.state).toBe(
+      "open",
+    );
+    // Success can merely enable auto-merge; only the host may declare it merged.
+    expect(pullRequestOverrideAfterAction(entry(1, "open"), "merge", now, 1)).toBeNull();
+    expect(pullRequestOverrideAfterAction(entry(1, "open"), "draft", now, 1)?.isDraft).toBe(true);
+    expect(pullRequestOverrideAfterAction(entry(1, "open"), "update-branch", now, 1)).toBeNull();
+  });
+
+  it("writes the override over the row and drops it from a list whose state it left", () => {
+    const rows = [entry(1, "open"), entry(2, "open")];
+    const overrides = new Map([
+      ["#1", { state: "closed" as const, updatedAt: "2026-07-03T00:00:00Z", token: 1, at: 0 }],
+    ]);
+    expect(
+      applyPullRequestOverrides(rows, overrides, key, "open").map((row) => row.number),
+    ).toEqual([2]);
+    const all = applyPullRequestOverrides(rows, overrides, key, "all");
+    expect(all.map((row) => [row.number, row.state])).toEqual([
+      [1, "closed"],
+      [2, "open"],
+    ]);
+    expect(applyPullRequestOverrides(rows, new Map(), key, "open")).toBe(rows);
+  });
+
+  it("keeps host and environment actions independent and fences an older completion", () => {
+    const now = new Date("2026-07-02T00:00:00Z");
+    const github = entry(7, "open");
+    const forgejo = entry(7, "open", { host: "forgejo.example" });
+    const otherEnvironment = entry(7, "open", { environmentId: "env-2" });
+    const key = pullRequestEntryKey(github);
+    expect(new Set([github, forgejo, otherEnvironment].map(pullRequestEntryKey)).size).toBe(3);
+    const newest = pullRequestOverrideAfterAction(github, "reopen", now, 2)!;
+    const overrides = new Map([[key, newest]]);
+    expect(confirmPullRequestOverride(overrides, key, 1)).toBe(overrides);
+    expect(
+      settlePullRequestOverrides(overrides, [github], pullRequestEntryKey, now.getTime() + 1),
+    ).toBe(overrides);
+    expect(
+      applyPullRequestOverrides(
+        [github, forgejo, otherEnvironment],
+        overrides,
+        pullRequestEntryKey,
+        "all",
+      )[1],
+    ).toBe(forgejo);
+  });
+
+  it("hands back the held object for a row a refresh did not change", () => {
+    const previous = [entry(1, "open"), entry(2, "open")];
+    const next = [{ ...entry(1, "open") }, { ...entry(2, "open"), state: "merged" as const }];
+    const reused = reusePullRequestEntries(previous, next, key);
+    expect(reused[0]).toBe(previous[0]);
+    expect(reused[1]).toBe(next[1]);
+    expect(
+      reusePullRequestEntries(previous, [{ ...entry(1, "open") }, { ...entry(2, "open") }], key),
+    ).toBe(previous);
+  });
+});
+
+describe("pull request list override settlement", () => {
+  const entry = (number: number, state: "open" | "closed" | "merged") =>
+    ({ number, state, isDraft: false, labels: [] }) as unknown as PullRequestListEntry;
+  const key = (row: { number: number }) => `#${row.number}`;
+
+  it("keeps an override until an answer agrees with it", () => {
+    const at = 1_000_000;
+    const closed = { state: "closed" as const, updatedAt: "2026-07-03T00:00:00Z", token: 1, at };
+    const overrides = new Map([["#1", closed]]);
+    // A read from before the action still says open: the override stands.
+    expect(settlePullRequestOverrides(overrides, [entry(1, "open")], key, at + 5_000)).toBe(
+      overrides,
+    );
+    // Absent from the answer says nothing: the row may live in another group or page.
+    expect(settlePullRequestOverrides(overrides, [entry(2, "open")], key, at + 5_000).size).toBe(1);
+    // A cached answer must not retire a request that has not completed.
+    expect(settlePullRequestOverrides(overrides, [entry(1, "closed")], key, at + 5_000)).toBe(
+      overrides,
+    );
+    const confirmed = confirmPullRequestOverride(overrides, "#1", 1);
+    expect(settlePullRequestOverrides(confirmed, [entry(1, "closed")], key, at + 5_000).size).toBe(
+      0,
+    );
+    // Present as open a good while later: the host's news, which outranks the note.
+    expect(settlePullRequestOverrides(confirmed, [entry(1, "open")], key, at + 90_000).size).toBe(
+      0,
+    );
+    // Filtered and paginated rows can be absent indefinitely; the local timer retires them.
+    expect(settlePullRequestOverrides(confirmed, [], key, at + 90_000).size).toBe(0);
+    expect(confirmPullRequestOverride(confirmed, "#1", 2)).toBe(confirmed);
+  });
+
+  it("does not hand back the old order when only the order changed", () => {
+    const previous = [entry(1, "open"), entry(2, "open")];
+    const swapped = reusePullRequestEntries(previous, [entry(2, "open"), entry(1, "open")], key);
+    expect(swapped).not.toBe(previous);
+    expect(swapped.map((row) => row.number)).toEqual([2, 1]);
   });
 });
