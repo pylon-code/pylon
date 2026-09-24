@@ -34,15 +34,11 @@ export function showUndoToast({
   description: string | undefined;
   undo: () => Promise<AtomCommandResult<unknown, unknown>>;
   failureTitle: string;
-  claim: {
-    readonly isCurrent: () => boolean;
-    readonly finish: () => void;
-    readonly sessionOwner?: object | null;
-  };
+  claim: { readonly isCurrent: () => boolean; readonly finish: () => void };
 }) {
-  // A successful command can race the first live shell projection. Without a
-  // session owner its inverse cannot be safely bound to that connection.
-  if (!claim.isCurrent() || claim.sessionOwner === null) {
+  // Single claims check their exact session owner in isCurrent; a composite
+  // claim checks every member, which may belong to different environments.
+  if (!claim.isCurrent()) {
     claim.finish();
     return;
   }

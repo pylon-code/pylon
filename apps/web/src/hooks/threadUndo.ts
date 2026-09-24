@@ -37,7 +37,7 @@ const observedResults = new Map<
 export function begin(
   kind: string,
   threadKey: string,
-  owner?: {
+  owner: {
     readonly projection: ActionProjection | null;
     readonly read: () => ActionProjection | null;
   },
@@ -46,10 +46,9 @@ export function begin(
   const key = JSON.stringify([kind, threadKey]);
   const token = Symbol();
   const isCurrent = () =>
-    currentActions.get(key)?.token === token &&
-    (owner === undefined || sameOwner(owner.projection, owner.read()));
+    currentActions.get(key)?.token === token && sameOwner(owner.projection, owner.read());
   const claim = {
-    sessionOwner: owner?.projection?.owner ?? null,
+    sessionOwner: owner.projection?.owner ?? null,
     isCurrent,
     finish: () => {
       if (currentActions.get(key)?.token === token) currentActions.delete(key);

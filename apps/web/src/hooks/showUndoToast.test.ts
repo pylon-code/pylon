@@ -9,8 +9,9 @@ import * as ThreadUndo from "./threadUndo";
 afterEach(() => vi.restoreAllMocks());
 
 const projection = { owner: Object.freeze({}), generation: 1, sequence: 1 };
-function ownedClaim(kind: string, threadKey: string) {
-  return ThreadUndo.begin(kind, threadKey, { projection, read: () => projection });
+function ownedClaim(kind: string, threadKey: string, owner = projection.owner) {
+  const scoped = { ...projection, owner };
+  return ThreadUndo.begin(kind, threadKey, { projection: scoped, read: () => scoped });
 }
 
 function setup() {
@@ -113,8 +114,8 @@ describe("showUndoToast", () => {
 describe("undoLatestThreadAction", () => {
   it("does not wake a partly superseded snooze batch", () => {
     const { options } = setup();
-    const first = ownedClaim("snooze", "env/first");
-    const second = ownedClaim("snooze", "env/second");
+    const first = ownedClaim("snooze", "env/first", Object.freeze({ environment: "one" }));
+    const second = ownedClaim("snooze", "env/second", Object.freeze({ environment: "two" }));
     const undo = vi.fn(async () => AsyncResult.success(undefined));
     showUndoToast({
       ...options,

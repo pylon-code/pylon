@@ -455,7 +455,15 @@ describe("settle and snooze Undo", () => {
   });
 
   it("expires every older inverse after a successful delete", async () => {
-    const claim = ThreadUndo.begin("settle", scopedThreadKey(target));
+    const projection = {
+      owner: shellState.owner,
+      generation: shellState.generation,
+      sequence: shellState.sequence,
+    };
+    const claim = ThreadUndo.begin("settle", scopedThreadKey(target), {
+      projection,
+      read: () => projection,
+    });
     shellState.available = false;
     await useThreadActions().deleteThread(target);
     expect(commands.delete).toHaveBeenCalledOnce();
