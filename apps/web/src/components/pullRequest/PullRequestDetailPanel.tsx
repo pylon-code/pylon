@@ -151,7 +151,6 @@ import {
   isStackedPullRequestBase,
   pullRequestActionMenuHasGroup,
   pullRequestActionNeedsHostRefresh,
-  pullRequestComposerTarget,
   panelPullRequestCheckoutCommand,
   pullRequestFindingKey,
   pullRequestHandoffLabels,
@@ -1099,10 +1098,9 @@ export function PullRequestDetailPanel({
     reviewComments?: ReadonlyArray<ReviewCommentContext>;
   };
 
-  // Beside the thread whose own pull request this is, a task belongs in that thread's composer:
-  // the branch is already checked out under it, so opening a second thread would only scatter
-  // the work.
-  const attachTarget = pullRequestComposerTarget(context, composerDraftTarget);
+  // A detail panel beside an active composer keeps hand-offs in that thread even when the
+  // inspected pull request is not its checkout. `context` still controls checkout-only actions.
+  const attachTarget = composerDraftTarget ?? null;
   const handoffLabels = pullRequestHandoffLabels(attachTarget !== null);
 
   const writeTaskToComposer = (target: ScopedThreadRef | DraftId, task: ThreadTask) => {
