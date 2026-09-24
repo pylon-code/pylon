@@ -5605,6 +5605,11 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       Predicate.isFunction(connection!.getState) &&
       Predicate.isFunction(connection!.navigateTree);
 
+    const conversationRequestIsCurrent = (generation: number) =>
+      generation === connectionGeneration &&
+      (reconnectResolution === undefined || reconnectResolution.settled) &&
+      client.hello?.supervisorGeneration?.trim() === conversationRuntimeGeneration;
+
     const readConversationLeaf = Effect.fn(
       "PrimeAgentDaemonSessionRuntime.inspectConversationLeaf",
     )(function* () {
@@ -5617,6 +5622,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         );
       }
       const getState = yield* requireMethod("inspect-conversation-leaf", connection!.getState);
+      const requestGeneration = connectionGeneration;
+      if (!conversationRequestIsCurrent(requestGeneration)) {
+        return yield* runtimeError(
+          "inspect-conversation-leaf",
+          "request-failed",
+          "Prime Agent conversation connection changed before inspection.",
+        );
+      }
       const output = yield* Effect.tryPromise({
         try: () => getState.call(connection),
         catch: () =>
@@ -5636,6 +5649,13 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             ),
         }),
       );
+      if (!conversationRequestIsCurrent(requestGeneration)) {
+        return yield* runtimeError(
+          "inspect-conversation-leaf",
+          "request-failed",
+          "Prime Agent conversation connection changed during inspection.",
+        );
+      }
       const decoded = decodePrivateConversationLeafState(output);
       if (
         Option.isNone(decoded) ||
@@ -5705,6 +5725,14 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
           "navigate-conversation-leaf",
           connection!.navigateTree,
         );
+        const requestGeneration = connectionGeneration;
+        if (!conversationRequestIsCurrent(requestGeneration)) {
+          return yield* runtimeError(
+            "navigate-conversation-leaf",
+            "request-failed",
+            "Prime Agent conversation connection changed before navigation.",
+          );
+        }
         const output = yield* Effect.tryPromise({
           try: () => navigate.call(connection, input.desiredLeafId, { summarize: false }),
           catch: () =>
@@ -5724,6 +5752,13 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
               ),
           }),
         );
+        if (!conversationRequestIsCurrent(requestGeneration)) {
+          return yield* runtimeError(
+            "navigate-conversation-leaf",
+            "request-failed",
+            "Prime Agent conversation connection changed during navigation.",
+          );
+        }
         const result = decodePrivateConversationNavigationResult(output);
         if (Option.isNone(result) || result.value.cancelled || result.value.aborted === true) {
           return yield* runtimeError(
