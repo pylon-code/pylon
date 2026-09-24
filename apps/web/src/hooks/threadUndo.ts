@@ -6,6 +6,7 @@ const observedResults = new Map<
     threadKey: string;
     observed: object;
     intent: string;
+    inFlight: boolean;
     result: Promise<{ readonly _tag: string }>;
   }
 >();
@@ -25,7 +26,7 @@ export function begin(kind: string, threadKey: string) {
   };
 }
 
-/** Join callbacks against one projected shell to its real receipt, including failures. */
+/** Join one in-flight intent, then dedupe only while its projected shell is unchanged. */
 export function runOnce<T extends { readonly _tag: string }>(
   kind: string,
   threadKey: string,
@@ -35,17 +36,26 @@ export function runOnce<T extends { readonly _tag: string }>(
 ): Promise<T> {
   const key = JSON.stringify([kind, threadKey]);
   const existing = observedResults.get(key);
-  if (existing?.observed === observed && existing.intent === intent)
+  // An unrelated projection may replace the shell before this receipt settles.
+  if (existing?.intent === intent && (existing.inFlight || existing.observed === observed))
     return existing.result as Promise<T>;
   const claim = begin(kind, threadKey);
   const result = run(claim);
-  observedResults.set(key, { threadKey, observed, intent, result });
+  const outcome = { threadKey, observed, intent, inFlight: true, result };
+  observedResults.set(key, outcome);
   const forget = () => {
     if (observedResults.get(key)?.result === result) observedResults.delete(key);
   };
-  void result.then((receipt) => {
-    if (receipt._tag !== "Success") forget();
-  }, forget);
+  void result.then(
+    (receipt) => {
+      outcome.inFlight = false;
+      if (receipt._tag !== "Success") forget();
+    },
+    () => {
+      outcome.inFlight = false;
+      forget();
+    },
+  );
   return result;
 }
 

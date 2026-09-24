@@ -197,6 +197,18 @@ describe("unpin Undo", () => {
     expect(commands.unpin).toHaveBeenCalledTimes(2);
   });
 
+  it("joins a pending unpin even if an unrelated projection replaces its shell", async () => {
+    threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
+    const pending = deferredResult();
+    commands.unpin.mockImplementationOnce(() => pending.promise);
+    const first = useThreadActions().unpinThread(target, { undoToast: false });
+    shellState.current = { ...threadShell, title: "Title changed while unpin waited" };
+    const duplicate = useThreadActions().unpinThread(target, { undoToast: false });
+    expect(commands.unpin).toHaveBeenCalledOnce();
+    pending.resolve(success);
+    expect(await Promise.all([first, duplicate])).toEqual([success, success]);
+  });
+
   it("ignores an old toast across hook instances and still restores the latest unpin", async () => {
     threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
     const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
