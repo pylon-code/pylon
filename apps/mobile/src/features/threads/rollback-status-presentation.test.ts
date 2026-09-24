@@ -9,7 +9,8 @@ import {
 const updatedAt = "2026-08-31T12:00:00.000Z";
 
 describe("mobile rollback status presentation", () => {
-  it("keeps the durable detail status ahead of a stale shell status", () => {
+  it("uses the newer authoritative event sequence in either stream", () => {
+    const owner = {};
     const detail: OrchestrationRollbackStatus = {
       state: "manual-recovery",
       updatedAt,
@@ -17,8 +18,81 @@ describe("mobile rollback status presentation", () => {
       allowedActions: ["retry-verification", "resume-compensation"],
     };
     const shell: OrchestrationRollbackStatus = { state: "pending", updatedAt };
-    expect(resolveMobileRollbackStatus(detail, shell)).toBe(detail);
-    expect(resolveMobileRollbackStatus(undefined, shell)).toBe(shell);
+    const source = (status: OrchestrationRollbackStatus, sequence: number) => ({
+      status,
+      sequence,
+      sessionOwner: owner,
+      live: true,
+    });
+    expect(
+      resolveMobileRollbackStatus({
+        detail: source(detail, 12),
+        shell: source(shell, 11),
+        currentSessionOwner: owner,
+      }),
+    ).toEqual({ status: detail, uncertain: false });
+    expect(
+      resolveMobileRollbackStatus({
+        detail: source(detail, 11),
+        shell: source(shell, 12),
+        currentSessionOwner: owner,
+      }),
+    ).toEqual({ status: shell, uncertain: false });
+    expect(
+      resolveMobileRollbackStatus({
+        detail: source({ state: "completed", updatedAt }, 12),
+        shell: source(shell, 13),
+        currentSessionOwner: owner,
+      }),
+    ).toEqual({ status: shell, uncertain: false });
+  });
+
+  it("rejects an old session after replacement even when its sequence is higher", () => {
+    const oldOwner = {};
+    const newOwner = {};
+    const oldStatus: OrchestrationRollbackStatus = { state: "completed", updatedAt };
+    const newStatus: OrchestrationRollbackStatus = { state: "manual-recovery", updatedAt };
+    expect(
+      resolveMobileRollbackStatus({
+        detail: { status: oldStatus, sequence: 100, sessionOwner: oldOwner, live: true },
+        shell: { status: newStatus, sequence: 1, sessionOwner: newOwner, live: true },
+        currentSessionOwner: newOwner,
+      }),
+    ).toEqual({ status: newStatus, uncertain: false });
+    expect(
+      resolveMobileRollbackStatus({
+        detail: { status: oldStatus, sequence: 100, sessionOwner: oldOwner, live: true },
+        shell: { status: undefined, sequence: undefined, sessionOwner: null, live: false },
+        currentSessionOwner: newOwner,
+      }),
+    ).toEqual({ status: undefined, uncertain: true });
+  });
+
+  it("fails closed on same-sequence disagreement and preserves old-peer absence", () => {
+    const owner = {};
+    const detail = {
+      status: { state: "completed" as const, updatedAt },
+      sequence: 15,
+      sessionOwner: owner,
+      live: true,
+    };
+    const shell = {
+      status: { state: "pending" as const, updatedAt },
+      sequence: 15,
+      sessionOwner: owner,
+      live: true,
+    };
+    expect(resolveMobileRollbackStatus({ detail, shell, currentSessionOwner: owner })).toEqual({
+      status: undefined,
+      uncertain: true,
+    });
+    expect(
+      resolveMobileRollbackStatus({
+        detail: { ...detail, status: undefined },
+        shell: { ...shell, status: undefined },
+        currentSessionOwner: owner,
+      }),
+    ).toEqual({ status: undefined, uncertain: false });
   });
 
   it("announces progress politely and manual recovery assertively with exact actions", () => {

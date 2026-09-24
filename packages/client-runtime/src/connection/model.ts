@@ -142,6 +142,8 @@ export interface SupervisorConnectionState {
   readonly stage: ConnectionAttemptStage | null;
   readonly attempt: number;
   readonly generation: number;
+  /** Opaque, local-only identity for the currently connected RPC session. */
+  readonly sessionOwner?: object;
   readonly lastFailure: ConnectionAttemptError | null;
   readonly retryAt: number | null;
 }

@@ -108,15 +108,17 @@ type TestThreadInput = OrchestrationThreadStreamItem | Error;
 
 function testSession(
   client: WsRpcProtocolClient,
-  options?: { readonly completionMarker?: boolean },
+  options?: {
+    readonly completionMarker?: boolean | undefined;
+    readonly rollbackStatusStreaming?: boolean | undefined;
+  },
 ): RpcSession.RpcSession {
   return {
     client,
-    initialConfig: Effect.succeed(
-      options?.completionMarker === true
-        ? ({ threadResumeCompletionMarker: true } as never)
-        : ({} as never),
-    ),
+    initialConfig: Effect.succeed({
+      ...(options?.completionMarker === true ? { threadResumeCompletionMarker: true } : {}),
+      ...(options?.rollbackStatusStreaming === true ? { rollbackStatusStreaming: true } : {}),
+    } as never),
     subscribeServerConfig: (input) => client.subscribeServerConfig(input),
     ready: Effect.void,
     probe: Effect.void,
@@ -139,6 +141,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   readonly cached?: OrchestrationThread;
   readonly httpSnapshot?: Option.Option<OrchestrationThreadDetailSnapshot>;
   readonly completionMarker?: boolean;
+  readonly rollbackStatusStreaming?: boolean;
   readonly resumeCache?: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]>;
   readonly loadCached?: Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>>;
   readonly saveThread?: Persistence.EnvironmentCacheStore["Service"]["saveThread"];
@@ -187,10 +190,10 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   } as unknown as WsRpcProtocolClient;
   const supervisorSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
     Option.some(
-      testSession(
-        client,
-        options?.completionMarker === true ? { completionMarker: true } : undefined,
-      ),
+      testSession(client, {
+        completionMarker: options?.completionMarker,
+        rollbackStatusStreaming: options?.rollbackStatusStreaming,
+      }),
     ),
   );
   const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(
@@ -280,10 +283,10 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     replaceSession: SubscriptionRef.set(
       supervisorSession,
       Option.some(
-        testSession(
-          client,
-          options?.completionMarker === true ? { completionMarker: true } : undefined,
-        ),
+        testSession(client, {
+          completionMarker: options?.completionMarker,
+          rollbackStatusStreaming: options?.rollbackStatusStreaming,
+        }),
       ),
     ),
   };
@@ -666,6 +669,86 @@ describe("EnvironmentThreads", () => {
       // The subscription resumed from the cached sequence and never fetched the
       // full snapshot over HTTP.
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+    }),
+  );
+
+  it.effect("waits for an authoritative rollback snapshot before trusting a cached status", () =>
+    Effect.gen(function* () {
+      const cached = {
+        ...BASE_THREAD,
+        rollbackStatus: { state: "completed" as const, updatedAt: "2026-04-01T00:00:00.000Z" },
+      };
+      const fresh = {
+        ...BASE_THREAD,
+        rollbackStatus: { state: "pending" as const, updatedAt: "2026-04-01T00:01:00.000Z" },
+      };
+      const harness = yield* makeHarness({
+        cached,
+        rollbackStatusStreaming: true,
+      });
+
+      yield* Queue.offer(harness.inputs, {
+        kind: "snapshot",
+        snapshot: { snapshotSequence: 8, thread: fresh },
+      });
+
+      const live = yield* awaitThreadState(
+        harness.observed,
+        (state) =>
+          state.status === "live" &&
+          Option.isSome(state.data) &&
+          state.data.value.rollbackStatus?.state === "pending",
+      );
+      expect(live.snapshotSequence).toBe(8);
+      expect(live.sessionOwner).not.toBeNull();
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBeUndefined();
+    }),
+  );
+
+  it.effect("reloads rollback status for a replacement session with the same environment ID", () =>
+    Effect.gen(function* () {
+      const cached = {
+        ...BASE_THREAD,
+        rollbackStatus: { state: "completed" as const, updatedAt: "2026-04-01T00:00:00.000Z" },
+      };
+      const fresh = {
+        ...BASE_THREAD,
+        rollbackStatus: { state: "pending" as const, updatedAt: "2026-04-01T00:01:00.000Z" },
+      };
+      const harness = yield* makeHarness({
+        cached,
+        rollbackStatusStreaming: true,
+      });
+      yield* Queue.offer(harness.inputs, {
+        kind: "snapshot",
+        snapshot: { snapshotSequence: 8, thread: fresh },
+      });
+      const first = yield* awaitThreadState(
+        harness.observed,
+        (state) => state.status === "live" && state.sessionOwner != null,
+      );
+
+      yield* harness.replaceSession;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(harness.subscriptionCount)) >= 2) break;
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+      yield* Queue.offer(harness.inputs, {
+        kind: "snapshot",
+        snapshot: { snapshotSequence: 9, thread: fresh },
+      });
+      const second = yield* awaitThreadState(
+        harness.observed,
+        (state) =>
+          state.status === "live" &&
+          state.sessionOwner != null &&
+          state.sessionOwner !== first.sessionOwner,
+      );
+      expect(second.snapshotSequence).toBe(9);
+      expect(Option.getOrThrow(second.data).rollbackStatus?.state).toBe("pending");
       expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
     }),
   );

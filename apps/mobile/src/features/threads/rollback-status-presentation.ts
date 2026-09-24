@@ -9,11 +9,44 @@ export interface MobileRollbackStatusPresentation {
   readonly actions: ReadonlyArray<"retry-verification" | "resume-compensation">;
 }
 
-export function resolveMobileRollbackStatus(
-  detailStatus: OrchestrationRollbackStatus | null | undefined,
-  shellStatus: OrchestrationRollbackStatus | null | undefined,
-): OrchestrationRollbackStatus | null | undefined {
-  return detailStatus ?? shellStatus;
+export interface RollbackStatusSource {
+  readonly status: OrchestrationRollbackStatus | null | undefined;
+  readonly sequence: number | undefined;
+  readonly sessionOwner: object | null | undefined;
+  readonly live: boolean;
+}
+
+/** Both streams use the server's global event sequence, scoped to one RPC session. */
+export function resolveMobileRollbackStatus(input: {
+  readonly detail: RollbackStatusSource;
+  readonly shell: RollbackStatusSource;
+  readonly currentSessionOwner: object | null;
+}): {
+  readonly status: OrchestrationRollbackStatus | null | undefined;
+  readonly uncertain: boolean;
+} {
+  const { detail, shell, currentSessionOwner } = input;
+  if (currentSessionOwner === null) {
+    // Keep a cached status visible offline, but never enable recovery actions
+    // or sends using state from a session whose authority is no longer live.
+    const cached = [detail, shell].filter((source) => source.sequence !== undefined);
+    const latest = cached.sort((a, b) => (b.sequence ?? 0) - (a.sequence ?? 0))[0];
+    return { status: latest?.status, uncertain: true };
+  }
+  const current = [detail, shell].filter(
+    (source) => source.live && source.sessionOwner === currentSessionOwner,
+  );
+  if (current.length === 0) return { status: undefined, uncertain: true };
+  if (current.length === 1) return { status: current[0]!.status, uncertain: false };
+  if (detail.sequence === undefined || shell.sequence === undefined) {
+    return { status: undefined, uncertain: true };
+  }
+  if (detail.sequence > shell.sequence) return { status: detail.status, uncertain: false };
+  if (shell.sequence > detail.sequence) return { status: shell.status, uncertain: false };
+  if (detail.status?.state !== shell.status?.state) {
+    return { status: undefined, uncertain: true };
+  }
+  return { status: detail.status ?? shell.status, uncertain: false };
 }
 
 export function getMobileRollbackStatusPresentation(
