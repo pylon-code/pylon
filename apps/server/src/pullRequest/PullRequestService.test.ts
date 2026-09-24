@@ -5032,6 +5032,13 @@ it.effect("keeps the diff cached across a file being ticked off", () =>
     let diffReads = 0;
     let viewedReads = 0;
     let state: "viewed" | "dismissed" = "viewed";
+    const patch = `diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1 +1 @@
+-before
++after
+`;
     const service = yield* makeService({
       projects: [
         project({ id: "p1", title: "t3code", workspaceRoot: "/a", repository: "pingdotgg/t3code" }),
@@ -5051,7 +5058,7 @@ it.effect("keeps the diff cached across a file being ticked off", () =>
           },
           getDiff: () => {
             diffReads += 1;
-            return Effect.succeed({ patch: "@@", truncated: false, nextCursor: null });
+            return Effect.succeed({ patch, truncated: false, nextCursor: null });
           },
           getFilesViewed: () => {
             viewedReads += 1;
@@ -5066,14 +5073,19 @@ it.effect("keeps the diff cached across a file being ticked off", () =>
     });
     const reference = { projectId: "p1" as ProjectId, repository: "pingdotgg/t3code", number: 1 };
 
-    yield* service.diff(reference);
+    const digest = (yield* service.diff(reference)).fileDigests?.[0]?.digest;
+    assert.isString(digest);
     yield* service.filesViewed(reference);
-    yield* service.setFilesViewed({ ...reference, files: [{ path: "src/a.ts", viewed: false }] });
+    yield* service.setFilesViewed({
+      expectedViewer: "bilal",
+      ...reference,
+      files: [{ path: "src/a.ts", viewed: false, digest }],
+    });
     yield* service.diff(reference);
     yield* service.filesViewed(reference);
 
     // The press forgets only the reader's own ticks: a diff of any size survives it.
-    assert.strictEqual(diffReads, 1);
+    assert.strictEqual(diffReads, 2);
     assert.strictEqual(viewedReads, 2);
 
     state = "dismissed";
@@ -5082,7 +5094,7 @@ it.effect("keeps the diff cached across a file being ticked off", () =>
     assert.deepStrictEqual((yield* service.filesViewed(reference)).files, [
       { path: "src/a.ts", state: "dismissed" },
     ]);
-    assert.strictEqual(diffReads, 1);
+    assert.strictEqual(diffReads, 2);
     assert.strictEqual(viewedReads, 3);
   }),
 );
@@ -5132,11 +5144,19 @@ it.effect("serializes host-backed presses on the same pull request", () =>
     const digest = (yield* service.diff(reference)).fileDigests?.[0]?.digest;
     assert.isString(digest);
     const first = yield* service
-      .setFilesViewed({ ...reference, files: [{ path: "src/a.ts", viewed: true, digest }] })
+      .setFilesViewed({
+        expectedViewer: "bilal",
+        ...reference,
+        files: [{ path: "src/a.ts", viewed: true, digest }],
+      })
       .pipe(Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(firstStarted);
     const second = yield* service
-      .setFilesViewed({ ...reference, files: [{ path: "src/a.ts", viewed: false }] })
+      .setFilesViewed({
+        expectedViewer: "bilal",
+        ...reference,
+        files: [{ path: "src/a.ts", viewed: false, digest }],
+      })
       .pipe(Effect.forkChild({ startImmediately: true }));
     yield* Effect.yieldNow;
     assert.deepStrictEqual(calls, [true]);
@@ -5186,10 +5206,71 @@ it.effect("rejects a host mark when the displayed file section changed before th
     const shown = (yield* service.diff(reference)).fileDigests?.[0]?.digest;
     assert.isString(shown);
     patch = patch.replace("+first", "+second");
+    for (const viewed of [true, false]) {
+      const error = yield* service
+        .setFilesViewed({
+          expectedViewer: "bilal",
+          ...reference,
+          files: [{ path: "src/a.ts", viewed, digest: shown }],
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(error._tag, "PullRequestOperationError");
+    }
+    assert.strictEqual(writes, 0);
+  }),
+);
+
+it.effect("rejects a host mark if CLI auth changes during diff preflight", () =>
+  Effect.gen(function* () {
+    let account = "alice";
+    let diffReads = 0;
+    let writes = 0;
+    const patch = `diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1 +1 @@
+-before
++after
+`;
+    const service = yield* makeService({
+      projects: [
+        project({ id: "p1", title: "project", workspaceRoot: "/a", repository: "acme/web" }),
+      ],
+      providers: [
+        fakeProvider("github", {
+          capabilities: {
+            diff: true,
+            comment: true,
+            actions: ["merge"],
+            mergeMethods: ["merge"],
+            search: true,
+            reactions: true,
+            viewedFiles: "host",
+            review: FULL_REVIEW,
+            reviewers: FULL_REVIEWERS,
+          },
+          getViewer: () => Effect.sync(() => account),
+          getDiff: () =>
+            Effect.sync(() => {
+              diffReads += 1;
+              if (diffReads === 2) account = "bob";
+              return { patch, truncated: false, nextCursor: null };
+            }),
+          setFilesViewed: () =>
+            Effect.sync(() => {
+              writes += 1;
+            }),
+        }),
+      ],
+    });
+    const reference = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    const digest = (yield* service.diff(reference)).fileDigests?.[0]?.digest;
+    assert.isString(digest);
     const error = yield* service
       .setFilesViewed({
         ...reference,
-        files: [{ path: "src/a.ts", viewed: true, digest: shown }],
+        expectedViewer: "alice",
+        files: [{ path: "src/a.ts", viewed: true, digest }],
       })
       .pipe(Effect.flip);
     assert.strictEqual(error._tag, "PullRequestOperationError");
@@ -5220,12 +5301,14 @@ it.effect(
         ],
       });
       yield* service.setFilesViewed({
+        expectedViewer: account,
         ...GITLAB_REFERENCE,
         files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
       });
       account = "bob";
       assert.deepStrictEqual((yield* service.filesViewed(GITLAB_REFERENCE)).files, []);
       yield* service.setFilesViewed({
+        expectedViewer: account,
         ...GITLAB_REFERENCE,
         files: [{ path: "src/b.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
       });
@@ -5268,6 +5351,7 @@ it.effect("rejects an environment mark when the account changes during revision 
     });
     const press = yield* service
       .setFilesViewed({
+        expectedViewer: account,
         ...GITLAB_REFERENCE,
         files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
       })
@@ -5279,6 +5363,40 @@ it.effect("rejects an environment mark when the account changes during revision 
     assert.strictEqual(error._tag, "PullRequestOperationError");
     assert.deepStrictEqual((yield* service.filesViewed(GITLAB_REFERENCE)).files, []);
     account = "alice";
+    assert.deepStrictEqual((yield* service.filesViewed(GITLAB_REFERENCE)).files, []);
+  }),
+);
+
+it.effect("rejects a press from the previous account's displayed marks", () =>
+  Effect.gen(function* () {
+    let account = "alice";
+    const service = yield* makeService({
+      projects: [
+        project({
+          id: "p1",
+          title: "on gitlab",
+          workspaceRoot: "/a",
+          repository: "group/project",
+          provider: "gitlab",
+        }),
+      ],
+      providers: [
+        {
+          ...environmentViewedProvider(new Map(), []),
+          getViewer: () => Effect.sync(() => account),
+        },
+      ],
+    });
+    assert.strictEqual((yield* service.filesViewed(GITLAB_REFERENCE)).viewer, "alice");
+    account = "bob";
+    const error = yield* service
+      .setFilesViewed({
+        ...GITLAB_REFERENCE,
+        expectedViewer: "alice",
+        files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
+      })
+      .pipe(Effect.flip);
+    assert.strictEqual(error._tag, "PullRequestOperationError");
     assert.deepStrictEqual((yield* service.filesViewed(GITLAB_REFERENCE)).files, []);
   }),
 );
@@ -5341,6 +5459,31 @@ const GITLAB_REFERENCE = {
   repository: "group/project",
   number: 1,
 };
+
+it.effect("a stale untick cannot delete a newer mark on the same file", () =>
+  Effect.gen(function* () {
+    const service = yield* environmentViewedService(new Map([["src/a.ts", "blob-a"]]), []);
+    const newerDigest = "b".repeat(64);
+    yield* service.setFilesViewed({
+      ...GITLAB_REFERENCE,
+      expectedViewer: "bilal",
+      files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
+    });
+    yield* service.setFilesViewed({
+      ...GITLAB_REFERENCE,
+      expectedViewer: "bilal",
+      files: [{ path: "src/a.ts", viewed: true, digest: newerDigest }],
+    });
+    yield* service.setFilesViewed({
+      ...GITLAB_REFERENCE,
+      expectedViewer: "bilal",
+      files: [{ path: "src/a.ts", viewed: false, digest: TEST_DISPLAY_DIGEST }],
+    });
+    assert.deepStrictEqual((yield* service.filesViewed(GITLAB_REFERENCE)).files, [
+      { path: "src/a.ts", state: "viewed", digest: newerDigest },
+    ]);
+  }),
+);
 
 it.effect("tracks Forgejo viewed files through its diff and refuses truncated baselines", () =>
   Effect.gen(function* () {
@@ -5410,6 +5553,7 @@ it.effect("tracks Forgejo viewed files through its diff and refuses truncated ba
     };
     const paths = ["alpha.ts", "beta.ts", "café notes.txt", "deleted.txt", "renamed.txt"];
     yield* service.setFilesViewed({
+      expectedViewer: "reviewer",
       ...reference,
       files: paths.map((path) => ({ path, viewed: true, digest: TEST_DISPLAY_DIGEST })),
     });
@@ -5426,8 +5570,9 @@ it.effect("tracks Forgejo viewed files through its diff and refuses truncated ba
       new Map(paths.map((path) => [path, path === "alpha.ts" ? "dismissed" : "viewed"])),
     );
     yield* service.setFilesViewed({
+      expectedViewer: "reviewer",
       ...reference,
-      files: [{ path: "beta.ts", viewed: false }],
+      files: [{ path: "beta.ts", viewed: false, digest: TEST_DISPLAY_DIGEST }],
     });
     assert.isFalse(
       (yield* service.filesViewed(reference)).files.some((file) => file.path === "beta.ts"),
@@ -5436,6 +5581,7 @@ it.effect("tracks Forgejo viewed files through its diff and refuses truncated ba
     truncated = true;
     yield* service.invalidate({ reference });
     yield* service.setFilesViewed({
+      expectedViewer: "reviewer",
       ...reference,
       files: [{ path: "beta.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5484,10 +5630,14 @@ it.effect("keeps hosted Forgejo marks with their repository instead of the servi
     };
     const second = { ...first, repository: "reviewer/second" };
     const files = [{ path: "same.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }];
-    yield* service.setFilesViewed({ ...first, files });
+    yield* service.setFilesViewed({ expectedViewer: "bilal", ...first, files });
     assert.deepStrictEqual((yield* service.filesViewed(second)).files, []);
-    yield* service.setFilesViewed({ ...second, files });
-    yield* service.setFilesViewed({ ...first, files: [{ path: "same.ts", viewed: false }] });
+    yield* service.setFilesViewed({ expectedViewer: "bilal", ...second, files });
+    yield* service.setFilesViewed({
+      expectedViewer: "bilal",
+      ...first,
+      files: [{ path: "same.ts", viewed: false, digest: TEST_DISPLAY_DIGEST }],
+    });
     assert.deepStrictEqual((yield* service.filesViewed(second)).files, [
       { path: "same.ts", state: "viewed", digest: TEST_DISPLAY_DIGEST },
     ]);
@@ -5538,10 +5688,11 @@ it.effect("keeps viewed files itself for a host that keeps none of its own", () 
 
     // Nothing marked is nothing to ask the host about.
     const empty = yield* service.filesViewed(GITLAB_REFERENCE);
-    assert.deepStrictEqual(empty, { files: [], truncated: false });
+    assert.deepStrictEqual(empty, { viewer: "bilal", files: [], truncated: false });
     assert.deepStrictEqual(asked, []);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [
         { path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST },
@@ -5598,12 +5749,14 @@ it.effect("reads a fresh version for each tick even when a whole-change answer i
     });
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
     // The second path came back with the first answer. A press still rereads current host state
     // instead of stamping a held version after the head may have moved.
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/b.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5622,6 +5775,7 @@ it.effect("reads a fresh version for each tick even when a whole-change answer i
     // than stamping a mark with a version the head may have moved off.
     yield* TestClock.adjust("2 minutes");
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/b.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5635,6 +5789,7 @@ it.effect("reads the marks without asking the host what the head has every time"
     const service = yield* environmentViewedService(new Map([["src/a.ts", "blob-a"]]), asked);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5656,6 +5811,7 @@ it.effect("answers the marks from what it last heard while it asks the host agai
     const service = yield* environmentViewedService(revisions, asked);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5692,11 +5848,13 @@ it.effect("asks the host about a file it has not been asked about before", () =>
     );
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
     yield* TestClock.adjust("20 seconds");
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/b.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5725,6 +5883,7 @@ it.effect("does not let a press about one file keep another file's version alive
     const service = yield* environmentViewedService(revisions, asked);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5733,6 +5892,7 @@ it.effect("does not let a press about one file keep another file's version alive
     // the whole scope as heard from would put the first file's version back inside the window it
     // had almost aged out of, and a reader working down a long diff renews it press after press.
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/b.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5765,6 +5925,7 @@ it.effect("reports a file pushed to since it was cleared as changed", () =>
     const service = yield* environmentViewedService(revisions, []);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [
         { path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST },
@@ -5792,12 +5953,14 @@ it.effect("clears a mark again when the file is put back", () =>
     const service = yield* environmentViewedService(new Map([["src/a.ts", "blob-a"]]), asked);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
-      files: [{ path: "src/a.ts", viewed: false }],
+      files: [{ path: "src/a.ts", viewed: false, digest: TEST_DISPLAY_DIGEST }],
     });
     const marked = yield* service.filesViewed(GITLAB_REFERENCE);
 
@@ -5812,6 +5975,7 @@ it.effect("keeps a deleted file cleared, which the head has no version of at all
     const service = yield* environmentViewedService(new Map(), []);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/gone.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5839,6 +6003,7 @@ it.effect("leaves a mark alone when the host could not say what the head has of 
     );
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [
         { path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST },
@@ -5870,6 +6035,7 @@ it.effect("keeps a file cleared that the press could not learn a version for", (
     const service = yield* environmentViewedService(revisions, [], unreadable);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/past-the-cut.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5890,6 +6056,7 @@ it.effect("keeps the version it last heard when a later read of the head stops s
     const service = yield* environmentViewedService(revisions, asked, unreadable);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5919,6 +6086,7 @@ it.effect("re-asks what the head has of a marked file after a whole-workspace re
     const service = yield* environmentViewedService(revisions, []);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5939,6 +6107,7 @@ it.effect("forgets what the head had of a marked file once a mutation moves the 
     const service = yield* environmentViewedService(revisions, []);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -5992,6 +6161,7 @@ it.effect("still reports its own marks when the host will not say what the head 
     });
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -6047,6 +6217,7 @@ it.effect("finishes two presses on one file in the order they were made", () =>
 
     const tick = service
       .setFilesViewed({
+        expectedViewer: "bilal",
         ...GITLAB_REFERENCE,
         files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
       })
@@ -6055,8 +6226,9 @@ it.effect("finishes two presses on one file in the order they were made", () =>
     yield* TestClock.adjust("1 second");
     const untick = service
       .setFilesViewed({
+        expectedViewer: "bilal",
         ...GITLAB_REFERENCE,
-        files: [{ path: "src/a.ts", viewed: false }],
+        files: [{ path: "src/a.ts", viewed: false, digest: TEST_DISPLAY_DIGEST }],
       })
       .pipe(Effect.runFork);
     yield* TestClock.adjust("1 second");
@@ -6124,6 +6296,7 @@ it.effect("keeps the marks of two Azure repositories of the same name apart", ()
     const service = yield* azureViewedService(AZURE_PAIR);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...AZURE_PLATFORM,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -6140,6 +6313,7 @@ it.effect("keeps environment marks apart from another change request's", () =>
     const service = yield* environmentViewedService(new Map([["src/a.ts", "blob-a"]]), []);
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -6163,7 +6337,11 @@ it.effect("bounds the paths one change request's held revisions carry", () =>
         digest: TEST_DISPLAY_DIGEST,
       }));
     const press = (prefix: string, count: number) =>
-      service.setFilesViewed({ ...GITLAB_REFERENCE, files: batch(prefix, count) });
+      service.setFilesViewed({
+        expectedViewer: "bilal",
+        ...GITLAB_REFERENCE,
+        files: batch(prefix, count),
+      });
 
     yield* press("a", MAX_FILE_REVISION_PATHS / 2);
     yield* press("b", MAX_FILE_REVISION_PATHS / 2);
@@ -6214,6 +6392,7 @@ it.effect("keeps the marked paths when a whole-change answer is wider than the c
     const ticked = ["src/f0000.ts", "src/f0500.ts"];
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: ticked.map((path) => ({ path, viewed: true, digest: TEST_DISPLAY_DIGEST })),
     });
@@ -6241,6 +6420,7 @@ it.effect("bounds held revision scopes while fresh presses continue to read the 
     const service = yield* environmentViewedService(new Map([["src/a.ts", "blob-a"]]), asked);
     const press = (number: number) =>
       service.setFilesViewed({
+        expectedViewer: "bilal",
         ...GITLAB_REFERENCE,
         number,
         files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
@@ -6275,21 +6455,24 @@ const environmentViewedServiceWithViewer = (
     providers: [{ ...environmentViewedProvider(revisions, []), getViewer }],
   });
 
-it.effect("keeps one reader's marks on a host that names nobody", () =>
+it.effect("refuses viewed marks when the host cannot name the current reader", () =>
   Effect.gen(function* () {
     const service = yield* environmentViewedServiceWithViewer(
       new Map([["src/a.ts", "blob-a"]]),
       () => Effect.succeed(""),
     );
 
-    yield* service.setFilesViewed({
-      ...GITLAB_REFERENCE,
-      files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
-    });
+    const write = yield* service
+      .setFilesViewed({
+        expectedViewer: "",
+        ...GITLAB_REFERENCE,
+        files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
+      })
+      .pipe(Effect.flip);
 
-    assert.deepStrictEqual((yield* service.filesViewed(GITLAB_REFERENCE)).files, [
-      { path: "src/a.ts", state: "viewed", digest: TEST_DISPLAY_DIGEST },
-    ]);
+    const read = yield* service.filesViewed(GITLAB_REFERENCE).pipe(Effect.flip);
+    assert.strictEqual(write._tag, "PullRequestOperationError");
+    assert.strictEqual(read._tag, "PullRequestOperationError");
   }),
 );
 
@@ -6322,13 +6505,13 @@ it.effect("rechecks the viewed mark account separately from a listing lookup", (
     });
 
     // What a cold page load does: read the listing and the reader's own marks at the same time.
-    // The mark lookup verifies its account at the end as well, so a switch during the read cannot
-    // return another account's marks. Listing retains its own display viewer lookup.
+    // The mark lookup verifies its account at both ends, even for an empty result, so a switch
+    // during the read cannot return another account's marks. Listing has its own lookup.
     yield* Effect.all([service.list({ state: "open" }), service.filesViewed(GITLAB_REFERENCE)], {
       concurrency: 2,
     });
 
-    assert.strictEqual(viewerLookups, 2);
+    assert.strictEqual(viewerLookups, 3);
   }),
 );
 
@@ -6345,6 +6528,7 @@ it.effect("carries a bounded number of its own marks and says it held more", () 
     );
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: paths.map((path) => ({ path, viewed: true, digest: TEST_DISPLAY_DIGEST })),
     });
@@ -6396,11 +6580,13 @@ it.effect("records a press while the host is backing off", () =>
     });
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
     yield* TestClock.adjust("11 minutes");
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/b.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -6461,6 +6647,7 @@ it.effect("asks who is reading through a pause only for the press that is waitin
     });
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -6477,6 +6664,7 @@ it.effect("asks who is reading through a pause only for the press that is waitin
     // The press is bounded by what the reader does, and its rows are keyed by who they are, so
     // it is asked rather than refused.
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/b.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -6560,6 +6748,7 @@ it.effect("refuses the marks when the host could not be asked who is reading", (
     );
 
     yield* service.setFilesViewed({
+      expectedViewer: "bilal",
       ...GITLAB_REFERENCE,
       files: [{ path: "src/a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
     });
@@ -6573,6 +6762,7 @@ it.effect("refuses the marks when the host could not be asked who is reading", (
     const read = yield* Effect.flip(service.filesViewed(GITLAB_REFERENCE));
     const write = yield* Effect.flip(
       service.setFilesViewed({
+        expectedViewer: "bilal",
         ...GITLAB_REFERENCE,
         files: [{ path: "src/b.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
       }),
@@ -6611,6 +6801,7 @@ it.effect("refuses to track viewed files on a host that does not", () =>
     const read = yield* Effect.flip(service.filesViewed(reference));
     const write = yield* Effect.flip(
       service.setFilesViewed({
+        expectedViewer: "bilal",
         ...reference,
         files: [{ path: "a.ts", viewed: true, digest: TEST_DISPLAY_DIGEST }],
       }),

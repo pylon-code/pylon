@@ -62,23 +62,26 @@ export function usePullRequestFilesViewed(options: {
   readonly enabled: boolean;
   /** The paths on screen, which is what the counter counts. */
   readonly paths: ReadonlyArray<string>;
+  /** Restore UI gestures that were coupled to a press when the host rejects that press. */
+  readonly onWriteRejected?: (paths: ReadonlyArray<string>) => void;
   readonly evidence: ReadonlyMap<
     string,
     { readonly digest: string; readonly cursor: string | null }
   >;
 }): PullRequestFilesViewedView {
-  const { environmentId, reference, enabled, paths, evidence } = options;
+  const { environmentId, reference, enabled, paths, evidence, onWriteRejected } = options;
   const query = useEnvironmentQuery(
     enabled ? pullRequestEnvironment.filesViewed({ environmentId, input: reference }) : null,
   );
   const refresh = query.refresh;
-  // `query.data` holds the last answer through a failure, so the boxes stay where the host last
-  // put them rather than emptying under the reader; the error travels with them, because ticks
-  // that stopped being refreshed look exactly like ticks that are current.
+  const viewer = query.error === null ? query.data?.viewer : undefined;
+  const accountReady = enabled && viewer !== undefined;
+  // A failed refresh cannot authenticate the cached answer's account. Hide those marks until a
+  // successful read rather than leaving another account's state on screen indefinitely.
   const states = useMemo(
     () =>
       toFileViewedStates(
-        query.data === null
+        query.data === null || query.error !== null
           ? null
           : {
               ...query.data,
@@ -89,9 +92,9 @@ export function usePullRequestFilesViewed(options: {
               ),
             },
       ),
-    [query.data, evidence],
+    [query.data, query.error, evidence],
   );
-  const truncated = query.data?.truncated === true;
+  const truncated = query.error === null && query.data?.truncated === true;
   const error = query.error;
   const [overlay, setOverlay] = useState<FileViewedOverlay>(NO_OVERLAY);
   const [overlayDigests, setOverlayDigests] = useState<ReadonlyMap<string, string>>(new Map());
@@ -126,6 +129,7 @@ export function usePullRequestFilesViewed(options: {
     reference.host ?? null,
     reference.repository,
     reference.number,
+    viewer ?? null,
   ]);
   const scope = useRef(scopeKey);
 
@@ -155,7 +159,10 @@ export function usePullRequestFilesViewed(options: {
     const sentFrom = scope.current;
     const request = ++requests.current;
     for (const file of batch) sentBy.current.set(file.path, request);
-    void setFilesViewed({ environmentId, input: { ...reference, files: batch } }).then((result) => {
+    void setFilesViewed({
+      environmentId,
+      input: { ...reference, expectedViewer: viewer, files: batch },
+    }).then((result) => {
       const mine = batch
         .map((file) => file.path)
         .filter((path) => sentBy.current.get(path) === request);
@@ -168,6 +175,7 @@ export function usePullRequestFilesViewed(options: {
         // of its own, or on the next flush, and that press is the one on screen.
         const owned = new Set(mine.filter((path) => !queued.current.has(path)));
         setOverlay((current) => revertFileViewedOverlay(current, batch, owned));
+        if (owned.size > 0) onWriteRejected?.([...owned]);
         // Silent when nothing was still this request's to answer for, so nothing on screen went
         // back, and when the connection went away mid-flight, which the reader is already being
         // told about and which the host never refused.
@@ -181,7 +189,7 @@ export function usePullRequestFilesViewed(options: {
       for (const path of mine) answeredFrom.current.set(path, statesRef.current);
       refresh();
     });
-  }, [environmentId, reference, refresh, setFilesViewed]);
+  }, [environmentId, reference, refresh, setFilesViewed, viewer, onWriteRejected]);
 
   // Read through a ref rather than closed over: `setViewed` is handed to every file header the
   // viewer draws, and a new identity per render would rebuild all of them.
@@ -210,9 +218,27 @@ export function usePullRequestFilesViewed(options: {
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
   const refreshFromHost = useCallback(() => refreshRef.current(), []);
+  // Provider CLI sign-in can change outside this tab. Refresh on focus and while the tab is
+  // visible so an account switch replaces the old reader's cached marks without a page reload.
+  useEffect(() => {
+    if (!enabled) return;
+    if (typeof window === "undefined" || typeof document === "undefined") return;
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") refreshRef.current();
+    };
+    const timer = setInterval(refreshIfVisible, 15_000);
+    window.addEventListener("focus", refreshIfVisible);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refreshIfVisible);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, [enabled]);
 
   const setViewed = useCallback(
     (path: string, viewed: boolean) => {
+      if (!accountReady) return;
       const shown = evidence.get(path);
       if (shown === undefined) return;
       setOverlayDigests((current) => new Map(current).set(path, shown.digest));
@@ -225,10 +251,13 @@ export function usePullRequestFilesViewed(options: {
       if (flushTimer.current !== null) clearTimeout(flushTimer.current);
       flushTimer.current = setTimeout(() => flushRef.current(), FLUSH_DELAY_MS);
     },
-    [evidence],
+    [accountReady, evidence],
   );
 
-  const isTrackable = useCallback((path: string) => evidence.has(path), [evidence]);
+  const isTrackable = useCallback(
+    (path: string) => accountReady && evidence.has(path),
+    [accountReady, evidence],
+  );
 
   const isViewed = useCallback(
     (path: string) => isFileViewed(path, states, visibleOverlay),
@@ -246,7 +275,7 @@ export function usePullRequestFilesViewed(options: {
   // One identity per change of what it says: the viewer keys every file it draws off this.
   return useMemo(
     () => ({
-      enabled,
+      enabled: accountReady,
       isViewed,
       isTrackable,
       isStale,
@@ -257,7 +286,7 @@ export function usePullRequestFilesViewed(options: {
       refresh: refreshFromHost,
     }),
     [
-      enabled,
+      accountReady,
       error,
       isStale,
       isViewed,

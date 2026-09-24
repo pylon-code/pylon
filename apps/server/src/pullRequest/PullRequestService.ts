@@ -1742,7 +1742,7 @@ export const make = Effect.gen(function* () {
       .pipe(
         Effect.mapError(toPullRequestError(operation)),
         Effect.flatMap((viewer) =>
-          viewer === null
+          viewer === null || viewer.trim().length === 0
             ? Effect.fail(
                 new PullRequestOperationError({
                   operation,

@@ -5,12 +5,13 @@ import {
   type PullRequestRef,
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
+import * as Cause from "effect/Cause";
 import { act, StrictMode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const { host, setFilesViewed, toastAdd } = vi.hoisted(() => ({
-  host: { data: null as unknown, refresh: vi.fn() },
+  host: { data: null as unknown, error: null as string | null, refresh: vi.fn() },
   setFilesViewed: vi.fn(),
   toastAdd: vi.fn(),
 }));
@@ -21,7 +22,7 @@ vi.mock("~/state/pullRequests", () => ({
 vi.mock("~/state/query", () => ({
   useEnvironmentQuery: () => ({
     data: host.data,
-    error: null,
+    error: host.error,
     isPending: false,
     isSuccess: true,
     refresh: host.refresh,
@@ -43,10 +44,11 @@ const reference: PullRequestRef = {
 };
 const paths = ["a.ts"];
 let evidence = new Map([["a.ts", { digest: "a".repeat(64), cursor: null }]]);
+const onWriteRejected = vi.fn();
 
 /** What the host answers, as a fresh object each time: a read is only a read if it is a new one. */
 function answer(state: "unviewed" | "viewed" | "dismissed"): PullRequestFilesViewedResult {
-  return { files: [{ path: "a.ts", state }], truncated: false };
+  return { viewer: "bilal", files: [{ path: "a.ts", state }], truncated: false };
 }
 
 let renderer: ReactTestRenderer | null = null;
@@ -62,6 +64,7 @@ function Surface() {
     enabled: true,
     paths,
     evidence,
+    onWriteRejected,
   });
   return <Probe view={view} />;
 }
@@ -86,8 +89,10 @@ beforeEach(async () => {
   vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   host.data = answer("unviewed");
+  host.error = null;
   evidence = new Map([["a.ts", { digest: "a".repeat(64), cursor: null }]]);
   host.refresh.mockReset();
+  onWriteRejected.mockReset();
   toastAdd.mockReset();
   setFilesViewed.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   act(() => {
@@ -112,7 +117,11 @@ describe("a mark whose file was pushed to before the read that followed it", () 
     await act(async () => vi.advanceTimersByTimeAsync(500));
     expect(setFilesViewed).toHaveBeenCalledExactlyOnceWith({
       environmentId,
-      input: { ...reference, files: [{ path: "a.ts", viewed: true, digest: "a".repeat(64) }] },
+      input: {
+        ...reference,
+        expectedViewer: "bilal",
+        files: [{ path: "a.ts", viewed: true, digest: "a".repeat(64) }],
+      },
     });
     expect(host.refresh).toHaveBeenCalled();
 
@@ -170,6 +179,7 @@ describe("a mark the host has not answered for yet", () => {
 
 it("never shows the old mark or pending press as viewed over a newly displayed file", async () => {
   host.data = {
+    viewer: "bilal",
     files: [{ path: "a.ts", state: "viewed", digest: "a".repeat(64) }],
     truncated: false,
   } satisfies PullRequestFilesViewedResult;
@@ -194,4 +204,66 @@ it("never shows the old mark or pending press as viewed over a newly displayed f
   expect(view().isViewed("a.ts")).toBe(false);
   expect(view().isStale("a.ts")).toBe(true);
   expect(view().viewedCount).toBe(0);
+});
+
+it("reverses the coupled file fold when a mark is rejected", async () => {
+  setFilesViewed.mockResolvedValueOnce(AsyncResult.failure(Cause.fail(new Error("denied"))));
+  view().setViewed("a.ts", true);
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(view().isViewed("a.ts")).toBe(false);
+  expect(onWriteRejected).toHaveBeenCalledExactlyOnceWith(["a.ts"]);
+});
+
+it("sends the account that owned a queued press even after the next account's answer arrives", async () => {
+  view().setViewed("a.ts", true);
+  host.data = {
+    viewer: "new-account",
+    files: [],
+    truncated: false,
+  } satisfies PullRequestFilesViewedResult;
+  await act(async () =>
+    renderer!.update(
+      <StrictMode>
+        <Surface />
+      </StrictMode>,
+    ),
+  );
+  expect(setFilesViewed).toHaveBeenCalledExactlyOnceWith({
+    environmentId,
+    input: {
+      ...reference,
+      expectedViewer: "bilal",
+      files: [{ path: "a.ts", viewed: true, digest: "a".repeat(64) }],
+    },
+  });
+  expect(view().isViewed("a.ts")).toBe(false);
+});
+
+it("hides cached marks and disables writes after an account read fails", async () => {
+  host.data = {
+    viewer: "bilal",
+    files: [{ path: "a.ts", state: "viewed" }],
+    truncated: false,
+  } satisfies PullRequestFilesViewedResult;
+  await act(async () =>
+    renderer!.update(
+      <StrictMode>
+        <Surface />
+      </StrictMode>,
+    ),
+  );
+  expect(view().isViewed("a.ts")).toBe(true);
+  host.error = "account lookup failed";
+  await act(async () =>
+    renderer!.update(
+      <StrictMode>
+        <Surface />
+      </StrictMode>,
+    ),
+  );
+  expect(view().enabled).toBe(false);
+  expect(view().isViewed("a.ts")).toBe(false);
+  view().setViewed("a.ts", true);
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(setFilesViewed).not.toHaveBeenCalled();
 });

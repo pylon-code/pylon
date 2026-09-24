@@ -249,7 +249,17 @@ export const make = (dependencies: Dependencies) => {
       ),
     );
   const invalidDisplayedFiles = (files: PullRequestSetFilesViewedInput["files"]) =>
-    files.some((file) => file.viewed && !DISPLAY_DIGEST.test(file.digest ?? ""));
+    files.some((file) => !DISPLAY_DIGEST.test(file.digest ?? ""));
+
+  const requireExpectedViewer = (input: PullRequestSetFilesViewedInput, viewer: string) =>
+    input.expectedViewer === viewer
+      ? Effect.void
+      : Effect.fail(
+          new PullRequestOperationError({
+            operation: "setFilesViewed",
+            detail: "The signed-in account changed. Refresh viewed files before updating them.",
+          }),
+        );
 
   const requireDisplayedFiles = (files: PullRequestSetFilesViewedInput["files"]) =>
     invalidDisplayedFiles(files)
@@ -297,7 +307,10 @@ export const make = (dependencies: Dependencies) => {
         .list(filesViewedScope(project, ref.number, viewer))
         .pipe(Effect.mapError(toFilesViewedStoreError("filesViewed")));
       const marks = held.files;
-      if (marks.length === 0) return { files: [], truncated: held.truncated };
+      if (marks.length === 0) {
+        yield* confirmViewer(project, viewer, "filesViewed");
+        return { viewer, files: [], truncated: held.truncated };
+      }
       // A host that won't say what its head has costs the marks their staleness (`fileRevisionsOf`
       // returns null), rather than costing the reader every tick they've made.
       const revisions = yield* fileRevisionsOf(
@@ -315,6 +328,7 @@ export const make = (dependencies: Dependencies) => {
       );
       yield* confirmViewer(project, viewer, "filesViewed");
       return {
+        viewer,
         files: marks.map((mark) => {
           // A mark stamped with no baseline holds until the reader presses it again.
           if (mark.revision === null)
@@ -391,6 +405,7 @@ export const make = (dependencies: Dependencies) => {
     Effect.gen(function* () {
       yield* requireDisplayedFiles(input.files);
       const viewer = yield* requiredViewerOf(project, "setFilesViewed");
+      yield* requireExpectedViewer(input, viewer);
       // Only the files being cleared need a revision. An unticked one is about to lose its row,
       // and what the head has of it changes nothing about deleting it.
       const cleared = input.files.filter((file) => file.viewed).map((file) => file.path);
@@ -432,12 +447,17 @@ export const make = (dependencies: Dependencies) => {
       Effect.flatMap((project): Effect.Effect<PullRequestFilesViewedResult, PullRequestError> => {
         const read = project.api.getFilesViewed;
         if (project.api.capabilities.viewedFiles === "host" && read) {
-          return read({
-            cwd: project.project.workspaceRoot,
-            repository: project.repository,
-            host: project.host,
-            number: input.number,
-          }).pipe(Effect.mapError(toPullRequestError("filesViewed")));
+          return Effect.gen(function* () {
+            const viewer = yield* requiredViewerOf(project, "filesViewed");
+            const result = yield* read({
+              cwd: project.project.workspaceRoot,
+              repository: project.repository,
+              host: project.host,
+              number: input.number,
+            }).pipe(Effect.mapError(toPullRequestError("filesViewed")));
+            yield* confirmViewer(project, viewer, "filesViewed");
+            return { ...result, viewer };
+          });
         }
         if (project.api.capabilities.viewedFiles === "environment") {
           return environmentFilesViewed(project, input);
@@ -463,8 +483,9 @@ export const make = (dependencies: Dependencies) => {
             input.number,
             Effect.gen(function* () {
               yield* requireDisplayedFiles(input.files);
-              const marked = input.files.filter((file) => file.viewed);
-              const cursors = [...new Set(marked.map((file) => file.cursor ?? null))];
+              const viewer = yield* requiredViewerOf(project, "setFilesViewed");
+              yield* requireExpectedViewer(input, viewer);
+              const cursors = [...new Set(input.files.map((file) => file.cursor ?? null))];
               if (cursors.length > MAX_HOST_MARK_PREFLIGHT_SLICES) {
                 return yield* new PullRequestOperationError({
                   operation: "setFilesViewed",
@@ -495,7 +516,7 @@ export const make = (dependencies: Dependencies) => {
                   ).map(({ path, digest }) => [path, digest]),
                 );
                 if (
-                  marked.some(
+                  input.files.some(
                     (file) =>
                       (file.cursor ?? null) === cursor && current.get(file.path) !== file.digest,
                   )
@@ -506,6 +527,7 @@ export const make = (dependencies: Dependencies) => {
                   });
                 }
               }
+              yield* confirmViewer(project, viewer, "setFilesViewed");
               yield* write({
                 cwd: project.project.workspaceRoot,
                 repository: project.repository,
@@ -513,6 +535,7 @@ export const make = (dependencies: Dependencies) => {
                 number: input.number,
                 files: input.files,
               }).pipe(Effect.mapError(toPullRequestError("setFilesViewed")));
+              yield* confirmViewer(project, viewer, "setFilesViewed");
             }),
           );
         }

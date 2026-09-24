@@ -328,6 +328,18 @@ describe("naming the reader as the author to narrow by", () => {
 });
 
 describe("naming the file a tick belongs to", () => {
+  it("accepts only canonical bounded displayed-file digests", () => {
+    const input = (digest: string) => ({
+      projectId: "p1",
+      repository: "group/project",
+      number: 7,
+      expectedViewer: "bilal",
+      files: [{ path: "src/a.ts", viewed: true, digest }],
+    });
+    expect(() => decodeSetFilesViewed(input("a".repeat(64)))).not.toThrow();
+    expect(() => decodeSetFilesViewed(input("A".repeat(64)))).toThrow();
+    expect(() => decodeSetFilesViewed(input("a".repeat(65)))).toThrow();
+  });
   // A space on either end of a name is part of the name as far as git is concerned. The patch on
   // screen and the environment's record of what was cleared are both keyed by it, so a path
   // tidied in transit ticks a file that does not exist and leaves the one on screen unticked.

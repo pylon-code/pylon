@@ -916,11 +916,13 @@ export const PullRequestOmittedFileStat = Schema.Struct({
 });
 export type PullRequestOmittedFileStat = typeof PullRequestOmittedFileStat.Type;
 
+const FileSectionDigest = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+
 export const PullRequestDiffResult = Schema.Struct({
   patch: Schema.String,
   /** Exact complete file sections in this slice, bound to this host and pull request. */
   fileDigests: Schema.optional(
-    Schema.Array(Schema.Struct({ path: Schema.String, digest: Schema.String })),
+    Schema.Array(Schema.Struct({ path: Schema.String, digest: FileSectionDigest })),
   ),
   /**
    * Something inside this slice could not be shown — a binary file, or a hunk the host declined
@@ -977,7 +979,7 @@ export const PullRequestFileViewed = Schema.Struct({
   path: FilePath,
   state: PullRequestFileViewedState,
   /** Displayed file-section digest for environment-kept marks, if known. */
-  digest: Schema.optional(Schema.String),
+  digest: Schema.optional(FileSectionDigest),
 });
 export type PullRequestFileViewed = typeof PullRequestFileViewed.Type;
 
@@ -987,6 +989,8 @@ export type PullRequestFileViewed = typeof PullRequestFileViewed.Type;
  * press, so one read would have to be wrong for the other to be right.
  */
 export const PullRequestFilesViewedResult = Schema.Struct({
+  /** Account that owned this answer; the client must echo it when applying a press. */
+  viewer: Schema.optional(TrimmedNonEmptyString),
   /** Only the files the host reported a state for. A file missing from this list is unviewed. */
   files: Schema.Array(PullRequestFileViewed),
   /** The host had more files than were read, so the count is short and says so. */
@@ -1007,12 +1011,14 @@ const MAX_FILES_VIEWED_PRESSES = 500;
  */
 export const PullRequestSetFilesViewedInput = Schema.Struct({
   ...PullRequestRef.fields,
+  /** Account whose displayed marks and diff motivated this press. */
+  expectedViewer: Schema.optional(TrimmedNonEmptyString),
   files: Schema.Array(
     Schema.Struct({
       path: FilePath,
       viewed: Schema.Boolean,
-      /** Required for a viewed press; absent for an untick. */
-      digest: Schema.optional(Schema.String),
+      /** Displayed file section for either a tick or untick. */
+      digest: Schema.optional(FileSectionDigest),
       /** Slice shown when pressed, for a host-managed preflight comparison. */
       cursor: Schema.optional(Schema.String),
     }),

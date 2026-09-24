@@ -16,8 +16,8 @@ import {
 /**
  * Which change request, on which host, for which reader. The host is part of it because the same
  * `group/project` exists on gitlab.com and on a self-managed instance, and the reader because
- * signing in as somebody else must not inherit their ticks. A host that will not say who the
- * reader is leaves it empty, which is one reader rather than none.
+ * signing in as somebody else must not inherit their ticks. Callers verify the current account
+ * before choosing this scope.
  */
 export const PullRequestFilesViewedScope = Schema.Struct({
   provider: SourceControlProviderKind,
@@ -176,6 +176,7 @@ const make = Effect.gen(function* () {
                   AND number = ${input.number}
                   AND viewer = ${input.viewer}
                   AND path = ${file.path}
+                  AND (display_digest IS NULL OR display_digest = ${file.displayDigest})
               `,
             { discard: true },
           ),

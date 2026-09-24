@@ -225,6 +225,9 @@ function PullRequestCodeTab({
   const { resolvedTheme } = useTheme();
   const settings = useClientSettings();
   const [toggledFiles, setToggledFiles] = useState<ReadonlySet<string>>(() => new Set());
+  const foldBeforeViewedPress = useRef(
+    new Map<string, { readonly fileKey: string; readonly toggled: boolean }>(),
+  );
   // A change of any size can carry hundreds of commits, and a menu that long is a scroll rather
   // than a choice. The rest arrive ten at a time, on request.
   const [visibleCommitCount, setVisibleCommitCount] = useState(COMMIT_PAGE_SIZE);
@@ -434,12 +437,26 @@ function PullRequestCodeTab({
   // commit at a time is what the scope is for. The tick is kept against the change request rather
   // than the scope it was made in, so clearing a file here clears it everywhere.
   const viewedFilesStore = detail.capabilities.viewedFiles;
+  const restoreRejectedViewedFolds = useCallback((paths: ReadonlyArray<string>) => {
+    setToggledFiles((current) => {
+      const next = new Set(current);
+      for (const path of paths) {
+        const before = foldBeforeViewedPress.current.get(path);
+        if (before === undefined) continue;
+        if (before.toggled) next.add(before.fileKey);
+        else next.delete(before.fileKey);
+        foldBeforeViewedPress.current.delete(path);
+      }
+      return next;
+    });
+  }, []);
   const filesViewed = usePullRequestFilesViewed({
     environmentId,
     reference,
     enabled: viewedFilesStore !== undefined && selectedCommitOid === null,
     paths: filePaths,
     evidence: fileEvidence,
+    onWriteRejected: restoreRejectedViewedFolds,
   });
   const {
     setViewed,
@@ -676,9 +693,10 @@ function PullRequestCodeTab({
     (fileKey: string, path: string, viewed: boolean) => {
       if (!isFileTrackable(path)) return;
       setViewed(path, viewed);
-      setToggledFiles((current) =>
-        toggleFileDiffFoldForViewed(fileKey, viewed, effectiveFoldOverride, current),
-      );
+      setToggledFiles((current) => {
+        foldBeforeViewedPress.current.set(path, { fileKey, toggled: current.has(fileKey) });
+        return toggleFileDiffFoldForViewed(fileKey, viewed, effectiveFoldOverride, current);
+      });
     },
     [effectiveFoldOverride, isFileTrackable, setViewed],
   );
