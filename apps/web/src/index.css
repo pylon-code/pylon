@@ -1911,6 +1911,19 @@ code {
   background: transparent !important;
 }
 
+/* A completed block can arrive before the assistant finishes. Animate only
+   fresh live blocks, and honor Pylon's panel-motion and reduced-motion controls. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-panel-animations="true"] .chat-markdown[data-streaming] > *,
+  [data-panel-animations="true"] .chat-markdown[data-streaming] .chat-markdown-shiki {
+    transition: opacity var(--panel-animation-duration, 600ms) ease-out;
+
+    @starting-style {
+      opacity: 0;
+    }
+  }
+}
+
 /* Diagnostics-style tables: row separators only, uppercase headers, and a
    scroll-fade container for horizontal overflow. The root chat-markdown
    wrapping rules (overflow-wrap: anywhere) would let columns shrink to single
