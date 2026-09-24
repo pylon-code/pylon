@@ -637,6 +637,13 @@ export function makeAcpProviderAdapter<Settings>(
             threadId: input.threadId,
           });
           const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          if (mcpSession && mcpSession.providerInstanceId !== boundInstanceId) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: "The MCP route does not belong to this provider instance.",
+            });
+          }
 
           // Per-instance isolation is enforced by the hydration layer rebuilding
           // this adapter whenever the instance configuration changes.
@@ -645,7 +652,14 @@ export function makeAcpProviderAdapter<Settings>(
           const acp = yield* definition
             .makeRuntime({
               settings: effectiveSettings,
-              ...(options?.environment ? { environment: options.environment } : {}),
+              ...(options?.environment || mcpSession?.agentDeviceEnvironment
+                ? {
+                    environment: McpProviderSession.withAgentDeviceEnvironment(
+                      options?.environment ?? process.env,
+                      mcpSession,
+                    ),
+                  }
+                : {}),
               childProcessSpawner,
               cwd,
               threadId: input.threadId,

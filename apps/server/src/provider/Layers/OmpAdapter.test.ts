@@ -41,6 +41,7 @@ const decodeRequestLogEntry = Schema.decodeUnknownSync(
 
 async function makeMockOmpWrapper(input?: {
   readonly argvLogPath?: string;
+  readonly environmentLogPath?: string;
   readonly environment?: Readonly<Record<string, string>>;
   readonly stderrBytes?: number;
 }) {
@@ -53,6 +54,9 @@ async function makeMockOmpWrapper(input?: {
     ? `printf '%s\t' "$@" >> ${JSON.stringify(input.argvLogPath)}
 printf '\n' >> ${JSON.stringify(input.argvLogPath)}`
     : "";
+  const environmentLog = input?.environmentLogPath
+    ? `printf '%s\n%s\n' "$PATH" "$AGENT_DEVICE_DAEMON_BASE_URL" > ${JSON.stringify(input.environmentLogPath)}`
+    : "";
   const stderrFlood = input?.stderrBytes
     ? `dd if=/dev/zero bs=1024 count=${Math.ceil(input.stderrBytes / 1024)} 1>&2 2>/dev/null`
     : "";
@@ -60,6 +64,7 @@ printf '\n' >> ${JSON.stringify(input.argvLogPath)}`
 ${exports}
 ${stderrFlood}
 ${argvLog}
+${environmentLog}
 exec ${JSON.stringify(process.execPath)} ${JSON.stringify(mockAgentPath)} "$@"
 `;
   await NodeFSP.writeFile(wrapperPath, script, "utf8");
@@ -146,9 +151,11 @@ it.effect("Oh My Pi hands the thread-scoped Pylon MCP server to ACP", () =>
         NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "omp-mcp-")),
       );
       const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const environmentLogPath = NodePath.join(tempDir, "environment.txt");
       yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
       const binaryPath = yield* Effect.promise(() =>
         makeMockOmpWrapper({
+          environmentLogPath,
           environment: { T3_ACP_REQUEST_LOG_PATH: requestLogPath },
         }),
       );
@@ -161,7 +168,12 @@ it.effect("Oh My Pi hands the thread-scoped Pylon MCP server to ACP", () =>
         providerInstanceId: ProviderInstanceId.make("omp"),
         endpoint: "http://127.0.0.1:43210/mcp",
         authorizationHeader: "Bearer test-mcp-token",
-        capabilities: new Set(["preview"]),
+        capabilities: new Set(["preview", "device"]),
+        agentDeviceEnvironment: {
+          PATH: "/tmp/pylon-agent-device-shim",
+          PATH_SEPARATOR: ":",
+          AGENT_DEVICE_DAEMON_BASE_URL: "http://127.0.0.1:43211",
+        },
       });
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
@@ -180,6 +192,11 @@ it.effect("Oh My Pi hands the thread-scoped Pylon MCP server to ACP", () =>
         .split("\n")
         .filter(Boolean)
         .map((line) => decodeRequestLogEntry(line));
+      const childEnvironment = (yield* Effect.promise(() =>
+        NodeFSP.readFile(environmentLogPath, "utf8"),
+      )).split("\n");
+      expect(childEnvironment[0]).toMatch(/^\/tmp\/pylon-agent-device-shim:/);
+      expect(childEnvironment[1]).toBe("http://127.0.0.1:43211");
       expect(requests.find((request) => request.method === "session/new")?.params).toMatchObject({
         mcpServers: [
           {
@@ -191,6 +208,45 @@ it.effect("Oh My Pi hands the thread-scoped Pylon MCP server to ACP", () =>
         ],
       });
       yield* adapter.stopSession(threadId);
+    }).pipe(Effect.provide(testLayer)),
+  ),
+);
+
+it.effect("OMP adapter rejects an MCP route owned by another provider instance", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const binaryPath = yield* Effect.promise(() => makeMockOmpWrapper());
+      const adapter = yield* makeOmpAdapter(decodeOmpSettings({ binaryPath }), {
+        instanceId: ProviderInstanceId.make("omp-work"),
+      });
+      const threadId = ThreadId.make("omp-foreign-mcp-route");
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("primary"),
+        threadId,
+        providerSessionId: "provider-session-foreign",
+        providerInstanceId: ProviderInstanceId.make("omp-personal"),
+        endpoint: "http://127.0.0.1:43210/mcp",
+        authorizationHeader: "Bearer foreign-mcp-token",
+        capabilities: new Set(["device"]),
+        agentDeviceEnvironment: { PATH: "/tmp/foreign-agent-device-shim" },
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+      );
+
+      const failure = yield* adapter
+        .startSession({
+          threadId,
+          provider: ProviderDriverKind.make("omp"),
+          providerInstanceId: ProviderInstanceId.make("omp-work"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.flip);
+      expect(failure).toMatchObject({
+        operation: "startSession",
+        issue: "The MCP route does not belong to this provider instance.",
+      });
     }).pipe(Effect.provide(testLayer)),
   ),
 );
