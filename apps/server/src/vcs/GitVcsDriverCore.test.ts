@@ -2137,6 +2137,57 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("worktree operations", () => {
+    it.effect(
+      "uses parallel checkout while preserving filters, hooks, and configured workers",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+          yield* git(cwd, ["config", "filter.test.smudge", "sed s/original/filtered/g"]);
+          yield* writeTextFile(cwd, ".gitattributes", "asset.txt filter=test\n");
+          yield* writeTextFile(cwd, "asset.txt", "original\n");
+          yield* git(cwd, ["add", "."]);
+          yield* git(cwd, ["commit", "-m", "filtered asset"]);
+          yield* writeTextFile(
+            cwd,
+            ".git/hooks/post-checkout",
+            "#!/bin/sh\ngit config checkout.workers > checkout-workers\nexit 0\n",
+          );
+          yield* fs.chmod(path.join(cwd, ".git/hooks/post-checkout"), 0o755);
+
+          for (const [configured, expected] of [
+            [null, "0"],
+            ["1", "1"],
+          ] as const) {
+            if (configured !== null) yield* git(cwd, ["config", "checkout.workers", configured]);
+            const worktreePath = path.join(
+              yield* makeTmpDir("git-worktrees-"),
+              `workers-${expected}`,
+            );
+            yield* driver.createWorktree({
+              cwd,
+              path: worktreePath,
+              refName: initialBranch,
+              newRefName: `feature/workers-${expected}`,
+            });
+            assert.equal(
+              yield* fs.readFileString(path.join(worktreePath, "checkout-workers")),
+              `${expected}\n`,
+            );
+            assert.equal(
+              yield* fs.readFileString(path.join(worktreePath, "asset.txt")),
+              "filtered\n",
+            );
+            assert.equal(
+              yield* git(worktreePath, ["rev-parse", "HEAD"]),
+              yield* git(cwd, ["rev-parse", "HEAD"]),
+            );
+          }
+        }),
+    );
     it("parses checkout progress lines from git's stderr", () => {
       assert.deepStrictEqual(parseGitCheckoutProgressLine("Updating files:  78% (2104/2700)"), {
         percent: 78,
@@ -2266,11 +2317,11 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("reports checkout progress while creating a worktree", () =>
+    it.effect("reports checkout progress during parallel worktree creation", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
-        for (let index = 0; index < 5; index += 1) {
+        for (let index = 0; index < 200; index += 1) {
           yield* writeTextFile(cwd, `file-${index}.txt`, `${index}\n`);
         }
         yield* git(cwd, ["add", "."]);
@@ -2304,7 +2355,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         const updates = yield* Ref.get(seen);
         assert.isAbove(updates.length, 1);
         assert.equal(updates.at(-1)?.percent, 100);
-        assert.equal(updates.at(-1)?.total, 6);
+        assert.equal(updates.at(-1)?.total, 201);
         const completed = updates.map((update) => update.completed);
         assert.deepEqual(
           completed,
@@ -2540,6 +2591,67 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("remote operations", () => {
+    for (const failure of ["offline", "auth", "timeout"] as const) {
+      it.effect(`does not retry a scoped fetch after ${failure}`, () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          yield* initRepoWithCommit(cwd);
+          yield* git(cwd, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+          const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+          const started = yield* Deferred.make<void>();
+          const attempts: Array<ReadonlyArray<string>> = [];
+          const spawner = ChildProcessSpawner.make((command) =>
+            Effect.gen(function* () {
+              if (!ChildProcess.isStandardCommand(command))
+                return yield* Effect.die("unexpected command");
+              if (command.args[0] !== "fetch") return yield* delegate.spawn(command);
+              attempts.push(command.args);
+              yield* Deferred.succeed(started, undefined);
+              return ChildProcessSpawner.makeHandle({
+                ...makeNonRepositoryHandle(),
+                exitCode:
+                  failure === "timeout"
+                    ? Effect.never
+                    : Effect.succeed(ChildProcessSpawner.ExitCode(128)),
+                stderr: Stream.encodeText(
+                  Stream.make(
+                    failure === "auth"
+                      ? "fatal: Authentication failed"
+                      : "fatal: Could not resolve host",
+                  ),
+                ),
+              });
+            }),
+          );
+          const driver = yield* makeGitVcsDriverCore().pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provide(ServerConfigLayer),
+          );
+          const fetching = yield* driver
+            .fetchRemote({ cwd, remoteName: "origin", refName: "main" })
+            .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.await(started);
+          if (failure === "timeout") {
+            yield* TestClock.adjust("31 seconds");
+            yield* TestClock.adjust("31 seconds");
+          }
+          const result = yield* Fiber.join(fetching);
+          assert.isTrue(Result.isFailure(result));
+          assert.equal(attempts.length, 1);
+          if (Result.isFailure(result)) {
+            assert.equal(
+              result.failure.detail,
+              failure === "timeout"
+                ? "Git command timed out."
+                : failure === "auth"
+                  ? "Git could not authenticate with the remote. Check Git credentials or SSH access on the server, then retry."
+                  : "Git could not reach the remote. Check the server's network connection and remote host, then retry.",
+            );
+          }
+        }),
+      );
+    }
+
     it.effect("explains a real fetch failure for a missing local remote", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
@@ -2579,7 +2691,15 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.notEqual(beforeFetch, remoteHead);
 
         const driver = yield* GitVcsDriver.GitVcsDriver;
-        yield* driver.fetchRemote({ cwd, remoteName: "origin" });
+        yield* git(peer, ["push", "origin", "HEAD:refs/heads/unrelated"]);
+        yield* driver.fetchRemote({
+          cwd,
+          remoteName: "origin",
+          refName: initialBranch,
+        });
+        assert.isFalse(
+          yield* driver.remoteBranchExists({ cwd, remoteName: "origin", refName: "unrelated" }),
+        );
 
         assert.equal(
           yield* driver.remoteBranchExists({
@@ -2641,6 +2761,46 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         const status = yield* driver.statusDetails(worktreePath);
         assert.equal(status.aheadCount, 0);
         assert.equal(status.aheadOfDefaultCount, 0);
+
+        // Local-only bases still use the old full-fetch fallback.
+        yield* driver.fetchRemote({ cwd, remoteName: "origin", refName: "local-only" });
+        assert.isTrue(
+          yield* driver.remoteBranchExists({ cwd, remoteName: "origin", refName: "unrelated" }),
+        );
+
+        // A branch literally named origin/topic must retain the old lookup at
+        // refs/remotes/origin/origin/topic, not get stripped to origin/topic.
+        yield* git(peer, ["push", "origin", "HEAD:refs/heads/origin/topic"]);
+        yield* driver.fetchRemote({ cwd, remoteName: "origin", refName: "origin/topic" });
+        assert.isTrue(
+          yield* driver.remoteBranchExists({ cwd, remoteName: "origin", refName: "origin/topic" }),
+        );
+
+        // A custom no-force fetch refspec keeps its full-fetch semantics.
+        yield* git(peer, ["push", "origin", "HEAD:refs/heads/custom-policy"]);
+        yield* git(cwd, ["config", "remote.origin.fetch", "refs/heads/*:refs/remotes/origin/*"]);
+        yield* driver.fetchRemote({ cwd, remoteName: "origin", refName: initialBranch });
+        assert.isTrue(
+          yield* driver.remoteBranchExists({ cwd, remoteName: "origin", refName: "custom-policy" }),
+        );
+
+        // Pruning needs the full remote refspec, not only the selected branch.
+        yield* git(cwd, ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]);
+        yield* git(cwd, ["config", "fetch.prune", "true"]);
+        yield* git(peer, ["push", "origin", ":refs/heads/custom-policy"]);
+        yield* driver.fetchRemote({ cwd, remoteName: "origin", refName: initialBranch });
+        assert.isFalse(
+          yield* driver.remoteBranchExists({ cwd, remoteName: "origin", refName: "custom-policy" }),
+        );
+
+        // A remote configured to fetch all tags also keeps its full branch fetch.
+        yield* git(cwd, ["config", "--unset", "fetch.prune"]);
+        yield* git(cwd, ["config", "remote.origin.tagOpt", "--tags"]);
+        yield* git(peer, ["push", "origin", "HEAD:refs/heads/tag-policy"]);
+        yield* driver.fetchRemote({ cwd, remoteName: "origin", refName: initialBranch });
+        assert.isTrue(
+          yield* driver.remoteBranchExists({ cwd, remoteName: "origin", refName: "tag-policy" }),
+        );
       }),
     );
 
