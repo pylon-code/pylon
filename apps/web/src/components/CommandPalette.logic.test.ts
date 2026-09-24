@@ -440,6 +440,94 @@ describe("buildThreadActionItems", () => {
     ]);
   });
 
+  it("uses activity recency for equally relevant titles across active and remote threads", () => {
+    const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+    const threads = [
+      makeThread({
+        id: ThreadId.make("older-active"),
+        title: "Fix search input",
+        createdAt: "2026-03-20T00:00:00.000Z",
+        updatedAt: "2026-03-21T00:00:00.000Z",
+      }),
+      makeThread({
+        id: ThreadId.make("newer-remote"),
+        environmentId: remoteEnvironmentId,
+        title: "Fix search results",
+        createdAt: "2026-03-01T00:00:00.000Z",
+        updatedAt: "2026-03-23T00:00:00.000Z",
+      }),
+      makeThread({
+        id: ThreadId.make("older-inactive"),
+        title: "Fix search ranking",
+        createdAt: "2026-03-22T00:00:00.000Z",
+        updatedAt: "2026-03-20T00:00:00.000Z",
+      }),
+    ];
+    const items = buildThreadActionItems({
+      threads,
+      activeThreadId: ThreadId.make("older-active"),
+      projectTitleById: new Map(),
+      sortOrder: "created_at",
+      icon: null,
+      runThread: async () => undefined,
+    });
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [],
+      query: "fix search",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: items,
+    });
+
+    expect(groups[0]?.items.map((item) => item.value)).toEqual([
+      "thread:newer-remote",
+      "thread:older-active",
+      "thread:older-inactive",
+    ]);
+  });
+
+  it("keeps stronger title matches ahead of recency and preserves stable ties", () => {
+    const items = buildThreadActionItems({
+      threads: [
+        makeThread({
+          id: ThreadId.make("prefix-a"),
+          title: "Search alpha",
+          createdAt: "2026-03-03T00:00:00.000Z",
+          updatedAt: "2026-03-20T00:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("substring"),
+          title: "Improve search",
+          createdAt: "2026-03-02T00:00:00.000Z",
+          updatedAt: "2026-03-25T00:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("prefix-b"),
+          title: "Search beta",
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-03-20T00:00:00.000Z",
+        }),
+      ],
+      projectTitleById: new Map(),
+      sortOrder: "created_at",
+      icon: null,
+      runThread: async () => undefined,
+    });
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [],
+      query: "search",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: items,
+    });
+
+    expect(groups[0]?.items.map((item) => item.value)).toEqual([
+      "thread:prefix-a",
+      "thread:prefix-b",
+      "thread:substring",
+    ]);
+  });
+
   it("preserves thread project-name matches when there is no stronger title match", () => {
     const group: CommandPaletteGroup = {
       value: "threads-search",
