@@ -30,6 +30,16 @@ describe("ExecutionEnvironmentDescriptor", () => {
     expect(decodeDescriptor(descriptor).capabilities.pullRequests).toBeUndefined();
   });
 
+  it("requires an explicit worktree submodules capability", () => {
+    expect(decodeDescriptor(descriptor).capabilities.worktreeSubmodules).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, worktreeSubmodules: true },
+      }).capabilities.worktreeSubmodules,
+    ).toBe(true);
+  });
+
   it("preserves an advertised pull-request capability", () => {
     expect(
       decodeDescriptor({
