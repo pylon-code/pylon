@@ -149,12 +149,11 @@ import {
   handoffPrompt,
   handoffReviewComments,
   latestPullRequestReviewOutcomes,
-  loadingPullRequestCheckoutCommand,
   isStackedPullRequestBase,
   pullRequestActionMenuHasGroup,
   pullRequestActionNeedsHostRefresh,
   pullRequestComposerTarget,
-  pullRequestCheckoutCommand,
+  panelPullRequestCheckoutCommand,
   pullRequestFindingKey,
   pullRequestHandoffLabels,
   PULL_REQUEST_MERGE_METHOD_LABELS,
@@ -765,14 +764,12 @@ export function PullRequestDetailPanel({
     repositoryUrl !== null
       ? new URL(`/${encodeURIComponent(detail.author.login)}`, repositoryUrl).toString()
       : null;
-  const checkoutCommand = detail
-    ? pullRequestCheckoutCommand(
-        detail.provider,
-        detail.number,
-        detail.headBranch,
-        detail.headRepositoryNameWithOwner,
-      )
-    : null;
+  const checkoutCommand = panelPullRequestCheckoutCommand({
+    reference,
+    identity: repositoryIdentity,
+    summary: handoffSummary,
+    headRepositoryNameWithOwner: detail?.headRepositoryNameWithOwner,
+  });
   const onCheckoutCommandError = useCallback((error: Error) => {
     toastManager.add({
       type: "error",
