@@ -262,7 +262,7 @@ export function DeviceHostsSettings(props: {
                 className="space-y-3 border-t border-border/50 py-3"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  if (Option.isSome(parsedEditing)) {
+                  if (validEditing && Option.isSome(parsedEditing)) {
                     void save([
                       ...props.hosts.filter((host) => host.id !== editing.id),
                       parsedEditing.value,
