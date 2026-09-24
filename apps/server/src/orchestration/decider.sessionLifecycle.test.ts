@@ -199,6 +199,12 @@ it.layer(NodeServices.layer)("session lifecycle CAS decider", (it) => {
           readModel: makeReadModel(current),
         });
         expect(stale).toEqual([]);
+
+        const runningWithPendingRequest = yield* decideOrchestrationCommand({
+          command: { ...command, session: { ...acceptedSession, status: "running" } },
+          readModel: makeReadModel(current),
+        });
+        expect(runningWithPendingRequest).toEqual([]);
       }),
   );
 
