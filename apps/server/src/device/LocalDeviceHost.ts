@@ -1,4 +1,3 @@
-import { pruneLocalDeviceTools } from "./deviceToolMaintenance.ts";
 import { deviceToolInstallMessage } from "@t3tools/contracts";
 /**
  * The device host that is this machine.
@@ -583,11 +582,6 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const hub = yield* restore(spawnHub(hubTool));
-        yield* pruneLocalDeviceTools(config.baseDir, process.execPath, "hub").pipe(
-          Effect.provideService(Path.Path, path),
-          Effect.provideService(ProcessRunner.ProcessRunner, runner),
-          Effect.ignore,
-        );
         const candidate = helperPaths(hubTool);
         const [axExists, cliExists] = yield* restore(
           Effect.all([
@@ -649,11 +643,6 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
         agentToolRef = agentTool;
         yield* onPhase("starting");
         const agentDevice = yield* startAgentDeviceDaemon(agentTool);
-        yield* pruneLocalDeviceTools(config.baseDir, process.execPath, "agent").pipe(
-          Effect.provideService(Path.Path, path),
-          Effect.provideService(ProcessRunner.ProcessRunner, runner),
-          Effect.ignore,
-        );
         const next = { ...running, agentDevice };
         yield* Ref.set(runningRef, next);
         return { ...toReady(next), agentDevice };
