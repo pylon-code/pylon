@@ -729,7 +729,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     const fixture = createFixture();
     const result = runShell(
       [
-        "set -eu",
+        "set -eux",
         `runtime_parent=${sh(fixture.runtimeParent)}`,
         'mkdir -p "$runtime_parent"',
         `scratch="$runtime_parent/.${fixture.runtimeId}.tmp.test"`,
