@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import { CheckpointStore } from "../checkpointing/CheckpointStore.ts";
+import { checkpointRefForThreadTurn } from "../checkpointing/Utils.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import {
   RuntimeReceiptBus,
@@ -53,9 +54,9 @@ const makeState = (operationId: string): RollbackSagaState => ({
   targetRevision: 1,
   sourceTurnId: null,
   targetTurnId: null,
-  sourceCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-runner/turn/2"),
+  sourceCheckpointRef: checkpointRefForThreadTurn(threadId, 2),
   sourceCheckpointOid: "a".repeat(40),
-  targetCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-runner/turn/1"),
+  targetCheckpointRef: checkpointRefForThreadTurn(threadId, 1),
   targetCheckpointOid: "b".repeat(40),
   targetCheckpointDigest: "target-tree-digest",
   providerInstanceId,
@@ -547,6 +548,21 @@ it.effect("compensates workspace and provider when the provider stays at source"
     );
     assert.equal(status?.status, "failed");
     assert.include(status?.detail ?? "", "no thread content was removed");
+  }),
+);
+
+it.effect("does not replay a persisted preimage under a mismatched checkpoint owner", () =>
+  Effect.gen(function* () {
+    const environment = makeEnvironment("operation-owner-mismatch", "stayed-source");
+    environment.setPersistedState({
+      sourceCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/foreign/turn/2"),
+    });
+    const runner = yield* environment.makeRunner();
+    yield* runner.run("operation-owner-mismatch", false);
+    const snapshot = environment.snapshot();
+    assert.equal(snapshot.record.state.phase, "manual-recovery");
+    assert.isFalse(snapshot.workspaceCalls.includes("restorePreimage"));
+    assert.equal(snapshot.workspaceDigest, "workspace-target");
   }),
 );
 
