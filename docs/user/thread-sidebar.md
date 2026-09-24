@@ -89,6 +89,15 @@ rules to connected environments that support shared settings. Offline environmen
 and older servers keep their previous values. Changing a rule does not reopen
 already settled threads.
 
+## Snooze until a chosen time
+
+Choose **Snooze** from a thread's menu and pick a preset or **Custom…** to set a local date and
+time or an elapsed duration. A date and time uses the timezone of the device where you choose it;
+duration days are 24 hours. Times that have passed or do not exist during a daylight-saving change
+are rejected. For a repeated fall-back hour, the first occurrence is used. Snoozing hides the thread
+until it wakes or new work needs your attention. The success notice on web and desktop offers
+**Undo**, and **Wake thread** is available from the snoozed shelf.
+
 ## Link a pull request
 
 The server finds the pull request for each unsettled thread's saved branch, even while your apps are
