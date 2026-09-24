@@ -3,6 +3,10 @@ import { describe, expect, it } from "vite-plus/test";
 import { providerIconKind } from "./providerIconKind";
 
 describe("mobile provider icon selection", () => {
+  it("selects the Oh My Pi mark explicitly", () => {
+    expect(providerIconKind("omp")).toBe("omp");
+  });
+
   it("selects the Prime Agent mark explicitly", () => {
     expect(providerIconKind("primeAgent")).toBe("primeAgent");
   });

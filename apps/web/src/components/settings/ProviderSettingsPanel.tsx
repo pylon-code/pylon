@@ -110,6 +110,7 @@ import {
   isProviderSettingsEnvironmentAvailable,
   type ProviderEnvironmentAccess,
   type ProviderOperateAccess,
+  isProtectedLegacyProviderSlot,
   resolvePrimaryOperateAccess,
   resolveRemoteOperateAccess,
   resolveProviderSettingsTargetEnvironment,
@@ -781,7 +782,9 @@ export function EnvironmentProviderSettings({
         instanceId: defaultInstanceId,
         instance: effectiveInstance,
         driver,
-        isDefault: true,
+        // Instance-only drivers can use their driver slug as an ordinary,
+        // deletable instance id. Only a real legacy mirror owns a protected slot.
+        isDefault: isProtectedLegacyProviderSlot(legacyConfig),
         isDirty,
       });
     }

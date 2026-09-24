@@ -202,3 +202,8 @@ export function classifyProviderEnvironmentAccess(input: {
   }
   return { kind: "editable" };
 }
+
+/** Only slots backed by the legacy providers map are protected from deletion. */
+export function isProtectedLegacyProviderSlot(legacyConfig: unknown): boolean {
+  return legacyConfig !== undefined;
+}

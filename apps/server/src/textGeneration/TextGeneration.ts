@@ -19,6 +19,7 @@ export type TextGenerationProvider =
   | "cursor"
   | "grok"
   | "opencode"
+  | "omp"
   | "primeAgent";
 
 export interface CommitMessageGenerationInput {

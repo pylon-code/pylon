@@ -3,13 +3,6 @@ import {
   getProviderUnavailablePresentation,
   type ProviderUnavailablePresentation,
 } from "@t3tools/client-runtime/providerAvailability";
-import type {
-  ModelCapabilities,
-  ModelSelection,
-  RuntimeMode,
-  ServerConfig as T3ServerConfig,
-  ServerProvider,
-} from "@t3tools/contracts";
 import {
   getProviderModelAdmissionAvailability,
   resolveProviderCatalogModelSelection,
@@ -18,6 +11,13 @@ import {
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   getServerProviderSupportedRuntimeModes,
+  PROVIDER_DISPLAY_NAMES,
+  type ModelCapabilities,
+  type ModelSelection,
+  type ProviderDriverKind,
+  type RuntimeMode,
+  type ServerConfig as T3ServerConfig,
+  type ServerProvider,
   resolveServerProviderRuntimeMode,
 } from "@t3tools/contracts";
 import {
@@ -54,10 +54,7 @@ function providerDisplayLabel(provider: {
   readonly instanceId: string;
 }): string {
   if (provider.displayName) return provider.displayName;
-  if (provider.driver === "codex") return "Codex";
-  if (provider.driver === "claudeAgent") return "Claude";
-  if (provider.driver === "primeAgent") return "Prime Agent";
-  return provider.instanceId;
+  return PROVIDER_DISPLAY_NAMES[provider.driver as ProviderDriverKind] ?? provider.instanceId;
 }
 
 function normalizeSelectionOptions(

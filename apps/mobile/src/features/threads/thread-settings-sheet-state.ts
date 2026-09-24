@@ -45,3 +45,8 @@ export function providerSectionIsCollapsed(input: {
   }
   return input.defaultExpanded ? input.hasExpansionOverride : !input.hasExpansionOverride;
 }
+
+/** Release-stage badge shown beside provider groups in the mobile model catalog. */
+export function providerReleaseBadgeLabel(driver: string | undefined): string | null {
+  return driver === "omp" ? "Early Access" : null;
+}

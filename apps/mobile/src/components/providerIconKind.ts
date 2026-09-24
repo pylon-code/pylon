@@ -5,6 +5,7 @@ export type ProviderIconKind =
   | "cursor"
   | "grok"
   | "opencode"
+  | "omp"
   | "primeAgent"
   | "unknown";
 
@@ -17,6 +18,7 @@ export function providerIconKind(provider: string | null | undefined): ProviderI
     case "cursor":
     case "grok":
     case "opencode":
+    case "omp":
     case "primeAgent":
       return provider;
     default:

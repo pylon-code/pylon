@@ -2,8 +2,8 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 
-import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -28,6 +28,9 @@ const streamCommandChunks = Number(process.env.T3_ACP_STREAM_COMMAND_CHUNKS ?? "
 const streamCommandChunkChars = Number(process.env.T3_ACP_STREAM_COMMAND_CHUNK_CHARS ?? "64");
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const emitCursorStartupPlan = process.env.T3_ACP_EMIT_CURSOR_STARTUP_PLAN === "1";
+const emitElicitation = process.env.T3_ACP_EMIT_ELICITATION === "1";
+const emitUnsupportedElicitation = process.env.T3_ACP_EMIT_UNSUPPORTED_ELICITATION === "1";
+const extraModelId = process.env.T3_ACP_EXTRA_MODEL_ID?.trim();
 const emitXAiAskUserQuestion = process.env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION === "1";
 const emitXAiExitPlanMode = process.env.T3_ACP_EMIT_XAI_EXIT_PLAN_MODE === "1";
 const emitXAiPlanMdWrite = process.env.T3_ACP_EMIT_XAI_PLAN_MD_WRITE === "1";
@@ -84,6 +87,7 @@ if (process.env.T3_ACP_ASSERT_TOP_LEVEL_ENV === "1") {
   }
 }
 
+const expectedPermissionOptionId = process.env.T3_ACP_EXPECT_PERMISSION_OPTION_ID?.trim();
 const permissionOptionIds = {
   allowOnce: process.env.T3_ACP_ALLOW_ONCE_OPTION_ID ?? "allow-once",
   allowAlways: process.env.T3_ACP_ALLOW_ALWAYS_OPTION_ID ?? "allow-always",
@@ -288,6 +292,7 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
         { value: "composer-2", name: "Composer 2" },
         { value: "composer-2[fast=true]", name: "Composer 2 Fast" },
         { value: "gpt-5.3-codex[reasoning=medium,fast=false]", name: "Codex 5.3" },
+        ...(extraModelId ? [{ value: extraModelId, name: extraModelId }] : []),
       ],
     },
   ];
@@ -407,6 +412,7 @@ const program = Effect.gen(function* () {
         ],
       },
     });
+  const promptCancellationSignals = new Map<string, Deferred.Deferred<void>>();
 
   yield* agent.handleInitialize((request) =>
     Effect.gen(function* () {
@@ -635,6 +641,10 @@ const program = Effect.gen(function* () {
           },
         });
       }
+      const cancellationSignal = promptCancellationSignals.get(cancelledSessionId);
+      if (cancellationSignal) {
+        yield* Deferred.succeed(cancellationSignal, undefined).pipe(Effect.ignore);
+      }
       if (emitLateUpdateAfterCancel) {
         yield* Effect.sleep("50 millis");
         yield* Effect.sync(() => {
@@ -812,7 +822,20 @@ const program = Effect.gen(function* () {
       }
 
       if (hangPromptForever || (hangFirstPromptForever && promptCount === 1)) {
-        return yield* Effect.never;
+        if (cancelledSessions.delete(requestedSessionId)) {
+          return { stopReason: "cancelled" };
+        }
+        const cancellationSignal = yield* Deferred.make<void>();
+        promptCancellationSignals.set(requestedSessionId, cancellationSignal);
+        yield* Deferred.await(cancellationSignal).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              promptCancellationSignals.delete(requestedSessionId);
+              cancelledSessions.delete(requestedSessionId);
+            }),
+          ),
+        );
+        return { stopReason: "cancelled" };
       }
 
       if (emitXAiRateLimitThenHang) {
@@ -1121,6 +1144,13 @@ const program = Effect.gen(function* () {
             },
             options: permissionOptions,
           });
+          if (
+            expectedPermissionOptionId &&
+            (permission.outcome.outcome !== "selected" ||
+              permission.outcome.optionId !== expectedPermissionOptionId)
+          ) {
+            throw new Error(`Expected permission option ${expectedPermissionOptionId}`);
+          }
           cancelled =
             cancelled ||
             cancelledSessions.delete(requestedSessionId) ||
@@ -1212,6 +1242,45 @@ const program = Effect.gen(function* () {
           ],
         });
 
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitElicitation) {
+        yield* agent.client.elicit({
+          mode: "form",
+          sessionId: requestedSessionId,
+          message: "Choose an Oh My Pi strategy",
+          requestedSchema: {
+            type: "object",
+            required: ["strategy"],
+            properties: {
+              strategy: {
+                type: "string",
+                title: "Strategy",
+                enum: ["safe", "fast"],
+              },
+            },
+          },
+        });
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitUnsupportedElicitation) {
+        yield* agent.client.elicit({
+          mode: "form",
+          sessionId: requestedSessionId,
+          message: "Describe the requested change",
+          requestedSchema: {
+            type: "object",
+            required: ["description"],
+            properties: {
+              description: {
+                type: "string",
+                title: "Description",
+              },
+            },
+          },
+        });
         return { stopReason: "end_turn" };
       }
 
