@@ -1,6 +1,9 @@
+// @effect-diagnostics globalFetch:off globalTimers:off - This browser and WebView transport runs without an Effect runtime.
+/* oxlint-disable unicorn/prefer-add-event-listener -- Each client owns its sockets and their handlers. */
+
 /**
  * Framework-free client for expo-device-hub's per-device streams, reached
- * through the T3 proxy. One class handles both platforms because the hub
+ * through the Pylon proxy. One class handles both platforms because the hub
  * vendors two servers with different wire formats:
  *
  * - iOS (serve-sim): video is an HTTP `stream.avcc` body of length-prefixed
@@ -16,8 +19,7 @@
  * The decoder only runs while frames arrive and the viewer is attached; a
  * hidden panel calls `stop()` so an idle device costs nothing on the GPU.
  */
-import type { DeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAccess";
-import { withDeviceHubQuery } from "@t3tools/client-runtime/state/deviceHubAccess";
+import { type DeviceHubAccess, withDeviceHubQuery } from "./hubAccess.ts";
 import type { DevicePlatform } from "@t3tools/contracts";
 
 export type DeviceStreamStatus = "connecting" | "streaming" | "error";
@@ -461,7 +463,7 @@ export function createDeviceStreamClient(
     const support = await VideoDecoder.isConfigSupported(full).catch(() => ({ supported: false }));
     if (!isCurrent() || epoch !== decoderEpoch) return false;
     if (!support.supported) {
-      if (platform === "android") fail(`This browser cannot decode ${config.codec}.`);
+      if (platform === "android") fail(`This viewer cannot decode ${config.codec}.`);
       return false;
     }
     try {
@@ -761,7 +763,7 @@ export function createDeviceStreamClient(
     } else if (useWebCodecs) {
       connectAndroid();
     } else {
-      fail("This browser cannot decode the Android stream (WebCodecs unavailable).");
+      fail("This viewer cannot decode the Android stream (WebCodecs unavailable).");
     }
   };
 

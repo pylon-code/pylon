@@ -6,7 +6,7 @@ import {
   avcCodecString,
   parseSemuPacket,
   scanAccessUnit,
-} from "@t3tools/client-runtime/device/stream";
+} from "./stream.ts";
 
 const envelope = (tag: number, payload: number[]) => {
   const length = 1 + payload.length;
@@ -100,6 +100,44 @@ describe("native device stream transport", () => {
     );
     return { client, opened, waitForSocket, events, fetch };
   }
+
+  it("reports an unavailable Android decoder instead of leaving a blank viewer", () => {
+    vi.stubGlobal("VideoDecoder", undefined);
+    vi.stubGlobal("EncodedVideoChunk", undefined);
+    Reflect.deleteProperty(globalThis, "VideoDecoder");
+    Reflect.deleteProperty(globalThis, "EncodedVideoChunk");
+    const events = {
+      onStatus: vi.fn(),
+      onScreen: vi.fn(),
+      onUnauthorized: vi.fn(),
+      onMjpegFallback: vi.fn(),
+      onInputConnected: vi.fn(),
+    };
+    const client = createDeviceStreamClient(
+      {
+        platform: "android",
+        deviceId: "remote-device",
+        access: {
+          httpBase: "http://remote.example/api/device-hub",
+          wsBase: "ws://remote.example/api/device-hub",
+          credentials: false,
+          query: { wsTicket: "ticket" },
+        },
+      },
+      { getContext: () => null } as unknown as HTMLCanvasElement,
+      events,
+    );
+    client.start();
+    expect(events.onStatus).toHaveBeenLastCalledWith(
+      "error",
+      "This viewer cannot decode the Android stream (WebCodecs unavailable).",
+    );
+    expect(events.onInputConnected).toHaveBeenLastCalledWith(
+      false,
+      "This viewer cannot decode the Android stream (WebCodecs unavailable).",
+    );
+    client.stop();
+  });
 
   it("uses authenticated iOS MJPEG and forwards controls without a cross-origin video fetch", async () => {
     const { client, opened, events, fetch } = setup("ios");
