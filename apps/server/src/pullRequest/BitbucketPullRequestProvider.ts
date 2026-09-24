@@ -31,6 +31,11 @@ const CAPABILITIES: PullRequestCapabilities = {
   },
   reviewers: { request: true, listCandidates: true },
   edit: { changeRequest: true, comment: true },
+  // Bitbucket Cloud states nothing about what a reviewer has already read: no endpoint carries a
+  // viewed file, and the per-pull-request properties it does offer are one value shared by
+  // everyone rather than one per reader. So the marks are kept here, and the client says whose
+  // they are rather than implying bitbucket.org will show them.
+  viewedFiles: "environment",
 };
 
 /**
@@ -229,15 +234,17 @@ export const make = Effect.gen(function* () {
         { concurrency: 3 },
       ).pipe(
         Effect.mapError(fail("getChangeRequestActivity")),
-        Effect.map(([pullRequest, comments, commits]): ProviderChangeRequestActivity => ({
-          comments: [...comments.comments, ...pullRequest.reviews].toSorted((left, right) =>
-            left.createdAt.localeCompare(right.createdAt),
-          ),
-          commentCount: comments.comments.length + pullRequest.reviews.length,
-          commentsTruncated: comments.truncated,
-          reviewThreads: comments.threads,
-          commits,
-        })),
+        Effect.map(
+          ([pullRequest, comments, commits]): ProviderChangeRequestActivity => ({
+            comments: [...comments.comments, ...pullRequest.reviews].toSorted((left, right) =>
+              left.createdAt.localeCompare(right.createdAt),
+            ),
+            commentCount: comments.comments.length + pullRequest.reviews.length,
+            commentsTruncated: comments.truncated,
+            reviewThreads: comments.threads,
+            commits,
+          }),
+        ),
       );
     },
 
@@ -259,6 +266,15 @@ export const make = Effect.gen(function* () {
           Effect.mapError(fail("getDiff")),
           Effect.map((diff) => ({ ...diff, nextCursor: null })),
         ),
+
+    getFileRevisions: (input) =>
+      api
+        .getFileRevisions({
+          repository: input.repository,
+          number: input.number,
+          paths: input.paths,
+        })
+        .pipe(Effect.mapError(fail("getFileRevisions"))),
 
     // Users only: Bitbucket requests a review of an account, and has no group that stands in for
     // one on a pull request.
