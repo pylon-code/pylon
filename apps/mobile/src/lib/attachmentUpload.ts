@@ -1,4 +1,5 @@
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
+import type { ConnectedInitialConfig } from "@t3tools/client-runtime/state/session";
 import {
   clampFileAttachmentUploadBytes,
   fileAttachmentTooLargeMessage,
@@ -20,6 +21,7 @@ import { appAtomRegistry } from "../state/atom-registry";
 import { assetEnvironment } from "../state/assets";
 import { attachmentEnvironment } from "../state/attachments";
 import { environmentSession } from "../state/session";
+import { connectedPastedTextAttachmentLease } from "../state/pasted-text-capability";
 import { retainComposerAttachmentFileForPreview } from "../state/use-composer-drafts";
 import { resolveOwnedComposerAttachmentFileUri } from "./composerAttachmentFiles";
 import {
@@ -155,8 +157,18 @@ export interface PreparedTurnAttachments {
   readonly draftAttachments: ReadonlyArray<DraftComposerAttachment>;
   /** Every pending upload backing this turn (reused and newly minted). */
   readonly pendingAttachmentIds: ReadonlyArray<string>;
+  /** The exact connected server that accepted any marked pasted-text file. */
+  readonly pastedTextLeaseState?: ConnectedInitialConfig["state"];
   /** Deletes all pending uploads once the delivered turn holds the bytes. */
   readonly releaseUploads: () => Promise<void>;
+}
+
+export function preparedPastedTextLeaseCurrent(
+  environmentId: EnvironmentId,
+  prepared: PreparedTurnAttachments,
+): boolean {
+  return prepared.pastedTextLeaseState === undefined ||
+    connectedPastedTextAttachmentLease(environmentId)?.state === prepared.pastedTextLeaseState;
 }
 
 export type PrepareTurnAttachmentsResult =
@@ -200,7 +212,11 @@ function uploadedReference(
   // chat view with nothing to show a thumbnail from, on every client.
   return isComposerImageAttachment(attachment)
     ? { type: "image", ...fields }
-    : { type: "file", ...fields };
+    : {
+        type: "file",
+        ...fields,
+        ...(attachment.source ? { source: attachment.source } : {}),
+      };
 }
 
 function attachmentUploadInput(attachment: DraftComposerAttachment) {
@@ -322,6 +338,16 @@ export async function prepareTurnAttachments(input: {
 }): Promise<PrepareTurnAttachmentsResult> {
   const { environmentId } = input;
   if (input.signal?.aborted) return { status: "abandoned" };
+  const hasPastedText = input.attachments.some(
+    (attachment) => attachment.type === "file" && attachment.source?._tag === "pasted-text",
+  );
+  const pasteLease = hasPastedText ? connectedPastedTextAttachmentLease(environmentId) : null;
+  const assertPasteLease = () => {
+    if (hasPastedText &&
+        (pasteLease === null || connectedPastedTextAttachmentLease(environmentId)?.state !== pasteLease.state))
+      throw new Error("Pasted-text attachments require the connected server that supports them. Reconnect before sending.");
+  };
+  assertPasteLease();
   const files = input.attachments.filter((attachment) => attachment.type === "file");
   const ready = (
     attachments: ReadonlyArray<UploadedMobileAttachment>,
@@ -332,6 +358,7 @@ export async function prepareTurnAttachments(input: {
     attachments,
     draftAttachments,
     pendingAttachmentIds,
+    ...(pasteLease ? { pastedTextLeaseState: pasteLease.state } : {}),
     releaseUploads: () => releasePendingAttachmentUploads(environmentId, pendingAttachmentIds),
   });
 
@@ -435,6 +462,7 @@ export async function prepareTurnAttachments(input: {
     }
 
     if (controller.signal.aborted) throw new Error("Upload cancelled.");
+    assertPasteLease();
 
     const draftAttachments = withUploadedMobileAttachmentReferences({
       environmentId,
@@ -450,6 +478,7 @@ export async function prepareTurnAttachments(input: {
         return { status: "abandoned" };
       }
     }
+    assertPasteLease();
     return ready(uploadedAttachments, pendingAttachmentIds, draftAttachments);
   } catch (error) {
     await releaseCreatedUploadsQuietly(environmentId, createdAttachmentIds);

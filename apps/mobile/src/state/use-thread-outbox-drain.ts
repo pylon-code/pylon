@@ -25,7 +25,7 @@ import { createQueuedModelCatalogRefresh } from "./queued-model-catalog-refresh"
 
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
-import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
+import { prepareTurnAttachments, preparedPastedTextLeaseCurrent, type PreparedTurnAttachments } from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
 import {
   retainAcknowledgedThreadMessage,
@@ -798,6 +798,10 @@ export function useThreadOutboxDrain(): void {
           },
         );
 
+      if (!preparedPastedTextLeaseCurrent(queuedMessage.environmentId, prepared)) {
+        await prepared.releaseUploads();
+        return "retry";
+      }
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: {
@@ -910,6 +914,10 @@ export function useThreadOutboxDrain(): void {
           },
         );
 
+      if (!preparedPastedTextLeaseCurrent(queuedMessage.environmentId, prepared)) {
+        await prepared.releaseUploads();
+        return "retry";
+      }
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: buildProjectThreadStartTurnInput({

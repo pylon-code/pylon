@@ -64,6 +64,7 @@ internal object T3ComposerClipboard {
 class T3ComposerEditorModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("T3ComposerEditor")
+    Constants("textPasteAttachmentRevision" to 1)
 
     AsyncFunction("writeContextClipboard") { text: String, fragment: String ->
       T3ComposerClipboard.write(requireNotNull(appContext.reactContext), text, fragment)
@@ -116,6 +117,12 @@ class T3ComposerEditorModule : Module() {
       Prop("spellCheck") { view: T3ComposerEditorView, spellCheck: Boolean ->
         view.setSpellCheck(spellCheck)
       }
+      Prop("textPasteThresholdBytes") { view: T3ComposerEditorView, threshold: Int ->
+        view.setTextPasteThresholdBytes(threshold)
+      }
+      Prop("maxInputChars") { view: T3ComposerEditorView, maxInputChars: Int ->
+        view.setMaxInputChars(maxInputChars)
+      }
 
       Events(
         "onComposerChange",
@@ -125,6 +132,7 @@ class T3ComposerEditorModule : Module() {
         "onComposerPasteImages",
         "onComposerContextPress",
         "onComposerPasteContext",
+        "onComposerPasteText",
         "onComposerContentSizeChange",
       )
 

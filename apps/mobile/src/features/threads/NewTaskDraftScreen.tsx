@@ -1,4 +1,6 @@
 import { shouldHandleUsageLimitsCommand } from "@t3tools/shared/usageLimits";
+import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
+import { nextPastedTextFileName, pastedTextDisposition, replaceTextSelection } from "@t3tools/client-runtime/text-paste";
 import { useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -11,7 +13,7 @@ import {
   usePreventRemove,
   type NavigationAction,
 } from "@react-navigation/native";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Alert, Platform, Pressable, ScrollView, View } from "react-native";
 import {
   KeyboardController,
@@ -26,10 +28,13 @@ import { useFontFamily } from "../../lib/useFontFamily";
 import { getProviderAdmissionUnavailableReason } from "@t3tools/client-runtime/providerAvailability";
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
+import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
+import { connectedPastedTextAttachmentLease, useConnectedPastedTextAttachmentCapability } from "../../state/pasted-text-capability";
 import { composerContextImportsAtom, useComposerDraft } from "../../state/use-composer-drafts";
 import {
   composerContextSendBlockReason,
@@ -76,13 +81,17 @@ import {
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
 import {
   convertPastedImagesToAttachments,
+  createPastedTextComposerAttachment,
   pickComposerFiles,
   pickComposerMedia,
+  removePersistedComposerAttachmentFile,
   type DraftComposerFileAttachment,
 } from "../../lib/composerImages";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import {
   clearComposerDraftContent,
+  countComposerDraftAttachmentsAfterSelection,
+  insertComposerDraftText,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
   restoreComposerDraftSnapshot,
@@ -192,6 +201,9 @@ export function NewTaskDraftScreen(props: {
   const { projectScopes, selectedProject, selectedProjectKey, setProject } = flow;
   const { connectedEnvironments } = useRemoteConnectionStatus();
   const selectedEnvironmentServerConfig = useEnvironmentServerConfig(
+    selectedProject?.environmentId ?? null,
+  );
+  const pastedTextAttachmentsAvailable = useConnectedPastedTextAttachmentCapability(
     selectedProject?.environmentId ?? null,
   );
   const environmentConnected =
@@ -395,6 +407,26 @@ export function NewTaskDraftScreen(props: {
   const activeShareImportTokenRef = useRef<symbol | null>(null);
   const shareImportMountedRef = useRef(true);
   const latestDraftKeyRef = useRef(flow.draftKey);
+  const pasteOwner = useMemo(
+    () => ({ key: flow.draftKey, environmentId: flow.selectedEnvironmentId, incarnation: Symbol("new-task-paste") }),
+    [flow.draftKey, flow.selectedEnvironmentId, flow.selectedProjectKey, flow.editingPendingTask?.messageId],
+  );
+  const committedPasteOwner = useRef<typeof pasteOwner | null>(null);
+  useLayoutEffect(() => {
+    committedPasteOwner.current = pasteOwner;
+    return () => {
+      if (committedPasteOwner.current === pasteOwner) committedPasteOwner.current = null;
+    };
+  }, [pasteOwner]);
+  const pastedTextNames = useRef<{ owner: symbol | null; names: Set<string> }>({ owner: null, names: new Set() });
+  const pendingPastedTextRef = useRef(new Map<symbol, number>());
+  const [pendingPastedTextState, setPendingPastedTextState] = useState<{owner: symbol; count: number}>(() => ({owner: pasteOwner.incarnation, count: 0}));
+  const pendingPastedTextCount = pendingPastedTextState.owner === pasteOwner.incarnation ? pendingPastedTextState.count : 0;
+  useLayoutEffect(() => {
+    return () => {
+      pendingPastedTextRef.current.delete(pasteOwner.incarnation);
+    };
+  }, [pasteOwner]);
   const latestIncomingShareIdRef = useRef(props.incomingShareId);
   latestDraftKeyRef.current = flow.draftKey;
   latestIncomingShareIdRef.current = props.incomingShareId;
@@ -1063,14 +1095,96 @@ export function NewTaskDraftScreen(props: {
     [flow],
   );
 
+  const handleNativePasteText = useCallback(async (paste: ComposerTextPaste) => {
+    const draftKey = pasteOwner.key;
+    if (!draftKey || committedPasteOwner.current !== pasteOwner) return;
+    const insertPaste = () => {
+      const insertion = replaceTextSelection({ value: paste.value, selection: paste.selection, text: paste.text });
+      flow.setPrompt(insertion.value);
+      composerMenu.onSelectionChange({ start: insertion.cursor, end: insertion.cursor });
+    };
+    const target = { text: paste.value, ...paste.selection };
+    const insertPasteAfterWrite = () => insertComposerDraftText(draftKey, paste.text, target);
+    const wouldExceedInputLimit =
+      paste.value.length - Math.max(0, paste.selection.end - paste.selection.start) + paste.text.length >
+      PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
+    const connectedLease = pasteOwner.environmentId == null
+      ? null : connectedPastedTextAttachmentLease(pasteOwner.environmentId);
+    const capabilities = connectedLease?.config.environment.capabilities;
+    if (capabilities?.attachmentUploads !== true) {
+      if (!wouldExceedInputLimit) insertPaste();
+      else Alert.alert("Pasted text is too large for this message", "Remove text or an attachment, then paste again.");
+      return;
+    }
+    const advertisedMax = capabilities.fileAttachments?.maxUploadBytes;
+    const maxBytes = advertisedMax === undefined ? null : clampFileAttachmentUploadBytes(advertisedMax);
+    const shouldFold = pastedTextDisposition({ text: paste.text, wouldExceedInputLimit, canAttach: true }) === "attachment";
+    if (!shouldFold || (maxBytes === null && !wouldExceedInputLimit)) {
+      insertPaste();
+      return;
+    }
+    const canAttach = maxBytes !== null &&
+      countComposerDraftAttachmentsAfterSelection(draftKey, target) < PROVIDER_SEND_TURN_MAX_ATTACHMENTS &&
+      new TextEncoder().encode(paste.text).byteLength <= maxBytes;
+    if (!canAttach || maxBytes === null) {
+      if (!wouldExceedInputLimit) {
+        insertPaste();
+      } else Alert.alert("Pasted text is too large for this message", "Remove text or an attachment, then paste again.");
+      return;
+    }
+    if (pastedTextNames.current.owner !== pasteOwner.incarnation)
+      pastedTextNames.current = { owner: pasteOwner.incarnation, names: new Set() };
+    const reserved = pastedTextNames.current.names;
+    for (const attachment of getComposerDraftSnapshot(draftKey).attachments) reserved.add(attachment.name);
+    const name = nextPastedTextFileName([...reserved]);
+    reserved.add(name);
+    pendingPastedTextRef.current.set(pasteOwner.incarnation, (pendingPastedTextRef.current.get(pasteOwner.incarnation) ?? 0) + 1);
+    setPendingPastedTextState({ owner: pasteOwner.incarnation, count: pendingPastedTextRef.current.get(pasteOwner.incarnation) ?? 0 });
+    try {
+      const attachment = await createPastedTextComposerAttachment({ text: paste.text, name, maxBytes });
+      if (committedPasteOwner.current !== pasteOwner ||
+          pasteOwner.environmentId == null ||
+          connectedPastedTextAttachmentLease(pasteOwner.environmentId)?.state !== connectedLease?.state) {
+        await removePersistedComposerAttachmentFile(attachment.fileUri);
+        if (committedPasteOwner.current === pasteOwner) {
+          if (!wouldExceedInputLimit) insertPasteAfterWrite();
+          else Alert.alert("Pasted text is too large for this message", "Reconnect and paste again.");
+        }
+        return;
+      }
+      if (flow.appendAttachments([attachment], target) > 0) {
+        await removePersistedComposerAttachmentFile(attachment.fileUri);
+        if (!wouldExceedInputLimit) {
+          insertPasteAfterWrite();
+        } else Alert.alert("Could not attach pasted text", `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`);
+      }
+    } catch (error) {
+      if (committedPasteOwner.current === pasteOwner) {
+        if (!wouldExceedInputLimit) {
+          insertPasteAfterWrite();
+        } else Alert.alert("Could not attach pasted text", error instanceof Error ? error.message : "Try again.");
+      }
+    } finally {
+      const remaining = pendingPastedTextRef.current.get(pasteOwner.incarnation);
+      if (remaining !== undefined) {
+        pendingPastedTextRef.current.set(pasteOwner.incarnation, Math.max(0, remaining - 1));
+        setPendingPastedTextState({ owner: pasteOwner.incarnation, count: pendingPastedTextRef.current.get(pasteOwner.incarnation) ?? 0 });
+      }
+    }
+  }, [composerMenu, flow, pasteOwner, selectedEnvironmentServerConfig]);
+
   async function handleStart(): Promise<void> {
-    if (voiceInput.blocksSubmission) return;
+    if (voiceInput.blocksSubmission || (pendingPastedTextRef.current.get(pasteOwner.incarnation) ?? 0) > 0) return;
     const selectedProject = flow.selectedProject;
     const draftKey = flow.draftKey;
     if (!selectedProject || !draftKey || providerUnavailable) {
       return;
     }
     const draft = getComposerDraftSnapshot(draftKey);
+    if (draft.text.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+      Alert.alert("Message text is too large", "Remove some text or attach it as a file before starting the task.");
+      return;
+    }
     if (appAtomRegistry.get(composerContextImportsAtom)[draftKey]) return;
     // Snapshot read keeps just-typed selector state. Ambient stale defaults
     // may fall back, but a human/recovered exact provider choice must remain
@@ -1114,6 +1228,11 @@ export function NewTaskDraftScreen(props: {
         "Too many attachments",
         `Remove attachments until there are at most ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS}.`,
       );
+      return;
+    }
+    if (draft.attachments.some((attachment) => attachment.type === "file" && attachment.source?._tag === "pasted-text") &&
+        connectedPastedTextAttachmentLease(selectedProject.environmentId) === null) {
+      Alert.alert("Reconnect before sending", "Pasted-text attachments need a connected server that supports them. Your draft is saved.");
       return;
     }
 
@@ -1242,6 +1361,7 @@ export function NewTaskDraftScreen(props: {
     isIncomingShareReady &&
     !isImportingShare &&
     !flow.submitting &&
+    pendingPastedTextCount === 0 &&
     !voiceInput.blocksSubmission &&
     !(flow.workspaceMode === "worktree" && !flow.selectedBranchName);
   const openDraftDocument = (attachment: ComposerDocumentAttachment) => {
@@ -1298,6 +1418,12 @@ export function NewTaskDraftScreen(props: {
         onFocus={() => setIsComposerFocused(true)}
         onBlur={() => setIsComposerFocused(false)}
         onPasteImages={(uris) => void handleNativePasteImages(uris)}
+        onPasteText={
+          pastedTextAttachmentsAvailable &&
+          !voiceInput.freezesEditor && !isIncomingShareTransferPending && !flow.submitting
+            ? (paste) => void handleNativePasteText(paste)
+            : undefined
+        }
         placeholder="Ask anything…"
         singleLineCentered={false}
         contentInsetVertical={0}
