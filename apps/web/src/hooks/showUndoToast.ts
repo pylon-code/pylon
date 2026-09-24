@@ -42,7 +42,10 @@ export function showUndoToast({
 }) {
   // A successful command can race the first live shell projection. Without a
   // session owner its inverse cannot be safely bound to that connection.
-  if (!claim.isCurrent() || claim.sessionOwner === null) return;
+  if (!claim.isCurrent() || claim.sessionOwner === null) {
+    claim.finish();
+    return;
+  }
   let undoStarted = false;
   let toastId: string | undefined;
   const reportFailure = (error: unknown) => {
