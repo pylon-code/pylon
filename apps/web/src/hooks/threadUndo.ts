@@ -37,8 +37,12 @@ export function runOnce<T extends { readonly _tag: string }>(
   const key = JSON.stringify([kind, threadKey]);
   const existing = observedResults.get(key);
   // An unrelated projection may replace the shell before this receipt settles.
-  if (existing?.intent === intent && (existing.inFlight || existing.observed === observed))
+  if (existing?.intent === intent && (existing.inFlight || existing.observed === observed)) {
+    // Follow the latest unrelated shell projection while the receipt is
+    // pending, so projection lag after receipt still joins this outcome.
+    if (existing.inFlight) existing.observed = observed;
     return existing.result as Promise<T>;
+  }
   const claim = begin(kind, threadKey);
   const result = run(claim);
   const outcome = { threadKey, observed, intent, inFlight: true, result };

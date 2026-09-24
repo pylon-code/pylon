@@ -207,6 +207,8 @@ describe("unpin Undo", () => {
     expect(commands.unpin).toHaveBeenCalledOnce();
     pending.resolve(success);
     expect(await Promise.all([first, duplicate])).toEqual([success, success]);
+    await useThreadActions().unpinThread(target, { undoToast: false });
+    expect(commands.unpin).toHaveBeenCalledOnce();
   });
 
   it("ignores an old toast across hook instances and still restores the latest unpin", async () => {
