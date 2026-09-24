@@ -72,6 +72,7 @@ import Migration0058 from "./Migrations/058_ProjectionProjectsAutoPull.ts";
 import Migration0059 from "./Migrations/059_ProjectionThreadPullRequests.ts";
 import Migration0060 from "./Migrations/060_ProjectionThreadCompactionQueue.ts";
 import Migration0061 from "./Migrations/061_ProjectionThreadMessageContext.ts";
+import Migration0062 from "./Migrations/062_RepairStoppedSessionRequests.ts";
 /**
  * Migration loader with all migrations defined inline.
  *
@@ -176,6 +177,7 @@ const migrationEntries = [
   [60, "ProjectionThreadCompactionQueue", Migration0060],
   // Upstream 51 is already Pylon durable rollback; retain that lineage and append.
   [61, "ProjectionThreadMessageContext", Migration0061],
+  [62, "RepairStoppedSessionRequests", Migration0062],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
