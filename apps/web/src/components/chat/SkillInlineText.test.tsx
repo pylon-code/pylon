@@ -6,10 +6,7 @@ import { SkillInlineText } from "./SkillInlineText";
 describe("SkillInlineText", () => {
   it("copies the original currency alias, including an astral prefix", () => {
     const html = renderToStaticMarkup(
-      <SkillInlineText
-        text="Use €review then 𑿝review pay €20"
-        skills={[{ name: "review" }]}
-      />,
+      <SkillInlineText text="Use €review then 𑿝review pay €20" skills={[{ name: "review" }]} />,
     );
     expect(html).toContain('data-markdown-copy="€review"');
     expect(html).toContain('data-markdown-copy="𑿝review"');
