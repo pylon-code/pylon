@@ -12,6 +12,7 @@ import type { PreparedConnection } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import { environmentEndpointUrl } from "../environment/endpoint.ts";
 import { ManagedRelayDpopSigner } from "../relay/managedRelay.ts";
+import { rpcSessionOwner } from "../rpc/sessionOwner.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "./environmentHttpAuth.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
@@ -57,6 +58,39 @@ export const fetchEnvironmentSessionState = Effect.fn(
     // This endpoint returns 200 with authenticated:false for expired credentials.
     isUnauthorizedResponse: (response) => !response.authenticated,
   });
+});
+
+/** A session response can finish after its connection has been replaced. */
+export const currentSessionStateReceipt = Effect.fn(
+  "clientRuntime.state.currentSessionStateReceipt",
+)(function* <E, R>(
+  supervisor: EnvironmentSupervisor["Service"],
+  prepared: PreparedConnection,
+  load: Effect.Effect<AuthSessionState, E, R>,
+) {
+  const [currentSession, livePrepared] = yield* Effect.all([
+    SubscriptionRef.get(supervisor.session),
+    SubscriptionRef.get(supervisor.prepared),
+  ]);
+  if (
+    Option.isNone(currentSession) ||
+    Option.isNone(livePrepared) ||
+    livePrepared.value !== prepared
+  )
+    return Option.none<AuthSessionState & { readonly sessionOwner: object }>();
+  const session = yield* load;
+  const [latestSession, latestPrepared] = yield* Effect.all([
+    SubscriptionRef.get(supervisor.session),
+    SubscriptionRef.get(supervisor.prepared),
+  ]);
+  if (
+    Option.isNone(latestSession) ||
+    latestSession.value !== currentSession.value ||
+    Option.isNone(latestPrepared) ||
+    latestPrepared.value !== prepared
+  )
+    return Option.none<AuthSessionState & { readonly sessionOwner: object }>();
+  return Option.some({ ...session, sessionOwner: rpcSessionOwner(currentSession.value) });
 });
 
 export function createEnvironmentSessionAtoms<R, E>(
@@ -120,6 +154,24 @@ export function createEnvironmentSessionAtoms<R, E>(
     ).pipe(Atom.withLabel(`environment-prepared-connection:${environmentId}`)),
   );
 
+  const rpcSessionOwnerAtom = Atom.family((environmentId: EnvironmentId) =>
+    runtime.atom(
+      followStreamInEnvironment(
+        environmentId,
+        Stream.unwrap(
+          EnvironmentSupervisor.pipe(
+            Effect.map((supervisor) =>
+              SubscriptionRef.changes(supervisor.session).pipe(
+                Stream.map(Option.map(rpcSessionOwner)),
+              ),
+            ),
+          ),
+        ),
+      ),
+      { initialValue: Option.none<object>() },
+    ),
+  );
+
   // Keyed on the prepared connection's identity: a reconnect (new credential,
   // new base URL) swaps the prepared value, which re-runs the fetch, so scope
   // changes from re-pairing are picked up without an explicit refresh.
@@ -127,14 +179,35 @@ export function createEnvironmentSessionAtoms<R, E>(
     runtime
       .atom((get) => {
         const prepared = Option.getOrNull(get(preparedConnectionValueAtom(environmentId)));
+        // Session admission may follow the prepared-connection event. Subscribe
+        // to both so an early no-session read retries when admission arrives.
+        get(rpcSessionOwnerAtom(environmentId));
         if (prepared === null) {
           return Effect.never;
         }
-        return Effect.gen(function* () {
-          const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
-          const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
-          return yield* fetchEnvironmentSessionState({ prepared, signer, remoteAuthorization });
-        });
+        return EnvironmentRegistry.pipe(
+          Effect.flatMap((registry) =>
+            registry.run(
+              environmentId,
+              EnvironmentSupervisor.pipe(
+                Effect.flatMap((supervisor) =>
+                  Effect.gen(function* () {
+                    const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
+                    const remoteAuthorization = yield* Effect.serviceOption(
+                      RemoteEnvironmentAuthorization,
+                    );
+                    const receipt = yield* currentSessionStateReceipt(
+                      supervisor,
+                      prepared,
+                      fetchEnvironmentSessionState({ prepared, signer, remoteAuthorization }),
+                    );
+                    return Option.isSome(receipt) ? receipt.value : yield* Effect.never;
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
       })
       .pipe(
         Atom.swr({ staleTime: 30_000, revalidateOnMount: true }),

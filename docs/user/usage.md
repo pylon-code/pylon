@@ -59,6 +59,17 @@ Pylon keeps a recent reading through a failed quota check when it can still veri
 account. It hides that reading while account status is unknown, after sign-out, or after a different
 account signs in.
 
+On iOS and Android, you can add the **Subscription usage** home-screen widget. It shows the
+tightest recent Codex and Claude session, weekly, or monthly quota from connected environments;
+the iOS Lock Screen version shows one selected limit. Tap it to open **Usage → Limits**. The
+widget uses readings the app already received, so open Pylon and refresh Limits to update it.
+Readings expire after 15 minutes or when their reset time passes, and disconnected environments
+are hidden when the app republishes the widget. Android may keep an old rendering until the system
+delivers its scheduled refresh; the last-checked time remains visible. The widget currently shows
+native Codex and Claude provider limits, not linked usage sources. It stores no account names,
+email addresses, or model names in the widget. A provider without a readable account ID or email
+is omitted from the widget until its identity can be verified.
+
 Antigravity Google-account limits belong to the account signed in to that Pylon provider instance.
 Settings and Limits show the model groups reported by Google. The thread composer selects the group
 for its chosen model. Other Antigravity sign-in methods do not currently report subscription limits.

@@ -23,6 +23,7 @@ import { appAtomRegistry } from "./state/atom-registry";
 import { OverlayPortalHost } from "./components/OverlayPortal";
 import { useUniwindTheme } from "./lib/useUniwindTheme";
 import { appBlurTargetRef } from "./lib/appBlurTarget";
+import { SubscriptionUsageCoordinator } from "./widgets/SubscriptionUsageCoordinator";
 import { useMobileNavigationTheme } from "./lib/useMobileNavigationTheme";
 
 import "../global.css";
@@ -83,6 +84,7 @@ function AppContent() {
   return (
     <>
       <SplashScreenCoordinator />
+      <SubscriptionUsageCoordinator />
       <GestureHandlerRootView className="flex-1">
         <KeyboardProvider statusBarTranslucent>
           <SafeAreaProvider>

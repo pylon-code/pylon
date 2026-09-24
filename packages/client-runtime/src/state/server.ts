@@ -45,6 +45,7 @@ import {
   type EnvironmentRpcInput,
 } from "../rpc/client.ts";
 import type { RpcSession } from "../rpc/session.ts";
+import { rpcSessionOwner } from "../rpc/sessionOwner.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 import {
   applyServerConfigProjection,
@@ -424,20 +425,33 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
       Effect.forkScoped,
     );
 
-    yield* subscribe(WS_METHODS.subscribeServerConfig, {
-      ...(subscription.environmentThemes === true ? { environmentThemes: true } : {}),
-      ...(subscription.usageLimitSources === true ? { usageLimitSources: true } : {}),
-      ...(subscription.usageLimitsCommand === true ? { usageLimitsCommand: true } : {}),
-    }).pipe(
-      Stream.runForEach((event) =>
+    yield* subscribeDynamicWithSession(WS_METHODS.subscribeServerConfig, () =>
+      Effect.succeed({
+        ...(subscription.environmentThemes === true ? { environmentThemes: true } : {}),
+        ...(subscription.usageLimitSources === true ? { usageLimitSources: true } : {}),
+        ...(subscription.usageLimitsCommand === true ? { usageLimitsCommand: true } : {}),
+      }),
+    ).pipe(
+      Stream.runForEach(([eventSession, event]) =>
         Effect.gen(function* () {
-          const next = applyServerConfigProjection(yield* SubscriptionRef.get(state), event);
+          const currentSession = yield* SubscriptionRef.get(supervisor.session);
+          if (Option.isNone(currentSession) || currentSession.value !== eventSession) return;
+          const current = yield* SubscriptionRef.get(state);
+          // A partial event cannot make the prior session's config current.
+          // The new session must first supply its own full snapshot.
+          if (
+            event.type !== "snapshot" &&
+            (Option.isNone(current) || current.value.sessionOwner !== rpcSessionOwner(eventSession))
+          )
+            return;
+          const next = applyServerConfigProjection(current, event);
           if (Option.isNone(next)) {
             return;
           }
-          yield* Ref.set(pendingPersistence, Option.some(next.value.config));
-          yield* SubscriptionRef.set(state, next);
-          yield* Queue.offer(persistence, next.value.config);
+          const live = { ...next.value, sessionOwner: rpcSessionOwner(eventSession) };
+          yield* Ref.set(pendingPersistence, Option.some(live.config));
+          yield* SubscriptionRef.set(state, Option.some(live));
+          yield* Queue.offer(persistence, live.config);
         }),
       ),
       Effect.forkScoped,
