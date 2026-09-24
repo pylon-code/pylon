@@ -2,6 +2,7 @@ import * as Arr from "effect/Array";
 import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as ByteSize from "effect/ByteSize";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -700,7 +701,7 @@ export const make = Effect.gen(function* () {
       const info = yield* fileSystem.stat(instructionPath);
       if (
         info.type !== "File" ||
-        info.size > FileSystem.Size(MAX_REPOSITORY_INSTRUCTIONS_READ_BYTES)
+        info.size > ByteSize.bytes(MAX_REPOSITORY_INSTRUCTIONS_READ_BYTES)
       ) {
         return "";
       }

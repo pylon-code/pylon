@@ -30,16 +30,16 @@ catalog:
   "@clerk/expo": 4.6.6
   "@clerk/react": 6.15.2
   "@clerk/shared": 4.31.1
-  "@effect/atom-react": 4.0.0-rc.112
-  "@effect/openapi-generator": 4.0.0-rc.112
-  "@effect/platform-bun": 4.0.0-rc.112
-  "@effect/platform-node": 4.0.0-rc.112
-  "@effect/platform-node-shared": 4.0.0-rc.112
-  "@effect/sql-mysql2": 4.0.0-rc.112
-  "@effect/sql-pg": 4.0.0-rc.112
-  "@effect/sql-sqlite-bun": 4.0.0-rc.112
+  "@effect/atom-react": 4.0.0-rc.115
+  "@effect/openapi-generator": 4.0.0-rc.115
+  "@effect/platform-bun": 4.0.0-rc.115
+  "@effect/platform-node": 4.0.0-rc.115
+  "@effect/platform-node-shared": 4.0.0-rc.115
+  "@effect/sql-mysql2": 4.0.0-rc.115
+  "@effect/sql-pg": 4.0.0-rc.115
+  "@effect/sql-sqlite-bun": 4.0.0-rc.115
   "@effect/tsgo": 0.41.0
-  "@effect/vitest": 4.0.0-rc.112
+  "@effect/vitest": 4.0.0-rc.115
   "@legendapp/list": 3.3.5
   "@noble/curves": 1.9.1
   "@noble/hashes": 1.8.0
@@ -48,7 +48,7 @@ catalog:
   "@tailwindcss/oxide": 4.3.3
   "@tailwindcss/vite": 4.3.3
   "@types/node": 24.12.4
-  effect: 4.0.0-rc.112
+  effect: 4.0.0-rc.115
   jose: 6.2.2
   lightningcss: 1.33.0
   tailwindcss: 4.3.3
@@ -70,17 +70,17 @@ minimumReleaseAgeExclude:
   - "@distilled.cloud/core@0.30.2"
   - "@distilled.cloud/neon@0.30.2"
   - "@distilled.cloud/planetscale@0.30.2"
-  - "@effect/atom-react@4.0.0-rc.112"
-  - "@effect/openapi-generator@4.0.0-rc.112"
-  - "@effect/platform-bun@4.0.0-rc.112"
-  - "@effect/platform-node-shared@4.0.0-rc.112"
-  - "@effect/platform-node@4.0.0-rc.112"
-  - "@effect/sql-mysql2@4.0.0-rc.112"
-  - "@effect/sql-pg@4.0.0-rc.112"
-  - "@effect/sql-sqlite-bun@4.0.0-rc.112"
-  - "@effect/vitest@4.0.0-rc.112"
-  - alchemy@2.0.0-beta.76
-  - effect@4.0.0-rc.112
+  - "@effect/atom-react@4.0.0-rc.115"
+  - "@effect/openapi-generator@4.0.0-rc.115"
+  - "@effect/platform-bun@4.0.0-rc.115"
+  - "@effect/platform-node-shared@4.0.0-rc.115"
+  - "@effect/platform-node@4.0.0-rc.115"
+  - "@effect/sql-mysql2@4.0.0-rc.115"
+  - "@effect/sql-pg@4.0.0-rc.115"
+  - "@effect/sql-sqlite-bun@4.0.0-rc.115"
+  - "@effect/vitest@4.0.0-rc.115"
+  - alchemy@2.0.0-beta.79
+  - effect@4.0.0-rc.115
   - "@legendapp/list@3.3.5"
   - "@expo/cli@57.0.20"
   - "@expo/env@2.4.3"
@@ -91,6 +91,9 @@ minimumReleaseAgeExclude:
   - expo-updates@57.0.19
   - expo@57.0.18
   - expo-widgets@57.0.15
+  - "@alchemy.run/cloudflare-runtime@2.0.0-beta.79"
+  - "@alchemy.run/floci@2.0.0-beta.79"
+  - "@alchemy.run/node-utils@2.0.0-beta.79"
   - electron@44.1.0
   - "@anthropic-ai/claude-agent-sdk@0.3.260"
 
@@ -112,6 +115,11 @@ overrides:
   "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-linux-x64-musl": "-"
   "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-win32-arm64": "-"
   "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-win32-x64": "-"
+  # The relay uses Alchemy's terminal helpers, not its Ink/React UI or Prisma provider.
+  "@alchemy.run/sigil>react": "-"
+  "@alchemy.run/sigil>react-reconciler": "-"
+  "@alchemy.run/sigil>scheduler": "-"
+  "alchemy>@prisma/dev": "-"
   "@clerk/backend": "catalog:"
   "@clerk/clerk-js": "catalog:"
   "@clerk/clerk-js>@base-org/account": "-"
@@ -170,7 +178,7 @@ packageExtensions:
 
 patchedDependencies:
   "@clerk/expo@4.6.6": patches/@clerk__expo@4.6.6.patch
-  "@effect/vitest@4.0.0-rc.112": patches/@effect__vitest@4.0.0-rc.112.patch
+  "@effect/vitest@4.0.0-rc.115": patches/@effect__vitest@4.0.0-rc.115.patch
   "@expo/metro-config@57.0.12": patches/@expo__metro-config@57.0.12.patch
   "@ff-labs/fff-node@0.9.4": patches/@ff-labs__fff-node@0.9.4.patch
   "@legendapp/list@3.3.5": patches/@legendapp__list@3.3.5.patch
@@ -182,7 +190,7 @@ patchedDependencies:
   "@tufjs/models@4.1.0": patches/@tufjs__models@4.1.0.patch
   app-builder-lib@26.15.6: patches/app-builder-lib@26.15.6.patch
   dbus-next@0.10.2: patches/dbus-next@0.10.2.patch
-  effect@4.0.0-rc.112: patches/effect@4.0.0-rc.112.patch
+  effect@4.0.0-rc.115: patches/effect@4.0.0-rc.115.patch
   expo-audio@57.0.4: patches/expo-audio@57.0.4.patch
   expo-modules-jsi@57.0.7: patches/expo-modules-jsi@57.0.7.patch
   expo-sharing@57.0.17: patches/expo-sharing@57.0.17.patch

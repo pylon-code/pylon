@@ -11,6 +11,7 @@
 import * as NodeOS from "node:os";
 
 import type { ServerProviderSkill } from "@t3tools/contracts";
+import * as ByteSize from "effect/ByteSize";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -22,9 +23,9 @@ const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const SKILL_MENTION_PATTERN = /(^|\s)\$([a-zA-Z][a-zA-Z0-9:_-]*)(?=\s|$)/g;
 const HAS_SKILL_MENTION_PATTERN = /(^|\s)\$[a-zA-Z][a-zA-Z0-9:_-]*(?=\s|$)/;
 const MAX_SKILL_DEPTH = 10;
-const MAX_SKILL_BYTES = FileSystem.Size(1_000_000);
+const MAX_SKILL_BYTES = ByteSize.bytes(1_000_000);
 const MAX_SKILL_SCAN_ENTRIES = 10_000;
-const MAX_SKILL_SCAN_BYTES = FileSystem.Size(8_000_000);
+const MAX_SKILL_SCAN_BYTES = ByteSize.bytes(8_000_000);
 
 interface CursorSkillFrontmatter {
   readonly description?: string;
