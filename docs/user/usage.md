@@ -61,6 +61,10 @@ Antigravity Google-account limits belong to the account signed in to that Pylon 
 Settings and Limits show the model groups reported by Google. The thread composer selects the group
 for its chosen model. Other Antigravity sign-in methods do not currently report subscription limits.
 
+Opening Limits checks the selected connected environments automatically. Each client waits at
+least five minutes between automatic checks of an environment, including after a failed check.
+If a window still looks stale, refresh Limits to re-check every provider and hub.
+
 API-key accounts may not report subscription limits. This also applies to Claude connections using a
 proxy through `ANTHROPIC_AUTH_TOKEN`.
 
