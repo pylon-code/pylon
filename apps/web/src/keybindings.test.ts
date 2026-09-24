@@ -661,6 +661,44 @@ describe("chat/editor shortcuts", () => {
     );
   });
 
+  it("routes theme selection and appearance cycle on desktop outside terminal focus", () => {
+    for (const [platform, modifier] of [
+      ["MacIntel", { metaKey: true }],
+      ["Win32", { ctrlKey: true }],
+    ] as const) {
+      assert.strictEqual(
+        resolveShortcutCommand(
+          event({ key: "a", altKey: true, ...modifier }),
+          DEFAULT_RESOLVED_KEYBINDINGS,
+          {
+            platform,
+            context: { terminalFocus: false },
+          },
+        ),
+        "theme.select",
+      );
+      assert.strictEqual(
+        resolveShortcutCommand(
+          event({ key: "a", altKey: true, shiftKey: true, ...modifier }),
+          DEFAULT_RESOLVED_KEYBINDINGS,
+          { platform, context: { terminalFocus: false } },
+        ),
+        "appearance.cycle",
+      );
+      assert.notStrictEqual(
+        resolveShortcutCommand(
+          event({ key: "a", altKey: true, ...modifier }),
+          DEFAULT_RESOLVED_KEYBINDINGS,
+          {
+            platform,
+            context: { terminalFocus: true },
+          },
+        ),
+        "theme.select",
+      );
+    }
+  });
+
   it("matches diff.toggle shortcut outside terminal focus", () => {
     assert.isTrue(
       isDiffToggleShortcut(event({ key: "d", metaKey: true }), DEFAULT_BINDINGS, {
