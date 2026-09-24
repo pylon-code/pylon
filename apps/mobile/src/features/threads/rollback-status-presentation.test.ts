@@ -1,14 +1,32 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { OrchestrationRollbackStatus } from "@t3tools/contracts";
+import { AVAILABLE_CONNECTION_STATE } from "@t3tools/client-runtime/connection";
+import { AsyncResult } from "effect/unstable/reactivity";
 
 import {
   getMobileRollbackStatusPresentation,
+  currentMobileRollbackSessionOwner,
   resolveMobileRollbackStatus,
 } from "./rollback-status-presentation";
 
 const updatedAt = "2026-08-31T12:00:00.000Z";
 
 describe("mobile rollback status presentation", () => {
+  it("rejects a waiting or disconnected catalog result even when it retains an old owner", () => {
+    const owner = {};
+    const connected = {
+      ...AVAILABLE_CONNECTION_STATE,
+      phase: "connected" as const,
+      sessionOwner: owner,
+    };
+    expect(currentMobileRollbackSessionOwner(AsyncResult.success(connected))).toBe(owner);
+    expect(
+      currentMobileRollbackSessionOwner(AsyncResult.waiting(AsyncResult.success(connected))),
+    ).toBeNull();
+    expect(
+      currentMobileRollbackSessionOwner(AsyncResult.success({ ...connected, phase: "connecting" })),
+    ).toBeNull();
+  });
   it("uses the newer authoritative event sequence in either stream", () => {
     const owner = {};
     const detail: OrchestrationRollbackStatus = {
@@ -86,6 +104,19 @@ describe("mobile rollback status presentation", () => {
       status: undefined,
       uncertain: true,
     });
+    expect(
+      resolveMobileRollbackStatus({
+        detail: {
+          ...detail,
+          status: { state: "manual-recovery", updatedAt, allowedActions: ["retry-verification"] },
+        },
+        shell: {
+          ...shell,
+          status: { state: "manual-recovery", updatedAt, allowedActions: [] },
+        },
+        currentSessionOwner: owner,
+      }),
+    ).toEqual({ status: undefined, uncertain: true });
     expect(
       resolveMobileRollbackStatus({
         detail: { ...detail, status: undefined },

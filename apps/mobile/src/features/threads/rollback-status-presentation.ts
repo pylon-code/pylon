@@ -1,4 +1,6 @@
 import type { OrchestrationRollbackStatus } from "@t3tools/contracts";
+import type { SupervisorConnectionState } from "@t3tools/client-runtime/connection";
+import { AsyncResult } from "effect/unstable/reactivity";
 
 export interface MobileRollbackStatusPresentation {
   readonly title: string;
@@ -14,6 +16,15 @@ export interface RollbackStatusSource {
   readonly sequence: number | undefined;
   readonly sessionOwner: object | null | undefined;
   readonly live: boolean;
+}
+
+/** A waiting success may retain the previous connection's value during replacement. */
+export function currentMobileRollbackSessionOwner(
+  result: AsyncResult.AsyncResult<SupervisorConnectionState, unknown>,
+): object | null {
+  return AsyncResult.isSuccess(result) && !result.waiting && result.value.phase === "connected"
+    ? (result.value.sessionOwner ?? null)
+    : null;
 }
 
 /** Both streams use the server's global event sequence, scoped to one RPC session. */
@@ -43,7 +54,7 @@ export function resolveMobileRollbackStatus(input: {
   }
   if (detail.sequence > shell.sequence) return { status: detail.status, uncertain: false };
   if (shell.sequence > detail.sequence) return { status: shell.status, uncertain: false };
-  if (detail.status?.state !== shell.status?.state) {
+  if (JSON.stringify(detail.status) !== JSON.stringify(shell.status)) {
     return { status: undefined, uncertain: true };
   }
   return { status: detail.status ?? shell.status, uncertain: false };
