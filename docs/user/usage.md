@@ -55,7 +55,9 @@ not report that window. Refresh to update the readings.
 
 During native Claude sessions, account-wide quota reports update immediately. Model-specific weekly
 limits reconcile with the signed-in account after about a minute; provider throttling can delay them.
-Pylon keeps the last reading when it cannot verify the account.
+Pylon keeps a recent reading through a failed quota check when it can still verify the same
+account. It hides that reading while account status is unknown, after sign-out, or after a different
+account signs in.
 
 Antigravity Google-account limits belong to the account signed in to that Pylon provider instance.
 Settings and Limits show the model groups reported by Google. The thread composer selects the group
