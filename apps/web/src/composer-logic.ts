@@ -54,9 +54,18 @@ function tokenStartForCursor(text: string, cursor: number): number {
   return index + 1;
 }
 
-export function expandCollapsedComposerCursor(text: string, cursorInput: number): number {
+export function expandCollapsedComposerCursor(
+  text: string,
+  cursorInput: number,
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
+): number {
   const collapsedCursor = clampCursor(text, cursorInput);
-  const segments = splitPromptIntoComposerSegments(text);
+  const segments = splitPromptIntoComposerSegments(
+    text,
+    allowUnicodeSkillAliases,
+    unicodeSkillNames,
+  );
   if (segments.length === 0) {
     return collapsedCursor;
   }
@@ -120,16 +129,30 @@ function clampCollapsedComposerCursorForSegments(
   return Math.max(0, Math.min(collapsedLength, Math.floor(cursorInput)));
 }
 
-export function clampCollapsedComposerCursor(text: string, cursorInput: number): number {
+export function clampCollapsedComposerCursor(
+  text: string,
+  cursorInput: number,
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
+): number {
   return clampCollapsedComposerCursorForSegments(
-    splitPromptIntoComposerSegments(text),
+    splitPromptIntoComposerSegments(text, allowUnicodeSkillAliases, unicodeSkillNames),
     cursorInput,
   );
 }
 
-export function collapseExpandedComposerCursor(text: string, cursorInput: number): number {
+export function collapseExpandedComposerCursor(
+  text: string,
+  cursorInput: number,
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
+): number {
   const expandedCursor = clampCursor(text, cursorInput);
-  const segments = splitPromptIntoComposerSegments(text);
+  const segments = splitPromptIntoComposerSegments(
+    text,
+    allowUnicodeSkillAliases,
+    unicodeSkillNames,
+  );
   if (segments.length === 0) {
     return expandedCursor;
   }
@@ -182,8 +205,14 @@ export function isCollapsedCursorAdjacentToInlineToken(
   text: string,
   cursorInput: number,
   direction: "left" | "right",
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
 ): boolean {
-  const segments = splitPromptIntoComposerSegments(text);
+  const segments = splitPromptIntoComposerSegments(
+    text,
+    allowUnicodeSkillAliases,
+    unicodeSkillNames,
+  );
   if (!segments.some(isInlineTokenSegment)) {
     return false;
   }
@@ -206,7 +235,11 @@ export function isCollapsedCursorAdjacentToInlineToken(
   return false;
 }
 
-export function detectComposerTrigger(text: string, cursorInput: number): ComposerTrigger | null {
+export function detectComposerTrigger(
+  text: string,
+  cursorInput: number,
+  allowUnicodeSkillAliases = true,
+): ComposerTrigger | null {
   const cursor = clampCursor(text, cursorInput);
   const lineStart = text.lastIndexOf("\n", Math.max(0, cursor - 1)) + 1;
   const linePrefix = text.slice(lineStart, cursor);
@@ -236,7 +269,7 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
     };
   }
   const skillPrefix = /^\p{Sc}/u.exec(token);
-  if (skillPrefix) {
+  if (skillPrefix && (allowUnicodeSkillAliases || skillPrefix[0] === "$")) {
     return {
       kind: "skill",
       query: token.slice(skillPrefix[0].length),
@@ -257,14 +290,27 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
 }
 
 /** Caret and trigger after replacing composer text and continuing at the end. */
-export function composerStateAtPromptEnd(text: string): {
+export function composerStateAtPromptEnd(
+  text: string,
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
+): {
   cursor: number;
   trigger: ComposerTrigger | null;
 } {
-  const cursor = collapseExpandedComposerCursor(text, text.length);
+  const cursor = collapseExpandedComposerCursor(
+    text,
+    text.length,
+    allowUnicodeSkillAliases,
+    unicodeSkillNames,
+  );
   return {
     cursor,
-    trigger: detectComposerTrigger(text, expandCollapsedComposerCursor(text, cursor)),
+    trigger: detectComposerTrigger(
+      text,
+      expandCollapsedComposerCursor(text, cursor, allowUnicodeSkillAliases, unicodeSkillNames),
+      allowUnicodeSkillAliases,
+    ),
   };
 }
 

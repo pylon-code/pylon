@@ -320,7 +320,7 @@ describe("nativeMarkdownDocumentRuns", () => {
         ],
       };
 
-      expect(nativeMarkdownDocumentRuns(node, [{ name: "ui", displayName: "UI" }])).toEqual([
+      expect(nativeMarkdownDocumentRuns(node, [{ name: "ui", displayName: "UI" }], true)).toEqual([
         { text: "Use ", role: "body" },
         {
           text: `${prefix}ui`,
@@ -334,12 +334,23 @@ describe("nativeMarkdownDocumentRuns", () => {
     },
   );
 
+  it("keeps Unicode aliases literal in history without provider identity", () => {
+    const node: MarkdownNode = {
+      type: "document",
+      children: [{ type: "paragraph", children: [{ type: "text", content: "Use 𑿝ui and $ui" }] }],
+    };
+    const runs = nativeMarkdownDocumentRuns(node, [{ name: "ui" }]);
+    expect(runs.some((run) => run.skillName === "ui" && run.text === "𑿝ui")).toBe(false);
+    expect(runs.some((run) => run.skillName === "ui" && run.text === "$ui")).toBe(true);
+    expect(runs.map((run) => run.text).join("")).toBe("Use 𑿝ui and $ui");
+  });
+
   it("copies a decorated astral currency alias without replacing its prefix", () => {
     const node: MarkdownNode = {
       type: "document",
       children: [{ type: "paragraph", children: [{ type: "text", content: "Use 𑿝ui now" }] }],
     };
-    const skillRun = nativeMarkdownDocumentRuns(node, [{ name: "ui" }]).find(
+    const skillRun = nativeMarkdownDocumentRuns(node, [{ name: "ui" }], true).find(
       (run) => run.skillName === "ui",
     );
     expect(skillRun).toBeDefined();
@@ -383,7 +394,9 @@ describe("nativeMarkdownDocumentRuns", () => {
       ],
     };
 
-    expect(nativeMarkdownDocumentRuns(node, [{ name: "ui", displayName: "UI" }])).toContainEqual({
+    expect(
+      nativeMarkdownDocumentRuns(node, [{ name: "ui", displayName: "UI" }], true),
+    ).toContainEqual({
       text: "$ui",
       role: "body",
       sourceText: "$ui",

@@ -1,3 +1,4 @@
+import { supportsUnicodeSkillAliases } from "@t3tools/client-runtime/providerSkills";
 import { shouldHandleUsageLimitsCommand } from "@t3tools/shared/usageLimits";
 import { useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
@@ -1265,6 +1266,7 @@ export function NewTaskDraftScreen(props: {
   const promptEditor = (
     <>
       <ComposerEditor
+        allowUnicodeSkillAliases={supportsUnicodeSkillAliases(flow.selectedProviderStatus?.driver)}
         draftKey={flow.draftKey}
         environmentId={selectedProject.environmentId}
         onOpenAttachment={openDraftDocument}

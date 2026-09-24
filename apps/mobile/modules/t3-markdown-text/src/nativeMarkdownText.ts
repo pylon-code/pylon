@@ -337,6 +337,7 @@ function formatSkillLabel(skill: SelectableMarkdownSkill): string {
 function decorateSkillRuns(
   runs: ReadonlyArray<NativeMarkdownTextRun>,
   skills: ReadonlyArray<SelectableMarkdownSkill>,
+  allowUnicodeSkillAliases: boolean,
 ): ReadonlyArray<NativeMarkdownTextRun> {
   if (skills.length === 0) {
     return runs;
@@ -361,6 +362,7 @@ function decorateSkillRuns(
       }
       const start = (match.index ?? 0) + prefix.length;
       const end = (match.index ?? 0) + match[0].length;
+      if (!allowUnicodeSkillAliases && run.text[start] !== "$") continue;
       if (start > cursor) {
         decorated.push({ ...run, text: run.text.slice(cursor, start) });
       }
@@ -951,6 +953,7 @@ export function nativeMarkdownChunkSpacing(
 export function nativeMarkdownDocumentRuns(
   node: MarkdownNode,
   skills: ReadonlyArray<SelectableMarkdownSkill> = [],
+  allowUnicodeSkillAliases = false,
 ): ReadonlyArray<NativeMarkdownTextRun> {
   const runs = appendDocumentBlock([], node);
   while (runs.length > 0) {
@@ -966,5 +969,5 @@ export function nativeMarkdownDocumentRuns(
       runs[lastIndex] = { ...last, text };
     }
   }
-  return decorateMentionRuns(decorateSkillRuns(runs, skills));
+  return decorateMentionRuns(decorateSkillRuns(runs, skills, allowUnicodeSkillAliases));
 }

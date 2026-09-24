@@ -75,8 +75,15 @@ function forEachMentionMatch(
   });
 }
 
-export function collectComposerPromptInlineTokens(text: string) {
-  const tokens = collectComposerInlineTokens(text);
+export function collectComposerPromptInlineTokens(
+  text: string,
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
+) {
+  const tokens = collectComposerInlineTokens(text, {
+    allowUnicodeSkillAliases,
+    ...(unicodeSkillNames ? { unicodeSkillNames } : {}),
+  });
   const citations = collectAssistantCitations(text);
   const references = collectComposerContextReferences(text);
   if (citations.length === 0 && references.length === 0) return tokens;
@@ -94,13 +101,21 @@ export function collectComposerPromptInlineTokens(text: string) {
   ].sort((left, right) => left.start - right.start);
 }
 
-function splitPromptTextIntoComposerSegments(text: string): ComposerPromptSegment[] {
+function splitPromptTextIntoComposerSegments(
+  text: string,
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
+): ComposerPromptSegment[] {
   const segments: ComposerPromptSegment[] = [];
   if (!text) {
     return segments;
   }
 
-  const tokenMatches = collectComposerPromptInlineTokens(text);
+  const tokenMatches = collectComposerPromptInlineTokens(
+    text,
+    allowUnicodeSkillAliases,
+    unicodeSkillNames,
+  );
   let cursor = 0;
   for (const match of tokenMatches) {
     if (match.start < cursor) {
@@ -175,6 +190,10 @@ export function selectionTouchesMentionBoundary(
   });
 }
 
-export function splitPromptIntoComposerSegments(prompt: string): ComposerPromptSegment[] {
-  return splitPromptTextIntoComposerSegments(prompt);
+export function splitPromptIntoComposerSegments(
+  prompt: string,
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
+): ComposerPromptSegment[] {
+  return splitPromptTextIntoComposerSegments(prompt, allowUnicodeSkillAliases, unicodeSkillNames);
 }

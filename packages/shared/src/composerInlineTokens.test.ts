@@ -3,6 +3,27 @@ import { describe, expect, it } from "vite-plus/test";
 import { collectComposerInlineTokens } from "./composerInlineTokens.ts";
 
 describe("collectComposerInlineTokens", () => {
+  it("chips only registered Unicode aliases while keeping dollar syntax", () => {
+    const tokens = collectComposerInlineTokens("Use €ui and €unknown and $unknown ", {
+      unicodeSkillNames: new Set(["ui"]),
+    });
+    expect(tokens.map((token) => token.source)).toEqual(["€ui", "$unknown"]);
+  });
+
+  it("treats Unicode aliases as literal text when provider dispatch is unsupported", () => {
+    const text = "Use €ui and 𑿝ui and $ui ";
+    expect(collectComposerInlineTokens(text, { allowUnicodeSkillAliases: false })).toEqual([
+      { type: "skill", value: "ui", source: "$ui", start: 21, end: 24 },
+    ]);
+    const confirmed = collectComposerInlineTokens("Use €ui ");
+    expect(
+      collectComposerInlineTokens("Use €ui", {
+        allowUnicodeSkillAliases: false,
+        preserveTrailingFrom: confirmed,
+      }),
+    ).toEqual([]);
+  });
+
   it("collects file links, mentions, and skills with source ranges", () => {
     const text = "Use $ui and inspect [Chat.tsx](src/Chat.tsx) with @AGENTS.md please";
 

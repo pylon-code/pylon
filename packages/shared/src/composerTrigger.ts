@@ -56,6 +56,7 @@ export function detectComposerTrigger(
   text: string,
   cursorInput: number,
   isWhitespaceChar?: (char: string) => boolean,
+  allowUnicodeSkillAliases = true,
 ): ComposerTrigger | null {
   const cursor = clampCursor(text, cursorInput);
   const lineStart = text.lastIndexOf("\n", Math.max(0, cursor - 1)) + 1;
@@ -109,7 +110,7 @@ export function detectComposerTrigger(
       rangeEnd: cursor,
     };
   const skillPrefix = /^\p{Sc}/u.exec(token);
-  if (skillPrefix) {
+  if (skillPrefix && (allowUnicodeSkillAliases || skillPrefix[0] === "$")) {
     return {
       kind: "skill",
       query: token.slice(skillPrefix[0].length),

@@ -3,6 +3,11 @@ import { describe, expect, it } from "vite-plus/test";
 import { detectComposerTrigger, serializeComposerFileLink } from "./composerTrigger.ts";
 
 describe("detectComposerTrigger", () => {
+  it("offers dollar skills but not Unicode aliases for unsupported providers", () => {
+    expect(detectComposerTrigger("Use €review", 11, undefined, false)).toBeNull();
+    expect(detectComposerTrigger("Use $review", 11, undefined, false)?.kind).toBe("skill");
+  });
+
   it.each(["$", "€", "£", "¥", "₹", "₩", "₿", "𑿝"])(
     "detects %s skill prefixes and their source range",
     (prefix) => {

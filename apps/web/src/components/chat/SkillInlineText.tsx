@@ -16,7 +16,11 @@ const SKILL_TOKEN_REGEX =
 
 type InlineSkill = Pick<ServerProviderSkill, "name" | "displayName">;
 
-export function SkillInlineText(props: { text: string; skills: ReadonlyArray<InlineSkill> }) {
+export function SkillInlineText(props: {
+  text: string;
+  skills: ReadonlyArray<InlineSkill>;
+  allowUnicodeSkillAliases?: boolean;
+}) {
   const nodes: ReactNode[] = [];
   let cursor = 0;
 
@@ -25,6 +29,7 @@ export function SkillInlineText(props: { text: string; skills: ReadonlyArray<Inl
     const name = match[2] ?? "";
     const start = (match.index ?? 0) + prefix.length;
     const rawText = props.text.slice(start, (match.index ?? 0) + match[0].length);
+    if (!props.allowUnicodeSkillAliases && !rawText.startsWith("$")) continue;
     const skill = props.skills.find((candidate) => candidate.name === name);
     if (!skill) {
       continue;
@@ -49,10 +54,17 @@ export function SkillInlineText(props: { text: string; skills: ReadonlyArray<Inl
 export function renderSkillInlineMarkdownChildren(
   children: ReactNode,
   skills: ReadonlyArray<InlineSkill>,
+  allowUnicodeSkillAliases = false,
 ): ReactNode {
   return Children.map(children, (child) => {
     if (typeof child === "string") {
-      return <SkillInlineText text={child} skills={skills} />;
+      return (
+        <SkillInlineText
+          text={child}
+          skills={skills}
+          allowUnicodeSkillAliases={allowUnicodeSkillAliases}
+        />
+      );
     }
     if (!isValidElement<{ children?: ReactNode; node?: { tagName?: string } }>(child)) {
       return child;
@@ -69,7 +81,7 @@ export function renderSkillInlineMarkdownChildren(
     return cloneElement(
       child,
       undefined,
-      renderSkillInlineMarkdownChildren(child.props.children, skills),
+      renderSkillInlineMarkdownChildren(child.props.children, skills, allowUnicodeSkillAliases),
     );
   });
 }

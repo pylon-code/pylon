@@ -7,6 +7,7 @@ import {
   getProviderSkillsForSlashMenu,
   getProviderSlashCommandsForSlashMenu,
   isProviderSkillUserInvocable,
+  supportsUnicodeSkillAliases,
 } from "@t3tools/client-runtime/providerSkills";
 import type { ComposerPathSearchEntry } from "@t3tools/client-runtime/state/threads";
 import {
@@ -467,8 +468,13 @@ export function useComposerCommandMenu({
     if (!enabled || selection.start !== selection.end) {
       return null;
     }
-    return detectComposerTrigger(draftMessage, selection.end);
-  }, [draftMessage, enabled, selection]);
+    return detectComposerTrigger(
+      draftMessage,
+      selection.end,
+      undefined,
+      supportsUnicodeSkillAliases(selectedProviderStatus?.driver),
+    );
+  }, [draftMessage, enabled, selection, selectedProviderStatus?.driver]);
 
   const pathSearch = useComposerPathSearch({
     environmentId,

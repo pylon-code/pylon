@@ -16,6 +16,8 @@ export type ComposerInlineToken =
 
 export interface CollectComposerInlineTokensOptions {
   readonly preserveTrailingFrom?: ReadonlyArray<ComposerInlineToken>;
+  readonly allowUnicodeSkillAliases?: boolean;
+  readonly unicodeSkillNames?: ReadonlySet<string>;
 }
 
 /**
@@ -117,6 +119,9 @@ export function collectComposerInlineTokens(
     }
     const start = (match.index ?? 0) + prefix.length;
     const end = start + fullMatch.length - prefix.length;
+    if (options.allowUnicodeSkillAliases === false && text[start] !== "$") continue;
+    if (text[start] !== "$" && options.unicodeSkillNames && !options.unicodeSkillNames.has(value))
+      continue;
     matches.push({
       type: "skill",
       value,
@@ -130,6 +135,13 @@ export function collectComposerInlineTokens(
     if (
       token.end === text.length &&
       text.slice(token.start, token.end) === token.source &&
+      (options.allowUnicodeSkillAliases !== false ||
+        token.type !== "skill" ||
+        token.source.startsWith("$")) &&
+      (token.type !== "skill" ||
+        token.source.startsWith("$") ||
+        !options.unicodeSkillNames ||
+        options.unicodeSkillNames.has(token.value)) &&
       !matches.some(
         (match) =>
           match.type === token.type && match.start === token.start && match.end === token.end,

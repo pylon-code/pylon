@@ -29,13 +29,19 @@ vi.mock("@lexical/react/LexicalPlainTextPlugin", () => ({
 let renderer: ReactTestRenderer | undefined;
 const editorRef = createRef<ComposerPromptEditorHandle>();
 
-function composer(value: string) {
+function composer(value: string, allowUnicodeSkillAliases = true, registered = true) {
   return (
     <ComposerPromptEditor
       value={value}
-      cursor={collapseExpandedComposerCursor(value, value.length)}
+      cursor={collapseExpandedComposerCursor(
+        value,
+        value.length,
+        allowUnicodeSkillAliases,
+        registered ? new Set(["review"]) : new Set(),
+      )}
       contextRecords={new Map()}
-      skills={[]}
+      skills={[{ name: "review", path: "/skills/review/SKILL.md", enabled: registered }]}
+      allowUnicodeSkillAliases={allowUnicodeSkillAliases}
       disabled={false}
       placeholder="Write a prompt"
       onChange={() => {}}
@@ -45,10 +51,10 @@ function composer(value: string) {
   );
 }
 
-async function renderPrompt(value: string) {
+async function renderPrompt(value: string, allowUnicodeSkillAliases = true, registered = true) {
   await act(() => {
-    if (renderer) renderer.update(composer(value));
-    else renderer = create(composer(value));
+    if (renderer) renderer.update(composer(value, allowUnicodeSkillAliases, registered));
+    else renderer = create(composer(value, allowUnicodeSkillAliases, registered));
   });
 }
 
@@ -191,6 +197,44 @@ describe("composer mention serialization", () => {
 });
 
 describe("composer skill serialization", () => {
+  it("reinterprets astral aliases on a provider switch without changing source text", async () => {
+    const prompt = "Use 𑿝review and €unknown and $review ";
+    await renderPrompt(prompt, true);
+    const readTypes = () =>
+      lexicalEditor.getEditorState().read(() => {
+        const paragraph = $getRoot().getFirstChildOrThrow();
+        if (!$isElementNode(paragraph)) throw new Error("Expected paragraph");
+        return paragraph.getChildren().map((node) => node.getType());
+      });
+    expect(readTypes().filter((type) => type === "composer-skill")).toHaveLength(2);
+    expect(editorRef.current?.readSnapshot().value).toBe(prompt);
+    expect(editorRef.current?.readSnapshot().expandedCursor).toBe(prompt.length);
+
+    await renderPrompt(prompt, false);
+    expect(readTypes().filter((type) => type === "composer-skill")).toHaveLength(1);
+    expect(editorRef.current?.readSnapshot().value).toBe(prompt);
+    expect(editorRef.current?.readSnapshot().expandedCursor).toBe(prompt.length);
+
+    await renderPrompt(prompt, true);
+    expect(readTypes().filter((type) => type === "composer-skill")).toHaveLength(2);
+    expect(editorRef.current?.readSnapshot().value).toBe(prompt);
+  });
+
+  it("removes a Unicode chip when its catalog skill is disabled", async () => {
+    const prompt = "Use €review and $review ";
+    await renderPrompt(prompt, true, true);
+    const countChips = () =>
+      lexicalEditor.getEditorState().read(() => {
+        const paragraph = $getRoot().getFirstChildOrThrow();
+        if (!$isElementNode(paragraph)) throw new Error("Expected paragraph");
+        return paragraph.getChildren().filter((node) => node.getType() === "composer-skill").length;
+      });
+    expect(countChips()).toBe(2);
+    await renderPrompt(prompt, true, false);
+    expect(countChips()).toBe(1);
+    expect(editorRef.current?.readSnapshot().value).toBe(prompt);
+  });
+
   it.each(["€review", "𑿝review"])("preserves %s across clone and JSON reload", async (prompt) => {
     await renderPrompt(`${prompt} `);
     expect(editorRef.current?.readSnapshot().value).toBe(`${prompt} `);

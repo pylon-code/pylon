@@ -104,14 +104,14 @@ import {
 } from "react";
 import { createPortal, flushSync } from "react-dom";
 import {
-  clampCollapsedComposerCursor,
+  clampCollapsedComposerCursor as clampCollapsedComposerCursorRaw,
   type ComposerSubmissionIntent,
   type ComposerTrigger,
-  collapseExpandedComposerCursor,
-  composerStateAtPromptEnd,
+  collapseExpandedComposerCursor as collapseExpandedComposerCursorRaw,
+  composerStateAtPromptEnd as composerStateAtPromptEndRaw,
   composerSubmissionIntentForEnter,
-  detectComposerTrigger,
-  expandCollapsedComposerCursor,
+  detectComposerTrigger as detectComposerTriggerRaw,
+  expandCollapsedComposerCursor as expandCollapsedComposerCursorRaw,
   formatAssistantCitationForComposer,
   replaceTextRange,
 } from "../../composer-logic";
@@ -1073,6 +1073,7 @@ import {
   getProviderSkillsForSlashMenu,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
+  supportsUnicodeSkillAliases,
 } from "@t3tools/client-runtime/providerSkills";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -2731,6 +2732,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedProviderSkills = selectedProviderStatus
     ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd)
     : [];
+  const unicodeSkillNames = new Set(
+    selectedProviderSkills
+      .filter((skill) => skill.enabled && skill.userInvocable !== false)
+      .map((skill) => skill.name),
+  );
+  const allowUnicodeSkillAliases = supportsUnicodeSkillAliases(selectedProvider);
+  const clampCollapsedComposerCursor = (text: string, cursor: number) =>
+    clampCollapsedComposerCursorRaw(text, cursor, allowUnicodeSkillAliases, unicodeSkillNames);
+  const collapseExpandedComposerCursor = (text: string, cursor: number) =>
+    collapseExpandedComposerCursorRaw(text, cursor, allowUnicodeSkillAliases, unicodeSkillNames);
+  const expandCollapsedComposerCursor = (text: string, cursor: number) =>
+    expandCollapsedComposerCursorRaw(text, cursor, allowUnicodeSkillAliases, unicodeSkillNames);
+  const detectComposerTrigger = (text: string, cursor: number) =>
+    detectComposerTriggerRaw(text, cursor, allowUnicodeSkillAliases);
+  const composerStateAtPromptEnd = (text: string) =>
+    composerStateAtPromptEndRaw(text, allowUnicodeSkillAliases, unicodeSkillNames);
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -7702,6 +7719,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         buildContextClipboardFragment={buildContextClipboardFragment}
                         importContextFragment={importContextFragment}
                         skills={selectedProviderSkills}
+                        allowUnicodeSkillAliases={allowUnicodeSkillAliases}
                         containerClassName={cn(isComposerResting && "min-w-0 flex-1")}
                         className={cn(
                           showMobilePendingAnswerActions && "max-sm:pb-11",
