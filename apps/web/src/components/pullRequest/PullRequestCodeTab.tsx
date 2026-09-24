@@ -66,7 +66,6 @@ import { diffFileTreeEntries } from "../diffs/diffFileTree.logic";
 import { useCodeViewFileReveal } from "../diffs/useCodeViewFileReveal";
 import { StyledDiffCodeView } from "../diffs/StyledDiffCodeView";
 import { Button } from "../ui/button";
-import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import {
   DropdownMenu,
@@ -85,8 +84,9 @@ import {
   toggleFileDiffFoldForViewed,
   type DiffFoldOverride,
 } from "./pullRequestDiff.logic";
-import { PullRequestDiffStat, PullRequestMetaLine } from "./pullRequestPresentation";
+import { PullRequestMetaLine } from "./pullRequestPresentation";
 import { usePullRequestFilesViewed } from "./usePullRequestFilesViewed";
+import { useViewedFileHeaderMetadata } from "./useViewedFileHeaderMetadata";
 import {
   nextPendingReviewCommentId,
   pullRequestReviewKey,
@@ -844,71 +844,10 @@ function PullRequestCodeTab({
     [toggleFile],
   );
 
-  // Read through refs rather than closed over. The viewer memoizes each visible file's header
-  // portal on the callback below, so a fresh identity on every tick, and on every refresh of the
-  // host's answer, would rebuild every header on screen.
-  const filesViewedRef = useRef(filesViewed);
-  filesViewedRef.current = filesViewed;
-  const setFileViewedRef = useRef(setFileViewed);
-  setFileViewedRef.current = setFileViewed;
-
-  const renderHeaderMetadata = useCallback(
-    (item: CodeViewItem<ReviewAnnotationGroup>) => {
-      if (item.type !== "diff") return null;
-      let additions = 0;
-      let deletions = 0;
-      for (const hunk of item.fileDiff.hunks) {
-        additions += hunk.additionLines;
-        deletions += hunk.deletionLines;
-      }
-      const path = resolveFileDiffPath(item.fileDiff);
-      if (additions === 0 && deletions === 0) {
-        const withheld = omittedFileStats.get(path);
-        if (withheld) ({ additions, deletions } = withheld);
-      }
-      const stat = (
-        <PullRequestDiffStat
-          additions={additions}
-          deletions={deletions}
-          className="font-mono text-[11px]"
-        />
-      );
-      const viewedFiles = filesViewedRef.current;
-      if (!viewedFiles.enabled || !viewedFiles.isTrackable(path)) return stat;
-      const viewed = viewedFiles.isViewed(path);
-      const stale = viewedFiles.isStale(path);
-      return (
-        <span className="flex items-center gap-3">
-          {stat}
-          {/* The header itself folds the file, so the tick keeps its press to itself. The
-              attribute is what the header's capture listener looks for. */}
-          <label
-            data-viewed-toggle=""
-            className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] text-muted-foreground"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <Checkbox
-              aria-label={stale ? "Changed" : "Viewed"}
-              checked={viewed}
-              onCheckedChange={(next) => setFileViewedRef.current(item.id, path, next === true)}
-            />
-            {stale ? (
-              <Tooltip>
-                <TooltipTrigger render={<span className="text-amber-600 dark:text-amber-500" />}>
-                  Changed
-                </TooltipTrigger>
-                <TooltipPopup side="bottom">
-                  This file has been pushed to since you marked it viewed.
-                </TooltipPopup>
-              </Tooltip>
-            ) : (
-              "Viewed"
-            )}
-          </label>
-        </span>
-      );
-    },
-    [omittedFileStats],
+  const renderHeaderMetadata = useViewedFileHeaderMetadata<ReviewAnnotationGroup>(
+    filesViewed,
+    omittedFileStats,
+    setFileViewed,
   );
 
   const diffViewOptions = useMemo(

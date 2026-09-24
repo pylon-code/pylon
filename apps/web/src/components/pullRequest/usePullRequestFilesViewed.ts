@@ -1,6 +1,6 @@
 import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, PullRequestRef } from "@t3tools/contracts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useEnvironmentQuery } from "~/state/query";
@@ -130,14 +130,20 @@ export function usePullRequestFilesViewed(options: {
     reference.number,
     viewer ?? null,
   ]);
-  const scope = useRef(scopeKey);
+  // Object identity also fences A → B → A: a callback retained from the first A must not
+  // enqueue into the later A merely because the serialized key happens to match again.
+  const owner = useMemo(() => ({ key: scopeKey }), [scopeKey]);
+  const committedOwner = useRef<typeof owner | null>(owner);
 
   // The host's answer as it stood when a completed write was acknowledged, per path. The first
   // answer that differs from it is the first read that could have seen the write, which is what
   // retires the press rather than the host happening to agree with it.
   const answeredFrom = useRef<Map<string, FileViewedStates | null>>(new Map());
   const statesRef = useRef(states);
-  statesRef.current = states;
+  useLayoutEffect(() => {
+    committedOwner.current = owner;
+    statesRef.current = states;
+  }, [owner, states]);
 
   useEffect(() => {
     const pending = new Set([...queued.current.keys(), ...sentBy.current.keys()]);
@@ -155,7 +161,7 @@ export function usePullRequestFilesViewed(options: {
     const batch = toFileViewedBatch(queued.current);
     if (batch.length === 0) return;
     queued.current = new Map();
-    const sentFrom = scope.current;
+    const sentFrom = owner;
     const request = ++requests.current;
     for (const file of batch) sentBy.current.set(file.path, request);
     void setFilesViewed({
@@ -167,7 +173,7 @@ export function usePullRequestFilesViewed(options: {
         .filter((path) => sentBy.current.get(path) === request);
       for (const path of mine) sentBy.current.delete(path);
       // The reader has moved on, and what is on screen now has nothing to do with this answer.
-      if (scope.current !== sentFrom) return;
+      if (committedOwner.current !== sentFrom) return;
       if (result._tag === "Failure") {
         // The host never heard these, so the ticks go back to whatever it last said. Only the
         // paths this request still answers for: one pressed again since is waiting on a request
@@ -188,24 +194,26 @@ export function usePullRequestFilesViewed(options: {
       for (const path of mine) answeredFrom.current.set(path, statesRef.current);
       refresh();
     });
-  }, [environmentId, reference, refresh, setFilesViewed, viewer, onWriteRejected]);
+  }, [environmentId, reference, refresh, setFilesViewed, viewer, onWriteRejected, owner]);
 
   // Read through a ref rather than closed over: `setViewed` is handed to every file header the
   // viewer draws, and a new identity per render would rebuild all of them.
   const flushRef = useRef(flush);
-  flushRef.current = flush;
+  useLayoutEffect(() => {
+    flushRef.current = flush;
+  }, [flush]);
 
   // Leaving a change request, the environment it lives on, or the page itself records what was
   // pressed and then drops the rest. The flush kept here is the one bound to the scope being
   // left, which is what sends those last presses where they were meant to go.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const flushScope = flushRef.current;
-    scope.current = scopeKey;
     return () => {
       if (flushTimer.current !== null) {
         clearTimeout(flushTimer.current);
         flushScope();
       }
+      committedOwner.current = null;
       queued.current = new Map();
       sentBy.current = new Map();
       answeredFrom.current = new Map();
@@ -215,7 +223,9 @@ export function usePullRequestFilesViewed(options: {
   }, [scopeKey]);
 
   const refreshRef = useRef(refresh);
-  refreshRef.current = refresh;
+  useLayoutEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
   const refreshFromHost = useCallback(() => refreshRef.current(), []);
   // Provider CLI sign-in can change outside this tab. Refresh on focus and while the tab is
   // visible so an account switch replaces the old reader's cached marks without a page reload.
@@ -237,7 +247,7 @@ export function usePullRequestFilesViewed(options: {
 
   const setViewed = useCallback(
     (path: string, viewed: boolean) => {
-      if (!accountReady) return;
+      if (!accountReady || committedOwner.current !== owner) return;
       const shown = evidence.get(path);
       if (shown === undefined) return;
       setOverlayDigests((current) => new Map(current).set(path, shown.digest));
@@ -250,7 +260,7 @@ export function usePullRequestFilesViewed(options: {
       if (flushTimer.current !== null) clearTimeout(flushTimer.current);
       flushTimer.current = setTimeout(() => flushRef.current(), FLUSH_DELAY_MS);
     },
-    [accountReady, evidence],
+    [accountReady, evidence, owner],
   );
 
   const isTrackable = useCallback(

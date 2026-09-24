@@ -6,8 +6,8 @@ import {
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
 import * as Cause from "effect/Cause";
-import { act, StrictMode } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { act, startTransition, StrictMode, Suspense } from "react";
+import { create, type ReactTestRenderer, type TestRendererOptions } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const { host, setFilesViewed, toastAdd } = vi.hoisted(() => ({
@@ -57,16 +57,35 @@ function Probe(_props: { readonly view: PullRequestFilesViewedView }) {
   return null;
 }
 
-function Surface() {
+function Surface({ currentReference = reference }: { readonly currentReference?: PullRequestRef }) {
   const view = usePullRequestFilesViewed({
     environmentId,
-    reference,
+    reference: currentReference,
     enabled: true,
     paths,
     evidence,
     onWriteRejected,
   });
   return <Probe view={view} />;
+}
+
+const otherReference: PullRequestRef = { ...reference, number: 43 };
+const neverResolves = new Promise<never>(() => {});
+let suspendedRenders = 0;
+
+function SuspendAfterSurface(): never {
+  suspendedRenders += 1;
+  throw neverResolves;
+}
+
+async function show(currentReference: PullRequestRef) {
+  await act(async () =>
+    renderer!.update(
+      <StrictMode>
+        <Surface currentReference={currentReference} />
+      </StrictMode>,
+    ),
+  );
 }
 
 function view(): PullRequestFilesViewedView {
@@ -94,6 +113,7 @@ beforeEach(async () => {
   host.refresh.mockReset();
   onWriteRejected.mockReset();
   toastAdd.mockReset();
+  suspendedRenders = 0;
   setFilesViewed.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   act(() => {
     renderer = create(
@@ -237,6 +257,91 @@ it("sends the account that owned a queued press even after the next account's an
     },
   });
   expect(view().isViewed("a.ts")).toBe(false);
+});
+
+it("flushes the committed old request on a switch and rejects an old callback after A → B → A", async () => {
+  const firstA = view().setViewed;
+  firstA("a.ts", true);
+  await show(otherReference);
+  expect(setFilesViewed).toHaveBeenCalledExactlyOnceWith({
+    environmentId,
+    input: {
+      ...reference,
+      expectedViewer: "bilal",
+      files: [{ path: "a.ts", viewed: true, digest: "a".repeat(64) }],
+    },
+  });
+
+  firstA("a.ts", false);
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(setFilesViewed).toHaveBeenCalledTimes(1);
+
+  await show(reference);
+  firstA("a.ts", false);
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(setFilesViewed).toHaveBeenCalledTimes(1);
+
+  view().setViewed("a.ts", false);
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(setFilesViewed).toHaveBeenCalledTimes(2);
+  expect(setFilesViewed).toHaveBeenLastCalledWith({
+    environmentId,
+    input: {
+      ...reference,
+      expectedViewer: "bilal",
+      files: [{ path: "a.ts", viewed: false, digest: "a".repeat(64) }],
+    },
+  });
+});
+
+it("rejects a retained press handler after unmount", async () => {
+  const oldHandler = view().setViewed;
+  await act(async () => renderer?.unmount());
+  renderer = null;
+  oldHandler("a.ts", true);
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(setFilesViewed).not.toHaveBeenCalled();
+});
+
+it("keeps a queued press on A when a concurrent B render suspends before commit", async () => {
+  await act(async () => renderer?.unmount());
+  // react-test-renderer's type declaration omits this supported concurrent-root test option.
+  const concurrent = { unstable_isConcurrent: true } as unknown as TestRendererOptions;
+  await act(async () => {
+    renderer = create(
+      <StrictMode>
+        <Suspense fallback={null}>
+          <Surface />
+        </Suspense>
+      </StrictMode>,
+      concurrent,
+    );
+  });
+
+  view().setViewed("a.ts", true);
+  await act(async () => {
+    startTransition(() =>
+      renderer!.update(
+        <StrictMode>
+          <Suspense fallback={null}>
+            <Surface currentReference={otherReference} />
+            <SuspendAfterSurface />
+          </Suspense>
+        </StrictMode>,
+      ),
+    );
+  });
+  expect(suspendedRenders).toBeGreaterThan(0);
+  expect(view().enabled).toBe(true); // A is still the committed view.
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(setFilesViewed).toHaveBeenCalledExactlyOnceWith({
+    environmentId,
+    input: {
+      ...reference,
+      expectedViewer: "bilal",
+      files: [{ path: "a.ts", viewed: true, digest: "a".repeat(64) }],
+    },
+  });
 });
 
 it("hides cached marks and disables writes after an account read fails", async () => {
