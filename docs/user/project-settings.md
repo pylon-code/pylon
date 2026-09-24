@@ -39,6 +39,10 @@ on each selected environment, and reset returns to the environment's shared list
 `t3.json` actions can be imported there.
 
 For workspace mode, a project's `t3.json` preference applies when the project has no override.
+For new worktrees, choose whether git initializes submodules recursively, only at the top level,
+or not at all. A project override takes precedence over its environment setting; when neither
+is set, `worktreeSubmodules` in the newly checked out branch's `t3.json` applies, otherwise
+initialization is recursive. This does not change existing worktrees.
 Browser access changes apply when an agent session next starts.
 
 ## Project icons
