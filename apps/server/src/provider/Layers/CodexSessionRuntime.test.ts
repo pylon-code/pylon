@@ -162,12 +162,35 @@ describe("buildTurnStartParams", () => {
           threadId: "provider-thread-1",
           runtimeMode: "full-access",
           prompt: `${symbol}review ${symbol}2spec $existing ${prose} ${symbol}last`,
+          skillNames: new Set(["review", "2spec", "last"]),
         });
 
         NodeAssert.deepEqual(params.input, [
           { type: "text", text: `$review $2spec $existing ${prose} $last` },
         ]);
       }
+    }),
+  );
+
+  it.effect("preserves unknown Unicode skill words and catalog-unavailable prompts", () =>
+    Effect.gen(function* () {
+      const prompt = "Use €review and €unknown with $existing";
+      const known = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt,
+        skillNames: new Set(["review"]),
+      });
+      NodeAssert.deepEqual(known.input, [
+        { type: "text", text: "Use $review and €unknown with $existing" },
+      ]);
+
+      const unavailable = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt,
+      });
+      NodeAssert.deepEqual(unavailable.input, [{ type: "text", text: prompt }]);
     }),
   );
 

@@ -60,6 +60,14 @@ function $firstMention() {
   return mention;
 }
 
+function $firstSkill() {
+  const paragraph = $getRoot().getFirstChildOrThrow();
+  if (!$isElementNode(paragraph)) throw new Error("Expected a composer paragraph");
+  const skill = paragraph.getFirstChildOrThrow();
+  if (skill.getType() !== "composer-skill") throw new Error("Expected a skill");
+  return skill;
+}
+
 class TestClipboardEvent extends Event {
   readonly clipboardData: DataTransfer;
 
@@ -179,5 +187,51 @@ describe("composer mention serialization", () => {
     expect(event.defaultPrevented).toBe(true);
     expect(editorRef.current?.readSnapshot().value).toBe("[README.md](README.md) ");
     expect(lexicalEditor.getEditorState().read(() => $firstMention().isInline())).toBe(true);
+  });
+});
+
+describe("composer skill serialization", () => {
+  it.each(["€review", "𑿝review"])("preserves %s across clone and JSON reload", async (prompt) => {
+    await renderPrompt(`${prompt} `);
+    expect(editorRef.current?.readSnapshot().value).toBe(`${prompt} `);
+    await act(() => {
+      lexicalEditor.update(
+        () => {
+          const skill = $firstSkill();
+          skill.replace($copyNode(skill));
+        },
+        { discrete: true },
+      );
+    });
+    const exportedState = lexicalEditor.getEditorState().toJSON();
+    await renderPrompt("");
+    await act(() => {
+      lexicalEditor.setEditorState(lexicalEditor.parseEditorState(exportedState));
+    });
+    expect(editorRef.current?.readSnapshot().value).toBe(`${prompt} `);
+  });
+
+  it("reads legacy skill JSON without a source as a dollar alias", async () => {
+    await renderPrompt("");
+    await act(() => {
+      lexicalEditor.setEditorState(
+        lexicalEditor.parseEditorState(
+          JSON.stringify({
+            root: {
+              type: "root",
+              version: 1,
+              children: [
+                {
+                  type: "paragraph",
+                  version: 1,
+                  children: [{ type: "composer-skill", version: 1, skillName: "review" }],
+                },
+              ],
+            },
+          }),
+        ),
+      );
+    });
+    expect(editorRef.current?.readSnapshot().value).toBe("$review");
   });
 });

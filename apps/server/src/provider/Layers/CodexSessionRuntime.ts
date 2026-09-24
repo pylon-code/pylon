@@ -643,10 +643,18 @@ function buildCodexCollaborationMode(input: {
 const SKILL_MENTION_PATTERN =
   /(^|\s)\p{Sc}(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=\s|$)/gu;
 
+function hasUnicodeSkillMention(prompt: string): boolean {
+  return [...prompt.matchAll(SKILL_MENTION_PATTERN)].some((match) => {
+    const prefix = match[1] ?? "";
+    return match[0].slice(prefix.length, prefix.length + 1) !== "$";
+  });
+}
+
 export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
   readonly prompt?: string;
+  readonly skillNames?: ReadonlySet<string>;
   readonly attachments?: ReadonlyArray<{
     readonly type: "localImage";
     readonly path: string;
@@ -665,7 +673,13 @@ export function buildTurnStartParams(input: {
   if (input.prompt) {
     turnInput.push({
       type: "text",
-      text: input.prompt.replace(SKILL_MENTION_PATTERN, "$1$$$2"),
+      text: input.prompt.replace(
+        SKILL_MENTION_PATTERN,
+        (source, whitespace: string, name: string) =>
+          source.slice(whitespace.length).startsWith("$") || input.skillNames?.has(name)
+            ? `${whitespace}$${name}`
+            : source,
+      ),
     });
   }
   for (const attachment of input.attachments ?? []) {
@@ -2902,10 +2916,31 @@ export const makeCodexSessionRuntime = (
           const normalizedModel = normalizeCodexModelSlug(
             input.model ?? (yield* Ref.get(sessionRef)).model,
           );
+          // Resolve aliases through this session's app server. Unknown words and
+          // failed catalog reads must remain the user's literal prompt text.
+          const skillNames =
+            input.input && hasUnicodeSkillMention(input.input)
+              ? yield* client.request("skills/list", { cwds: [options.cwd] }).pipe(
+                  Effect.map((response) => {
+                    const entry = response.data.find((item) => item.cwd === options.cwd);
+                    return new Set(
+                      (entry?.skills ?? [])
+                        .filter((skill) => skill.enabled)
+                        .map((skill) => skill.name),
+                    );
+                  }),
+                  Effect.catch((cause) =>
+                    Effect.logWarning("Failed to resolve Codex skill aliases before turn.", {
+                      cause,
+                    }).pipe(Effect.as(undefined)),
+                  ),
+                )
+              : undefined;
           const params = yield* buildTurnStartParams({
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
             ...(input.input ? { prompt: input.input } : {}),
+            ...(skillNames ? { skillNames } : {}),
             ...(input.attachments ? { attachments: input.attachments } : {}),
             ...(normalizedModel ? { model: normalizedModel } : {}),
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
