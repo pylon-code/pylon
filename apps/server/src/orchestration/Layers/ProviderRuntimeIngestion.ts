@@ -71,7 +71,7 @@ import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
-import { canReplaceThreadTitle } from "../threadTitles.ts";
+import { canReplaceThreadTitle, DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 
 class PrivateProviderRuntimeEventFence extends Context.Service<
   PrivateProviderRuntimeEventFence,
@@ -3043,12 +3043,20 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "thread.metadata.updated" && event.payload.name) {
-        if (canReplaceThreadTitle(thread.title)) {
+        if (
+          event.payload.name !== DEFAULT_THREAD_TITLE &&
+          event.payload.name !== thread.title &&
+          thread.titleState != null &&
+          thread.titleState.source !== "manual" &&
+          canReplaceThreadTitle(thread.title)
+        ) {
           yield* orchestrationEngine.dispatch({
-            type: "thread.meta.update",
+            type: "thread.title.generate.complete",
             commandId: yield* providerCommandId(event, "thread-meta-update"),
             threadId: thread.id,
             title: event.payload.name,
+            expectedTitle: thread.title,
+            expectedVersion: thread.titleState.version,
           });
         }
       }

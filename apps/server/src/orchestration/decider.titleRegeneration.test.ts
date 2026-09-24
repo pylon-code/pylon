@@ -123,6 +123,33 @@ it.layer(NodeServices.layer)("title regeneration decider", (it) => {
     }),
   );
 
+  it.effect("does not rotate intent for an unchanged generated title", () =>
+    Effect.gen(function* () {
+      const version = CommandId.make("cmd-pending-title");
+      const thread = {
+        ...readModel.threads[0]!,
+        titleState: { source: "provisional" as const, version },
+      };
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.title.generate.complete",
+          commandId: CommandId.make("cmd-placeholder-title"),
+          threadId: thread.id,
+          expectedTitle: thread.title,
+          expectedVersion: version,
+          title: thread.title,
+        },
+        readModel: { ...readModel, threads: [thread] },
+      });
+      const event = Array.isArray(result) ? result[0] : result;
+      expect(event.type).toBe("thread.meta-updated");
+      if (event.type === "thread.meta-updated") {
+        expect(event.payload.title).toBeUndefined();
+        expect(event.payload.titleState).toBeUndefined();
+      }
+    }),
+  );
+
   it.effect("invalidates a pending title when a thread is archived and later reopened", () =>
     Effect.gen(function* () {
       const version = CommandId.make("cmd-title-before-archive");

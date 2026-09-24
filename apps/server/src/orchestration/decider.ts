@@ -48,6 +48,7 @@ import {
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
+import { DEFAULT_THREAD_TITLE } from "./threadTitles.ts";
 
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
 
@@ -1358,7 +1359,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         thread.titleState != null &&
         thread.titleState.source !== "manual" &&
         thread.title === command.expectedTitle &&
-        thread.titleState.version === command.expectedVersion;
+        thread.titleState.version === command.expectedVersion &&
+        command.title !== thread.title &&
+        command.title !== DEFAULT_THREAD_TITLE;
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
