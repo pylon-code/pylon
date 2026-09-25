@@ -150,6 +150,9 @@ The `production` GitHub environment must define these Actions variables:
 - `RELAY_API_ZONE_NAME`
 - `RELAY_TUNNEL_ZONE_NAME`
 - `RELAY_DOMAIN` if overriding the derived production relay domain
+- `RELAY_TUNNEL_CLEANUP_MODE` to reclaim idle managed tunnels: `off` (the default when unset),
+  `dry-run`, or `enabled`. Follow the [rollout](../../docs/operations/release.md#managed-tunnel-cleanup-rollout)
+  before changing it.
 - `CLERK_PUBLISHABLE_KEY`
 - `CLERK_JWT_AUDIENCE`
 - `CLERK_JWT_TEMPLATE`
