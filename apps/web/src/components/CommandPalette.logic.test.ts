@@ -11,6 +11,7 @@ import {
   filterPinnedBrowseEntries,
   filterCommandPaletteGroups,
   getExistingThreadForProjectAdd,
+  nextAppearanceMode,
   reduceCommandPaletteUiState,
   type CommandPaletteActionItem,
   type CommandPaletteGroup,
@@ -252,6 +253,17 @@ describe("reduceCommandPaletteUiState", () => {
       mode: "command",
       openIntent: { kind: "new-thread-in" },
     });
+    expect(reduceCommandPaletteUiState(filesOpen, { _tag: "OpenChangeTheme" })).toEqual({
+      open: true,
+      mode: "command",
+      openIntent: { kind: "change-theme" },
+    });
+  });
+
+  it("cycles every appearance mode back to the starting mode", () => {
+    expect(nextAppearanceMode("system")).toBe("light");
+    expect(nextAppearanceMode("light")).toBe("dark");
+    expect(nextAppearanceMode("dark")).toBe("system");
   });
 
   it("preserves the mode on close and resets it on open", () => {
