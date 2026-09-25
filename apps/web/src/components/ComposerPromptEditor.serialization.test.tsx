@@ -3,6 +3,7 @@ import { $copyNode, $getRoot, $isElementNode, PASTE_COMMAND, type LexicalEditor 
 import { act, createRef } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 
 import { collapseExpandedComposerCursor } from "../composer-logic";
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
@@ -84,6 +85,16 @@ afterEach(async () => {
 });
 
 describe("composer mention serialization", () => {
+  it("turns an absolute dropped folder path into a retained path chip", async () => {
+    const path = "/tmp/My Project/contracts";
+    const prompt = `${serializeComposerFileLink(path)} `;
+    await renderPrompt(prompt);
+    expect(editorRef.current?.readSnapshot().value).toBe(prompt);
+    expect(lexicalEditor.getEditorState().read(() => $firstMention().exportJSON())).toMatchObject({
+      path,
+    });
+  });
+
   it.each([
     "@README.md control",
     "@terminal-1:3 Explain this output\n\n<terminal_context>\n- Terminal 1 line 3:\n  3 | output\n</terminal_context>",

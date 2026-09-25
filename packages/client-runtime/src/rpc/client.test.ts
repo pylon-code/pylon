@@ -1,11 +1,13 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  ORCHESTRATION_WS_METHODS,
   EnvironmentId,
   PreviewTabId,
   ThreadId,
   type PreviewAutomationStreamEvent,
   type PreviewSessionSnapshot,
   type ServerConfig,
+  type ClientOrchestrationCommand,
   type RelayClientInstallProgressEvent,
   type ServerConfigStreamEvent,
   type ServerLifecycleStreamEvent,
@@ -332,6 +334,99 @@ describe("environment RPC", () => {
         }),
     );
   }
+
+  it.effect("rejects a queued pasted-text command when its receiving session is older", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const { activeSession, supervisor } = yield* makeHarness();
+      const ready = yield* Deferred.make<void>();
+      const command = {
+        type: "thread.turn.start",
+        message: {
+          attachments: [
+            {
+              type: "file",
+              id: "paste-1",
+              name: "paste.txt",
+              mimeType: "text/plain",
+              sizeBytes: 4,
+              source: { _tag: "pasted-text" },
+            },
+          ],
+        },
+      } as unknown as ClientOrchestrationCommand;
+      const receiver = (label: string, supported: boolean) => ({
+        ...session({
+          [ORCHESTRATION_WS_METHODS.dispatchCommand]: () =>
+            Effect.sync(() => {
+              calls.push(label);
+              return { status: "accepted" };
+            }),
+        } as unknown as WsRpcProtocolClient),
+        initialConfig: Effect.succeed({
+          environment: { capabilities: { pastedTextAttachments: supported } },
+        } as unknown as ServerConfig),
+      });
+      yield* SubscriptionRef.set(activeSession, Option.some(receiver("new", true)));
+      const queued = yield* Deferred.await(ready).pipe(
+        Effect.flatMap(() => request(ORCHESTRATION_WS_METHODS.dispatchCommand, command)),
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.exit,
+        Effect.forkChild,
+      );
+      yield* SubscriptionRef.set(activeSession, Option.some(receiver("old", false)));
+      yield* Deferred.succeed(ready, undefined);
+      const rejected = yield* Fiber.join(queued);
+      expect(Exit.isFailure(rejected)).toBe(true);
+      expect(calls).toEqual([]);
+
+      const question = {
+        type: "thread.user-input.respond",
+        attachmentsByQuestionId: {
+          question: [
+            {
+              type: "file",
+              id: "paste-1",
+              name: "paste.txt",
+              mimeType: "text/plain",
+              sizeBytes: 4,
+              source: { _tag: "pasted-text" },
+            },
+          ],
+        },
+      } as unknown as ClientOrchestrationCommand;
+      const rejectedQuestion = yield* request(
+        ORCHESTRATION_WS_METHODS.dispatchCommand,
+        question,
+      ).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.exit,
+      );
+      expect(Exit.isFailure(rejectedQuestion)).toBe(true);
+      expect(calls).toEqual([]);
+
+      const ordinary = {
+        type: "thread.turn.start",
+        message: {
+          attachments: [
+            {
+              type: "file",
+              id: "normal",
+              name: "normal.txt",
+              mimeType: "text/plain",
+              sizeBytes: 4,
+            },
+          ],
+        },
+      } as unknown as ClientOrchestrationCommand;
+      const allowed = yield* request(ORCHESTRATION_WS_METHODS.dispatchCommand, ordinary).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.exit,
+      );
+      expect(Exit.isSuccess(allowed)).toBe(true);
+      expect(calls).toEqual(["old"]);
+    }),
+  );
 
   it.effect("observes unary requests until they complete", () =>
     Effect.gen(function* () {
