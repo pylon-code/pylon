@@ -63,8 +63,9 @@ and Control elsewhere. Other modifiers are `cmd` / `meta`, `ctrl` / `control`, `
 
 ## When conditions
 
-Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`, `previewOpen`, and
-`modelPickerOpen`. Unknown keys evaluate to `false`.
+Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`, `previewOpen`,
+`modelPickerOpen`, and `editableFocus`. `editableFocus` is true while a text field or editor owns
+the keyboard. Unknown keys evaluate to `false`.
 
 Combine keys with `!` for not, `&&` for and, `||` for or, and parentheses:
 
@@ -88,6 +89,8 @@ chooser. Both use your [new-thread defaults](./thread-sidebar.md#start-a-thread)
 `thread.copyReference` (`mod+shift+c`) copies the open pull request panel URL, then the thread's pull
 request link, or its thread ID when no pull request is available. `thread.settle` (`mod+shift+s`)
 settles the active thread or restores it, and `thread.pin` (`mod+shift+p`) pins or unpins it.
+`thread.undo` (`mod+z`) reverses the newest thread action whose **Undo** notification is still
+active. Text editors and terminals keep their native undo behavior.
 
 `thread.stop` stops the running turn in the focused thread, including a turn still waiting to
 start. `rightPanel.toggleMaximized` maximizes or restores the right panel. Neither has a default

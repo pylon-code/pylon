@@ -21,6 +21,7 @@ import {
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
+import { rpcSessionOwner } from "../rpc/sessionOwner.ts";
 import {
   archiveThread,
   createProject,
@@ -29,6 +30,10 @@ import {
   settleThread,
   stopThreadSession,
   unsettleThread,
+  unarchiveThread,
+  pinThread,
+  snoozeThread,
+  unsnoozeThread,
 } from "./commands.ts";
 
 const TEST_CRYPTO_LAYER = Layer.succeed(
@@ -76,6 +81,33 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("environment commands", () => {
+  it.effect("keeps Undo session ownership local across every inverse command", () =>
+    Effect.gen(function* () {
+      const dispatched: ClientOrchestrationCommand[] = [];
+      const supervisor = yield* makeSupervisor(dispatched);
+      const current = yield* SubscriptionRef.get(supervisor.session);
+      if (Option.isNone(current)) throw new Error("Expected a connected test session");
+      const owner = rpcSessionOwner(current.value);
+      const threadId = ThreadId.make("thread-1");
+      const metadata = { threadId, expectedSessionOwner: owner };
+      const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      yield* run(unarchiveThread(metadata));
+      yield* run(unsettleThread({ ...metadata, reason: "user" }));
+      yield* run(pinThread(metadata));
+      yield* run(snoozeThread({ ...metadata, snoozedUntil: "2026-10-01T00:00:00.000Z" }));
+      yield* run(unsnoozeThread({ ...metadata, reason: "user" }));
+      expect(dispatched.map((command) => command.type)).toEqual([
+        "thread.unarchive",
+        "thread.unsettle",
+        "thread.pin",
+        "thread.snooze",
+        "thread.unsnooze",
+      ]);
+      for (const command of dispatched) expect(command).not.toHaveProperty("expectedSessionOwner");
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
   it.effect("adds generated command metadata", () =>
     Effect.gen(function* () {
       const dispatched: ClientOrchestrationCommand[] = [];

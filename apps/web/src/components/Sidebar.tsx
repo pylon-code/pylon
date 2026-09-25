@@ -2,6 +2,7 @@ import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePull
 import { useCompactSidebarEnabled } from "../hooks/useSettings";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import * as Schema from "effect/Schema";
 import {
@@ -119,6 +120,8 @@ import {
   useThreadSelectionStore,
 } from "../threadSelectionStore";
 import { useThreadActions } from "../hooks/useThreadActions";
+import * as ThreadUndo from "../hooks/threadUndo";
+import { showUndoToast } from "../hooks/showUndoToast";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
@@ -218,12 +221,7 @@ import {
   type TerminalStatusIndicator,
   useLinkedThreadPullRequest,
 } from "./ThreadStatusIndicators";
-import {
-  resolveSnoozePresets,
-  snoozeWakeDescription,
-  snoozeWakeLabel,
-  type SnoozePreset,
-} from "./Sidebar.snooze";
+import { resolveSnoozePresets, snoozeWakeLabel, type SnoozePreset } from "./Sidebar.snooze";
 import { ProjectFavicon, type ProjectFaviconProject } from "./ProjectFavicon";
 import { ThreadSearchMatchExcerpt } from "./ThreadSearchMatch";
 import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
@@ -3505,7 +3503,9 @@ export default function Sidebar() {
         settlingThreadKeysRef.current.add(threadKey);
         try {
           const navigateAfterSettle = planForwardNavigation(threadKey, opts.coSettlingKeys);
-          const result = await settleThread(threadRef);
+          const result = await settleThread(threadRef, {
+            undoToast: opts.coSettlingKeys === undefined,
+          });
           if (result._tag === "Failure") {
             // Never navigate away from a thread that did not settle.
             if (!isAtomCommandInterrupted(result)) {
@@ -3743,8 +3743,8 @@ export default function Sidebar() {
     [pinThread],
   );
   const attemptUnpin = useCallback(
-    async (threadRef: ScopedThreadRef) => {
-      const result = await confirmAndUnpinThread(threadRef);
+    async (threadRef: ScopedThreadRef, opts: { undoToast?: boolean } = {}) => {
+      const result = await confirmAndUnpinThread(threadRef, opts);
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
         toastManager.add(
@@ -4085,7 +4085,10 @@ export default function Sidebar() {
           }
           case "move-active":
             // The drag expresses unpin intent; button/menu confirmation is unchanged.
-            if (plan.unpin && !(await run(unpinThread(threadRef), "Failed to unpin thread")))
+            if (
+              plan.unpin &&
+              !(await run(unpinThread(threadRef, { undoToast: false }), "Failed to unpin thread"))
+            )
               return;
             if (
               plan.unsettle &&
@@ -4168,19 +4171,27 @@ export default function Sidebar() {
         // Snoozing the open thread moves you forward, same as settle —
         // both park the thread you're done with for now.
         const navigateAfterSnooze = planForwardNavigation(threadKey, opts.coSnoozingKeys);
-        const result = await snoozeThread(threadRef, preset.snoozedUntil);
+        const result = await snoozeThread(threadRef, preset.snoozedUntil, {
+          undoToast: opts.coSnoozingKeys === undefined,
+          claimForBatch: opts.coSnoozingKeys !== undefined,
+        });
         if (result._tag === "Failure") {
           // Never navigate away from a thread that did not snooze.
           return isAtomCommandInterrupted(result)
             ? ({ status: "interrupted" } as const)
             : ({ status: "failure", error: squashAtomCommandFailure(result) } as const);
         }
+        const undoClaim = opts.coSnoozingKeys
+          ? ThreadUndo.takeBatchClaim("snooze", threadKey, result.value.sequence)
+          : undefined;
+        // A successful no-op or superseded receipt did not earn an inverse.
+        if (opts.coSnoozingKeys && !undoClaim) return { status: "skipped" } as const;
         // Only move forward if the user is still on the snoozed thread —
         // a navigation made during the await wins over ours.
         if (routeThreadKeyRef.current === threadKey) {
           navigateAfterSnooze?.();
         }
-        return { status: "success" } as const;
+        return { status: "success", undoClaim } as const;
       } finally {
         snoozingThreadKeysRef.current.delete(threadKey);
       }
@@ -4206,23 +4217,9 @@ export default function Sidebar() {
           );
           return;
         }
-        if (outcome.status !== "success") return;
-        // Snooze hides the row, so the toast is the only confirmation —
-        // and the Undo is the escape hatch for a mis-click.
-        toastManager.add(
-          stackedThreadToast({
-            type: "success",
-            title: `Snoozed until ${snoozeWakeDescription(preset.snoozedUntil, new Date(), timestampFormat)}`,
-            timeout: 5_000,
-            actionProps: {
-              children: "Undo",
-              onClick: () => attemptUnsnooze(threadRef),
-            },
-          }),
-        );
       })();
     },
-    [attemptUnsnooze, performSnooze, timestampFormat],
+    [performSnooze],
   );
 
   const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
@@ -4317,9 +4314,12 @@ export default function Sidebar() {
               return { outcome, threadRef };
             }),
           );
-          const snoozedThreadRefs = outcomes.flatMap(({ outcome, threadRef }) =>
-            outcome.status === "success" ? [threadRef] : [],
+          const snoozedMembers = outcomes.flatMap(({ outcome, threadRef }) =>
+            outcome.status === "success" && outcome.undoClaim?.sessionOwner
+              ? [{ threadRef, claim: outcome.undoClaim }]
+              : [],
           );
+          const snoozedThreadRefs = snoozedMembers.map(({ threadRef }) => threadRef);
           const failures = outcomes.flatMap(({ outcome }) =>
             outcome.status === "failure" ? [outcome.error] : [],
           );
@@ -4327,26 +4327,39 @@ export default function Sidebar() {
           if (snoozedThreadRefs.length > 0) {
             const snoozedCount = snoozedThreadRefs.length;
             const failedCount = failures.length;
-            toastManager.add(
-              stackedThreadToast({
-                type: failedCount > 0 ? "warning" : "success",
-                title:
-                  failedCount > 0
-                    ? `Snoozed ${snoozedCount} of ${selectedThreads.length} threads`
-                    : `Snoozed ${snoozedCount} thread${snoozedCount === 1 ? "" : "s"}`,
-                description:
-                  failedCount > 0
-                    ? `${failedCount} thread${failedCount === 1 ? "" : "s"} couldn't be snoozed.`
-                    : undefined,
-                timeout: 5_000,
-                actionProps: {
-                  children: "Undo",
-                  onClick: () => {
-                    for (const threadRef of snoozedThreadRefs) attemptUnsnooze(threadRef);
-                  },
-                },
-              }),
+            // The batch notice owns only confirmed successes. A later action
+            // on any member invalidates the whole batch so Undo cannot revert
+            // a newer intent or touch a failed member.
+            const claims = outcomes.flatMap(({ outcome }) =>
+              outcome.status === "success" && outcome.undoClaim ? [outcome.undoClaim] : [],
             );
+            showUndoToast({
+              type: failedCount > 0 ? "warning" : "success",
+              title:
+                failedCount > 0
+                  ? `Snoozed ${snoozedCount} of ${selectedThreads.length} threads`
+                  : `Snoozed ${snoozedCount} thread${snoozedCount === 1 ? "" : "s"}`,
+              description:
+                failedCount > 0
+                  ? `${failedCount} thread${failedCount === 1 ? "" : "s"} couldn't be snoozed.`
+                  : undefined,
+              claim: {
+                isCurrent: () => claims.every((claim) => claim.isCurrent()),
+                finish: () => claims.forEach((claim) => claim.finish()),
+              },
+              undo: async () => {
+                const results = await Promise.all(
+                  snoozedMembers.map(({ threadRef, claim }) =>
+                    unsnoozeThread(threadRef, claim.sessionOwner ?? undefined),
+                  ),
+                );
+                return (
+                  results.find((result) => result._tag === "Failure") ??
+                  AsyncResult.success(undefined)
+                );
+              },
+              failureTitle: "Failed to wake threads",
+            });
           } else if (failures.length > 0) {
             const firstError = failures[0];
             toastManager.add(
@@ -4364,7 +4377,9 @@ export default function Sidebar() {
       if (clicked.value === "unpin") {
         // Await each confirmation so Pylon never opens overlapping dialogs.
         for (const thread of pinnedSelectedThreads) {
-          const result = await attemptUnpin(scopeThreadRef(thread.environmentId, thread.id));
+          const result = await attemptUnpin(scopeThreadRef(thread.environmentId, thread.id), {
+            undoToast: false,
+          });
           if (result._tag === "Failure" && isAtomCommandInterrupted(result)) break;
         }
         clearSelection();
@@ -4466,7 +4481,7 @@ export default function Sidebar() {
       performSnooze,
       removeFromSelection,
       serverConfigs,
-      attemptUnsnooze,
+      unsnoozeThread,
       updateThreadMetadata,
       timestampFormat,
     ],
