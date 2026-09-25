@@ -1,12 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "react-native";
 
 import {
   CommandId,
   MessageId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   RuntimeTaskId,
   type EnvironmentId,
   type ModelSelection,
@@ -15,6 +16,10 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
+import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
+import { nextPastedTextFileName, pastedTextDisposition } from "@t3tools/client-runtime/text-paste";
+import type { ComposerTextPaste } from "../native/T3ComposerEditor.types";
+import { supportsNativePastedTextAttachments } from "../native/composerPasteCapability";
 import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
 import {
   parseCodexFeedbackCommand,
@@ -62,12 +67,18 @@ import { serializeComposerMessageForEnvironment } from "./serialize-composer-mes
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
 import {
   convertPastedImagesToAttachments,
+  createPastedTextComposerAttachment,
   pasteComposerClipboard,
   pickComposerFiles,
   pickComposerMedia,
+  removePersistedComposerAttachmentFile,
 } from "../lib/composerImages";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
-import { prepareTurnAttachments, validateDraftFileAttachments } from "../lib/attachmentUpload";
+import {
+  prepareTurnAttachments,
+  preparedPastedTextLeaseCurrent,
+  validateDraftFileAttachments,
+} from "../lib/attachmentUpload";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import {
   canSendToModelSelection,
@@ -82,9 +93,14 @@ import { serverEnvironment } from "../state/server";
 import { pendingThreadCreationMessage } from "./pending-thread-creation";
 import {
   appendComposerDraftAttachments,
-  appendComposerDraftText,
+  countComposerDraftAttachmentsAfterSelection,
+  insertComposerDraftText,
+  insertComposerDraftTextIfIncarnation,
+  mayCommitPastedTextAttachment,
   insertComposerDraftContext,
   clearComposerDraftContent,
+  captureComposerDraftInsertion,
+  bindComposerDraftSourceEpoch,
   composerDraftsAtom,
   composerContextImportsAtom,
   ensureComposerDraftsLoaded,
@@ -98,6 +114,7 @@ import {
   useComposerDraft,
 } from "./use-composer-drafts";
 import { setPendingConnectionError } from "../state/use-remote-environment-registry";
+import { connectedPastedTextAttachmentLease } from "./pasted-text-capability";
 import { useEnvironmentServerConfig, useProjects } from "../state/entities";
 import { useSelectedThreadDetail } from "../state/use-thread-detail";
 import { useThreadSelection } from "../state/use-thread-selection";
@@ -237,6 +254,32 @@ export function useThreadComposerState() {
   const selectedThreadKey = selectedThreadShell
     ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)
     : null;
+  const pasteOwner = useMemo(
+    () => ({
+      key: selectedThreadKey,
+      incarnation: Symbol("thread-paste"),
+    }),
+    [selectedThreadKey, selectedThreadShell?.sourceEpoch],
+  );
+  const committedPasteOwner = useRef<typeof pasteOwner | null>(null);
+  const pasteOwnerDraftIncarnations = useRef(new WeakMap<typeof pasteOwner, symbol>());
+  const pendingPasteWrites = useRef(new Map<symbol, number>());
+  useLayoutEffect(() => {
+    if (pasteOwner.key)
+      pasteOwnerDraftIncarnations.current.set(
+        pasteOwner,
+        bindComposerDraftSourceEpoch(pasteOwner.key, selectedThreadShell?.sourceEpoch ?? 0),
+      );
+    committedPasteOwner.current = pasteOwner;
+    return () => {
+      if (committedPasteOwner.current === pasteOwner) committedPasteOwner.current = null;
+      pendingPasteWrites.current.delete(pasteOwner.incarnation);
+    };
+  }, [pasteOwner, selectedThreadShell?.sourceEpoch]);
+  const pastedTextNames = useRef<{ owner: symbol | null; names: Set<string> }>({
+    owner: null,
+    names: new Set(),
+  });
   // The creation entry is the thread itself (rendered as the first message),
   // not a follow-up waiting behind it.
   const selectedThreadQueuedMessages = useMemo(
@@ -679,7 +722,11 @@ export function useThreadComposerState() {
     (selectedThread.session?.status === "running" || selectedThread.session?.status === "starting");
 
   const onSendMessage = useCallback(async () => {
-    if (!selectedThreadShell || sessionCompactionBlocksSubmission) {
+    if (
+      !selectedThreadShell ||
+      sessionCompactionBlocksSubmission ||
+      (pendingPasteWrites.current.get(pasteOwner.incarnation) ?? 0) > 0
+    ) {
       return null;
     }
     // The server has not created this thread yet. Queuing a follow-up against
@@ -691,11 +738,28 @@ export function useThreadComposerState() {
     }
 
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
+    if (getComposerDraftSnapshot(threadKey).text.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+      setPendingConnectionError(
+        "Message text is too large. Remove some text or attach it as a file before sending.",
+      );
+      return null;
+    }
     const draft = getComposerDraftSnapshot(threadKey);
     if (appAtomRegistry.get(composerContextImportsAtom)[threadKey]) return null;
     const thread = selectedThreadDetail ?? selectedThreadShell;
     const text = draft.text.trim();
     const attachments = draft.attachments;
+    if (
+      attachments.some(
+        (attachment) => attachment.type === "file" && attachment.source?._tag === "pasted-text",
+      ) &&
+      connectedPastedTextAttachmentLease(selectedThreadShell.environmentId) === null
+    ) {
+      setPendingConnectionError(
+        "Pasted-text attachments need a connected server that supports them. Reconnect before sending.",
+      );
+      return null;
+    }
     if (
       composerAttachmentUploadBlockReason({
         environmentId: selectedThreadShell.environmentId,
@@ -866,12 +930,14 @@ export function useThreadComposerState() {
     selectedThreadProject,
     selectedThreadServerConfig,
     selectedThreadShell,
+    pasteOwner,
     uploadThreadFeedback,
   ]);
 
   const onQueueFollowUp = useCallback(async () => {
     if (
       !selectedThreadShell ||
+      (pendingPasteWrites.current.get(pasteOwner.incarnation) ?? 0) > 0 ||
       sessionCompactionBlocksSubmission ||
       selectedThreadDetail?.session?.status !== "running" ||
       selectedThreadDetail.session.activeTurnId == null
@@ -880,6 +946,12 @@ export function useThreadComposerState() {
     }
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
     const draft = getComposerDraftSnapshot(threadKey);
+    if (draft.text.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+      setPendingConnectionError(
+        "Message text is too large. Remove some text or attach it as a file before sending.",
+      );
+      return null;
+    }
     const submissionSettings = resolveExistingThreadComposerSettings({
       thread: selectedThreadDetail,
       sessionProviderInstanceId: selectedSessionProviderInstanceId,
@@ -895,6 +967,17 @@ export function useThreadComposerState() {
     }
     const text = draft.text.trim();
     const attachments = draft.attachments;
+    if (
+      attachments.some(
+        (attachment) => attachment.type === "file" && attachment.source?._tag === "pasted-text",
+      ) &&
+      connectedPastedTextAttachmentLease(selectedThreadShell.environmentId) === null
+    ) {
+      setPendingConnectionError(
+        "Pasted-text attachments need a connected server that supports them. Reconnect before sending.",
+      );
+      return null;
+    }
     if (text.length === 0 && attachments.length === 0) return null;
     if (appAtomRegistry.get(composerContextImportsAtom)[threadKey]) return null;
     const contextBlockReason = composerContextSendBlockReason(draft.context);
@@ -969,6 +1052,13 @@ export function useThreadComposerState() {
       setPendingConnectionError("The attachments are no longer available.");
       return null;
     }
+    if (!preparedPastedTextLeaseCurrent(selectedThreadShell.environmentId, prepared)) {
+      await prepared.releaseUploads();
+      setPendingConnectionError(
+        "The server changed while pasted text was uploading. Reconnect and send again.",
+      );
+      return null;
+    }
 
     // Defer cleanup: the sweep would otherwise delete the local bytes while the
     // queue call is still in flight, leaving a failure restore pointing at
@@ -1019,6 +1109,7 @@ export function useThreadComposerState() {
     selectedThreadServerConfig,
     selectedThreadShell,
     sessionCompactionBlocksSubmission,
+    pasteOwner,
   ]);
 
   const onMessageSessionAgent = useCallback(
@@ -1320,23 +1411,159 @@ export function useThreadComposerState() {
     }
 
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
-    const result = await pasteComposerClipboard({
-      existingCount: composerDrafts[threadKey]?.attachments.length ?? 0,
-    });
-    const rejectedPasteCount = appendComposerDraftAttachments(threadKey, result.images, {
-      appendReference: true,
-    });
-    if (result.text) {
-      appendComposerDraftText(threadKey, result.text);
-    }
-    if (result.error) {
-      setPendingConnectionError(result.error);
-    } else if (rejectedPasteCount > 0) {
-      setPendingConnectionError(
-        `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`,
+    const target = captureComposerDraftInsertion(threadKey);
+    const draftIncarnation = pasteOwnerDraftIncarnations.current.get(pasteOwner) ?? null;
+    if (!mayCommitPastedTextAttachment(threadKey, draftIncarnation)) {
+      Alert.alert(
+        "Paste was not added",
+        "The original draft was discarded. Paste again to add the clipboard content.",
       );
+      return;
     }
-  }, [composerDrafts, selectedThreadShell]);
+    pendingPasteWrites.current.set(
+      pasteOwner.incarnation,
+      (pendingPasteWrites.current.get(pasteOwner.incarnation) ?? 0) + 1,
+    );
+    try {
+      const result = await pasteComposerClipboard({
+        existingCount: countComposerDraftAttachmentsAfterSelection(threadKey, target),
+      });
+      if (!mayCommitPastedTextAttachment(threadKey, draftIncarnation)) {
+        if (result.text || result.images.length > 0)
+          Alert.alert(
+            "Paste was not added",
+            "The original draft was discarded. Paste again to add the clipboard content.",
+          );
+        return;
+      }
+      if (committedPasteOwner.current !== pasteOwner) {
+        if (result.text)
+          insertComposerDraftTextIfIncarnation(threadKey, draftIncarnation, result.text, target);
+        if (result.images.length > 0)
+          appendComposerDraftAttachments(threadKey, result.images, {
+            appendReference: true,
+            insertion: target,
+          });
+        return;
+      }
+      const rejectedPasteCount = appendComposerDraftAttachments(threadKey, result.images, {
+        appendReference: true,
+        insertion: target,
+      });
+      if (result.text) {
+        const draft = getComposerDraftSnapshot(threadKey);
+        const connectedLease = connectedPastedTextAttachmentLease(
+          selectedThreadShell.environmentId,
+        );
+        const capabilities = connectedLease?.config.environment.capabilities;
+        const advertisedMax =
+          capabilities?.attachmentUploads === true && capabilities.pastedTextAttachments === true
+            ? capabilities.fileAttachments?.maxUploadBytes
+            : undefined;
+        const maxBytes =
+          advertisedMax === undefined ? null : clampFileAttachmentUploadBytes(advertisedMax);
+        const wouldExceedInputLimit =
+          draft.text.length -
+            (draft.text === target.text ? Math.max(0, target.end - target.start) : 0) +
+            result.text.length >
+          PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
+        const shouldFold =
+          supportsNativePastedTextAttachments() &&
+          maxBytes !== null &&
+          pastedTextDisposition({
+            text: result.text,
+            wouldExceedInputLimit,
+            canAttach: true,
+          }) === "attachment";
+        const canAttach =
+          maxBytes !== null &&
+          shouldFold &&
+          countComposerDraftAttachmentsAfterSelection(threadKey, target) <
+            PROVIDER_SEND_TURN_MAX_ATTACHMENTS &&
+          new TextEncoder().encode(result.text).byteLength <= maxBytes;
+        if (canAttach && maxBytes !== null) {
+          if (pastedTextNames.current.owner !== pasteOwner.incarnation)
+            pastedTextNames.current = { owner: pasteOwner.incarnation, names: new Set() };
+          const reserved = pastedTextNames.current.names;
+          for (const attachment of draft.attachments) reserved.add(attachment.name);
+          const name = nextPastedTextFileName([...reserved]);
+          reserved.add(name);
+          try {
+            const attachment = await createPastedTextComposerAttachment({
+              text: result.text,
+              name,
+              maxBytes,
+            });
+            if (
+              committedPasteOwner.current !== pasteOwner ||
+              !mayCommitPastedTextAttachment(threadKey, draftIncarnation) ||
+              connectedPastedTextAttachmentLease(selectedThreadShell.environmentId)?.state !==
+                connectedLease?.state
+            ) {
+              await removePersistedComposerAttachmentFile(attachment.fileUri);
+              if (
+                insertComposerDraftTextIfIncarnation(
+                  threadKey,
+                  draftIncarnation,
+                  result.text,
+                  target,
+                ) &&
+                wouldExceedInputLimit
+              )
+                setPendingConnectionError(
+                  "Pasted text is too large to send. Reconnect before sending.",
+                );
+              return;
+            }
+            if (
+              appendComposerDraftAttachments(threadKey, [attachment], {
+                appendReference: true,
+                insertion: target,
+              }) > 0
+            ) {
+              await removePersistedComposerAttachmentFile(attachment.fileUri);
+              if (!wouldExceedInputLimit)
+                insertComposerDraftTextIfIncarnation(
+                  threadKey,
+                  draftIncarnation,
+                  result.text,
+                  target,
+                );
+              else setPendingConnectionError("Pasted text is too large for this message.");
+            }
+          } catch (error) {
+            if (
+              insertComposerDraftTextIfIncarnation(
+                threadKey,
+                draftIncarnation,
+                result.text,
+                target,
+              ) &&
+              wouldExceedInputLimit
+            )
+              setPendingConnectionError(
+                error instanceof Error ? error.message : "Could not attach pasted text.",
+              );
+          }
+        } else if (!wouldExceedInputLimit) insertComposerDraftText(threadKey, result.text, target);
+        else
+          setPendingConnectionError(
+            "Pasted text is too large for this message. Remove text or an attachment, then paste again.",
+          );
+      }
+      if (result.error) {
+        setPendingConnectionError(result.error);
+      } else if (rejectedPasteCount > 0) {
+        setPendingConnectionError(
+          `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`,
+        );
+      }
+    } finally {
+      const remaining = pendingPasteWrites.current.get(pasteOwner.incarnation);
+      if (remaining !== undefined)
+        pendingPasteWrites.current.set(pasteOwner.incarnation, Math.max(0, remaining - 1));
+    }
+  }, [pasteOwner, selectedThreadServerConfig, selectedThreadShell]);
 
   const onNativePasteImages = useCallback(
     async (uris: ReadonlyArray<string>) => {
@@ -1345,12 +1572,14 @@ export function useThreadComposerState() {
       }
 
       const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
+      const draftIncarnation = pasteOwnerDraftIncarnations.current.get(pasteOwner) ?? null;
+      if (!mayCommitPastedTextAttachment(threadKey, draftIncarnation)) return;
       try {
         const images = await convertPastedImagesToAttachments({
           uris,
           existingCount: composerDrafts[threadKey]?.attachments.length ?? 0,
         });
-        if (images.length > 0) {
+        if (images.length > 0 && mayCommitPastedTextAttachment(threadKey, draftIncarnation)) {
           appendComposerDraftAttachments(threadKey, images, { appendReference: true });
         }
       } catch (error) {
@@ -1362,7 +1591,134 @@ export function useThreadComposerState() {
         });
       }
     },
-    [composerDrafts, selectedThreadShell],
+    [composerDrafts, pasteOwner, selectedThreadShell],
+  );
+
+  const onNativePasteText = useCallback(
+    async (paste: ComposerTextPaste) => {
+      const threadKey = pasteOwner.key;
+      if (!threadKey || !selectedThreadShell) return;
+      const target = { text: paste.value, ...paste.selection };
+      const draftIncarnation = pasteOwnerDraftIncarnations.current.get(pasteOwner) ?? null;
+      if (!mayCommitPastedTextAttachment(threadKey, draftIncarnation)) {
+        Alert.alert(
+          "Paste was not added",
+          "The original draft was discarded. Paste again to add the text to the current draft.",
+        );
+        return;
+      }
+      const preserveCapturedPaste = () => {
+        if (!insertComposerDraftTextIfIncarnation(threadKey, draftIncarnation, paste.text, target))
+          Alert.alert(
+            "Paste was not added",
+            "The original draft was discarded. Paste again to add the text to the current draft.",
+          );
+      };
+      if (committedPasteOwner.current !== pasteOwner) {
+        preserveCapturedPaste();
+        return;
+      }
+      const wouldExceedInputLimit =
+        paste.value.length -
+          Math.max(0, paste.selection.end - paste.selection.start) +
+          paste.text.length >
+        PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
+      const connectedLease = connectedPastedTextAttachmentLease(selectedThreadShell.environmentId);
+      const capabilities = connectedLease?.config.environment.capabilities;
+      if (capabilities?.attachmentUploads !== true) {
+        if (!wouldExceedInputLimit) insertComposerDraftText(threadKey, paste.text, target);
+        else
+          setPendingConnectionError(
+            "Pasted text is too large for this message. Remove text or an attachment, then paste again.",
+          );
+        return;
+      }
+      const advertisedMax = capabilities.fileAttachments?.maxUploadBytes;
+      const maxBytes =
+        advertisedMax === undefined ? null : clampFileAttachmentUploadBytes(advertisedMax);
+      const shouldFold =
+        pastedTextDisposition({
+          text: paste.text,
+          wouldExceedInputLimit,
+          canAttach: true,
+        }) === "attachment";
+      if (!shouldFold || (maxBytes === null && !wouldExceedInputLimit)) {
+        insertComposerDraftText(threadKey, paste.text, target);
+        return;
+      }
+      const canAttach =
+        maxBytes !== null &&
+        countComposerDraftAttachmentsAfterSelection(threadKey, target) <
+          PROVIDER_SEND_TURN_MAX_ATTACHMENTS &&
+        new TextEncoder().encode(paste.text).byteLength <= maxBytes;
+      if (!canAttach || maxBytes === null) {
+        if (!wouldExceedInputLimit) insertComposerDraftText(threadKey, paste.text, target);
+        else
+          setPendingConnectionError(
+            "Pasted text is too large for this message. Remove text or an attachment, then paste again.",
+          );
+        return;
+      }
+      const currentNames = getComposerDraftSnapshot(threadKey).attachments.map(
+        (attachment) => attachment.name,
+      );
+      if (pastedTextNames.current.owner !== pasteOwner.incarnation)
+        pastedTextNames.current = { owner: pasteOwner.incarnation, names: new Set() };
+      const reserved = pastedTextNames.current.names;
+      for (const name of currentNames) reserved.add(name);
+      const name = nextPastedTextFileName([...reserved]);
+      reserved.add(name);
+      pendingPasteWrites.current.set(
+        pasteOwner.incarnation,
+        (pendingPasteWrites.current.get(pasteOwner.incarnation) ?? 0) + 1,
+      );
+      try {
+        const attachment = await createPastedTextComposerAttachment({
+          text: paste.text,
+          name,
+          maxBytes,
+        });
+        if (
+          committedPasteOwner.current !== pasteOwner ||
+          !mayCommitPastedTextAttachment(threadKey, draftIncarnation) ||
+          connectedPastedTextAttachmentLease(selectedThreadShell.environmentId)?.state !==
+            connectedLease?.state
+        ) {
+          await removePersistedComposerAttachmentFile(attachment.fileUri);
+          preserveCapturedPaste();
+          if (wouldExceedInputLimit)
+            setPendingConnectionError(
+              "Pasted text is too large to send. Reconnect before sending.",
+            );
+          return;
+        }
+        if (
+          appendComposerDraftAttachments(threadKey, [attachment], {
+            appendReference: true,
+            insertion: target,
+          }) > 0
+        ) {
+          await removePersistedComposerAttachmentFile(attachment.fileUri);
+          if (!wouldExceedInputLimit)
+            insertComposerDraftTextIfIncarnation(threadKey, draftIncarnation, paste.text, target);
+          else
+            setPendingConnectionError(
+              `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`,
+            );
+        }
+      } catch (error) {
+        preserveCapturedPaste();
+        if (wouldExceedInputLimit)
+          setPendingConnectionError(
+            error instanceof Error ? error.message : "Could not attach pasted text.",
+          );
+      } finally {
+        const remaining = pendingPasteWrites.current.get(pasteOwner.incarnation);
+        if (remaining !== undefined)
+          pendingPasteWrites.current.set(pasteOwner.incarnation, Math.max(0, remaining - 1));
+      }
+    },
+    [pasteOwner, selectedThreadServerConfig],
   );
 
   const onRemoveDraftImage = useCallback(
@@ -1716,6 +2072,7 @@ export function useThreadComposerState() {
     onPickDraftFiles,
     onPasteIntoDraft,
     onNativePasteImages,
+    onNativePasteText,
     onRemoveDraftImage,
     onSendMessage,
     onQueueFollowUp,

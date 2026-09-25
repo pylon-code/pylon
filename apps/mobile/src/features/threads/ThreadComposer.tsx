@@ -47,6 +47,8 @@ import {
   type SessionResourcesSnapshot,
 } from "@t3tools/client-runtime/state/session-resources";
 import { PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS } from "@t3tools/contracts";
+import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
+import { useConnectedPastedTextAttachmentCapability } from "../../state/pasted-text-capability";
 import type {
   EnvironmentId,
   MessageId,
@@ -252,6 +254,7 @@ export interface ThreadComposerProps {
   readonly onPickDraftMedia: () => Promise<void>;
   readonly onPickDraftFiles: () => Promise<void>;
   readonly onNativePasteImages: (uris: ReadonlyArray<string>) => Promise<void>;
+  readonly onNativePasteText: (paste: ComposerTextPaste) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onReloadSessionResources: () => Promise<void>;
@@ -415,6 +418,9 @@ export function ComposerSurface(props: {
 }
 
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
+  const pastedTextAttachmentsAvailable = useConnectedPastedTextAttachmentCapability(
+    props.environmentId,
+  );
   const project = useProject(scopeProjectRef(props.environmentId, props.selectedThread.projectId));
   const { materialYouStyleLayoutActive, themeVariables: materialTheme } =
     useAppearancePreferences();
@@ -425,6 +431,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
   const inputRef = props.editorRef ?? fallbackInputRef;
   const [isFocused, setIsFocused] = useState(false);
+  const pendingPastedTextRef = useRef(new Map<symbol, number>());
   const settingsSheetPresentation = useThreadSettingsSheetPresentation({
     editorRef: inputRef,
     isEditorFocused: isFocused,
@@ -439,6 +446,21 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
   const hasContent = props.draftMessage.trim().length > 0 || props.draftAttachments.length > 0;
   const composerOwnerKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+  const pasteOwner = useMemo(
+    () => Symbol("composer-paste"),
+    [composerOwnerKey, props.selectedThread.sourceEpoch],
+  );
+  const [pendingPastedTextState, setPendingPastedTextState] = useState<{
+    owner: symbol;
+    count: number;
+  }>(() => ({ owner: pasteOwner, count: 0 }));
+  const pendingPastedTextCount =
+    pendingPastedTextState.owner === pasteOwner ? pendingPastedTextState.count : 0;
+  useLayoutEffect(() => {
+    return () => {
+      pendingPastedTextRef.current.delete(pasteOwner);
+    };
+  }, [pasteOwner]);
   const draftContext = useComposerDraft(composerOwnerKey).context;
   const contextImports = useAtomValue(composerContextImportsAtom);
   const stripAttachments = useMemo(
@@ -567,7 +589,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     });
   // A provider follow-up bypasses the outbox and uploads its files itself, so
   // it still waits for the background transfer instead of starting another.
-  const sendBlockedReason = props.sendBlockedReason ?? attachmentBlockReason;
+  const sendBlockedReason =
+    props.sendBlockedReason ??
+    (pendingPastedTextCount > 0 ? "Attaching pasted text" : null) ??
+    attachmentBlockReason;
   const followUpBlockReason =
     sendBlockedReason ?? (attachmentsUploading ? "Attachment still uploading" : null);
   const canSend =
@@ -1379,7 +1404,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const handleSend = useCallback(async () => {
     // canSend is derived above voiceInput, so the block lives here.
     // Reachable via a hardware-keyboard Return while recording.
-    if (voiceInput.blocksSubmission) return;
+    if (voiceInput.blocksSubmission || (pendingPastedTextRef.current.get(pasteOwner) ?? 0) > 0)
+      return;
     if (!canSend) return;
     if (handleLocalUsageLimits()) return;
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
@@ -1811,6 +1837,29 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 onChangeText={props.onChangeDraftMessage}
                 onSelectionChange={composerMenu.onSelectionChange}
                 onPasteImages={(uris) => void props.onNativePasteImages(uris)}
+                onPasteText={
+                  pastedTextAttachmentsAvailable && !voiceInput.freezesEditor
+                    ? (paste) => {
+                        pendingPastedTextRef.current.set(
+                          pasteOwner,
+                          (pendingPastedTextRef.current.get(pasteOwner) ?? 0) + 1,
+                        );
+                        setPendingPastedTextState({
+                          owner: pasteOwner,
+                          count: pendingPastedTextRef.current.get(pasteOwner) ?? 0,
+                        });
+                        void props.onNativePasteText(paste).finally(() => {
+                          const remaining = pendingPastedTextRef.current.get(pasteOwner);
+                          if (remaining === undefined) return;
+                          pendingPastedTextRef.current.set(pasteOwner, Math.max(0, remaining - 1));
+                          setPendingPastedTextState({
+                            owner: pasteOwner,
+                            count: pendingPastedTextRef.current.get(pasteOwner) ?? 0,
+                          });
+                        });
+                      }
+                    : undefined
+                }
                 placeholder={props.placeholder}
                 onFocus={handleFocus}
                 onBlur={handleBlur}

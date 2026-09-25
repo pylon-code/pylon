@@ -7,6 +7,13 @@ export type ComposerEditorSelection = {
   readonly end: number;
 };
 
+export type ComposerTextPaste = {
+  readonly value: string;
+  readonly eventCount: number;
+  readonly text: string;
+  readonly selection: ComposerEditorSelection;
+};
+
 export interface ComposerEditorHandle {
   focus: () => void;
   blur: () => void;
@@ -50,6 +57,7 @@ export interface ComposerEditorProps {
     readonly start: number;
     readonly end: number;
   }) => void;
+  readonly onPasteText?: (paste: ComposerTextPaste) => void;
   readonly onFocus?: () => void;
   readonly onBlur?: () => void;
   /** Invoked by the native editor when Command-Return is pressed on a hardware keyboard. */

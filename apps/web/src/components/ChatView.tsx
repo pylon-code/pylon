@@ -61,6 +61,9 @@ import {
   isRollbackActive,
   type RollbackTarget,
 } from "@t3tools/client-runtime/rollback";
+import { shouldRoutePlainTextPaste } from "./composerInlineTokenPaste";
+import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
+import { connectedInitialConfigForState } from "@t3tools/client-runtime/state/session";
 import { type CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
 import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import {
@@ -112,6 +115,7 @@ import { flushSync } from "react-dom";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { assistantCitationFromLocation } from "../lib/assistantCitationNavigation";
+import { isMacPlatform } from "../lib/utils";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
 import { useShallow } from "zustand/react/shallow";
 import { getProviderAdmissionUnavailableReason } from "@t3tools/client-runtime/providerAvailability";
@@ -126,6 +130,7 @@ import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/unstable/reactivity";
+import * as Option from "effect/Option";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
@@ -542,7 +547,7 @@ import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/at
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { fileAttachmentCapabilityBlockReason } from "./chat/composerAttachmentFiles";
 import { assetEnvironment } from "../state/assets";
-import { readPreparedConnection } from "../state/session";
+import { environmentSession, readPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { Button } from "./ui/button";
@@ -756,6 +761,19 @@ function pasteTextToFocusComposer(event: ClipboardEvent): string | null {
   if (!shouldRedirectInputToComposer(event)) return null;
   const text = event.clipboardData.getData("text/plain");
   return text.length > 0 ? text : null;
+}
+
+function supportsPastedTextAttachmentsNow(environmentId: EnvironmentId): boolean {
+  const connection = appAtomRegistry.get(environmentCatalog.stateAtom(environmentId));
+  const leaseConfig = appAtomRegistry.get(
+    environmentSession.connectedInitialConfigAtom(environmentId),
+  );
+  if (connection.waiting || leaseConfig.waiting) return false;
+  const config = connectedInitialConfigForState(
+    Option.getOrNull(AsyncResult.value(connection)),
+    Option.getOrElse(AsyncResult.value(leaseConfig), () => Option.none()),
+  );
+  return config?.environment.capabilities.pastedTextAttachments === true;
 }
 
 function formatOutgoingPrompt(params: {
@@ -1750,6 +1768,7 @@ export default function ChatView(props: ChatViewProps) {
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const branchToolbarRef = useRef<BranchToolbarHandle>(null);
+  const pasteAsTextShortcutUntilRef = useRef(0);
   const [restingComposerControlsHost, setRestingComposerControlsHost] =
     useState<HTMLDivElement | null>(null);
   const [restingComposerControlsVisible, setRestingComposerControlsVisible] = useState(false);
@@ -2690,10 +2709,30 @@ export default function ChatView(props: ChatViewProps) {
     observedPullRequestProviders,
   ]);
   const pullRequestsUnavailableGitHubUrl = pullRequestsUnavailableFallbackLink?.url ?? null;
-  const attachmentEnvironmentConfig = environmentById.get(environmentId)?.serverConfig ?? null;
+  const attachmentEnvironment = environmentById.get(environmentId) ?? null;
+  const attachmentEnvironmentConfig = attachmentEnvironment?.serverConfig ?? null;
+  // The presentation config may retain a previous server's capabilities.
+  // Both atoms carry the exact supervisor state object: if the environment ID
+  // reconnects to a different server, the old config cannot match its lease.
+  const attachmentConnectionResult = useAtomValue(environmentCatalog.stateAtom(environmentId));
+  const attachmentLeaseConfigResult = useAtomValue(
+    environmentSession.connectedInitialConfigAtom(environmentId),
+  );
+  const attachmentConnectionState = attachmentConnectionResult.waiting
+    ? null
+    : Option.getOrNull(AsyncResult.value(attachmentConnectionResult));
+  const attachmentLeaseConfig = attachmentLeaseConfigResult.waiting
+    ? Option.none()
+    : Option.getOrElse(AsyncResult.value(attachmentLeaseConfigResult), () => Option.none());
+  const attachmentBootstrapConfig = connectedInitialConfigForState(
+    attachmentConnectionState,
+    attachmentLeaseConfig,
+  );
   const attachmentUploadsCapabilityKnown = attachmentEnvironmentConfig !== null;
   const supportsQuestionAttachments =
     attachmentEnvironmentConfig?.environment.capabilities.questionAttachments === true;
+  const supportsPastedTextAttachments =
+    attachmentBootstrapConfig?.environment.capabilities.pastedTextAttachments === true;
   const supportsAttachmentUploads =
     attachmentEnvironmentConfig?.environment.capabilities.attachmentUploads === true;
   const advertisedFileAttachmentBytes =
@@ -7346,24 +7385,38 @@ export default function ChatView(props: ChatViewProps) {
   // so a paste that follows has no editable target and would be dropped.
   // Route it to the composer like a typed key, which also expands it.
   useEffect(() => {
+    const keyHandler = (event: KeyboardEvent) => {
+      if (
+        shouldRedirectInputToComposer(event) &&
+        isPasteAsTextShortcut(event, isMacPlatform(navigator.platform))
+      ) {
+        pasteAsTextShortcutUntilRef.current = Date.now() + 1_000;
+      }
+    };
     const handler = (event: ClipboardEvent) => {
       if (!activeThreadId || isCommandPaletteOpen()) return;
       if (getTerminalFocusOwner() !== null) return;
       if (composerRef.current?.isModelPickerOpen()) return;
       const text = pasteTextToFocusComposer(event);
-      if (text === null) return;
+      const clipboardData = event.clipboardData;
+      if (text === null || clipboardData === null) return;
+      const bypassAutoAttachment = Date.now() <= pasteAsTextShortcutUntilRef.current;
+      pasteAsTextShortcutUntilRef.current = 0;
       if (
-        composerRef.current?.insertTextAtEnd(
-          text,
-          event.clipboardData ? { clipboardData: event.clipboardData } : undefined,
-        )
+        (shouldRoutePlainTextPaste(clipboardData, bypassAutoAttachment) &&
+          composerRef.current?.pasteTextAtEnd(text, { bypassAutoAttachment })) ||
+        composerRef.current?.insertTextAtEnd(text, { clipboardData })
       ) {
         event.preventDefault();
         event.stopPropagation();
       }
     };
+    window.addEventListener("keydown", keyHandler, true);
     window.addEventListener("paste", handler, true);
-    return () => window.removeEventListener("paste", handler, true);
+    return () => {
+      window.removeEventListener("keydown", keyHandler, true);
+      window.removeEventListener("paste", handler, true);
+    };
   }, [activeThreadId, composerRef]);
 
   const [pendingRevert, setPendingRevert] = useState<{
@@ -8036,6 +8089,7 @@ export default function ChatView(props: ChatViewProps) {
         supportsAttachmentUploads: liveSupportsAttachmentUploads,
         fileBlockReason: fileAttachmentCapabilityBlockReason({
           files: composerFilesSnapshot,
+          supportsPastedTextAttachments: supportsPastedTextAttachmentsNow(environmentId),
           attachmentUploadsCapabilityKnown: config !== null,
           supportsAttachmentUploads: liveSupportsAttachmentUploads,
           maxFileAttachmentBytes:
@@ -8159,6 +8213,7 @@ export default function ChatView(props: ChatViewProps) {
             mimeType: attachment.mimeType,
             sizeBytes: attachment.sizeBytes,
             downloadable: false,
+            ...(attachment.source ? { source: attachment.source } : {}),
           },
     );
     const shouldAnchorFirstMessage =
@@ -8971,6 +9026,18 @@ export default function ChatView(props: ChatViewProps) {
         const draft = useComposerDraftStore.getState().getComposerDraft(target);
         const attachments = draft ? [...draft.images, ...draft.files] : [];
         if (attachments.length === 0) continue;
+        if (
+          attachments.some(
+            (attachment) => attachment.type === "file" && attachment.source?._tag === "pasted-text",
+          ) &&
+          !supportsPastedTextAttachmentsNow(environmentId)
+        ) {
+          setThreadError(
+            activeThreadId,
+            "This server cannot use a saved large-paste attachment. Remove it or reconnect to a server that supports large pastes.",
+          );
+          return;
+        }
         const uploaded = getUploadedAttachments({ environmentId, images: attachments });
         if (!uploaded) {
           setThreadError(
@@ -10691,6 +10758,7 @@ export default function ChatView(props: ChatViewProps) {
                             attachmentUploadsCapabilityKnown={attachmentUploadsCapabilityKnown}
                             supportsAttachmentUploads={supportsAttachmentUploads}
                             supportsQuestionAttachments={supportsQuestionAttachments}
+                            supportsPastedTextAttachments={supportsPastedTextAttachments}
                             maxFileAttachmentBytes={maxFileAttachmentBytes}
                             routeKind={routeKind}
                             routeThreadRef={routeThreadRef}
