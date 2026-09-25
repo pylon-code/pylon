@@ -10,6 +10,7 @@ import type {
   SshDeviceHostConfig,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { randomUUID } from "../../lib/utils";
 import { useState } from "react";
 import { deviceEnvironment, useDeviceState } from "../../state/device";
@@ -20,6 +21,9 @@ import { Input } from "../ui/input";
 import { MoreVertical, PlusIcon } from "lucide-react";
 import { Menu, MenuTrigger, MenuPopup, MenuItem } from "../ui/menu";
 import { SettingsRow } from "./settingsLayout";
+import { useSettingsScope } from "./SettingsScopeContext";
+import { useHostConnectionChecks } from "./useHostConnectionChecks";
+import { deviceHostChecksKey, parseDeviceHostDraft } from "./deviceHostConnectionChecks";
 
 /** Host names and identity paths belong to the selected environment, never all environments. */
 export function DeviceHostsSettings(props: {
@@ -30,11 +34,19 @@ export function DeviceHostsSettings(props: {
   const test = useAtomCommand(deviceEnvironment.testHost, { reportFailure: false });
   const retry = useAtomCommand(deviceEnvironment.list);
   const { state } = useDeviceState(props.environmentId);
+  const { environments } = useSettingsScope();
+  const targets = environments.map((environment) => ({
+    environmentId: environment.environmentId,
+    label: environment.label,
+    connected: environment.connection.phase === "connected",
+  }));
+  const { checks: environmentChecks, testConnection: testAcrossEnvironments } =
+    useHostConnectionChecks(targets);
   const [editing, setEditing] = useState<SshDeviceHostConfig | null>(null);
+  const parsedEditing = editing ? parseDeviceHostDraft(editing) : Option.none();
+  const validEditing = Option.isSome(parsedEditing) && editing?.label.trim() !== "";
   const [busy, setBusy] = useState(false);
   const [retrying, setRetrying] = useState<string | null>(null);
-  const validPort = (port: number | undefined) =>
-    port === undefined || (Number.isInteger(port) && port >= 1 && port <= 65535);
   const [checks, setChecks] = useState<
     Record<
       string,
@@ -250,7 +262,12 @@ export function DeviceHostsSettings(props: {
                 className="space-y-3 border-t border-border/50 py-3"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void save([...props.hosts.filter((host) => host.id !== editing.id), editing]);
+                  if (validEditing && Option.isSome(parsedEditing)) {
+                    void save([
+                      ...props.hosts.filter((host) => host.id !== editing.id),
+                      parsedEditing.value,
+                    ]);
+                  }
                 }}
               >
                 <label className="block space-y-1 text-sm">
@@ -305,29 +322,18 @@ export function DeviceHostsSettings(props: {
                   />
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    type="submit"
-                    disabled={
-                      busy ||
-                      !editing.label.trim() ||
-                      !editing.target.trim() ||
-                      !validPort(editing.port)
-                    }
-                  >
+                  <Button size="sm" type="submit" disabled={busy || !validEditing}>
                     Save host
                   </Button>
                   <Button
                     size="sm"
                     type="button"
                     variant="outline"
-                    disabled={
-                      busy ||
-                      !editing.label.trim() ||
-                      !editing.target.trim() ||
-                      !validPort(editing.port)
-                    }
-                    onClick={() => void testConnection(editing)}
+                    disabled={busy || !validEditing}
+                    onClick={() => {
+                      if (Option.isSome(parsedEditing))
+                        void testAcrossEnvironments(parsedEditing.value);
+                    }}
                   >
                     Test connection
                   </Button>
@@ -343,23 +349,24 @@ export function DeviceHostsSettings(props: {
                     Cancel
                   </Button>
                 </div>
-                {checks[editing.id]?.pending ? (
-                  <span
-                    role="status"
-                    className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
-                  >
-                    <Spinner className="size-3" />
-                    Checking connection…
-                  </span>
-                ) : null}
-                {checks[editing.id]?.platforms ? (
-                  <DeviceHostAvailability platforms={checks[editing.id]?.platforms ?? []} />
-                ) : null}
-                {checks[editing.id]?.error ? (
-                  <p role="alert" className="text-xs text-destructive">
-                    {checks[editing.id]?.error}
-                  </p>
-                ) : null}
+                {targets.map((target) => {
+                  const result =
+                    environmentChecks[deviceHostChecksKey(editing, targets)]?.[
+                      target.environmentId
+                    ];
+                  if (!result) return null;
+                  return (
+                    <div key={target.environmentId} className="text-xs" role="status">
+                      <span className="font-medium">{target.label}: </span>
+                      {result.status === "pending" ? "Checking…" : null}
+                      {result.status === "local" ? "Already available locally" : null}
+                      {result.status === "failed" ? result.error : null}
+                      {result.status === "connected" ? (
+                        <DeviceHostAvailability platforms={result.platforms} />
+                      ) : null}
+                    </div>
+                  );
+                })}
               </form>
             ) : null}
           </>

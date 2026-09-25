@@ -59,6 +59,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import { isLocalSshDeviceHost, remoteSshDeviceHosts } from "./localSshDeviceHost.ts";
 
 import { readDeviceDetail, runDeviceAction } from "./DeviceActions.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -1032,11 +1033,17 @@ export const make = Effect.gen(function* () {
   };
   const probeContext =
     yield* Effect.context<Effect.Services<ReturnType<typeof SshDeviceHost.probe>>>();
+  const localTargetContext =
+    yield* Effect.context<Effect.Services<ReturnType<typeof isLocalSshDeviceHost>>>();
   const service = yield* makeWithHosts(
     hosts,
     (host) =>
-      SshDeviceHost.probe(host).pipe(
-        Effect.provide(probeContext),
+      Effect.gen(function* () {
+        if (yield* isLocalSshDeviceHost(host).pipe(Effect.provide(localTargetContext))) {
+          return yield* localHost.summary;
+        }
+        return yield* SshDeviceHost.probe(host).pipe(Effect.provide(probeContext));
+      }).pipe(
         Effect.mapError(
           (error) =>
             new DeviceOperationError({
@@ -1051,8 +1058,11 @@ export const make = Effect.gen(function* () {
   const hostContext =
     yield* Effect.context<Effect.Services<ReturnType<typeof SshDeviceHost.make>>>();
   const configured = new Map<string, { config: SshDeviceHostConfig; scope: Scope.Closeable }>();
-  const reconcile = (next: ReadonlyArray<SshDeviceHostConfig>) =>
+  const reconcile = (configuredHosts: ReadonlyArray<SshDeviceHostConfig>) =>
     Effect.gen(function* () {
+      const next = yield* remoteSshDeviceHosts(configuredHosts).pipe(
+        Effect.provide(localTargetContext),
+      );
       const removed = yield* service.withLifecycleLock(
         Effect.gen(function* () {
           const removed: Array<{ id: string; scope: Scope.Closeable }> = [];
