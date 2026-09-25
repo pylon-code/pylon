@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -19,7 +19,7 @@ describe("marketing ignore command", () => {
 
   const run = (ref: string, previousSha: string): "skip" | "build" => {
     try {
-      execFileSync("bash", ["-c", config.ignoreCommand ?? ""], {
+      NodeChildProcess.execFileSync("bash", ["-c", config.ignoreCommand ?? ""], {
         cwd: NodePath.join(dir, "apps/marketing"),
         env: {
           ...process.env,
@@ -35,21 +35,30 @@ describe("marketing ignore command", () => {
   };
 
   const commit = (message: string): string => {
-    execFileSync("git", ["add", "-A"], { cwd: dir, stdio: "ignore" });
-    execFileSync("git", ["commit", "-m", message], { cwd: dir, stdio: "ignore" });
-    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+    NodeChildProcess.execFileSync("git", ["add", "-A"], { cwd: dir, stdio: "ignore" });
+    NodeChildProcess.execFileSync("git", ["commit", "-m", message], { cwd: dir, stdio: "ignore" });
+    return NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: dir,
+      encoding: "utf8",
+    }).trim();
   };
 
   beforeAll(() => {
     dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "pylon-marketing-ignore-"));
     NodeFS.mkdirSync(NodePath.join(dir, "apps/marketing/src"), { recursive: true });
     NodeFS.mkdirSync(NodePath.join(dir, "packages/shared"), { recursive: true });
-    execFileSync("git", ["init", "-q", "-b", "pylon"], { cwd: dir, stdio: "ignore" });
-    execFileSync("git", ["config", "user.email", "test@example.com"], {
+    NodeChildProcess.execFileSync("git", ["init", "-q", "-b", "pylon"], {
       cwd: dir,
       stdio: "ignore",
     });
-    execFileSync("git", ["config", "user.name", "Test"], { cwd: dir, stdio: "ignore" });
+    NodeChildProcess.execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: dir,
+      stdio: "ignore",
+    });
+    NodeChildProcess.execFileSync("git", ["config", "user.name", "Test"], {
+      cwd: dir,
+      stdio: "ignore",
+    });
     NodeFS.writeFileSync(NodePath.join(dir, "pnpm-lock.yaml"), "lockfile: 1\n");
     NodeFS.writeFileSync(NodePath.join(dir, "pnpm-workspace.yaml"), "packages: []\n");
     NodeFS.writeFileSync(NodePath.join(dir, "apps/marketing/src/index.astro"), "<h1>one</h1>\n");
@@ -64,7 +73,10 @@ describe("marketing ignore command", () => {
   });
 
   it("spends a build only for a product-branch push that moved the site", () => {
-    const base = execFileSync("git", ["rev-parse", "HEAD^"], { cwd: dir, encoding: "utf8" }).trim();
+    const base = NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD^"], {
+      cwd: dir,
+      encoding: "utf8",
+    }).trim();
     expect(run("pylon", base)).toBe("build");
   });
 
@@ -73,7 +85,10 @@ describe("marketing ignore command", () => {
   });
 
   it("skips every other branch, even one that did move the site", () => {
-    const base = execFileSync("git", ["rev-parse", "HEAD^"], { cwd: dir, encoding: "utf8" }).trim();
+    const base = NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD^"], {
+      cwd: dir,
+      encoding: "utf8",
+    }).trim();
     expect(run("fix/unrelated", base)).toBe("skip");
   });
 
