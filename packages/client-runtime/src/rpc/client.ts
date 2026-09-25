@@ -2,6 +2,7 @@ import {
   DEFAULT_BROWSER_PROFILE_ID,
   ORCHESTRATION_WS_METHODS,
   WS_METHODS,
+  type ClientOrchestrationCommand,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -145,6 +146,36 @@ export const request = Effect.fn("EnvironmentRpc.request")(function* <
     "rpc.method": tag,
   });
   const session = yield* currentSession();
+  if (tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+    const command = input as ClientOrchestrationCommand;
+    const requiresPastedTextSupport =
+      command.type === "thread.turn.start" || command.type === "thread.input-queue.follow-up"
+        ? command.message.attachments.some(
+            (attachment) =>
+              attachment.type === "file" &&
+              "source" in attachment &&
+              attachment.source?._tag === "pasted-text",
+          )
+        : command.type === "thread.user-input.respond"
+          ? Object.values(command.attachmentsByQuestionId ?? {}).some((attachments) =>
+              attachments.some(
+                (attachment) =>
+                  attachment.type === "file" && attachment.source?._tag === "pasted-text",
+              ),
+            )
+          : false;
+    if (requiresPastedTextSupport) {
+      const unavailable = () =>
+        new EnvironmentRpcUnavailableError({
+          environmentId: supervisor.target.environmentId,
+          message:
+            "This environment no longer supports pasted-text attachments. Reconnect or remove the attachment before sending.",
+        });
+      const config = yield* session.initialConfig.pipe(Effect.mapError(unavailable));
+      if (config.environment.capabilities.pastedTextAttachments !== true)
+        return yield* unavailable();
+    }
+  }
   // Check the same session that will receive the open. Legacy servers discard
   // profileId, which would silently attach a custom/incognito tab to Default.
   if (tag === WS_METHODS.previewOpen) {
