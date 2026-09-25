@@ -1087,16 +1087,14 @@ persistence("Relay persisted observer and controls", (it) => {
         yield* missingBridge.reconcile;
         yield* missingBridge.reconcile;
         yield* missingBridge.reconcile;
+        // A binding whose worker never reached the thread has nothing to
+        // downgrade, so its missing Relay files stay quiet rather than
+        // opening an idle row nobody can act on.
         const missingRows = yield* sql`
           SELECT payload_json AS payload FROM projection_thread_activities
           WHERE kind = 'task.progress' AND json_extract(payload_json, '$.taskId') = ${`relay:${missingId}`}
         `;
-        expect(missingRows).toHaveLength(1);
-        expect(decodeJson(missingRows[0]?.payload)).toMatchObject({
-          status: "idle",
-          summary: "Relay observer unavailable",
-          cancellable: false,
-        });
+        expect(missingRows).toEqual([]);
         const missingPolls = cli
           .calls()
           .filter((args) => args[0] === "observe" && args[1] === missingId).length;
@@ -1194,4 +1192,337 @@ persistence("Relay persisted observer and controls", (it) => {
       }).pipe(Effect.ensuring(Effect.sync(() => cli.cleanup())));
     },
   );
+});
+
+function recordingEngine(sql: SqlClient.SqlClient) {
+  const commands = new Set<string>();
+  return {
+    dispatch: (command: {
+      readonly type: string;
+      readonly commandId: string;
+      readonly threadId: string;
+      readonly activity?: {
+        readonly id: string;
+        readonly turnId: string | null;
+        readonly kind: string;
+        readonly tone: string;
+        readonly summary: string;
+        readonly payload: unknown;
+        readonly createdAt: string;
+      };
+    }) =>
+      Effect.gen(function* () {
+        if (commands.has(command.commandId)) return { sequence: commands.size, eventCount: 0 };
+        if (command.type !== "thread.activity.append" || !command.activity)
+          throw new Error("unexpected command");
+        commands.add(command.commandId);
+        const activity = command.activity;
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+          ) VALUES (
+            ${activity.id}, ${command.threadId}, ${activity.turnId}, ${activity.tone},
+            ${activity.kind}, ${activity.summary}, ${encodeJson(activity.payload)}, ${commands.size}, ${activity.createdAt}
+          ) ON CONFLICT(activity_id) DO UPDATE SET
+            payload_json = excluded.payload_json, sequence = excluded.sequence,
+            created_at = excluded.created_at
+        `;
+        return { sequence: commands.size, eventCount: 1 };
+      }),
+  } as unknown as OrchestrationEngineService["Service"];
+}
+
+persistence("Relay progress-only outage", (it) => {
+  it.effect("keeps an outage for a progress-only worker after restart", () => {
+    const cli = fakeRelayCli();
+    cli.setState({});
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const jobId = "job-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4";
+      const taskId = `relay:${jobId}`;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        ) VALUES (
+          ${`relay-binding:${jobId}`}, 'thread-a', 'turn-progress', 'info',
+          'relay.binding', 'Relay worker bound',
+          ${encodeJson({ kind: "job", id: jobId, toolCallId: "tool-progress", environmentId: "test-environment" })},
+          1, '2026-09-24T00:00:00.000Z'
+        ), (
+          ${`relay-progress:${jobId}`}, 'thread-a', 'turn-progress', 'info',
+          'task.progress', 'Relay worker running',
+          ${encodeJson({ taskId, attempt: 1, relaySequence: 1, status: "running" })},
+          2, '2026-09-24T00:00:01.000Z'
+        )
+      `;
+      const bridge = yield* makeWithCliPath(cli.path).pipe(
+        Effect.provideService(OrchestrationEngineService, recordingEngine(sql)),
+        Effect.provideService(ServerEnvironment, fakeEnvironment),
+        Effect.provideService(ThreadBackgroundLivenessService, makeLiveness()),
+      );
+      yield* bridge.reconcile;
+      yield* bridge.reconcile;
+      yield* bridge.reconcile;
+      const outage = yield* sql`
+        SELECT payload_json AS payload FROM projection_thread_activities
+        WHERE kind = 'task.progress' AND summary = 'Relay observer unavailable'
+          AND json_extract(payload_json, '$.taskId') = ${taskId}
+      `;
+      expect(outage).toHaveLength(1);
+      expect(decodeJson(outage[0]?.payload)).toMatchObject({ status: "idle" });
+    }).pipe(Effect.ensuring(Effect.sync(() => cli.cleanup())));
+  });
+});
+
+persistence("Relay startup receipt adoption", (it) => {
+  it.effect("stays silent about adopted historical jobs it never projected", () => {
+    const cli = fakeRelayCli();
+    // The startup scan adopts every persisted Relay receipt, including turns
+    // whose workers finished and were swept long before this boot.
+    cli.setState({});
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const historical = [
+        { job: "job-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", turn: "turn-old-1", tool: "tool-old-1" },
+        { job: "job-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2", turn: "turn-old-2", tool: "tool-old-2" },
+      ];
+      for (const entry of historical) {
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+          ) VALUES (
+            ${`persisted-${entry.tool}`}, 'thread-a', ${entry.turn}, 'tool', 'tool.completed',
+            'Relay delegate',
+            ${encodeJson({
+              itemType: "mcp_tool_call",
+              toolCallId: entry.tool,
+              status: "completed",
+              data: {
+                toolName: "mcp__plugin_relay-orchestrator_relay__relay_delegate",
+                result: {
+                  type: "tool_result",
+                  tool_use_id: entry.tool,
+                  content: [
+                    { type: "text", text: encodeJson({ id: entry.job, status: "queued" }) },
+                  ],
+                },
+              },
+            })},
+            NULL, '2026-09-20T00:00:00.000Z'
+          )
+        `;
+      }
+      const bridge = yield* makeWithCliPath(cli.path).pipe(
+        Effect.provideService(OrchestrationEngineService, recordingEngine(sql)),
+        Effect.provideService(ServerEnvironment, fakeEnvironment),
+        Effect.provideService(ThreadBackgroundLivenessService, makeLiveness()),
+      );
+      yield* bridge.reconcile;
+      yield* bridge.reconcile;
+      yield* bridge.reconcile;
+      yield* bridge.reconcile;
+
+      // The scan still adopts them so a worker that outlived a crash can be
+      // reclaimed, but a job it can never observe stays out of the thread.
+      const adopted = yield* sql`
+        SELECT activity_id AS activityId FROM projection_thread_activities
+        WHERE kind = 'relay.binding' ORDER BY activity_id
+      `;
+      expect(adopted).toEqual(
+        historical.map((entry) => ({ activityId: `relay-binding:${entry.job}` })),
+      );
+      const noise = yield* sql`
+        SELECT activity_id AS activityId FROM projection_thread_activities
+        WHERE kind LIKE 'task.%'
+      `;
+      expect(noise).toEqual([]);
+      // Relay answered that these jobs are gone and nothing about them ever
+      // reached the thread, so they are retired instead of holding a CLI spawn
+      // for the life of the process.
+      const settledPolls = cli.calls().filter((args) => args[0] === "observe").length;
+      expect(settledPolls).toBeGreaterThan(0);
+      yield* bridge.reconcile;
+      yield* bridge.reconcile;
+      expect(cli.calls().filter((args) => args[0] === "observe")).toHaveLength(settledPolls);
+
+      // Retirement is persisted on the binding itself, so a restart does not
+      // re-probe every job the environment has ever run.
+      const restarted = yield* makeWithCliPath(cli.path).pipe(
+        Effect.provideService(OrchestrationEngineService, recordingEngine(sql)),
+        Effect.provideService(ServerEnvironment, fakeEnvironment),
+        Effect.provideService(ThreadBackgroundLivenessService, makeLiveness()),
+      );
+      const beforeRestart = cli.calls().filter((args) => args[0] === "observe").length;
+      yield* restarted.reconcile;
+      yield* restarted.reconcile;
+      expect(
+        cli
+          .calls()
+          .slice(beforeRestart)
+          .filter((args) => args[0] === "observe" && historical.some((e) => e.job === args[1])),
+      ).toEqual([]);
+      // No extra rows were written to carry the retirement.
+      const bindingRows = yield* sql`
+        SELECT COUNT(*) AS n FROM projection_thread_activities WHERE kind = 'relay.binding'
+      `;
+      expect(Number((bindingRows[0] as { n: number }).n)).toBe(historical.length);
+
+      // A worker this environment did project still reports its outage.
+      const liveJob = "job-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
+      cli.setState({
+        [liveJob]: {
+          schemaVersion: 1,
+          kind: "job",
+          id: liveJob,
+          attempt: 1,
+          sequence: 1,
+          status: "running",
+          providerType: "codex",
+          model: "gpt-6-sol",
+          effort: "high",
+          activity: { kind: "editing", label: "Editing files" },
+          usage: { totalTokens: 4, inputTokens: 3, outputTokens: 1 },
+          pending: false,
+          outcome: null,
+        },
+      });
+      yield* bridge.recordToolResult(
+        toolEvent({
+          toolName: "mcp__relay__relay_delegate",
+          turnId: "turn-live",
+          itemId: "tool-live",
+          result: { structuredContent: { schemaVersion: 1, kind: "job", jobId: liveJob } },
+        }),
+      );
+      yield* bridge.reconcile;
+      const started = yield* sql`
+        SELECT payload_json AS payload FROM projection_thread_activities
+        WHERE kind = 'task.started' AND json_extract(payload_json, '$.taskId') = ${`relay:${liveJob}`}
+      `;
+      expect(started).toHaveLength(1);
+
+      cli.setState({});
+      yield* bridge.reconcile;
+      yield* bridge.reconcile;
+      yield* bridge.reconcile;
+      const outage = yield* sql`
+        SELECT json_extract(payload_json, '$.taskId') AS taskId
+        FROM projection_thread_activities
+        WHERE kind = 'task.progress' AND summary = 'Relay observer unavailable'
+      `;
+      expect(outage).toEqual([{ taskId: `relay:${liveJob}` }]);
+
+      // Reopening the thread after a restart must not republish the same
+      // history the previous boot already declined to announce.
+      const rebooted = yield* makeWithCliPath(cli.path).pipe(
+        Effect.provideService(OrchestrationEngineService, recordingEngine(sql)),
+        Effect.provideService(ServerEnvironment, fakeEnvironment),
+        Effect.provideService(ThreadBackgroundLivenessService, makeLiveness()),
+      );
+      yield* rebooted.reconcile;
+      yield* rebooted.reconcile;
+      yield* rebooted.reconcile;
+      yield* rebooted.reconcile;
+      const afterReboot = yield* sql`
+        SELECT DISTINCT json_extract(payload_json, '$.taskId') AS taskId
+        FROM projection_thread_activities
+        WHERE kind = 'task.progress' AND summary = 'Relay observer unavailable'
+      `;
+      expect(afterReboot).toEqual([{ taskId: `relay:${liveJob}` }]);
+    }).pipe(Effect.ensuring(Effect.sync(() => cli.cleanup())));
+  });
+});
+
+persistence("Relay retirement reversal", (it) => {
+  it.effect("wakes a retired worker for a resume accepted after it was retired", () => {
+    const cli = fakeRelayCli();
+    const revived = "job-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
+    cli.setState({});
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const engine = recordingEngine(sql);
+      const boot = () =>
+        makeWithCliPath(cli.path).pipe(
+          Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provideService(ServerEnvironment, fakeEnvironment),
+          Effect.provideService(ThreadBackgroundLivenessService, makeLiveness()),
+        );
+
+      // Dispatch a worker, then let Relay lose it before anything projects.
+      const first = yield* boot();
+      yield* first.recordToolResult(
+        toolEvent({
+          toolName: "mcp__relay__relay_delegate",
+          turnId: "turn-1",
+          itemId: "tool-1",
+          result: { structuredContent: { schemaVersion: 1, kind: "job", jobId: revived } },
+        }),
+      );
+      yield* first.reconcile;
+      yield* first.reconcile;
+      yield* first.reconcile;
+      yield* first.reconcile;
+      const retired = yield* sql`
+        SELECT payload_json AS payload FROM projection_thread_activities
+        WHERE activity_id = ${`relay-binding:${revived}`}
+      `;
+      expect(decodeJson(retired[0]?.payload)).toMatchObject({ id: revived });
+      expect(
+        (decodeJson(retired[0]?.payload) as { retiredAfterRowId?: number }).retiredAfterRowId,
+      ).toBeGreaterThan(0);
+
+      // A restart leaves it asleep.
+      const asleep = yield* boot();
+      const beforeRestart = cli.calls().length;
+      yield* asleep.reconcile;
+      yield* asleep.reconcile;
+      expect(
+        cli
+          .calls()
+          .slice(beforeRestart)
+          .filter((args) => args[0] === "observe" && args[1] === revived),
+      ).toEqual([]);
+
+      // A resume recorded after the retirement outranks it.
+      cli.setState({
+        [revived]: {
+          schemaVersion: 1,
+          kind: "job",
+          id: revived,
+          attempt: 2,
+          sequence: 1,
+          status: "running",
+          providerType: "codex",
+          model: "gpt-6-sol",
+          effort: "high",
+          pending: false,
+          outcome: null,
+        },
+      });
+      yield* asleep.recordToolResult(
+        toolEvent({
+          toolName: "mcp__relay__relay_resume",
+          turnId: "turn-2",
+          itemId: "tool-2",
+          result: {
+            structuredContent: { schemaVersion: 1, kind: "job", jobId: revived, attempt: 2 },
+          },
+        }),
+      );
+      const awake = yield* boot();
+      const beforeWake = cli.calls().length;
+      yield* awake.reconcile;
+      expect(
+        cli
+          .calls()
+          .slice(beforeWake)
+          .some((args) => args[0] === "observe" && args[1] === revived),
+      ).toBe(true);
+      const started = yield* sql`
+        SELECT payload_json AS payload FROM projection_thread_activities
+        WHERE kind = 'task.started' AND json_extract(payload_json, '$.taskId') = ${`relay:${revived}`}
+      `;
+      expect(started).toHaveLength(1);
+    }).pipe(Effect.ensuring(Effect.sync(() => cli.cleanup())));
+  });
 });
