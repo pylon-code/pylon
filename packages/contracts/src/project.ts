@@ -28,6 +28,7 @@ export type ProjectSearchEntriesInput = typeof ProjectSearchEntriesInput.Type;
 export const ProjectEntry = Schema.Struct({
   path: TrimmedNonEmptyString,
   kind: ProjectEntryKind,
+  ignored: Schema.optional(Schema.Boolean),
 });
 export type ProjectEntry = typeof ProjectEntry.Type;
 
@@ -72,12 +73,19 @@ export type ProjectSearchContentsResult = typeof ProjectSearchContentsResult.Typ
 
 export const ProjectListEntriesInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
+  /** Empty string requests immediate children of the workspace root. Omitted retains indexed listing. */
+  directoryPath: Schema.optional(TrimmedString),
+  /** Resume an immediate-child listing after this exact child name. */
+  directoryCursor: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProjectListEntriesInput = typeof ProjectListEntriesInput.Type;
 
 export const ProjectListEntriesResult = Schema.Struct({
   entries: Schema.Array(ProjectEntry),
   truncated: Schema.Boolean,
+  /** Present only when the server understood and served the directory-listing request. */
+  directoryPath: Schema.optional(TrimmedString),
+  nextDirectoryCursor: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProjectListEntriesResult = typeof ProjectListEntriesResult.Type;
 
@@ -89,6 +97,7 @@ export const ProjectEntriesFailure = Schema.Literals([
   "search_index_create_failed",
   "search_index_scan_timed_out",
   "search_index_search_failed",
+  "directory_list_failed",
 ]);
 export type ProjectEntriesFailure = typeof ProjectEntriesFailure.Type;
 
