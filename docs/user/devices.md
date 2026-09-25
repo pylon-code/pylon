@@ -63,8 +63,10 @@ once per server. Restart an existing agent session after granting access so it
 receives the device CLI environment.
 
 To keep agents away from simulators, turn off **Agent device access** in
-**Settings → Integrations → Devices**. This hides the device tools from agents
-started from then on; your own Device panel is unaffected.
+**Settings → Integrations → Devices**. This follows the environments or project
+selected in Settings and hides device tools from agents started from then on;
+your own Device panel is unaffected. The device hub itself remains an
+environment setting and can be changed across selected environments.
 
 ## Remote connections
 
@@ -75,16 +77,18 @@ still-image stream and Android cannot show video.
 
 ## SSH device hosts
 
-In Settings → Integrations → Devices, select one connected environment
-and add a host under **Device hosts**. Enter an SSH alias or `user@host`, with
-an optional identity file and port. These resolve on the environment server,
-so use the SSH configuration and keys available there. Password prompts are
-not supported.
+In Settings → Integrations → Devices, select the environments to configure and
+add a host under **Device hosts**. Adding, editing, or removing a host updates
+each selected environment's own host list; an unavailable environment is named
+if it could not be updated. Enter an SSH alias or `user@host`, with an optional
+identity file and port. An unchanged identity-file field keeps each server's
+own path, while editing that field applies the entered path to every selected
+server. Paths resolve on each environment server, so use SSH configuration and
+keys available there. Password prompts are not supported.
 
 **Test connection** checks SSH, Node, npm, and platform tools without installing
 anything. When adding or editing a host, the check reports a result for each environment
-selected in Settings; saving changes the host list on the environment shown in
-the Devices section. An SSH alias that resolves to the environment server's own
+selected in Settings. An SSH alias that resolves to the environment server's own
 machine is skipped, unless it uses a forwarded port or SSH proxy. The first
 device listing installs pinned device tools on the host.
 Node 22 or newer and npm must be available to non-interactive SSH commands.
