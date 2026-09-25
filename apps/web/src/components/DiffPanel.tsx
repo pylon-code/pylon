@@ -26,6 +26,7 @@ import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenInPreferredEditor } from "../editorPreferences";
+import { useFileContextMenuHandler } from "../fileContextMenu";
 import { type DraftId } from "../composerDraftStore";
 import { openDiffFilePrimaryAction } from "../diffFileActions";
 import { useCheckpointDiff } from "~/lib/checkpointDiffState";
@@ -170,6 +171,10 @@ export default function DiffPanel({
     : activeProject?.repositoryIdentity?.rootPath;
   const serverConfig = useAtomValue(
     serverEnvironment.configValueAtom(activeThread?.environmentId ?? null),
+  );
+  const onFileContextMenu = useFileContextMenuHandler(
+    activeThread?.environmentId ?? null,
+    activeCwd,
   );
   const openInPreferredEditor = useOpenInPreferredEditor(
     activeThread?.environmentId ?? null,
@@ -495,6 +500,29 @@ export default function DiffPanel({
           };
         }),
     [collapsedDiffFileKeys, renderableFileEntries, lazySource, readyFilePaths],
+  );
+  const showDiffFileContextMenu = useCallback(
+    (filePath: string, position: { clientX: number; clientY: number }) => {
+      const matching = codeViewFiles.filter((file) => file.filePath === filePath);
+      if (matching.length === 0) return false;
+      return onFileContextMenu(
+        {
+          environmentId: activeThread?.environmentId ?? null,
+          filePath,
+          fileExists: matching.some((file) => file.fileDiff.type !== "deleted"),
+          workspaceRoot: activeCwd,
+          repositoryRoot: activeRepositoryRoot,
+        },
+        position,
+      );
+    },
+    [
+      activeCwd,
+      activeRepositoryRoot,
+      activeThread?.environmentId,
+      codeViewFiles,
+      onFileContextMenu,
+    ],
   );
   const diffFileKeys = useMemo(
     () => renderableFileEntries.map((file) => file.fileKey),
@@ -1072,6 +1100,53 @@ export default function DiffPanel({
                         (candidate) => candidate.filePath === headerFilePath,
                       );
                       if (file) toggleDiffFileCollapsed(file.fileKey);
+                    }}
+                    onContextMenuCapture={(event) => {
+                      const path = event.nativeEvent.composedPath?.() ?? [];
+                      if (
+                        path.some(
+                          (node) =>
+                            node instanceof HTMLButtonElement || node instanceof HTMLAnchorElement,
+                        )
+                      )
+                        return;
+                      const title = path.find(
+                        (node): node is HTMLElement =>
+                          node instanceof HTMLElement && node.hasAttribute("data-title"),
+                      );
+                      const header = path.find(
+                        (node): node is HTMLElement =>
+                          node instanceof HTMLElement && node.hasAttribute("data-diffs-header"),
+                      );
+                      const filePath =
+                        title?.textContent ?? header?.querySelector("[data-title]")?.textContent;
+                      if (!filePath) return;
+                      const rect =
+                        title?.getBoundingClientRect() ?? header?.getBoundingClientRect();
+                      if (
+                        showDiffFileContextMenu(filePath, {
+                          clientX: event.clientX || rect?.left || 0,
+                          clientY: event.clientY || rect?.bottom || 0,
+                        })
+                      )
+                        event.preventDefault();
+                    }}
+                    onKeyDownCapture={(event) => {
+                      if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))
+                        return;
+                      const target = event.target;
+                      if (!(target instanceof HTMLElement)) return;
+                      const header = target.closest<HTMLElement>("[data-diffs-header]");
+                      const filePath = header?.querySelector("[data-title]")?.textContent;
+                      if (!filePath || !header) return;
+                      const rect = header.getBoundingClientRect();
+                      if (
+                        showDiffFileContextMenu(filePath, {
+                          clientX: rect.left,
+                          clientY: rect.bottom,
+                        })
+                      )
+                        event.preventDefault();
                     }}
                   >
                     <AnnotatableCodeView
