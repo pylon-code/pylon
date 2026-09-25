@@ -4247,6 +4247,67 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("shows buffered prose before a tool starts and preserves later assistant text", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-tool-boundary");
+    const itemId = asItemId("item-tool-boundary-assistant");
+    const now = "2026-01-01T00:00:00.000Z";
+    const base = { provider: ProviderDriverKind.make("claude"), createdAt: now, threadId, turnId };
+
+    await harness.emitAndDrain([
+      { ...base, type: "turn.started", eventId: asEventId("tool-boundary-turn") },
+      {
+        ...base,
+        type: "content.delta",
+        eventId: asEventId("tool-boundary-prose"),
+        itemId,
+        payload: { streamKind: "assistant_text", delta: "I will inspect the server" },
+      },
+      {
+        ...base,
+        type: "item.started",
+        eventId: asEventId("tool-boundary-start"),
+        itemId: asItemId("tool-boundary-call"),
+        payload: { itemType: "command_execution", status: "inProgress", title: "Inspect" },
+      },
+    ]);
+
+    const midThread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    const midMessage = midThread?.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === `assistant:${itemId}`,
+    );
+    expect(midMessage).toMatchObject({ text: "I will inspect the server", streaming: true });
+    expect(
+      midThread?.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.started",
+      ),
+    ).toBe(true);
+
+    await harness.emitAndDrain([
+      {
+        ...base,
+        type: "content.delta",
+        eventId: asEventId("tool-boundary-later-prose"),
+        itemId,
+        payload: { streamKind: "assistant_text", delta: " and report back." },
+      },
+      {
+        ...base,
+        type: "item.completed",
+        eventId: asEventId("tool-boundary-prose-completed"),
+        itemId,
+        payload: { itemType: "assistant_message", status: "completed" },
+      },
+    ]);
+    const finalThread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      finalThread?.messages.find(
+        (entry: ProviderRuntimeTestMessage) => entry.id === `assistant:${itemId}`,
+      ),
+    ).toMatchObject({ text: "I will inspect the server and report back.", streaming: false });
+  });
+
   it("flushes and completes buffered assistant text when an approval request opens", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

@@ -3323,6 +3323,21 @@ const make = Effect.gen(function* () {
       }
 
       const activities = runtimeEventToActivities(activityEvent, taskTitle);
+      // A tool start is a natural prose boundary. A provider may begin a tool
+      // before it completes the assistant item, leaving an otherwise valid
+      // single paragraph buffered while tool activity is already visible.
+      if (activities.some((activity) => activity.kind === "tool.started")) {
+        const turnId = toTurnId(event.turnId);
+        if (turnId) {
+          yield* flushBufferedAssistantMessagesForTurn({
+            event,
+            threadId: thread.id,
+            turnId,
+            createdAt: now,
+            commandTag: "assistant-delta-flush-on-tool-started",
+          });
+        }
+      }
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
           Effect.flatMap((commandId) =>
