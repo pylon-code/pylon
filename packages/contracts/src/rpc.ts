@@ -894,7 +894,7 @@ const WsServerMutateProviderInstancesRpc = Rpc.make(WS_METHODS.serverMutateProvi
 });
 
 const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
-  payload: Schema.Struct({}),
+  payload: Schema.Struct({ supportsForgejo: Schema.optional(Schema.Boolean) }),
   success: SourceControlDiscoveryResult,
   error: EnvironmentAuthorizationError,
 });

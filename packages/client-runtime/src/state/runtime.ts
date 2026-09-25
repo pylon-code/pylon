@@ -614,6 +614,7 @@ export function createEnvironmentRpcQueryAtomFamily<R, ER, TTag extends Environm
       readonly environmentId: EnvironmentIdType;
       readonly input: EnvironmentRpcInput<TTag>;
     }) => Atom.Atom<unknown> | undefined;
+    readonly transformInput?: (input: EnvironmentRpcInput<TTag>) => EnvironmentRpcInput<TTag>;
   },
 ) {
   return createEnvironmentQueryAtomFamily(runtime, {
@@ -624,7 +625,8 @@ export function createEnvironmentRpcQueryAtomFamily<R, ER, TTag extends Environm
       ? {}
       : { refreshIntervalMs: options.refreshIntervalMs }),
     ...(options.refreshTrigger === undefined ? {} : { refreshTrigger: options.refreshTrigger }),
-    execute: (input: EnvironmentRpcInput<TTag>) => request(options.tag, input),
+    execute: (input: EnvironmentRpcInput<TTag>) =>
+      request(options.tag, options.transformInput?.(input) ?? input),
   });
 }
 
@@ -639,6 +641,7 @@ export function createEnvironmentRpcSubscriptionAtomFamily<
     readonly label: string;
     readonly tag: TTag;
     readonly idleTtlMs?: number;
+    readonly transformInput?: (input: EnvironmentRpcInput<TTag>) => EnvironmentRpcInput<TTag>;
     readonly transform?: (
       stream: Stream.Stream<
         EnvironmentRpcStreamValue<TTag>,
@@ -652,7 +655,7 @@ export function createEnvironmentRpcSubscriptionAtomFamily<
     label: options.label,
     ...(options.idleTtlMs === undefined ? {} : { idleTtlMs: options.idleTtlMs }),
     subscribe: (input: EnvironmentRpcInput<TTag>) => {
-      const stream = subscribe(options.tag, input);
+      const stream = subscribe(options.tag, options.transformInput?.(input) ?? input);
       return options.transform === undefined
         ? (stream as Stream.Stream<B, EnvironmentRpcStreamFailure<TTag>, EnvironmentSupervisor | R>)
         : options.transform(stream);
@@ -684,6 +687,7 @@ export function createEnvironmentRpcCommand<R, ER, TTag extends EnvironmentUnary
       },
       registry: AtomRegistry.AtomRegistry,
     ) => Effect.Effect<void, never, R>;
+    readonly transformInput?: (input: EnvironmentRpcInput<TTag>) => EnvironmentRpcInput<TTag>;
   },
 ) {
   return createEnvironmentCommand(runtime, {
@@ -695,7 +699,7 @@ export function createEnvironmentRpcCommand<R, ER, TTag extends EnvironmentUnary
         environmentId,
         input,
       };
-      return request(options.tag, input).pipe(
+      return request(options.tag, options.transformInput?.(input) ?? input).pipe(
         Effect.tap(() => options.onSuccess?.(target, registry) ?? Effect.void),
         Effect.ensuring(options.onSettled?.(target, registry) ?? Effect.void),
       );

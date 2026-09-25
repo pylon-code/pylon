@@ -84,6 +84,7 @@ import {
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
+  PullRequestUnavailableError,
   WS_METHODS,
   WsRpcGroup,
   WORKTREE_SETUP_ACTIVITY_KIND,
@@ -191,11 +192,20 @@ import { pullRequestSyncKey } from "./pullRequest/pullRequestSyncKey.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
+import {
+  projectCloneListForClient,
+  repositoryMetadataForClient,
+  sourceControlErrorForClient,
+  sourceControlDiscoveryForClient,
+  vcsStatusEventForClient,
+  vcsStatusForClient,
+} from "./sourceControl/forgejoClientCompatibility.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
 import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
 import * as GitHubCli from "./sourceControl/GitHubCli.ts";
 import * as GitLabCli from "./sourceControl/GitLabCli.ts";
+import * as ForgejoCli from "./sourceControl/ForgejoCli.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
@@ -2958,10 +2968,14 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
-        [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
+        [WS_METHODS.serverDiscoverSourceControl]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,
-            sourceControlDiscovery.discover,
+            sourceControlDiscovery.discover.pipe(
+              Effect.map((result) =>
+                sourceControlDiscoveryForClient(result, input.supportsForgejo === true),
+              ),
+            ),
             {
               "rpc.aggregate": "server",
             },
@@ -3087,9 +3101,21 @@ const makeWsRpcLayer = (
             "rpc.aggregate": "pull-requests",
           }),
         [WS_METHODS.pullRequestsSummary]: (input) =>
-          observeRpcEffect(WS_METHODS.pullRequestsSummary, pullRequests.summary(input), {
-            "rpc.aggregate": "pull-requests",
-          }),
+          observeRpcEffect(
+            WS_METHODS.pullRequestsSummary,
+            pullRequests
+              .summary(input)
+              .pipe(
+                Effect.flatMap((summary) =>
+                  !input.supportsForgejo && summary.provider === "forgejo"
+                    ? Effect.fail(
+                        new PullRequestUnavailableError({ reason: "provider-unsupported" }),
+                      )
+                    : Effect.succeed(summary),
+                ),
+              ),
+            { "rpc.aggregate": "pull-requests" },
+          ),
         [WS_METHODS.pullRequestsStack]: (input) =>
           observeRpcEffect(WS_METHODS.pullRequestsStack, pullRequests.stack(input), {
             "rpc.aggregate": "pull-requests",
@@ -3109,9 +3135,21 @@ const makeWsRpcLayer = (
             { "rpc.aggregate": "pull-requests" },
           ),
         [WS_METHODS.pullRequestsDetail]: (input) =>
-          observeRpcEffect(WS_METHODS.pullRequestsDetail, pullRequests.detail(input), {
-            "rpc.aggregate": "pull-requests",
-          }),
+          observeRpcEffect(
+            WS_METHODS.pullRequestsDetail,
+            pullRequests
+              .detail(input)
+              .pipe(
+                Effect.flatMap((detail) =>
+                  !input.supportsForgejo && detail.provider === "forgejo"
+                    ? Effect.fail(
+                        new PullRequestUnavailableError({ reason: "provider-unsupported" }),
+                      )
+                    : Effect.succeed(detail),
+                ),
+              ),
+            { "rpc.aggregate": "pull-requests" },
+          ),
         [WS_METHODS.pullRequestsActivity]: (input) =>
           observeRpcEffect(WS_METHODS.pullRequestsActivity, pullRequests.activity(input), {
             "rpc.aggregate": "pull-requests",
@@ -3239,7 +3277,18 @@ const makeWsRpcLayer = (
         [WS_METHODS.sourceControlCloneRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlCloneRepository,
-            sourceControlRepositories.cloneRepository(input),
+            sourceControlRepositories.cloneRepository(input).pipe(
+              Effect.map((result) => ({
+                ...result,
+                repository: repositoryMetadataForClient(
+                  result.repository,
+                  input.supportsForgejo === true,
+                ),
+              })),
+              Effect.mapError((error) =>
+                sourceControlErrorForClient(error, input.supportsForgejo === true),
+              ),
+            ),
             {
               "rpc.aggregate": "source-control",
             },
@@ -3247,41 +3296,56 @@ const makeWsRpcLayer = (
         [WS_METHODS.projectCloneStart]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectCloneStart,
-            projectCloneTracker.start(input, {
-              createProject: (project) =>
-                Effect.gen(function* () {
-                  const normalizedCommand = yield* normalizeDispatchCommand({
-                    type: "project.create",
-                    commandId: yield* serverCommandId("project-clone-create"),
-                    projectId: project.projectId,
-                    title: project.title,
-                    workspaceRoot: project.workspaceRoot,
-                    createWorkspaceRootIfMissing: true,
-                    createdAt: project.createdAt,
-                  });
-                  yield* dispatchNormalizedCommand(normalizedCommand);
-                }).pipe(Effect.provideContext(normalizerContext)),
-              onCloned: (project) =>
-                // The project was created against an empty directory, so its
-                // cached identity is "not a repository" until this refresh.
-                // Re-emitting the project shell carries the new identity to
-                // every client without a round trip.
-                repositoryIdentityResolver.resolve(project.workspaceRoot, { refresh: true }).pipe(
-                  Effect.andThen(
-                    Effect.gen(function* () {
-                      const command = yield* normalizeDispatchCommand({
-                        type: "project.meta.update",
-                        commandId: yield* serverCommandId("project-clone-done"),
-                        projectId: project.projectId,
-                      });
-                      yield* dispatchNormalizedCommand(command);
-                    }),
+            projectCloneTracker
+              .start(input, {
+                createProject: (project) =>
+                  Effect.gen(function* () {
+                    const normalizedCommand = yield* normalizeDispatchCommand({
+                      type: "project.create",
+                      commandId: yield* serverCommandId("project-clone-create"),
+                      projectId: project.projectId,
+                      title: project.title,
+                      workspaceRoot: project.workspaceRoot,
+                      createWorkspaceRootIfMissing: true,
+                      createdAt: project.createdAt,
+                    });
+                    yield* dispatchNormalizedCommand(normalizedCommand);
+                  }).pipe(Effect.provideContext(normalizerContext)),
+                onCloned: (project) =>
+                  // The project was created against an empty directory, so its
+                  // cached identity is "not a repository" until this refresh.
+                  // Re-emitting the project shell carries the new identity to
+                  // every client without a round trip.
+                  repositoryIdentityResolver.resolve(project.workspaceRoot, { refresh: true }).pipe(
+                    Effect.andThen(
+                      Effect.gen(function* () {
+                        const command = yield* normalizeDispatchCommand({
+                          type: "project.meta.update",
+                          commandId: yield* serverCommandId("project-clone-done"),
+                          projectId: project.projectId,
+                        });
+                        yield* dispatchNormalizedCommand(command);
+                      }),
+                    ),
+                    Effect.andThen(refreshGitStatus(project.workspaceRoot)),
+                    Effect.ignoreCause({ log: true }),
+                    Effect.provideContext(normalizerContext),
                   ),
-                  Effect.andThen(refreshGitStatus(project.workspaceRoot)),
-                  Effect.ignoreCause({ log: true }),
-                  Effect.provideContext(normalizerContext),
+              })
+              .pipe(
+                Effect.map((result) => ({
+                  ...result,
+                  repository: repositoryMetadataForClient(
+                    result.repository,
+                    input.supportsForgejo === true,
+                  ),
+                })),
+                Effect.mapError((error) =>
+                  error._tag === "SourceControlRepositoryError"
+                    ? sourceControlErrorForClient(error, input.supportsForgejo === true)
+                    : error,
                 ),
-            }),
+              ),
             { "rpc.aggregate": "source-control" },
           ),
         [WS_METHODS.projectCloneCancel]: (input) =>
@@ -3295,13 +3359,24 @@ const makeWsRpcLayer = (
         [WS_METHODS.projectCloneRetry]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectCloneRetry,
-            projectCloneTracker.retry(input.projectId).pipe(Effect.map((applied) => ({ applied }))),
+            projectCloneTracker.retry(input.projectId).pipe(
+              Effect.map((applied) => ({ applied })),
+              Effect.mapError((error) =>
+                sourceControlErrorForClient(error, input.supportsForgejo === true),
+              ),
+            ),
             { "rpc.aggregate": "source-control" },
           ),
-        [WS_METHODS.subscribeProjectClones]: () =>
-          observeRpcStream(WS_METHODS.subscribeProjectClones, projectCloneTracker.stream, {
-            "rpc.aggregate": "source-control",
-          }),
+        [WS_METHODS.subscribeProjectClones]: (input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeProjectClones,
+            projectCloneTracker.stream.pipe(
+              Stream.map((snapshots) =>
+                projectCloneListForClient(snapshots, input.supportsForgejo === true),
+              ),
+            ),
+            { "rpc.aggregate": "source-control" },
+          ),
         [WS_METHODS.sourceControlPublishRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlPublishRepository,
@@ -3566,9 +3641,15 @@ const makeWsRpcLayer = (
         [WS_METHODS.subscribeVcsStatus]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeVcsStatus,
-            vcsStatusBroadcaster.streamStatus(input, {
-              automaticRemoteRefreshInterval: automaticGitFetchInterval,
-            }),
+            vcsStatusBroadcaster
+              .streamStatus(input, {
+                automaticRemoteRefreshInterval: automaticGitFetchInterval,
+              })
+              .pipe(
+                Stream.map((event) =>
+                  vcsStatusEventForClient(event, input.supportsForgejo === true),
+                ),
+              ),
             {
               "rpc.aggregate": "vcs",
             },
@@ -3590,7 +3671,11 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsRefreshStatus]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsRefreshStatus,
-            vcsStatusBroadcaster.refreshStatus(input.cwd),
+            vcsStatusBroadcaster
+              .refreshStatus(input.cwd)
+              .pipe(
+                Effect.map((status) => vcsStatusForClient(status, input.supportsForgejo === true)),
+              ),
             {
               "rpc.aggregate": "vcs",
             },
@@ -4167,6 +4252,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                           BitbucketApi.layer,
                           GitHubCli.layer,
                           GitLabCli.layer,
+                          ForgejoCli.layer,
                         ),
                       ),
                       Layer.provideMerge(GitVcsDriver.layer),

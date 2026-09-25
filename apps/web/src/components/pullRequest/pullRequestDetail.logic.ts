@@ -112,12 +112,17 @@ export function pullRequestCheckoutCommand(
   number: number,
   headBranch: string,
   headRepositoryNameWithOwner?: string | null,
+  repositoryUrl?: string | null,
 ): string | null {
   switch (provider) {
     case "github":
       return `gh pr checkout ${number}`;
     case "gitlab":
       return `glab mr checkout ${number}`;
+    case "forgejo":
+      return repositoryUrl
+        ? `git fetch '${repositoryUrl.replaceAll("'", "'\\''")}' refs/pull/${number}/head && git checkout -B pulls/${number} FETCH_HEAD`
+        : null;
     case "azure-devops":
       return `az repos pr checkout --id ${number}`;
     case "bitbucket": {
@@ -157,6 +162,7 @@ export function panelPullRequestCheckoutCommand(input: {
   readonly identity: RepositoryIdentity | null | undefined;
   readonly summary: Pick<PullRequestDetail, "provider" | "number" | "headBranch"> | null;
   readonly headRepositoryNameWithOwner?: string | null | undefined;
+  readonly repositoryUrl?: string | null | undefined;
 }): string | null {
   return input.summary
     ? pullRequestCheckoutCommand(
@@ -164,6 +170,7 @@ export function panelPullRequestCheckoutCommand(input: {
         input.summary.number,
         input.summary.headBranch,
         input.headRepositoryNameWithOwner,
+        input.repositoryUrl,
       )
     : loadingPullRequestCheckoutCommand(input.reference, input.identity);
 }
