@@ -52,6 +52,15 @@ interface RelayBinding {
   readonly panelId?: string;
   readonly agentIndex?: number;
   readonly slotAttempt?: number;
+  /**
+   * Watermark written once Relay itself reported this job gone while nothing
+   * about it had ever reached the thread. Boot skips a retired binding unless
+   * an activation was recorded after this point, so adopted history stops
+   * costing a probe on every start. A row id rather than a timestamp: the
+   * rest of this file already orders recovery that way, and same-millisecond
+   * writes are common.
+   */
+  readonly retiredAfterRowId?: number;
 }
 
 interface RelayToolReceipt {
@@ -574,6 +583,9 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
       ...(nonNegativeInteger(payload.slotAttempt) !== undefined
         ? { slotAttempt: payload.slotAttempt as number }
         : {}),
+      ...(nonNegativeInteger(payload.retiredAfterRowId) !== undefined
+        ? { retiredAfterRowId: payload.retiredAfterRowId as number }
+        : {}),
     };
   };
 
@@ -943,10 +955,75 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     },
   );
 
+  /** An activation for this binding (or its panel) recorded after `afterRowId`. */
+  const hasActivationSince = Effect.fn("RelayWorkerBridge.hasActivationSince")(function* (
+    binding: RelayBinding,
+    afterRowId: number,
+  ) {
+    const rows = yield* sql`
+      SELECT 1 FROM projection_thread_activities
+      WHERE thread_id = ${binding.threadId} AND kind = 'relay.activation'
+        AND rowid > ${afterRowId}
+        AND json_extract(payload_json, '$.environmentId') = ${environmentId}
+        AND (
+          json_extract(payload_json, '$.id') = ${binding.id}
+          OR (
+            json_extract(payload_json, '$.id') = ${binding.panelId ?? ""}
+            AND EXISTS (
+              SELECT 1 FROM json_each(json_extract(payload_json, '$.jobIds'))
+              WHERE value = ${binding.id}
+            )
+          )
+        )
+      LIMIT 1
+    `;
+    return rows.length > 0;
+  });
+
+  /**
+   * Record that Relay reported this job gone while nothing about it had ever
+   * reached the thread. The binding row is upserted in place, so this costs no
+   * new activity and stays invisible to the transcript; boot then skips the
+   * binding instead of re-probing every job the environment has ever run.
+   */
+  const markRetired = Effect.fn("RelayWorkerBridge.markRetired")(function* (binding: RelayBinding) {
+    const watermark = yield* sql`
+      SELECT MAX(rowid) AS rowId FROM projection_thread_activities
+      WHERE thread_id = ${binding.threadId}
+    `;
+    const retiredAfterRowId = nonNegativeInteger(record(watermark[0])?.rowId);
+    if (retiredAfterRowId === undefined) return;
+    yield* append(
+      binding,
+      "relay.binding",
+      {
+        kind: binding.kind,
+        id: binding.id,
+        toolCallId: binding.toolCallId,
+        environmentId: binding.environmentId,
+        ...(binding.panelId ? { panelId: binding.panelId } : {}),
+        ...(binding.agentIndex !== undefined ? { agentIndex: binding.agentIndex } : {}),
+        ...(binding.slotAttempt !== undefined ? { slotAttempt: binding.slotAttempt } : {}),
+        retiredAfterRowId,
+      },
+      "Relay worker bound",
+      `relay-binding:${binding.id}`,
+      `retired:${retiredAfterRowId}`,
+    );
+  });
+
   const shouldObserveOnBoot = Effect.fn("RelayWorkerBridge.shouldObserveOnBoot")(function* (
     binding: RelayBinding,
     bindingRowId: number,
   ) {
+    // A retired binding stays asleep unless an activation arrived after it was
+    // retired. One that did wake still answers to the normal rules below, so a
+    // resumed worker that has since finished is not re-probed forever.
+    if (
+      binding.retiredAfterRowId !== undefined &&
+      !(yield* hasActivationSince(binding, binding.retiredAfterRowId))
+    )
+      return false;
     const latest = yield* readLatestTaskActivity(binding);
     if (latest.kind !== "task.completed" || bindingRowId > latest.rowId) return true;
     // A resume or panel continuation accepted after the terminal row must be
@@ -1155,13 +1232,16 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     if (!(yield* hasProjectedWorkerActivity(binding))) {
       // Relay itself answered that this job is gone, and nothing about it ever
       // reached the thread, so there is no observation left to resume. Retire
-      // it rather than let every adopted historical job hold a CLI spawn a
-      // minute for the life of the process. A worker that does come back
-      // re-registers through its own receipt, and boot re-checks it once.
-      // When Relay is absent entirely the silence says nothing about the job,
-      // so keep the binding and just slow the recheck down.
-      if (enabled && cliPath) retire(binding.id);
-      else {
+      // it for good: otherwise every job the environment has ever run is
+      // re-probed on each boot and holds a CLI spawn a minute in between. A
+      // worker that does come back re-registers through its own receipt, and
+      // its activation outranks the retirement. When Relay is absent entirely
+      // the silence says nothing about the job, so keep the binding live and
+      // only slow the recheck down.
+      if (enabled && cliPath) {
+        yield* markRetired(binding);
+        retire(binding.id);
+      } else {
         unavailable.add(binding.id);
         missingObservationRetryAt.set(binding.id, (yield* Clock.currentTimeMillis) + 60_000);
       }
