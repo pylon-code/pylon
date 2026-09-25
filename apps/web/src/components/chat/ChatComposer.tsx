@@ -5,6 +5,8 @@ import { environmentThreadDetails } from "../../state/threads";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { trackPendingContextImport } from "./pendingContextImport";
 import { observeResponsiveBreakpointFade, usePanelAnimationSettings } from "../../panelAnimations";
+import { usePrimaryEnvironmentId } from "../../state/environments";
+import { readPrimaryEnvironmentTarget } from "../../environments/primary/target";
 import { runtimeModeConfig, runtimeModeOptions } from "./runtimeModeConfig";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { AttachmentFilePreview } from "../files/AttachmentFilePreview";
@@ -47,6 +49,7 @@ import {
   resolveServerProviderRuntimeMode,
   ProviderDriverKind,
   ProviderInstanceId,
+  PRIMARY_LOCAL_ENVIRONMENT_ID,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
@@ -88,6 +91,7 @@ import {
   supportsSessionResourceReload,
 } from "@t3tools/client-runtime/state/session-resources";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
+import { folderDropTarget, resolveDroppedFolderPath } from "./folderDrop";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import {
   memo,
@@ -1383,6 +1387,7 @@ export interface ChatComposerHandle {
   restoreAfterTimelineReachedEnd: () => void;
   collapseForTimelineScrollKey: (key: string) => void;
   addDroppedFiles: (files: File[]) => void;
+  addDroppedFolders: (folders: File[], unresolvedCount: number) => void;
   hasPendingAttachments: () => boolean;
   insertTextAtEnd: (
     text: string,
@@ -1751,7 +1756,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onFileOpen,
   } = props;
   const [isQuickQuestionOpen, setIsQuickQuestionOpen] = useState(false);
-
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const activeTasksProgress = props.threadSyncPhase === null ? props.activeTasksProgress : null;
   const activeTaskSteps = props.threadSyncPhase === null ? props.activeTaskSteps : null;
   // ------------------------------------------------------------------
@@ -6706,6 +6711,64 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           if (!inserted) focusComposer();
         });
       },
+      addDroppedFolders: (folders: File[], unresolvedCount: number) => {
+        let desktopManagedPrimary = false;
+        let primaryRunningDistro: string | null | undefined;
+        try {
+          desktopManagedPrimary = readPrimaryEnvironmentTarget().source === "desktop-managed";
+          primaryRunningDistro = window.desktopBridge
+            ?.getLocalEnvironmentBootstraps()
+            .find((entry) => entry.id === PRIMARY_LOCAL_ENVIRONMENT_ID)?.runningDistro;
+        } catch {
+          // An unavailable local bootstrap must not make a client path look server-local.
+        }
+        const target = folderDropTarget({
+          desktopManagedPrimary,
+          primaryRunningDistro,
+          hasNativePathBridge: window.desktopBridge?.getPathForFile !== undefined,
+          environmentId,
+          primaryEnvironmentId,
+        });
+        if (target !== "local") {
+          toastManager.add({
+            type: "error",
+            title:
+              target === "remote"
+                ? "Folders can't be dropped into remote environments"
+                : "Folder paths are available only in the desktop local environment",
+          });
+          return;
+        }
+        if (unresolvedCount > 0) {
+          toastManager.add({
+            type: "error",
+            title: "Some dropped items could not be read",
+            description: "Drop the items again or type folder paths with @ instead.",
+          });
+        }
+        for (const folder of folders) {
+          const path = resolveDroppedFolderPath(folder, window.desktopBridge?.getPathForFile);
+          if (path === null) {
+            toastManager.add({
+              type: "error",
+              title: `Couldn't get the path of "${folder.name}"`,
+              description: "Type the folder path with @ instead.",
+            });
+            continue;
+          }
+          const inserted = insertComposerTextAtEnd(`${serializeComposerFileLink(path)} `, {
+            ensureLeadingBoundary: true,
+          });
+          if (!inserted) {
+            toastManager.add({
+              type: "error",
+              title: `Couldn't add "${folder.name}" to the composer`,
+              description: "The composer is busy; try again when it is ready.",
+            });
+          }
+        }
+        focusComposer();
+      },
       hasPendingAttachments: () =>
         (pendingImageCompressionsRef.current.get(attachmentTargetKey) ?? 0) > 0 ||
         pendingDraftWork.has(attachmentTargetKey),
@@ -6862,6 +6925,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerPreviewAnnotations,
       composerReviewComments,
       focusComposer,
+      environmentId,
+      primaryEnvironmentId,
       isConnecting,
       isComposerApprovalState,
       pendingUserInputs.length,

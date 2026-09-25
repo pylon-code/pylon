@@ -10479,6 +10479,8 @@ export default function ChatView(props: ChatViewProps) {
   const workspaceFileDropHandlers = makeWorkspaceFileDropHandlers({
     setDragActive: setIsWorkspaceFileDragActive,
     addFiles: (files) => composerRef.current?.addDroppedFiles(files),
+    addFolders: (folders, unresolvedCount) =>
+      composerRef.current?.addDroppedFolders(folders, unresolvedCount),
   });
   const externalComposerDrawerAttached =
     composerBannerItems.length > 0 || Boolean(threadSyncPhase && !activeEnvironmentUnavailable);
