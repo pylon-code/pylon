@@ -644,10 +644,70 @@ function buildCodexCollaborationMode(input: {
   };
 }
 
+// Match the skill grammar used by Claude/Cursor, leaving currency amounts as prose.
+const SKILL_MENTION_PATTERN =
+  /(^|\s)\p{Sc}(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=\s|$)/gu;
+
+function hasUnicodeSkillMention(prompt: string): boolean {
+  return [...prompt.matchAll(SKILL_MENTION_PATTERN)].some((match) => {
+    const prefix = match[1] ?? "";
+    return match[0].slice(prefix.length, prefix.length + 1) !== "$";
+  });
+}
+
+export function codexSkillNamesForCwd(
+  response: {
+    readonly data: ReadonlyArray<{
+      readonly cwd: string;
+      readonly skills: ReadonlyArray<{ readonly name: string; readonly enabled: boolean }>;
+    }>;
+  },
+  cwd: string,
+): ReadonlySet<string> {
+  const entry =
+    response.data.find((item) => item.cwd === cwd) ??
+    (response.data.length === 1 ? response.data[0] : undefined);
+  return new Set((entry?.skills ?? []).filter((skill) => skill.enabled).map((skill) => skill.name));
+}
+
+export function resolveCodexSkillNamesForPrompt<E>(
+  prompt: string | undefined,
+  cwd: string,
+  request: Effect.Effect<
+    {
+      readonly data: ReadonlyArray<{
+        readonly cwd: string;
+        readonly skills: ReadonlyArray<{ readonly name: string; readonly enabled: boolean }>;
+      }>;
+    },
+    E
+  >,
+): Effect.Effect<ReadonlySet<string> | undefined> {
+  if (!prompt || !hasUnicodeSkillMention(prompt)) return Effect.succeed(undefined);
+  return request.pipe(
+    Effect.timeoutOption("2 seconds"),
+    Effect.flatMap(
+      Option.match({
+        onNone: () =>
+          Effect.logWarning("Timed out resolving Codex skill aliases before turn.").pipe(
+            Effect.as(undefined),
+          ),
+        onSome: (response) => Effect.succeed(codexSkillNamesForCwd(response, cwd)),
+      }),
+    ),
+    Effect.catch((cause) =>
+      Effect.logWarning("Failed to resolve Codex skill aliases before turn.", { cause }).pipe(
+        Effect.as(undefined),
+      ),
+    ),
+  );
+}
+
 export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
   readonly prompt?: string;
+  readonly skillNames?: ReadonlySet<string>;
   readonly attachments?: ReadonlyArray<{
     readonly type: "localImage";
     readonly path: string;
@@ -666,7 +726,13 @@ export function buildTurnStartParams(input: {
   if (input.prompt) {
     turnInput.push({
       type: "text",
-      text: input.prompt,
+      text: input.prompt.replace(
+        SKILL_MENTION_PATTERN,
+        (source, whitespace: string, name: string) =>
+          source.slice(whitespace.length).startsWith("$") || input.skillNames?.has(name)
+            ? `${whitespace}$${name}`
+            : source,
+      ),
     });
   }
   for (const attachment of input.attachments ?? []) {
@@ -2925,10 +2991,18 @@ export const makeCodexSessionRuntime = (
           const normalizedModel = normalizeCodexModelSlug(
             input.model ?? (yield* Ref.get(sessionRef)).model,
           );
+          // Resolve aliases through this session's app server. Unknown words and
+          // failed catalog reads must remain the user's literal prompt text.
+          const skillNames = yield* resolveCodexSkillNamesForPrompt(
+            input.input,
+            options.cwd,
+            client.request("skills/list", { cwds: [options.cwd] }),
+          );
           const params = yield* buildTurnStartParams({
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
             ...(input.input ? { prompt: input.input } : {}),
+            ...(skillNames ? { skillNames } : {}),
             ...(input.attachments ? { attachments: input.attachments } : {}),
             ...(normalizedModel ? { model: normalizedModel } : {}),
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
