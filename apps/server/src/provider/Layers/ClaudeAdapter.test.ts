@@ -10179,4 +10179,70 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect("attributes live subagent tool heartbeats when Claude omits task_id", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const progressFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "tool.progress"),
+        Stream.take(4),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "Delegate work" });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-heartbeat",
+        description: "Inspect code",
+        task_type: "local_agent",
+        tool_use_id: "tool-task-heartbeat",
+        uuid: "task-heartbeat-start",
+        session_id: "sdk-heartbeat",
+      } as unknown as SDKMessage);
+      const heartbeat = (uuid: string, parentToolUseId: string, taskId?: string) =>
+        harness.query.emit({
+          type: "tool_progress",
+          tool_use_id: `tool-${uuid}`,
+          tool_name: "Bash",
+          elapsed_time_seconds: 30,
+          parent_tool_use_id: parentToolUseId,
+          ...(taskId ? { task_id: taskId } : {}),
+          uuid,
+          session_id: "sdk-heartbeat",
+        } as unknown as SDKMessage);
+      heartbeat("live", "tool-task-heartbeat");
+      heartbeat("explicit", "tool-task-heartbeat", "task-explicit");
+      heartbeat("unknown", "tool-unknown");
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-heartbeat",
+        status: "completed",
+        uuid: "task-heartbeat-end",
+        session_id: "sdk-heartbeat",
+      } as unknown as SDKMessage);
+      heartbeat("late", "tool-task-heartbeat");
+
+      const progress = Array.from(yield* Fiber.join(progressFiber));
+      assert.deepEqual(
+        progress.map((event) =>
+          event.type === "tool.progress" && event.payload.taskId
+            ? String(event.payload.taskId)
+            : undefined,
+        ),
+        ["task-heartbeat", "task-explicit", undefined, undefined],
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 });

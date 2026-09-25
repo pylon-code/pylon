@@ -640,8 +640,14 @@ const make = Effect.gen(function* () {
     });
     // A directory deleted without `git worktree remove` leaves an admin entry
     // that makes `git worktree add` refuse the path; prune clears it.
+    const submodules = yield* projectSettingsForThread(thread.id).pipe(
+      Effect.map((settings) => settings.worktreeSubmodules),
+      Effect.orElseSucceed(() => null),
+    );
     yield* gitWorkflow.pruneWorktrees({ cwd }).pipe(
-      Effect.andThen(gitWorkflow.createWorktree({ cwd, refName: branch, path: worktreePath })),
+      Effect.andThen(
+        gitWorkflow.createWorktree({ cwd, refName: branch, path: worktreePath }, { submodules }),
+      ),
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.failCause(cause)
@@ -1048,10 +1054,23 @@ const make = Effect.gen(function* () {
             detail: `Provider session '${session.threadId}' started without a provider instance or session incarnation id.`,
           });
         }
+        if (
+          options?.pendingTurnStart === true &&
+          (session.status === "error" || session.status === "closed")
+        ) {
+          return yield* new ProviderAdapterRequestError({
+            provider: providerErrorLabel(session.provider),
+            method: "thread.turn.start",
+            detail: `Provider session '${session.threadId}' is ${session.status}; it cannot accept a new turn.`,
+          });
+        }
         const sessionBinding: OrchestrationSession = {
           threadId,
+          // The provider can still report the previous turn as running while
+          // a new exact admission is reserved. The reservation owns the
+          // projected lifecycle until its matching turn.started is accepted.
           status:
-            options?.pendingTurnStart === true && session.status === "ready"
+            options?.pendingTurnStart === true
               ? "starting"
               : mapProviderSessionStatusToOrchestrationStatus(session.status),
           providerName: session.provider,

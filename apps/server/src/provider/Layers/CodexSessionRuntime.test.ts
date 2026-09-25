@@ -16,6 +16,7 @@ import {
   describeMcpElicitation,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
+  isThreadWriterLockedError,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
   readCodexThread,
@@ -871,6 +872,44 @@ describe("isRecoverableThreadResumeError", () => {
   });
 });
 
+describe("isThreadWriterLockedError", () => {
+  it("matches the app-server writer-lock refusal", () => {
+    NodeAssert.equal(
+      isThreadWriterLockedError(
+        new CodexErrors.CodexAppServerRequestError({
+          code: -32603,
+          errorMessage: "thread 01a0ccd7-23c1-7c00-9cbd-eafe286d36b5 already has an active writer",
+        }),
+      ),
+      true,
+    );
+  });
+
+  it("ignores other resume failures", () => {
+    NodeAssert.equal(
+      isThreadWriterLockedError(
+        new CodexErrors.CodexAppServerRequestError({
+          code: -32603,
+          errorMessage: "thread not found",
+        }),
+      ),
+      false,
+    );
+  });
+
+  it("is not treated as a recoverable resume error", () => {
+    NodeAssert.equal(
+      isRecoverableThreadResumeError(
+        new CodexErrors.CodexAppServerRequestError({
+          code: -32603,
+          errorMessage: "thread 01a0ccd7-23c1-7c00-9cbd-eafe286d36b5 already has an active writer",
+        }),
+      ),
+      false,
+    );
+  });
+});
+
 describe("openCodexThread", () => {
   it.effect("resumes metadata when historical turns contain unknown error values", () =>
     Effect.gen(function* () {
@@ -1095,6 +1134,35 @@ describe("openCodexThread", () => {
 
       NodeAssert.ok(isCodexAppServerRequestError(error));
       NodeAssert.equal(error.errorMessage, "timed out waiting for server");
+    }),
+  );
+
+  it.effect("explains a writer-locked conversation without starting a fresh thread", () =>
+    Effect.gen(function* () {
+      const refusal = new CodexErrors.CodexAppServerRequestError({
+        code: -32603,
+        errorMessage: "thread 01a0ccd7-23c1-7c00-9cbd-eafe286d36b5 already has an active writer",
+      });
+      const client = {
+        request: () => Effect.die("A writer-locked conversation must not start a fresh thread"),
+        raw: { request: () => Effect.fail(refusal) },
+      };
+
+      const error = yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: "01a0ccd7-23c1-7c00-9cbd-eafe286d36b5",
+      }).pipe(Effect.flip);
+
+      NodeAssert.ok(isCodexAppServerRequestError(error));
+      NodeAssert.ok(error.errorMessage.includes("01a0ccd7-23c1-7c00-9cbd-eafe286d36b5"));
+      NodeAssert.match(error.errorMessage, /writer lock/i);
+      NodeAssert.match(error.errorMessage, /close/i);
+      NodeAssert.equal(error.cause, refusal);
     }),
   );
 });

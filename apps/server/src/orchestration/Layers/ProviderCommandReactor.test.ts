@@ -2006,6 +2006,100 @@ describe("ProviderCommandReactor", () => {
     }),
   );
 
+  effectIt.effect(
+    "keeps exact admission pending while a provider reports a running prior turn",
+    () =>
+      Effect.gen(function* () {
+        const sendEntered = yield* Deferred.make<void>();
+        const releaseSend = yield* Deferred.make<void>();
+        const requestId = CommandId.make("cmd-running-provider-exact-admission");
+        const messageId = asMessageId("message-running-provider-exact-admission");
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            startSessionEffect: (session) => Effect.succeed({ ...session, status: "running" }),
+            sendTurnEffect: () =>
+              Deferred.succeed(sendEntered, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseSend)),
+                Effect.as({ threadId: ThreadId.make("thread-1"), turnId: asTurnId("new-turn") }),
+              ),
+          }),
+        );
+
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: requestId,
+          threadId: ThreadId.make("thread-1"),
+          message: { messageId, role: "user", text: "follow up", attachments: [] },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: isoAt(0),
+        });
+        yield* Deferred.await(sendEntered);
+        let thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (entry) => entry.id === ThreadId.make("thread-1"),
+        );
+        expect(thread?.session?.status).toBe("starting");
+        expect(thread?.session?.pendingTurnRequestId).toBe(requestId);
+        expect(thread?.session?.pendingTurnMessageId).toBe(messageId);
+
+        yield* Deferred.succeed(releaseSend, undefined);
+        yield* Effect.promise(() =>
+          waitFor(async () => {
+            const thread = (await harness.readModel()).threads.find(
+              (entry) => entry.id === ThreadId.make("thread-1"),
+            );
+            return thread?.session?.activeTurnId === asTurnId("new-turn");
+          }),
+        );
+        thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (entry) => entry.id === ThreadId.make("thread-1"),
+        );
+        expect(thread?.session?.status).toBe("running");
+        expect(thread?.session?.activeTurnRequestId).toBe(requestId);
+        expect(thread?.session?.pendingTurnRequestId).toBeUndefined();
+      }),
+  );
+
+  for (const status of ["error", "closed"] as const) {
+    effectIt.effect(`rejects exact admission when the provider session is ${status}`, () =>
+      Effect.gen(function* () {
+        const requestId = CommandId.make(`cmd-terminal-provider-${status}`);
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            startSessionEffect: (session) => Effect.succeed({ ...session, status }),
+          }),
+        );
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: requestId,
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId(`message-terminal-provider-${status}`),
+            role: "user",
+            text: "follow up",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: isoAt(0),
+        });
+        yield* Effect.promise(() =>
+          waitFor(async () => {
+            const thread = (await harness.readModel()).threads.find(
+              (entry) => entry.id === ThreadId.make("thread-1"),
+            );
+            return thread?.session?.status === "error";
+          }),
+        );
+        const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (entry) => entry.id === ThreadId.make("thread-1"),
+        );
+        expect(thread?.session?.failedTurnRequestId).toBe(requestId);
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+      }),
+    );
+  }
+
   effectIt.effect("does not disarm when raw turn start ingestion never accepts the CAS", () =>
     Effect.gen(function* () {
       const testClock = yield* TestClock.make();
@@ -3826,11 +3920,14 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     expect(harness.pruneWorktrees).toHaveBeenCalledWith({ cwd: "/tmp/provider-project" });
-    expect(harness.createWorktree).toHaveBeenCalledWith({
-      cwd: "/tmp/provider-project",
-      refName: "feature/restore",
-      path: worktreePath,
-    });
+    expect(harness.createWorktree).toHaveBeenCalledWith(
+      {
+        cwd: "/tmp/provider-project",
+        refName: "feature/restore",
+        path: worktreePath,
+      },
+      { submodules: null },
+    );
     expect(harness.createWorktree.mock.invocationCallOrder[0]).toBeLessThan(
       harness.startSession.mock.invocationCallOrder[0]!,
     );

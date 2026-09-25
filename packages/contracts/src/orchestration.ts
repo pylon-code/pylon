@@ -326,6 +326,9 @@ export const ChatImageAttachment = Schema.Struct({
 });
 export type ChatImageAttachment = typeof ChatImageAttachment.Type;
 
+export const PastedTextAttachmentSource = Schema.TaggedStruct("pasted-text", {});
+export type PastedTextAttachmentSource = typeof PastedTextAttachmentSource.Type;
+
 export const ChatFileAttachment = Schema.Struct({
   type: Schema.Literal("file"),
   id: ChatAttachmentId,
@@ -335,6 +338,10 @@ export const ChatFileAttachment = Schema.Struct({
     Schema.isGreaterThanOrEqualTo(1),
     Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES),
   ),
+  /** Clipboard text folded by a client. Providers keep these path-only so the
+      agent can inspect the file selectively instead of eagerly spending the
+      same context the fold is intended to preserve. */
+  source: Schema.optional(PastedTextAttachmentSource),
 });
 export type ChatFileAttachment = typeof ChatFileAttachment.Type;
 
@@ -2236,7 +2243,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   context: Schema.optional(OrchestrationMessageContext),
-  turnId: Schema.NullOr(TurnId),
+  // Events persisted before the field existed carry no key at all.
+  turnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

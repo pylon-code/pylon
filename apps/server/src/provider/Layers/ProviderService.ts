@@ -528,30 +528,41 @@ const correlateRuntimeEventWithInstance = (
  * makes the path line the sole channel a non-image attachment has on those
  * providers, which is why follow-ups need it exactly as much as turns do.
  *
- * A context block that would push the input past the provider limit is left
- * out. Unresolvable ids are skipped here and surface as adapter errors when the
- * file is read.
+ * Ordinary context that would push input past the provider limit is left out.
+ * A pasted-text path is required: silently omitting it would leave the agent
+ * unable to inspect the folded paste. Unresolvable ids are skipped here and
+ * surface as adapter errors when the file is read.
  */
 const appendAttachmentContext = (
   attachmentsDir: string,
   input: string | undefined,
   attachments: ReadonlyArray<ChatAttachment>,
-): string | undefined => {
+): { readonly input: string | undefined; readonly pastedTextOverflow: boolean } => {
   let inputWithContext = input;
+  let pastedTextOverflow = false;
   const append = (context: string | undefined) => {
-    if (context === undefined) return;
+    if (context === undefined) return true;
     const candidate = inputWithContext ? `${inputWithContext}\n\n${context}` : context;
     if (candidate.length <= PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
       inputWithContext = candidate;
+      return true;
     }
+    return false;
   };
   for (const attachment of attachments) {
     const attachmentPath = resolveAttachmentPath({ attachmentsDir, attachment });
-    append(
+    const isPastedText =
+      attachment.type === "file" &&
+      "source" in attachment &&
+      attachment.source?._tag === "pasted-text";
+    const appended = append(
       attachmentPath === null
         ? undefined
-        : `[Attached ${attachment.type} "${attachment.name}" is saved at: ${attachmentPath}]`,
+        : isPastedText
+          ? `[Pasted text "${attachment.name}" is saved at: ${attachmentPath}. Inspect it as needed.]`
+          : `[Attached ${attachment.type} "${attachment.name}" is saved at: ${attachmentPath}]`,
     );
+    if (isPastedText && (attachmentPath === null || !appended)) pastedTextOverflow = true;
   }
   for (const attachment of attachments) {
     const source = isChatImageAttachment(attachment) ? attachment.source : undefined;
@@ -583,7 +594,7 @@ const appendAttachmentContext = (
         : undefined,
     );
   }
-  return inputWithContext;
+  return { input: inputWithContext, pastedTextOverflow };
 };
 
 const makeProviderService = Effect.fn("makeProviderService")(function* (
@@ -2326,11 +2337,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
     // Pylon keeps the attachment context in a shared helper; feed it the
     // citation-expanded text so both transforms land in the provider prompt.
-    const inputTextWithAttachmentContext = appendAttachmentContext(
+    const attachmentContext = appendAttachmentContext(
       serverConfig.attachmentsDir,
       inputTextWithCitations,
       attachments,
     );
+    if (attachmentContext.pastedTextOverflow) {
+      return yield* toValidationError(
+        "ProviderService.sendTurn",
+        `Pasted-text attachment path is unavailable or exceeds the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS} character input limit`,
+      );
+    }
+    const inputTextWithAttachmentContext = attachmentContext.input;
 
     const input = {
       ...parsed,
@@ -3358,11 +3376,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     // generic file attached to a follow-up is lost outright: every adapter
     // except OpenCode skips non-images, so the path line is the only thing
     // that tells the agent the file exists.
-    const followUpInputText = appendAttachmentContext(
+    const followUpContext = appendAttachmentContext(
       serverConfig.attachmentsDir,
       input.input,
       input.attachments,
     );
+    if (followUpContext.pastedTextOverflow) {
+      return yield* toValidationError(
+        "ProviderService.followUp",
+        `Pasted-text attachment path is unavailable or exceeds the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS} character input limit`,
+      );
+    }
+    const followUpInputText = followUpContext.input;
     return yield* followUpSession({
       ...input,
       ...(followUpInputText !== undefined ? { input: followUpInputText } : {}),

@@ -95,6 +95,12 @@ const ManifestProviderCatalog = Schema.Struct({
  */
 const ModelManifestEnvelopeSchema = Schema.Struct({
   version: Schema.Literal(1),
+  /**
+   * ISO date of the last edit. A release bundles its manifest, and a disk
+   * cache of an older edit must not outrank it. Optional so older remote
+   * files still decode; they count as older than any dated bundle.
+   */
+  updatedAt: Schema.optional(Schema.String),
   currentModels: Schema.Record(
     Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(64)),
     Schema.Array(
@@ -154,6 +160,13 @@ export const decodeManifestJson = (input: string) =>
 
 export const BUNDLED_MODEL_MANIFEST: ModelManifestData =
   Schema.decodeUnknownSync(ModelManifestSchema)(bundledManifestJson);
+
+/** Epoch millis of the manifest's `updatedAt`, or 0 when absent or unparsable. */
+function manifestUpdatedAtMs(manifest: ModelManifestData): number {
+  if (manifest.updatedAt === undefined) return 0;
+  const parsed = Date.parse(manifest.updatedAt);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
 
 export interface ResolvedManifestModel {
   readonly model: ServerProviderModel;
@@ -341,6 +354,8 @@ export class ModelManifest extends Context.Service<
     readonly current: Effect.Effect<ModelManifestData>;
     /** Manifest after a TTL-gated remote refresh; never fails. */
     readonly refresh: Effect.Effect<ModelManifestData>;
+    /** Explicit refresh bypasses freshness and retry timers, retaining last-good data. */
+    readonly forceRefresh: Effect.Effect<ModelManifestData>;
     /** Forks `refresh` into the service's own scope. Drivers call this from
      * provider checks: the fetch is process-shared state, so it must survive
      * the teardown of whichever instance happened to trigger it. */
@@ -352,6 +367,7 @@ export class ModelManifest extends Context.Service<
 const BundledOnlyModelManifest: ModelManifest["Service"] = {
   current: Effect.succeed(BUNDLED_MODEL_MANIFEST),
   refresh: Effect.succeed(BUNDLED_MODEL_MANIFEST),
+  forceRefresh: Effect.succeed(BUNDLED_MODEL_MANIFEST),
   refreshInBackground: Effect.void,
 };
 
@@ -382,13 +398,20 @@ export const make = Effect.gen(function* () {
       );
       if (fromDisk === null) return;
       // The disk copy is the last-seen remote manifest, so it outranks the
-      // bundle even when stale: it is refreshed on the next successful fetch.
+      // bundle even when stale, unless the bundle's own edit date is newer
+      // than the cached manifest's. Then the release carries data the cache
+      // has not seen and the cache is dropped so the next refresh replaces
+      // it. Comparing edit dates, not fetch time, keeps this independent of
+      // when the cache was written relative to the release.
+      if (manifestUpdatedAtMs(BUNDLED_MODEL_MANIFEST) > manifestUpdatedAtMs(fromDisk.manifest)) {
+        return;
+      }
       manifest = fromDisk.manifest;
       fetchedAtMs = fromDisk.fetchedAtMs;
     }),
   );
 
-  const refresh = Effect.fn("ModelManifest.refresh")(function* () {
+  const refresh = Effect.fn("ModelManifest.refresh")(function* (force = false) {
     yield* ensureDiskCacheLoaded;
     const now = yield* Clock.currentTimeMillis;
     // A timestamp in the future means the wall clock moved backwards (the
@@ -396,8 +419,8 @@ export const make = Effect.gen(function* () {
     // it as expired: the refetch rewrites both timestamps and self-heals.
     const isWithin = (sinceMs: number | null, windowMs: number) =>
       sinceMs !== null && now >= sinceMs && now - sinceMs < windowMs;
-    if (isWithin(fetchedAtMs, MANIFEST_TTL_MS)) return manifest;
-    if (isWithin(lastAttemptMs, MANIFEST_RETRY_MS)) return manifest;
+    if (!force && isWithin(fetchedAtMs, MANIFEST_TTL_MS)) return manifest;
+    if (!force && isWithin(lastAttemptMs, MANIFEST_RETRY_MS)) return manifest;
 
     // The same switch that gates provider CLI update checks. It stops network
     // fetches only: a manifest already cached on disk from an earlier fetch
@@ -430,6 +453,9 @@ export const make = Effect.gen(function* () {
       Effect.catchCause(() => Effect.succeed(null)),
     );
     if (fetched === null) return manifest;
+    // The hosted catalog can lag behind a newly shipped bundle. Do not
+    // downgrade the live model list or persist that older copy across restarts.
+    if (manifestUpdatedAtMs(fetched) < manifestUpdatedAtMs(manifest)) return manifest;
 
     manifest = fetched;
     fetchedAtMs = now;
@@ -450,6 +476,7 @@ export const make = Effect.gen(function* () {
   return ModelManifest.of({
     current: ensureDiskCacheLoaded.pipe(Effect.map(() => manifest)),
     refresh: guardedRefresh,
+    forceRefresh: refreshSemaphore.withPermits(1)(refresh(true)),
     refreshInBackground: Effect.forkIn(guardedRefresh, serviceScope).pipe(Effect.asVoid),
   });
 });

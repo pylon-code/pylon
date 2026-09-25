@@ -21,7 +21,7 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
  * client renders partial coverage when an environment reports an older version
  * rather than failing the whole page.
  */
-export const USAGE_CONTRACT_VERSION = 6 as const;
+export const USAGE_CONTRACT_VERSION = 7 as const;
 
 /**
  * Oldest {@link UsageSummary} version a current client will still merge.
@@ -150,6 +150,12 @@ export const UsageSource = Schema.Struct({
    * those overcounts; this is the figure clients should total.
    */
   distinctSessions: NonNegativeInt,
+  /**
+   * Buckets attributed to this directory after the server's scan-wide record
+   * de-duplication. Added in v7; older peers only report provider-wide buckets.
+   * Raw transcript records never cross the wire.
+   */
+  buckets: Schema.optional(Schema.Array(UsageBucket)),
   message: Schema.NullOr(TrimmedNonEmptyString),
 });
 export type UsageSource = typeof UsageSource.Type;
