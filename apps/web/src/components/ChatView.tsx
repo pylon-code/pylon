@@ -222,7 +222,10 @@ import {
   selectThreadPreviewMiniPlayer,
   usePreviewMiniPlayerStore,
 } from "../previewMiniPlayerStore";
-import { isThreadOwnPullRequest } from "./pullRequest/pullRequestDetail.logic";
+import {
+  pullRequestPanelContext,
+  pullRequestPanelHost,
+} from "./pullRequest/pullRequestDetail.logic";
 import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
@@ -4998,6 +5001,8 @@ export default function ChatView(props: ChatViewProps) {
       )
     : linkedThreadPullRequestKey;
   const activeProjectRepository = activeProject?.repositoryIdentity?.displayName ?? null;
+  const activeProjectHost =
+    activeProject?.repositoryIdentity?.canonicalKey.split("/")[0]?.trim().toLowerCase() || null;
   const threadRepository = linkedThreadPullRequest?.repository ?? activeProjectRepository;
   const openThreadPullRequest = useCallback(
     (number: number) => {
@@ -5007,18 +5012,28 @@ export default function ChatView(props: ChatViewProps) {
       const projectId = linkedThreadPullRequest?.projectId ?? activeProject?.id;
       const repository = linkedThreadPullRequest?.repository ?? activeProjectRepository;
       if (projectId === undefined || repository === null) return;
+      const host = pullRequestPanelHost({
+        links: visiblePullRequests,
+        repository,
+        number,
+        linkedUrl: linkedThreadPullRequest?.url,
+        projectHost: activeProjectHost,
+      });
       useRightPanelStore.getState().openPullRequest(activeThreadRef, {
         projectId,
+        ...(host ? { host } : {}),
         repository,
         number,
       });
     },
     [
       activeProject,
+      activeProjectHost,
       activeProjectRepository,
       activeThreadRef,
       linkedThreadPullRequest,
       supportsPullRequests,
+      visiblePullRequests,
     ],
   );
   const openProjectPullRequest = useCallback(
@@ -5033,11 +5048,18 @@ export default function ChatView(props: ChatViewProps) {
       }
       useRightPanelStore.getState().openPullRequest(activeThreadRef, {
         projectId: activeProject.id,
+        ...(activeProjectHost ? { host: activeProjectHost } : {}),
         repository: activeProjectRepository,
         number,
       });
     },
-    [activeProject, activeProjectRepository, activeThreadRef, supportsPullRequests],
+    [
+      activeProject,
+      activeProjectHost,
+      activeProjectRepository,
+      activeThreadRef,
+      supportsPullRequests,
+    ],
   );
   const proactivePanelObservationRef = useRef<ReturnType<
     typeof observeProactivePanelUserChoice
@@ -10363,22 +10385,15 @@ export default function ChatView(props: ChatViewProps) {
           repository: renderedRightPanelSurface.repository,
           number: renderedRightPanelSurface.number,
         }}
-        context={
-          isThreadOwnPullRequest(
-            {
-              projectId: linkedThreadPullRequest?.projectId ?? activeProject?.id ?? null,
-              repository: threadRepository,
-              number: activeThreadPr?.number ?? null,
-            },
-            {
-              projectId: renderedRightPanelSurface.projectId,
-              repository: renderedRightPanelSurface.repository,
-              number: renderedRightPanelSurface.number,
-            },
-          )
-            ? "thread"
-            : "page"
-        }
+        context={pullRequestPanelContext(
+          {
+            projectId: activeThreadMetadata?.projectId ?? activeProject?.id ?? null,
+            pullRequests: activeThreadMetadata?.pullRequests,
+            linkedPullRequest: activeThreadMetadata?.linkedPullRequest,
+            branchPullRequest: activeThreadMetadata?.branchPullRequest,
+          },
+          renderedRightPanelSurface,
+        )}
         composerDraftTarget={composerDraftTarget}
         onBack={
           activeThreadRef !== null && pullRequestsSurfaceAvailable
