@@ -4053,3 +4053,50 @@ it("keeps attachment-only question answers expandable outside mobile work groups
   expect(running[1]).toBe(group);
   expect(running[2]?.type).toBe("work-toggle");
 });
+
+describe("orphaned background tasks never become subagent cards", () => {
+  // The next provider process settles a watcher it never launched, reporting
+  // only the task id and status. Ingestion stamps that bare row "agent", and
+  // judging it alone turned shell watchers into phantom subagents.
+  it("keeps a settled shell watcher classified as background work", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-orphan"),
+      projectId: ProjectId.make("project-orphan"),
+      title: "Orphan proof",
+      activities: [
+        makeActivity({
+          id: EventId.make("watcher-start"),
+          kind: "task.started",
+          summary: "local_bash task started",
+          createdAt: "2026-09-24T21:16:13.000Z",
+          payload: {
+            taskId: "watcher-1",
+            taskType: "local_bash",
+            agentKind: "background",
+            title: "Run the parallel merge queue dispatcher",
+          },
+        }),
+        makeActivity({
+          id: EventId.make("watcher-stop"),
+          kind: "task.completed",
+          summary: "Task stopped",
+          createdAt: "2026-09-24T21:34:03.000Z",
+          payload: {
+            taskId: "watcher-1",
+            status: "stopped",
+            agentKind: "agent",
+            title: "Run the parallel merge queue dispatcher",
+            summary: "Orphaned by a previous Claude Code process exit",
+          },
+        }),
+      ],
+    });
+
+    const rows = buildThreadFeed(thread).flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => row.workEntry.isBackgroundTask === true)).toBe(true);
+    expect(rows.some((row) => row.workEntry.agentSpawn !== undefined)).toBe(false);
+  });
+});

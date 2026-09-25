@@ -17,6 +17,7 @@ import {
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
@@ -51,6 +52,15 @@ interface RelayBinding {
   readonly panelId?: string;
   readonly agentIndex?: number;
   readonly slotAttempt?: number;
+  /**
+   * Watermark written once Relay itself reported this job gone while nothing
+   * about it had ever reached the thread. Boot skips a retired binding unless
+   * an activation was recorded after this point, so adopted history stops
+   * costing a probe on every start. A row id rather than a timestamp: the
+   * rest of this file already orders recovery that way, and same-millisecond
+   * writes are common.
+   */
+  readonly retiredAfterRowId?: number;
 }
 
 interface RelayToolReceipt {
@@ -154,7 +164,7 @@ function relayReceiptFromToolEvent(event: ProviderRuntimeEvent): RelayToolReceip
     return undefined;
   }
   const result = item?.result ?? data?.result;
-  const structured = relayStructuredResult(result);
+  const structured = relayStructuredResult(result) ?? relayLegacyResult(result);
   if (!structured || structured.schemaVersion !== 1) return undefined;
   const base = {
     threadId: event.threadId,
@@ -189,6 +199,48 @@ function relayReceiptFromToolEvent(event: ProviderRuntimeEvent): RelayToolReceip
       toolName,
       jobIds: jobIds.slice(0, 8),
     };
+  }
+  return undefined;
+}
+
+/** The installed Claude plugin still returns its job/panel record as text. */
+function relayLegacyResult(value: unknown): Record<string, unknown> | undefined {
+  const object = record(value);
+  const content = object?.content;
+  if (!Array.isArray(content) || content.length > 4) return undefined;
+  const text = record(content[0])?.text;
+  if (typeof text !== "string" || text.length > MAX_MCP_RECEIPT_CODE_UNITS) return undefined;
+  try {
+    const parsed = record(JSON.parse(text));
+    if (!parsed) return undefined;
+    if (
+      typeof parsed.id === "string" &&
+      JOB_ID.test(parsed.id) &&
+      typeof parsed.status === "string" &&
+      parsed.status !== "not_dispatched"
+    ) {
+      return {
+        schemaVersion: 1,
+        kind: "job",
+        jobId: parsed.id,
+        ...(nonNegativeInteger(parsed.attempt) !== undefined ? { attempt: parsed.attempt } : {}),
+      };
+    }
+    if (
+      typeof parsed.id === "string" &&
+      PANEL_ID.test(parsed.id) &&
+      Array.isArray(parsed.jobs) &&
+      parsed.jobs.length <= 8
+    ) {
+      return {
+        schemaVersion: 1,
+        kind: "panel",
+        panelId: parsed.id,
+        jobIds: parsed.jobs.filter((id): id is string => typeof id === "string" && JOB_ID.test(id)),
+      };
+    }
+  } catch {
+    /* Invalid plugin text is not a dispatch receipt. */
   }
   return undefined;
 }
@@ -280,6 +332,79 @@ export function parseObservation(
   return undefined;
 }
 
+function legacyObservation(
+  value: unknown,
+  expectedId: string,
+  priorJobSlots: ReadonlyMap<string, number> = new Map(),
+): RelayJobObservation | RelayPanelObservation | undefined {
+  const object = record(value);
+  if (!object || object.id !== expectedId) return undefined;
+  if (JOB_ID.test(expectedId)) {
+    const attempt = nonNegativeInteger(object.attempt) ?? 1;
+    const sequence = Date.parse(String(object.updatedAt ?? object.createdAt));
+    if (attempt < 1 || !Number.isSafeInteger(sequence) || typeof object.status !== "string")
+      return undefined;
+    return parseObservation(
+      {
+        schemaVersion: 1,
+        kind: "job",
+        id: expectedId,
+        attempt,
+        sequence,
+        status: object.status,
+        providerType: object.providerType,
+        model: object.actualModel ?? object.model,
+        effort: object.effort,
+        panelId: object.panelId,
+        panelMemberIndex: object.panelMemberIndex,
+        createdAt: object.createdAt,
+        updatedAt: object.updatedAt,
+      },
+      expectedId,
+    );
+  }
+  if (
+    !PANEL_ID.test(expectedId) ||
+    !Array.isArray(object.jobs) ||
+    !Array.isArray(object.unstarted) ||
+    object.jobs.length > 8
+  )
+    return undefined;
+  const request = record(object.request);
+  const requested = request?.members;
+  if (!Array.isArray(requested) || requested.length < 2 || requested.length > 8) return undefined;
+  const jobs = object.jobs.map(record);
+  const members = requested.map((_, index) => {
+    const prior = Array.isArray(object.previousJobs) ? object.previousJobs : [];
+    const slotAttempt = 1 + prior.filter((id) => priorJobSlots.get(id) === index).length;
+    const job = jobs.find((candidate) => candidate?.panelMemberIndex === index);
+    const jobId = typeof job?.id === "string" && JOB_ID.test(job.id) ? job.id : null;
+    return {
+      index,
+      slotAttempt,
+      state: jobId ? "started" : "unstarted",
+      jobId,
+      ...(jobId ? { job: legacyObservation(job, jobId) } : {}),
+    };
+  });
+  return parseObservation(
+    {
+      schemaVersion: 1,
+      kind: "panel",
+      id: expectedId,
+      createdAt: object.createdAt,
+      complete: object.complete === true,
+      members,
+    },
+    expectedId,
+  );
+}
+
+function legacyObserveUnavailable(value: unknown): boolean {
+  const object = record(value);
+  return typeof object?.usage === "string" && typeof object.request === "string";
+}
+
 function observationFingerprint(observation: RelayJobObservation | RelayPanelObservation): string {
   return NodeCrypto.createHash("sha256")
     .update(JSON.stringify(observation))
@@ -363,6 +488,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
   const seen = new Map<string, { attempt: number; sequence: number; state: string }>();
   const currentPanelJobs = new Map<string, ReadonlyMap<number, string>>();
   const failedObservations = new Map<string, number>();
+  const missingObservationRetryAt = new Map<string, number>();
   const unavailable = new Set<string>();
   const outageEpochs = new Map<string, number>();
   const pendingPanelDispatchPolls = new Map<string, number>();
@@ -370,6 +496,20 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     string,
     { attempt: number; usage: RelayUsageRollup | undefined }
   >();
+  const legacyPriorJobSlots = new Map<string, Map<string, number>>();
+
+  /** Drop every trace of a binding this process has stopped observing. */
+  const retire = (id: string): void => {
+    active.delete(id);
+    legacyPriorJobSlots.delete(id);
+    seen.delete(id);
+    failedObservations.delete(id);
+    missingObservationRetryAt.delete(id);
+    unavailable.delete(id);
+    outageEpochs.delete(id);
+    pendingPanelDispatchPolls.delete(id);
+    priorUsageCache.delete(id);
+  };
 
   const append = Effect.fn("RelayWorkerBridge.append")(function* (
     binding: RelayBinding,
@@ -443,6 +583,9 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
       ...(nonNegativeInteger(payload.slotAttempt) !== undefined
         ? { slotAttempt: payload.slotAttempt as number }
         : {}),
+      ...(nonNegativeInteger(payload.retiredAfterRowId) !== undefined
+        ? { retiredAfterRowId: payload.retiredAfterRowId as number }
+        : {}),
     };
   };
 
@@ -457,14 +600,14 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
   });
 
   const readBindingPage = Effect.fn("RelayWorkerBridge.readBindingPage")(function* (
-    afterRowId: number,
+    beforeRowId: number,
   ) {
     const rows = yield* sql`
       SELECT rowid AS rowId, thread_id AS threadId, turn_id AS turnId, payload_json AS payload
       FROM projection_thread_activities
-      WHERE rowid > ${afterRowId} AND kind = 'relay.binding'
+      WHERE rowid < ${beforeRowId} AND kind = 'relay.binding'
         AND json_extract(payload_json, '$.environmentId') = ${environmentId}
-      ORDER BY rowid ASC LIMIT 256
+      ORDER BY rowid DESC LIMIT 256
     `;
     return rows.map((raw) => ({
       rowId: nonNegativeInteger(record(raw)?.rowId) ?? 0,
@@ -729,18 +872,56 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     },
   );
 
-  const runCli = Effect.fn("RelayWorkerBridge.runCli")(function* (args: ReadonlyArray<string>) {
+  const runCli = Effect.fn("RelayWorkerBridge.runCli")(function* (
+    args: ReadonlyArray<string>,
+    timeout = 12_000,
+  ) {
     if (!enabled || !cliPath) return Option.none<{ stdout: string; stderr: string }>();
     return yield* Effect.tryPromise({
       try: () =>
         execFile(process.execPath, [cliPath, ...args], {
-          timeout: 12_000,
-          maxBuffer: MAX_OBSERVE_BYTES,
+          timeout,
+          maxBuffer: args[0] === "panel-result" ? MAX_MCP_RECEIPT_CODE_UNITS : MAX_OBSERVE_BYTES,
           windowsHide: true,
         }),
       catch: () => undefined,
     }).pipe(Effect.option);
   });
+
+  const parseLegacyCliObservation = Effect.fn("RelayWorkerBridge.parseLegacyCliObservation")(
+    function* (value: unknown, id: string) {
+      if (!PANEL_ID.test(id)) return legacyObservation(value, id);
+      const previousJobs = record(value)?.previousJobs;
+      if (!Array.isArray(previousJobs) || previousJobs.length > 64) return undefined;
+      const previousIds = previousJobs.filter(
+        (previousId): previousId is string =>
+          typeof previousId === "string" && JOB_ID.test(previousId),
+      );
+      if (previousIds.length !== previousJobs.length) return undefined;
+      const priorSlots = legacyPriorJobSlots.get(id) ?? new Map<string, number>();
+      const missing = previousIds.filter((previousId) => !priorSlots.has(previousId));
+      // Old retry records are immutable. Cache resolved slots and bound an
+      // unavailable history lookup so a current panel cannot stall the sweep.
+      const resolved = yield* Effect.forEach(
+        missing,
+        (previousId) =>
+          Effect.gen(function* () {
+            const result = yield* runCli(["status", previousId], 2_000);
+            const decoded = Option.isSome(result) ? decodeJson(result.value.stdout) : Option.none();
+            const job = Option.isSome(decoded) ? record(decoded.value) : undefined;
+            const index = nonNegativeInteger(job?.panelMemberIndex);
+            return job?.id === previousId && job.panelId === id && index !== undefined && index <= 7
+              ? ([previousId, index] as const)
+              : undefined;
+          }),
+        { concurrency: 8 },
+      );
+      if (resolved.some((entry) => entry === undefined)) return undefined;
+      for (const entry of resolved) if (entry) priorSlots.set(entry[0], entry[1]);
+      legacyPriorJobSlots.set(id, priorSlots);
+      return legacyObservation(value, id, priorSlots);
+    },
+  );
 
   const readLatestTaskActivity = Effect.fn("RelayWorkerBridge.readLatestTaskActivity")(function* (
     binding: RelayBinding,
@@ -761,10 +942,88 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     };
   });
 
+  const hasProjectedWorkerActivity = Effect.fn("RelayWorkerBridge.hasProjectedWorkerActivity")(
+    function* (binding: RelayBinding) {
+      const rows = yield* sql`
+      SELECT 1 FROM projection_thread_activities
+      WHERE thread_id = ${binding.threadId} AND kind LIKE 'task.%'
+        AND activity_id NOT LIKE 'relay-observer-unavailable:%'
+        AND CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.taskId') END = ${bindingTaskId(binding)}
+      LIMIT 1
+    `;
+      return rows.length > 0;
+    },
+  );
+
+  /** An activation for this binding (or its panel) recorded after `afterRowId`. */
+  const hasActivationSince = Effect.fn("RelayWorkerBridge.hasActivationSince")(function* (
+    binding: RelayBinding,
+    afterRowId: number,
+  ) {
+    const rows = yield* sql`
+      SELECT 1 FROM projection_thread_activities
+      WHERE thread_id = ${binding.threadId} AND kind = 'relay.activation'
+        AND rowid > ${afterRowId}
+        AND json_extract(payload_json, '$.environmentId') = ${environmentId}
+        AND (
+          json_extract(payload_json, '$.id') = ${binding.id}
+          OR (
+            json_extract(payload_json, '$.id') = ${binding.panelId ?? ""}
+            AND EXISTS (
+              SELECT 1 FROM json_each(json_extract(payload_json, '$.jobIds'))
+              WHERE value = ${binding.id}
+            )
+          )
+        )
+      LIMIT 1
+    `;
+    return rows.length > 0;
+  });
+
+  /**
+   * Record that Relay reported this job gone while nothing about it had ever
+   * reached the thread. The binding row is upserted in place, so this costs no
+   * new activity and stays invisible to the transcript; boot then skips the
+   * binding instead of re-probing every job the environment has ever run.
+   */
+  const markRetired = Effect.fn("RelayWorkerBridge.markRetired")(function* (binding: RelayBinding) {
+    const watermark = yield* sql`
+      SELECT MAX(rowid) AS rowId FROM projection_thread_activities
+      WHERE thread_id = ${binding.threadId}
+    `;
+    const retiredAfterRowId = nonNegativeInteger(record(watermark[0])?.rowId);
+    if (retiredAfterRowId === undefined) return;
+    yield* append(
+      binding,
+      "relay.binding",
+      {
+        kind: binding.kind,
+        id: binding.id,
+        toolCallId: binding.toolCallId,
+        environmentId: binding.environmentId,
+        ...(binding.panelId ? { panelId: binding.panelId } : {}),
+        ...(binding.agentIndex !== undefined ? { agentIndex: binding.agentIndex } : {}),
+        ...(binding.slotAttempt !== undefined ? { slotAttempt: binding.slotAttempt } : {}),
+        retiredAfterRowId,
+      },
+      "Relay worker bound",
+      `relay-binding:${binding.id}`,
+      `retired:${retiredAfterRowId}`,
+    );
+  });
+
   const shouldObserveOnBoot = Effect.fn("RelayWorkerBridge.shouldObserveOnBoot")(function* (
     binding: RelayBinding,
     bindingRowId: number,
   ) {
+    // A retired binding stays asleep unless an activation arrived after it was
+    // retired. One that did wake still answers to the normal rules below, so a
+    // resumed worker that has since finished is not re-probed forever.
+    if (
+      binding.retiredAfterRowId !== undefined &&
+      !(yield* hasActivationSince(binding, binding.retiredAfterRowId))
+    )
+      return false;
     const latest = yield* readLatestTaskActivity(binding);
     if (latest.kind !== "task.completed" || bindingRowId > latest.rowId) return true;
     // A resume or panel continuation accepted after the terminal row must be
@@ -958,25 +1217,52 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
   ) {
     const failures = (failedObservations.get(binding.id) ?? 0) + 1;
     failedObservations.set(binding.id, failures);
-    if (failures < 3 || unavailable.has(binding.id)) return;
+    if (failures < 3) return;
+    if (unavailable.has(binding.id)) {
+      // An announced outage is not re-announced, but the binding still owns a
+      // CLI spawn on every sweep until its recheck is pushed back out.
+      missingObservationRetryAt.set(binding.id, (yield* Clock.currentTimeMillis) + 60_000);
+      return;
+    }
     const taskId = bindingTaskId(binding);
+    // An outage row explains a worker the thread already shows. The startup
+    // receipt scan also adopts long-finished historical jobs whose Relay
+    // files are gone; those never projected a row, so announcing them turns
+    // every reopened thread into a wall of idle workers.
+    if (!(yield* hasProjectedWorkerActivity(binding))) {
+      // Relay itself answered that this job is gone, and nothing about it ever
+      // reached the thread, so there is no observation left to resume. Retire
+      // it for good: otherwise every job the environment has ever run is
+      // re-probed on each boot and holds a CLI spawn a minute in between. A
+      // worker that does come back re-registers through its own receipt, and
+      // its activation outranks the retirement. When Relay is absent entirely
+      // the silence says nothing about the job, so keep the binding live and
+      // only slow the recheck down.
+      if (enabled && cliPath) {
+        yield* markRetired(binding);
+        retire(binding.id);
+      } else {
+        unavailable.add(binding.id);
+        missingObservationRetryAt.set(binding.id, (yield* Clock.currentTimeMillis) + 60_000);
+      }
+      return;
+    }
     const latest = yield* readLatestTaskActivity(binding);
     const payload = latest.payload;
     const completedAttempt = nonNegativeInteger(payload?.attempt);
     const completedSequence = nonNegativeInteger(payload?.relaySequence);
-    if (completedAttempt === undefined || completedSequence === undefined) return;
+    if (completedAttempt === undefined || completedSequence === undefined) {
+      unavailable.add(binding.id);
+      missingObservationRetryAt.set(binding.id, (yield* Clock.currentTimeMillis) + 60_000);
+      return;
+    }
     const pending =
       latest.kind === "task.completed"
         ? yield* pendingGenerationAfter(binding, latest.rowId, completedAttempt)
         : undefined;
     if (latest.kind === "task.completed") {
       if (!pending) {
-        active.delete(binding.id);
-        seen.delete(binding.id);
-        failedObservations.delete(binding.id);
-        unavailable.delete(binding.id);
-        outageEpochs.delete(binding.id);
-        priorUsageCache.delete(binding.id);
+        retire(binding.id);
         return;
       }
     }
@@ -1010,16 +1296,27 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
   });
 
   const poll = Effect.fn("RelayWorkerBridge.poll")(function* (binding: RelayBinding) {
+    if ((missingObservationRetryAt.get(binding.id) ?? 0) > (yield* Clock.currentTimeMillis)) return;
     const result = yield* runCli(
       binding.kind === "job" ? ["observe", binding.id] : ["observe", "--panel", binding.id],
     );
-    if (Option.isNone(result)) return yield* markObserverUnavailable(binding);
-    const parsed = decodeJson(result.value.stdout);
-    const observation = parseObservation(
+    const parsed = Option.isSome(result) ? decodeJson(result.value.stdout) : Option.none();
+    let observation = parseObservation(
       Option.isSome(parsed) ? parsed.value : undefined,
       binding.id,
     );
+    if (!observation && Option.isSome(parsed) && legacyObserveUnavailable(parsed.value)) {
+      const legacy = yield* runCli(
+        binding.kind === "job" ? ["status", binding.id] : ["panel-result", binding.id],
+      );
+      const decoded = Option.isSome(legacy) ? decodeJson(legacy.value.stdout) : Option.none();
+      observation = yield* parseLegacyCliObservation(
+        Option.isSome(decoded) ? decoded.value : undefined,
+        binding.id,
+      );
+    }
     if (!observation) return yield* markObserverUnavailable(binding);
+    missingObservationRetryAt.delete(binding.id);
     const wasUnavailableInMemory = unavailable.delete(binding.id);
     const lastPersisted = seen.has(binding.id) ? undefined : yield* readLatestTaskActivity(binding);
     const wasUnavailable =
@@ -1153,23 +1450,12 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
             : `relay-panel-complete:${binding.id}:${attempt}`,
           fingerprint,
         );
-        active.delete(binding.id);
-        seen.delete(binding.id);
-        failedObservations.delete(binding.id);
-        unavailable.delete(binding.id);
-        outageEpochs.delete(binding.id);
-        pendingPanelDispatchPolls.delete(binding.id);
-        priorUsageCache.delete(binding.id);
+        retire(binding.id);
       } else if (!hasRunningMember && (!hasPendingDispatch || pendingPolls >= 3)) {
         // Failed/cancelled members and unstarted slots remain visible as an
         // idle panel. A new continuation or member resume receipt reactivates
         // observation; polling this unchanged snapshot forever is needless.
-        active.delete(binding.id);
-        seen.delete(binding.id);
-        failedObservations.delete(binding.id);
-        unavailable.delete(binding.id);
-        outageEpochs.delete(binding.id);
-        pendingPanelDispatchPolls.delete(binding.id);
+        retire(binding.id);
       }
       return;
     }
@@ -1289,12 +1575,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
         `relay-complete:${binding.id}:${observation.attempt}`,
         fingerprint,
       );
-      active.delete(binding.id);
-      seen.delete(binding.id);
-      failedObservations.delete(binding.id);
-      unavailable.delete(binding.id);
-      outageEpochs.delete(binding.id);
-      priorUsageCache.delete(binding.id);
+      retire(binding.id);
     }
   });
 
@@ -1304,12 +1585,14 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     // the crash window after command dispatch and before observer registration.
     if (!bootstrapped) {
       yield* recoverPersistedToolReceipts();
-      let afterRowId = 0;
+      // Replay inserts historical bindings in receipt order. Visit newest
+      // bindings first so current workers project before old missing jobs.
+      let beforeRowId = Number.MAX_SAFE_INTEGER;
       for (;;) {
-        const page = yield* readBindingPage(afterRowId);
+        const page = yield* readBindingPage(beforeRowId);
         if (page.length === 0) break;
         for (const { rowId, binding } of page) {
-          afterRowId = Math.max(afterRowId, rowId);
+          beforeRowId = Math.min(beforeRowId, rowId);
           if (binding && !active.has(binding.id) && (yield* shouldObserveOnBoot(binding, rowId))) {
             active.set(binding.id, binding);
           }
@@ -1404,13 +1687,25 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
       )
         return yield* new ProviderCancelSessionAgentError({ reason: "agent-not-active" });
       const current = yield* runCli(["observe", "--panel", panelId]);
-      if (Option.isNone(current))
-        return yield* new ProviderCancelSessionAgentError({ reason: "request-failed" });
-      const decodedPanel = decodeJson(current.value.stdout);
-      const observedPanel = parseObservation(
+      const decodedPanel = Option.isSome(current)
+        ? decodeJson(current.value.stdout)
+        : Option.none();
+      let observedPanel = parseObservation(
         Option.isSome(decodedPanel) ? decodedPanel.value : undefined,
         panelId,
       );
+      if (
+        !observedPanel &&
+        Option.isSome(decodedPanel) &&
+        legacyObserveUnavailable(decodedPanel.value)
+      ) {
+        const legacy = yield* runCli(["panel-result", panelId]);
+        const decoded = Option.isSome(legacy) ? decodeJson(legacy.value.stdout) : Option.none();
+        observedPanel = yield* parseLegacyCliObservation(
+          Option.isSome(decoded) ? decoded.value : undefined,
+          panelId,
+        );
+      }
       if (observedPanel?.kind !== "panel")
         return yield* new ProviderCancelSessionAgentError({ reason: "request-failed" });
       const member = observedPanel.members.find((candidate) => candidate.index === index);
@@ -1441,12 +1736,17 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
     if (!binding) return yield* new ProviderCancelSessionAgentError({ reason: "agent-not-active" });
     const id = binding.id;
     const observed = yield* runCli(["observe", id]);
-    if (Option.isNone(observed))
-      return yield* new ProviderCancelSessionAgentError({ reason: "request-failed" });
-    const decodedJob = decodeJson(observed.value.stdout);
-    if (
-      parseObservation(Option.isSome(decodedJob) ? decodedJob.value : undefined, id)?.kind !== "job"
-    ) {
+    const decodedJob = Option.isSome(observed) ? decodeJson(observed.value.stdout) : Option.none();
+    let current = parseObservation(Option.isSome(decodedJob) ? decodedJob.value : undefined, id);
+    if (!current && Option.isSome(decodedJob) && legacyObserveUnavailable(decodedJob.value)) {
+      const legacy = yield* runCli(["status", id]);
+      const decoded = Option.isSome(legacy) ? decodeJson(legacy.value.stdout) : Option.none();
+      current = yield* parseLegacyCliObservation(
+        Option.isSome(decoded) ? decoded.value : undefined,
+        id,
+      );
+    }
+    if (current?.kind !== "job") {
       return yield* new ProviderCancelSessionAgentError({ reason: "request-failed" });
     }
     const result = yield* runCli(["cancel", id]);

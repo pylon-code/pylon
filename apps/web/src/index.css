@@ -13,7 +13,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(root) {
 }
 
 html[data-mobile-composer-route-transition="true"]::view-transition-group(t3-mobile-composer) {
-  animation-duration: 180ms;
+  animation-duration: var(--mobile-composer-transition-duration);
   animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -22,12 +22,12 @@ html[data-mobile-composer-route-transition="true"]::view-transition-image-pair(t
 }
 
 html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobile-composer) {
-  animation: t3-mobile-composer-old 180ms linear both;
+  animation: t3-mobile-composer-old var(--mobile-composer-transition-duration) linear both;
   mix-blend-mode: normal;
 }
 
 html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobile-composer) {
-  animation: t3-mobile-composer-new 180ms linear both;
+  animation: t3-mobile-composer-new var(--mobile-composer-transition-duration) linear both;
   mix-blend-mode: normal;
 }
 
@@ -57,11 +57,12 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobil
 }
 
 html[data-mobile-composer-route-transition="true"]::view-transition-group(t3-mobile-draft-headline) {
-  animation-duration: 130ms;
+  animation-duration: var(--mobile-composer-transition-duration);
 }
 
 html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobile-draft-headline) {
-  animation: t3-mobile-draft-headline-exit 130ms cubic-bezier(0.4, 0, 1, 1) both;
+  animation: t3-mobile-draft-headline-exit var(--mobile-composer-transition-duration)
+    cubic-bezier(0.4, 0, 1, 1) both;
   mix-blend-mode: normal;
 }
 
@@ -1909,6 +1910,19 @@ code {
 
 .chat-markdown .chat-markdown-shiki .shiki {
   background: transparent !important;
+}
+
+/* A completed block can arrive before the assistant finishes. Animate only
+   fresh live blocks, and honor Pylon's panel-motion and reduced-motion controls. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-panel-animations="true"] .chat-markdown[data-streaming] > *,
+  [data-panel-animations="true"] .chat-markdown[data-streaming] .chat-markdown-shiki {
+    transition: opacity var(--panel-animation-duration, 600ms) ease-out;
+
+    @starting-style {
+      opacity: 0;
+    }
+  }
 }
 
 /* Diagnostics-style tables: row separators only, uppercase headers, and a
