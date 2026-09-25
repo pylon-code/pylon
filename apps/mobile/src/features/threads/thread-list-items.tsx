@@ -457,6 +457,7 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
 
 const THREAD_ROW_MENU_ACTIONS: MenuAction[] = [
   { id: "archive", title: "Archive", image: "archivebox" },
+  { id: "rename", title: "Rename", image: "square.and.pencil" },
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
 ];
 
@@ -479,6 +480,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
   readonly onDeleteThread: (thread: EnvironmentThreadShell) => void;
   readonly onNewThreadOnBranch: (thread: EnvironmentThreadShell) => void;
+  readonly onRenameThread: (thread: EnvironmentThreadShell) => void;
   readonly onRegenerateThreadTitle: (thread: EnvironmentThreadShell) => void;
   readonly titleRegenerationSupported: boolean;
   readonly onSwipeableWillOpen: (methods: SwipeableMethods) => void;
@@ -510,6 +512,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
     onSelectThread,
     onArchiveThread,
     onDeleteThread,
+    onRenameThread,
     onRegenerateThreadTitle,
     onNewThreadOnBranch,
   } = props;
@@ -554,6 +557,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
 
   const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
   const handleArchive = useCallback(() => onArchiveThread(thread), [onArchiveThread, thread]);
+  const handleRename = useCallback(() => onRenameThread(thread), [onRenameThread, thread]);
   const handleRegenerateTitle = useCallback(
     () => onRegenerateThreadTitle(thread),
     [onRegenerateThreadTitle, thread],
@@ -571,12 +575,13 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
           ]
         : []),
       THREAD_ROW_MENU_ACTIONS[0]!,
+      THREAD_ROW_MENU_ACTIONS[1]!,
       { id: "copy-thread-id", title: "Copy thread ID", image: "doc.on.doc" },
       ...buildThreadTitleRegenerationMenuItems({
         supported: props.titleRegenerationSupported,
         isRegenerating: thread.titleRegeneration != null,
       }),
-      THREAD_ROW_MENU_ACTIONS[1]!,
+      THREAD_ROW_MENU_ACTIONS[2]!,
     ],
     [props.titleRegenerationSupported, thread.branch, thread.titleRegeneration],
   );
@@ -593,13 +598,14 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
       if (nativeEvent.event === "new-thread-on-branch") onNewThreadOnBranch(thread);
       if (nativeEvent.event === "archive") handleArchive();
+      if (nativeEvent.event === "rename") handleRename();
       if (nativeEvent.event === "copy-thread-id") {
         copyTextWithHaptic(thread.id, { target: "thread-id" });
       }
       if (nativeEvent.event === "regenerate-title") handleRegenerateTitle();
       if (nativeEvent.event === "delete") handleDelete();
     },
-    [handleArchive, handleDelete, handleRegenerateTitle, onNewThreadOnBranch, thread],
+    [handleArchive, handleDelete, handleRegenerateTitle, handleRename, onNewThreadOnBranch, thread],
   );
 
   const statusPill = effectiveStatus ? (
