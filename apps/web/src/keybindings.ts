@@ -36,6 +36,8 @@ export interface ShortcutMatchContext {
   previewOpen: boolean;
   isWeb: boolean;
   isDesktop: boolean;
+  /** Native text editing owns chords such as Mod+Z. */
+  editableFocus?: boolean;
   [key: string]: boolean;
 }
 
@@ -149,6 +151,7 @@ function resolveContext(options: ShortcutMatchOptions | undefined): ShortcutMatc
     previewOpen: false,
     isWeb: !isElectron,
     isDesktop: isElectron,
+    editableFocus: false,
     ...options?.context,
   };
 }
