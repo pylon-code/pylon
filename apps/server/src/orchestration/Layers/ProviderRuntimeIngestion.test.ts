@@ -67,6 +67,7 @@ import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import {
   ProviderRuntimeIngestionLive,
+  repairedAssistantFinalText,
   runtimeEventToActivities,
   splitBufferedAssistantText,
 } from "./ProviderRuntimeIngestion.ts";
@@ -3272,6 +3273,78 @@ describe("ProviderRuntimeIngestion", () => {
       (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-truncated",
     );
     expect(message?.text).toBe(complete);
+  });
+
+  it("keeps the indentation the stream carried when repairing", async () => {
+    // Adversarial review finding: `detail` arrives trimmed, so replacing with
+    // it verbatim reparents a nested list item.
+    expect(
+      repairedAssistantFinalText({
+        providerText: "- parent\n    - child",
+        deliveredText: "  - parent\n",
+      }),
+    ).toBe("  - parent\n    - child");
+  });
+
+  it("repairs a message that only ever received whitespace", () => {
+    expect(repairedAssistantFinalText({ providerText: "Hello", deliveredText: " " })).toBe("Hello");
+    // Nothing delivered at all is the ordinary fallback path, not a repair.
+    expect(
+      repairedAssistantFinalText({ providerText: "Hello", deliveredText: "" }),
+    ).toBeUndefined();
+  });
+
+  it("refuses to repair from text the completion does not contain", () => {
+    expect(
+      repairedAssistantFinalText({ providerText: "alpha beta", deliveredText: "gamma" }),
+    ).toBeUndefined();
+    expect(
+      repairedAssistantFinalText({ providerText: "same", deliveredText: "same" }),
+    ).toBeUndefined();
+  });
+
+  it("does not let one block's completion rewrite another block's message", async () => {
+    // Adversarial review finding: the active message id is resolved per turn,
+    // not per item, so a sibling completing first must not claim this row.
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-block-a-delta"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-blocks"),
+      itemId: asItemId("item-block-a"),
+      payload: { streamKind: "assistant_text", delta: "alpha" },
+    });
+    // A different block completes first, carrying text that contains "alpha".
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-block-b-completed"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-blocks"),
+      itemId: asItemId("item-block-b"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        detail: "alpha beta from another block",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-block-a" && !message.streaming,
+      ),
+    );
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-block-a",
+    );
+    expect(message?.text).toBe("alpha");
   });
 
   it("keeps streamed text that the completion detail does not contain", async () => {

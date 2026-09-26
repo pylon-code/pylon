@@ -337,10 +337,24 @@ export function repairedAssistantFinalText(input: {
   const provider = input.providerText?.trim();
   if (!provider) return undefined;
   const delivered = input.deliveredText.trim();
-  // Nothing was delivered: the ordinary fallback path already writes the
-  // provider's text, so there is no loss to repair here.
-  if (delivered.length === 0 || delivered.length >= provider.length) return undefined;
-  return provider.includes(delivered) ? provider : undefined;
+  if (delivered.length === 0) {
+    // Whitespace alone carries no content, so the provider's text can only
+    // improve it. An entirely empty delivery is left to the ordinary fallback
+    // path, which already writes that text.
+    return input.deliveredText.length > 0 ? provider : undefined;
+  }
+  if (delivered.length >= provider.length) return undefined;
+  if (!provider.includes(delivered)) return undefined;
+  // `detail` reaches us trimmed, so replacing with it verbatim would flatten
+  // the indentation the stream actually carried — enough to reparent a nested
+  // list item or turn an indented code block into a paragraph. Only the first
+  // line can have been trimmed, so restoring the delivered prefix restores the
+  // original exactly.
+  const leadingWhitespace = input.deliveredText.slice(
+    0,
+    input.deliveredText.length - input.deliveredText.trimStart().length,
+  );
+  return `${leadingWhitespace}${provider}`;
 }
 
 function proposedPlanIdForTurn(threadId: ThreadId, turnId: TurnId): string {
@@ -3023,7 +3037,12 @@ const make = Effect.gen(function* () {
             commandTag: "assistant-complete",
             finalDeltaCommandTag: "assistant-delta-finalize",
             hasProjectedMessage: existingAssistantMessage !== undefined,
-            ...(assistantCompletion.fallbackText !== undefined
+            // Only the completing item may rewrite a message. The active id is
+            // resolved per turn, not per item, so a sibling block completing
+            // first would otherwise replace this row with its own text.
+            ...(assistantCompletion.fallbackText !== undefined &&
+            (Option.isNone(activeAssistantMessageId) ||
+              activeAssistantMessageId.value === assistantCompletion.messageId)
               ? { providerText: assistantCompletion.fallbackText }
               : {}),
             ...(existingAssistantMessage !== undefined
