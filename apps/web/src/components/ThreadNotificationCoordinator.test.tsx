@@ -1,7 +1,13 @@
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import * as Option from "effect/Option";
-import { act } from "react";
+import {
+  CircleAlertIcon,
+  CircleCheckIcon,
+  MessageCircleQuestionIcon,
+  ShieldQuestionIcon,
+} from "lucide-react";
+import { act, type ReactElement } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -23,8 +29,12 @@ const state = vi.hoisted(() => ({
   sessionOnly: false,
   notifyCompletion: true,
   add: vi.fn(
-    (_toast: { title: string; description: string; actionProps: { onClick: () => void } }) =>
-      "toast-1",
+    (_toast: {
+      title: string;
+      description: string;
+      data?: { leadingIcon?: ReactElement };
+      actionProps: { onClick: () => void };
+    }) => "toast-1",
   ),
   close: vi.fn(),
   navigate: vi.fn(),
@@ -164,6 +174,7 @@ describe("thread notifications", () => {
     const toast = state.add.mock.calls[0]?.[0];
     expect(toast?.title).toBe("Thread completed");
     expect(toast?.description).toBe("Fix the login form");
+    expect(toast?.data?.leadingIcon?.type).toBe(CircleCheckIcon);
     toast?.actionProps.onClick();
     expect(state.close).toHaveBeenCalledWith("toast-1");
     expect(state.navigate).toHaveBeenCalledWith({
@@ -188,35 +199,39 @@ describe("thread notifications", () => {
   );
 
   it.each([
-    ["input", "Input needed"],
-    ["approval", "Approval needed"],
-    ["sessionError", "Thread failed"],
-    ["turnError", "Thread failed"],
-  ] as const)("uses the same %s event for in-app and desktop alerts", async (event, title) => {
-    state.mode = "notifications-and-sound";
-    await render();
-    state[event] = true;
-    await render();
-    await render();
-    expect(state.add).toHaveBeenCalledTimes(1);
-    expect(state.add).toHaveBeenLastCalledWith(expect.objectContaining({ title }));
-    expect(state.sound).toHaveBeenCalledWith("input", expect.any(Function));
-    expect(state.notification).not.toHaveBeenCalled();
+    ["input", "Input needed", MessageCircleQuestionIcon],
+    ["approval", "Approval needed", ShieldQuestionIcon],
+    ["sessionError", "Thread failed", CircleAlertIcon],
+    ["turnError", "Thread failed", CircleAlertIcon],
+  ] as const)(
+    "uses the same %s event for in-app and desktop alerts",
+    async (event, title, icon) => {
+      state.mode = "notifications-and-sound";
+      await render();
+      state[event] = true;
+      await render();
+      await render();
+      expect(state.add).toHaveBeenCalledTimes(1);
+      expect(state.add).toHaveBeenLastCalledWith(expect.objectContaining({ title }));
+      expect(state.add.mock.calls[0]?.[0].data?.leadingIcon?.type).toBe(icon);
+      expect(state.sound).toHaveBeenCalledWith("input", expect.any(Function));
+      expect(state.notification).not.toHaveBeenCalled();
 
-    state[event] = false;
-    await render();
-    state.focused = false;
-    state[event] = true;
-    await render();
-    await render();
-    expect(state.add).toHaveBeenCalledTimes(1);
-    expect(state.notification).toHaveBeenCalledTimes(1);
-    expect(state.notification).toHaveBeenCalledWith(title, {
-      body: "Fix the login form",
-      tag: "env-1:thread-1",
-      silent: true,
-    });
-  });
+      state[event] = false;
+      await render();
+      state.focused = false;
+      state[event] = true;
+      await render();
+      await render();
+      expect(state.add).toHaveBeenCalledTimes(1);
+      expect(state.notification).toHaveBeenCalledTimes(1);
+      expect(state.notification).toHaveBeenCalledWith(title, {
+        body: "Fix the login form",
+        tag: "env-1:thread-1",
+        silent: true,
+      });
+    },
+  );
 
   it("keeps background desktop alerts when in-app notifications are disabled", async () => {
     state.focused = false;

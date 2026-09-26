@@ -1,8 +1,15 @@
-import { ApprovalRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  ApprovalRequestId,
+  EnvironmentId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  ThreadId,
+} from "@t3tools/contracts";
 import { beforeEach, expect, it, vi } from "vite-plus/test";
 import { useComposerDraftStore } from "./composerDraftStore";
 import {
   questionAttachmentDraftId,
+  countQuestionAttachments,
+  countCurrentDraftAttachments,
   questionAttachmentDraftPrefix,
   changeQuestionAttachmentPreparation,
   clearQuestionAttachmentDraft,
@@ -57,6 +64,34 @@ it("keeps question files separate from the normal draft and other questions", ()
   expect(revoke).toHaveBeenCalledWith(image.previewUrl);
   revoke.mockRestore();
 });
+it("counts back-to-back pasted files from the store before a component ref can update", () => {
+  const target = { environmentId, threadId };
+  const store = useComposerDraftStore.getState();
+  const staleRenderCounts = { images: 0, files: 0 };
+  expect(countCurrentDraftAttachments(target, staleRenderCounts)).toBe(0);
+  const pastedFile = (id: string) => ({
+    type: "file" as const,
+    id,
+    name: `${id}.txt`,
+    mimeType: "text/plain",
+    sizeBytes: 5,
+    file: new File(["paste"], `${id}.txt`, { type: "text/plain" }),
+    source: { _tag: "pasted-text" as const },
+  });
+  store.addFiles(
+    target,
+    Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 1 }, (_, index) =>
+      pastedFile(`paste-${index}`),
+    ),
+  );
+  expect(countCurrentDraftAttachments(target, staleRenderCounts)).toBe(
+    PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 1,
+  );
+  store.addFiles(target, [pastedFile("last-slot")]);
+  expect(countCurrentDraftAttachments(target, staleRenderCounts)).toBe(
+    PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  );
+});
 it("scopes provider request ids to their environment and thread", () => {
   const keys = [
     questionAttachmentDraftId(environmentId, threadId, requestId, "q"),
@@ -97,4 +132,44 @@ it("does not clear another environment whose id contains a question prefix", () 
   }
   expect(store.getComposerDraft(ownKey)).toBeNull();
   expect(store.getComposerDraft(otherKey)?.prompt).toBe("Keep this answer");
+});
+
+it("counts files, images, and pending preparation across the shared question budget", () => {
+  const first = questionAttachmentDraftId(environmentId, threadId, requestId, "first");
+  const second = questionAttachmentDraftId(environmentId, threadId, requestId, "second");
+  const other = questionAttachmentDraftId(
+    EnvironmentId.make("other"),
+    threadId,
+    requestId,
+    "first",
+  );
+  const store = useComposerDraftStore.getState();
+  store.addFiles(
+    second,
+    Array.from({ length: 6 }, (_, index) => ({
+      type: "file" as const,
+      id: `file-${index}`,
+      name: `spec-${index}.txt`,
+      mimeType: "text/plain",
+      sizeBytes: 4,
+      file: new File(["spec"], `spec-${index}.txt`),
+    })),
+  );
+  store.addImages(first, [
+    {
+      type: "image",
+      id: "image",
+      name: "image.png",
+      mimeType: "image/png",
+      sizeBytes: 5,
+      previewUrl: "blob:count-test",
+      file: new File(["image"], "image.png"),
+    },
+  ]);
+  changeQuestionAttachmentPreparation(second, 1);
+  changeQuestionAttachmentPreparation(other, 8);
+  expect(countQuestionAttachments([first, second])).toBe(8);
+  expect(countQuestionAttachments([second])).toBe(7);
+  changeQuestionAttachmentPreparation(second, -1);
+  expect(countQuestionAttachments([first, second])).toBe(7);
 });

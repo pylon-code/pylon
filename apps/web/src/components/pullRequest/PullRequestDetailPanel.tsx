@@ -36,7 +36,6 @@ import {
   LinkIcon,
   MoreHorizontalIcon,
   PanelRightIcon,
-  PencilIcon,
   PlayIcon,
   RotateCcwIcon,
   TriangleAlertIcon,
@@ -111,6 +110,7 @@ import {
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { PullRequestEditButton } from "./PullRequestEditButton";
 import { Input } from "../ui/input";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import {
@@ -463,7 +463,16 @@ export function PullRequestDetailPanel({
    * An action changed this pull request on the host, so a list showing it is now out of date.
    * Told rather than assumed: only the page knows whether it is showing one.
    */
-  onActed?: () => void;
+  /**
+   * Each host action as it goes: "sent" the moment it leaves, so a list can answer before the
+   * host does; "done" or "failed" when the host has spoken. Undefined for one the caller cannot
+   * name, which is only ever "done".
+   */
+  onActed?: (
+    action?: PullRequestAction,
+    phase?: "sent" | "done" | "failed",
+    receipt?: symbol,
+  ) => void;
   /** Page-owned detail columns use this to clear the selected pull request. */
   onClose?: () => void;
   /** Keeps surrounding thread state in step with refreshed host state. */
@@ -993,6 +1002,8 @@ export function PullRequestDetailPanel({
     method?: PullRequestMergeMethod,
     updateMethod?: PullRequestUpdateMethod,
   ) => {
+    const receipt = Symbol("pull-request-action");
+    onActed?.(action, "sent", receipt);
     const result = await runAction({
       environmentId,
       input: {
@@ -1020,6 +1031,7 @@ export function PullRequestDetailPanel({
         title: ACTION_FAILURE_LABELS[action],
         description: readableFailure(failure, hint),
       });
+      onActed?.(action, "failed", receipt);
       return false;
     }
     toastManager.add({ type: "success", title: ACTION_SUCCESS_LABELS[action] });
@@ -1033,7 +1045,7 @@ export function PullRequestDetailPanel({
     } else {
       refreshDetail();
     }
-    onActed?.();
+    onActed?.(action, "done", receipt);
     return true;
   };
 
@@ -2415,15 +2427,10 @@ export function PullRequestDetailPanel({
                       <TooltipPopup side="top">{detail.title}</TooltipPopup>
                     </Tooltip>
                     {canEditPullRequestChangeRequest(detail) ? (
-                      <Button
-                        size="icon-xs"
-                        variant="ghost"
-                        className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+                      <PullRequestEditButton
                         aria-label="Edit title"
                         onClick={() => setTitleScope({ pullRequestKey, text: detail.title })}
-                      >
-                        <PencilIcon className="size-3" />
-                      </Button>
+                      />
                     ) : null}
                   </div>
                 ) : (

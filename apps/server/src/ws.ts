@@ -92,6 +92,7 @@ import {
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { isDriveOrPosixAbsolutePath, isWindowsAbsolutePath } from "@t3tools/shared/path";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
@@ -122,6 +123,8 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ModelManifest from "./provider/ModelManifest.ts";
+import * as ProviderMaintenance from "./provider/providerMaintenance.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
@@ -151,6 +154,7 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import { withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import { deletePendingAttachment, issueAttachmentUploadUrl } from "./assets/AttachmentUpload.ts";
@@ -568,8 +572,12 @@ const makeWsRpcLayer = (
       const terminalManager = yield* TerminalManager.TerminalManager;
       const previewManager = yield* PreviewManager.PreviewManager;
       const deviceService = yield* DeviceService.DeviceService;
+      const deviceHostContext =
+        yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const modelManifest = yield* ModelManifest.ModelManifest;
+      const providerVersionCache = yield* ProviderMaintenance.ProviderVersionCache;
       const providerService = yield* ProviderService.ProviderService;
       const relayWorkerBridge = Option.getOrUndefined(
         yield* Effect.serviceOption(RelayWorkerBridge),
@@ -1078,6 +1086,41 @@ const makeWsRpcLayer = (
           return output;
         });
 
+      // The branch checked out into a new worktree may have its own t3.json,
+      // so a null settings value intentionally leaves that read to the driver.
+      const resolveBootstrapWorktreeSubmodules = Effect.fnUntraced(function* (input: {
+        readonly threadId: ThreadId;
+        readonly projectId: ProjectId | null;
+      }) {
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => null));
+        if (settings === null) return null;
+        const projectId =
+          input.projectId ??
+          (yield* projectionSnapshotQuery.getThreadShellById(input.threadId).pipe(
+            Effect.map((thread) => Option.getOrNull(thread)?.projectId ?? null),
+            Effect.orElseSucceed(() => null),
+          ));
+        const project =
+          projectId === null
+            ? null
+            : yield* projectionSnapshotQuery.getProjectShellById(projectId).pipe(
+                Effect.map(Option.getOrNull),
+                Effect.orElseSucceed(() => null),
+              );
+        return resolveProjectSettings(settings, projectId, project).settings.worktreeSubmodules;
+      });
+
+      const resolveWorktreeSubmodulesForCwd = Effect.fnUntraced(function* (cwd: string) {
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => null));
+        if (settings === null) return null;
+        const project = yield* projectionSnapshotQuery.getActiveProjectByWorkspaceRoot(cwd).pipe(
+          Effect.map(Option.getOrNull),
+          Effect.orElseSucceed(() => null),
+        );
+        return resolveProjectSettings(settings, project?.id ?? null, project).settings
+          .worktreeSubmodules;
+      });
+
       const dispatchBootstrapTurnStart = (
         command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
@@ -1352,6 +1395,7 @@ const makeWsRpcLayer = (
                 yield* gitWorkflow.fetchRemote({
                   cwd: prepareWorktree.projectCwd,
                   remoteName: "origin",
+                  refName: prepareWorktree.baseBranch,
                 });
                 const remoteBaseExists = yield* gitWorkflow.remoteBranchExists({
                   cwd: prepareWorktree.projectCwd,
@@ -1501,6 +1545,10 @@ const makeWsRpcLayer = (
               }
               yield* worktreeSetupTracker.stageStatus(threadId, "checkout", "running");
               let checkoutTotal: number | null = null;
+              const submodules = yield* resolveBootstrapWorktreeSubmodules({
+                threadId,
+                projectId: targetProjectId ?? null,
+              });
               const worktree = yield* gitWorkflow.createWorktree(
                 {
                   cwd: prepareWorktree.projectCwd,
@@ -1510,6 +1558,7 @@ const makeWsRpcLayer = (
                   path: null,
                 },
                 {
+                  submodules,
                   progress: {
                     // Git has registered the directory at this point, so a
                     // cancel during the submodule step can still remove it.
@@ -1539,6 +1588,13 @@ const makeWsRpcLayer = (
                             worktreeSetupTracker.stageStatus(threadId, "submodules", "running"),
                           ),
                         ),
+                    onSubmodulesDisabled: ({ source }) =>
+                      worktreeSetupTracker.stageStatus(
+                        threadId,
+                        "submodules",
+                        "skipped",
+                        `disabled in ${source}`,
+                      ),
                     onSubmoduleLine: (line) => {
                       const submodulePath = /Submodule path '([^']+)'/.exec(line)?.[1];
                       return submodulePath === undefined
@@ -2355,6 +2411,29 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverRefreshProviders,
             Effect.gen(function* () {
+              if (input.refreshModels) {
+                // Explicit refresh bypasses Pylon-owned caches; background probes
+                // keep their normal freshness windows.
+                yield* modelManifest.forceRefresh;
+                const instances = yield* providerInstances.listInstances;
+                yield* Effect.forEach(
+                  instances.filter(
+                    (instance) =>
+                      input.instanceId === undefined || input.instanceId === instance.instanceId,
+                  ),
+                  (instance) =>
+                    Effect.gen(function* () {
+                      yield* instance.invalidateCaches ?? Effect.void;
+                      const maintenance = yield* instance.snapshot.resolveMaintenance({
+                        fresh: true,
+                      });
+                      if (maintenance.packageName) {
+                        providerVersionCache.delete(maintenance.packageName);
+                      }
+                    }),
+                  { concurrency: "unbounded", discard: true },
+                );
+              }
               let providers = yield* input.cwd !== undefined && input.instanceId !== undefined
                 ? providerRegistry.refreshWorkspaceSnapshot({
                     instanceId: input.instanceId,
@@ -2859,9 +2938,18 @@ const makeWsRpcLayer = (
               serverSettings.getSettings.pipe(
                 Effect.map((current) => providerSettingsMutationInstanceIds(current, patch)),
               ),
-              serverSettings
-                .updateSettings(patch)
-                .pipe(Effect.map(ServerSettings.redactServerSettingsForClient)),
+              Effect.gen(function* () {
+                const deviceHosts = patch.deviceHosts
+                  ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(
+                      Effect.provide(deviceHostContext),
+                    )
+                  : undefined;
+                const settings = yield* serverSettings.updateSettings({
+                  ...patch,
+                  ...(deviceHosts ? { deviceHosts } : {}),
+                });
+                return ServerSettings.redactServerSettingsForClient(settings);
+              }),
             ),
             {
               "rpc.aggregate": "server",
@@ -3145,7 +3233,7 @@ const makeWsRpcLayer = (
         [WS_METHODS.pullRequestsInvalidate]: (input) =>
           observeRpcEffect(
             WS_METHODS.pullRequestsInvalidate,
-            pullRequests.invalidate(input).pipe(
+            pullRequests.invalidate(input, { notifyReaders: true }).pipe(
               // A reader asking for fresh host state also wants the thread badges it feeds to
               // catch up, including a merged link the sweep would otherwise never revisit.
               Effect.andThen(
@@ -3677,7 +3765,10 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateWorktree,
-            gitWorkflow.createWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            resolveWorktreeSubmodulesForCwd(input.cwd).pipe(
+              Effect.flatMap((submodules) => gitWorkflow.createWorktree(input, { submodules })),
+              Effect.tap(() => refreshGitStatus(input.cwd)),
+            ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsRemoveWorktree]: (input) =>
@@ -3834,13 +3925,15 @@ const makeWsRpcLayer = (
         [WS_METHODS.deviceList]: (input) =>
           observeRpcEffect(
             WS_METHODS.deviceList,
-            input.inspectOnly
+            input.inspectOnly && !input.updateTool
               ? deviceService.inspect
               : authorizeEffect(
                   requiredScopeForDeviceList(input),
-                  input.retryHostId
-                    ? deviceService.retryHost(input.retryHostId)
-                    : deviceService.list,
+                  input.updateTool
+                    ? deviceService.updateTool(input.updateTool)
+                    : input.retryHostId
+                      ? deviceService.retryHost(input.retryHostId)
+                      : deviceService.list,
                 ),
             {
               "rpc.aggregate": "device",

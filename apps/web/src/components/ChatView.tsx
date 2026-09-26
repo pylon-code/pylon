@@ -61,6 +61,9 @@ import {
   isRollbackActive,
   type RollbackTarget,
 } from "@t3tools/client-runtime/rollback";
+import { shouldRoutePlainTextPaste } from "./composerInlineTokenPaste";
+import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
+import { connectedInitialConfigForState } from "@t3tools/client-runtime/state/session";
 import { type CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
 import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import {
@@ -109,9 +112,10 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
-import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate, useRouter } from "@tanstack/react-router";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { assistantCitationFromLocation } from "../lib/assistantCitationNavigation";
+import { isMacPlatform } from "../lib/utils";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
 import { useShallow } from "zustand/react/shallow";
 import { getProviderAdmissionUnavailableReason } from "@t3tools/client-runtime/providerAvailability";
@@ -126,6 +130,7 @@ import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/unstable/reactivity";
+import * as Option from "effect/Option";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
@@ -363,6 +368,13 @@ import {
 } from "../lib/composerContextRecords";
 import { type ReviewCommentContext } from "../reviewCommentContext";
 import { environmentCatalog } from "../connection/catalog";
+import { environmentPresentations } from "../state/presentation";
+import { canManuallyDisconnectEnvironment } from "../lib/environmentDisconnectEligibility";
+import { useEnvironmentDisconnectDelay } from "../hooks/useEnvironmentDisconnectDelay";
+import {
+  disconnectEnvironmentAndNavigate,
+  disconnectIfStillEligible,
+} from "../lib/environmentDisconnectNavigation";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { projectEnvironment } from "../state/projects";
@@ -396,6 +408,7 @@ import {
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
+import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -456,7 +469,6 @@ import {
 import { deriveLatestContextWindowSnapshot, formatContextWindowTokens } from "../lib/contextWindow";
 import {
   DRAFT_HERO_TRANSITION_ANIMATION_ID,
-  DRAFT_HERO_TRANSITION_DURATION_MS,
   DRAFT_HERO_TRANSITION_EASING,
   MOBILE_COMPOSER_VIEW_TRANSITION_NAME,
   MOBILE_DRAFT_HEADLINE_VIEW_TRANSITION_NAME,
@@ -525,7 +537,6 @@ import {
   shouldWriteThreadErrorToCurrentServerThread,
   startNewThreadForProject,
   codexArtifactTemplatePromptToAppend,
-  toolGroupConsumesUpwardNavigation,
   waitForStartedServerThread,
   shouldRefocusComposerOnWindowFocus,
 } from "./ChatView.logic";
@@ -545,7 +556,7 @@ import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/at
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { fileAttachmentCapabilityBlockReason } from "./chat/composerAttachmentFiles";
 import { assetEnvironment } from "../state/assets";
-import { readPreparedConnection } from "../state/session";
+import { environmentSession, readPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { Button } from "./ui/button";
@@ -589,7 +600,11 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
-function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
+function useDraftHeroLayoutTransition(
+  isDraftHeroState: boolean,
+  animationsActive: boolean,
+  animationDurationMs: number,
+) {
   const transitionGroupRef = useRef<HTMLDivElement | null>(null);
   const composerAnchorRef = useRef<HTMLDivElement | null>(null);
   const previousStateRef = useRef(isDraftHeroState);
@@ -609,9 +624,6 @@ function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
     const transitionGroup = transitionGroupRef.current;
     const nextComposerRect = composerAnchorRef.current?.getBoundingClientRect() ?? null;
     const stateChanged = previousStateRef.current !== isDraftHeroState;
-    const prefersReducedMotion =
-      typeof window !== "undefined" &&
-      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     const mobileComposerTransitionActive =
       typeof document !== "undefined" &&
       document.documentElement.dataset.mobileComposerRouteTransition === "true";
@@ -622,7 +634,7 @@ function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
     const previousComposerRect = previousComposerRectRef.current;
     if (
       stateChanged &&
-      !prefersReducedMotion &&
+      animationsActive &&
       !mobileComposerTransitionActive &&
       transitionGroup &&
       previousComposerRect &&
@@ -638,7 +650,7 @@ function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
             { transform: "translate3d(0, 0, 0)" },
           ],
           {
-            duration: DRAFT_HERO_TRANSITION_DURATION_MS,
+            duration: animationDurationMs,
             easing: DRAFT_HERO_TRANSITION_EASING,
           },
         );
@@ -657,7 +669,7 @@ function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
 
     previousStateRef.current = isDraftHeroState;
     previousComposerRectRef.current = nextComposerRect;
-  }, [isDraftHeroState]);
+  }, [animationDurationMs, animationsActive, isDraftHeroState]);
 
   return [attachTransitionGroupRef, attachComposerAnchorRef, captureComposerRect] as const;
 }
@@ -759,6 +771,19 @@ function pasteTextToFocusComposer(event: ClipboardEvent): string | null {
   if (!shouldRedirectInputToComposer(event)) return null;
   const text = event.clipboardData.getData("text/plain");
   return text.length > 0 ? text : null;
+}
+
+function supportsPastedTextAttachmentsNow(environmentId: EnvironmentId): boolean {
+  const connection = appAtomRegistry.get(environmentCatalog.stateAtom(environmentId));
+  const leaseConfig = appAtomRegistry.get(
+    environmentSession.connectedInitialConfigAtom(environmentId),
+  );
+  if (connection.waiting || leaseConfig.waiting) return false;
+  const config = connectedInitialConfigForState(
+    Option.getOrNull(AsyncResult.value(connection)),
+    Option.getOrElse(AsyncResult.value(leaseConfig), () => Option.none()),
+  );
+  return config?.environment.capabilities.pastedTextAttachments === true;
 }
 
 function formatOutgoingPrompt(params: {
@@ -1637,6 +1662,10 @@ export default function ChatView(props: ChatViewProps) {
   const { environments } = useEnvironments();
   const primaryEnvironment = usePrimaryEnvironment();
   const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, { reportFailure: false });
+  const router = useRouter();
+  const setEnvironmentEnabled = useAtomCommand(environmentCatalog.setEnabled, {
+    reportFailure: false,
+  });
   const environmentById = useMemo(
     () => new Map(environments.map((environment) => [environment.environmentId, environment])),
     [environments],
@@ -1753,6 +1782,7 @@ export default function ChatView(props: ChatViewProps) {
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const branchToolbarRef = useRef<BranchToolbarHandle>(null);
+  const pasteAsTextShortcutUntilRef = useRef(0);
   const [restingComposerControlsHost, setRestingComposerControlsHost] =
     useState<HTMLDivElement | null>(null);
   const [restingComposerControlsVisible, setRestingComposerControlsVisible] = useState(false);
@@ -2502,6 +2532,61 @@ export default function ChatView(props: ChatViewProps) {
     },
     [retryEnvironment],
   );
+  const disconnectDelayElapsed = useEnvironmentDisconnectDelay(
+    activeEnvironmentUnavailable ? activeEnvironment.environmentId : null,
+  );
+  const canDisconnectActiveEnvironment =
+    disconnectDelayElapsed && canManuallyDisconnectEnvironment(activeEnvironment);
+  const [disconnectingEnvironmentId, setDisconnectingEnvironmentId] =
+    useState<EnvironmentId | null>(null);
+  const disconnectingEnvironmentRef = useRef<EnvironmentId | null>(null);
+  const handleDisconnectActiveEnvironment = useCallback(
+    async (environmentId: EnvironmentId) => {
+      if (disconnectingEnvironmentRef.current !== null) return;
+      disconnectingEnvironmentRef.current = environmentId;
+      setDisconnectingEnvironmentId(environmentId);
+      try {
+        const result = await disconnectIfStillEligible({
+          isEligibleNow: () =>
+            disconnectDelayElapsed &&
+            canManuallyDisconnectEnvironment(
+              appAtomRegistry.get(environmentPresentations.presentationAtom(environmentId)),
+            ),
+          disconnect: () =>
+            disconnectEnvironmentAndNavigate({
+              disconnect: () => setEnvironmentEnabled({ environmentId, enabled: false }),
+              readLocation: () => ({
+                href: router.state.location.href,
+                key: router.state.location.state.__TSR_key,
+              }),
+              navigateHome: () => {
+                void navigate({ to: "/", replace: true });
+              },
+            }),
+        });
+        if (result === null) return;
+        if (result._tag === "Failure") {
+          if (!isAtomCommandInterrupted(result)) {
+            const error = squashAtomCommandFailure(result);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Could not disconnect server",
+                description: error instanceof Error ? error.message : "Failed to disconnect.",
+              }),
+            );
+          }
+          return;
+        }
+      } finally {
+        if (disconnectingEnvironmentRef.current === environmentId) {
+          disconnectingEnvironmentRef.current = null;
+          setDisconnectingEnvironmentId(null);
+        }
+      }
+    },
+    [disconnectDelayElapsed, navigate, router, setEnvironmentEnabled],
+  );
   const logicalProjectEnvironments = useMemo(() => {
     if (!activeProject) return [];
     const logicalKey = deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings);
@@ -2693,10 +2778,30 @@ export default function ChatView(props: ChatViewProps) {
     observedPullRequestProviders,
   ]);
   const pullRequestsUnavailableGitHubUrl = pullRequestsUnavailableFallbackLink?.url ?? null;
-  const attachmentEnvironmentConfig = environmentById.get(environmentId)?.serverConfig ?? null;
+  const attachmentEnvironment = environmentById.get(environmentId) ?? null;
+  const attachmentEnvironmentConfig = attachmentEnvironment?.serverConfig ?? null;
+  // The presentation config may retain a previous server's capabilities.
+  // Both atoms carry the exact supervisor state object: if the environment ID
+  // reconnects to a different server, the old config cannot match its lease.
+  const attachmentConnectionResult = useAtomValue(environmentCatalog.stateAtom(environmentId));
+  const attachmentLeaseConfigResult = useAtomValue(
+    environmentSession.connectedInitialConfigAtom(environmentId),
+  );
+  const attachmentConnectionState = attachmentConnectionResult.waiting
+    ? null
+    : Option.getOrNull(AsyncResult.value(attachmentConnectionResult));
+  const attachmentLeaseConfig = attachmentLeaseConfigResult.waiting
+    ? Option.none()
+    : Option.getOrElse(AsyncResult.value(attachmentLeaseConfigResult), () => Option.none());
+  const attachmentBootstrapConfig = connectedInitialConfigForState(
+    attachmentConnectionState,
+    attachmentLeaseConfig,
+  );
   const attachmentUploadsCapabilityKnown = attachmentEnvironmentConfig !== null;
   const supportsQuestionAttachments =
     attachmentEnvironmentConfig?.environment.capabilities.questionAttachments === true;
+  const supportsPastedTextAttachments =
+    attachmentBootstrapConfig?.environment.capabilities.pastedTextAttachments === true;
   const supportsAttachmentUploads =
     attachmentEnvironmentConfig?.environment.capabilities.attachmentUploads === true;
   const advertisedFileAttachmentBytes =
@@ -2769,6 +2874,20 @@ export default function ChatView(props: ChatViewProps) {
     const items: ComposerBannerStackItem[] = [];
     const updateRunning = serverUpdateState.status === "running";
     const unavailableConnection = activeEnvironmentUnavailableState?.connection ?? null;
+    const disconnectAction =
+      canDisconnectActiveEnvironment && activeEnvironmentUnavailableState ? (
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={disconnectingEnvironmentId === activeEnvironmentUnavailableState.environmentId}
+          title="Hide this server's threads. Switch it on again in Connections."
+          onClick={() =>
+            void handleDisconnectActiveEnvironment(activeEnvironmentUnavailableState.environmentId)
+          }
+        >
+          Disconnect server
+        </Button>
+      ) : null;
     const environmentReconnecting =
       unavailableConnection !== null &&
       (unavailableConnection.phase === "connecting" ||
@@ -2802,6 +2921,7 @@ export default function ChatView(props: ChatViewProps) {
           ),
           title: `${unavailableConnection.phase === "connecting" ? "Connecting" : "Reconnecting"} to ${activeEnvironmentUnavailableState.label}`,
           description: "Finishing an update",
+          actions: disconnectAction,
           compact: true,
         });
       } else {
@@ -2834,6 +2954,7 @@ export default function ChatView(props: ChatViewProps) {
               >
                 Connections
               </Button>
+              {disconnectAction}
             </>
           ),
         });
@@ -2888,22 +3009,24 @@ export default function ChatView(props: ChatViewProps) {
           (versionMismatchSelfUpdate !== "desktop-managed" || !versionMismatchDesktopAppUpdate)
             ? serverUpdateGuidance(versionMismatchSelfUpdate)
             : undefined,
-        actions:
-          updateInProgress ||
-          !versionMismatch ||
+        actions: updateInProgress ? (
+          suppressUnavailableBanner ? (
+            disconnectAction
+          ) : undefined
+        ) : !versionMismatch ||
           (versionMismatchSelfUpdate === "desktop-managed" &&
             !versionMismatchDesktopAppUpdate) ? undefined : (
-            <ServerUpdateAction
-              environmentId={serverUpdateEnvironmentId}
-              serverLabel={versionMismatchServerLabel}
-              selfUpdate={versionMismatchSelfUpdate}
-              desktopAppUpdate={versionMismatchDesktopAppUpdate}
-              threadContinuation={versionMismatchThreadContinuation}
-              targetVersion={versionMismatch.clientVersion}
-              label={updateFailed ? "Retry" : "Update"}
-              variant="ghost"
-            />
-          ),
+          <ServerUpdateAction
+            environmentId={serverUpdateEnvironmentId}
+            serverLabel={versionMismatchServerLabel}
+            selfUpdate={versionMismatchSelfUpdate}
+            desktopAppUpdate={versionMismatchDesktopAppUpdate}
+            threadContinuation={versionMismatchThreadContinuation}
+            targetVersion={versionMismatch.clientVersion}
+            label={updateFailed ? "Retry" : "Update"}
+            variant="ghost"
+          />
+        ),
         ...(updateInProgress || (!updateFailed && !versionMismatchDismissKey)
           ? {}
           : {
@@ -2931,6 +3054,9 @@ export default function ChatView(props: ChatViewProps) {
     activeEnvironmentUnavailableState,
     reconnectWarningGraceElapsed,
     handleReconnectActiveEnvironment,
+    canDisconnectActiveEnvironment,
+    disconnectingEnvironmentId,
+    handleDisconnectActiveEnvironment,
     navigate,
     setDismissedVersionMismatchKey,
     showVersionMismatchBanner,
@@ -3781,7 +3907,11 @@ export default function ChatView(props: ChatViewProps) {
     attachDraftHeroTransitionGroupRef,
     attachDraftHeroComposerAnchorRef,
     captureDraftHeroComposerRect,
-  ] = useDraftHeroLayoutTransition(isDraftHeroState);
+  ] = useDraftHeroLayoutTransition(
+    isDraftHeroState,
+    panelAnimationsActive,
+    panelAnimationDurationMs,
+  );
   const rollbackActive = isRollbackActive(activeThread?.rollbackStatus);
   const rollbackTargetIdle =
     activeThread?.session !== null &&
@@ -5678,6 +5808,8 @@ export default function ChatView(props: ChatViewProps) {
         // Only an upward wheel is a navigation intent; wheeling down while
         // following either does nothing (at the end) or moves toward it.
         const handleWheel = (event: WheelEvent) => {
+          if (event.ctrlKey || !isTimelineScrollTarget(event.target, scrollNode, event.deltaY))
+            return;
           if (event.deltaY > 0) {
             timelineScrollIntentRef.current = "toward-end";
             if (isAtEndRef.current) {
@@ -5686,11 +5818,7 @@ export default function ChatView(props: ChatViewProps) {
           } else if (event.deltaY < 0) {
             timelineScrollIntentRef.current = "away-from-end";
           }
-          if (
-            event.deltaY < 0 &&
-            contentScrollsUp() &&
-            !toolGroupConsumesUpwardNavigation(event.target)
-          ) {
+          if (event.deltaY < 0 && contentScrollsUp()) {
             handleManualNavigation();
           }
         };
@@ -5740,12 +5868,20 @@ export default function ChatView(props: ChatViewProps) {
           ) {
             return;
           }
+          if (!["PageUp", "Home", "ArrowUp", "PageDown", "End", "ArrowDown"].includes(event.key))
+            return;
+          const scrollDirection = ["PageUp", "Home", "ArrowUp"].includes(event.key) ? -1 : 1;
+          if (
+            scrollNode.contains(event.target) &&
+            !isTimelineScrollTarget(event.target, scrollNode, scrollDirection)
+          )
+            return;
           switch (event.key) {
             case "PageUp":
             case "Home":
             case "ArrowUp":
               timelineScrollIntentRef.current = "away-from-end";
-              if (contentScrollsUp() && !toolGroupConsumesUpwardNavigation(event.target)) {
+              if (contentScrollsUp()) {
                 handleManualNavigation();
                 composerRef.current?.collapseForTimelineScrollKey(event.key);
               }
@@ -7087,6 +7223,8 @@ export default function ChatView(props: ChatViewProps) {
       previewFocus: isPreviewFocused(),
       previewOpen: previewPanelOpen,
       modelPickerOpen: composerRef.current?.isModelPickerOpen() ?? false,
+      isWeb: !isElectron,
+      isDesktop: isElectron,
     }),
     [composerRef, previewPanelOpen, terminalUiState.terminalOpen],
   );
@@ -7368,24 +7506,38 @@ export default function ChatView(props: ChatViewProps) {
   // so a paste that follows has no editable target and would be dropped.
   // Route it to the composer like a typed key, which also expands it.
   useEffect(() => {
+    const keyHandler = (event: KeyboardEvent) => {
+      if (
+        shouldRedirectInputToComposer(event) &&
+        isPasteAsTextShortcut(event, isMacPlatform(navigator.platform))
+      ) {
+        pasteAsTextShortcutUntilRef.current = Date.now() + 1_000;
+      }
+    };
     const handler = (event: ClipboardEvent) => {
       if (!activeThreadId || isCommandPaletteOpen()) return;
       if (getTerminalFocusOwner() !== null) return;
       if (composerRef.current?.isModelPickerOpen()) return;
       const text = pasteTextToFocusComposer(event);
-      if (text === null) return;
+      const clipboardData = event.clipboardData;
+      if (text === null || clipboardData === null) return;
+      const bypassAutoAttachment = Date.now() <= pasteAsTextShortcutUntilRef.current;
+      pasteAsTextShortcutUntilRef.current = 0;
       if (
-        composerRef.current?.insertTextAtEnd(
-          text,
-          event.clipboardData ? { clipboardData: event.clipboardData } : undefined,
-        )
+        (shouldRoutePlainTextPaste(clipboardData, bypassAutoAttachment) &&
+          composerRef.current?.pasteTextAtEnd(text, { bypassAutoAttachment })) ||
+        composerRef.current?.insertTextAtEnd(text, { clipboardData })
       ) {
         event.preventDefault();
         event.stopPropagation();
       }
     };
+    window.addEventListener("keydown", keyHandler, true);
     window.addEventListener("paste", handler, true);
-    return () => window.removeEventListener("paste", handler, true);
+    return () => {
+      window.removeEventListener("keydown", keyHandler, true);
+      window.removeEventListener("paste", handler, true);
+    };
   }, [activeThreadId, composerRef]);
 
   const [pendingRevert, setPendingRevert] = useState<{
@@ -8058,6 +8210,7 @@ export default function ChatView(props: ChatViewProps) {
         supportsAttachmentUploads: liveSupportsAttachmentUploads,
         fileBlockReason: fileAttachmentCapabilityBlockReason({
           files: composerFilesSnapshot,
+          supportsPastedTextAttachments: supportsPastedTextAttachmentsNow(environmentId),
           attachmentUploadsCapabilityKnown: config !== null,
           supportsAttachmentUploads: liveSupportsAttachmentUploads,
           maxFileAttachmentBytes:
@@ -8113,13 +8266,16 @@ export default function ChatView(props: ChatViewProps) {
       const dockStarted = new Promise<void>((resolve) => {
         resolveDockStarted = resolve;
       });
-      const dockTransition = runMobileComposerTransition(() => {
-        flushSync(() => {
-          captureDraftHeroComposerRect();
-          setDockedDraftHeroThreadKey(activeThreadKey);
-        });
-        resolveDockStarted?.();
-      });
+      const dockTransition = runMobileComposerTransition(
+        () => {
+          flushSync(() => {
+            captureDraftHeroComposerRect();
+            setDockedDraftHeroThreadKey(activeThreadKey);
+          });
+          resolveDockStarted?.();
+        },
+        { active: panelAnimationsActive, durationMs: panelAnimationDurationMs },
+      );
       void dockTransition.catch(() => resolveDockStarted?.());
       await dockStarted;
     }
@@ -8181,6 +8337,7 @@ export default function ChatView(props: ChatViewProps) {
             mimeType: attachment.mimeType,
             sizeBytes: attachment.sizeBytes,
             downloadable: false,
+            ...(attachment.source ? { source: attachment.source } : {}),
           },
     );
     const shouldAnchorFirstMessage =
@@ -8993,6 +9150,18 @@ export default function ChatView(props: ChatViewProps) {
         const draft = useComposerDraftStore.getState().getComposerDraft(target);
         const attachments = draft ? [...draft.images, ...draft.files] : [];
         if (attachments.length === 0) continue;
+        if (
+          attachments.some(
+            (attachment) => attachment.type === "file" && attachment.source?._tag === "pasted-text",
+          ) &&
+          !supportsPastedTextAttachmentsNow(environmentId)
+        ) {
+          setThreadError(
+            activeThreadId,
+            "This server cannot use a saved large-paste attachment. Remove it or reconnect to a server that supports large pastes.",
+          );
+          return;
+        }
         const uploaded = getUploadedAttachments({ environmentId, images: attachments });
         if (!uploaded) {
           setThreadError(
@@ -10390,6 +10559,8 @@ export default function ChatView(props: ChatViewProps) {
   const workspaceFileDropHandlers = makeWorkspaceFileDropHandlers({
     setDragActive: setIsWorkspaceFileDragActive,
     addFiles: (files) => composerRef.current?.addDroppedFiles(files),
+    addFolders: (folders, unresolvedCount) =>
+      composerRef.current?.addDroppedFolders(folders, unresolvedCount),
   });
   const externalComposerDrawerAttached =
     composerBannerItems.length > 0 || Boolean(threadSyncPhase && !activeEnvironmentUnavailable);
@@ -10706,6 +10877,7 @@ export default function ChatView(props: ChatViewProps) {
                             attachmentUploadsCapabilityKnown={attachmentUploadsCapabilityKnown}
                             supportsAttachmentUploads={supportsAttachmentUploads}
                             supportsQuestionAttachments={supportsQuestionAttachments}
+                            supportsPastedTextAttachments={supportsPastedTextAttachments}
                             maxFileAttachmentBytes={maxFileAttachmentBytes}
                             routeKind={routeKind}
                             routeThreadRef={routeThreadRef}

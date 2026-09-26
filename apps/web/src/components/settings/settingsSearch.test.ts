@@ -214,6 +214,32 @@ describe("searchSettings", () => {
     });
   });
 
+  it("finds keybinding commands by label, command ID, and default chord", () => {
+    expect(searchSettings("toggle sidebar")[0]?.id).toBe("keybinding-sidebar.toggle");
+    expect(searchSettings("sidebar.toggle")[0]?.id).toBe("keybinding-sidebar.toggle");
+    expect(searchSettings("mod+b")[0]?.id).toBe("keybinding-sidebar.toggle");
+    expect(searchSettings("copy link")[0]).toMatchObject({
+      id: "keybinding-thread.copyReference",
+      to: "/settings/keybindings",
+    });
+  });
+
+  it("keeps primary settings ahead of command-specific matches", () => {
+    const ids = searchSettings("model").map((item) => item.id);
+    expect(ids[0]).toBe("default-model");
+    expect(ids.indexOf("keybinding-modelPicker.toggle")).toBeGreaterThan(
+      ids.indexOf("text-generation-model"),
+    );
+  });
+
+  it("sends commands without a default binding to the keybindings section", () => {
+    expect(searchSettings("thread.stop")[0]).toMatchObject({
+      id: "keybinding-thread.stop",
+      targetId: "keybindings",
+    });
+    expect(searchSettings("sidebar.toggle")[0]?.targetId).toBeUndefined();
+  });
+
   it("routes conditional window capture settings to the stable toggle row", () => {
     const targets = [
       "capture accessibility data",
