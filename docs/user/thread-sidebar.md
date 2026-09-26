@@ -54,6 +54,9 @@ the thread menu.
 
 On web and desktop, pinning or unpinning a thread keeps the sidebar at your current
 scroll position instead of following the thread to its new place in the list.
+After unpinning, settling, snoozing, or archiving one thread on web and desktop, use **Undo** in the
+notification or press `mod+z` while it is visible to reverse that action. Undo restores a
+settled thread's previous pin and snooze state. The shortcut leaves text editing alone.
 
 The server saves the order, so it survives a refresh and appears on your other devices. New threads
 appear above the active threads you arranged, and thread activity does not change the order.

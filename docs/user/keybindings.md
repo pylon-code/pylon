@@ -66,7 +66,7 @@ and Control elsewhere. Other modifiers are `cmd` / `meta`, `ctrl` / `control`, `
 Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`, `previewOpen`,
 `editableFocus`, `modelPickerOpen`, `isWeb`, and `isDesktop`. `isWeb` is true in a browser tab;
 `isDesktop` is true in the desktop app. `editableFocus` is supplied for route-history shortcuts
-when an input or editable element has focus. Unknown keys evaluate to `false`.
+and Undo while a text field or editor owns the keyboard. Unknown keys evaluate to `false`.
 
 The default `mod+1` through `mod+9` thread and model jumps run only in the desktop app so a
 browser tab keeps its own numbered-tab shortcuts. Remove the `isDesktop` condition in Settings if
@@ -100,6 +100,8 @@ focused editors, terminal input, and preview controls alone.
 `thread.copyReference` (`mod+shift+c`) copies the open pull request panel URL, then the thread's pull
 request link, or its thread ID when no pull request is available. `thread.settle` (`mod+shift+s`)
 settles the active thread or restores it, and `thread.pin` (`mod+shift+p`) pins or unpins it.
+`thread.undo` (`mod+z`) reverses the newest thread action whose **Undo** notification is still
+active. Text editors and terminals keep their native undo behavior.
 
 `thread.stop` stops the running turn in the focused thread, including a turn still waiting to
 start. `rightPanel.toggleMaximized` maximizes or restores the right panel. Neither has a default
