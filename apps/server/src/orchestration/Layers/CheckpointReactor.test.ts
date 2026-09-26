@@ -7,10 +7,12 @@ import * as NodeChildProcess from "node:child_process";
 import {
   VcsProcessTimeoutError,
   VcsProcessSpawnError,
+  VcsProcessExitError,
   ProviderDriverKind,
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  type OrchestrationEvent,
 } from "@t3tools/contracts";
 import {
   CommandId,
@@ -28,9 +30,11 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import { it as effectIt } from "@effect/vitest";
 import * as RuntimeReceiptBus from "../Services/RuntimeReceiptBus.ts";
 import * as Scope from "effect/Scope";
@@ -50,6 +54,7 @@ import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { RuntimeReceiptBusTest } from "./RuntimeReceiptBus.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
+import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import {
@@ -71,6 +76,7 @@ import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
@@ -314,6 +320,10 @@ describe("CheckpointReactor", () => {
     readonly checkpointLookupFailure?: (
       cwd: string,
     ) => VcsProcessTimeoutError | VcsProcessSpawnError | undefined;
+    readonly checkpointCaptureFailure?: (cwd: string) => VcsProcessExitError | undefined;
+    readonly checkpointDiffFailure?: (cwd: string) => VcsProcessExitError | undefined;
+    readonly checkpointRepositoryFailure?: (cwd: string) => VcsProcessExitError | undefined;
+    readonly logMessages?: Array<unknown>;
     readonly workspaceRefresh?: (cwd: string) => Effect.Effect<void>;
     readonly hasSession?: boolean;
     readonly seedFilesystemCheckpoints?: boolean;
@@ -343,6 +353,8 @@ describe("CheckpointReactor", () => {
       options?.providerName ?? ProviderDriverKind.make("codex"),
       options?.conversationRollback ?? "relative",
     );
+    const historicalRollbackEvents = Effect.runSync(PubSub.unbounded<OrchestrationEvent>());
+    const historicalRollbackReady = Effect.runSync(Deferred.make<void>());
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(ThreadBackgroundLiveness.layer),
@@ -353,6 +365,24 @@ describe("CheckpointReactor", () => {
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const historicalEngineLayer = Layer.effect(
+      OrchestrationEngineService,
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        return OrchestrationEngineService.of({
+          ...engine,
+          streamDomainEvents: Stream.merge(
+            engine.streamDomainEvents,
+            Stream.unwrap(
+              PubSub.subscribe(historicalRollbackEvents).pipe(
+                Effect.tap(() => Deferred.succeed(historicalRollbackReady, undefined)),
+                Effect.map(Stream.fromSubscription),
+              ),
+            ),
+          ),
+        });
+      }),
+    ).pipe(Layer.provide(orchestrationLayer));
     const projectionSnapshotLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
       Layer.provide(ThreadBackgroundLiveness.layer),
       Layer.provide(ThreadPlanProgress.layer),
@@ -404,7 +434,7 @@ describe("CheckpointReactor", () => {
     );
 
     const layer = CheckpointReactorLive.pipe(
-      Layer.provideMerge(orchestrationLayer),
+      Layer.provideMerge(historicalEngineLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(RuntimeReceiptBusTest),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
@@ -420,6 +450,18 @@ describe("CheckpointReactor", () => {
                 const failure = options?.checkpointLookupFailure?.(input.cwd);
                 return failure ? Effect.fail(failure) : store.hasCheckpointRef(input);
               },
+              captureCheckpoint: (input) => {
+                const failure = options?.checkpointCaptureFailure?.(input.cwd);
+                return failure ? Effect.fail(failure) : store.captureCheckpoint(input);
+              },
+              diffCheckpoints: (input) => {
+                const failure = options?.checkpointDiffFailure?.(input.cwd);
+                return failure ? Effect.fail(failure) : store.diffCheckpoints(input);
+              },
+              isGitRepository: (cwd) => {
+                const failure = options?.checkpointRepositoryFailure?.(cwd);
+                return failure ? Effect.fail(failure) : store.isGitRepository(cwd);
+              },
             })),
           ),
         ).pipe(Layer.provide(VcsDriverRegistry.layer)),
@@ -430,9 +472,56 @@ describe("CheckpointReactor", () => {
       Layer.provideMerge(ServerConfigLayer),
       Layer.provideMerge(NodeServices.layer),
     );
+    const layerWithLogger =
+      options?.logMessages === undefined
+        ? layer
+        : layer.pipe(
+            Layer.provideMerge(
+              Logger.layer(
+                [
+                  Logger.make<unknown, void>((event) => {
+                    options.logMessages?.push(Logger.formatStructured.log(event));
+                  }),
+                ],
+                { mergeWithExisting: false },
+              ),
+            ),
+          );
 
-    runtime = ManagedRuntime.make(layer);
+    runtime = ManagedRuntime.make(layerWithLogger);
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    const eventStore = await runtime.runPromise(
+      Effect.service(OrchestrationEventStore).pipe(
+        Effect.provide(OrchestrationEventStoreLive.pipe(Layer.provide(SqlitePersistenceMemory))),
+      ),
+    );
+    const publishLegacyRevert = (command: {
+      readonly commandId: CommandId;
+      readonly threadId: ThreadId;
+      readonly turnCount: number;
+      readonly createdAt: string;
+    }) =>
+      Effect.gen(function* () {
+        const event = yield* eventStore.append({
+          eventId: EventId.make(`legacy-${command.commandId}`),
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          causationEventId: null,
+          correlationId: command.commandId,
+          metadata: {},
+          type: "thread.checkpoint-revert-requested",
+          payload: {
+            threadId: command.threadId,
+            turnCount: command.turnCount,
+            createdAt: command.createdAt,
+          },
+        });
+        const persisted = yield* Stream.runCollect(engine.readEvents(event.sequence - 1));
+        expect(Array.from(persisted).some((stored) => stored.eventId === event.eventId)).toBe(true);
+        yield* PubSub.publish(historicalRollbackEvents, event);
+      });
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const reactor = await runtime.runPromise(Effect.service(CheckpointReactor));
     const checkpointStore = await runtime.runPromise(
@@ -450,6 +539,7 @@ describe("CheckpointReactor", () => {
           Queue.offer(receipts, receipt),
         ).pipe(Effect.forkIn(testScope, { startImmediately: true }));
         yield* reactor.start().pipe(Scope.provide(testScope));
+        yield* Deferred.await(historicalRollbackReady);
         return receipts;
       }),
     );
@@ -539,6 +629,7 @@ describe("CheckpointReactor", () => {
 
     return {
       engine,
+      publishLegacyRevert,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       provider,
       workspaceRefresh,
@@ -653,6 +744,152 @@ describe("CheckpointReactor", () => {
       }),
   );
 
+  for (const stage of ["capture", "diff"] as const) {
+    effectIt.effect(`keeps ${stage} VCS failure details out of public activity and logs`, () =>
+      Effect.gen(function* () {
+        let fail = false;
+        const logMessages: Array<unknown> = [];
+        const failure = (cwd: string) =>
+          fail
+            ? new VcsProcessExitError({
+                operation: "checkpoint-private-operation",
+                command: "git-private-command-canary",
+                cwd,
+                exitCode: 128,
+                detail: "private-stderr-and-credential-canary",
+              })
+            : undefined;
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            seedFilesystemCheckpoints: false,
+            ...(stage === "capture" ? { checkpointCaptureFailure: failure } : {}),
+            ...(stage === "diff" ? { checkpointDiffFailure: failure } : {}),
+            logMessages,
+          }),
+        );
+        const threadId = ThreadId.make("thread-1");
+        const turnId = asTurnId(`turn-private-${stage}`);
+        harness.provider.emit({
+          type: "turn.started",
+          eventId: EventId.make(`evt-private-${stage}-start`),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          threadId,
+          turnId,
+        });
+        expect(yield* harness.nextReceipt).toMatchObject({ type: "checkpoint.baseline.captured" });
+        fail = true;
+        harness.provider.emit({
+          type: "turn.completed",
+          eventId: EventId.make(`evt-private-${stage}-complete`),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:01.000Z",
+          threadId,
+          turnId,
+          payload: { state: "completed" },
+        });
+        yield* Effect.promise(harness.drain);
+        const thread = (yield* Effect.promise(harness.readModel)).threads[0];
+        const publicActivity = encodeUnknownJson(
+          thread?.activities.filter((activity) => activity.kind === "checkpoint.capture.failed"),
+        );
+        expect(publicActivity).toContain("checkpoint.capture.failed");
+        const emittedLogs = encodeUnknownJson(logMessages);
+        if (stage === "diff") {
+          expect(emittedLogs).toContain("failed to derive checkpoint file summary");
+          expect(emittedLogs).toContain("git-exit");
+        }
+        for (const privateCanary of [
+          harness.cwd,
+          "git-private-command-canary",
+          "private-stderr-and-credential-canary",
+        ]) {
+          expect(publicActivity).not.toContain(privateCanary);
+          expect(emittedLogs).not.toContain(privateCanary);
+        }
+      }),
+    );
+  }
+
+  effectIt.effect("keeps repository errors out of public revert failure activity", () =>
+    Effect.gen(function* () {
+      let fail = false;
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          checkpointRepositoryFailure: (cwd) =>
+            fail
+              ? new VcsProcessExitError({
+                  operation: "private-revert-operation",
+                  command: "git-private-revert-command",
+                  cwd,
+                  exitCode: 128,
+                  detail: "private-revert-stderr-canary",
+                })
+              : undefined,
+        }),
+      );
+      fail = true;
+      yield* harness.publishLegacyRevert({
+        commandId: CommandId.make("cmd-private-revert-failure"),
+        threadId: ThreadId.make("thread-1"),
+        turnCount: 0,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* Effect.promise(harness.drain);
+      const thread = (yield* Effect.promise(harness.readModel)).threads[0];
+      const publicActivity = encodeUnknownJson(
+        thread?.activities.filter((activity) => activity.kind === "checkpoint.revert.failed"),
+      );
+      expect(publicActivity).toContain("checkpoint.revert.failed");
+      expect(publicActivity).toContain("git-exit");
+      for (const privateCanary of [
+        harness.cwd,
+        "git-private-revert-command",
+        "private-revert-stderr-canary",
+      ]) {
+        expect(publicActivity).not.toContain(privateCanary);
+      }
+    }),
+  );
+
+  effectIt.effect("logs checkpoint workspace refresh failure without its path or cause", () =>
+    Effect.gen(function* () {
+      const logMessages: Array<unknown> = [];
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          seedFilesystemCheckpoints: false,
+          workspaceRefresh: () => Effect.die(new Error("private-refresh-cause-canary")),
+          logMessages,
+        }),
+      );
+      const threadId = ThreadId.make("thread-1");
+      const turnId = asTurnId("turn-private-refresh");
+      harness.provider.emit({
+        type: "turn.started",
+        eventId: EventId.make("evt-private-refresh-start"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        turnId,
+      });
+      expect(yield* harness.nextReceipt).toMatchObject({ type: "checkpoint.baseline.captured" });
+      harness.provider.emit({
+        type: "turn.completed",
+        eventId: EventId.make("evt-private-refresh-complete"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId,
+        payload: { state: "completed" },
+      });
+      yield* Effect.promise(harness.drain);
+      const emittedLogs = encodeUnknownJson(logMessages);
+      expect(emittedLogs).toContain("failed to refresh checkpoint workspace entries");
+      expect(emittedLogs).not.toContain(harness.cwd);
+      expect(emittedLogs).not.toContain("private-refresh-cause-canary");
+    }),
+  );
+
   effectIt.effect(
     "appends isolation failure activity when restoreFiles is true in a shared workspace",
     () =>
@@ -719,24 +956,26 @@ describe("CheckpointReactor", () => {
     (failureKind) =>
       Effect.gen(function* () {
         let failLookup = false;
+        const logMessages: Array<unknown> = [];
         const harness = yield* Effect.promise(() =>
           createHarness({
             seedFilesystemCheckpoints: false,
+            logMessages,
             checkpointLookupFailure: (cwd) =>
               !failLookup
                 ? undefined
                 : failureKind === "timeout"
                   ? new VcsProcessTimeoutError({
                       operation: "test.refLookup",
-                      command: "git",
+                      command: "git-private-ref-canary",
                       cwd,
                       timeoutMs: 30000,
                     })
                   : new VcsProcessSpawnError({
                       operation: "test.refLookup",
-                      command: "git",
+                      command: "git-private-ref-canary",
                       cwd,
-                      cause: new Error("transient lookup spawn failure"),
+                      cause: new Error("private-ref-cause-canary"),
                     }),
           }),
         );
@@ -763,6 +1002,16 @@ describe("CheckpointReactor", () => {
           payload: { state: "completed" },
         });
         yield* Effect.promise(harness.drain);
+        const emittedLogs = encodeUnknownJson(logMessages);
+        expect(emittedLogs).toContain(failureKind === "timeout" ? "git-timeout" : "git-spawn");
+        for (const privateCanary of [
+          harness.cwd,
+          "git-private-ref-canary",
+          "private-ref-cause-canary",
+          checkpointRefForThreadTurn(threadId, 0),
+        ]) {
+          expect(emittedLogs).not.toContain(privateCanary);
+        }
         const ref = checkpointRefForThreadTurn(threadId, 1);
         expect(gitShowFileAtRef(harness.cwd, ref, "README.md")).toBe("new snapshot\n");
         expect(yield* harness.nextReceipt).toMatchObject({

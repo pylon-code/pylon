@@ -567,7 +567,8 @@ const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, 
      */
     instanceId: Schema.optional(ProviderInstanceId),
     cwd: Schema.optional(TrimmedNonEmptyString),
-    /** Explicit user request. Background status refreshes must not open agent sessions. */
+    /** Explicit user request: bypass provider discovery caches and rediscover models.
+     * Background status refreshes must not open agent sessions. */
     refreshModels: Schema.optional(Schema.Boolean),
   }),
   success: ServerProviderUpdatedPayload,
@@ -893,7 +894,7 @@ const WsServerMutateProviderInstancesRpc = Rpc.make(WS_METHODS.serverMutateProvi
 });
 
 const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
-  payload: Schema.Struct({}),
+  payload: Schema.Struct({ supportsForgejo: Schema.optional(Schema.Boolean) }),
   success: SourceControlDiscoveryResult,
   error: EnvironmentAuthorizationError,
 });

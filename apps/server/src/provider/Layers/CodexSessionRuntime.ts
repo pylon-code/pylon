@@ -78,6 +78,11 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "no rollout found",
 ];
 
+// The app-server refuses a resume while another Codex host holds the conversation's
+// writer lock. Resuming is the only correct outcome, so this must not fall back to a
+// fresh thread: that would strand the conversation's history behind a new one.
+const THREAD_WRITER_LOCKED_ERROR_SNIPPET = "already has an active writer";
+
 export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | undefined): boolean {
   return appServerArgs?.some((argument) => argument.includes("mcp_servers.")) === true;
 }
@@ -783,6 +788,19 @@ function classifyCodexStderrLine(rawLine: string): { readonly message: string } 
   return { message: line };
 }
 
+export function isThreadWriterLockedError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return message.includes(THREAD_WRITER_LOCKED_ERROR_SNIPPET);
+}
+
+function describeThreadWriterLock(resumeThreadId: string): string {
+  return (
+    `Codex conversation ${resumeThreadId} is open in another Codex app, which holds its writer lock. ` +
+    "Close that conversation there, most often in the Codex desktop app, then send again. " +
+    "This thread keeps its history instead of continuing in a new conversation."
+  );
+}
+
 export function isRecoverableThreadResumeError(error: unknown): boolean {
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
   if (!message.includes("thread")) {
@@ -866,6 +884,15 @@ export const openCodexThread = (input: {
             ),
           ),
         ),
+      ),
+      Effect.mapError((error) =>
+        isThreadWriterLockedError(error)
+          ? CodexErrors.CodexAppServerRequestError.internalError(
+              describeThreadWriterLock(resumeThreadId),
+              undefined,
+              { method: "thread/resume", operation: "receive-response", cause: error },
+            )
+          : error,
       ),
       Effect.catchIf(
         (error) => !input.strictResume && isRecoverableThreadResumeError(error),

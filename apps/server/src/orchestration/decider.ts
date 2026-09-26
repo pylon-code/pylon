@@ -2629,6 +2629,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         thread.session.activeTurnId !== null ||
         command.session.pendingTurnRequestId !== command.requestId ||
         command.session.pendingTurnMessageId !== command.messageId ||
+        command.session.status !== "starting" ||
         command.session.providerInstanceId !== command.modelSelection.instanceId ||
         command.session.runtimeMode !== command.runtimeMode ||
         command.session.sessionIncarnationId === undefined ||

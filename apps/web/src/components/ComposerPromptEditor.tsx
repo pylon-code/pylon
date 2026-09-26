@@ -857,6 +857,7 @@ export interface ComposerPromptEditorHandle {
   focus: () => void;
   focusAt: (cursor: number) => void;
   focusAtEnd: () => void;
+  readSelectionRange: () => { start: number; end: number };
   requestCitationComment: (request: ComposerCitationCommentRequest) => void;
   readSnapshot: () => {
     value: string;
@@ -1950,6 +1951,10 @@ function ComposerPromptEditorInner({
           ),
         );
       },
+      readSelectionRange: () => {
+        readSnapshot();
+        return selectionRangeRef.current;
+      },
       requestCitationComment: (request) => {
         citationCommentRequestRef.current = request;
         const target = editor
@@ -2117,7 +2122,7 @@ function ComposerPromptEditorInner({
                 }}
                 onKeyUp={(event) => onPageScrollKeyUp?.(event.key)}
                 onBlur={onPageScrollRelease}
-                onPaste={onPaste}
+                onPasteCapture={onPaste}
               />
             }
             placeholder={

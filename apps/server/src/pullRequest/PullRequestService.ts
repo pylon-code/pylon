@@ -1,5 +1,6 @@
 import {
   canonicalRepositoryKey,
+  isSshRemoteUrl,
   sourceControlRepositorySelector,
 } from "@t3tools/shared/sourceControl";
 import * as Cache from "effect/Cache";
@@ -214,7 +215,10 @@ export class PullRequestService extends Context.Service<
     readonly setLabels: (
       input: PullRequestLabelChangeInput,
     ) => Effect.Effect<void, PullRequestError>;
-    readonly invalidate: (input: PullRequestInvalidateInput) => Effect.Effect<void>;
+    readonly invalidate: (
+      input: PullRequestInvalidateInput,
+      options?: { readonly notifyReaders?: boolean },
+    ) => Effect.Effect<void>;
   }
 >()("t3/pullRequest/PullRequestService") {}
 
@@ -409,8 +413,9 @@ function providerDetail(error: PullRequestProviderError): string {
 function toUnavailableError(error: PullRequestProviderError): PullRequestUnavailableError {
   return new PullRequestUnavailableError({
     reason: error.reason === "missing-tool" ? "cli-missing" : "cli-unauthenticated",
-    provider: error.provider,
-    cause: error,
+    // Older clients decode this enum strictly. Every PR RPC shares this error,
+    // including reads opened from provider-neutral thread links.
+    ...(error.provider === "forgejo" ? {} : { provider: error.provider, cause: error }),
   });
 }
 
@@ -420,7 +425,11 @@ function toPullRequestError(
   return (error) =>
     isProviderUnusable(error)
       ? toUnavailableError(error)
-      : new PullRequestOperationError({ operation, detail: error.detail, cause: error });
+      : new PullRequestOperationError({
+          operation,
+          detail: error.detail,
+          ...(error.provider === "forgejo" ? {} : { cause: error }),
+        });
 }
 
 function withRateLimitBackoff(
@@ -566,14 +575,21 @@ export const make = Effect.gen(function* () {
       if (filter.projectId !== undefined && project.id !== filter.projectId) continue;
       const identity = project.repositoryIdentity;
       if (
-        identity?.provider !== "unknown" ||
+        (identity?.provider !== "unknown" &&
+          !(identity?.provider === "forgejo" && isSshRemoteUrl(identity.locator.remoteUrl))) ||
         sourceControlRepositorySelector(project.repositoryIdentity) === null
       )
         continue;
       const host = pullRequestHostOf(identity, "unknown");
       // A legacy identity has no canonical host until its provider is refined, so it must reach
       // the refinement before a host filter can decide whether it belongs in the result.
-      if (filter.host !== undefined && host !== "unknown" && host !== filter.host.toLowerCase()) {
+      if (
+        filter.host !== undefined &&
+        host !== "unknown" &&
+        host !== filter.host.toLowerCase() &&
+        pullRequestHostOf(identity, "forgejo") !== filter.host.toLowerCase() &&
+        !isSshRemoteUrl(identity.locator.remoteUrl)
+      ) {
         continue;
       }
       const { remoteName, remoteUrl } = identity.locator;
@@ -594,27 +610,37 @@ export const make = Effect.gen(function* () {
             Effect.suspend(() =>
               sourceControlProviders.resolveHandle({
                 cwd: project.workspaceRoot,
-                context: { provider, remoteName, remoteUrl },
+                context: {
+                  provider:
+                    provider.kind === "forgejo" ? { ...provider, kind: "unknown" } : provider,
+                  remoteName,
+                  remoteUrl,
+                  ...(filter.host !== undefined && isSshRemoteUrl(remoteUrl)
+                    ? { requestedHost: filter.host }
+                    : {}),
+                },
               }),
             ).pipe(
               Effect.flatMap((handle) => {
-                const kind = handle.context?.provider.kind;
-                return kind === undefined || kind === "unknown"
+                const refined = handle.context?.provider;
+                return refined === undefined || refined.kind === "unknown"
                   ? Effect.fail(undefined)
-                  : Effect.succeed(kind);
+                  : Effect.succeed(refined);
               }),
             ),
           ),
         ).pipe(
-          Effect.map((kind) => [baseUrl, kind] as const),
-          Effect.orElseSucceed(() => [baseUrl, "unknown"] as const),
+          Effect.map((provider) => [baseUrl, provider] as const),
+          Effect.orElseSucceed(() => [baseUrl, null] as const),
         ),
       { concurrency: REPOSITORY_CONCURRENCY },
     ).pipe(Effect.map((resolved) => new Map(resolved)));
   };
 
   const listWorkspaceProjects = (
-    filter: Pick<PullRequestListInput, "projectId" | "projectIds" | "host">,
+    filter: Pick<PullRequestListInput, "projectId" | "projectIds" | "host"> & {
+      readonly supportsForgejo?: boolean;
+    },
   ): Effect.Effect<WorkspaceProjects, PullRequestError> =>
     (filter.projectId === undefined
       ? projections.getProjectShells(filter.projectIds)
@@ -630,10 +656,10 @@ export const make = Effect.gen(function* () {
       ),
       Effect.flatMap((projects) =>
         refineUnknownProjectKinds(projects, filter).pipe(
-          Effect.map((refinedKinds) => ({ refinedKinds, projects })),
+          Effect.map((refinedProviders) => ({ refinedProviders, projects })),
         ),
       ),
-      Effect.map(({ refinedKinds, projects }) => {
+      Effect.map(({ refinedProviders, projects }) => {
         const supported: SupportedProject[] = [];
         const unimplemented = new Map<
           string,
@@ -651,12 +677,23 @@ export const make = Effect.gen(function* () {
           // Worktrees of one repository are separate projects; reading the remote once keeps
           // the page from repeating every change request per local checkout. The host is part
           // of the key, so the same `owner/repo` on two hosts stays two repositories.
-          if (kind === "unknown") {
+          let refinedProvider: SourceControlProviderInfo | null | undefined;
+          if (
+            kind === "unknown" ||
+            (kind === "forgejo" && isSshRemoteUrl(identity.locator.remoteUrl))
+          ) {
             const provider = detectSourceControlProviderFromRemoteUrl(identity.locator.remoteUrl);
-            kind = provider === null ? kind : (refinedKinds.get(provider.baseUrl) ?? kind);
+            refinedProvider = provider === null ? null : refinedProviders.get(provider.baseUrl);
+            kind = refinedProvider?.kind ?? kind;
           }
-          const host = pullRequestHostOf(identity, kind);
-          if (filter.host !== undefined && host !== filter.host.toLowerCase()) continue;
+          if (filter.supportsForgejo === false && kind === "forgejo") continue;
+          const host =
+            refinedProvider?.kind === "forgejo"
+              ? new URL(refinedProvider.baseUrl).host.toLowerCase()
+              : pullRequestHostOf(identity, kind);
+          if (filter.host !== undefined && host !== filter.host.toLowerCase()) {
+            continue;
+          }
           const api = registry.get(kind);
           // Recorded before the de-duplication below, so the viewer lookup keeps the alternates
           // the listing is about to drop.
@@ -851,7 +888,7 @@ export const make = Effect.gen(function* () {
         return Effect.die(new Error(`Missing pull request provider: ${kind}`));
       }
       const api = withRateLimitBackoff(registered, host, rateLimits);
-      return Effect.firstSuccessOf(roots.map((cwd) => api.getViewer({ cwd }))).pipe(
+      return Effect.firstSuccessOf(roots.map((cwd) => api.getViewer({ cwd, host }))).pipe(
         Effect.map((viewer) => ({
           host,
           kind,
@@ -1000,7 +1037,10 @@ export const make = Effect.gen(function* () {
         supported: projects,
         unimplemented,
         viewerRoots,
-      } = yield* listWorkspaceProjects(input);
+      } = yield* listWorkspaceProjects({
+        ...input,
+        supportsForgejo: input.supportsForgejo === true,
+      });
       const projectCounts = new Map<string, number>();
       for (const { host } of projects) {
         projectCounts.set(host, (projectCounts.get(host) ?? 0) + 1);
@@ -2470,6 +2510,7 @@ export const make = Effect.gen(function* () {
       const [
         ,
         state,
+        supportsForgejo,
         involvement,
         filters,
         projectId,
@@ -2481,6 +2522,7 @@ export const make = Effect.gen(function* () {
       ] = JSON.parse(key) as [
         number,
         string,
+        boolean,
         string | null,
         ReadonlyArray<string | ReadonlyArray<string> | null> | null,
         string | null,
@@ -2492,6 +2534,7 @@ export const make = Effect.gen(function* () {
       ];
       return listUncached({
         state,
+        supportsForgejo,
         ...(involvement === null ? {} : { involvement }),
         ...(filters === null ? {} : { filters: filtersOfKey(filters) }),
         ...(projectId === null ? {} : { projectId }),
@@ -2511,6 +2554,7 @@ export const make = Effect.gen(function* () {
     const key = JSON.stringify([
       listingsEpoch,
       input.state,
+      input.supportsForgejo === true,
       input.involvement ?? null,
       // Positional so two identical filter sets key alike however their record was assembled.
       input.filters === undefined
@@ -2732,10 +2776,12 @@ export const make = Effect.gen(function* () {
     return { stats: [...held, ...result.stats] };
   });
 
-  const invalidate: PullRequestService["Service"]["invalidate"] = (input) => {
+  const invalidate: PullRequestService["Service"]["invalidate"] = Effect.fn(
+    "PullRequestService.invalidate",
+  )(function* (input, options) {
     const reference = input.reference;
     if (reference !== undefined) {
-      return canonicalRef(reference).pipe(
+      yield* canonicalRef(reference).pipe(
         Effect.flatMap((ref) =>
           readCache
             .invalidate(refScope(ref))
@@ -2743,12 +2789,15 @@ export const make = Effect.gen(function* () {
         ),
         Effect.ignore,
       );
-    }
-    return Effect.sync(() => {
+    } else {
       listingsEpoch = ++epochCounter;
       viewersByHost.clear();
-    }).pipe(Effect.andThen(Cache.invalidateAll(viewerFlights)));
-  };
+      yield* Cache.invalidateAll(viewerFlights);
+    }
+    if (options?.notifyReaders) {
+      yield* SubscriptionRef.set(pullRequestRefreshes, ++epochCounter);
+    }
+  });
 
   const refreshAfterTurn: PullRequestService["Service"]["refreshAfterTurn"] = (projectId) =>
     Effect.suspend(() => {
@@ -2767,9 +2816,7 @@ export const make = Effect.gen(function* () {
         .pipe(Effect.andThen(SubscriptionRef.set(pullRequestRefreshes, listingsEpoch)));
     });
 
-  // A mutation's own client re-reads right after it, and every other client's next read must
-  // see the action too — so a write forgets the change request it touched and the listings its
-  // state change reorders, for everyone, without any client asking.
+  // Invalidate before notifying every client so mounted readers immediately fetch the edit.
   const invalidatedByMutation =
     <I extends PullRequestRef>(
       method: (input: I) => Effect.Effect<void, PullRequestError>,
@@ -2787,6 +2834,7 @@ export const make = Effect.gen(function* () {
             }),
           ),
         );
+        yield* SubscriptionRef.set(pullRequestRefreshes, listingsEpoch);
       });
   const runActionAndInvalidate: PullRequestService["Service"]["runAction"] = Effect.fn(
     "PullRequestService.runActionAndInvalidate",
@@ -2798,6 +2846,7 @@ export const make = Effect.gen(function* () {
     );
     bumpRefEpoch({ ...ref, repository });
     listingsEpoch = ++epochCounter;
+    yield* SubscriptionRef.set(pullRequestRefreshes, listingsEpoch);
     if (input.action === "merge") {
       // A successful merge action can merely enqueue the PR or enable auto-merge.
       const confirmed = yield* summaryUncached({ ...input, repository }).pipe(

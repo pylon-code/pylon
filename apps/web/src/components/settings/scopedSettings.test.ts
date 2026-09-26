@@ -34,6 +34,7 @@ function environment(
       threadRestartContinuation?: boolean;
       threadAutoSettlement?: boolean;
       defaultRuntimeMode?: boolean;
+      worktreeSubmodules?: boolean;
     };
   } = {},
 ) {
@@ -225,6 +226,19 @@ describe("scoped settings writes", () => {
     expect(persistServer).toHaveBeenCalledTimes(1);
   });
 
+  it("scopes agent device access to projects while keeping hub and hosts environment-wide", () => {
+    const access = planScopedSettingsPatch(project, [laptop, server], {
+      enableAgentDeviceAccess: true,
+    });
+    expect(access.serverWrites.map((write) => write.patch)).toEqual([
+      { projectSettingsOverrides: { [projectId]: { enableAgentDeviceAccess: true } } },
+      { projectSettingsOverrides: { [laptopProjectId]: { enableAgentDeviceAccess: true } } },
+    ]);
+    for (const patch of [{ enableDeviceSupport: true }, { deviceHosts: [] }]) {
+      expect(planScopedSettingsPatch(project, environments, patch).serverWrites).toEqual([]);
+    }
+  });
+
   it.each([
     "defaultModelSelection",
     "sourceControlWriterModelSelection",
@@ -275,6 +289,39 @@ describe("scoped settings writes", () => {
       defaultRuntimeMode: "approval-required",
     });
     expect(plan.serverWrites).toEqual([]);
+    expect(plan.skippedEnvironments).toEqual([
+      { environmentId: older.environmentId, label: older.label },
+    ]);
+  });
+
+  it.each([undefined, false])(
+    "does not acknowledge worktree submodule writes when capability is %s",
+    async (capability) => {
+      const older = environment("Server", {
+        capabilities: capability === undefined ? {} : { worktreeSubmodules: capability },
+      });
+      for (const scope of [
+        resolveSettingsScope({ machine: older.environmentId }, [], [older]),
+        checkout,
+      ]) {
+        const plan = planScopedSettingsPatch(scope, [older], { worktreeSubmodules: "none" });
+        expect(plan.serverWrites).toEqual([]);
+        const persistServer = vi.fn().mockResolvedValue({ _tag: "Success" });
+        const result = await persistScopedSettingsPatch(plan, persistServer, vi.fn());
+        expect(result.savedEnvironmentCount).toBe(0);
+        expect(persistServer).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("writes worktree submodule settings only to an advertising environment", () => {
+    const capable = environment("Capable", { capabilities: { worktreeSubmodules: true } });
+    const older = environment("Older", { capabilities: { worktreeSubmodules: false } });
+    const scope = resolveSettingsScope({}, [], [capable, older]);
+    const plan = planScopedSettingsPatch(scope, [capable, older], {
+      worktreeSubmodules: "top-level",
+    });
+    expect(plan.serverWrites.map((write) => write.environmentId)).toEqual([capable.environmentId]);
     expect(plan.skippedEnvironments).toEqual([
       { environmentId: older.environmentId, label: older.label },
     ]);
@@ -421,6 +468,39 @@ describe("scoped settings writes", () => {
         ["defaultAutoPull", "enableAgentBrowserAccess"],
       ).serverWrites[0]?.patch,
     ).toEqual({ projectSettingsOverrides: { [projectId]: null } });
+  });
+
+  it("does not acknowledge submodule override resets on an older selected server", async () => {
+    const capable = environment("Laptop", {
+      capabilities: { worktreeSubmodules: true },
+      settings: {
+        projectSettingsOverrides: { [laptopProjectId]: { worktreeSubmodules: "none" } },
+      },
+    });
+    const older = environment("Server", {
+      capabilities: { worktreeSubmodules: false },
+      settings: { projectSettingsOverrides: { [projectId]: { worktreeSubmodules: "none" } } },
+    });
+    const cleared = planScopedSettingsClear(project, [capable, older], ["worktreeSubmodules"]);
+    expect(cleared.serverWrites.map((write) => write.environmentId)).toEqual([
+      capable.environmentId,
+    ]);
+    expect(cleared.skippedEnvironments).toEqual([
+      { environmentId: older.environmentId, label: older.label },
+    ]);
+    const named = planProjectOverridesClear(
+      [capable, older],
+      [
+        { environmentId: capable.environmentId, projectId: laptopProjectId },
+        { environmentId: older.environmentId, projectId },
+      ],
+      ["worktreeSubmodules"],
+    );
+    expect(named.serverWrites.map((write) => write.environmentId)).toEqual([capable.environmentId]);
+    const persistServer = vi.fn().mockResolvedValue({ _tag: "Success" });
+    const result = await persistScopedSettingsPatch(cleared, persistServer, vi.fn());
+    expect(result.savedEnvironmentCount).toBe(1);
+    expect(result.failedEnvironments).toEqual(cleared.skippedEnvironments);
   });
 
   it("never substitutes an environment-default write for an invalid scope", () => {
