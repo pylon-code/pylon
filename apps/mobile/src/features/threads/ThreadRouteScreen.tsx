@@ -24,7 +24,6 @@ import {
 } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
-import { AsyncResult } from "effect/unstable/reactivity";
 import {
   CommandId,
   MessageId,
@@ -940,7 +939,7 @@ function ThreadRouteContent(
         ],
       );
     },
-    [revertThreadCheckpoint, rollbackTargetIdle, selectedThread],
+    [revertThreadCheckpoint, rollbackTargetIdle, selectedThread, setRollbackCommandPending],
   );
 
   const onRecoverRollback = useCallback(
@@ -968,7 +967,7 @@ function ThreadRouteContent(
         );
       }
     },
-    [recoverThreadRollback, rollbackCommandPending, selectedThread],
+    [recoverThreadRollback, rollbackCommandPending, selectedThread, setRollbackCommandPending],
   );
 
   const threadGitControlProps = {
