@@ -521,9 +521,7 @@ describe("CheckpointReactor", () => {
           },
         });
         const persisted = yield* Stream.runCollect(engine.readEvents(event.sequence - 1));
-        expect(Array.from(persisted).some((stored) => stored.eventId === event.eventId)).toBe(
-          true,
-        );
+        expect(Array.from(persisted).some((stored) => stored.eventId === event.eventId)).toBe(true);
         yield* PubSub.publish(historicalRollbackEvents, event);
       });
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
