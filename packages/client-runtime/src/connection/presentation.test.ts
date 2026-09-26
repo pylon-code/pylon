@@ -52,6 +52,14 @@ function supervisorState(overrides: Partial<SupervisorConnectionState>): Supervi
 }
 
 describe("connection presentation", () => {
+  it("exposes the successful lease generation across reconnects", () => {
+    expect(presentConnectionState(supervisorState({ phase: "connected", generation: 2 }))).toEqual({
+      phase: "connected",
+      generation: 2,
+      error: null,
+      traceId: null,
+    });
+  });
   it("labels a blocked protocol as unsupported", () => {
     const connection = presentConnectionState(
       supervisorState({
@@ -174,6 +182,7 @@ describe("connection presentation", () => {
       ),
     ).toEqual({
       phase: "connected",
+      generation: 1,
       error: null,
       traceId: null,
     });

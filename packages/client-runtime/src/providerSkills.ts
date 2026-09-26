@@ -1,8 +1,16 @@
 import type {
+  ProviderDriverKind,
   ServerProvider,
   ServerProviderSkill,
   ServerProviderSlashCommand,
 } from "@t3tools/contracts";
+
+/** Only these adapters turn a Unicode currency alias into a native skill invocation. */
+export function supportsUnicodeSkillAliases(
+  driver: ProviderDriverKind | null | undefined,
+): boolean {
+  return driver === "claudeAgent" || driver === "cursor" || driver === "codex";
+}
 
 export type ProviderSkillSourceKind = "app" | "repo" | "project" | "personal" | "system" | "other";
 

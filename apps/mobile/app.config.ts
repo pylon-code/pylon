@@ -159,6 +159,44 @@ const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
     frequentUpdates: true,
     widgets: [
       {
+        name: "SubscriptionUsage",
+        displayName: "Subscription usage",
+        description: "Recent subscription limits from connected Pylon environments.",
+        configuration: {
+          title: "Subscription usage",
+          description: "Choose session or weekly limits for Codex and Claude.",
+          parameters: {
+            codexPeriod: {
+              title: "Codex limits",
+              type: "enum",
+              default: "auto",
+              values: [
+                { name: "Both", value: "auto" },
+                { name: "Session", value: "session" },
+                { name: "Weekly", value: "weekly" },
+              ],
+            },
+            claudePeriod: {
+              title: "Claude limits",
+              type: "enum",
+              default: "auto",
+              values: [
+                { name: "Both", value: "auto" },
+                { name: "Session", value: "session" },
+                { name: "Weekly", value: "weekly" },
+              ],
+            },
+          },
+        },
+        supportedFamilies: [
+          "systemSmall",
+          "systemMedium",
+          "systemLarge",
+          "systemExtraLarge",
+          "accessoryRectangular",
+        ],
+      },
+      {
         name: "AgentActivity",
         displayName: "Agent Activity",
         description: "Shows the current state of active Pylon agents.",

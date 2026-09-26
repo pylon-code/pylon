@@ -725,6 +725,37 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
     }),
   );
 
+  it.effect(
+    "ignores a late skill catalog reply after cancellation and serves the next request",
+    () =>
+      Effect.gen(function* () {
+        const { stdio, input, output } = yield* makeInMemoryStdio();
+        const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({ stdio });
+
+        const catalog = yield* transport
+          .request("skills/list", { cwds: ["/project"] })
+          .pipe(Effect.forkScoped);
+        assert.deepEqual(yield* decodeJson(yield* Queue.take(output)), {
+          id: 1,
+          method: "skills/list",
+          params: { cwds: ["/project"] },
+        });
+        yield* Fiber.interrupt(catalog);
+        yield* Queue.offer(input, encodeJsonl({ id: 1, result: { data: [] } }));
+
+        const next = yield* transport
+          .request("thread/read", { threadId: "thread-2" })
+          .pipe(Effect.forkScoped);
+        assert.deepEqual(yield* decodeJson(yield* Queue.take(output)), {
+          id: 2,
+          method: "thread/read",
+          params: { threadId: "thread-2" },
+        });
+        yield* Queue.offer(input, encodeJsonl({ id: 2, result: { threadId: "thread-2" } }));
+        assert.deepEqual(yield* Fiber.join(next), { threadId: "thread-2" });
+      }),
+  );
+
   it.effect("logs decode failures without copying the cause or wire payload", () =>
     Effect.gen(function* () {
       const secret = "codex-wire-secret-sentinel";

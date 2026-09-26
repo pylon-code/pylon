@@ -1,16 +1,23 @@
 import {
   EnvironmentId,
+  ProviderInstanceId,
+  ProviderDriverKind,
   UsageDay,
   USAGE_CONTRACT_VERSION,
   type UsageSummary,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { EnvironmentPresentation } from "../connection/presentation.ts";
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
-import { refreshUsage } from "./usage.ts";
+import {
+  invalidateUsageLimitsRefresh,
+  refreshUsage,
+  refreshUsageLimits,
+  usageLimitsRefreshScope,
+} from "./usage.ts";
 
 const input = {
   sinceDay: UsageDay.make("2026-09-05"),
@@ -180,5 +187,87 @@ describe("manual usage refresh", () => {
     await refreshing;
     expect(reads).toBe(2);
     unmount();
+  });
+});
+
+describe("limits refresh cooldown", () => {
+  it("does not join or inherit cooldown from an old connection or account", async () => {
+    const id = EnvironmentId.make("limits-incarnation");
+    const stale = Promise.withResolvers<string>();
+    const old = refreshUsageLimits(id, () => stale.promise, true, "account-a");
+    invalidateUsageLimitsRefresh(id);
+    const fresh = vi.fn(async () => "account-b-quota");
+    expect(await refreshUsageLimits(id, fresh, true, "account-b")).toBe("account-b-quota");
+    stale.resolve("old-quota");
+    expect(await old).toBeUndefined();
+    expect(await refreshUsageLimits(id, fresh, true, "account-b")).toBeUndefined();
+    expect(fresh).toHaveBeenCalledTimes(1);
+    expect(await refreshUsageLimits(id, fresh, true, "account-c")).toBe("account-b-quota");
+    expect(fresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an old lease result when reconnect happens while the view is absent", async () => {
+    const id = EnvironmentId.make("limits-hidden-reconnect");
+    const stale = Promise.withResolvers<string>();
+    const old = refreshUsageLimits(id, () => stale.promise, true, "generation-1");
+    const next = vi.fn(async () => "fresh-quota");
+    expect(await refreshUsageLimits(id, next, true, "generation-2")).toBe("fresh-quota");
+    stale.resolve("stale-quota");
+    expect(await old).toBeUndefined();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it("changes scope only for provider identity, not a quota reading", () => {
+    const provider = {
+      instanceId: ProviderInstanceId.make("cursor"),
+      driver: ProviderDriverKind.make("cursor"),
+      auth: { status: "authenticated" as const, accountId: "one" },
+    };
+    const first = { ...provider, checkedAt: "first" };
+    const second = { ...provider, checkedAt: "second" };
+    expect(usageLimitsRefreshScope([first])).toBe(usageLimitsRefreshScope([second]));
+    expect(usageLimitsRefreshScope([provider])).not.toBe(
+      usageLimitsRefreshScope([{ ...provider, auth: { ...provider.auth, accountId: "two" } }]),
+    );
+  });
+  it("joins manual calls and gates automatic refreshes after success or failure", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      for (const fails of [false, true]) {
+        const id = EnvironmentId.make(`limits-${fails}`);
+        const pending = Promise.withResolvers<string>();
+        const refresh = vi.fn(() => pending.promise);
+        const first = refreshUsageLimits(id, refresh, true);
+        await refreshUsageLimits(id, refresh, true);
+        const manual = refreshUsageLimits(id, refresh);
+        const settled = vi.fn();
+        void manual.then(settled, settled);
+        expect(settled).not.toHaveBeenCalled();
+        expect(refresh).toHaveBeenCalledTimes(1);
+        if (fails) {
+          const firstFailure = expect(first).rejects.toThrow("unavailable");
+          const manualFailure = expect(manual).rejects.toThrow("unavailable");
+          pending.reject(new Error("unavailable"));
+          await Promise.all([firstFailure, manualFailure]);
+        } else {
+          pending.resolve("quota");
+          expect(await first).toBe("quota");
+          expect(await manual).toBe("quota");
+        }
+        expect(settled).toHaveBeenCalledTimes(1);
+        const next = vi.fn(async () => undefined);
+        clock.mockReturnValue(300_999);
+        await refreshUsageLimits(id, next, true);
+        expect(next).not.toHaveBeenCalled();
+        clock.mockReturnValue(301_000);
+        await refreshUsageLimits(id, next, true);
+        expect(next).toHaveBeenCalledTimes(1);
+        await refreshUsageLimits(id, next);
+        expect(next).toHaveBeenCalledTimes(2);
+        clock.mockReturnValue(1_000);
+      }
+    } finally {
+      clock.mockRestore();
+    }
   });
 });

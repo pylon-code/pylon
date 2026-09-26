@@ -336,6 +336,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         accentColor,
         enabled,
         snapshot,
+        invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
         snapshotForCwd,
         adapter,
         textGeneration,

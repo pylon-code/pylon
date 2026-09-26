@@ -13,7 +13,9 @@ Usage includes each configured account's history, including disabled accounts. C
 the account's home setting or its `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `GROK_HOME` environment
 variable. Use absolute paths in the account's environment settings; relative
 environment paths depend on each project's working directory and cannot be reliably discovered
-by Usage. Accounts sharing a history directory count once.
+by Usage. Accounts sharing an identifiable history directory count once, while distinct directories
+keep their own totals. If an older server cannot separate those totals, or a directory's filesystem
+identity is unavailable, Usage warns that shared history may be counted more than once.
 
 Antigravity totals come from saved native conversations, including standalone CLI history when
 available. Models without known prices still contribute tokens; set a custom model price to include
@@ -59,12 +61,41 @@ Pylon keeps a recent reading through a failed quota check when it can still veri
 account. It hides that reading while account status is unknown, after sign-out, or after a different
 account signs in.
 
+On iOS and Android, you can add the **Subscription usage** home-screen widget. It shows the
+tightest recent Codex and Claude session, weekly, or monthly quota from connected environments;
+the iOS Lock Screen version shows one selected limit. Tap it to open **Usage → Limits**. The
+widget uses readings the app already received, so open Pylon and refresh Limits to update it.
+Readings expire after 15 minutes or when their reset time passes, and disconnected environments
+are hidden when the app republishes the widget. Android may keep an old rendering until the system
+delivers its scheduled refresh; the last-checked time remains visible. The widget currently shows
+native Codex and Claude provider limits, not linked usage sources. It stores no account names,
+email addresses, or model names in the widget. A provider without a readable account ID or email
+is omitted from the widget until its identity can be verified.
+
 Antigravity Google-account limits belong to the account signed in to that Pylon provider instance.
 Settings and Limits show the model groups reported by Google. The thread composer selects the group
 for its chosen model. Other Antigravity sign-in methods do not currently report subscription limits.
 
+Opening Limits checks the selected connected environments automatically. Each client waits at
+least five minutes between automatic checks of an environment, including after a failed check.
+If a window still looks stale, refresh Limits to re-check every provider and hub.
+
 API-key accounts may not report subscription limits. This also applies to Claude connections using a
 proxy through `ANTHROPIC_AUTH_TOKEN`.
+
+OpenCode Go reports its session, weekly, and monthly allowance when OpenCode runs locally in
+the environment. Pylon cannot report limits for external OpenCode servers because their credentials
+belong to the remote server. Cursor reports
+its monthly allowance, including separate Auto and API usage, using a file-based CLI login or
+`CURSOR_AUTH_TOKEN`. Cursor's default macOS keychain login does not currently report limits.
+On macOS, use `AGENT_CLI_CREDENTIAL_STORE=file` when signing in and in the provider's environment
+to use a file-based login.
+
+Grok reports the remaining subscription allowance and reset time for its current billing period
+after signing in with `grok login`. Explicit `XAI_API_KEY` connections and custom authentication
+or endpoint configurations do not report subscription limits. A newly signed-in account with no
+metered usage appears without a percentage until Grok starts reporting one. Pylon groups the same
+Grok login across environments when its saved account includes an email address.
 
 In a thread, send `/usage-limits` by itself to show the current provider's quota above the composer
 without starting an agent turn. Dismiss the panel, or send a message, to clear it. Provider commands
