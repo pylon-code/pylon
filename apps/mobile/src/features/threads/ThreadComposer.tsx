@@ -1,3 +1,4 @@
+import { supportsUnicodeSkillAliases } from "@t3tools/client-runtime/providerSkills";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useAtomValue } from "@effect/atom-react";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
@@ -1788,6 +1789,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 the surface's own paddingLeft. */}
             <View className={isExpanded ? "px-[14px]" : "min-w-0 flex-1"}>
               <ComposerEditor
+                allowUnicodeSkillAliases={supportsUnicodeSkillAliases(
+                  selectedProviderStatus?.driver,
+                )}
                 draftKey={composerOwnerKey}
                 environmentId={props.environmentId}
                 onOpenMention={(path) => {

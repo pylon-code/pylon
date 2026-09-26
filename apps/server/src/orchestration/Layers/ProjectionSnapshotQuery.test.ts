@@ -1,6 +1,7 @@
 import {
   type AgentSessionImportSource,
   ChatAttachment,
+  CommandId,
   ComposerContextId,
   CheckpointRef,
   EventId,
@@ -510,6 +511,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pinOrderKey: "gm",
           activeOrderKey: "hq",
           titleRegeneration: null,
+          titleState: null,
           continuedFromThreadId: null,
           deletedAt: null,
           messages: [
@@ -646,6 +648,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pinOrderKey: "gm",
           activeOrderKey: "hq",
           titleRegeneration: null,
+          titleState: null,
           continuedFromThreadId: null,
           session: {
             threadId: ThreadId.make("thread-1"),
@@ -781,7 +784,22 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
           title: "Thread 1",
-          session: snapshot.threads[0]?.session,
+          titleState: null,
+          session: snapshot.threads[0]?.session ?? null,
+        });
+      }
+
+      yield* sql`
+        UPDATE projection_threads
+        SET title_state_json = '{"source":"manual","version":"cmd-manual-title"}'
+        WHERE thread_id = 'thread-1'
+      `;
+      const ownedContext = yield* snapshotQuery.getThreadRuntimeContext(ThreadId.make("thread-1"));
+      assert.equal(ownedContext._tag, "Some");
+      if (ownedContext._tag === "Some") {
+        assert.deepEqual(ownedContext.value.titleState, {
+          source: "manual",
+          version: CommandId.make("cmd-manual-title"),
         });
       }
 

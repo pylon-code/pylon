@@ -114,7 +114,7 @@ export function nativeMarkdownContextCopyRanges(
     const source = reference
       ? formatComposerContextReference({ ...reference, label: run.text })
       : run.skillName
-        ? `$${run.skillName}`
+        ? (run.sourceText ?? `$${run.skillName}`)
         : run.fileIcon && run.href
           ? (run.sourceText ?? `[${run.text}](<${run.href}>)`)
           : null;
@@ -267,6 +267,7 @@ function sameRunStyle(left: NativeMarkdownTextRun, right: NativeMarkdownTextRun)
     left.externalHost === right.externalHost &&
     left.fileIcon === right.fileIcon &&
     left.skillName === right.skillName &&
+    left.sourceText === right.sourceText &&
     left.skillLabel === right.skillLabel &&
     left.role === right.role &&
     left.headingLevel === right.headingLevel &&
@@ -319,7 +320,7 @@ function appendRun(
 }
 
 const SKILL_TOKEN_REGEX =
-  /(^|\s)\$(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=\s|$)/g;
+  /(^|\s)\p{Sc}(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=\s|$)/gu;
 
 function formatSkillLabel(skill: SelectableMarkdownSkill): string {
   const displayName = skill.displayName?.trim();
@@ -336,6 +337,7 @@ function formatSkillLabel(skill: SelectableMarkdownSkill): string {
 function decorateSkillRuns(
   runs: ReadonlyArray<NativeMarkdownTextRun>,
   skills: ReadonlyArray<SelectableMarkdownSkill>,
+  allowUnicodeSkillAliases: boolean,
 ): ReadonlyArray<NativeMarkdownTextRun> {
   if (skills.length === 0) {
     return runs;
@@ -359,13 +361,15 @@ function decorateSkillRuns(
         continue;
       }
       const start = (match.index ?? 0) + prefix.length;
-      const end = start + name.length + 1;
+      const end = (match.index ?? 0) + match[0].length;
+      if (!allowUnicodeSkillAliases && run.text[start] !== "$") continue;
       if (start > cursor) {
         decorated.push({ ...run, text: run.text.slice(cursor, start) });
       }
       decorated.push({
         ...run,
         text: run.text.slice(start, end),
+        sourceText: run.text.slice(start, end),
         skillName: name,
         skillLabel: formatSkillLabel(skill),
       });
@@ -949,6 +953,7 @@ export function nativeMarkdownChunkSpacing(
 export function nativeMarkdownDocumentRuns(
   node: MarkdownNode,
   skills: ReadonlyArray<SelectableMarkdownSkill> = [],
+  allowUnicodeSkillAliases = false,
 ): ReadonlyArray<NativeMarkdownTextRun> {
   const runs = appendDocumentBlock([], node);
   while (runs.length > 0) {
@@ -964,5 +969,5 @@ export function nativeMarkdownDocumentRuns(
       runs[lastIndex] = { ...last, text };
     }
   }
-  return decorateMentionRuns(decorateSkillRuns(runs, skills));
+  return decorateMentionRuns(decorateSkillRuns(runs, skills, allowUnicodeSkillAliases));
 }

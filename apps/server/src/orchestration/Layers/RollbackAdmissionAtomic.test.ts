@@ -24,6 +24,9 @@ import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { RollbackSagaRepository } from "../../persistence/Services/RollbackSagas.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { RollbackAdmission } from "../../rollback/RollbackAdmission.ts";
+import { layer as RollbackAdmissionLive } from "../../rollback/RollbackAdmission.ts";
+import { RollbackWorkspace } from "../../rollback/RollbackWorkspace.ts";
+import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -106,6 +109,174 @@ const app = Layer.mergeAll(
   ),
   Layer.provideMerge(NodeServices.layer),
 );
+
+const unsupportedAdmission = RollbackAdmissionLive.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      Layer.succeed(ProviderService, {
+        getCapabilities: () => Effect.succeed({ conversationRollback: "unsupported" }),
+      } as never),
+      Layer.succeed(RollbackWorkspace, {} as never),
+    ),
+  ),
+);
+const unsupportedEngine = OrchestrationEngineLive.pipe(
+  Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+  Layer.provide(OrchestrationProjectionPipelineLive),
+  Layer.provideMerge(unsupportedAdmission),
+  Layer.provideMerge(RollbackSagaRepositoryLive),
+);
+const unsupportedApp = Layer.mergeAll(
+  unsupportedEngine,
+  OrchestrationProjectionSnapshotQueryLive,
+  RollbackSagaRepositoryLive,
+).pipe(
+  Layer.provide(ThreadBackgroundLiveness.layer),
+  Layer.provide(ThreadPlanProgress.layer),
+  Layer.provide(OrchestrationEventStoreLive),
+  Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+  Layer.provide(RepositoryIdentityResolver.layer),
+  Layer.provide(SqlitePersistenceMemory),
+  Layer.provideMerge(
+    ServerConfig.layerTest(process.cwd(), { prefix: "t3-rollback-rejected-test-" }),
+  ),
+  Layer.provideMerge(NodeServices.layer),
+);
+
+const absentAdmissionEngine = OrchestrationEngineLive.pipe(
+  Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+  Layer.provide(OrchestrationProjectionPipelineLive),
+);
+const absentAdmissionApp = Layer.mergeAll(
+  absentAdmissionEngine,
+  OrchestrationProjectionSnapshotQueryLive,
+).pipe(
+  Layer.provide(ThreadBackgroundLiveness.layer),
+  Layer.provide(ThreadPlanProgress.layer),
+  Layer.provide(OrchestrationEventStoreLive),
+  Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+  Layer.provide(RepositoryIdentityResolver.layer),
+  Layer.provide(SqlitePersistenceMemory),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-rollback-absent-test-" })),
+  Layer.provideMerge(NodeServices.layer),
+);
+
+it.layer(absentAdmissionApp)("missing rollback admission", (it) => {
+  it.effect("rejects a new revert without persisting its request event", () =>
+    Effect.gen(function* () {
+      const orchestration = yield* OrchestrationEngineService;
+      yield* orchestration.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("command-absent-project"),
+        projectId: ProjectId.make("project-absent-admission"),
+        title: "Absent admission",
+        workspaceRoot: "/workspace/absent-admission",
+        defaultModelSelection: { instanceId: providerInstanceId, model: "fake" },
+        createdAt: now,
+      });
+      yield* orchestration.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("command-absent-thread"),
+        threadId: ThreadId.make("thread-absent-admission"),
+        projectId: ProjectId.make("project-absent-admission"),
+        title: "Absent admission",
+        modelSelection: { instanceId: providerInstanceId, model: "fake" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      });
+      for (const commandType of [
+        "thread.checkpoint.revert",
+        "thread.conversation.revert",
+      ] as const) {
+        const result = yield* orchestration
+          .dispatch({
+            type: commandType,
+            commandId: CommandId.make(`command-absent-${commandType}`),
+            threadId: ThreadId.make("thread-absent-admission"),
+            turnCount: 0,
+            expectedSourceRevision: 1,
+            createdAt: now,
+          })
+          .pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure")
+          assert.equal(result.failure._tag, "OrchestrationCommandInvariantError");
+      }
+      const events = yield* Stream.runCollect(orchestration.readEvents(0));
+      assert.equal(
+        Array.from(events).some((event) => event.type === "thread.checkpoint-revert-requested"),
+        false,
+      );
+    }),
+  );
+});
+
+const rejectedLayer = it.layer(unsupportedApp);
+rejectedLayer("non-absolute rollback admission", (it) => {
+  for (const commandType of ["thread.checkpoint.revert", "thread.conversation.revert"] as const) {
+    it.effect(`rejects ${commandType} before persisting a request event`, () =>
+      Effect.gen(function* () {
+        const orchestration = yield* OrchestrationEngineService;
+        const snapshots = yield* ProjectionSnapshotQuery;
+        const repository = yield* RollbackSagaRepository;
+        const localProjectId = ProjectId.make(`project-rejected-${commandType}`);
+        const localThreadId = ThreadId.make(`thread-rejected-${commandType}`);
+        yield* orchestration.dispatch({
+          type: "project.create",
+          commandId: CommandId.make(`command-rejected-project-${commandType}`),
+          projectId: localProjectId,
+          title: "Rejected rollback",
+          workspaceRoot: `/workspace/rejected/${commandType}`,
+          defaultModelSelection: { instanceId: providerInstanceId, model: "fake" },
+          createdAt: now,
+        });
+        yield* orchestration.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`command-rejected-thread-${commandType}`),
+          threadId: localThreadId,
+          projectId: localProjectId,
+          title: "Rejected rollback",
+          modelSelection: { instanceId: providerInstanceId, model: "fake" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+        });
+
+        const result = yield* orchestration
+          .dispatch({
+            type: commandType,
+            commandId: CommandId.make(`command-rejected-revert-${commandType}`),
+            threadId: localThreadId,
+            turnCount: 0,
+            expectedSourceRevision: 1,
+            createdAt: now,
+          })
+          .pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") {
+          assert.equal(result.failure._tag, "OrchestrationCommandInvariantError");
+        }
+        const events = yield* Stream.runCollect(orchestration.readEvents(0)).pipe(
+          Effect.map((chunk) => Array.from(chunk)),
+        );
+        assert.equal(
+          events.some((event) => event.type === "thread.checkpoint-revert-requested"),
+          false,
+        );
+        assert.deepEqual(yield* repository.listNonterminal(), []);
+        const thread = (yield* snapshots.getSnapshot()).threads.find(
+          (entry) => entry.id === localThreadId,
+        );
+        assert.equal(thread?.rollbackStatus ?? null, null);
+      }),
+    );
+  }
+});
 
 for (const commandType of ["thread.checkpoint.revert", "thread.conversation.revert"] as const) {
   const layer = it.layer(app);

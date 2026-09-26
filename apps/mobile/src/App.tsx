@@ -25,6 +25,7 @@ import { useUniwindTheme } from "./lib/useUniwindTheme";
 import { appBlurTargetRef } from "./lib/appBlurTarget";
 import { SubscriptionUsageCoordinator } from "./widgets/SubscriptionUsageCoordinator";
 import { useMobileNavigationTheme } from "./lib/useMobileNavigationTheme";
+import { shouldHandleAppLink } from "./lib/appLinking";
 
 import "../global.css";
 
@@ -42,14 +43,7 @@ const appLinking = {
   // schemes `app.config.ts` registers, because iOS never delivers an
   // unregistered scheme to the app.
   prefixes: [Linking.createURL("/"), "pylon-code://", "pylon-code-dev://", "pylon-code-preview://"],
-  // The Expo dev client launches the app via
-  // <scheme>://expo-development-client/?url=<packager> — that URL addresses
-  // the launcher, not app navigation. Without this filter it falls through
-  // to the NotFound wildcard route on every dev launch.
-  // expo-sharing uses a private lifecycle URL only to wake the app. The
-  // persisted share inbox below owns navigation once the payload is durable.
-  filter: (url: string) =>
-    !url.includes("expo-development-client") && !url.includes("://expo-sharing"),
+  filter: shouldHandleAppLink,
 };
 
 const Navigation = createStaticNavigation(RootStack);

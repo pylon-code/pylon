@@ -2721,3 +2721,52 @@ describe("session activity performance", () => {
     expect(updateMs).toBeLessThan(fromScratchMs / 2);
   });
 });
+
+describe("orphaned background tasks never become spawn cards", () => {
+  // A watcher orphaned by a provider process exit is settled by the NEXT
+  // process, which reports only the task id and status. Ingestion stamps that
+  // bare row "agent"; judging it alone minted a "Ran 1 subagent · Status
+  // unavailable" card the Agents panel could never resolve.
+  const rows = [
+    makeActivity({
+      kind: "task.started",
+      summary: "local_bash task started",
+      turnId: "turn-1",
+      payload: {
+        taskId: "watcher-1",
+        taskType: "local_bash",
+        title: "Run the parallel merge queue dispatcher",
+      },
+    }),
+    makeActivity({
+      kind: "task.completed",
+      summary: "Task stopped",
+      createdAt: "2026-02-23T01:00:00.000Z",
+      payload: {
+        taskId: "watcher-1",
+        status: "stopped",
+        title: "Run the parallel merge queue dispatcher",
+        summary: "Orphaned by a previous Claude Code process exit",
+        agentKind: "agent",
+      },
+    }),
+  ];
+
+  it("leaves the settled watcher out of the spawn cards", () => {
+    expect(deriveWorkLogEntries(rows).filter((entry) => entry.agentSpawn !== undefined)).toEqual(
+      [],
+    );
+  });
+
+  it("still raises a spawn card for a real subagent", () => {
+    const spawned = deriveWorkLogEntries([
+      makeActivity({
+        kind: "task.started",
+        summary: "subagent task started",
+        turnId: "turn-1",
+        payload: { taskId: "task-1", taskType: "subagent", title: "Reviewer" },
+      }),
+    ]).filter((entry) => entry.agentSpawn !== undefined);
+    expect(spawned.map((entry) => entry.agentSpawn?.agentTaskIds)).toEqual([["task-1"]]);
+  });
+});
