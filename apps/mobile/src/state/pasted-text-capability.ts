@@ -13,6 +13,8 @@ import { environmentSession } from "./session";
 
 const EMPTY_RESULT = Atom.make(AsyncResult.initial<never, never>(false));
 
+// Stream atoms can be waiting for their next emission while retaining a valid value.
+// The connected lease identity, rather than the waiting flag, fences stale config.
 export function connectedPastedTextAttachmentLease(
   environmentId: EnvironmentId,
 ): ConnectedInitialConfig | null {
@@ -20,7 +22,6 @@ export function connectedPastedTextAttachmentLease(
   const configResult = appAtomRegistry.get(
     environmentSession.connectedInitialConfigAtom(environmentId),
   );
-  if (stateResult.waiting || configResult.waiting) return null;
   const state = Option.getOrNull(AsyncResult.value(stateResult));
   const observed = Option.getOrElse(AsyncResult.value(configResult), () => Option.none());
   const config = connectedInitialConfigForState(state, observed);
@@ -43,7 +44,7 @@ export function useConnectedPastedTextAttachmentCapability(
       ? EMPTY_RESULT
       : environmentSession.connectedInitialConfigAtom(environmentId),
   );
-  if (environmentId === null || stateResult.waiting || configResult.waiting) return false;
+  if (environmentId === null) return false;
   const state = Option.getOrNull(AsyncResult.value(stateResult));
   const observed = Option.getOrElse(AsyncResult.value(configResult), () => Option.none());
   const capabilities = connectedInitialConfigForState(state, observed)?.environment.capabilities;
