@@ -1110,6 +1110,10 @@ function fakeRuntimeFactory(
           captures.order.push("abort");
           expect(captures.prompts.at(-1)?.signal?.aborted).toBe(true);
         }),
+        abortAndSendQueued: Effect.sync(() => {
+          captures.order.push("abortAndSendQueued");
+          expect(captures.prompts.at(-1)?.signal?.aborted).toBe(true);
+        }),
         abortAndClearQueue: captures.abortClearFailure
           ? Effect.fail(
               new PrimeAgentDaemonSessionRuntimeError({
