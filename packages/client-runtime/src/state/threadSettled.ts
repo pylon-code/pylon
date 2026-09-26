@@ -293,6 +293,21 @@ export function resolveCustomSnooze(input: CustomSnoozeInput, now: Date): string
     wake = new Date(`${input.date}T${input.time}:00`);
     // Reject impossible dates and spring-forward wall times that JS normalizes forward.
     if (localSnoozeDate(wake) !== input.date || localSnoozeTime(wake) !== input.time) return null;
+    if (wake.getTime() <= now.getTime()) {
+      // Date parsing chooses the first occurrence of a repeated fall-back hour.
+      // If that one has passed, the later occurrence may still be in the future.
+      const laterOffset = new Date(wake.getTime() + DAY_MS).getTimezoneOffset();
+      const offsetChangeMs = (laterOffset - wake.getTimezoneOffset()) * 60_000;
+      if (offsetChangeMs > 0) {
+        const secondOccurrence = new Date(wake.getTime() + offsetChangeMs);
+        if (
+          localSnoozeDate(secondOccurrence) === input.date &&
+          localSnoozeTime(secondOccurrence) === input.time
+        ) {
+          wake = secondOccurrence;
+        }
+      }
+    }
   }
   return Number.isFinite(wake.getTime()) && wake.getTime() > now.getTime()
     ? wake.toISOString()

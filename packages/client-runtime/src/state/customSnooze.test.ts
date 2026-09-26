@@ -61,6 +61,22 @@ describe("custom snooze", () => {
     ).toBe("2026-11-01T08:30:00.000Z");
   });
 
+  it("chooses the second fall-back occurrence when the first has passed", () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    expect(
+      resolveCustomSnooze(
+        { mode: "date", date: "2026-11-01", time: "01:30" },
+        new Date("2026-11-01T09:00:00Z"),
+      ),
+    ).toBe("2026-11-01T09:30:00.000Z");
+    expect(
+      resolveCustomSnooze(
+        { mode: "date", date: "2026-11-01", time: "01:30" },
+        new Date("2026-11-01T09:30:00Z"),
+      ),
+    ).toBeNull();
+  });
+
   it("treats duration days as 24 hours across DST", () => {
     vi.stubEnv("TZ", "America/Los_Angeles");
     const before = new Date(2027, 2, 13, 12);
