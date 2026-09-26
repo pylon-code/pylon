@@ -9,6 +9,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppText as Text } from "../../components/AppText";
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { CloudEnvironmentRows } from "../connection/CloudEnvironmentRows";
+import { SettingsRow } from "./components/SettingsRow";
+import { SettingsSection } from "./components/SettingsSection";
 import { ConnectionEnvironmentRow } from "../connection/ConnectionEnvironmentRow";
 import { splitEnvironmentSections } from "../connection/environmentSections";
 import { cn } from "../../lib/cn";
@@ -175,6 +177,29 @@ export function SettingsEnvironmentsRouteScreen() {
               }
             : {})}
         />
+        {!SHOWCASE_ENABLED && connectedEnvironments.length > 0 ? (
+          <View className="pt-6">
+            <SettingsSection title="Manage updates">
+              {connectedEnvironments.map((environment) => (
+                <SettingsRow
+                  key={environment.environmentId}
+                  icon="server.rack"
+                  label={environment.environmentLabel}
+                  value="Providers"
+                  onPress={() =>
+                    navigation.navigate("SettingsSheet", {
+                      screen: "SettingsContent",
+                      params: {
+                        screen: "SettingsEnvironmentDetail",
+                        params: { environmentId: environment.environmentId },
+                      },
+                    })
+                  }
+                />
+              ))}
+            </SettingsSection>
+          </View>
+        ) : null}
       </ScrollView>
     </View>
   );

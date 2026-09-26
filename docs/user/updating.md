@@ -72,6 +72,12 @@ fails:
 
 ## Mobile updates
 
+In the mobile app, open **Settings → Environments → Manage updates** and choose a connected
+environment to inspect its Pylon server and provider versions. With permission to operate that
+environment, you can refresh provider status and update an installed provider when the server
+offers an update command. Server updates remain in Pylon web or desktop, where the connected
+client supplies the Pylon version to install; mobile does not guess a release target.
+
 Mobile updates are separate from the desktop tracks. The mobile app downloads updates in the
 background and applies them when you next leave the app. It saves drafts and queued messages before
 restarting. If you keep the app open for a long time, it may ask to install immediately; choosing
