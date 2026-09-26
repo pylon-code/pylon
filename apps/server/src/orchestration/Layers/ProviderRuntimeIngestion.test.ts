@@ -3224,6 +3224,103 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("repairs a message whose opening delta never reached ingestion", async () => {
+    // Live loss (Kraken thread, 2026-09-26T18:05:36Z): the user sent a prompt
+    // mid-stream, the admission gate dropped the block's first delta, and the
+    // partial buffer then won over the complete text the provider had already
+    // supplied. The stored reply opened with "'d already picked this up".
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const complete = "I'd already picked this up: PR #831 is merged.";
+
+    // The opening delta ("I") never arrives; only the remainder is ingested.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-truncated-delta"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-truncated"),
+      itemId: asItemId("item-truncated"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: complete.slice(1),
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-truncated-completed"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-truncated"),
+      itemId: asItemId("item-truncated"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        detail: complete,
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-truncated" && !message.streaming,
+      ),
+    );
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-truncated",
+    );
+    expect(message?.text).toBe(complete);
+  });
+
+  it("keeps streamed text that the completion detail does not contain", async () => {
+    // Detail is trimmed and describes one content block. It is only the
+    // authority when it demonstrably contains what was streamed, so a
+    // disagreeing completion must never truncate a delivered message.
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-divergent-delta"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-divergent"),
+      itemId: asItemId("item-divergent"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "streamed body that the completion omits",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-divergent-completed"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-divergent"),
+      itemId: asItemId("item-divergent"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        detail: "an unrelated shorter summary",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-divergent" && !message.streaming,
+      ),
+    );
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-divergent",
+    );
+    expect(message?.text).toBe("streamed body that the completion omits");
+  });
+
   it("persists and replaces bounded final reasoning as one provider-neutral work-log activity", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

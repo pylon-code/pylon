@@ -1799,6 +1799,13 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   turnId: Schema.optional(TurnId),
+  /**
+   * The provider's own complete text for this message, sent only when it
+   * disagrees with what streaming delivered. Deltas can be lost in transit,
+   * and the accumulated text is then permanently short; a non-empty text on
+   * the terminal event replaces the message, which is how that heals.
+   */
+  text: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
 });
 

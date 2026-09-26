@@ -315,6 +315,34 @@ export function splitBufferedAssistantText(text: string): { ready: string; rest:
     : { ready: text.slice(0, boundary), rest: text.slice(boundary) };
 }
 
+/**
+ * The provider's own text for a finished assistant message, returned only when
+ * it is strictly more complete than what streaming actually delivered.
+ *
+ * Deltas can be lost before they reach ingestion — the admission gate drops
+ * turn-scoped output while a newly sent prompt waits to be admitted — and the
+ * accumulated text is then permanently short by whatever went missing. The
+ * completion carries the whole block, so it can repair that.
+ *
+ * Containment is the safety rule: `detail` is trimmed and describes a single
+ * content block, so a completion that does not demonstrably contain the
+ * delivered text is treated as disagreement, not authority, and nothing is
+ * replaced. Equal text repairs nothing and is left alone so a message keeps
+ * the exact whitespace it streamed.
+ */
+export function repairedAssistantFinalText(input: {
+  readonly providerText: string | undefined;
+  readonly deliveredText: string;
+}): string | undefined {
+  const provider = input.providerText?.trim();
+  if (!provider) return undefined;
+  const delivered = input.deliveredText.trim();
+  // Nothing was delivered: the ordinary fallback path already writes the
+  // provider's text, so there is no loss to repair here.
+  if (delivered.length === 0 || delivered.length >= provider.length) return undefined;
+  return provider.includes(delivered) ? provider : undefined;
+}
+
 function proposedPlanIdForTurn(threadId: ThreadId, turnId: TurnId): string {
   return `plan:${threadId}:turn:${turnId}`;
 }
@@ -2013,6 +2041,10 @@ const make = Effect.gen(function* () {
     commandTag: string;
     finalDeltaCommandTag: string;
     fallbackText?: string;
+    /** The provider's complete text for this message, when it supplied one. */
+    providerText?: string;
+    /** Text already projected for this message before this finalization. */
+    projectedText?: string;
     hasProjectedMessage?: boolean;
   }) =>
     Effect.gen(function* () {
@@ -2038,12 +2070,19 @@ const make = Effect.gen(function* () {
       }
 
       if (input.hasProjectedMessage || hasRenderableText) {
+        // Repair a message that lost deltas on the way in. Non-empty text on
+        // the terminal event replaces what was streamed; empty keeps it.
+        const repaired = repairedAssistantFinalText({
+          providerText: input.providerText,
+          deliveredText: `${input.projectedText ?? ""}${hasRenderableText ? text : ""}`,
+        });
         yield* orchestrationEngine.dispatch({
           type: "thread.message.assistant.complete",
           commandId: yield* providerCommandId(input.event, input.commandTag),
           threadId: input.threadId,
           messageId: input.messageId,
           ...(input.turnId ? { turnId: input.turnId } : {}),
+          ...(repaired !== undefined ? { text: repaired } : {}),
           createdAt: input.createdAt,
         });
       }
@@ -2984,6 +3023,12 @@ const make = Effect.gen(function* () {
             commandTag: "assistant-complete",
             finalDeltaCommandTag: "assistant-delta-finalize",
             hasProjectedMessage: existingAssistantMessage !== undefined,
+            ...(assistantCompletion.fallbackText !== undefined
+              ? { providerText: assistantCompletion.fallbackText }
+              : {}),
+            ...(existingAssistantMessage !== undefined
+              ? { projectedText: existingAssistantMessage.text }
+              : {}),
             ...(assistantCompletion.fallbackText !== undefined && shouldApplyFallbackCompletionText
               ? { fallbackText: assistantCompletion.fallbackText }
               : {}),
