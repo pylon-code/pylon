@@ -26,11 +26,13 @@ import {
   AVAILABLE_CONNECTION_STATE,
   PrimaryConnectionTarget,
   type PreparedConnection,
+  type SupervisorConnectionState,
 } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
+import { rpcSessionOwner } from "../rpc/sessionOwner.ts";
 import {
   applyServerWelcomeEvent,
   makeEnvironmentServerWelcomeState,
@@ -812,14 +814,26 @@ describe("server state projection", () => {
 
   it.effect("starts from cached configuration and persists the live projection", () =>
     Effect.gen(function* () {
-      const events = yield* Queue.unbounded<ServerConfigStreamEvent>();
-      const client = {
-        [WS_METHODS.subscribeServerConfig]: () => Stream.fromQueue(events),
+      const firstEvents = yield* Queue.unbounded<ServerConfigStreamEvent>();
+      const secondEvents = yield* Queue.unbounded<ServerConfigStreamEvent>();
+      const firstClient = {
+        [WS_METHODS.subscribeServerConfig]: () => Stream.fromQueue(firstEvents),
       } as unknown as WsRpcProtocolClient;
+      const secondClient = {
+        [WS_METHODS.subscribeServerConfig]: () => Stream.fromQueue(secondEvents),
+      } as unknown as WsRpcProtocolClient;
+      const firstSession = session(firstClient);
+      const secondSession = session(secondClient);
+      const supervisorSession = yield* SubscriptionRef.make(Option.some(firstSession));
+      const supervisorState = yield* SubscriptionRef.make<SupervisorConnectionState>({
+        ...AVAILABLE_CONNECTION_STATE,
+        phase: "connected",
+        generation: 1,
+      });
       const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
         target: TARGET,
-        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
-        session: yield* SubscriptionRef.make(Option.some(session(client))),
+        state: supervisorState,
+        session: supervisorSession,
         prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
         connect: Effect.void,
         disconnect: Effect.void,
@@ -873,7 +887,15 @@ describe("server state projection", () => {
           expect(Option.getOrThrow(yield* SubscriptionRef.get(state)).config).toEqual(CONFIG);
 
           const providers: ServerConfig["providers"] = [];
-          yield* Queue.offer(events, {
+          const sourceCapableConfig = {
+            ...CONFIG,
+            environment: {
+              ...CONFIG.environment,
+              capabilities: { ...CONFIG.environment.capabilities, usageLimitSources: true },
+            },
+          };
+          yield* Queue.offer(firstEvents, snapshotEvent(sourceCapableConfig));
+          yield* Queue.offer(firstEvents, {
             version: 1,
             type: "providerStatuses",
             payload: { providers },
@@ -888,6 +910,73 @@ describe("server state projection", () => {
             Stream.runHead,
           );
           expect(Option.getOrThrow(Option.getOrThrow(projected)).config.providers).toBe(providers);
+          expect(Option.getOrThrow(Option.getOrThrow(projected)).sessionOwner).toBe(
+            rpcSessionOwner(firstSession),
+          );
+          const sourcePublished = yield* SubscriptionRef.changes(state).pipe(
+            Stream.filter(
+              (value) =>
+                Option.isSome(value) && value.value.latestEvent.type === "usageLimitSourcesUpdated",
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* Queue.offer(firstEvents, {
+            version: 1,
+            type: "usageLimitSourcesUpdated",
+            payload: {
+              sources: [
+                {
+                  id: UsageLimitSourceId.make("first-session"),
+                  kind: "cliproxy",
+                  label: "First session",
+                  checkedAt: "2026-09-07T00:00:00.000Z",
+                  accounts: [],
+                },
+              ],
+            },
+          });
+          expect(
+            Option.getOrThrow(Option.getOrThrow(yield* Fiber.join(sourcePublished))).config
+              .usageLimitSources,
+          ).toHaveLength(1);
+
+          // A's live result remains readable for ordinary cached UI, but it
+          // cannot claim generation B before B publishes its own snapshot.
+          const reconnecting: SupervisorConnectionState = {
+            ...AVAILABLE_CONNECTION_STATE,
+            phase: "connecting",
+            generation: 1,
+          };
+          yield* SubscriptionRef.set(supervisorState, reconnecting);
+          yield* SubscriptionRef.set(supervisorSession, Option.some(secondSession));
+          const reconnected: SupervisorConnectionState = {
+            ...AVAILABLE_CONNECTION_STATE,
+            phase: "connected",
+            // Reconfiguration can replace the supervisor and reuse a number.
+            generation: 1,
+          };
+          yield* SubscriptionRef.set(supervisorState, reconnected);
+          yield* Queue.offer(firstEvents, snapshotEvent(CONFIG));
+          expect(Option.getOrThrow(yield* SubscriptionRef.get(state)).sessionOwner).toBe(
+            rpcSessionOwner(firstSession),
+          );
+          const secondProjection = yield* SubscriptionRef.changes(state)
+            .pipe(
+              Stream.filter(
+                (value) =>
+                  Option.isSome(value) &&
+                  value.value.sessionOwner === rpcSessionOwner(secondSession),
+              ),
+              Stream.runHead,
+            )
+            .pipe(Effect.forkChild);
+          yield* Queue.offer(secondEvents, snapshotEvent(sourceCapableConfig));
+          const newSessionProjection = Option.getOrThrow(
+            Option.getOrThrow(yield* Fiber.join(secondProjection)),
+          );
+          expect(newSessionProjection.sessionOwner).toBe(rpcSessionOwner(secondSession));
+          expect(newSessionProjection.config.usageLimitSources).toBeUndefined();
         }),
       );
 
