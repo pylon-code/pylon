@@ -102,6 +102,7 @@ export function createLinkedPullRequestSummaryAtomFamily<R, E>(
   return createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:pull-requests:linked-summary",
     tag: WS_METHODS.pullRequestsSummary,
+    transformInput: (input) => ({ ...input, supportsForgejo: true }),
     staleTimeMs: 60_000,
     refreshIntervalMs: 60_000,
     idleTtlMs: LINKED_PULL_REQUEST_IDLE_TTL_MS,
@@ -164,6 +165,7 @@ export function createPullRequestEnvironmentAtoms<R, E>(
     createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:pull-requests:detail",
       tag: WS_METHODS.pullRequestsDetail,
+      transformInput: (input) => ({ ...input, supportsForgejo: true }),
       staleTimeMs: 60_000,
       refreshTrigger: ({ environmentId }) => refreshes({ environmentId, input: {} }),
     }),
@@ -194,6 +196,7 @@ export function createPullRequestEnvironmentAtoms<R, E>(
     list: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:pull-requests:list",
       tag: WS_METHODS.pullRequestsList,
+      transformInput: (input) => ({ ...input, supportsForgejo: true }),
       staleTimeMs: 30_000,
       refreshTrigger: ({ environmentId, input }) =>
         input.cursors === undefined ? refreshes({ environmentId, input: {} }) : undefined,
