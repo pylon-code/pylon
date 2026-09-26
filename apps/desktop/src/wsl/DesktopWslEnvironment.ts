@@ -22,7 +22,9 @@ const WSLPATH_TIMEOUT = Duration.seconds(10);
 const PROBE_TIMEOUT = Duration.seconds(10);
 const TOOLCHAIN_TIMEOUT = Duration.seconds(10);
 const BUILD_TIMEOUT = Duration.minutes(5);
-const RUNTIME_INSTALL_TIMEOUT = Duration.minutes(2);
+// A cold extraction reads the archive from /mnt/c while holding an install lock.
+// Slow disks and antivirus scans can take longer than two minutes.
+const RUNTIME_INSTALL_TIMEOUT = Duration.minutes(10);
 const RUNTIME_PRUNE_TIMEOUT = Duration.seconds(30);
 const RUNTIME_INVALIDATE_TIMEOUT = Duration.seconds(15);
 const USER_HOME_TIMEOUT = Duration.seconds(5);
@@ -261,6 +263,7 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
 // that install wrote.
 const WSL_RUNTIME_READY_MARKER = ".t3code-wsl-runtime-ready";
 const WSL_RUNTIME_SELECTED_MARKER = ".t3code-wsl-runtime-selected";
+const WSL_RUNTIME_PROBE_FAILURE_COOLDOWN_MINUTES = 10;
 // Pylon's own runtime home inside the distro, per channel — not `~/.t3`, which
 // belongs to T3 Code. This is a correctness boundary rather than branding:
 // `pruneRuntimes` deletes every `sha256-*` sibling it does not recognise as
@@ -330,9 +333,18 @@ export const buildWslRuntimeInstallScript = (
     "}",
     'mkdir -p "$runtime_parent"',
     `runtime_lock="$runtime_parent/.${safeRuntimeId}.install.lock"`,
+    `probe_failure_marker="$runtime_parent/.${safeRuntimeId}.probe-failed"`,
     "trap 'exit 1' HUP INT TERM",
     'exec 9> "$runtime_lock"',
     "flock -x 9",
+    // A staged binary that failed a real node-pty load while the mounted tree
+    // worked is unlikely to be repaired by reinstalling identical archive
+    // bytes on every desktop launch. Retry after a bounded cooling period.
+    `if [ -f "$probe_failure_marker" ] && find "$probe_failure_marker" -maxdepth 0 -mmin -${WSL_RUNTIME_PROBE_FAILURE_COOLDOWN_MINUTES} -print -quit | grep -q .; then`,
+    "  printf 'The staged WSL runtime failed its native probe recently; using the mounted tree until retry.\\n' >&2",
+    "  exit 2",
+    "fi",
+    'rm -f -- "$probe_failure_marker"',
     "if runtime_is_ready; then",
     `  touch "$runtime_root/${WSL_RUNTIME_SELECTED_MARKER}"`,
     `  printf 'runtimeRoot:%s\\n' "$runtime_root"`,
@@ -436,13 +448,16 @@ export const buildWslRuntimePruneScript = (
     'prune_lock="$runtime_parent/.prune.lock"',
     'exec 8> "$prune_lock"',
     "flock -x 8",
-    // Without a way to see the distro's processes we cannot tell which caches
-    // are load-bearing, and the retention rules below are not safe on their own.
-    "[ -d /proc/1 ] || exit 0",
+    // Old extraction scratch can be swept without process info only after
+    // checking its stable per-runtime install lock. A timed-out host call does
+    // not prove that WSL's tar process has exited.
+    "have_process_info=0",
+    "[ -d /proc/1 ] && have_process_info=1",
     "runtime_in_use() {",
     '  grep -qF -- "$1/" /proc/[0-9]*/cmdline 2>/dev/null',
     "}",
     'previous_runtime=""',
+    'if [ "$have_process_info" = 1 ]; then',
     'for candidate in "$runtime_parent"/sha256-*; do',
     '  [ -d "$candidate" ] || continue',
     '  [ "$candidate" != "$current_runtime" ] || continue',
@@ -470,14 +485,38 @@ export const buildWslRuntimePruneScript = (
     "    continue",
     "  fi",
     '  rm -rf -- "$candidate"',
+    // Keep the per-runtime flock pathname. Removing it after unlocking can
+    // split concurrent installers across old and new inodes. These tiny files
+    // are stable coordination state, even after their cache tree is pruned.
     "  flock -u 9",
     "done",
+    "fi",
     // Interrupted installs use dot-prefixed names under this dedicated parent.
-    'for scratch in "$runtime_parent"/.*.tmp.* "$runtime_parent"/.*.stale.*; do',
+    'for scratch in "$runtime_parent"/.*.tmp.*; do',
     '  [ -d "$scratch" ] || continue',
     `  find "$scratch" -maxdepth 0 -mmin +${String(ORPHANED_RUNTIME_SCRATCH_MAX_AGE_MINUTES)} -print -quit | grep -q . || continue`,
+    "  scratch_name=${scratch##*/}",
+    "  scratch_runtime=${scratch_name#.}",
+    "  scratch_runtime=${scratch_runtime%%.tmp.*}",
+    '  exec 9> "$runtime_parent/.${scratch_runtime}.install.lock"',
+    "  flock -n 9 || continue",
     '  rm -rf -- "$scratch"',
+    "  flock -u 9",
     "done",
+    'if [ "$have_process_info" = 1 ]; then',
+    '  for scratch in "$runtime_parent"/.*.stale.*; do',
+    '    [ -d "$scratch" ] || continue',
+    `    find "$scratch" -maxdepth 0 -mmin +${String(ORPHANED_RUNTIME_SCRATCH_MAX_AGE_MINUTES)} -print -quit | grep -q . || continue`,
+    "    stale_name=${scratch##*/}",
+    "    original_name=${stale_name#.}",
+    "    original_name=${original_name%%.stale.*}",
+    '    ! runtime_in_use "$runtime_parent/$original_name" || continue',
+    '    exec 9> "$runtime_parent/.${original_name}.install.lock"',
+    "    flock -n 9 || continue",
+    '    rm -rf -- "$scratch"',
+    "    flock -u 9",
+    "  done",
+    "fi",
   ].join("\n");
 };
 
@@ -495,7 +534,13 @@ export const buildWslRuntimeInvalidateScript = (
   const safeRuntimeId = sanitizeWslRuntimeId(runtimeId);
   return [
     "set -eu",
-    `rm -f "$HOME/.${runtimeHomeDirName}/wsl-runtime/${safeRuntimeId}/${WSL_RUNTIME_READY_MARKER}"`,
+    `runtime_parent=${wslRuntimeParent(runtimeHomeDirName)}`,
+    `[ -d "$runtime_parent" ] || exit 0`,
+    `runtime_lock="$runtime_parent/.${safeRuntimeId}.install.lock"`,
+    'exec 9> "$runtime_lock"',
+    "flock -x 9",
+    `rm -f "$runtime_parent/${safeRuntimeId}/${WSL_RUNTIME_READY_MARKER}"`,
+    `touch "$runtime_parent/.${safeRuntimeId}.probe-failed"`,
   ].join("\n");
 };
 

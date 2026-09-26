@@ -3444,7 +3444,11 @@ export const packWindowsServerAsar = Effect.fn("packWindowsServerAsar")(function
       createPackageWithOptions(input.sourceDir, input.asarPath, {
         dot: true,
         unpack: WINDOWS_NATIVE_ASAR_UNPACK_GLOB,
-        globOptions: { ignore: resolveWindowsServerAsarIgnoreGlobs(input.arch) },
+        // asar 4's glob matches ignore patterns relative to cwd.
+        globOptions: {
+          cwd: input.sourceDir,
+          ignore: resolveWindowsServerAsarIgnoreGlobs(input.arch),
+        },
       }),
     catch: (cause) => new WindowsServerSidecarPackError({ asarPath: input.asarPath, cause }),
   });

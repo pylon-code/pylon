@@ -271,6 +271,7 @@ export function SettingsRow({
   status,
   resetAction,
   onResetOverride,
+  disableOverrideReset = false,
   control,
   serverScoped = false,
   settingKeys = EMPTY_SETTING_KEYS,
@@ -285,6 +286,8 @@ export function SettingsRow({
   resetAction?: ReactNode;
   /** Replaces the default override clear for rows with side effects beyond the settings key. */
   onResetOverride?: () => void;
+  /** Hide project reset when a selected server cannot apply this setting. */
+  disableOverrideReset?: boolean;
   control?: ReactNode;
   serverScoped?: boolean;
   settingKeys?: readonly (keyof ServerSettings)[];
@@ -350,17 +353,18 @@ export function SettingsRow({
       ];
     });
   }, [context, isProjectScope, scopedKeys]);
-  const renderedReset = unavailable ? null : isProjectScope && scopedKeys.length > 0 ? (
-    source === "project" || source === "mixed" ? (
-      <SettingResetButton
-        label={typeof title === "string" ? title : "override"}
-        tooltip="Reset to inherited value"
-        onClick={() => (onResetOverride ? onResetOverride() : clearOverrides(scopedKeys))}
-      />
-    ) : null
-  ) : (
-    resetAction
-  );
+  const renderedReset =
+    unavailable || disableOverrideReset ? null : isProjectScope && scopedKeys.length > 0 ? (
+      source === "project" || source === "mixed" ? (
+        <SettingResetButton
+          label={typeof title === "string" ? title : "override"}
+          tooltip="Reset to inherited value"
+          onClick={() => (onResetOverride ? onResetOverride() : clearOverrides(scopedKeys))}
+        />
+      ) : null
+    ) : (
+      resetAction
+    );
   const inertControl = (message: string) => (
     <Tooltip>
       <TooltipTrigger
