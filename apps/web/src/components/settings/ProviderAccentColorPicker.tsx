@@ -1,7 +1,15 @@
 "use client";
 
 import { PipetteIcon, XIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+} from "react";
 
 import { Button } from "../ui/button";
 import { Popover, PopoverClose, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -106,6 +114,36 @@ function ProviderCustomColorPanel(props: {
     [commitHsv, hsv],
   );
 
+  const handlePlaneAxisKeyDown = (event: KeyboardEvent<HTMLInputElement>, axis: "s" | "v") => {
+    const step = event.shiftKey ? 0.1 : 0.02;
+    let next: number;
+    if (event.key === "ArrowLeft" || event.key === "ArrowDown") next = clamp(hsv[axis] - step);
+    else if (event.key === "ArrowRight" || event.key === "ArrowUp") next = clamp(hsv[axis] + step);
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = 1;
+    else return;
+    event.preventDefault();
+    commitHsv({ ...hsv, [axis]: next });
+  };
+
+  const handleHueKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Home") {
+      event.preventDefault();
+      commitHsv({ ...hsv, h: 0 });
+      return;
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      commitHsv({ ...hsv, h: 359 });
+      return;
+    }
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    const direction = event.key === "ArrowLeft" || event.key === "ArrowDown" ? -1 : 1;
+    const step = event.shiftKey ? 10 : 1;
+    commitHsv({ ...hsv, h: (hsv.h + direction * step + 360) % 360 });
+  };
+
   const handlePointerDown = (handler: (event: PointerEvent<HTMLDivElement>) => void) => {
     return (event: PointerEvent<HTMLDivElement>) => {
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -116,7 +154,9 @@ function ProviderCustomColorPanel(props: {
   return (
     <div className="w-56 bg-popover">
       <div
-        className="relative h-36 cursor-crosshair touch-none"
+        aria-label="Accent color saturation and brightness"
+        role="group"
+        className="relative h-36 cursor-crosshair touch-none has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-offset-2 has-[:focus-visible]:ring-offset-popover"
         style={{
           backgroundColor: `hsl(${hsv.h} 100% 50%)`,
           backgroundImage:
@@ -129,6 +169,33 @@ function ProviderCustomColorPanel(props: {
           }
         }}
       >
+        {(["s", "v"] as const).map((axis) => {
+          const label = axis === "s" ? "Saturation" : "Brightness";
+          return (
+            <label key={axis} className="contents">
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step="any"
+                value={hsv[axis] * 100}
+                aria-label={`Accent color ${label.toLowerCase()}`}
+                aria-valuetext={`${Math.round(hsv[axis] * 100)}%`}
+                className="peer sr-only"
+                onKeyDown={(event) => handlePlaneAxisKeyDown(event, axis)}
+                onChange={(event) =>
+                  commitHsv({ ...hsv, [axis]: clamp(event.currentTarget.valueAsNumber / 100) })
+                }
+              />
+              <span
+                aria-hidden
+                className="pointer-events-none invisible absolute bottom-2 left-2 rounded bg-popover px-1.5 py-0.5 text-xs text-popover-foreground peer-focus-visible:visible"
+              >
+                {label} {Math.round(hsv[axis] * 100)}%
+              </span>
+            </label>
+          );
+        })}
         <span
           className="pointer-events-none absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-[0_0_0_1px_rgb(0_0_0/0.35)]"
           style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%` }}
@@ -136,11 +203,18 @@ function ProviderCustomColorPanel(props: {
       </div>
       <div className="grid gap-3 p-3">
         <div
-          className="relative h-3 cursor-pointer touch-none rounded-full"
+          aria-label="Accent color hue"
+          aria-valuemin={0}
+          aria-valuemax={360}
+          aria-valuenow={Math.round(hsv.h)}
+          role="slider"
+          tabIndex={0}
+          className="relative h-3 cursor-pointer touch-none rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-popover"
           style={{
             background: "linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)",
           }}
           onPointerDown={handlePointerDown(updateFromHue)}
+          onKeyDown={handleHueKeyDown}
           onPointerMove={(event) => {
             if (event.currentTarget.hasPointerCapture(event.pointerId)) {
               updateFromHue(event);

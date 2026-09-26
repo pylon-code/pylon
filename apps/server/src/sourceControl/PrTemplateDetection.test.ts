@@ -55,6 +55,9 @@ const runWithTempDirectory = <A, E, R>(
       const fileSystem = yield* FileSystem.FileSystem;
       const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pr-template-" });
       yield* runGit(cwd, ["init", "--initial-branch=main"]);
+      // Auto maintenance may still write object packs after the scoped fixture
+      // starts removing this temporary repository under parallel CI load.
+      yield* runGit(cwd, ["config", "gc.auto", "0"]);
       yield* runGit(cwd, ["config", "user.email", "test@example.com"]);
       yield* runGit(cwd, ["config", "user.name", "Test User"]);
       return yield* test(cwd);

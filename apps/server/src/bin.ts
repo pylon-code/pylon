@@ -33,7 +33,7 @@ class ConnectPublicConfigMissingError extends CliError.UserError {
 }
 
 const connectUnavailableCommand = Command.make("connect", {
-  command: Argument.string("command").pipe(Argument.variadic),
+  command: Argument.String("command").pipe(Argument.variadic),
 }).pipe(
   Command.withDescription("Pylon Connect is unavailable in builds without public configuration."),
   Command.unlisted,

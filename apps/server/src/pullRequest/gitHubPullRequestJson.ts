@@ -10,6 +10,7 @@ import type {
   PullRequestChecksState,
   PullRequestComment,
   PullRequestCommit,
+  PullRequestFileViewedState,
   PullRequestLabel,
   PullRequestMergeCapabilities,
   PullRequestMergeMethod,
@@ -30,6 +31,7 @@ import type {
   PullRequestState,
   PullRequestThreadComment,
 } from "@t3tools/contracts";
+import { quoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 
 import { dedupeChecks } from "./pullRequestChecks.ts";
@@ -1725,6 +1727,139 @@ export function decodePullRequestStatsJson(
   return Result.succeed(stats);
 }
 
+/**
+ * The fields a linked thread keeps current, for many pull requests in one aliased read. Same
+ * shape as the search row where the two overlap: the checks arrive as GitHub's one-word rollup
+ * rather than the whole check list `gh pr view` hands back, which is what keeps a batch cheap.
+ */
+const PULL_REQUEST_SUMMARY_SELECTION =
+  "number title url state isDraft mergeable reviewDecision additions deletions changedFiles " +
+  "updatedAt mergedAt closedAt headRefName baseRefName " +
+  "author { __typename login avatarUrl ... on User { name } } " +
+  "latestReviews(first: 20) { nodes { state author { login } } } " +
+  "commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }";
+
+/**
+ * Summaries for pull requests anywhere on one host, one aliased lookup each. Checked and written
+ * into the document the way `buildPullRequestStatsGraphQlQuery` does, so null means "do not send".
+ */
+export function buildPullRequestSummariesGraphQlQuery(
+  changeRequests: ReadonlyArray<{ readonly repository: string; readonly number: number }>,
+): string | null {
+  if (changeRequests.length === 0) return null;
+  const selections: string[] = [];
+  for (const [index, changeRequest] of changeRequests.entries()) {
+    const [owner, name, ...rest] = changeRequest.repository.trim().split("/");
+    if (rest.length > 0 || owner === undefined || name === undefined) return null;
+    if (!REPOSITORY_PART.test(owner) || !REPOSITORY_PART.test(name)) return null;
+    if (!Number.isSafeInteger(changeRequest.number) || changeRequest.number <= 0) return null;
+    selections.push(
+      `  s${index}: repository(owner: "${owner}", name: "${name}") { pullRequest(number: ${changeRequest.number}) { ${PULL_REQUEST_SUMMARY_SELECTION} } }`,
+    );
+  }
+  return `query PullRequestSummaries {\n${selections.join("\n")}\n}`;
+}
+
+const RawSummarySchema = Schema.Struct({
+  ...RawSearchItemSchema.fields,
+  changedFiles: Schema.optional(Schema.NullOr(Schema.Int)),
+  additions: Schema.optional(Schema.NullOr(Schema.Int)),
+  deletions: Schema.optional(Schema.NullOr(Schema.Int)),
+  closedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  createdAt: Schema.optional(Schema.String),
+});
+const decodeSummaries = decodeJsonResult(
+  Schema.Struct({
+    errors: Schema.optional(Schema.Array(Schema.Unknown)),
+    data: Schema.optional(
+      Schema.NullOr(
+        Schema.Record(
+          Schema.String,
+          Schema.NullOr(Schema.Struct({ pullRequest: Schema.optional(Schema.Unknown) })),
+        ),
+      ),
+    ),
+  }),
+);
+const decodeSummaryEntry = Schema.decodeUnknownExit(RawSummarySchema);
+
+/** A failed GraphQL document is not a set of missing aliases to retry individually. */
+export class GitHubSummaryBatchUnavailableError extends Error {}
+
+export interface GitHubPullRequestSummary {
+  readonly number: number;
+  readonly title: string;
+  readonly url: string;
+  readonly headBranch: string;
+  readonly baseBranch: string;
+  readonly state: PullRequestState;
+  readonly isDraft: boolean;
+  readonly closedAt: string | null;
+  readonly mergedAt: string | null;
+  readonly updatedAt: string;
+  readonly author: PullRequestActor | null;
+  readonly additions: number;
+  readonly deletions: number;
+  readonly changedFiles: number;
+  readonly reviewDecision: PullRequestReviewDecision | null;
+  readonly checksState: PullRequestChecksState | null;
+  readonly mergeability: PullRequestMergeability;
+}
+
+/**
+ * Summaries by the position they were asked in. A pull request GitHub answered nothing for, or
+ * one whose fields no longer decode, is absent rather than failing the rest of the batch.
+ */
+export function decodePullRequestSummariesJson(
+  raw: string,
+): Result.Result<
+  ReadonlyMap<number, GitHubPullRequestSummary>,
+  DecodeFailure | GitHubSummaryBatchUnavailableError
+> {
+  const decoded = decodeSummaries(raw);
+  if (!Result.isSuccess(decoded)) return Result.fail(decoded.failure);
+  if (decoded.success.data == null && (decoded.success.errors?.length ?? 0) > 0) {
+    return Result.fail(new GitHubSummaryBatchUnavailableError("GitHub rejected the summary batch"));
+  }
+  const summaries = new Map<number, GitHubPullRequestSummary>();
+  for (const [alias, value] of Object.entries(decoded.success.data ?? {})) {
+    const index = /^s(\d+)$/.exec(alias)?.[1];
+    if (index === undefined || value?.pullRequest == null) continue;
+    const entry = decodeSummaryEntry(value.pullRequest);
+    if (!Exit.isSuccess(entry)) continue;
+    const pr = entry.value;
+    summaries.set(Number(index), {
+      number: pr.number,
+      title: pr.title,
+      url: pr.url,
+      headBranch: pr.headRefName,
+      baseBranch: pr.baseRefName,
+      state: toState(pr),
+      isDraft: pr.isDraft ?? false,
+      closedAt: trimmed(pr.closedAt),
+      mergedAt: trimmed(pr.mergedAt),
+      updatedAt: pr.updatedAt,
+      author: toActor(pr.author),
+      additions: pr.additions ?? 0,
+      deletions: pr.deletions ?? 0,
+      changedFiles: pr.changedFiles ?? 0,
+      reviewDecision: toReviewDecisionWithReviews(
+        pr.reviewDecision,
+        (pr.latestReviews?.nodes ?? []).flatMap((review) => (review === null ? [] : [review])),
+      ),
+      // One enum for the head commit, dressed as a single check like the search row's.
+      checksState: rollupChecksState(
+        (pr.commits?.nodes ?? []).flatMap((commitNode) => {
+          const state = trimmed(commitNode?.commit?.statusCheckRollup?.state);
+          return state === null ? [] : [{ state }];
+        }),
+      ),
+      mergeability: toMergeability(pr.mergeable),
+    });
+  }
+  return Result.succeed(summaries);
+}
+
 export function decodePullRequestDetailJson(
   raw: string,
 ): Result.Result<GitHubPullRequestDetail, DecodeFailure> {
@@ -2548,16 +2683,21 @@ export function decodePullRequestFilesJson(
     }
     // A rename counts its hunks against the old path, which is the only place it is named.
     const oldPath =
-      status === "renamed" ? (trimmed(value.previous_filename) ?? value.filename) : value.filename;
+      status === "renamed" ? value.previous_filename || value.filename : value.filename;
     const header = [
-      `diff --git a/${oldPath} b/${value.filename}`,
+      `diff --git ${quoteGitPatchPath(`a/${oldPath}`)} ${quoteGitPatchPath(`b/${value.filename}`)}`,
       // The files API reports no file mode, so the ordinary one stands in: the viewer reads
       // these lines as "added" and "removed" rather than for the mode they carry.
       ...(status === "added" ? ["new file mode 100644"] : []),
       ...(status === "removed" ? ["deleted file mode 100644"] : []),
-      ...(status === "renamed" ? [`rename from ${oldPath}`, `rename to ${value.filename}`] : []),
-      `--- ${status === "added" ? "/dev/null" : `a/${oldPath}`}`,
-      `+++ ${status === "removed" ? "/dev/null" : `b/${value.filename}`}`,
+      ...(status === "renamed"
+        ? [
+            `rename from ${quoteGitPatchPath(oldPath)}`,
+            `rename to ${quoteGitPatchPath(value.filename)}`,
+          ]
+        : []),
+      `--- ${status === "added" ? "/dev/null" : quoteGitPatchPath(`a/${oldPath}`)}`,
+      `+++ ${status === "removed" ? "/dev/null" : quoteGitPatchPath(`b/${value.filename}`)}`,
     ].join("\n");
     sections.push(hunks.length === 0 ? `${header}\n` : `${header}\n${hunks.replace(/\n?$/, "\n")}`);
   }
@@ -2567,6 +2707,119 @@ export function decodePullRequestFilesJson(
     rawCount: decoded.success.length,
     omittedFileStats,
   });
+}
+
+/**
+ * Which files of a pull request the signed-in account has cleared. GraphQL only, since the REST
+ * files endpoint the patch is read from carries no viewed state, so this is a second read rather
+ * than a wider version of the first.
+ */
+export const PULL_REQUEST_FILES_VIEWED_GRAPHQL_QUERY = `query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      files(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { path viewerViewedState }
+      }
+    }
+  }
+}`;
+
+const RawPullRequestFilesViewedSchema = Schema.Struct({
+  data: Schema.Struct({
+    repository: Schema.NullOr(
+      Schema.Struct({
+        pullRequest: Schema.NullOr(
+          Schema.Struct({
+            files: Schema.Struct({
+              pageInfo: Schema.Struct({
+                hasNextPage: Schema.Boolean,
+                endCursor: Schema.NullOr(Schema.String),
+              }),
+              nodes: Schema.NullOr(
+                Schema.Array(
+                  Schema.NullOr(
+                    Schema.Struct({
+                      path: Schema.String,
+                      // Decoded as a plain string and narrowed below: a GitHub release that adds
+                      // a fourth state must not fail the whole page.
+                      viewerViewedState: Schema.String,
+                    }),
+                  ),
+                ),
+              ),
+            }),
+          }),
+        ),
+      }),
+    ),
+  }),
+});
+
+const decodePullRequestFilesViewed = decodeJsonResult(RawPullRequestFilesViewedSchema);
+
+export interface GitHubPullRequestFilesViewedPage {
+  readonly files: ReadonlyArray<{
+    readonly path: string;
+    readonly state: PullRequestFileViewedState;
+  }>;
+  /** Where the next page carries on, or null once the host has no more to give. */
+  readonly nextCursor: string | null;
+}
+
+/** Anything this host does not name is treated as unread, which is the state that asks for least. */
+function toFileViewedState(raw: string): PullRequestFileViewedState {
+  switch (raw.trim().toUpperCase()) {
+    case "VIEWED":
+      return "viewed";
+    case "DISMISSED":
+      return "dismissed";
+    default:
+      return "unviewed";
+  }
+}
+
+export function decodePullRequestFilesViewedJson(
+  raw: string,
+): Result.Result<GitHubPullRequestFilesViewedPage, DecodeFailure> {
+  const decoded = decodePullRequestFilesViewed(raw);
+  if (!Result.isSuccess(decoded)) return Result.fail(decoded.failure);
+  const files = decoded.success.data.repository?.pullRequest?.files;
+  if (files === undefined) return Result.succeed({ files: [], nextCursor: null });
+  return Result.succeed({
+    files: (files.nodes ?? []).flatMap((node) =>
+      node === null || node.path.length === 0
+        ? []
+        : [{ path: node.path, state: toFileViewedState(node.viewerViewedState) }],
+    ),
+    nextCursor: files.pageInfo.hasNextPage ? files.pageInfo.endCursor : null,
+  });
+}
+
+/**
+ * One document that clears and restores as many files as the reader ticked, rather than one
+ * request each. GitHub has no bulk form of `markFileAsViewed`/`unmarkFileAsViewed`, which each
+ * take a single path, so the batching is done with aliases; top-level mutation fields run in
+ * write order, so the last word about a path is the one that sticks.
+ *
+ * Paths travel as variables rather than interpolated into the document, since a path is data
+ * and a document is not.
+ */
+export function buildSetFilesViewedGraphQlMutation(
+  files: ReadonlyArray<{ readonly path: string; readonly viewed: boolean }>,
+): { readonly query: string; readonly variables: Readonly<Record<string, string>> } | null {
+  if (files.length === 0) return null;
+  const parameters = files.map((_, index) => `$path${index}: String!`).join(", ");
+  const fields = files
+    .map(
+      (file, index) =>
+        `  f${index}: ${file.viewed ? "markFileAsViewed" : "unmarkFileAsViewed"}(input: { pullRequestId: $pullRequestId, path: $path${index} }) { clientMutationId }`,
+    )
+    .join("\n");
+  return {
+    query: `mutation($pullRequestId: ID!, ${parameters}) {\n${fields}\n}`,
+    variables: Object.fromEntries(files.map((file, index) => [`path${index}`, file.path])),
+  };
 }
 
 /** One pull request as the stacks API lists it: a number, a head, and whether it is done. */

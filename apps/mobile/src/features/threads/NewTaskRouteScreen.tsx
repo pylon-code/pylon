@@ -7,8 +7,16 @@ import {
 } from "@react-navigation/native";
 import { SymbolView } from "../../components/AppSymbol";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import { useEffect, useRef } from "react";
-import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  TextInput,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { cn } from "../../lib/cn";
 
@@ -22,6 +30,7 @@ import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
 import { useNewTaskFlow } from "./new-task-flow-provider";
 import {
+  filterProjectScopes,
   getProjectScopeAccessibilityLabel,
   getProjectScopeSelectionTarget,
 } from "./new-task-project-selection";
@@ -87,6 +96,7 @@ function deriveProjectEmptyState(catalogState: WorkspaceState): {
 
 export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRouteParams | undefined>) {
   const projects = useProjects();
+  const [searchText, setSearchText] = useState("");
   const { projectScopes, selectedEnvironmentId, setProject } = useNewTaskFlow();
   const { state: catalogState } = useWorkspaceState();
   const navigation = useNavigation();
@@ -107,6 +117,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
     : null;
   const screenTitle = incomingShare ? "Start a task" : "Choose project";
   const projectEmptyState = deriveProjectEmptyState(catalogState);
+  const visibleScopes = filterProjectScopes(projectScopes, searchText);
   const resumedDestinationKeyRef = useRef<string | null>(null);
   const reservedDestinationProject = incomingShare?.destination
     ? (projects.find(
@@ -230,9 +241,46 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
         </>
       )}
 
+      <View className="px-5 pb-2 pt-3">
+        <View className="min-h-12 flex-row items-center gap-2.5 rounded-2xl border border-input-border bg-input px-3.5">
+          <SymbolView
+            name="magnifyingglass"
+            size={17}
+            tintColorClassName="accent-foreground-muted"
+            type="monochrome"
+          />
+          <TextInput
+            accessibilityLabel="Search projects"
+            autoCapitalize="none"
+            autoCorrect={false}
+            className="flex-1 py-2.5 text-base font-sans text-foreground"
+            onChangeText={setSearchText}
+            placeholder="Search projects"
+            placeholderTextColorClassName="accent-placeholder"
+            value={searchText}
+          />
+          {searchText.length > 0 ? (
+            <Pressable
+              accessibilityLabel="Clear search"
+              hitSlop={10}
+              onPress={() => setSearchText("")}
+            >
+              <SymbolView
+                name="xmark.circle.fill"
+                size={17}
+                tintColorClassName="accent-foreground-muted"
+                type="monochrome"
+              />
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         className="flex-1"
         contentContainerStyle={{
           gap: 12,
@@ -274,9 +322,18 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
               </Pressable>
             )}
           </View>
+        ) : visibleScopes.length === 0 ? (
+          <View collapsable={false} className="items-center gap-2 rounded-[24px] bg-card px-6 py-8">
+            <Text className="text-center text-lg font-t3-bold text-foreground">
+              No matching projects
+            </Text>
+            <Text className="text-center text-sm leading-normal text-foreground-muted">
+              Try a different project name or workspace path.
+            </Text>
+          </View>
         ) : (
           <View collapsable={false} className="overflow-hidden rounded-[24px] bg-card">
-            {projectScopes.map((scope, scopeIndex) => {
+            {visibleScopes.map((scope, scopeIndex) => {
               const hasMultipleProjects = scope.projects.length > 1;
               const selectionTarget = getProjectScopeSelectionTarget(scope, selectedEnvironmentId);
               return (

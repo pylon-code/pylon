@@ -3307,7 +3307,15 @@ const CHAT_MARKDOWN_COMPONENTS = {
           resetKeys={[codeBlock.code, language, diffThemeName, isStreaming]}
           fallback={<pre {...props}>{children}</pre>}
         >
-          <Suspense fallback={<pre {...props}>{children}</pre>}>
+          {/* Keep the block's dimensions while highlighting loads so a
+              newly delivered code block does not flash as plain text. */}
+          <Suspense
+            fallback={
+              <pre {...props} className="invisible" aria-hidden>
+                {children}
+              </pre>
+            }
+          >
             <SuspenseShikiCodeBlock
               className={codeBlock.className}
               code={codeBlock.code}
@@ -3360,6 +3368,7 @@ function ChatMarkdown({
         "chat-markdown w-full min-w-0 text-sm leading-relaxed text-foreground/[calc(80%+var(--appearance-contrast-boost)/5)] [overflow-wrap:anywhere] [word-break:break-word]",
         className,
       )}
+      data-streaming={componentState.isStreaming ? "" : undefined}
       onCopy={handleCopy}
     >
       <ChatMarkdownRendererContext value={componentState}>

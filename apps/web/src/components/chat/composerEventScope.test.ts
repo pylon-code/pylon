@@ -1,9 +1,13 @@
+import { act, createElement, useLayoutEffect } from "react";
+import { create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { ComposerHandleContext, type ComposerHandleRef } from "../../composerHandleContext";
 import {
   isInsideCollapsedComposerControls,
   isInsideComposerFloatingLayer,
   isInsideRestingComposerControlScope,
+  useComposerMenuProps,
 } from "./composerEventScope";
 
 class FakeElement {
@@ -19,6 +23,73 @@ class FakeElement {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("composer menu focus", () => {
+  it.each([
+    ["an open menu", '[data-chat-composer-floating-layer="true"]', true],
+    ["an unmounted menu", null, true],
+    ["another control", "input", false],
+  ])("closes while focus is on %s", async (_label, selector, shouldFocusComposer) => {
+    const body = new FakeElement(null);
+    const editor = new FakeElement(null);
+    const activeElement = selector === null ? body : new FakeElement(selector);
+    const document = { body, activeElement };
+    const composerRef = {
+      current: { focusAtEnd: () => (document.activeElement = editor) },
+    } as unknown as ComposerHandleRef;
+    vi.stubGlobal("Element", FakeElement);
+    vi.stubGlobal("document", document);
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let menuProps: ReturnType<typeof useComposerMenuProps> | undefined;
+    function Probe() {
+      const props = useComposerMenuProps();
+      useLayoutEffect(() => {
+        menuProps = props;
+      }, [props]);
+      return null;
+    }
+    const renderer = await act(() =>
+      create(createElement(ComposerHandleContext, { value: composerRef }, createElement(Probe))),
+    );
+    try {
+      expect(menuProps?.finalFocus?.()).toBe(false);
+      expect(document.activeElement).toBe(shouldFocusComposer ? editor : activeElement);
+    } finally {
+      await act(() => renderer.unmount());
+    }
+  });
+
+  it.each(["unmounted composer", "editor that cannot focus"])(
+    "lets the trigger regain focus when the %s is unavailable",
+    async (caseName) => {
+      const body = new FakeElement(null);
+      const document = { body, activeElement: body };
+      const composerRef = {
+        current: caseName === "unmounted composer" ? null : { focusAtEnd: () => {} },
+      } as unknown as ComposerHandleRef;
+      vi.stubGlobal("Element", FakeElement);
+      vi.stubGlobal("document", document);
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      let menuProps: ReturnType<typeof useComposerMenuProps> | undefined;
+      function Probe() {
+        const props = useComposerMenuProps();
+        useLayoutEffect(() => {
+          menuProps = props;
+        }, [props]);
+        return null;
+      }
+      const renderer = await act(() =>
+        create(createElement(ComposerHandleContext, { value: composerRef }, createElement(Probe))),
+      );
+      try {
+        expect(menuProps?.finalFocus?.()).toBe(true);
+        expect(document.activeElement).toBe(body);
+      } finally {
+        await act(() => renderer.unmount());
+      }
+    },
+  );
 });
 
 describe("composer event scopes", () => {

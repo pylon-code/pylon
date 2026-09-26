@@ -401,6 +401,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         addFiles: (files) => {
           onFileDropThreads(threadRef, files);
         },
+        addFolders: () =>
+          toastManager.add({
+            type: "error",
+            title: "Drop folders into an open local thread composer",
+          }),
       }),
     [onFileDropThreads, threadRef],
   );

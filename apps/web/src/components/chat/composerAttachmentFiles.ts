@@ -18,6 +18,7 @@ interface FileAttachmentCapabilityState {
   readonly attachmentUploadsCapabilityKnown: boolean;
   readonly supportsAttachmentUploads: boolean;
   readonly maxFileAttachmentBytes: number | null;
+  readonly supportsPastedTextAttachments?: boolean;
 }
 
 const IMAGE_MIME_TYPE_BY_EXTENSION: Readonly<Record<string, string>> = {
@@ -113,11 +114,21 @@ export function fileAttachmentStagingLimit(input: FileAttachmentCapabilityState)
 /** Why retained generic files cannot send with the current server config. */
 export function fileAttachmentCapabilityBlockReason(
   input: FileAttachmentCapabilityState & {
-    readonly files: ReadonlyArray<{ readonly name: string; readonly sizeBytes: number }>;
+    readonly files: ReadonlyArray<{
+      readonly name: string;
+      readonly sizeBytes: number;
+      readonly source?: { readonly _tag: string } | undefined;
+    }>;
   },
 ): string | null {
   if (input.files.length === 0) {
     return null;
+  }
+  if (
+    input.supportsPastedTextAttachments !== true &&
+    input.files.some((file) => file.source?._tag === "pasted-text")
+  ) {
+    return "This server cannot use a saved large-paste attachment. Remove it or reconnect to a server that supports large pastes.";
   }
   if (!input.attachmentUploadsCapabilityKnown) {
     return "Waiting for the server before file attachments can send";

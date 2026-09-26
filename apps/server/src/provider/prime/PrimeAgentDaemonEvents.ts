@@ -387,6 +387,9 @@ const rlmChild = Schema.Struct({
   toolUseCount: Schema.optional(Schema.Number),
   tokenCount: Schema.optional(Schema.Number),
   recap: Schema.optional(Schema.String),
+  progressNote: Schema.optional(Schema.String),
+  lastActivityAt: Schema.optional(Schema.Finite),
+  activityStaleMs: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   sessionDir: Schema.String,
   activity: Schema.optional(
     Schema.Struct({
@@ -1309,6 +1312,9 @@ export type PrimeDaemonEvent = (
         readonly toolUseCount?: number | undefined;
         readonly tokenCount?: number | undefined;
         readonly recap?: string | undefined;
+        readonly progressNote?: string | undefined;
+        readonly lastActivityAt?: number | undefined;
+        readonly activityStaleMs?: number | undefined;
         readonly activity?:
           | {
               readonly kind: "waiting" | "writing" | "executing";
@@ -1656,6 +1662,9 @@ function mapChild(
     toolUseCount: value.toolUseCount,
     tokenCount: value.tokenCount,
     recap: optionalBounded(value.recap, MAX_PREVIEW_LENGTH),
+    progressNote: optionalBounded(value.progressNote, 512),
+    lastActivityAt: value.lastActivityAt,
+    activityStaleMs: value.activityStaleMs,
     activity: value.activity,
     error: optionalBounded(value.error, MAX_PREVIEW_LENGTH),
   };

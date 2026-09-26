@@ -23,6 +23,7 @@ import {
 import { BrowserDeviceToolbar } from "./BrowserDeviceToolbar";
 import { BrowserViewportResizeHandles } from "./BrowserViewportResizeHandles";
 import { acquireDesktopTab, type AcquiredDesktopTab } from "./desktopTabLifetime";
+import { dispatchGuestFocusPointerDown } from "./guestFocusPointer";
 import { resolveHostedBrowserWebviewWrapperStyle } from "./hostedBrowserWebviewStyle";
 import { usePreviewWebviewConfig } from "./previewWebviewConfigState";
 import { useBrowserViewportResize } from "./useBrowserViewportResize";
@@ -180,7 +181,13 @@ export function HostedBrowserWebview(props: {
         dispatchSnapShotComposerFocus();
       }
     };
+    // Guest presses do not reach this document, so host popovers miss their
+    // outside-pointer dismissal when focus moves into the webview.
+    const dismissHostPopups = () => {
+      dispatchGuestFocusPointerDown(webview);
+    };
     webview.addEventListener("focus", handleFocus);
+    webview.addEventListener("focus", dismissHostPopups);
     webview.addEventListener("did-attach", register);
     webview.addEventListener("dom-ready", register);
     webview.addEventListener("render-process-gone", recoverGuest);
@@ -189,6 +196,7 @@ export function HostedBrowserWebview(props: {
       disposed = true;
       if (recoveryTimeout !== null) clearTimeout(recoveryTimeout);
       webview.removeEventListener("focus", handleFocus);
+      webview.removeEventListener("focus", dismissHostPopups);
       webview.removeEventListener("did-attach", register);
       webview.removeEventListener("dom-ready", register);
       webview.removeEventListener("render-process-gone", recoverGuest);
