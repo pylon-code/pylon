@@ -283,6 +283,9 @@ function fixture(options?: {
   readonly setRlmImpl?: (maxDepth: number) => Promise<unknown>;
   readonly cancelRlmImpl?: (agentId: string) => Promise<unknown>;
   readonly sendAgentMessageImpl?: (activeSessionId: string, message: string) => Promise<unknown>;
+  readonly abortAndSendQueuedImpl?: () => Promise<unknown>;
+  readonly abortAndSendQueuedSupported?: boolean;
+  readonly omitAbortAndSendQueued?: boolean;
   readonly omitSendAgentMessage?: boolean;
   readonly omitWatchSession?: boolean;
   readonly watchSessionUndefined?: boolean;
@@ -572,6 +575,9 @@ function fixture(options?: {
       if (options?.omitNegotiatedCapabilityAccessor === true) {
         Object.defineProperty(this, "supportsNegotiatedCapability", { value: undefined });
       }
+      if (options?.omitAbortAndSendQueued === true) {
+        Object.defineProperty(this, "abortAndSendQueued", { value: undefined });
+      }
     }
     static attach(
       _client: PrimeAgentDaemonClient,
@@ -672,6 +678,9 @@ function fixture(options?: {
       return options?.getPromptLifecyclesImpl?.() ?? Promise.resolve({ records: [], expired: [] });
     }
     supportsNegotiatedCapability(capability: string): boolean {
+      if (capability === "abort_and_send_queued_v1") {
+        return options?.abortAndSendQueuedSupported ?? false;
+      }
       return capability === "caller_owned_session_environment_cleanup_v1"
         ? true
         : capability === "correlated_prompt_lifecycle_v1" &&
@@ -729,6 +738,10 @@ function fixture(options?: {
     abort(): Promise<unknown> {
       captures.connectionCalls.push({ method: "abort", args: [] });
       return Promise.resolve(undefined);
+    }
+    abortAndSendQueued(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "abortAndSendQueued", args: [] });
+      return options?.abortAndSendQueuedImpl?.() ?? Promise.resolve(undefined);
     }
     abortAndClearQueue(): Promise<unknown> {
       captures.connectionCalls.push({ method: "abortAndClearQueue", args: [] });
@@ -12668,6 +12681,111 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     }),
   );
 
+  it.effect("rejects a private leaf response from before daemon reconnect", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let releaseOldState!: (value: unknown) => void;
+        let observeOldRequest!: () => void;
+        let currentLeaf = "leaf-source-private";
+        let firstRequest = true;
+        const oldRequestStarted = new Promise<void>((resolve) => {
+          observeOldRequest = resolve;
+        });
+        const test = fixture({
+          rawSnapshot: {
+            ...snapshot(),
+            state: { ...snapshot().state, leafId: "leaf-source-private" },
+          },
+          getStateImpl: () => {
+            if (firstRequest) {
+              firstRequest = false;
+              observeOldRequest();
+              return new Promise<unknown>((resolve) => {
+                releaseOldState = resolve;
+              });
+            }
+            return Promise.resolve({
+              sessionId: "session-1",
+              activeSessionId: "active-secret-1",
+              leafId: currentLeaf,
+            });
+          },
+        });
+        const runtime = yield* test.make();
+        const inspection = yield* runtime.inspectConversationLeaf.pipe(
+          Effect.result,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() => oldRequestStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() => test.emit({ type: "session_resynced", snapshot: snapshot(9) }));
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Effect.promise(() => test.emit({ type: "connection_status", status: "connected" }));
+        releaseOldState({
+          sessionId: "session-1",
+          activeSessionId: "active-secret-1",
+          leafId: "leaf-target-private",
+        });
+        const result = yield* Fiber.join(inspection);
+        expect(result._tag).toBe("Failure");
+        expect(yield* runtime.inspectConversationLeaf).toBe("leaf-source-private");
+        currentLeaf = "leaf-third-private";
+        expect(yield* runtime.inspectConversationLeaf).toBe("leaf-third-private");
+      }),
+    ),
+  );
+
+  it.effect("rejects a private navigation response from before daemon reconnect", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let releaseOldNavigation!: (value: unknown) => void;
+        let observeOldNavigation!: () => void;
+        let currentLeaf = "leaf-source-private";
+        const oldNavigationStarted = new Promise<void>((resolve) => {
+          observeOldNavigation = resolve;
+        });
+        const test = fixture({
+          rawSnapshot: {
+            ...snapshot(),
+            state: { ...snapshot().state, leafId: currentLeaf },
+          },
+          getStateImpl: () =>
+            Promise.resolve({
+              sessionId: "session-1",
+              activeSessionId: "active-secret-1",
+              leafId: currentLeaf,
+            }),
+          navigateTreeImpl: () => {
+            observeOldNavigation();
+            return new Promise<unknown>((resolve) => {
+              releaseOldNavigation = resolve;
+            });
+          },
+        });
+        const runtime = yield* test.make();
+        const navigation = yield* runtime
+          .navigateConversationLeaf({
+            desiredLeafId: "leaf-target-private",
+            allowedSourceLeafId: "leaf-source-private",
+          })
+          .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => oldNavigationStarted);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        yield* Effect.promise(() => test.emit({ type: "session_resynced", snapshot: snapshot(9) }));
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Effect.promise(() => test.emit({ type: "connection_status", status: "connected" }));
+        currentLeaf = "leaf-third-private";
+        releaseOldNavigation({ cancelled: false });
+        expect((yield* Fiber.join(navigation))._tag).toBe("Failure");
+        expect(yield* runtime.inspectConversationLeaf).toBe("leaf-third-private");
+      }),
+    ),
+  );
+
   it.effect("rejects a third leaf and keeps response-loss target proof inspectable", () =>
     Effect.gen(function* () {
       let leafId = "leaf-source-private";
@@ -14246,6 +14364,106 @@ describe("Prime Agent live activity privacy boundary", () => {
         expect(side.captures.disposeCount).toBe(1);
         expect(side.captures.unsubscribeCount).toBe(1);
         expect(side.captures.closeCount).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect(
+    "invokes connection.abortAndSendQueued when abort_and_send_queued_v1 is negotiated",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { captures, make } = fixture({ abortAndSendQueuedSupported: true });
+          const runtime = yield* make();
+
+          yield* runtime.abort;
+          expect(captures.connectionCalls).toContainEqual({
+            method: "abortAndSendQueued",
+            args: [],
+          });
+          expect(captures.connectionCalls).not.toContainEqual({
+            method: "abort",
+            args: [],
+          });
+
+          yield* runtime.abortAndSendQueued;
+          expect(
+            captures.connectionCalls.filter((call) => call.method === "abortAndSendQueued"),
+          ).toHaveLength(2);
+        }),
+      ),
+  );
+
+  it.effect("falls back to connection.abort when abort_and_send_queued_v1 is not negotiated", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({ abortAndSendQueuedSupported: false });
+        const runtime = yield* make();
+
+        yield* runtime.abort;
+        expect(captures.connectionCalls).toContainEqual({
+          method: "abort",
+          args: [],
+        });
+        expect(captures.connectionCalls).not.toContainEqual({
+          method: "abortAndSendQueued",
+          args: [],
+        });
+
+        yield* runtime.abortAndSendQueued;
+        expect(captures.connectionCalls.filter((call) => call.method === "abort")).toHaveLength(2);
+        expect(captures.connectionCalls).not.toContainEqual({
+          method: "abortAndSendQueued",
+          args: [],
+        });
+      }),
+    ),
+  );
+
+  it.effect(
+    "falls back to connection.abort when abort_and_send_queued_v1 is negotiated but method is missing",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { captures, make } = fixture({
+            abortAndSendQueuedSupported: true,
+            omitAbortAndSendQueued: true,
+          });
+          const runtime = yield* make();
+
+          yield* runtime.abort;
+          expect(captures.connectionCalls).toContainEqual({
+            method: "abort",
+            args: [],
+          });
+          expect(captures.connectionCalls).not.toContainEqual({
+            method: "abortAndSendQueued",
+            args: [],
+          });
+
+          yield* runtime.abortAndSendQueued;
+          expect(captures.connectionCalls.filter((call) => call.method === "abort")).toHaveLength(
+            2,
+          );
+        }),
+      ),
+  );
+
+  it.effect("propagates failure when abortAndSendQueued rejects", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { make } = fixture({
+          abortAndSendQueuedSupported: true,
+          abortAndSendQueuedImpl: () => Promise.reject(new Error("abort_and_send_queued failed")),
+        });
+        const runtime = yield* make();
+
+        const error = yield* runtime.abort.pipe(Effect.flip);
+        expect(error).toMatchObject({
+          operation: "abort",
+          reason: "request-failed",
+          detail: "The daemon operation failed.",
+        });
       }),
     ),
   );

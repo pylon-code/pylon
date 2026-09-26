@@ -257,8 +257,12 @@ it.effect(
   "leaves every relative or unsupported production-style adapter on the fail-closed path",
   () =>
     Effect.gen(function* () {
-      assert.isTrue(Option.isNone(yield* prepare({ mode: "relative" }, 1)));
-      assert.isTrue(Option.isNone(yield* prepare({ mode: "unsupported" }, 1)));
+      for (const mode of ["relative", "unsupported"] as const) {
+        const result = yield* prepare({ mode }, 1).pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure")
+          assert.equal(result.failure._tag, "OrchestrationCommandInvariantError");
+      }
     }),
 );
 
@@ -427,7 +431,11 @@ it.effect(
       }
       assert.equal((yield* prepare({}, 1, "omit", true).pipe(Effect.result))._tag, "Failure");
       assert.equal((yield* prepare({}, 1, 1, true).pipe(Effect.result))._tag, "Failure");
-      assert.isTrue(Option.isNone(yield* prepare({ mode: "relative" }, 1, 2, true)));
-      assert.isTrue(Option.isNone(yield* prepare({ mode: "unsupported" }, 1, 2, true)));
+      for (const mode of ["relative", "unsupported"] as const) {
+        const result = yield* prepare({ mode }, 1, 2, true).pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure")
+          assert.equal(result.failure.commandType, "thread.conversation.revert");
+      }
     }),
 );

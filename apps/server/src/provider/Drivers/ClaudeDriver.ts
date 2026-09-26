@@ -12,11 +12,7 @@
  *
  * @module provider/Drivers/ClaudeDriver
  */
-import {
-  ClaudeSettings,
-  ProviderDriverKind,
-  type ServerProviderUsageLimits,
-} from "@t3tools/contracts";
+import { ClaudeSettings, ProviderDriverKind } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
@@ -29,7 +25,12 @@ import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { retainUsageLimits } from "../providerUsageRetention.ts";
+import {
+  authenticatedUsageIdentity,
+  matchingAccountUsage,
+  retainUsageLimitsForAccount,
+  type AccountUsageReading,
+} from "../providerUsageRetention.ts";
 import { makeClaudeTextGeneration } from "../../textGeneration/ClaudeTextGeneration.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
@@ -194,7 +195,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         cwd,
         processEnv,
       );
-      const lastKnownUsage = yield* Ref.make<ServerProviderUsageLimits | undefined>(undefined);
+      const lastKnownUsage = yield* Ref.make<AccountUsageReading | undefined>(undefined);
       const usageProbeCache = yield* Cache.makeWith(
         () =>
           probeClaudeUsageLimits(effectiveConfig, processEnv, cwd).pipe(
@@ -236,15 +237,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
                     usageProbeCache,
                     `${capabilitiesCacheKey}:${accountIdentity ?? "unknown"}`,
                   ).pipe(
-                    Effect.map((result) => {
-                      if (!result) return undefined;
-                      return result.accountIdentity &&
-                        accountIdentity &&
-                        result.accountIdentity !== accountIdentity
-                        ? undefined
-                        : result.usageLimits;
-                    }),
-                    Effect.flatMap((usageLimits) => retainUsageLimits(lastKnownUsage, usageLimits)),
+                    Effect.map((result) => matchingAccountUsage(accountIdentity, result)),
+                    Effect.flatMap((usageLimits) =>
+                      retainUsageLimitsForAccount(
+                        lastKnownUsage,
+                        authenticatedUsageIdentity({
+                          status: "authenticated",
+                          email: accountIdentity,
+                        }),
+                        usageLimits,
+                      ),
+                    ),
                   ),
                 resolveClaudeModelCatalog(manifest),
               ),
@@ -333,6 +336,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         accentColor,
         enabled,
         snapshot,
+        invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
         snapshotForCwd,
         adapter,
         textGeneration,

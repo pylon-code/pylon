@@ -71,7 +71,7 @@ export const make = Effect.gen(function* () {
         .getCapabilities(thread.modelSelection.instanceId)
         .pipe(Effect.option);
       if (Option.isNone(capabilities) || capabilities.value.conversationRollback !== "absolute") {
-        return Option.none();
+        return yield* invariant("The provider cannot prove absolute conversation rollback.");
       }
       if (
         provider.hasAbsoluteConversationRollback === undefined ||

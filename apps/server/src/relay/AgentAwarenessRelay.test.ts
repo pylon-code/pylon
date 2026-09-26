@@ -325,6 +325,9 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
     const projectId = "project-1" as ProjectId;
     const activeThreadId = "thread-active" as ThreadId;
     const idleThreadId = "thread-idle" as ThreadId;
+    const oldCompletedId = "thread-old-completed" as ThreadId;
+    const newCompletedId = "thread-new-completed" as ThreadId;
+    const freshMessageId = "thread-fresh-message" as ThreadId;
 
     const baseThread = {
       projectId,
@@ -351,6 +354,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
     expect(
       AgentAwarenessRelay.resolveAgentAwarenessRelayActiveThreadIds({
         environmentId,
+        startedAt: Date.parse(now),
         projects: [
           {
             id: projectId,
@@ -376,6 +380,44 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           },
           {
             ...baseThread,
+            id: oldCompletedId,
+            latestTurn: {
+              turnId: "turn-old" as TurnId,
+              state: "completed",
+              requestedAt: "2026-05-24T00:00:00.000Z",
+              startedAt: "2026-05-24T00:00:00.000Z",
+              completedAt: "2026-05-24T00:01:00.000Z",
+              assistantMessageId: null,
+            },
+          },
+          {
+            ...baseThread,
+            id: newCompletedId,
+            latestTurn: {
+              turnId: "turn-new" as TurnId,
+              state: "completed",
+              requestedAt: "2026-05-25T00:00:01.000Z",
+              startedAt: "2026-05-25T00:00:01.000Z",
+              completedAt: "2026-05-25T00:00:02.000Z",
+              assistantMessageId: null,
+            },
+          },
+          {
+            ...baseThread,
+            id: freshMessageId,
+            latestUserMessageAt: "2026-05-25T00:00:01.000Z",
+            session: {
+              threadId: freshMessageId,
+              status: "ready",
+              providerName: "Codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: "2026-05-25T00:00:02.000Z",
+            },
+          },
+          {
+            ...baseThread,
             id: "thread-missing-project" as ThreadId,
             projectId: "missing-project" as ProjectId,
             latestTurn: {
@@ -389,7 +431,101 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           },
         ],
       }),
-    ).toEqual([activeThreadId]);
+    ).toEqual([activeThreadId, newCompletedId]);
+    expect(
+      AgentAwarenessRelay.resolveAgentAwarenessRelayActiveThreadIds({
+        environmentId,
+        startedAt: Date.parse(now),
+        pendingAdmissionThreads: new Set([newCompletedId]),
+        projects: [{ id: projectId, title: "Pylon" }],
+        threads: [
+          {
+            ...baseThread,
+            id: newCompletedId,
+            latestTurn: {
+              turnId: "turn-new" as TurnId,
+              state: "completed",
+              requestedAt: "2026-05-25T00:00:01.000Z",
+              startedAt: "2026-05-25T00:00:01.000Z",
+              completedAt: "2026-05-25T00:00:02.000Z",
+              assistantMessageId: null,
+            },
+          },
+        ],
+      }),
+    ).toEqual([]);
+    // A provider running event proves work even when a no-checkpoint turn
+    // settles to ready without materializing latestTurn.
+    expect(
+      AgentAwarenessRelay.resolveAgentAwarenessRelayActiveThreadIds({
+        environmentId,
+        startedAt: Date.parse(now),
+        freshLifecycleThreads: new Map([
+          [
+            freshMessageId,
+            {
+              phase: "completed",
+              sequence: 2,
+              sessionStatus: "ready",
+              sessionUpdatedAt: "2026-05-25T00:00:02.000Z",
+              sessionIncarnationId: undefined,
+            },
+          ],
+        ]),
+        projects: [{ id: projectId, title: "Pylon" }],
+        threads: [
+          {
+            ...baseThread,
+            id: freshMessageId,
+            session: {
+              threadId: freshMessageId,
+              status: "ready",
+              providerName: "Codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: "2026-05-25T00:00:02.000Z",
+            },
+          },
+        ],
+      }),
+    ).toEqual([freshMessageId]);
+    // A running event may arrive before an old ready shell catches up, even
+    // when both states were stamped in the same millisecond.
+    expect(
+      AgentAwarenessRelay.resolveAgentAwarenessRelayActiveThreadIds({
+        environmentId,
+        startedAt: Date.parse(now),
+        freshLifecycleThreads: new Map([
+          [
+            freshMessageId,
+            {
+              phase: "running",
+              sequence: 1,
+              sessionStatus: null,
+              sessionUpdatedAt: "2026-05-25T00:00:01.000Z",
+              sessionIncarnationId: undefined,
+            },
+          ],
+        ]),
+        projects: [{ id: projectId, title: "Pylon" }],
+        threads: [
+          {
+            ...baseThread,
+            id: freshMessageId,
+            session: {
+              threadId: freshMessageId,
+              status: "ready",
+              providerName: "Codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: "2026-05-25T00:00:01.000Z",
+            },
+          },
+        ],
+      }),
+    ).toEqual([]);
   });
 
   it.effect("signs the activity publish JWT and rejects tampering", () =>

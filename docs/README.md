@@ -48,6 +48,7 @@ source alone does not explain. Most code changes do not need an internal documen
 - [Connection runtime](./internals/connection-runtime.md)
 - [Live update buffers](./internals/live-updates.md)
 - [Providers](./internals/providers.md)
+- [Pull request file revisions](./internals/pull-request-file-revisions.md)
 - [Model classification](./internals/model-manifest.md)
 - [Exact conversation rollback](./internals/rollback-recovery.md)
 - [Remote environments](./internals/remote.md)

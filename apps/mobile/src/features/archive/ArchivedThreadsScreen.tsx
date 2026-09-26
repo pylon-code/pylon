@@ -634,7 +634,8 @@ export function ArchivedThreadsScreen(props: {
   }, [isFiltered, isInitialLoad]);
 
   return (
-    <View className="flex-1 bg-sheet">
+    // Preserve this list container during iOS form-sheet search-bar resizing.
+    <View collapsable={false} className="flex-1 bg-sheet">
       <ArchivedThreadsHeader
         environments={props.environments}
         searchQuery={props.searchQuery}

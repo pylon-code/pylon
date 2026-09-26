@@ -18,6 +18,13 @@ on:
       - "apps/mobile/.editorconfig"
       - "apps/mobile/Brewfile"
       - "scripts/mobile-native-static-check.ts"
+      - "apps/mobile/scripts/native-thread-sanitizer.ts"
+      - "apps/mobile/scripts/permissions-service.test.ts"
+      - "apps/mobile/scripts/notification-center-manager.test.ts"
+      - "apps/mobile/scripts/fixtures/PermissionsServiceRegression.m"
+      - "apps/mobile/scripts/fixtures/NotificationCenterManagerRegression.swift"
+      - "patches/expo-modules-core@57.0.14.patch"
+      - "patches/expo-notifications@57.0.15.patch"
       - ".github/workflows/ci-mobile-native.yml"
   push:
     branches:
@@ -31,6 +38,13 @@ on:
       - "apps/mobile/.editorconfig"
       - "apps/mobile/Brewfile"
       - "scripts/mobile-native-static-check.ts"
+      - "apps/mobile/scripts/native-thread-sanitizer.ts"
+      - "apps/mobile/scripts/permissions-service.test.ts"
+      - "apps/mobile/scripts/notification-center-manager.test.ts"
+      - "apps/mobile/scripts/fixtures/PermissionsServiceRegression.m"
+      - "apps/mobile/scripts/fixtures/NotificationCenterManagerRegression.swift"
+      - "patches/expo-modules-core@57.0.14.patch"
+      - "patches/expo-notifications@57.0.15.patch"
       - ".github/workflows/ci-mobile-native.yml"
 
 concurrency:
@@ -62,6 +76,10 @@ jobs:
           run-install: |
             args:
               - --filter=@t3tools/scripts...
+              - --filter=@t3tools/mobile...
+
+      - name: Test patched Expo native concurrency
+        run: vp test run apps/mobile/scripts/permissions-service.test.ts apps/mobile/scripts/notification-center-manager.test.ts
 
       - name: Install mobile native static analysis tools
         run: brew bundle install --file apps/mobile/Brewfile

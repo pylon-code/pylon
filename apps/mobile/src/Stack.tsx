@@ -10,12 +10,17 @@ import {
   createNativeStackScreen,
   type NativeStackNavigationOptions,
 } from "@react-navigation/native-stack";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { useResolveClassNames } from "uniwind";
 
 import { AppText as Text } from "./components/AppText";
 import { getCompactBrandHeaderOptions } from "./components/CompactBrandTitle";
+import {
+  RenderErrorBoundary,
+  RenderFailureView,
+  type RenderFailureProps,
+} from "./components/RenderErrorBoundary";
 import { ArchivedThreadsRouteScreen } from "./features/archive/ArchivedThreadsRouteScreen";
 import { useAgentNotificationNavigation } from "./features/agent-awareness/notificationNavigation";
 import { ConnectOnboardingRouteScreen } from "./features/cloud/ConnectOnboardingRouteScreen";
@@ -503,7 +508,7 @@ function NotFoundScreen() {
   );
 }
 
-export const RootStack = createNativeStackNavigator({
+const RootStackConfig = createNativeStackNavigator({
   initialRouteName: "Home",
   layout: RootStackLayout,
   screenOptions: {
@@ -686,10 +691,15 @@ export const RootStack = createNativeStackNavigator({
       // The whole new-task flow (choose project → draft → add project) shares
       // draft state via NewTaskFlowProvider. The expo-router era mounted it in
       // app/new/_layout.tsx; this layout wrapper is the native-stack equivalent.
-      layout: ({ children }) => (
-        <NewTaskFlowProvider>
-          <View className="flex-1 bg-sheet-solid">{children}</View>
-        </NewTaskFlowProvider>
+      // A screen's layout replaces the navigator's screenLayout.
+      layout: ({ children, route }) => (
+        <GuardedScreenLayout route={route}>
+          <NewTaskFlowProvider>
+            <GuardedScreenLayout route={route}>
+              <View className="flex-1 bg-sheet-solid">{children}</View>
+            </GuardedScreenLayout>
+          </NewTaskFlowProvider>
+        </GuardedScreenLayout>
       ),
       options: {
         gestureEnabled: true,
@@ -711,6 +721,38 @@ export const RootStack = createNativeStackNavigator({
     }),
   },
 });
+
+function GuardedScreenLayout(props: {
+  readonly children: ReactNode;
+  readonly route: { readonly name: string; readonly params?: object | undefined };
+}) {
+  return (
+    <RenderErrorBoundary
+      resetKeys={[props.route.params]}
+      renderFallback={(fallback) => (
+        <ScreenRenderFallback {...fallback} routeName={props.route.name} />
+      )}
+    >
+      {props.children}
+    </RenderErrorBoundary>
+  );
+}
+
+function ScreenRenderFallback(props: RenderFailureProps & { readonly routeName: string }) {
+  const navigation = useNavigation();
+  const exit = navigation.canGoBack()
+    ? { label: "Go back", onPress: () => navigation.goBack() }
+    : props.routeName === "Home"
+      ? { label: "Open settings", onPress: () => navigation.navigate("SettingsSheet") }
+      : { label: "Return home", onPress: () => navigation.dispatch(StackActions.replace("Home")) };
+
+  return <RenderFailureView {...props} exit={exit} />;
+}
+
+export const RootStack = RootStackConfig.with(function GuardedRootStack({ Navigator }) {
+  return <Navigator screenLayout={GuardedScreenLayout} />;
+});
+
 type RootStackType = typeof RootStack;
 
 const navigationPathConfig = {

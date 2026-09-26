@@ -3,7 +3,13 @@ import { describe, expect, it } from "vite-plus/test";
 import { ProviderInstanceId, type ProviderOptionSelection } from "@t3tools/contracts";
 
 import type { ModelOption } from "../../lib/modelOptions";
-import { modelMatchesCatalogQuery, pendingModelAfterPress } from "./thread-settings-sheet-state";
+import {
+  favoritesFirst,
+  modelFavoriteKey,
+  modelMatchesCatalogQuery,
+  pendingModelAfterPress,
+  toggleModelFavorite,
+} from "./thread-settings-sheet-state";
 
 function modelOption(
   model: string,
@@ -28,6 +34,33 @@ function modelOption(
 }
 
 describe("thread settings sheet state", () => {
+  it("keeps favorites in catalog order ahead of other models", () => {
+    const models = [modelOption("first"), modelOption("second"), modelOption("third")];
+    const favorites = new Set([models[2]!.key, models[0]!.key]);
+    expect(favoritesFirst(models, favorites).map((model) => model.selection.model)).toEqual([
+      "first",
+      "third",
+      "second",
+    ]);
+    expect(models.map((model) => model.selection.model)).toEqual(["first", "second", "third"]);
+  });
+
+  it("adds and removes favorites by provider instance", () => {
+    const codexModel = modelOption("shared");
+    const personalId = ProviderInstanceId.make("codex_personal");
+    const personalModel = {
+      ...codexModel,
+      key: modelFavoriteKey(personalId, "shared"),
+      selection: { ...codexModel.selection, instanceId: personalId },
+    };
+    const favorites = toggleModelFavorite([], codexModel);
+    expect(toggleModelFavorite(favorites, personalModel)).toEqual([
+      { provider: ProviderInstanceId.make("codex"), model: "shared" },
+      { provider: personalId, model: "shared" },
+    ]);
+    expect(toggleModelFavorite(favorites, codexModel)).toEqual([]);
+  });
+
   it("matches visible model and provider terms", () => {
     const model = modelOption("gpt-next");
 

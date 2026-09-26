@@ -23,6 +23,8 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
+import * as DesktopApp from "../app/DesktopApp.ts";
+import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublisher.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
@@ -1500,6 +1502,149 @@ describe("DesktopBackendManager", () => {
 
         assert.equal(yield* Queue.size(starts), 0);
         assert.equal((yield* instance.snapshot).desiredRunning, false);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("stopAllPoolInstances bounds the quit finalizer when backends hang", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Each backend's process-scope finalizer reports when it starts and
+        // when it finishes, keyed by instance name, so the test can prove
+        // both backends reached each milestone instead of inferring it from
+        // a shared flag or a clock advance.
+        const teardownStarted = yield* Queue.unbounded<string>();
+        const teardownFinished = yield* Queue.unbounded<string>();
+        const allowTeardown = yield* Deferred.make<void>();
+
+        const makeInstance = (name: string) =>
+          makeTestInstance({
+            spawnerLayer: Layer.succeed(
+              ChildProcessSpawner.ChildProcessSpawner,
+              ChildProcessSpawner.make(() =>
+                Effect.gen(function* () {
+                  const scope = yield* Scope.Scope;
+                  yield* Scope.addFinalizer(
+                    scope,
+                    Queue.offer(teardownStarted, name).pipe(
+                      Effect.andThen(Deferred.await(allowTeardown)),
+                      Effect.andThen(Queue.offer(teardownFinished, name)),
+                      Effect.asVoid,
+                    ),
+                  );
+                  return makeProcess({ exitCode: Effect.never });
+                }),
+              ),
+            ),
+            httpClientLayer: httpClientLayer(() => Effect.never),
+          });
+
+        const instance1 = yield* makeInstance("instance1");
+        const instance2 = yield* makeInstance("instance2");
+
+        yield* instance1.start;
+        yield* instance2.start;
+
+        const mockPool = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
+          list: Effect.succeed([instance1, instance2]),
+          get: () => Effect.succeed(Option.none()),
+          primary: Effect.die(new Error("primary not implemented")),
+          register: () => Effect.die(new Error("register not implemented")),
+          unregister: () => Effect.die(new Error("unregister not implemented")),
+        });
+
+        // Mirror the quit path: register stopAllPoolInstances as a scope
+        // finalizer and let the scope close run it, rather than calling it
+        // as an ordinary interruptible effect.
+        const quitFiber = yield* Effect.scoped(
+          Effect.addFinalizer(() => DesktopApp.stopAllPoolInstances()),
+        ).pipe(Effect.provide(mockPool), Effect.forkChild);
+
+        const started = yield* Queue.takeN(teardownStarted, 2);
+        assert.deepEqual(started.toSorted(), ["instance1", "instance2"]);
+
+        // Both backends are now hung in teardown. Advancing past the 5s
+        // budget must let the quit finalizer return without them.
+        yield* TestClock.adjust(Duration.seconds(5));
+        yield* Fiber.join(quitFiber);
+        assert.equal(yield* Queue.size(teardownFinished), 0);
+
+        // The timed-out closes keep running in the background and finish
+        // once the backends unblock.
+        yield* Deferred.succeed(allowTeardown, undefined);
+        const finished = yield* Queue.takeN(teardownFinished, 2);
+        assert.deepEqual(finished.toSorted(), ["instance1", "instance2"]);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("stopAllPoolInstances bounds an early shutdown callback", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const ready = yield* Queue.unbounded<string>();
+        const hookStarted = yield* Queue.unbounded<string>();
+        const hookFinished = yield* Queue.unbounded<string>();
+        const releaseHook = yield* Deferred.make<void>();
+
+        const makeInstance = (name: string) =>
+          makeTestInstance({
+            spawnerLayer: Layer.succeed(
+              ChildProcessSpawner.ChildProcessSpawner,
+              ChildProcessSpawner.make(() =>
+                Effect.gen(function* () {
+                  const scope = yield* Scope.Scope;
+                  const closed = yield* Deferred.make<void>();
+                  yield* Scope.addFinalizer(
+                    scope,
+                    Deferred.succeed(closed, undefined).pipe(Effect.asVoid),
+                  );
+                  return makeProcess({
+                    exitCode: Deferred.await(closed).pipe(
+                      Effect.as(ChildProcessSpawner.ExitCode(0)),
+                    ),
+                    kill: () => Deferred.succeed(closed, undefined).pipe(Effect.asVoid),
+                  });
+                }),
+              ),
+            ),
+            onReady: Queue.offer(ready, name).pipe(Effect.asVoid),
+            onShutdown: Queue.offer(hookStarted, name).pipe(
+              Effect.andThen(Deferred.await(releaseHook)),
+              Effect.andThen(Queue.offer(hookFinished, name)),
+              Effect.asVoid,
+            ),
+          });
+
+        const instance1 = yield* makeInstance("instance1");
+        const instance2 = yield* makeInstance("instance2");
+        yield* instance1.start;
+        yield* instance2.start;
+        assert.deepEqual((yield* Queue.takeN(ready, 2)).toSorted(), ["instance1", "instance2"]);
+
+        const mockPool = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
+          list: Effect.succeed([instance1, instance2]),
+          get: () => Effect.succeed(Option.none()),
+          primary: Effect.die(new Error("primary not implemented")),
+          register: () => Effect.die(new Error("register not implemented")),
+          unregister: () => Effect.die(new Error("unregister not implemented")),
+        });
+        const quitFiber = yield* Effect.scoped(
+          Effect.addFinalizer(() => DesktopApp.stopAllPoolInstances()),
+        ).pipe(Effect.provide(mockPool), Effect.forkChild);
+
+        assert.deepEqual((yield* Queue.takeN(hookStarted, 2)).toSorted(), [
+          "instance1",
+          "instance2",
+        ]);
+        yield* TestClock.adjust(Duration.seconds(5));
+        yield* Fiber.join(quitFiber);
+        assert.equal(yield* Queue.size(hookFinished), 0);
+
+        yield* Deferred.succeed(releaseHook, undefined);
+        assert.deepEqual((yield* Queue.takeN(hookFinished, 2)).toSorted(), [
+          "instance1",
+          "instance2",
+        ]);
       }).pipe(Effect.provide(TestClock.layer())),
     ),
   );

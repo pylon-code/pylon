@@ -3,6 +3,7 @@ import {
   EnvironmentId,
   type ModelSelection,
   type ProviderInstanceId,
+  type WorktreeSubmodules,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { useNavigate } from "@tanstack/react-router";
@@ -17,7 +18,7 @@ import {
 } from "../../providerInstances";
 import { useEnvironments } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
-import { resolveEnvModeLabel } from "../BranchToolbar.logic";
+import { resolveEnvModeLabel, WORKTREE_SUBMODULES_LABELS } from "../BranchToolbar.logic";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { runtimeModeConfig, runtimeModeOptions } from "../chat/runtimeModeConfig";
 import { PULL_REQUEST_MERGE_METHOD_LABELS } from "../pullRequest/pullRequestDetail.logic";
@@ -46,6 +47,11 @@ import {
  * environment defaults at an environment scope and project overrides at a
  * project or checkout scope; the scoped hooks route the write.
  */
+const WORKTREE_SUBMODULES_OPTIONS = ["recursive", "top-level", "none"] as const;
+function isWorktreeSubmodules(value: string | null): value is WorktreeSubmodules {
+  return value !== null && (WORKTREE_SUBMODULES_OPTIONS as readonly string[]).includes(value);
+}
+
 export function ProjectDefaultsSettings({ category }: { category: ProjectSettingsCategory }) {
   const { scope, target, targets, connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
@@ -71,6 +77,13 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const mixedPermissions = useScopedSettingsMixed(["defaultRuntimeMode"]);
   const PermissionIcon = runtimeModeConfig[settings.defaultRuntimeMode].icon;
   const mixedWorkspace = useScopedSettingsMixed(["defaultThreadEnvMode"]);
+  const mixedSubmodules = useScopedSettingsMixed(["worktreeSubmodules"]);
+  const submoduleSettingSupported =
+    connectedEnvironments.length > 0 &&
+    connectedEnvironments.every(
+      (environment) =>
+        environment.serverConfig?.environment.capabilities.worktreeSubmodules === true,
+    );
   const mixedBrowser = useScopedSettingsMixed(["enableAgentBrowserAccess"]);
   const mixedDevice = useScopedSettingsMixed(["enableAgentDeviceAccess"]);
   const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
@@ -89,6 +102,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     category === "general" && checkout ? checkout.workspaceRoot : null,
   );
   const repositoryEnvMode = t3File.file?.defaultThreadEnvMode ?? null;
+  const repositorySubmodules = t3File.file?.worktreeSubmodules ?? null;
   const inheritedEnvModeLabel =
     workspaceSource === "project"
       ? null
@@ -281,6 +295,67 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                       </SelectItem>
                     );
                   })}
+                </SelectPopup>
+              </Select>
+            }
+          />
+          <SettingsRow
+            serverScoped
+            settingKeys={["worktreeSubmodules"]}
+            disableOverrideReset={!submoduleSettingSupported}
+            mixed={mixedSubmodules}
+            {...searchableSetting("worktree-submodules")}
+            description={
+              isProjectScope
+                ? "How new worktrees in this project populate git submodules."
+                : "How new worktrees populate git submodules. Projects and t3.json can override it."
+            }
+            status={
+              !submoduleSettingSupported
+                ? "Update Pylon on the selected environment to change this setting."
+                : settings.worktreeSubmodules === null && repositorySubmodules !== null
+                  ? `Repository default: ${WORKTREE_SUBMODULES_LABELS[repositorySubmodules]} (t3.json)`
+                  : undefined
+            }
+            resetAction={
+              submoduleSettingSupported &&
+              !isProjectScope &&
+              settings.worktreeSubmodules !== null ? (
+                <SettingResetButton
+                  label="worktree submodules"
+                  onClick={() => updateSettings({ worktreeSubmodules: null })}
+                />
+              ) : null
+            }
+            control={
+              <Select
+                disabled={!submoduleSettingSupported}
+                value={
+                  mixedSubmodules
+                    ? null
+                    : (settings.worktreeSubmodules ?? repositorySubmodules ?? "recursive")
+                }
+                onValueChange={(value) => {
+                  if (isWorktreeSubmodules(value)) updateSettings({ worktreeSubmodules: value });
+                }}
+              >
+                <SelectTrigger size="sm" aria-label="Worktree submodules">
+                  <SelectValue>
+                    {(value: string | null) =>
+                      isWorktreeSubmodules(value)
+                        ? WORKTREE_SUBMODULES_LABELS[value]
+                        : unavailable
+                          ? "Unavailable"
+                          : "Mixed"
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {WORKTREE_SUBMODULES_OPTIONS.map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {WORKTREE_SUBMODULES_LABELS[option]}
+                    </SelectItem>
+                  ))}
                 </SelectPopup>
               </Select>
             }

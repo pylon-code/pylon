@@ -10,7 +10,10 @@ import {
   enumerateCommandPaletteItems,
   filterPinnedBrowseEntries,
   filterCommandPaletteGroups,
+  getExistingThreadForProjectAdd,
+  nextAppearanceMode,
   reduceCommandPaletteUiState,
+  type CommandPaletteActionItem,
   type CommandPaletteGroup,
 } from "./CommandPalette.logic";
 
@@ -250,6 +253,17 @@ describe("reduceCommandPaletteUiState", () => {
       mode: "command",
       openIntent: { kind: "new-thread-in" },
     });
+    expect(reduceCommandPaletteUiState(filesOpen, { _tag: "OpenChangeTheme" })).toEqual({
+      open: true,
+      mode: "command",
+      openIntent: { kind: "change-theme" },
+    });
+  });
+
+  it("cycles every appearance mode back to the starting mode", () => {
+    expect(nextAppearanceMode("system")).toBe("light");
+    expect(nextAppearanceMode("light")).toBe("dark");
+    expect(nextAppearanceMode("dark")).toBe("system");
   });
 
   it("preserves the mode on close and resets it on open", () => {
@@ -342,6 +356,55 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     ...overrides,
   };
 }
+
+describe("adding an existing project", () => {
+  it("starts a new thread when the latest unarchived thread is settled", () => {
+    const olderActive = makeThread({
+      id: ThreadId.make("older-active"),
+      updatedAt: "2026-03-01T00:00:00.000Z",
+    });
+    const newestSettled = makeThread({
+      id: ThreadId.make("newest-settled"),
+      updatedAt: "2026-03-02T00:00:00.000Z",
+      settledOverride: "settled",
+      settledAt: "2026-03-02T00:00:00.000Z",
+    });
+    expect(
+      getExistingThreadForProjectAdd([olderActive, newestSettled], PROJECT_ID, "updated_at"),
+    ).toBeNull();
+
+    expect(
+      getExistingThreadForProjectAdd(
+        [olderActive, { ...newestSettled, settledOverride: "active", settledAt: null }],
+        PROJECT_ID,
+        "updated_at",
+      )?.id,
+    ).toBe(newestSettled.id);
+  });
+
+  it("ignores archived threads while leaving ordinary active threads available", () => {
+    const active = makeThread({ id: ThreadId.make("active") });
+    const archived = makeThread({
+      id: ThreadId.make("archived"),
+      updatedAt: "2026-03-03T00:00:00.000Z",
+      archivedAt: "2026-03-03T00:00:00.000Z",
+    });
+    expect(getExistingThreadForProjectAdd([active, archived], PROJECT_ID, "updated_at")?.id).toBe(
+      active.id,
+    );
+  });
+
+  it("keeps snoozed threads eligible because snoozing does not settle them", () => {
+    const snoozed = makeThread({
+      id: ThreadId.make("snoozed"),
+      snoozedAt: "2026-03-01T00:00:00.000Z",
+      snoozedUntil: "2026-03-04T00:00:00.000Z",
+    });
+    expect(getExistingThreadForProjectAdd([snoozed], PROJECT_ID, "updated_at")?.id).toBe(
+      snoozed.id,
+    );
+  });
+});
 
 describe("buildProjectActionItems", () => {
   it("shows the grouped display name but keeps the real title for icons", () => {
@@ -436,6 +499,94 @@ describe("buildThreadActionItems", () => {
     expect(groups[0]?.items.map((item) => item.value)).toEqual([
       "thread:thread-title-match",
       "thread:thread-context-match",
+    ]);
+  });
+
+  it("uses activity recency for equally relevant titles across active and remote threads", () => {
+    const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+    const threads = [
+      makeThread({
+        id: ThreadId.make("older-active"),
+        title: "Fix search input",
+        createdAt: "2026-03-20T00:00:00.000Z",
+        updatedAt: "2026-03-21T00:00:00.000Z",
+      }),
+      makeThread({
+        id: ThreadId.make("newer-remote"),
+        environmentId: remoteEnvironmentId,
+        title: "Fix search results",
+        createdAt: "2026-03-01T00:00:00.000Z",
+        updatedAt: "2026-03-23T00:00:00.000Z",
+      }),
+      makeThread({
+        id: ThreadId.make("older-inactive"),
+        title: "Fix search ranking",
+        createdAt: "2026-03-22T00:00:00.000Z",
+        updatedAt: "2026-03-20T00:00:00.000Z",
+      }),
+    ];
+    const items = buildThreadActionItems({
+      threads,
+      activeThreadId: ThreadId.make("older-active"),
+      projectTitleById: new Map(),
+      sortOrder: "created_at",
+      icon: null,
+      runThread: async () => undefined,
+    });
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [],
+      query: "fix search",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: items,
+    });
+
+    expect(groups[0]?.items.map((item) => item.value)).toEqual([
+      "thread:newer-remote",
+      "thread:older-active",
+      "thread:older-inactive",
+    ]);
+  });
+
+  it("keeps stronger title matches ahead of recency and preserves stable ties", () => {
+    const items = buildThreadActionItems({
+      threads: [
+        makeThread({
+          id: ThreadId.make("prefix-a"),
+          title: "Search alpha",
+          createdAt: "2026-03-03T00:00:00.000Z",
+          updatedAt: "2026-03-20T00:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("substring"),
+          title: "Improve search",
+          createdAt: "2026-03-02T00:00:00.000Z",
+          updatedAt: "2026-03-25T00:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("prefix-b"),
+          title: "Search beta",
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-03-20T00:00:00.000Z",
+        }),
+      ],
+      projectTitleById: new Map(),
+      sortOrder: "created_at",
+      icon: null,
+      runThread: async () => undefined,
+    });
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [],
+      query: "search",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: items,
+    });
+
+    expect(groups[0]?.items.map((item) => item.value)).toEqual([
+      "thread:prefix-a",
+      "thread:prefix-b",
+      "thread:substring",
     ]);
   });
 
@@ -581,6 +732,38 @@ describe("buildThreadActionItems", () => {
       query: "reconnect",
     });
     expect(item?.description).toBe("Pylon · #feat/search");
+  });
+
+  it("finds a thread by pasted ID while ranking a title match first", () => {
+    const byId = makeThread({
+      id: ThreadId.make("thread-alpha-1234"),
+      title: "Unrelated work",
+      updatedAt: "2026-03-05T00:00:00.000Z",
+    });
+    const byTitle = makeThread({
+      id: ThreadId.make("thread-other-9999"),
+      title: "Fix thread-alpha-1234 flakes",
+      updatedAt: "2026-03-04T00:00:00.000Z",
+    });
+    const items = buildThreadActionItems({
+      threads: [byId, byTitle],
+      projectTitleById: new Map([[PROJECT_ID, "Pylon"]]),
+      sortOrder: "updated_at",
+      icon: null,
+      runThread: async () => undefined,
+    });
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [],
+      query: "  THREAD-ALPHA-1234  ",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      settingsSearchItems: [],
+      threadSearchItems: items,
+    });
+    expect(groups.flatMap((group) => group.items.map((item) => item.value))).toEqual([
+      `thread:${byTitle.id}`,
+      `thread:${byId.id}`,
+    ]);
   });
 
   it("prefers renderDescription when provided", () => {
@@ -736,5 +919,32 @@ it.each([
   });
   expect(groups.flatMap((group) => group.items.map((item) => item.title))).toEqual([
     "Implementation",
+  ]);
+});
+
+it("ranks secondary keybinding settings after primary settings matches", () => {
+  const item = (value: string, title: string, secondary = false): CommandPaletteActionItem => ({
+    kind: "action",
+    value,
+    title,
+    searchTerms: [title, "General"],
+    icon: null,
+    run: async () => undefined,
+    secondary,
+  });
+  const groups = filterCommandPaletteGroups({
+    activeGroups: [],
+    query: "model",
+    isInSubmenu: false,
+    projectSearchItems: [],
+    settingsSearchItems: [
+      item("setting:keybinding-modelPicker.toggle", "Model Picker: Toggle", true),
+      item("setting:default-model", "Default model"),
+    ],
+    threadSearchItems: [],
+  });
+  expect(groups.flatMap((group) => group.items.map((entry) => entry.value))).toEqual([
+    "setting:default-model",
+    "setting:keybinding-modelPicker.toggle",
   ]);
 });
