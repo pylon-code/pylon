@@ -72,6 +72,20 @@ If a window still looks stale, refresh Limits to re-check every provider and hub
 API-key accounts may not report subscription limits. This also applies to Claude connections using a
 proxy through `ANTHROPIC_AUTH_TOKEN`.
 
+OpenCode Go reports its session, weekly, and monthly allowance when OpenCode runs locally in
+the environment. Pylon cannot report limits for external OpenCode servers because their credentials
+belong to the remote server. Cursor reports
+its monthly allowance, including separate Auto and API usage, using a file-based CLI login or
+`CURSOR_AUTH_TOKEN`. Cursor's default macOS keychain login does not currently report limits.
+On macOS, use `AGENT_CLI_CREDENTIAL_STORE=file` when signing in and in the provider's environment
+to use a file-based login.
+
+Grok reports the remaining subscription allowance and reset time for its current billing period
+after signing in with `grok login`. Explicit `XAI_API_KEY` connections and custom authentication
+or endpoint configurations do not report subscription limits. A newly signed-in account with no
+metered usage appears without a percentage until Grok starts reporting one. Pylon groups the same
+Grok login across environments when its saved account includes an email address.
+
 In a thread, send `/usage-limits` by itself to show the current provider's quota above the composer
 without starting an agent turn. Dismiss the panel, or send a message, to clear it. Provider commands
 with the same name keep their own behavior. On mobile, use **Usage → Limits** before creating a
