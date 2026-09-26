@@ -30,6 +30,7 @@ import {
   type VcsRemoveWorktreeInput,
   type VcsStatusInput,
   type VcsStatusResult,
+  type WorktreeSubmodules,
 } from "@t3tools/contracts";
 import {
   makeGitVcsDriverCore,
@@ -128,6 +129,9 @@ export interface CreateWorktreeProgress {
     total: number;
   }) => Effect.Effect<void, never>;
   readonly onSubmodulesStarted?: () => Effect.Effect<void, never>;
+  readonly onSubmodulesDisabled?: (input: {
+    source: "settings" | "t3.json";
+  }) => Effect.Effect<void, never>;
   readonly onSubmoduleLine?: (line: string) => Effect.Effect<void, never>;
   readonly onSubmodulesFinished?: (input: {
     ok: boolean;
@@ -137,6 +141,8 @@ export interface CreateWorktreeProgress {
 
 export interface CreateWorktreeOptions {
   readonly progress?: CreateWorktreeProgress;
+  /** Null defers to the newly created checkout's t3.json. */
+  readonly submodules?: WorktreeSubmodules | null;
 }
 
 export interface GitCommitProgress {

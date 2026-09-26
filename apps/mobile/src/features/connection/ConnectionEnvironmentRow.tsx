@@ -1,3 +1,4 @@
+import { ConnectionTraceId, connectionTraceAccessibilityAction } from "./ConnectionTraceId";
 import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
 import { resolveEnvironmentMachineKind } from "@t3tools/contracts";
 import { SymbolView } from "../../components/AppSymbol";
@@ -19,7 +20,6 @@ import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanim
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
 import { ThemedSwitch } from "../../components/ThemedSwitch";
 import { cn } from "../../lib/cn";
-import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 import { serverEnvironment } from "../../state/server";
 import { ConnectionStatusDot } from "./ConnectionStatusDot";
@@ -201,6 +201,8 @@ export function ConnectionEnvironmentRow(props: {
       <Pressable
         className="flex-row items-center gap-3 px-4 py-3.5 active:opacity-70"
         onPress={props.onToggle}
+        accessibilityHint={statusTraceId ? "Actions include Copy trace ID" : undefined}
+        {...connectionTraceAccessibilityAction(statusTraceId)}
       >
         <ConnectionStatusDot
           state={enabled || unsupported ? props.environment.connectionState : "available"}
@@ -236,23 +238,12 @@ export function ConnectionEnvironmentRow(props: {
             >
               {statusLabel}
               {statusTraceId ? (
-                <>
-                  {" Trace ID: "}
-                  <Text
-                    accessibilityHint="Copies the trace ID"
-                    accessibilityRole="button"
-                    className="underline decoration-dotted"
-                    onLongPress={(event) => {
-                      event.stopPropagation();
-                      copyTextWithHaptic(statusTraceId, { target: "connection-trace-id" });
-                    }}
-                    onPress={(event) => {
-                      event.stopPropagation();
-                    }}
-                  >
-                    {statusTraceId}
-                  </Text>
-                </>
+                <ConnectionTraceId
+                  traceId={statusTraceId}
+                  tone={hasConnectionFailure ? "danger" : "muted"}
+                  activation="longPress"
+                  parentOwnsAccessibility
+                />
               ) : null}
             </Text>
           ) : null}

@@ -1,4 +1,9 @@
-import type { ApprovalRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type {
+  ApprovalRequestId,
+  EnvironmentId,
+  ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import { create } from "zustand";
 import { DraftId, useComposerDraftStore } from "./composerDraftStore";
 import { releaseDraftAttachments } from "./lib/attachmentUploadQueue";
@@ -24,6 +29,25 @@ export function questionAttachmentDraftId(
 export const useQuestionAttachmentPreparation = create<{ counts: Record<string, number> }>(() => ({
   counts: {},
 }));
+
+/** Count both staged files and in-flight preparation against the shared question limit. */
+export function countQuestionAttachments(keys: ReadonlyArray<DraftId>): number {
+  const store = useComposerDraftStore.getState();
+  const { counts } = useQuestionAttachmentPreparation.getState();
+  return keys.reduce((total, key) => {
+    const draft = store.getComposerDraft(key);
+    return total + (draft?.images.length ?? 0) + (draft?.files.length ?? 0) + (counts[key] ?? 0);
+  }, 0);
+}
+
+/** Synchronous slot count for paste handlers that can run twice before React rerenders. */
+export function countCurrentDraftAttachments(
+  target: DraftId | ScopedThreadRef,
+  fallback: { readonly images: number; readonly files: number },
+): number {
+  const draft = useComposerDraftStore.getState().getComposerDraft(target);
+  return (draft?.images.length ?? fallback.images) + (draft?.files.length ?? fallback.files);
+}
 
 export function changeQuestionAttachmentPreparation(key: DraftId, delta: number): void {
   useQuestionAttachmentPreparation.setState((state) =>
