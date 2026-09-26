@@ -313,12 +313,13 @@ export function buildComposerCommandItems({
 /** The text a selected item writes over its trigger range, or `null` for mode switches. */
 export function composerCommandReplacement(
   item: Exclude<ComposerCommandItem, { type: "pull-request" }>,
+  originalToken?: string,
 ): string | null {
   switch (item.type) {
     case "path":
       return `${serializeComposerFileLink(item.path)} `;
     case "skill":
-      return `$${item.skill.name} `;
+      return `${/^\p{Sc}/u.exec(originalToken ?? "")?.[0] ?? "$"}${item.skill.name} `;
     case "slash-command":
       return item.command === "plan" || item.command === "default" ? null : `/${item.command} `;
     case "provider-slash-command":
@@ -560,7 +561,10 @@ export function useComposerCommandMenu({
         return;
       }
 
-      const replacement = composerCommandReplacement(item);
+      const replacement = composerCommandReplacement(
+        item,
+        draftMessage.slice(trigger.rangeStart, trigger.rangeEnd),
+      );
       const result = replaceTextRange(
         draftMessage,
         trigger.rangeStart,
