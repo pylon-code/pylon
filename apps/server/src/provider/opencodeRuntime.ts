@@ -13,7 +13,6 @@ import {
   type QuestionRequest,
 } from "@opencode-ai/sdk/v2";
 import * as Cause from "effect/Cause";
-import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
@@ -59,7 +58,12 @@ export function resolveOpenCodeConfigContent(
   );
 }
 
-const decodeOpenCodeBoolean = Schema.decodeUnknownOption(Config.Boolean);
+const decodeOpenCodeBoolean = (value: unknown) => {
+  if (typeof value !== "string") return Option.none();
+  if (["true", "yes", "on", "1", "y"].includes(value)) return Option.some(true);
+  if (["false", "no", "off", "0", "n"].includes(value)) return Option.some(false);
+  return Option.none();
+};
 
 export function resolveOpenCodeExactRollbackUnavailableReason(
   input: {

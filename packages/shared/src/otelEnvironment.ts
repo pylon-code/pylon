@@ -48,7 +48,7 @@ const flag = (
   ).pipe(
     Config.map((value): Flag => ({ value: truthy.includes(value) })),
     Config.orElse(() =>
-      Config.string(name).pipe(
+      Config.String(name).pipe(
         Config.map((raw): Flag => {
           const value = raw.trim();
           return value === ""
