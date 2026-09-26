@@ -496,6 +496,7 @@ describe("CheckpointReactor", () => {
       ),
     );
     const publishLegacyRevert = (command: {
+      readonly type?: "thread.checkpoint.revert" | "thread.conversation.revert";
       readonly commandId: CommandId;
       readonly threadId: ThreadId;
       readonly turnCount: number;
@@ -515,6 +516,7 @@ describe("CheckpointReactor", () => {
           payload: {
             threadId: command.threadId,
             turnCount: command.turnCount,
+            ...(command.type === "thread.conversation.revert" ? { restoreFiles: false } : {}),
             createdAt: command.createdAt,
           },
         });
@@ -690,7 +692,7 @@ describe("CheckpointReactor", () => {
         "sibling-work.txt",
       );
       NodeFS.writeFileSync(siblingFile, "sibling work\n");
-      yield* harness.engine.dispatch({
+      yield* harness.publishLegacyRevert({
         type: "thread.checkpoint.revert",
         commandId: CommandId.make("cmd-shared-revert"),
         threadId: ThreadId.make("thread-1"),
@@ -722,7 +724,7 @@ describe("CheckpointReactor", () => {
           }),
         );
         const createdAt = "2026-01-01T00:00:02.000Z";
-        yield* harness.engine.dispatch({
+        yield* harness.publishLegacyRevert({
           type: "thread.conversation.revert",
           commandId: CommandId.make("cmd-revert-conv-shared"),
           threadId: ThreadId.make("thread-1"),
@@ -900,7 +902,7 @@ describe("CheckpointReactor", () => {
           }),
         );
         const createdAt = "2026-01-01T00:00:02.000Z";
-        yield* harness.engine.dispatch({
+        yield* harness.publishLegacyRevert({
           type: "thread.checkpoint.revert",
           commandId: CommandId.make("cmd-revert-restore-shared"),
           threadId: ThreadId.make("thread-1"),
@@ -929,7 +931,7 @@ describe("CheckpointReactor", () => {
           }),
         );
         const createdAt = "2026-01-01T00:00:02.000Z";
-        yield* harness.engine.dispatch({
+        yield* harness.publishLegacyRevert({
           type: "thread.checkpoint.revert",
           commandId: CommandId.make("cmd-revert-restore-isolated"),
           threadId: ThreadId.make("thread-1"),
@@ -1449,7 +1451,7 @@ describe("CheckpointReactor", () => {
         });
         expect(yield* harness.nextReceipt).toMatchObject({ type: "turn.processing.quiesced" });
 
-        yield* harness.engine.dispatch({
+        yield* harness.publishLegacyRevert({
           type: "thread.checkpoint.revert",
           commandId: CommandId.make("cmd-nested-revert"),
           threadId,
@@ -2287,7 +2289,7 @@ describe("CheckpointReactor", () => {
       harness.workspaceRefresh.mockClear();
 
       await Effect.runPromise(
-        harness.engine.dispatch({
+        harness.publishLegacyRevert({
           type: "thread.checkpoint.revert",
           commandId: CommandId.make(`cmd-revert-${mode}`),
           threadId: ThreadId.make("thread-1"),
@@ -2328,7 +2330,7 @@ describe("CheckpointReactor", () => {
     const createdAt = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
-      harness.engine.dispatch({
+      harness.publishLegacyRevert({
         type: "thread.checkpoint.revert",
         commandId: CommandId.make("cmd-revert-no-session"),
         threadId: ThreadId.make("thread-1"),

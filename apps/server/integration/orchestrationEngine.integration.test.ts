@@ -831,13 +831,18 @@ it.live("fails closed before checkpoint, workspace, or provider rollback mutatio
           receipt.checkpointTurnCount === 2,
       );
 
-      yield* harness.engine.dispatch({
-        type: "thread.checkpoint.revert",
-        commandId: CommandId.make("cmd-checkpoint-revert"),
-        threadId: THREAD_ID,
-        turnCount: 1,
-        createdAt: nowIso(),
-      });
+      const revertResult = yield* harness.engine
+        .dispatch({
+          type: "thread.checkpoint.revert",
+          commandId: CommandId.make("cmd-checkpoint-revert"),
+          threadId: THREAD_ID,
+          turnCount: 1,
+          createdAt: nowIso(),
+        })
+        .pipe(Effect.result);
+      assert.equal(revertResult._tag, "Failure");
+      if (revertResult._tag === "Failure")
+        assert.equal(revertResult.failure._tag, "OrchestrationCommandInvariantError");
 
       yield* harness.drainCheckpointReactor;
       const snapshot = yield* harness.snapshotQuery.getSnapshot();
@@ -849,7 +854,7 @@ it.live("fails closed before checkpoint, workspace, or provider rollback mutatio
         unchangedThread?.activities.some(
           (activity) => activity.kind === "checkpoint.revert.failed",
         ),
-        true,
+        false,
       );
       assert.equal(
         NodeFS.readFileSync(NodePath.join(harness.workspaceDir, "README.md"), "utf8"),
@@ -876,13 +881,18 @@ it.live(
       Effect.gen(function* () {
         yield* seedProjectAndThread(harness);
 
-        yield* harness.engine.dispatch({
-          type: "thread.checkpoint.revert",
-          commandId: CommandId.make("cmd-checkpoint-revert-no-session"),
-          threadId: THREAD_ID,
-          turnCount: 0,
-          createdAt: nowIso(),
-        });
+        const revertResult = yield* harness.engine
+          .dispatch({
+            type: "thread.checkpoint.revert",
+            commandId: CommandId.make("cmd-checkpoint-revert-no-session"),
+            threadId: THREAD_ID,
+            turnCount: 0,
+            createdAt: nowIso(),
+          })
+          .pipe(Effect.result);
+        assert.equal(revertResult._tag, "Failure");
+        if (revertResult._tag === "Failure")
+          assert.equal(revertResult.failure._tag, "OrchestrationCommandInvariantError");
 
         yield* harness.drainCheckpointReactor;
         const snapshot = yield* harness.snapshotQuery.getSnapshot();
@@ -890,13 +900,7 @@ it.live(
         const failureActivity = thread?.activities.find(
           (activity) => activity.kind === "checkpoint.revert.failed",
         );
-        assert.equal(failureActivity !== undefined, true);
-        assert.equal(
-          String(
-            (failureActivity?.payload as { readonly detail?: string } | undefined)?.detail,
-          ).includes("No active provider session"),
-          true,
-        );
+        assert.equal(failureActivity, undefined);
       }),
     ),
 );
@@ -1389,13 +1393,18 @@ it.live("fails closed for relative claudeAgent rollback", () =>
             receipt.checkpointTurnCount === 2,
         );
 
-        yield* harness.engine.dispatch({
-          type: "thread.checkpoint.revert",
-          commandId: CommandId.make("cmd-checkpoint-revert-claude"),
-          threadId: THREAD_ID,
-          turnCount: 1,
-          createdAt: nowIso(),
-        });
+        const revertResult = yield* harness.engine
+          .dispatch({
+            type: "thread.checkpoint.revert",
+            commandId: CommandId.make("cmd-checkpoint-revert-claude"),
+            threadId: THREAD_ID,
+            turnCount: 1,
+            createdAt: nowIso(),
+          })
+          .pipe(Effect.result);
+        assert.equal(revertResult._tag, "Failure");
+        if (revertResult._tag === "Failure")
+          assert.equal(revertResult.failure._tag, "OrchestrationCommandInvariantError");
 
         yield* harness.drainCheckpointReactor;
         const snapshot = yield* harness.snapshotQuery.getSnapshot();
@@ -1406,7 +1415,7 @@ it.live("fails closed for relative claudeAgent rollback", () =>
           unchangedThread?.activities.some(
             (activity) => activity.kind === "checkpoint.revert.failed",
           ),
-          true,
+          false,
         );
         assert.equal(
           gitRefExists(harness.workspaceDir, checkpointRefForThreadTurn(THREAD_ID, 1)),
