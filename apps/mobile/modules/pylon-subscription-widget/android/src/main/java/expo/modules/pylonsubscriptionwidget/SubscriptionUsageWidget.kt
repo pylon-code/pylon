@@ -86,7 +86,8 @@ class SubscriptionUsageWidget : AppWidgetProvider() {
       if (rows.isNotEmpty()) {
         views.removeAllViews(R.id.pylon_widget_rows)
         val options = manager.getAppWidgetOptions(id)
-        val height = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 180)
+        // Match the default 200dp widget height, which fits one row per provider.
+        val height = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 200)
         val count = ((height - 64) / 66).coerceIn(1, 12).coerceAtMost(rows.size)
         for ((provider, window) in rows.take(count)) {
           views.addView(R.id.pylon_widget_rows, rowView(context, provider, window))

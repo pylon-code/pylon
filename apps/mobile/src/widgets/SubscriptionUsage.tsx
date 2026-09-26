@@ -250,7 +250,9 @@ function SubscriptionUsage(
           modifiers={[font({ textStyle: "caption2" }), foregroundStyle("secondary"), lineLimit(1)]}
         >
           {props.checkedAt
-            ? `As of ${new Date(props.checkedAt).toLocaleString(undefined, { hour: "numeric", minute: "2-digit", month: "short", day: "numeric" })}`
+            ? compact
+              ? `${new Date(props.checkedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })} · ${new Date(props.checkedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`
+              : `As of ${new Date(props.checkedAt).toLocaleString(undefined, { hour: "numeric", minute: "2-digit", month: "short", day: "numeric" })}`
             : "Tap to connect in Pylon"}
         </Text>
       ) : null}
