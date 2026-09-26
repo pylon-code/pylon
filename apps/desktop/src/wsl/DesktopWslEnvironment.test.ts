@@ -168,7 +168,7 @@ describe("WSL runtime cache", () => {
     expect(nightly).not.toContain('"$HOME/.pylon-code/wsl-runtime"');
 
     expect(buildWslRuntimeInvalidateScript("sha256-bbb", "pylon-code-nightly")).toContain(
-      ".pylon-code-nightly/wsl-runtime/sha256-bbb",
+      ".pylon-code-nightly/wsl-runtime",
     );
   });
 
@@ -190,6 +190,10 @@ describe("WSL runtime cache", () => {
     expect(script).toContain("trap 'exit 1' HUP INT TERM");
     expect(script).toContain('exec 9> "$runtime_lock"');
     expect(script).toContain("flock -x 9");
+    expect(script).toContain('probe_failure_marker="$runtime_parent/.1.2.3-x64.probe-failed"');
+    expect(script.indexOf('if [ -f "$probe_failure_marker" ]')).toBeLessThan(
+      script.indexOf("if runtime_is_ready; then"),
+    );
     expect(script).not.toContain("runtime_lock_pid");
     expect(script).not.toContain("sleep 0.1");
     expect(script).not.toContain('rm -rf "$runtime_lock"');
@@ -386,7 +390,7 @@ describe("WSL runtime cache", () => {
 
     // Without visible processes the retention rules cannot tell a live cache
     // from an abandoned one, so the sweep is skipped rather than guessed at.
-    expect(script).toContain("[ -d /proc/1 ] || exit 0");
+    expect(script).toContain("[ -d /proc/1 ] && have_process_info=1");
 
     // The guard has to gate the delete, not just exist.
     const inUseChecked = script.indexOf('! runtime_in_use "$candidate"');
@@ -400,9 +404,9 @@ describe("WSL runtime cache", () => {
 
     // Dot-prefixed, so `"$runtime_parent"/*` never matches them, and they carry
     // no ready marker either; without this pass a killed install leaks forever.
-    expect(script).toContain(
-      'for scratch in "$runtime_parent"/.*.tmp.* "$runtime_parent"/.*.stale.*; do',
-    );
+    expect(script).toContain('for scratch in "$runtime_parent"/.*.tmp.*; do');
+    expect(script).toContain('for scratch in "$runtime_parent"/.*.stale.*; do');
+    expect(script).toContain('! runtime_in_use "$runtime_parent/$original_name" || continue');
     // Age guard: a scratch directory younger than this belongs to a live install.
     expect(script).toContain('find "$scratch" -maxdepth 0 -mmin +120');
   });
@@ -412,9 +416,8 @@ describe("WSL runtime cache", () => {
 
     // Readiness is a presence check, so a tree whose pty.node is present but
     // unloadable stays ready forever unless the probe can revoke the marker.
-    expect(script).toContain(
-      'rm -f "$HOME/.pylon-code/wsl-runtime/1.2.3_x64/.t3code-wsl-runtime-ready"',
-    );
+    expect(script).toContain('rm -f "$runtime_parent/1.2.3_x64/.t3code-wsl-runtime-ready"');
+    expect(script).toContain('touch "$runtime_parent/.1.2.3_x64.probe-failed"');
     // Deleting the tree here would pull it out from under any backend still
     // running from it; the next install moves an unready root aside instead.
     expect(script).not.toContain("rm -rf");
@@ -501,6 +504,34 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     expect(parseWslRuntimeRoot(repaired.stdout)).toBe(fixture.runtimeRoot);
     const restored = runShell(`set -eu\ncat ${sh(fixture.serverEntry)}`);
     expect(restored.stdout).toBe(SERVER_ENTRY_SOURCE);
+  });
+
+  it("backs off a proven native probe failure and retries after the cooldown", () => {
+    const fixture = createFixture();
+    expect(fixture.install().status).toBe(0);
+    const invalidated = runShell(
+      [
+        "set -eu",
+        `HOME=${sh(`${fixture.work}/home`)}`,
+        "export HOME",
+        buildWslRuntimeInvalidateScript(fixture.runtimeId, "pylon-code"),
+      ].join("\n"),
+    );
+    expect(invalidated.status, invalidated.stderr).toBe(0);
+
+    // No extraction or runtime path is offered during the cooling period.
+    const cooled = fixture.install();
+    expect(cooled.status).toBe(2);
+    expect(parseWslRuntimeRoot(cooled.stdout)).toBeNull();
+    expect(cooled.stderr).toContain("using the mounted tree");
+
+    const expired = runShell(
+      `set -eu\ntouch -d "11 minutes ago" ${sh(`${fixture.runtimeParent}/.${fixture.runtimeId}.probe-failed`)}`,
+    );
+    expect(expired.status, expired.stderr).toBe(0);
+    const repaired = fixture.install();
+    expect(repaired.status, repaired.stderr).toBe(0);
+    expect(parseWslRuntimeRoot(repaired.stdout)).toBe(fixture.runtimeRoot);
   });
 
   it("falls back instead of launching a corrupted cache it cannot reinstall", () => {
@@ -664,7 +695,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   });
 
-  it("removes an aged stale tree after replacing an active unready cache", () => {
+  it("keeps an aged stale tree until its original runtime process exits", () => {
     const fixture = createFixture();
     expect(fixture.install().status).toBe(0);
     const result = runShell(
@@ -683,12 +714,48 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         `HOME=${sh(`${fixture.work}/home`)}`,
         "export HOME",
         buildWslRuntimePruneScript(fixture.runtimeId, "pylon-code"),
-        'test ! -e "$stale"',
+        'test -d "$stale"',
         "kill $active_pid",
         "wait $active_pid 2>/dev/null || true",
+        buildWslRuntimePruneScript(fixture.runtimeId, "pylon-code"),
+        'test ! -e "$stale"',
       ].join("\n"),
     );
 
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  });
+
+  it("does not sweep aged extraction scratch while its install lock is held", () => {
+    const fixture = createFixture();
+    const result = runShell(
+      [
+        "set -eu",
+        `runtime_parent=${sh(fixture.runtimeParent)}`,
+        'mkdir -p "$runtime_parent"',
+        `held_scratch="$runtime_parent/.${fixture.runtimeId}.tmp.test"`,
+        'mkdir -p "$held_scratch"',
+        'touch -d "180 minutes ago" "$held_scratch"',
+        // The writer signals only after flock has acquired the lock. -F and
+        // exec keep $! as the exact lock-owning sleep process for cleanup.
+        'lock_ready="$runtime_parent/lock-ready.pipe"',
+        'mkfifo "$lock_ready"',
+        `flock -x -F "$runtime_parent/.${fixture.runtimeId}.install.lock" sh -c 'printf "ready\\n" > "$1"; exec sleep 30' sh "$lock_ready" >/dev/null 2>&1 &`,
+        "lock_pid=$!",
+        'trap \'kill "$lock_pid" 2>/dev/null || true; wait "$lock_pid" 2>/dev/null || true\' EXIT',
+        'locked=$(timeout 5 cat "$lock_ready")',
+        'test "$locked" = ready',
+        'rm "$lock_ready"',
+        `HOME=${sh(`${fixture.work}/home`)}`,
+        "export HOME",
+        buildWslRuntimePruneScript(fixture.runtimeId, "pylon-code"),
+        'test -d "$held_scratch"',
+        "kill $lock_pid",
+        "wait $lock_pid 2>/dev/null || true",
+        "trap - EXIT",
+        buildWslRuntimePruneScript(fixture.runtimeId, "pylon-code"),
+        'test ! -e "$held_scratch"',
+      ].join("\n"),
+    );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   });
 

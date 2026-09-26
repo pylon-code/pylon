@@ -15,6 +15,8 @@ export type EnvironmentConnectionPhase =
 
 export interface EnvironmentConnectionPresentation {
   readonly phase: EnvironmentConnectionPhase;
+  /** Successful transport lease generation; changes across reconnects. */
+  readonly generation?: number;
   readonly error: string | null;
   readonly traceId: string | null;
 }
@@ -40,7 +42,7 @@ export function presentConnectionState(
         traceId: state.lastFailure?.traceId ?? null,
       };
     case "connected":
-      return { phase: "connected", error: null, traceId: null };
+      return { phase: "connected", generation: state.generation, error: null, traceId: null };
     case "backoff":
       return {
         phase: "reconnecting",

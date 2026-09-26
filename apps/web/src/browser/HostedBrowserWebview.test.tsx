@@ -48,6 +48,7 @@ import {
 } from "~/hooks/useSettings";
 import { useBrowserSurfaceStore } from "./browserSurfaceStore";
 import * as desktopTabLifetime from "./desktopTabLifetime";
+import { isGuestFocusPointerDown } from "./guestFocusPointer";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
 
 let renderer: ReactTestRenderer | undefined;
@@ -99,6 +100,74 @@ afterEach(async () => {
 });
 
 describe("HostedBrowserWebview settings hydration", () => {
+  it("dismisses host popups on guest focus and removes the listener on unmount", async () => {
+    mocks.getClientSettings.mockResolvedValue(DEFAULT_CLIENT_SETTINGS);
+    await act(async () => ensureClientSettingsHydrated());
+    class TestPointerEvent extends Event {
+      readonly pointerType: string;
+
+      constructor(type: string, init: EventInit & { pointerType: string }) {
+        super(type, init);
+        this.pointerType = init.pointerType;
+      }
+    }
+    vi.stubGlobal("PointerEvent", TestPointerEvent);
+    const guest = Object.assign(new EventTarget(), { getWebContentsId: () => 41 });
+    const hostDocument = new EventTarget();
+    const onHostOutsidePointer = vi.fn();
+    hostDocument.addEventListener("pointerdown", onHostOutsidePointer);
+    const dispatchGuestEvent = guest.dispatchEvent.bind(guest);
+    vi.spyOn(guest, "dispatchEvent").mockImplementation((event) => {
+      const delivered = dispatchGuestEvent(event);
+      if (event.bubbles) hostDocument.dispatchEvent(event);
+      return delivered;
+    });
+    const onPointerDown = vi.fn();
+    guest.addEventListener("pointerdown", onPointerDown);
+
+    await act(() => {
+      renderer = create(
+        <HostedBrowserWebview
+          threadRef={{
+            environmentId: EnvironmentId.make("guest-focus"),
+            threadId: ThreadId.make("thread-guest-focus"),
+          }}
+          tabId="server-tab"
+          runtimeTabId="guest-focus-tab"
+          initialUrl="https://example.com"
+          viewport={FILL_PREVIEW_VIEWPORT}
+          pictureInPicture={false}
+          profileId={undefined}
+          zoomFactor={1}
+        />,
+        {
+          createNodeMock: (element) =>
+            element.type === "webview"
+              ? guest
+              : { scrollLeft: 0, scrollTop: 0, scrollTo: () => undefined },
+        },
+      );
+    });
+
+    guest.dispatchEvent(new Event("focus"));
+    expect(onPointerDown).toHaveBeenCalledOnce();
+    expect(onHostOutsidePointer).toHaveBeenCalledOnce();
+    expect(isGuestFocusPointerDown(onHostOutsidePointer.mock.calls[0]?.[0])).toBe(true);
+    expect(
+      isGuestFocusPointerDown(new TestPointerEvent("pointerdown", { pointerType: "mouse" })),
+    ).toBe(false);
+    expect(onPointerDown.mock.calls[0]?.[0]).toMatchObject({
+      type: "pointerdown",
+      bubbles: true,
+      pointerType: "mouse",
+    });
+
+    await act(() => renderer?.unmount());
+    guest.dispatchEvent(new Event("focus"));
+    expect(onPointerDown).toHaveBeenCalledOnce();
+    expect(onHostOutsidePointer).toHaveBeenCalledOnce();
+  });
+
   it("starts a retained background tab only after a settings read succeeds on retry", async () => {
     const firstRead = deferred<ClientSettings | null>();
     const retryRead = deferred<ClientSettings | null>();

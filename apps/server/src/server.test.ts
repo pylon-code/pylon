@@ -142,6 +142,12 @@ import { OrchestrationEventStore } from "./persistence/Services/OrchestrationEve
 import { RollbackSagaRepository } from "./persistence/Services/RollbackSagas.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ModelManifest from "./provider/ModelManifest.ts";
+import {
+  ProviderVersionCache,
+  type ProviderVersionCacheEntry,
+} from "./provider/providerMaintenance.ts";
+import type { ProviderInstance } from "./provider/ProviderDriver.ts";
 import {
   ProviderAdapterUnsupportedOperationError,
   ProviderValidationError,
@@ -225,6 +231,7 @@ import {
 } from "../integration/TransferBudgetReport.integration.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import { DEFAULT_SIGNAL_EXPORT, otlpSerializationLayer } from "@t3tools/shared/observability";
+import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 
 const defaultProjectId = ProjectId.make("project-default");
 const defaultThreadId = ThreadId.make("thread-default");
@@ -506,6 +513,8 @@ const buildAppUnderTest = (options?: {
     antigravityInstallation?: Partial<AntigravityInstallation["Service"]>;
     environmentTheme?: Partial<EnvironmentTheme.EnvironmentThemeService["Service"]>;
     providerRegistry?: Partial<ProviderRegistry.ProviderRegistry["Service"]>;
+    modelManifest?: Partial<ModelManifest.ModelManifest["Service"]>;
+    providerVersionCache?: Map<string, ProviderVersionCacheEntry>;
     providerService?: Partial<ProviderService.ProviderService["Service"]>;
     rollbackSagaRepository?: Partial<RollbackSagaRepository["Service"]>;
     serverSettings?: Partial<ServerSettings.ServerSettingsService["Service"]>;
@@ -568,6 +577,7 @@ const buildAppUnderTest = (options?: {
       otlpMetricsExport: DEFAULT_SIGNAL_EXPORT,
       otlpLogsExport: DEFAULT_SIGNAL_EXPORT,
       otlpServiceName: "t3-server",
+      otelEnvironment: OtelEnvironment.none,
       mode: "desktop",
       port: 0,
       host: "127.0.0.1",
@@ -767,6 +777,14 @@ const buildAppUnderTest = (options?: {
             getInstance: () => Effect.succeed(undefined),
             ...options?.layers?.providerInstances,
           }),
+          Layer.mock(ModelManifest.ModelManifest)({
+            current: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
+            refresh: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
+            forceRefresh: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
+            refreshInBackground: Effect.void,
+            ...options?.layers?.modelManifest,
+          }),
+          Layer.succeed(ProviderVersionCache, options?.layers?.providerVersionCache ?? new Map()),
           Layer.mock(EnvironmentTheme.EnvironmentThemeService)({
             current: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -6428,6 +6446,93 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  for (const mode of ["all", "targeted", "background"] as const) {
+    it.effect(`provider refresh invalidates owned caches before probing (${mode})`, () => {
+      const driver = ProviderDriverKind.make("codex");
+      const instanceIds = [ProviderInstanceId.make("codex"), ProviderInstanceId.make("codex_work")];
+      const packageNames = ["@example/personal", "@example/work"];
+      const versionCache = new Map(
+        packageNames.map((name) => [
+          name,
+          { expiresAt: Number.MAX_SAFE_INTEGER, version: "1.0.0" },
+        ]),
+      );
+      const invalidated: string[] = [];
+      const freshMaintenance: string[] = [];
+      let manifestRefreshed = false;
+      let probed = false;
+      const instances = instanceIds.map(
+        (instanceId, index) =>
+          ({
+            instanceId,
+            driverKind: driver,
+            continuationIdentity: { driverKind: driver, continuationKey: instanceId },
+            displayName: undefined,
+            enabled: true,
+            invalidateCaches: Effect.sync(() => {
+              invalidated.push(instanceId);
+            }),
+            snapshot: {
+              resolveMaintenance: (options) =>
+                Effect.sync(() => {
+                  assert.isTrue(options?.fresh);
+                  freshMaintenance.push(instanceId);
+                  return makeManualOnlyProviderMaintenanceCapabilities({
+                    provider: driver,
+                    packageName: packageNames[index]!,
+                  });
+                }),
+              getSnapshot: Effect.never,
+              refresh: Effect.never,
+              streamChanges: Stream.empty,
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+          }) satisfies ProviderInstance,
+      );
+      const expected =
+        mode === "background" ? [] : mode === "targeted" ? [instanceIds[1]!] : instanceIds;
+      const probe = Effect.sync(() => {
+        probed = true;
+        assert.equal(manifestRefreshed, mode !== "background");
+        assert.deepEqual(invalidated.toSorted(), expected.toSorted());
+        assert.deepEqual(freshMaintenance.toSorted(), expected.toSorted());
+        for (let index = 0; index < instanceIds.length; index++) {
+          assert.equal(
+            versionCache.has(packageNames[index]!),
+            !expected.includes(instanceIds[index]!),
+          );
+        }
+        return [];
+      });
+      return Effect.gen(function* () {
+        yield* buildAppUnderTest({
+          layers: {
+            modelManifest: {
+              forceRefresh: Effect.sync(() => {
+                manifestRefreshed = true;
+                return ModelManifest.BUNDLED_MODEL_MANIFEST;
+              }),
+            },
+            providerVersionCache: versionCache,
+            providerInstances: { listInstances: Effect.succeed(instances) },
+            providerRegistry: { refresh: () => probe, refreshInstance: () => probe },
+          },
+        });
+        const wsUrl = yield* getWsServerUrl("/ws");
+        yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.serverRefreshProviders]({
+              ...(mode === "targeted" ? { instanceId: instanceIds[1]! } : {}),
+              ...(mode !== "background" ? { refreshModels: true } : {}),
+            }),
+          ),
+        );
+        assert.isTrue(probed);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest));
+    });
+  }
+
   it.effect("serves config on reconnect without starting provider probes", () =>
     Effect.gen(function* () {
       const refresh = vi.fn(() => Effect.never);
@@ -11119,6 +11224,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.deepEqual(fetchRemote.mock.calls[0]?.[0], {
           cwd: "/tmp/project",
           remoteName: "origin",
+          refName: "main",
         });
         assert.deepEqual(remoteBranchExists.mock.calls[0]?.[0], {
           cwd: "/tmp/project",
