@@ -1,10 +1,15 @@
-import { AuthOrchestrationOperateScope, ServerProvider } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  ProviderDriverKind,
+  ServerProvider,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   canMaintainEnvironment,
   canUpdateEnvironmentProvider,
+  environmentProviderLabel,
   providerUpdateOutcome,
 } from "./environment-maintenance";
 
@@ -30,6 +35,24 @@ const provider = Schema.decodeUnknownSync(ServerProvider)({
 });
 
 describe("mobile environment maintenance access", () => {
+  it("uses product names for raw driver labels while preserving custom names", () => {
+    expect(
+      environmentProviderLabel({
+        ...provider,
+        driver: ProviderDriverKind.make("codex"),
+        displayName: "codex",
+      }),
+    ).toBe("Codex");
+    expect(
+      environmentProviderLabel({
+        ...provider,
+        driver: ProviderDriverKind.make("claudeAgent"),
+        displayName: "claudeAgent",
+      }),
+    ).toBe("Claude");
+    expect(environmentProviderLabel({ ...provider, displayName: "Work Codex" })).toBe("Work Codex");
+  });
+
   it("requires a connected session with operate permission", () => {
     const session = {
       authenticated: true,

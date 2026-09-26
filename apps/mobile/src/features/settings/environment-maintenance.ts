@@ -13,6 +13,14 @@ export function canMaintainEnvironment(session: AuthSessionState | null, connect
   );
 }
 
+export function environmentProviderLabel(provider: ServerProvider): string {
+  if (provider.displayName && provider.displayName !== provider.driver) return provider.displayName;
+  if (provider.driver === "claudeAgent") return "Claude";
+  if (provider.driver === "codex") return "Codex";
+  if (provider.driver === "primeAgent") return "Prime Agent";
+  return provider.displayName ?? provider.driver;
+}
+
 export function providerUpdateOutcome(
   providers: ReadonlyArray<ServerProvider>,
   instanceId: ProviderInstanceId,

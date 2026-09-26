@@ -24,6 +24,7 @@ import { SettingsSection } from "./components/SettingsSection";
 import {
   canMaintainEnvironment,
   canUpdateEnvironmentProvider,
+  environmentProviderLabel,
   providerUpdateOutcome,
 } from "./environment-maintenance";
 
@@ -191,7 +192,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                         <ProviderIcon provider={provider.driver} size={18} />
                         <View className="min-w-0 flex-1 gap-1">
                           <Text className="text-base text-foreground">
-                            {provider.displayName ?? provider.driver}
+                            {environmentProviderLabel(provider)}
                           </Text>
                           <Text className="text-sm text-foreground-muted">
                             {provider.installed
@@ -222,7 +223,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                           label={
                             pending === provider.instanceId
                               ? "Updating…"
-                              : `Update ${provider.displayName ?? provider.driver}`
+                              : `Update ${environmentProviderLabel(provider)}`
                           }
                           disabled={!allowed || busy}
                           onPress={() => requestProviderUpdate(provider)}
