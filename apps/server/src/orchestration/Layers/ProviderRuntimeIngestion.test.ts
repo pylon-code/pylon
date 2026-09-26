@@ -6070,6 +6070,71 @@ describe("ProviderRuntimeIngestion", () => {
       (entry) => entry.title === "Renamed by provider",
     );
     expect(thread.title).toBe("Renamed by provider");
+    expect(thread.titleState?.source).toBe("generated");
+  });
+
+  it("does not replace an explicit default-title rename with late provider metadata", async () => {
+    const harness = await createHarness({ threadTitle: DEFAULT_THREAD_TITLE });
+    await harness.dispatch({
+      type: "thread.meta.update",
+      commandId: CommandId.make("cmd-user-renamed-to-default"),
+      threadId: ThreadId.make("thread-1"),
+      title: DEFAULT_THREAD_TITLE,
+    });
+
+    harness.emit({
+      type: "thread.metadata.updated",
+      eventId: asEventId("evt-thread-metadata-after-manual-default"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: { name: "Renamed by provider", metadata: { source: "provider" } },
+    });
+
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.title).toBe(DEFAULT_THREAD_TITLE);
+    expect(thread?.titleState).toEqual({
+      source: "manual",
+      version: CommandId.make("cmd-user-renamed-to-default"),
+    });
+  });
+
+  it("does not let placeholder provider metadata supersede a pending generated title", async () => {
+    const harness = await createHarness({ threadTitle: DEFAULT_THREAD_TITLE });
+    const before = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(before?.titleState?.source).toBe("provisional");
+
+    harness.emit({
+      type: "thread.metadata.updated",
+      eventId: asEventId("evt-thread-metadata-placeholder"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: { name: DEFAULT_THREAD_TITLE, metadata: { source: "provider" } },
+    });
+    await harness.drain();
+
+    const after = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(after?.titleState).toEqual(before?.titleState);
+    await harness.dispatch({
+      type: "thread.title.generate.complete",
+      commandId: CommandId.make("cmd-pending-real-title"),
+      threadId: ThreadId.make("thread-1"),
+      expectedTitle: DEFAULT_THREAD_TITLE,
+      expectedVersion: before!.titleState!.version,
+      title: "Real generated title",
+    });
+    const accepted = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(accepted?.title).toBe("Real generated title");
   });
 
   it("rejects a provider title once the thread has a real title", async () => {

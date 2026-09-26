@@ -213,6 +213,7 @@ describe("ProviderCommandReactor", () => {
 
   async function createHarness(input?: {
     readonly baseDir?: string;
+    readonly initialThreadTitle?: string;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
     readonly requiresNewThreadForModelChange?: boolean;
@@ -703,7 +704,7 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-thread-create"),
         threadId: ThreadId.make("thread-1"),
         projectId: asProjectId("project-1"),
-        title: "Thread",
+        title: input?.initialThreadTitle ?? "Thread",
         modelSelection: modelSelection,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
@@ -2934,9 +2935,9 @@ describe("ProviderCommandReactor", () => {
   );
 
   it("retries thread title generation after a transient failure", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
     const seededTitle = "Please investigate reconnect failures after restar...";
+    const harness = await createHarness({ initialThreadTitle: seededTitle });
+    const now = "2026-01-01T00:00:00.000Z";
     let attempts = 0;
     harness.generateThreadTitle.mockReturnValue(
       Effect.suspend(() => {
@@ -2949,15 +2950,6 @@ describe("ProviderCommandReactor", () => {
               }),
             )
           : Effect.succeed({ title: "Generated title" });
-      }),
-    );
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.meta.update",
-        commandId: CommandId.make("cmd-thread-title-seed"),
-        threadId: ThreadId.make("thread-1"),
-        title: seededTitle,
       }),
     );
 
@@ -2995,6 +2987,65 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.title).toBe("Generated title");
     expect(attempts).toBe(2);
+  });
+
+  it("keeps an explicit rename made while the first title generation is in flight", async () => {
+    const seededTitle = "Investigate reconnect failures";
+    const harness = await createHarness({ initialThreadTitle: seededTitle });
+    const generationStarted = await Effect.runPromise(Deferred.make<void>());
+    const releaseGeneration = await Effect.runPromise(Deferred.make<void>());
+    harness.generateThreadTitle.mockReturnValue(
+      Deferred.succeed(generationStarted, undefined).pipe(
+        Effect.andThen(Deferred.await(releaseGeneration)),
+        Effect.as({ title: "Generated reconnect title" }),
+      ),
+    );
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-title-race-turn"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("message-title-race"),
+          role: "user",
+          text: "Investigate reconnect failures",
+          attachments: [],
+        },
+        titleSeed: seededTitle,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(Deferred.await(generationStarted));
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-title-race-rename-b"),
+        threadId: ThreadId.make("thread-1"),
+        title: "Review reconnect state",
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-title-race-rename-a"),
+        threadId: ThreadId.make("thread-1"),
+        title: seededTitle,
+      }),
+    );
+    await Effect.runPromise(Deferred.succeed(releaseGeneration, undefined));
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.title).toBe(seededTitle);
+    expect(thread?.titleState).toEqual({
+      source: "manual",
+      version: CommandId.make("cmd-title-race-rename-a"),
+    });
   });
 
   it("regenerates a thread title from the current conversation", async () => {
@@ -3708,22 +3759,13 @@ describe("ProviderCommandReactor", () => {
   });
 
   it("matches the client-seeded title even when the outgoing prompt is reformatted", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
     const seededTitle = "Fix reconnect spinner on resume";
+    const harness = await createHarness({ initialThreadTitle: seededTitle });
+    const now = "2026-01-01T00:00:00.000Z";
     const prompt = `[effort:high]\\n\\nFix reconnect spinner on resume ${serializeAssistantCitation(assistantCitation)}`;
     harness.generateThreadTitle.mockReturnValue(
       Effect.succeed({
         title: "Reconnect spinner resume bug",
-      }),
-    );
-
-    await harness.runEffect(
-      harness.engine.dispatch({
-        type: "thread.meta.update",
-        commandId: CommandId.make("cmd-thread-title-formatted-seed"),
-        threadId: ThreadId.make("thread-1"),
-        title: seededTitle,
       }),
     );
 
@@ -5584,7 +5626,7 @@ describe("ProviderCommandReactor", () => {
     const harness = await createHarness({ unreadableHistory: true });
     const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.session.set",
         commandId: CommandId.make("cmd-session-set-for-approval"),
@@ -5602,7 +5644,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.approval.respond",
         commandId: CommandId.make("cmd-approval-respond"),
@@ -5625,7 +5667,7 @@ describe("ProviderCommandReactor", () => {
     const harness = await createHarness({ unreadableHistory: true });
     const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.session.set",
         commandId: CommandId.make("cmd-session-set-for-user-input"),
@@ -5643,7 +5685,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.user-input.respond",
         commandId: CommandId.make("cmd-user-input-respond"),
