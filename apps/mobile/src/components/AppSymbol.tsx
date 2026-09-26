@@ -48,6 +48,7 @@ import IconGitBranch from "@tabler/icons-react-native/IconGitBranch";
 import IconHammer from "@tabler/icons-react-native/IconHammer";
 import IconGitMerge from "@tabler/icons-react-native/IconGitMerge";
 import IconGitPullRequest from "@tabler/icons-react-native/IconGitPullRequest";
+import IconHome from "@tabler/icons-react-native/IconHome";
 import IconInfoCircle from "@tabler/icons-react-native/IconInfoCircle";
 import IconKeyboard from "@tabler/icons-react-native/IconKeyboard";
 import IconKeyboardHide from "@tabler/icons-react-native/IconKeyboardHide";
@@ -147,6 +148,9 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "folder.badge.plus": IconFolderPlus,
   "folder.fill": IconFolder,
   gearshape: IconSettings,
+  globe: IconWorld,
+  hammer: IconHammer,
+  house: IconHome,
   "info.circle": IconInfoCircle,
   link: IconLink,
   "line.3.horizontal": IconMenu2,
@@ -172,6 +176,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "sidebar.right": IconLayoutSidebarRight,
   "slider.horizontal.3": IconAdjustmentsHorizontal,
   "square.and.pencil": IconEdit,
+  "square.on.square": IconCopy,
   "square.grid.2x2": IconApps,
   "square.split.2x1": IconLayoutColumns,
   star: IconStar,

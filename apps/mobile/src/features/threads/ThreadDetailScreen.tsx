@@ -24,6 +24,7 @@ import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp
 import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { HeaderHeightContext } from "@react-navigation/elements";
+import { useNavigation } from "@react-navigation/native";
 import type {
   ApprovalRequestId,
   EnvironmentId,
@@ -93,6 +94,8 @@ import { RenderErrorBoundary, RenderFailureView } from "../../components/RenderE
 import { CHAT_CONTENT_MAX_WIDTH, type LayoutVariant } from "../../lib/layout";
 import { IOS_NAV_BAR_HEIGHT } from "../../lib/layoutMetrics";
 import { editPendingThreadMessage } from "../../state/edit-pending-thread-message";
+import { useLiveDeviceState } from "../../state/device";
+import { threadDevicePreviews } from "../devices/threadDevicePreviews";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import type {
@@ -393,6 +396,19 @@ function RollbackStatusSurface(props: {
 }
 
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
+  const navigation = useNavigation();
+  const deviceState = useLiveDeviceState(props.environmentId);
+  const devicePreviews = useMemo(
+    () => threadDevicePreviews(deviceState.data, props.selectedThread.id),
+    [deviceState.data, props.selectedThread.id],
+  );
+  const openDevicePreview = useCallback(() => {
+    Keyboard.dismiss();
+    navigation.navigate("ThreadDevicePreview", {
+      environmentId: props.environmentId,
+      threadId: props.selectedThread.id,
+    });
+  }, [navigation, props.environmentId, props.selectedThread.id]);
   const insets = useSafeAreaInsets();
   const isKeyboardVisible = useKeyboardState((state) => state.isVisible);
   const liveKeyboardHeight = useKeyboardState((state) => state.height);
@@ -540,6 +556,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   // reserves no status space.
   const showFloatingStatus =
     showWorkingControl ||
+    devicePreviews.length > 0 ||
     props.connectionStateLabel !== "connected" ||
     props.queuedMessages.some((message) => message.deliveryHold === undefined) ||
     props.selectedThreadFeed.some(
@@ -1072,6 +1089,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               <FloatingWorkingControl
                 colorScheme={isDarkMode ? "dark" : "light"}
                 status={floatingStatus}
+                devicePreview={
+                  devicePreviews.length > 0
+                    ? { count: devicePreviews.length, onPress: openDevicePreview }
+                    : null
+                }
                 showScrollToEnd={showScrollToEndButton}
                 onScrollToEnd={handleScrollToEnd}
               />
