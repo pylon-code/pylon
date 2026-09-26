@@ -82,7 +82,9 @@ to use a file-based login.
 
 Grok reports the remaining subscription allowance and reset time for its current billing period
 after signing in with `grok login`. Explicit `XAI_API_KEY` connections and custom authentication
-or endpoint configurations do not report subscription limits.
+or endpoint configurations do not report subscription limits. A newly signed-in account with no
+metered usage appears without a percentage until Grok starts reporting one. Pylon groups the same
+Grok login across environments when its saved account includes an email address.
 
 In a thread, send `/usage-limits` by itself to show the current provider's quota above the composer
 without starting an agent turn. Dismiss the panel, or send a message, to clear it. Provider commands
