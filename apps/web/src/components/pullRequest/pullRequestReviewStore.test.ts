@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vite-plus/test";
-import { ProjectId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 
 import {
   type PendingReviewComment,
@@ -47,8 +47,12 @@ describe("pull request review drafts", () => {
       repository: "owner/repo",
       number: 7,
     };
-    const publicKey = pullRequestReviewKey({ ...reference, host: "github.com" });
-    const enterpriseKey = pullRequestReviewKey({ ...reference, host: "github.example.com" });
+    const environmentId = EnvironmentId.make("env-a");
+    const publicKey = pullRequestReviewKey(environmentId, { ...reference, host: "github.com" });
+    const enterpriseKey = pullRequestReviewKey(environmentId, {
+      ...reference,
+      host: "github.example.com",
+    });
     const store = usePullRequestReviewStore.getState();
     store.addComment(publicKey, comment("public"));
     store.setSummary(publicKey, "Public review");
@@ -63,6 +67,20 @@ describe("pull request review drafts", () => {
 
     expect(usePullRequestReviewStore.getState().drafts[publicKey]).toEqual([comment("public")]);
     expect(usePullRequestReviewStore.getState().summaries[publicKey]).toBe("Public review");
+  });
+
+  it("does not carry a review draft to another environment with the same PR identity", () => {
+    const reference = {
+      projectId: ProjectId.make("project-a"),
+      host: "github.com",
+      repository: "owner/repo",
+      number: 7,
+    };
+    const first = pullRequestReviewKey(EnvironmentId.make("env-a"), reference);
+    const second = pullRequestReviewKey(EnvironmentId.make("env-b"), reference);
+    usePullRequestReviewStore.getState().setSummary(first, "Private draft");
+    expect(first).not.toBe(second);
+    expect(usePullRequestReviewStore.getState().summaries[second]).toBeUndefined();
   });
 
   it("does not clear a summary revised while submission is in flight", () => {

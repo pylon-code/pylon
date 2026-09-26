@@ -1,3 +1,4 @@
+import { ConnectionTraceId, connectionTraceAccessibilityAction } from "./ConnectionTraceId";
 import { useAuth } from "@clerk/expo";
 import { SymbolView } from "../../components/AppSymbol";
 import {
@@ -399,6 +400,8 @@ function CloudEnvironmentRowShell(props: {
           {...(errorCanExpand
             ? { accessibilityRole: "button" as const, onPress: props.onToggleError }
             : {})}
+          {...(errorTraceId ? { accessible: true, accessibilityRole: "button" as const } : {})}
+          {...connectionTraceAccessibilityAction(errorTraceId)}
           className="min-w-0 flex-row items-start gap-1"
         >
           <Text
@@ -407,23 +410,16 @@ function CloudEnvironmentRowShell(props: {
           >
             {statusText}
             {errorTraceId ? (
-              <>
-                {" Trace ID: "}
-                <Text
-                  accessibilityHint="Copies the trace ID"
-                  accessibilityRole="button"
-                  className={cn("text-xs underline decoration-dotted", statusClassName)}
-                  onLongPress={(event) => {
-                    event.stopPropagation();
-                    copyTextWithHaptic(errorTraceId, { target: "connection-trace-id" });
-                  }}
-                  onPress={(event) => {
-                    event.stopPropagation();
-                  }}
-                >
-                  {errorTraceId}
-                </Text>
-              </>
+              <ConnectionTraceId
+                traceId={errorTraceId}
+                tone={
+                  props.connectionError && props.connectionState !== "unsupported"
+                    ? "danger"
+                    : "muted"
+                }
+                activation="longPress"
+                parentOwnsAccessibility
+              />
             ) : null}
           </Text>
           {errorCanExpand ? (

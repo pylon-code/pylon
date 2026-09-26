@@ -15,21 +15,74 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 const { listBrowserImportSources, selectedDeviceEnvironment } = vi.hoisted(() => ({
   listBrowserImportSources: vi.fn().mockResolvedValue([]),
-  selectedDeviceEnvironment: { id: null as string | null, aggregate: false, projectScope: false },
+  selectedDeviceEnvironment: {
+    id: null as string | null,
+    aggregate: false,
+    projectScope: false,
+    versioned: false,
+  },
 }));
 
 vi.mock("../preview/previewBridge", () => ({
   previewBridge: { listBrowserImportSources },
 }));
 vi.mock("../../env", () => ({ isElectron: true }));
+vi.mock("../../state/device", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../state/device")>();
+  return {
+    ...original,
+    useDeviceState: (environmentId: Parameters<typeof original.useDeviceState>[0]) =>
+      selectedDeviceEnvironment.versioned
+        ? {
+            loaded: true,
+            state: {
+              hosts: [
+                {
+                  id: "local",
+                  kind: "local",
+                  label: "This machine",
+                  hubInstalled: true,
+                  agentDeviceInstalled: true,
+                  platforms: [],
+                  tools: {
+                    hub: { requiredVersion: "2", installedVersions: ["1"], runningVersion: "1" },
+                    agent: {
+                      requiredVersion: "2",
+                      installedVersions: ["1"],
+                      runningVersion: "1",
+                    },
+                  },
+                },
+              ],
+              hostStatus: "ready",
+              hostStatuses: {},
+              devices: [],
+              sessions: [],
+              onboardingCompleted: true,
+              agentAccessEnabled: true,
+              hubBasePath: "/api/device-hub",
+              revision: 1,
+              supportsToolUpdate: true,
+              supportsToolInspection: true,
+            } satisfies DeviceServiceState,
+          }
+        : original.useDeviceState(environmentId),
+  };
+});
+vi.mock("../device/DeviceToolVersions", () => ({
+  DeviceToolVersions: ({ action, kind }: { action: ReactNode; kind: string }) => (
+    <div data-tool-version-kind={kind}>{action}</div>
+  ),
+}));
 vi.mock("../../state/environments", () => ({
   useEnvironments: () => ({ environments: [], isReady: true }),
   usePrimaryEnvironment: () => null,
 }));
 vi.mock("../../hooks/useSettings", () => ({
   PRIMARY_SETTINGS_UNAVAILABLE_MESSAGE: "Connect to an environment",
-  useClientSettings: (selector: (settings: typeof DEFAULT_CLIENT_SETTINGS) => unknown) =>
-    selector(DEFAULT_CLIENT_SETTINGS),
+  mergeEnvironmentSettings: (server: object, client: object) => ({ ...server, ...client }),
+  useClientSettings: (selector?: (settings: typeof DEFAULT_CLIENT_SETTINGS) => unknown) =>
+    selector ? selector(DEFAULT_CLIENT_SETTINGS) : DEFAULT_CLIENT_SETTINGS,
   useClientSettingsHydrated: () => true,
   usePrimarySettingsAvailable: () => true,
   usePrimarySettings: () => DEFAULT_UNIFIED_SETTINGS,
@@ -44,6 +97,7 @@ vi.mock("./settingsLayout", async (importOriginal) => ({
 vi.mock("./ProjectDefaultsSettings", () => ({ ProjectDefaultsSettings: () => null }));
 vi.mock("./SettingsScopeContext", () => ({
   useSettingsScope: () => ({
+    search: {},
     scope: {
       kind: selectedDeviceEnvironment.projectScope ? "project" : "all",
       environmentIds: selectedDeviceEnvironment.aggregate ? ["remote", "other"] : [],
@@ -56,7 +110,26 @@ vi.mock("./SettingsScopeContext", () => ({
           serverConfig: { settings: DEFAULT_UNIFIED_SETTINGS },
         }
       : null,
-    connectedEnvironments: selectedDeviceEnvironment.aggregate ? [{}, {}] : [],
+    connectedEnvironments: selectedDeviceEnvironment.aggregate
+      ? [
+          {
+            environmentId: "remote",
+            label: "Selected remote",
+            serverConfig: { settings: DEFAULT_UNIFIED_SETTINGS },
+          },
+          {
+            environmentId: "other",
+            label: "Other",
+            serverConfig: { settings: DEFAULT_UNIFIED_SETTINGS },
+          },
+        ]
+      : [],
+    environments: selectedDeviceEnvironment.aggregate
+      ? [
+          { environmentId: "remote", label: "Selected remote", connection: { phase: "connected" } },
+          { environmentId: "other", label: "Other", connection: { phase: "connected" } },
+        ]
+      : [],
     targets: [],
   }),
   useOptionalSettingsScope: () => null,
@@ -73,6 +146,7 @@ beforeEach(() => {
   selectedDeviceEnvironment.id = null;
   selectedDeviceEnvironment.aggregate = false;
   selectedDeviceEnvironment.projectScope = false;
+  selectedDeviceEnvironment.versioned = false;
 });
 
 afterEach(async () => {
@@ -115,7 +189,7 @@ describe("Integrations browser discovery", () => {
     expect(sections.indexOf("devices")).toBeGreaterThan(sections.indexOf("browser"));
   });
 
-  it("names the header's representative device environment without a second selector", async () => {
+  it("shows the selected device settings without a second selector", async () => {
     selectedDeviceEnvironment.id = "selected-remote";
     selectedDeviceEnvironment.aggregate = true;
     await openSettings();
@@ -124,13 +198,13 @@ describe("Integrations browser discovery", () => {
     )[0]!;
     expect(
       section.findAll((node) => node.type === "h2").map((node) => node.children.join("")),
-    ).toContain("Devices · Selected remote");
+    ).toContain("Devices");
     expect(
       section.findAll((node) => node.props["aria-label"] === "Device environment"),
     ).toHaveLength(0);
   });
 
-  it("keeps environment device helpers but removes their permission switch at a project scope", async () => {
+  it("keeps environment device helpers and the project-scoped permission switch", async () => {
     selectedDeviceEnvironment.projectScope = true;
     await openSettings();
     const section = renderer!.root.findAll(
@@ -138,10 +212,36 @@ describe("Integrations browser discovery", () => {
     )[0]!;
     expect(
       section.findAll((node) => node.props["aria-label"] === "Agent device access"),
-    ).toHaveLength(0);
+    ).not.toHaveLength(0);
     expect(
       section.findAll((node) => node.props["aria-label"] === "Device hub").length,
     ).toBeGreaterThan(0);
+  });
+
+  it("offers manual tool updates only at environment scope while retaining project inspection", async () => {
+    selectedDeviceEnvironment.id = "selected-remote";
+    selectedDeviceEnvironment.aggregate = true;
+    selectedDeviceEnvironment.versioned = true;
+    selectedDeviceEnvironment.projectScope = true;
+    await openSettings();
+    const project = renderer!.root.findAll(
+      (node) => node.type === "section" && node.props.id === "devices",
+    )[0]!;
+    expect(
+      project.findAll((node) => node.props["aria-label"] === "Agent device access"),
+    ).not.toHaveLength(0);
+    expect(project.findAll((node) => node.children.includes("Check versions"))).not.toHaveLength(0);
+    expect(project.findAll((node) => node.children.includes("Update to v2"))).toHaveLength(0);
+
+    await act(() => renderer?.unmount());
+    selectedDeviceEnvironment.projectScope = false;
+    await openSettings();
+    const environment = renderer!.root.findAll(
+      (node) => node.type === "section" && node.props.id === "devices",
+    )[0]!;
+    expect(environment.findAll((node) => node.children.includes("Update to v2"))).not.toHaveLength(
+      0,
+    );
   });
 });
 

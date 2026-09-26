@@ -1270,6 +1270,8 @@ export interface DesktopBridge {
   ) => () => void;
 
   getAppBranding: () => DesktopAppBranding | null;
+  /** Absolute path of a dropped or picked file; absent on desktop builds predating it. */
+  getPathForFile?: (file: File) => string;
   /** The desktop client's OS platform, read from Electron's preload process. */
   getClientPlatform?: () => string;
   setNotificationBadge?: (badge: { count: number; image: string | null }) => Promise<void>;
@@ -1367,6 +1369,8 @@ export interface DesktopBridge {
    * builds lack it; callers fall back to VS Code only.
    */
   probeRemoteEditors?: () => Promise<readonly EditorId[]>;
+  /** Present when the desktop shell can perform an ordered plain-text paste. */
+  pasteAsText?: () => Promise<void>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   onSnapShotEvent?: (listener: (event: DesktopSnapShotEvent) => void) => () => void;
   /**

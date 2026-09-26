@@ -307,27 +307,56 @@ describe("nativeMarkdownDocumentRuns", () => {
     ]);
   });
 
-  it("decorates known skill references as selectable skill links", () => {
+  it.each(["$", "€", "£", "¥", "₹", "₩", "₿", "𑿝"])(
+    "decorates %s skill references as selectable skill links",
+    (prefix) => {
+      const node: MarkdownNode = {
+        type: "document",
+        children: [
+          {
+            type: "paragraph",
+            children: [{ type: "text", content: `Use ${prefix}ui for this.` }],
+          },
+        ],
+      };
+
+      expect(nativeMarkdownDocumentRuns(node, [{ name: "ui", displayName: "UI" }], true)).toEqual([
+        { text: "Use ", role: "body" },
+        {
+          text: `${prefix}ui`,
+          role: "body",
+          sourceText: `${prefix}ui`,
+          skillName: "ui",
+          skillLabel: "UI",
+        },
+        { text: " for this.", role: "body" },
+      ]);
+    },
+  );
+
+  it("keeps Unicode aliases literal in history without provider identity", () => {
     const node: MarkdownNode = {
       type: "document",
-      children: [
-        {
-          type: "paragraph",
-          children: [{ type: "text", content: "Use $ui for this." }],
-        },
-      ],
+      children: [{ type: "paragraph", children: [{ type: "text", content: "Use 𑿝ui and $ui" }] }],
     };
+    const runs = nativeMarkdownDocumentRuns(node, [{ name: "ui" }]);
+    expect(runs.some((run) => run.skillName === "ui" && run.text === "𑿝ui")).toBe(false);
+    expect(runs.some((run) => run.skillName === "ui" && run.text === "$ui")).toBe(true);
+    expect(runs.map((run) => run.text).join("")).toBe("Use 𑿝ui and $ui");
+  });
 
-    expect(nativeMarkdownDocumentRuns(node, [{ name: "ui", displayName: "UI" }])).toEqual([
-      { text: "Use ", role: "body" },
-      {
-        text: "$ui",
-        role: "body",
-        skillName: "ui",
-        skillLabel: "UI",
-      },
-      { text: " for this.", role: "body" },
-    ]);
+  it("copies a decorated astral currency alias without replacing its prefix", () => {
+    const node: MarkdownNode = {
+      type: "document",
+      children: [{ type: "paragraph", children: [{ type: "text", content: "Use 𑿝ui now" }] }],
+    };
+    const skillRun = nativeMarkdownDocumentRuns(node, [{ name: "ui" }], true).find(
+      (run) => run.skillName === "ui",
+    );
+    expect(skillRun).toBeDefined();
+    expect(
+      nativeMarkdownContextCopyRanges([{ run: skillRun!, text: "\uFFFC", inlineImageLength: 0 }]),
+    ).toEqual([{ start: 0, end: 1, text: "𑿝ui" }]);
   });
 
   it("decorates known skill references that begin with a digit", () => {
@@ -346,6 +375,7 @@ describe("nativeMarkdownDocumentRuns", () => {
       {
         text: "$2spec",
         role: "body",
+        sourceText: "$2spec",
         skillName: "2spec",
         skillLabel: "2Spec",
       },
@@ -364,9 +394,12 @@ describe("nativeMarkdownDocumentRuns", () => {
       ],
     };
 
-    expect(nativeMarkdownDocumentRuns(node, [{ name: "ui", displayName: "UI" }])).toContainEqual({
+    expect(
+      nativeMarkdownDocumentRuns(node, [{ name: "ui", displayName: "UI" }], true),
+    ).toContainEqual({
       text: "$ui",
       role: "body",
+      sourceText: "$ui",
       skillName: "ui",
       skillLabel: "UI",
     });

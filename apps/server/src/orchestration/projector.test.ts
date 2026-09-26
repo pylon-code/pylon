@@ -78,6 +78,7 @@ describe("orchestration projector", () => {
         id: "thread-1",
         projectId: "project-1",
         title: "demo",
+        titleState: null,
         modelSelection: {
           instanceId: "codex",
           model: "gpt-5-codex",

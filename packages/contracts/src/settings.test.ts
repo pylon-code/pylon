@@ -700,6 +700,22 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults text generation to Luna at low reasoning effort", () => {
     expect(DEFAULT_SERVER_SETTINGS.textGenerationModelSelection).toEqual({
       instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-6-luna",
+      options: [{ id: "reasoningEffort", value: "low" }],
+    });
+  });
+
+  it("preserves a previously selected text-generation model", () => {
+    expect(
+      decodeServerSettings({
+        textGenerationModelSelection: {
+          instanceId: "codex",
+          model: "gpt-5.6-luna",
+          options: [{ id: "reasoningEffort", value: "low" }],
+        },
+      }).textGenerationModelSelection,
+    ).toEqual({
+      instanceId: ProviderInstanceId.make("codex"),
       model: "gpt-5.6-luna",
       options: [{ id: "reasoningEffort", value: "low" }],
     });
@@ -812,6 +828,13 @@ describe("provider enabled defaults", () => {
 });
 
 describe("ServerSettings worktree defaults", () => {
+  it("defaults submodules to repository settings and accepts explicit modes", () => {
+    expect(decodeServerSettings({}).worktreeSubmodules).toBeNull();
+    for (const mode of ["recursive", "top-level", "none"] as const) {
+      expect(decodeServerSettingsPatch({ worktreeSubmodules: mode }).worktreeSubmodules).toBe(mode);
+    }
+    expect(decodeServerSettingsPatch({ worktreeSubmodules: null }).worktreeSubmodules).toBeNull();
+  });
   it("defaults start-from-origin on for legacy configs", () => {
     expect(decodeServerSettings({}).newWorktreesStartFromOrigin).toBe(true);
   });

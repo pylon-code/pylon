@@ -115,8 +115,8 @@ the URL manually.
 
 ### Migration table upgrade
 
-Alchemy beta.76 records applied migrations in its own table format. The first deploy on beta.76
-against a relay database rebuilds `relay_migrations` in place, from three columns to `id serial`,
+Alchemy beta.76 and later record applied migrations in their own table format. The first deploy on
+beta.76 or later against a relay database rebuilds `relay_migrations` in place, from three columns to `id serial`,
 `hash`, `created_at`, `name` and `applied_at`. Every applied row is kept, so no migration runs
 again.
 

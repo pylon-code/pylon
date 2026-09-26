@@ -132,9 +132,16 @@ Use `https://openrouter.ai/api`, not `/api/v1`. If that Claude config directory 
 login, run `/logout` in a Claude Code session using that directory before starting the router setup.
 Cached login credentials can conflict with the router token.
 
-Verify requests with `/status` in a Claude session or in OpenRouter's activity dashboard. For
-model-role overrides and current compatibility requirements, use the
-[OpenRouter Claude Code guide](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration).
+Choose the model in Pylon's chat model picker. If the OpenRouter model is not listed, open that
+Claude instance in **Settings → Providers**, add its full model ID with **Add custom model**, then
+select it in the picker. Claude Code's `ANTHROPIC_DEFAULT_*_MODEL` variables map role aliases such
+as `sonnet`; they do not replace a model ID explicitly selected in Pylon. Custom models may expose
+fewer effort, thinking, or context controls than built-in models.
+
+Verify the router connection with `/status` in a Claude session using that config directory, and
+check OpenRouter's activity dashboard for the model used by Pylon. For model-role overrides and
+current compatibility requirements, use the
+[OpenRouter Claude Code guide](https://openrouter.ai/docs/guides/coding-agents/claude-code-integration).
 
 ## Other routers
 
