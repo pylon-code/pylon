@@ -189,18 +189,26 @@ export const make = Effect.gen(function* () {
       record = workspaceStarted.value;
       const preimage = privatePreimage(record.state);
       if (preimage !== null) {
-        workspaceProved = yield* workspace
-          .restorePreimage({
-            cwd: record.state.workspaceCwd,
-            preimage,
-          })
-          .pipe(
-            Effect.tap(() => after("side-effect:workspace-compensated", record.operationId)),
-            Effect.match({
-              onFailure: () => false,
-              onSuccess: (receipt) => receipt.digest === preimage.digest,
-            }),
-          );
+        const validOwner =
+          record.state.sourceCheckpointRef ===
+            checkpointRefForThreadTurn(record.state.threadId, record.state.sourceRevision) &&
+          record.state.targetCheckpointRef ===
+            checkpointRefForThreadTurn(record.state.threadId, record.state.targetRevision);
+        workspaceProved = validOwner
+          ? yield* workspace
+              .restorePreimage({
+                cwd: record.state.workspaceCwd,
+                threadId: record.state.threadId,
+                preimage,
+              })
+              .pipe(
+                Effect.tap(() => after("side-effect:workspace-compensated", record.operationId)),
+                Effect.match({
+                  onFailure: () => false,
+                  onSuccess: (receipt) => receipt.digest === preimage.digest,
+                }),
+              )
+          : false;
       }
 
       const workspaceComplete = yield* update(record, {
@@ -332,6 +340,7 @@ export const make = Effect.gen(function* () {
             .capturePreimage({
               operationId: state.operationId,
               cwd: state.workspaceCwd,
+              threadId: state.threadId,
               targetCheckpointOid: state.targetCheckpointOid,
             })
             .pipe(Effect.result);

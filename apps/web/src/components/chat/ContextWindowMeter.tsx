@@ -1,4 +1,4 @@
-import { composerFloatingLayerProps } from "./composerEventScope";
+import { useComposerMenuProps } from "./composerEventScope";
 import type { SessionCompactionUpdatedPayload } from "@t3tools/contracts";
 import { useId } from "react";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
@@ -147,6 +147,7 @@ export function ContextWindowMeter(props: {
   compaction?: ContextCompactionControlProps | null;
   harnessRefinement?: HarnessRefinementControlProps | null;
 }) {
+  const composerFloatingLayerProps = useComposerMenuProps();
   const { usage, modelDisplayName } = props;
   const usedPercentage = formatPercentage(usage?.usedPercentage ?? null);
   const normalizedPercentage = Math.max(0, Math.min(100, usage?.usedPercentage ?? 0));

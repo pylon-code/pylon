@@ -94,6 +94,8 @@ export interface MergedUsage {
   readonly duplicateSources: readonly string[];
   readonly contributingEnvironments: readonly EnvironmentId[];
   readonly staleEnvironments: readonly EnvironmentId[];
+  /** Legacy mixed homes or unknown filesystem identities prevent exact attribution. */
+  readonly approximateEnvironments: readonly EnvironmentId[];
 }
 
 /**
@@ -104,13 +106,16 @@ export interface MergedUsage {
  * home path, which is every Mac in a fleet, from collapsing into one source and
  * having one of them silently dropped.
  */
-function fingerprintKey(fingerprint: UsageSourceFingerprint): string {
-  return [
+function fingerprintKey(fingerprint: UsageSourceFingerprint, environmentId: EnvironmentId): string {
+  return JSON.stringify([
     fingerprint.hostId,
     fingerprint.provider,
     fingerprint.resolvedHomePath,
     fingerprint.volumeId,
-  ].join(" ");
+    // An unreadable filesystem identity cannot prove two remote environments
+    // see the same directory, even if their hostnames and paths match.
+    fingerprint.volumeId === "" ? environmentId : "",
+  ]);
 }
 
 /**
@@ -118,23 +123,39 @@ function fingerprintKey(fingerprint: UsageSourceFingerprint): string {
  *
  * Several environments on one machine (worktree servers, for instance) resolve
  * the same provider home and would otherwise double count every token. The
- * first environment in a stable order claims a fingerprint; the rest have that
- * provider's buckets dropped. Environments are sorted by id so the winner does
- * not change between renders.
+ * most recently read summary claims a fingerprint; environment ids break ties
+ * so ownership stays stable when two summaries have the same read time.
  */
 function claimSources(environments: readonly EnvironmentUsage[]): {
   readonly ownerByFingerprint: ReadonlyMap<string, EnvironmentId>;
   readonly duplicates: readonly string[];
+  readonly uncertainEnvironments: readonly EnvironmentId[];
 } {
   const ownerByFingerprint = new Map<string, EnvironmentId>();
   const duplicates: string[] = [];
+  const weakMatches = new Map<string, { environmentId: EnvironmentId; volumeId: string }[]>();
 
-  const ordered = [...environments].sort((a, b) => a.environmentId.localeCompare(b.environmentId));
+  const ordered = [...environments].sort(
+    (a, b) =>
+      (Date.parse(b.summary.readAt) || 0) - (Date.parse(a.summary.readAt) || 0) ||
+      a.environmentId.localeCompare(b.environmentId),
+  );
 
   for (const environment of ordered) {
     for (const source of environment.summary.sources) {
       if (source.status === "missing") continue;
-      const key = fingerprintKey(source.fingerprint);
+      const weakKey = JSON.stringify([
+        source.fingerprint.hostId,
+        source.fingerprint.provider,
+        source.fingerprint.resolvedHomePath,
+      ]);
+      const matches = weakMatches.get(weakKey) ?? [];
+      matches.push({
+        environmentId: environment.environmentId,
+        volumeId: source.fingerprint.volumeId,
+      });
+      weakMatches.set(weakKey, matches);
+      const key = fingerprintKey(source.fingerprint, environment.environmentId);
       if (ownerByFingerprint.has(key)) {
         duplicates.push(`${environment.label}: ${source.fingerprint.resolvedHomePath}`);
         continue;
@@ -143,7 +164,17 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
     }
   }
 
-  return { ownerByFingerprint, duplicates };
+  const uncertainEnvironments = new Set<EnvironmentId>();
+  for (const matches of weakMatches.values()) {
+    if (
+      matches.some((match) => match.volumeId === "") &&
+      new Set(matches.map((match) => match.environmentId)).size > 1
+    ) {
+      for (const match of matches) uncertainEnvironments.add(match.environmentId);
+    }
+  }
+
+  return { ownerByFingerprint, duplicates, uncertainEnvironments: [...uncertainEnvironments] };
 }
 
 /** Sources this environment owns after fingerprint claims, plus their buckets. */
@@ -153,12 +184,16 @@ function ownedContribution(
 ): {
   readonly buckets: readonly UsageBucket[];
   readonly sessionsByProvider: ReadonlyMap<UsageProviderKind, number>;
+  readonly approximate: boolean;
 } {
   const ownedProviders = new Set<UsageProviderKind>();
   const sessionsByProvider = new Map<UsageProviderKind, number>();
+  const sourcesByProvider = new Map<UsageProviderKind, typeof environment.summary.sources>();
   for (const source of environment.summary.sources) {
     if (source.status === "missing") continue;
-    const key = fingerprintKey(source.fingerprint);
+    const providerSources = sourcesByProvider.get(source.fingerprint.provider) ?? [];
+    sourcesByProvider.set(source.fingerprint.provider, [...providerSources, source]);
+    const key = fingerprintKey(source.fingerprint, environment.environmentId);
     if (ownerByFingerprint.get(key) === environment.environmentId) {
       const provider = source.fingerprint.provider;
       ownedProviders.add(provider);
@@ -170,9 +205,45 @@ function ownedContribution(
       );
     }
   }
+  const buckets: UsageBucket[] = [];
+  let approximate = false;
+  for (const [provider, sources] of sourcesByProvider) {
+    if (!ownedProviders.has(provider)) continue;
+    // Mixed-version peers still have provider-wide buckets. Keep those totals
+    // visible, but explicitly report their attribution as approximate when a
+    // provider spans both owned and duplicated directories.
+    const granular = sources.every(
+      (source) =>
+        source.buckets !== undefined &&
+        source.buckets.every((bucket) => bucket.provider === source.fingerprint.provider),
+    );
+    if (granular) {
+      for (const source of sources) {
+        if (
+          ownerByFingerprint.get(fingerprintKey(source.fingerprint, environment.environmentId)) ===
+          environment.environmentId
+        ) {
+          buckets.push(...(source.buckets ?? []));
+        }
+      }
+    } else {
+      buckets.push(...environment.summary.buckets.filter((bucket) => bucket.provider === provider));
+      if (
+        sources.some(
+          (source) =>
+            ownerByFingerprint.get(
+              fingerprintKey(source.fingerprint, environment.environmentId),
+            ) !== environment.environmentId,
+        )
+      ) {
+        approximate = true;
+      }
+    }
+  }
   return {
-    buckets: environment.summary.buckets.filter((bucket) => ownedProviders.has(bucket.provider)),
+    buckets,
     sessionsByProvider,
+    approximate,
   };
 }
 
@@ -213,6 +284,7 @@ const EMPTY_MERGED: MergedUsage = {
   duplicateSources: [],
   contributingEnvironments: [],
   staleEnvironments: [],
+  approximateEnvironments: [],
 };
 
 /**
@@ -242,7 +314,7 @@ export function mergeUsage(
     }
   }
 
-  const { ownerByFingerprint, duplicates } = claimSources(current);
+  const { ownerByFingerprint, duplicates, uncertainEnvironments } = claimSources(current);
 
   let costUsd = 0;
   let uncachedInputTokens = 0;
@@ -289,9 +361,14 @@ export function mergeUsage(
     }
   >();
   const contributingEnvironments: EnvironmentId[] = [];
+  const approximateEnvironments = new Set<EnvironmentId>(uncertainEnvironments);
 
   for (const environment of current) {
-    const { buckets, sessionsByProvider } = ownedContribution(environment, ownerByFingerprint);
+    const { buckets, sessionsByProvider, approximate } = ownedContribution(
+      environment,
+      ownerByFingerprint,
+    );
+    if (approximate) approximateEnvironments.add(environment.environmentId);
     if (buckets.length > 0) contributingEnvironments.push(environment.environmentId);
 
     for (const [providerKind, providerSessions] of sessionsByProvider) {
@@ -444,5 +521,6 @@ export function mergeUsage(
     duplicateSources: duplicates,
     contributingEnvironments,
     staleEnvironments,
+    approximateEnvironments: [...approximateEnvironments],
   };
 }

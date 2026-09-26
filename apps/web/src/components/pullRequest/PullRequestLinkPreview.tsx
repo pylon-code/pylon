@@ -10,7 +10,7 @@ import {
 } from "react";
 
 import { formatRelativeTimeLabel } from "~/timestampFormat";
-import { pullRequestEnvironment } from "~/state/pullRequests";
+import { linkedPullRequestDetailAtom } from "~/state/pullRequests";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useEnvironmentQuery } from "~/state/query";
 
@@ -45,15 +45,8 @@ export function PullRequestLinkPreview({
 }) {
   const [open, setOpen] = useState(false);
   const [resolvingClick, setResolvingClick] = useState(false);
-  const detailQuery = useEnvironmentQuery(
-    open
-      ? pullRequestEnvironment.detail({
-          environmentId: target.environmentId,
-          input: target.input,
-        })
-      : null,
-  );
-  const readDetail = useAtomQueryRunner(pullRequestEnvironment.detail, {
+  const summaryQuery = useEnvironmentQuery(open ? linkedPullRequestDetailAtom(target) : null);
+  const readSummary = useAtomQueryRunner(linkedPullRequestDetailAtom, {
     reportFailure: false,
     reportDefect: false,
   });
@@ -68,7 +61,7 @@ export function PullRequestLinkPreview({
             if (resolvingClick) return;
             setOpen(false);
             setResolvingClick(true);
-            void readDetail({ environmentId: target.environmentId, input: target.input })
+            void readSummary(target)
               .then(async (result) => {
                 if (isAtomCommandInterrupted(result)) return;
                 if (result._tag === "Success" && onOpenPullRequest?.(result.value.url)) return;
@@ -81,53 +74,58 @@ export function PullRequestLinkPreview({
           },
         })
       : link;
-  const detail = detailQuery.data;
+  const summary = summaryQuery.data;
   const state =
-    detail === null
+    summary === null
       ? null
-      : resolvePullRequestState({ state: detail.state, isDraft: detail.isDraft });
+      : resolvePullRequestState({ state: summary.state, isDraft: summary.isDraft ?? false });
+  const author = summary?.author ?? null;
   const authorLabel =
-    detail?.author === null
+    author === null
       ? "ghost"
-      : detail?.author.name && detail.author.name !== detail.author.login
-        ? `${detail.author.name} (@${detail.author.login})`
-        : (detail?.author.login ?? null);
+      : author.name && author.name !== author.login
+        ? `${author.name} (@${author.login})`
+        : author.login;
 
   return (
     <PreviewCard open={open} onOpenChange={setOpen}>
       <PreviewCardTrigger render={trigger} delay={350} closeDelay={120} />
-      <PreviewCardPopup align="center" className="w-80 max-w-[calc(100vw-2rem)] p-3">
-        {detail === null ? (
-          (fallback ?? (
-            <p className="text-xs leading-relaxed text-muted-foreground wrap-anywhere">
-              {detailQuery.isPending ? "Loading pull request details…" : originalUrl}
-            </p>
-          ))
-        ) : (
-          <div className="min-w-0">
-            <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-              <span className="min-w-0 truncate">{detail.repository}</span>
-              <span className="shrink-0">#{detail.number}</span>
-              <span aria-hidden>·</span>
-              {state === null ? null : (
-                <span className="inline-flex shrink-0 items-center gap-1">
-                  <state.Icon aria-hidden className={`size-3 ${state.toneClassName}`} />
-                  {state.label}
+      {summary !== null || summaryQuery.error !== null ? (
+        <PreviewCardPopup align="center" className="w-80 max-w-[calc(100vw-2rem)] p-3">
+          {summary === null ? (
+            (fallback ?? (
+              <p className="text-xs leading-relaxed text-muted-foreground wrap-anywhere">
+                {originalUrl}
+              </p>
+            ))
+          ) : (
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+                <span className="min-w-0 truncate">{summary.repository}</span>
+                <span className="shrink-0">#{summary.number}</span>
+                <span aria-hidden>·</span>
+                {state === null ? null : (
+                  <span className="inline-flex shrink-0 items-center gap-1">
+                    <state.Icon aria-hidden className={`size-3 ${state.toneClassName}`} />
+                    {state.label}
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-sm font-medium leading-snug text-foreground text-pretty">
+                {summary.title}
+              </p>
+              <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                <PullRequestActorAvatar actor={author} className="size-4" />
+                <span className="min-w-0 truncate">{authorLabel}</span>
+                <span aria-hidden>·</span>
+                <span className="shrink-0">
+                  updated {formatRelativeTimeLabel(summary.updatedAt)}
                 </span>
-              )}
+              </div>
             </div>
-            <p className="mt-1 text-sm font-medium leading-snug text-foreground text-pretty">
-              {detail.title}
-            </p>
-            <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-              <PullRequestActorAvatar actor={detail.author} className="size-4" />
-              <span className="min-w-0 truncate">{authorLabel}</span>
-              <span aria-hidden>·</span>
-              <span className="shrink-0">opened {formatRelativeTimeLabel(detail.createdAt)}</span>
-            </div>
-          </div>
-        )}
-      </PreviewCardPopup>
+          )}
+        </PreviewCardPopup>
+      ) : null}
     </PreviewCard>
   );
 }

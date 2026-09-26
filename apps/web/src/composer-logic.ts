@@ -54,9 +54,18 @@ function tokenStartForCursor(text: string, cursor: number): number {
   return index + 1;
 }
 
-export function expandCollapsedComposerCursor(text: string, cursorInput: number): number {
+export function expandCollapsedComposerCursor(
+  text: string,
+  cursorInput: number,
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
+): number {
   const collapsedCursor = clampCursor(text, cursorInput);
-  const segments = splitPromptIntoComposerSegments(text);
+  const segments = splitPromptIntoComposerSegments(
+    text,
+    allowUnicodeSkillAliases,
+    unicodeSkillNames,
+  );
   if (segments.length === 0) {
     return collapsedCursor;
   }
@@ -79,7 +88,7 @@ export function expandCollapsedComposerCursor(text: string, cursorInput: number)
       continue;
     }
     if (segment.type === "skill") {
-      const expandedLength = segment.name.length + 1;
+      const expandedLength = segment.source.length;
       if (remaining <= 1) {
         return expandedCursor + (remaining === 0 ? 0 : expandedLength);
       }
@@ -120,16 +129,30 @@ function clampCollapsedComposerCursorForSegments(
   return Math.max(0, Math.min(collapsedLength, Math.floor(cursorInput)));
 }
 
-export function clampCollapsedComposerCursor(text: string, cursorInput: number): number {
+export function clampCollapsedComposerCursor(
+  text: string,
+  cursorInput: number,
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
+): number {
   return clampCollapsedComposerCursorForSegments(
-    splitPromptIntoComposerSegments(text),
+    splitPromptIntoComposerSegments(text, allowUnicodeSkillAliases, unicodeSkillNames),
     cursorInput,
   );
 }
 
-export function collapseExpandedComposerCursor(text: string, cursorInput: number): number {
+export function collapseExpandedComposerCursor(
+  text: string,
+  cursorInput: number,
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
+): number {
   const expandedCursor = clampCursor(text, cursorInput);
-  const segments = splitPromptIntoComposerSegments(text);
+  const segments = splitPromptIntoComposerSegments(
+    text,
+    allowUnicodeSkillAliases,
+    unicodeSkillNames,
+  );
   if (segments.length === 0) {
     return expandedCursor;
   }
@@ -155,7 +178,7 @@ export function collapseExpandedComposerCursor(text: string, cursorInput: number
       continue;
     }
     if (segment.type === "skill") {
-      const expandedLength = segment.name.length + 1;
+      const expandedLength = segment.source.length;
       if (remaining === 0) {
         return collapsedCursor;
       }
@@ -182,8 +205,14 @@ export function isCollapsedCursorAdjacentToInlineToken(
   text: string,
   cursorInput: number,
   direction: "left" | "right",
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
 ): boolean {
-  const segments = splitPromptIntoComposerSegments(text);
+  const segments = splitPromptIntoComposerSegments(
+    text,
+    allowUnicodeSkillAliases,
+    unicodeSkillNames,
+  );
   if (!segments.some(isInlineTokenSegment)) {
     return false;
   }
@@ -206,7 +235,11 @@ export function isCollapsedCursorAdjacentToInlineToken(
   return false;
 }
 
-export function detectComposerTrigger(text: string, cursorInput: number): ComposerTrigger | null {
+export function detectComposerTrigger(
+  text: string,
+  cursorInput: number,
+  allowUnicodeSkillAliases = true,
+): ComposerTrigger | null {
   const cursor = clampCursor(text, cursorInput);
   const lineStart = text.lastIndexOf("\n", Math.max(0, cursor - 1)) + 1;
   const linePrefix = text.slice(lineStart, cursor);
@@ -235,10 +268,11 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
       rangeEnd: cursor,
     };
   }
-  if (token.startsWith("$")) {
+  const skillPrefix = /^\p{Sc}/u.exec(token);
+  if (skillPrefix && (allowUnicodeSkillAliases || skillPrefix[0] === "$")) {
     return {
       kind: "skill",
-      query: token.slice(1),
+      query: token.slice(skillPrefix[0].length),
       rangeStart: tokenStart,
       rangeEnd: cursor,
     };
@@ -256,14 +290,75 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
 }
 
 /** Caret and trigger after replacing composer text and continuing at the end. */
-export function composerStateAtPromptEnd(text: string): {
+export function composerStateAtPromptEnd(
+  text: string,
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames?: ReadonlySet<string>,
+): {
   cursor: number;
   trigger: ComposerTrigger | null;
 } {
-  const cursor = collapseExpandedComposerCursor(text, text.length);
+  const cursor = collapseExpandedComposerCursor(
+    text,
+    text.length,
+    allowUnicodeSkillAliases,
+    unicodeSkillNames,
+  );
   return {
     cursor,
-    trigger: detectComposerTrigger(text, expandCollapsedComposerCursor(text, cursor)),
+    trigger: detectComposerTrigger(
+      text,
+      expandCollapsedComposerCursor(text, cursor, allowUnicodeSkillAliases, unicodeSkillNames),
+      allowUnicodeSkillAliases,
+    ),
+  };
+}
+
+export interface ComposerAliasPolicy {
+  readonly allowUnicodeSkillAliases: boolean;
+  readonly unicodeSkillNames: ReadonlySet<string>;
+}
+
+/** Stable readers for callbacks that outlive a provider or skill-catalog selection. */
+export function createComposerAliasPolicyReaders(getPolicy: () => ComposerAliasPolicy) {
+  return {
+    clampCollapsedComposerCursor: (text: string, cursor: number) => {
+      const policy = getPolicy();
+      return clampCollapsedComposerCursor(
+        text,
+        cursor,
+        policy.allowUnicodeSkillAliases,
+        policy.unicodeSkillNames,
+      );
+    },
+    collapseExpandedComposerCursor: (text: string, cursor: number) => {
+      const policy = getPolicy();
+      return collapseExpandedComposerCursor(
+        text,
+        cursor,
+        policy.allowUnicodeSkillAliases,
+        policy.unicodeSkillNames,
+      );
+    },
+    expandCollapsedComposerCursor: (text: string, cursor: number) => {
+      const policy = getPolicy();
+      return expandCollapsedComposerCursor(
+        text,
+        cursor,
+        policy.allowUnicodeSkillAliases,
+        policy.unicodeSkillNames,
+      );
+    },
+    detectComposerTrigger: (text: string, cursor: number) =>
+      detectComposerTrigger(text, cursor, getPolicy().allowUnicodeSkillAliases),
+    composerStateAtPromptEnd: (text: string) => {
+      const policy = getPolicy();
+      return composerStateAtPromptEnd(
+        text,
+        policy.allowUnicodeSkillAliases,
+        policy.unicodeSkillNames,
+      );
+    },
   };
 }
 

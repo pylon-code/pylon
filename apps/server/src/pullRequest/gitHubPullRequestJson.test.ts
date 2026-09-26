@@ -2,14 +2,18 @@ import * as Result from "effect/Result";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  buildPullRequestSummariesGraphQlQuery,
+  decodePullRequestSummariesJson,
   buildReviewSubmissionJson,
   buildPullRequestStackMembershipsGraphQlQuery,
   decodePullRequestStackMembershipsJson,
   buildReviewerRequestJson,
+  buildSetFilesViewedGraphQlMutation,
   decodeBaseComparisonJson,
   decodePullRequestActivityJson,
   decodePullRequestDetailJson,
   decodePullRequestFilesJson,
+  decodePullRequestFilesViewedJson,
   decodePullRequestListJson,
   decodePullRequestNodeIdJson,
   decodePullRequestSearchJson,
@@ -1402,6 +1406,57 @@ describe("review submission payload", () => {
 });
 
 describe("decodePullRequestFilesJson", () => {
+  it("quotes literal backslashes without interpreting them as escapes", () => {
+    const result = expectSuccess(
+      decodePullRequestFilesJson(
+        JSON.stringify([
+          {
+            filename: String.raw`src\notes.ts`,
+            status: "modified",
+            patch: "@@ -1 +1 @@\n-old\n+new",
+          },
+        ]),
+      ),
+    );
+
+    expect(result.patch).toBe(
+      [
+        String.raw`diff --git "a/src\\notes.ts" "b/src\\notes.ts"`,
+        String.raw`--- "a/src\\notes.ts"`,
+        String.raw`+++ "b/src\\notes.ts"`,
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("preserves spaces and literal backslashes in both rename paths", () => {
+    const result = expectSuccess(
+      decodePullRequestFilesJson(
+        JSON.stringify([
+          {
+            previous_filename: String.raw` old\name.ts `,
+            filename: String.raw` new\name.ts `,
+            status: "renamed",
+          },
+        ]),
+      ),
+    );
+
+    expect(result.patch).toBe(
+      [
+        String.raw`diff --git "a/ old\\name.ts " "b/ new\\name.ts "`,
+        String.raw`rename from " old\\name.ts "`,
+        String.raw`rename to " new\\name.ts "`,
+        String.raw`--- "a/ old\\name.ts "`,
+        String.raw`+++ "b/ new\\name.ts "`,
+        "",
+      ].join("\n"),
+    );
+  });
+
   it("assembles a unified patch the files API does not return", () => {
     const result = expectSuccess(
       decodePullRequestFilesJson(
@@ -1570,6 +1625,100 @@ describe("how far a branch trails its base", () => {
   });
 });
 
+describe("decodePullRequestFilesViewedJson", () => {
+  const page = (
+    nodes: ReadonlyArray<unknown>,
+    pageInfo: { hasNextPage: boolean; endCursor: string | null },
+  ) =>
+    JSON.stringify({
+      data: { repository: { pullRequest: { files: { pageInfo, nodes } } } },
+    });
+
+  it("reads each file's state and where the next page carries on", () => {
+    const decoded = decodePullRequestFilesViewedJson(
+      page(
+        [
+          { path: "src/a.ts", viewerViewedState: "VIEWED" },
+          { path: "src/b.ts", viewerViewedState: "UNVIEWED" },
+          { path: "src/c.ts", viewerViewedState: "DISMISSED" },
+        ],
+        { hasNextPage: true, endCursor: "cursor-2" },
+      ),
+    );
+    expect(Result.isSuccess(decoded)).toBe(true);
+    if (!Result.isSuccess(decoded)) return;
+    expect(decoded.success).toEqual({
+      files: [
+        { path: "src/a.ts", state: "viewed" },
+        { path: "src/b.ts", state: "unviewed" },
+        { path: "src/c.ts", state: "dismissed" },
+      ],
+      nextCursor: "cursor-2",
+    });
+  });
+
+  it("treats a state it has never heard of as unread rather than failing the page", () => {
+    const decoded = decodePullRequestFilesViewedJson(
+      page([{ path: "src/a.ts", viewerViewedState: "SOMETHING_NEW" }], {
+        hasNextPage: false,
+        endCursor: null,
+      }),
+    );
+    expect(Result.isSuccess(decoded)).toBe(true);
+    if (!Result.isSuccess(decoded)) return;
+    expect(decoded.success).toEqual({
+      files: [{ path: "src/a.ts", state: "unviewed" }],
+      nextCursor: null,
+    });
+  });
+
+  it("answers empty for a pull request the host has nothing to say about", () => {
+    const decoded = decodePullRequestFilesViewedJson(
+      JSON.stringify({ data: { repository: { pullRequest: null } } }),
+    );
+    expect(Result.isSuccess(decoded)).toBe(true);
+    if (!Result.isSuccess(decoded)) return;
+    expect(decoded.success).toEqual({ files: [], nextCursor: null });
+  });
+});
+
+describe("buildSetFilesViewedGraphQlMutation", () => {
+  it("asks for nothing when nothing was pressed", () => {
+    expect(buildSetFilesViewedGraphQlMutation([])).toBeNull();
+  });
+
+  it("clears and restores in one document, each file under its own alias", () => {
+    const mutation = buildSetFilesViewedGraphQlMutation([
+      { path: "src/a.ts", viewed: true },
+      { path: "src/b.ts", viewed: false },
+    ]);
+    expect(mutation).not.toBeNull();
+    if (mutation === null) return;
+    expect(mutation.query).toContain(
+      "mutation($pullRequestId: ID!, $path0: String!, $path1: String!)",
+    );
+    expect(mutation.query).toContain(
+      "f0: markFileAsViewed(input: { pullRequestId: $pullRequestId, path: $path0 })",
+    );
+    expect(mutation.query).toContain(
+      "f1: unmarkFileAsViewed(input: { pullRequestId: $pullRequestId, path: $path1 })",
+    );
+    expect(mutation.variables).toEqual({ path0: "src/a.ts", path1: "src/b.ts" });
+  });
+
+  it("keeps a path out of the document, so one cannot be read as part of it", () => {
+    const mutation = buildSetFilesViewedGraphQlMutation([
+      { path: '") { __typename } evil: markFileAsViewed(input: { path: "x', viewed: true },
+    ]);
+    expect(mutation).not.toBeNull();
+    if (mutation === null) return;
+    expect(mutation.query).not.toContain("evil");
+    expect(mutation.variables.path0).toBe(
+      '") { __typename } evil: markFileAsViewed(input: { path: "x',
+    );
+  });
+});
+
 describe("host-native stack decoding", () => {
   /** A stack as the preview lists it, bottom to top, with the fields it answers today. */
   function stack(overrides: Record<string, unknown> = {}) {
@@ -1706,5 +1855,56 @@ describe("pull request stack membership batches", () => {
     expect(buildPullRequestStackMembershipsGraphQlQuery("acme/web", [7, 8])).toContain(
       "pullRequest(number: 8)",
     );
+  });
+});
+
+describe("batched pull request summaries", () => {
+  it("refuses a repository GraphQL cannot address, rather than writing it into the document", () => {
+    expect(
+      buildPullRequestSummariesGraphQlQuery([{ repository: 'acme/web") { x } #', number: 1 }]),
+    ).toBeNull();
+    expect(
+      buildPullRequestSummariesGraphQlQuery([{ repository: "acme/web", number: 0 }]),
+    ).toBeNull();
+    expect(buildPullRequestSummariesGraphQlQuery([])).toBeNull();
+  });
+
+  it("files each answer by its alias and skips what GitHub or the decoder could not give", () => {
+    const decoded = decodePullRequestSummariesJson(
+      JSON.stringify({
+        data: {
+          s0: {
+            pullRequest: {
+              number: 7,
+              title: "Merged",
+              url: "https://github.com/acme/web/pull/7",
+              author: { __typename: "Bot", login: "renovate", avatarUrl: "https://a/r.png" },
+              headRefName: "feat/seven",
+              baseRefName: "main",
+              state: "MERGED",
+              mergedAt: "2026-08-24T00:00:00Z",
+              closedAt: "2026-08-24T00:00:00Z",
+              updatedAt: "2026-08-24T00:00:00Z",
+              commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE" } } }] },
+            },
+          },
+          s1: { pullRequest: null },
+          s2: { pullRequest: { number: 9 } },
+          rateLimit: { cost: 1 },
+        },
+      }),
+    );
+    expect(Result.isSuccess(decoded)).toBe(true);
+    if (!Result.isSuccess(decoded)) return;
+    expect([...decoded.success.keys()]).toEqual([0]);
+    expect(decoded.success.get(0)).toMatchObject({
+      number: 7,
+      state: "merged",
+      mergedAt: "2026-08-24T00:00:00Z",
+      author: { login: "renovate", isBot: true },
+      checksState: "failing",
+      mergeability: "unknown",
+      additions: 0,
+    });
   });
 });

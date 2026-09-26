@@ -58,32 +58,89 @@ export function isRetainedUsageFresh(input: {
  * number beats no number when deciding where to send work, and `checkedAt`
  * travels with it so the client can say how old it is.
  */
-export function retainUsageLimits(
-  lastKnown: Ref.Ref<ServerProviderUsageLimits | undefined>,
+export interface AccountUsageReading {
+  readonly identity: string;
+  readonly usageLimits: ServerProviderUsageLimits;
+}
+
+/** Only stable, affirmative account identity can authorize a retained reading. */
+export function authenticatedUsageIdentity(auth: ServerProviderAuth): string | undefined {
+  if (auth.status !== "authenticated") return undefined;
+  // Account id and live CLI email are independent signals. Keeping both
+  // prevents a changing auth.json from assigning B's CLI read to A's id.
+  if (auth.accountId && auth.email) {
+    return `account:${auth.accountId}|email:${auth.email.trim().toLowerCase()}`;
+  }
+  if (auth.accountId) return `account:${auth.accountId}`;
+  if (auth.email) return `email:${auth.email.trim().toLowerCase()}`;
+  return undefined;
+}
+
+/** A direct post-reset read may overlay only the same authenticated account. */
+export function usageReadingForAuth(
+  reading: AccountUsageReading | undefined,
+  auth: ServerProviderAuth,
+): ServerProviderUsageLimits | undefined {
+  const identity = authenticatedUsageIdentity(auth);
+  return identity && reading?.identity === identity ? reading.usageLimits : undefined;
+}
+
+/** A separate OAuth usage read must agree with the authenticated account. */
+export function matchingAccountUsage(
+  expectedEmail: string | undefined,
+  result:
+    | {
+        readonly accountIdentity: string | undefined;
+        readonly usageLimits: ServerProviderUsageLimits | undefined;
+      }
+    | undefined,
+): ServerProviderUsageLimits | undefined {
+  if (!result) return undefined;
+  if (
+    expectedEmail &&
+    result.accountIdentity?.trim().toLowerCase() !== expectedEmail.trim().toLowerCase()
+  ) {
+    return undefined;
+  }
+  return result.usageLimits;
+}
+
+export function retainUsageLimitsForAccount(
+  lastKnown: Ref.Ref<AccountUsageReading | undefined>,
+  identity: string | undefined,
   usageLimits: ServerProviderUsageLimits | undefined,
 ): Effect.Effect<ServerProviderUsageLimits | undefined> {
   return Effect.gen(function* () {
     if (usageLimits) {
-      yield* RefModule.set(lastKnown, usageLimits);
+      if (identity) yield* RefModule.set(lastKnown, { identity, usageLimits });
       return usageLimits;
     }
     const retained = yield* RefModule.get(lastKnown);
     if (!retained) return undefined;
+    // A temporarily unknown auth result cannot authorize publication, but it
+    // also cannot prove the signed-in account changed. Hold the reading for a
+    // later matching identity without showing it during the unknown interval.
+    if (identity === undefined) return undefined;
+    if (retained.identity !== identity) {
+      yield* RefModule.set(lastKnown, undefined);
+      return undefined;
+    }
     const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-    if (isRetainedUsageFresh({ checkedAt: retained.checkedAt, nowMs })) return retained;
+    if (isRetainedUsageFresh({ checkedAt: retained.usageLimits.checkedAt, nowMs })) {
+      return retained.usageLimits;
+    }
     yield* RefModule.set(lastKnown, undefined);
     return undefined;
   });
 }
 
 /**
- * Apply {@link retainUsageLimits} to a whole probed snapshot.
+ * Apply account-scoped retention to a whole probed snapshot.
  *
- * A signed-out account has no capacity to retain, so its reading is cleared
- * rather than carried; anything else keeps the last good reading through a
- * failed or timed-out read. Codex reads its windows over the network inside
- * the status probe, where one slow answer would otherwise blank the gauge
- * until the next poll.
+ * A signed-out account has no capacity to retain. A failed or timed-out read
+ * may reuse the last reading only while the authenticated account identity
+ * remains the same. Codex reads its windows over the network inside the
+ * status probe, where one slow answer would otherwise blank the gauge.
  */
 export function retainSnapshotUsageLimits<
   Snapshot extends {
@@ -91,7 +148,7 @@ export function retainSnapshotUsageLimits<
     readonly usageLimits?: ServerProviderUsageLimits | undefined;
   },
 >(
-  lastKnown: Ref.Ref<ServerProviderUsageLimits | undefined>,
+  lastKnown: Ref.Ref<AccountUsageReading | undefined>,
   snapshot: Snapshot,
 ): Effect.Effect<Snapshot> {
   return Effect.gen(function* () {
@@ -100,7 +157,11 @@ export function retainSnapshotUsageLimits<
       const { usageLimits: _usageLimits, ...withoutUsage } = snapshot;
       return withoutUsage as Snapshot;
     }
-    const usageLimits = yield* retainUsageLimits(lastKnown, snapshot.usageLimits);
+    const usageLimits = yield* retainUsageLimitsForAccount(
+      lastKnown,
+      authenticatedUsageIdentity(snapshot.auth),
+      snapshot.usageLimits,
+    );
     if (usageLimits === snapshot.usageLimits) return snapshot;
     return usageLimits ? { ...snapshot, usageLimits } : snapshot;
   });
