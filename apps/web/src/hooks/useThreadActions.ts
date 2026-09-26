@@ -725,26 +725,35 @@ export function useThreadActions() {
             description: resolved?.thread.title,
             claim: action,
             undo: async () => {
-              const unsettled = await unsettleThread(target, action.sessionOwner ?? undefined);
-              if (unsettled._tag !== "Success") return unsettled;
-              if (wasPinned) {
-                const pinned = await pinThread(target, {
-                  ...(pinOrderKey == null ? {} : { orderKey: pinOrderKey }),
-                  expectedSessionOwner: action.sessionOwner ?? undefined,
-                });
-                if (pinned._tag !== "Success") return pinned;
-              }
-              if (snoozedUntil !== null) {
-                return snoozeThreadMutation({
-                  environmentId: target.environmentId,
-                  input: {
-                    threadId: target.threadId,
-                    snoozedUntil,
+              const intents = ThreadUndo.watchThreadIntents(scopedThreadKey(target));
+              try {
+                const unsettling = unsettleThread(target, action.sessionOwner ?? undefined);
+                intents.acknowledgeOwnIntent();
+                const unsettled = await unsettling;
+                if (unsettled._tag !== "Success" || !intents.isCurrent()) return unsettled;
+                if (wasPinned) {
+                  const pinning = pinThread(target, {
+                    ...(pinOrderKey == null ? {} : { orderKey: pinOrderKey }),
                     expectedSessionOwner: action.sessionOwner ?? undefined,
-                  },
-                });
+                  });
+                  intents.acknowledgeOwnIntent();
+                  const pinned = await pinning;
+                  if (pinned._tag !== "Success" || !intents.isCurrent()) return pinned;
+                }
+                if (snoozedUntil !== null) {
+                  return snoozeThreadMutation({
+                    environmentId: target.environmentId,
+                    input: {
+                      threadId: target.threadId,
+                      snoozedUntil,
+                      expectedSessionOwner: action.sessionOwner ?? undefined,
+                    },
+                  });
+                }
+                return unsettled;
+              } finally {
+                intents.stop();
               }
-              return unsettled;
             },
             failureTitle: "Failed to undo settle",
           });

@@ -10,6 +10,29 @@ const currentActions = new Map<
   string,
   { threadKey: string; token: symbol; claim: ActionClaim; batchReceiptSequence: number | null }
 >();
+const intentObservers = new Map<string, Set<() => void>>();
+
+/** Observe later lifecycle intents while a multi-step inverse is in flight. */
+export function watchThreadIntents(threadKey: string) {
+  let current = true;
+  const onIntent = () => {
+    current = false;
+  };
+  const observers = intentObservers.get(threadKey) ?? new Set<() => void>();
+  observers.add(onIntent);
+  intentObservers.set(threadKey, observers);
+  return {
+    isCurrent: () => current,
+    // Called synchronously after dispatching one of this inverse's own intents.
+    acknowledgeOwnIntent: () => {
+      current = true;
+    },
+    stop: () => {
+      observers.delete(onIntent);
+      if (observers.size === 0) intentObservers.delete(threadKey);
+    },
+  };
+}
 export interface ActionProjection {
   readonly owner: object;
   readonly generation: number;
@@ -157,6 +180,7 @@ export function invalidate(kind: string, threadKey: string) {
 
 /** A new lifecycle intent or deletion makes every older inverse unsafe. */
 export function invalidateThread(threadKey: string) {
+  for (const onIntent of intentObservers.get(threadKey) ?? []) onIntent();
   for (const [key, action] of currentActions) {
     if (action.threadKey === threadKey) currentActions.delete(key);
   }

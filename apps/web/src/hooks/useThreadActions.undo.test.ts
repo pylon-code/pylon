@@ -431,6 +431,47 @@ describe("settle and snooze Undo", () => {
     });
   });
 
+  it("stops a settle inverse after a newer intent arrives during un-settle", async () => {
+    const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
+    vi.spyOn(toastManager, "close").mockImplementation(() => {});
+    threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
+    threadShell.snoozedUntil = "2030-01-01T09:00:00.000Z";
+    const pending = deferredResult();
+    commands.unsettle.mockImplementationOnce(() => pending.promise);
+    const actions = useThreadActions();
+    await actions.settleThread(target);
+    const undo = undoOf(add, 0)();
+    await actions.unpinThread(target);
+    pending.resolve(success);
+    await undo;
+    expect(commands.pin).not.toHaveBeenCalled();
+    expect(commands.snooze).not.toHaveBeenCalled();
+  });
+
+  it("stops re-snoozing after a newer intent arrives during re-pin", async () => {
+    const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
+    vi.spyOn(toastManager, "close").mockImplementation(() => {});
+    threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
+    threadShell.snoozedUntil = "2030-01-01T09:00:00.000Z";
+    const pending = deferredResult();
+    let pinStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      pinStarted = resolve;
+    });
+    commands.pin.mockImplementationOnce(() => {
+      pinStarted();
+      return pending.promise;
+    });
+    const actions = useThreadActions();
+    await actions.settleThread(target);
+    const undo = undoOf(add, 0)();
+    await started;
+    await actions.unsnoozeThread(target);
+    pending.resolve(success);
+    await undo;
+    expect(commands.snooze).not.toHaveBeenCalled();
+  });
+
   it("expires an older unpin Undo when the thread is settled", async () => {
     threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
     const add = vi.spyOn(toastManager, "add").mockReturnValue("toast");
