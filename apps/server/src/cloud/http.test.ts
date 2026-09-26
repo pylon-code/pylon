@@ -30,6 +30,7 @@ import {
   type ServiceUpdateRecord,
 } from "./serviceProtocol.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as AgentAwarenessRelay from "../relay/AgentAwarenessRelay.ts";
 import { CLOUD_CLI_DESIRED_LINK_SECRET } from "./CliState.ts";
 import * as CliTokenManager from "./CliTokenManager.ts";
 import type { RelayLinkProofRequest } from "@t3tools/contracts/relay";
@@ -60,7 +61,12 @@ const storeFailure = (tag: "AlreadyExists" | "PermissionDenied") =>
   });
 
 const unusedSecretStoreOperation = () => Effect.die("unused secret-store operation");
-
+// Linking wakes the awareness relay; these tests do not run it.
+const idleAwarenessRelay = AgentAwarenessRelay.AgentAwarenessRelay.of({
+  publishThread: () => Effect.void,
+  requestCatchUp: () => Effect.void,
+  start: () => Effect.void,
+});
 function makeSecretStore(
   create: ServerSecretStore.ServerSecretStore["Service"]["create"],
 ): ServerSecretStore.ServerSecretStore["Service"] {
@@ -235,6 +241,7 @@ describe("reconcileDesiredCloudLink", () => {
         HttpClient.HttpClient,
         HttpClient.make(() => unusedSecretStoreOperation()),
       ),
+      Effect.provideService(AgentAwarenessRelay.AgentAwarenessRelay, idleAwarenessRelay),
       Effect.provide(NodeServices.layer),
     ),
   );
@@ -310,6 +317,7 @@ describe("releaseManagedTunnelOnShutdown", () => {
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
         Effect.provideService(ServerSecretStore.ServerSecretStore, harness.store),
+        Effect.provideService(AgentAwarenessRelay.AgentAwarenessRelay, idleAwarenessRelay),
         Effect.provideService(
           ServerEnvironment.ServerEnvironment,
           ServerEnvironment.ServerEnvironment.of({
