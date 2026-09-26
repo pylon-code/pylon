@@ -118,17 +118,13 @@ import {
 } from "react";
 import { createPortal, flushSync } from "react-dom";
 import {
-  clampCollapsedComposerCursor,
   type ComposerSubmissionIntent,
   type ComposerTrigger,
-  collapseExpandedComposerCursor,
-  composerStateAtPromptEnd,
   composerSubmissionIntentForEnter,
-  detectComposerTrigger,
-  expandCollapsedComposerCursor,
   formatAssistantCitationForComposer,
   replaceTextRange,
 } from "../../composer-logic";
+import { useComposerAliasPolicyReaders } from "../../useComposerAliasPolicyReaders";
 import { DISCONNECTED_COMPOSER_PLACEHOLDER } from "../../composerPlaceholder";
 import {
   buildRunningThreadTurnInterruptInput,
@@ -1094,6 +1090,7 @@ import {
   getProviderSkillsForSlashMenu,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
+  supportsUnicodeSkillAliases,
 } from "@t3tools/client-runtime/providerSkills";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -2759,6 +2756,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedProviderSkills = selectedProviderStatus
     ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd)
     : [];
+  const unicodeSkillNames = new Set(
+    selectedProviderSkills
+      .filter((skill) => skill.enabled && skill.userInvocable !== false)
+      .map((skill) => skill.name),
+  );
+  const allowUnicodeSkillAliases = supportsUnicodeSkillAliases(selectedProvider);
+  const {
+    clampCollapsedComposerCursor,
+    collapseExpandedComposerCursor,
+    expandCollapsedComposerCursor,
+    detectComposerTrigger,
+    composerStateAtPromptEnd,
+  } = useComposerAliasPolicyReaders({ allowUnicodeSkillAliases, unicodeSkillNames });
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -8041,6 +8051,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         buildContextClipboardFragment={buildContextClipboardFragment}
                         importContextFragment={importContextFragment}
                         skills={selectedProviderSkills}
+                        allowUnicodeSkillAliases={allowUnicodeSkillAliases}
                         containerClassName={cn(isComposerResting && "min-w-0 flex-1")}
                         className={cn(
                           showMobilePendingAnswerActions && "max-sm:pb-11",
