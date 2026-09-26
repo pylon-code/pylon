@@ -13,7 +13,16 @@ import {
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import {
   CommandId,
@@ -34,7 +43,13 @@ import {
   isRollbackActive,
   type RollbackTarget,
 } from "@t3tools/client-runtime/rollback";
-import { resolveMobileRollbackStatus } from "./rollback-status-presentation";
+import {
+  currentMobileRollbackSessionOwner,
+  mobileRollbackDetailIsCurrent,
+  resolveMobileRollbackStatus,
+} from "./rollback-status-presentation";
+import { environmentCatalog } from "../../connection/catalog";
+import { environmentShell } from "../../state/shell";
 import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
@@ -286,6 +301,12 @@ function ThreadRouteContent(
   } = useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
+  const rollbackEnvironmentId = EnvironmentId.make(props.route.params.environmentId);
+  const rollbackShellState = useAtomValue(environmentShell.stateValueAtom(rollbackEnvironmentId));
+  const rollbackConnectionResult = useAtomValue(
+    environmentCatalog.stateAtom(rollbackEnvironmentId),
+  );
+  const rollbackSessionOwner = currentMobileRollbackSessionOwner(rollbackConnectionResult);
   // "Load earlier turns" header state for windowed (paginated) thread loads.
   const loadEarlierTurns = useMemo(() => {
     if (selectedThread === null || !threadHasOlderTurns(selectedThreadDetailState)) {
@@ -811,11 +832,27 @@ function ThreadRouteContent(
         : deriveRollbackTargets(selectedThreadDetail),
     [selectedThreadDetail],
   );
-  const rollbackStatus = resolveMobileRollbackStatus(
-    selectedThreadDetail?.rollbackStatus,
-    selectedThread?.rollbackStatus,
+  const rollbackShell = Option.getOrNull(rollbackShellState.snapshot)?.threads.find(
+    (thread) => thread.id === selectedThread?.id,
   );
-  const rollbackActive = isRollbackActive(rollbackStatus);
+  const resolvedRollback = resolveMobileRollbackStatus({
+    detail: {
+      status: selectedThreadDetail?.rollbackStatus,
+      sequence: selectedThreadDetailState.snapshotSequence,
+      sessionOwner: selectedThreadDetailState.sessionOwner,
+      live: selectedThreadDetailState.status === "live",
+    },
+    shell: {
+      status: rollbackShell?.rollbackStatus,
+      sequence: Option.getOrNull(rollbackShellState.snapshot)?.snapshotSequence,
+      sessionOwner: rollbackShellState.sessionOwner,
+      live: rollbackShellState.status === "live" && rollbackShell !== undefined,
+    },
+    currentSessionOwner: rollbackSessionOwner,
+    rollbackStatusStreaming: selectedThreadDetailState.rollbackStatusStreaming,
+  });
+  const rollbackStatus = resolvedRollback.status;
+  const rollbackActive = resolvedRollback.uncertain || isRollbackActive(rollbackStatus);
   const rollbackTargetIdle =
     selectedThreadDetail?.session !== null &&
     selectedThreadDetail?.session !== undefined &&
@@ -827,14 +864,51 @@ function ThreadRouteContent(
     selectedThreadDetail.session.compactionQueue === undefined &&
     selectedThreadDetail.latestTurn?.state !== "running" &&
     !rollbackActive &&
+    mobileRollbackDetailIsCurrent({
+      detail: {
+        live: selectedThreadDetailState.status === "live",
+        sessionOwner: selectedThreadDetailState.sessionOwner,
+      },
+      currentSessionOwner: rollbackSessionOwner,
+      uncertain: resolvedRollback.uncertain,
+    }) &&
     composer.selectedThreadQueueCount === 0 &&
     !composer.activeThreadBusy &&
     !rollbackCommandPending;
+  const rollbackActionAuthority = useRef({
+    threadId: selectedThread?.id,
+    environmentId: selectedThread?.environmentId,
+    targetIdle: rollbackTargetIdle,
+    uncertain: resolvedRollback.uncertain,
+    recoveryActions: rollbackStatus?.allowedActions ?? [],
+  });
+  useLayoutEffect(() => {
+    rollbackActionAuthority.current = {
+      threadId: selectedThread?.id,
+      environmentId: selectedThread?.environmentId,
+      targetIdle: rollbackTargetIdle,
+      uncertain: resolvedRollback.uncertain,
+      recoveryActions: rollbackStatus?.allowedActions ?? [],
+    };
+  }, [
+    selectedThread?.id,
+    selectedThread?.environmentId,
+    rollbackTargetIdle,
+    resolvedRollback.uncertain,
+    rollbackStatus?.allowedActions,
+  ]);
 
   const onRevertMessage = useCallback(
     (target: RollbackTarget) => {
       if (!selectedThread || !rollbackTargetIdle) return;
       const revert = (restoreFiles: boolean) => {
+        const current = rollbackActionAuthority.current;
+        if (
+          !current.targetIdle ||
+          current.threadId !== selectedThread.id ||
+          current.environmentId !== selectedThread.environmentId
+        )
+          return;
         setRollbackCommandPending(true);
         void revertThreadCheckpoint({
           environmentId: selectedThread.environmentId,
@@ -865,12 +939,20 @@ function ThreadRouteContent(
         ],
       );
     },
-    [revertThreadCheckpoint, rollbackTargetIdle, selectedThread],
+    [revertThreadCheckpoint, rollbackTargetIdle, selectedThread, setRollbackCommandPending],
   );
 
   const onRecoverRollback = useCallback(
     async (action: "retry-verification" | "resume-compensation") => {
       if (!selectedThread || rollbackCommandPending) return;
+      const current = rollbackActionAuthority.current;
+      if (
+        current.uncertain ||
+        current.threadId !== selectedThread.id ||
+        current.environmentId !== selectedThread.environmentId ||
+        !current.recoveryActions.includes(action)
+      )
+        return;
       setRollbackCommandPending(true);
       const result = await recoverThreadRollback({
         environmentId: selectedThread.environmentId,
@@ -885,7 +967,7 @@ function ThreadRouteContent(
         );
       }
     },
-    [recoverThreadRollback, rollbackCommandPending, selectedThread],
+    [recoverThreadRollback, rollbackCommandPending, selectedThread, setRollbackCommandPending],
   );
 
   const threadGitControlProps = {
@@ -1322,6 +1404,7 @@ function ThreadRouteContent(
           threadSyncStatus={selectedThreadDetailState.status}
           loadEarlier={loadEarlierTurns}
           rollbackStatus={rollbackStatus}
+          rollbackStatusUncertain={resolvedRollback.uncertain}
           rollbackTargets={rollbackTargets}
           rollbackTargetIdle={rollbackTargetIdle}
           rollbackCommandPending={rollbackCommandPending}

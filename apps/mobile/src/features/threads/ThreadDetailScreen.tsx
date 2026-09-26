@@ -189,6 +189,7 @@ export interface ThreadDetailScreenProps {
   /** Non-null when older turns exist beyond the loaded window. */
   readonly loadEarlier?: { readonly loading: boolean; readonly onLoadEarlier: () => void } | null;
   readonly rollbackStatus: OrchestrationRollbackStatus | null | undefined;
+  readonly rollbackStatusUncertain: boolean;
   readonly rollbackTargets: ReadonlyMap<string, RollbackTarget>;
   readonly rollbackTargetIdle: boolean;
   readonly rollbackCommandPending: boolean;
@@ -1112,12 +1113,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 <View className="px-4">
                   <RollbackStatusSurface
                     status={props.rollbackStatus}
-                    pending={props.rollbackCommandPending}
+                    pending={props.rollbackCommandPending || props.rollbackStatusUncertain}
                     onRecover={props.onRecoverRollback}
                   />
                   {props.localOutboxCount > 0 &&
                   props.rollbackTargets.size > 0 &&
-                  !isRollbackActive(props.rollbackStatus) ? (
+                  !isRollbackActive(props.rollbackStatus) &&
+                  !props.rollbackStatusUncertain ? (
                     <View
                       accessibilityRole="summary"
                       className="mb-3 rounded-xl border border-adaptive-neutral-300-700 bg-screen px-3 py-2"
@@ -1229,6 +1231,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                       props.activePendingApproval !== null ||
                       props.activePendingUserInput !== null ||
                       props.activePendingInteraction !== null ||
+                      props.rollbackStatusUncertain ||
                       props.rollbackStatus?.state === "pending" ||
                       props.rollbackStatus?.state === "recovering" ||
                       props.rollbackStatus?.state === "manual-recovery"
