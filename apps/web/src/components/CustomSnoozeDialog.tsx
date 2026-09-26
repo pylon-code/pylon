@@ -72,6 +72,7 @@ function CustomSnoozeDialog(props: { readonly requestId: number }) {
     >
       <DialogPopup className="sm:max-w-sm">
         <form
+          className="flex min-h-0 flex-col"
           onSubmit={(event) => {
             event.preventDefault();
             const input: CustomSnoozeInput =
