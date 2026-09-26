@@ -27,7 +27,7 @@ import {
 import { resolveComposerInstanceSelection } from "../composerInstanceSelection";
 import { deriveProviderInstanceEntries } from "../providerInstances";
 
-import type { Thread, ThreadShell, TurnDiffSummary } from "../types";
+import type { ChatMessage, Thread, ThreadShell, TurnDiffSummary } from "../types";
 import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
 import {
   type RightPanelSurface,
@@ -46,6 +46,8 @@ import {
   buildThreadTurnInterruptInput,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  deriveIsCompacting,
+  isCompactCommandMessage,
   deriveLockedProvider,
   dismissBranchMismatchForSession,
   ENVIRONMENT_RECONNECT_WARNING_GRACE_MS,
@@ -2621,5 +2623,167 @@ describe("draft retention through worktree setup", () => {
     expect(canFinalizePromotedDraft(preparing)).toBe(false);
     expect(canFinalizePromotedDraft({ ...preparing, session: readySession })).toBe(true);
     expect(canFinalizePromotedDraft({ ...preparing, latestTurn: completedTurn })).toBe(true);
+  });
+});
+
+describe("deriveIsCompacting", () => {
+  const compactMessageId = MessageId.make("message-compact");
+  const compactSentAt = "2026-03-29T00:05:00.000Z";
+  const compactMessage: ChatMessage = {
+    id: compactMessageId,
+    role: "user",
+    text: "/compact",
+    turnId: null,
+    createdAt: compactSentAt,
+    updatedAt: compactSentAt,
+    streaming: false,
+  };
+  // The turn `/compact` opens keeps the message's own `requestedAt` after the
+  // compaction finishes, so the running continuation looks identical to the
+  // compaction turn on timestamps alone.
+  const continuationTurn = {
+    turnId: TurnId.make("turn-after-compaction"),
+    state: "running" as const,
+    requestedAt: compactSentAt,
+    startedAt: compactSentAt,
+    completedAt: null,
+    assistantMessageId: null,
+  };
+
+  it("reports compaction while the server holds the queue open", () => {
+    for (const phase of ["running", "draining"] as const) {
+      expect(
+        deriveIsCompacting({
+          activeThread: makeThread({
+            messages: [compactMessage],
+            latestTurn: continuationTurn,
+            session: {
+              ...readySession,
+              compactionQueue: { requestId: CommandId.make("compact"), phase, queued: [] },
+            },
+          }),
+          optimisticCompactionMessage: undefined,
+          isSendBusy: false,
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("stops reporting compaction once the server clears the queue, even while the turn /compact opened is still running", () => {
+    expect(
+      deriveIsCompacting({
+        activeThread: makeThread({
+          messages: [compactMessage],
+          latestTurn: continuationTurn,
+          session: { ...readySession, status: "running", activeTurnId: continuationTurn.turnId },
+        }),
+        optimisticCompactionMessage: undefined,
+        isSendBusy: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not revive an earlier /compact when a later turn starts", () => {
+    expect(
+      deriveIsCompacting({
+        activeThread: makeThread({
+          messages: [
+            compactMessage,
+            {
+              id: MessageId.make("message-followup"),
+              role: "user",
+              text: "carry on",
+              turnId: null,
+              createdAt: "2026-03-29T00:09:00.000Z",
+              updatedAt: "2026-03-29T00:09:00.000Z",
+              streaming: false,
+            },
+          ],
+          latestTurn: { ...continuationTurn, requestedAt: "2026-03-29T00:09:00.000Z" },
+          session: { ...readySession, status: "running" },
+        }),
+        optimisticCompactionMessage: undefined,
+        isSendBusy: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("covers the window before the server records a locally dispatched /compact", () => {
+    expect(
+      deriveIsCompacting({
+        activeThread: makeThread({ session: readySession }),
+        optimisticCompactionMessage: compactMessage,
+        isSendBusy: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("drops a locally dispatched /compact that failed admission", () => {
+    expect(
+      deriveIsCompacting({
+        activeThread: makeThread({
+          session: readySession,
+          activities: [
+            {
+              id: EventId.make("activity-compact-failed"),
+              kind: "provider.turn.start.failed",
+              summary: "Turn start failed",
+              tone: "error",
+              turnId: null,
+              createdAt: compactSentAt,
+              payload: { requestId: compactMessageId },
+            },
+          ],
+        }),
+        optimisticCompactionMessage: compactMessage,
+        isSendBusy: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("ignores an optimistic message that is not /compact", () => {
+    expect(
+      deriveIsCompacting({
+        activeThread: makeThread({ session: readySession }),
+        optimisticCompactionMessage: { ...compactMessage, text: "compact the context please" },
+        isSendBusy: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isCompactCommandMessage", () => {
+  const base: ChatMessage = {
+    id: MessageId.make("message-1"),
+    role: "user",
+    text: "/compact",
+    turnId: null,
+    createdAt: now,
+    updatedAt: now,
+    streaming: false,
+  };
+
+  it("matches a bare /compact from the user", () => {
+    expect(isCompactCommandMessage(base)).toBe(true);
+    expect(isCompactCommandMessage({ ...base, text: "  /COMPACT  " })).toBe(true);
+  });
+
+  it("rejects anything else", () => {
+    expect(isCompactCommandMessage({ ...base, role: "assistant" })).toBe(false);
+    expect(isCompactCommandMessage({ ...base, text: "/compact now" })).toBe(false);
+    expect(
+      isCompactCommandMessage({
+        ...base,
+        attachments: [
+          {
+            type: "file",
+            id: "a1",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            sizeBytes: 1,
+          },
+        ],
+      }),
+    ).toBe(false);
   });
 });
