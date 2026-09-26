@@ -138,6 +138,7 @@ function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
     return false;
   }
   return (
+    detail.includes("no active provider session is bound to this thread") ||
     detail.includes("stale pending approval request") ||
     detail.includes("unknown pending approval request") ||
     detail.includes("unknown pending permission request")
@@ -204,6 +205,7 @@ function derivePendingUserInputCountFromActivities(
         activity.kind === "provider.interaction.respond.failed") &&
       detail !== null &&
       (detail.includes("stale pending user-input request") ||
+        detail.includes("no active provider session is bound to this thread") ||
         detail.includes("unknown pending user-input request") ||
         detail.includes("unknown pending user input request") ||
         detail.includes("unknown pending codex user input request") ||
@@ -604,6 +606,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
             title: event.payload.title,
+            titleState: event.payload.titleState ?? null,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
             interactionMode: event.payload.interactionMode,
@@ -647,6 +650,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             archivedAt: event.payload.archivedAt,
+            ...(event.payload.titleState !== undefined
+              ? { titleState: event.payload.titleState }
+              : {}),
             titleRegenerationRequestId: null,
             titleRegenerationStartedAt: null,
             updatedAt: event.payload.updatedAt,
@@ -801,6 +807,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+            ...(event.payload.titleState !== undefined
+              ? { titleState: event.payload.titleState }
+              : {}),
             ...(event.payload.activeOrderKey !== undefined
               ? { activeOrderKey: event.payload.activeOrderKey }
               : {}),
@@ -874,12 +883,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
-          yield* projectionThreadPullRequestRepository.delete({
+          const links = yield* projectionThreadPullRequestRepository.listByThreadId({
             threadId: event.payload.threadId,
-            host: event.payload.host.toLowerCase(),
-            repository: event.payload.repository.toLowerCase(),
-            number: event.payload.number,
           });
+          const link = links.find((candidate) =>
+            threadPullRequestKeysEqual(candidate, event.payload),
+          );
+          if (link !== undefined) {
+            yield* projectionThreadPullRequestRepository.delete({
+              threadId: event.payload.threadId,
+              host: link.host,
+              repository: link.repository,
+              number: link.number,
+            });
+          }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             updatedAt: event.payload.updatedAt,

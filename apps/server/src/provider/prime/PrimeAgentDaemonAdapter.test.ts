@@ -1110,6 +1110,10 @@ function fakeRuntimeFactory(
           captures.order.push("abort");
           expect(captures.prompts.at(-1)?.signal?.aborted).toBe(true);
         }),
+        abortAndSendQueued: Effect.sync(() => {
+          captures.order.push("abortAndSendQueued");
+          expect(captures.prompts.at(-1)?.signal?.aborted).toBe(true);
+        }),
         abortAndClearQueue: captures.abortClearFailure
           ? Effect.fail(
               new PrimeAgentDaemonSessionRuntimeError({
@@ -6661,6 +6665,39 @@ describe("PrimeAgentDaemonAdapter", () => {
             },
           });
         }
+        yield* offer(captures, {
+          _tag: "ChildUpdated",
+          child: {
+            id: "child-private-progress",
+            parentId: "parent",
+            activeSessionId: "native-private-100",
+            model: "child-model",
+            label: "private-safe-label",
+            status: "running",
+            tokenCount: 10,
+            toolUseCount: 1,
+            activity: { kind: "executing", toolName: "bash" },
+            progressNote: "Checking the failing test",
+            lastActivityAt: 1_000,
+          },
+        });
+        yield* awaitObservedType(subscription.observed, "task.progress");
+        yield* offer(captures, {
+          _tag: "ChildUpdated",
+          child: {
+            id: "child-private-progress",
+            parentId: "parent",
+            activeSessionId: "native-private-100",
+            model: "child-model",
+            label: "private-safe-label",
+            status: "running",
+            tokenCount: 10,
+            toolUseCount: 1,
+            activity: { kind: "executing", toolName: "bash" },
+            progressNote: "Checking the failing test",
+            lastActivityAt: 2_000,
+          },
+        });
         captures.agentRoster = [
           {
             id: "child-private-progress",
@@ -6676,6 +6713,7 @@ describe("PrimeAgentDaemonAdapter", () => {
             activity: { kind: "executing", toolName: "bash" },
             answerPreview: "private-answer-roster",
             recap: "private-recap-roster",
+            progressNote: "Checking the failing test",
           },
         ];
         expect(
@@ -6718,17 +6756,21 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* awaitObservedType(subscription.observed, "session.goal.updated");
 
         const durableEvents = subscription.events.slice(durableStart);
-        expect(durableEvents.filter((event) => event.type === "task.progress")).toEqual([]);
+        expect(durableEvents.filter((event) => event.type === "task.progress")).toEqual([
+          expect.objectContaining({
+            payload: expect.objectContaining({ summary: "Checking the failing test" }),
+          }),
+        ]);
         const completed = durableEvents.filter((event) => event.type === "task.completed");
         expect(completed).toHaveLength(1);
         expect(completed[0]).toMatchObject({
           payload: {
             taskId: "child-private-progress",
             status: "failed",
+            summary: "Failed",
             typedUsage: { totalTokens: 12, toolUses: 1, durationMs: 1_500 },
           },
         });
-        expect(completed[0]?.payload).not.toHaveProperty("summary");
         const persisted = encodeUnknownJson(durableEvents);
         expect(persisted).not.toContain("private-answer");
         expect(persisted).not.toContain("private-recap");

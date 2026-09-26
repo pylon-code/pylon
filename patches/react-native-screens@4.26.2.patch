@@ -310,7 +310,7 @@ index 1c844846a5c66e31cfa530ca462774d2fb6bbea1..a60b96b44e85d3f4b29dc0d190b95ab6
          break;
        }
        case RNSScreenStackHeaderSubviewTypeCenter:
-@@ -648,10 +709,478 @@ + (void)updateViewController:(UIViewController *)vc
+@@ -648,10 +709,487 @@ + (void)updateViewController:(UIViewController *)vc
    // This assignment should be done after `navitem.titleView = ...` assignment (iOS 16.0 bug).
    // See: https://github.com/software-mansion/react-native-screens/issues/1570 (comments)
    navitem.title = config.title;
@@ -608,6 +608,15 @@ index 1c844846a5c66e31cfa530ca462774d2fb6bbea1..a60b96b44e85d3f4b29dc0d190b95ab6
 +        ]];
 +      }
 +
++      // A bare UISearchTextField keeps UITextField defaults (sentence
++      // capitalization, autocorrect), unlike UISearchBar. Search queries are
++      // identifiers, so match the autoCapitalize "none" the JS fallbacks use.
++      if (resolvedSearchTextField != nil) {
++        resolvedSearchTextField.autocapitalizationType = UITextAutocapitalizationTypeNone;
++        resolvedSearchTextField.autocorrectionType = UITextAutocorrectionTypeNo;
++        resolvedSearchTextField.spellCheckingType = UITextSpellCheckingTypeNo;
++      }
++
 +      NSString *searchTextChangeId = mailSearchToolbarConfig[@"searchTextChangeId"];
 +      NSString *searchTextChangeActionIdentifier = @"org.react-native-screens.mail-search-toolbar.text-change";
 +      if (resolvedSearchTextField != nil) {
@@ -793,7 +802,7 @@ index 1c844846a5c66e31cfa530ca462774d2fb6bbea1..a60b96b44e85d3f4b29dc0d190b95ab6
  
    // Setting navigation bar visibility is split to mitigate iOS 26 bug with bar button items
    // (setting nav bar visibility should be done after `navitem.*BarButtonItems`).
-@@ -784,6 +1313,8 @@ - (void)applySemanticContentAttributeIfNeededToNavCtrl:(UINavigationController *
+@@ -784,6 +1322,8 @@ - (void)applySemanticContentAttributeIfNeededToNavCtrl:(UINavigationController *
  
  - (NSArray<UIBarButtonItem *> *)barButtonItemsFromConfigs:(NSArray<NSDictionary<NSString *, id> *> *)dicts
                                           withCurrentItems:(NSArray<UIBarButtonItem *> *)currentItems
@@ -802,7 +811,7 @@ index 1c844846a5c66e31cfa530ca462774d2fb6bbea1..a60b96b44e85d3f4b29dc0d190b95ab6
  {
    if (dicts.count == 0) {
      return currentItems;
-@@ -792,7 +1323,200 @@ - (void)applySemanticContentAttributeIfNeededToNavCtrl:(UINavigationController *
+@@ -792,7 +1332,200 @@ - (void)applySemanticContentAttributeIfNeededToNavCtrl:(UINavigationController *
    [items addObjectsFromArray:currentItems];
    for (NSUInteger i = 0; i < dicts.count; i++) {
      NSDictionary *dict = dicts[i];
@@ -1004,7 +1013,7 @@ index 1c844846a5c66e31cfa530ca462774d2fb6bbea1..a60b96b44e85d3f4b29dc0d190b95ab6
        RNSBarButtonItem *item = [[RNSBarButtonItem alloc] initWithConfig:dict
            action:^(NSString *buttonId) {
              auto eventEmitter = std::static_pointer_cast<const facebook::react::RNSScreenStackHeaderConfigEventEmitter>(
-@@ -814,19 +1538,23 @@ - (void)applySemanticContentAttributeIfNeededToNavCtrl:(UINavigationController *
+@@ -814,19 +1547,23 @@ - (void)applySemanticContentAttributeIfNeededToNavCtrl:(UINavigationController *
            }
            imageLoader:_imageLoader];
        NSNumber *index = dict[@"index"];
@@ -1034,7 +1043,7 @@ index 1c844846a5c66e31cfa530ca462774d2fb6bbea1..a60b96b44e85d3f4b29dc0d190b95ab6
          [items insertObject:item atIndex:index.integerValue];
        } else {
          [items addObject:item];
-@@ -836,6 +1564,47 @@ - (void)applySemanticContentAttributeIfNeededToNavCtrl:(UINavigationController *
+@@ -836,6 +1573,47 @@ - (void)applySemanticContentAttributeIfNeededToNavCtrl:(UINavigationController *
    return items;
  }
  
@@ -1082,7 +1091,7 @@ index 1c844846a5c66e31cfa530ca462774d2fb6bbea1..a60b96b44e85d3f4b29dc0d190b95ab6
  RNS_IGNORE_SUPER_CALL_BEGIN
  - (void)insertReactSubview:(RNSScreenStackHeaderSubview *)subview atIndex:(NSInteger)atIndex
  {
-@@ -1023,6 +1792,8 @@ - (void)updateProps:(react::Props::Shared const &)props oldProps:(react::Props::
+@@ -1023,6 +1801,8 @@ - (void)updateProps:(react::Props::Shared const &)props oldProps:(react::Props::
    }
  
    _title = RCTNSStringFromStringNilIfEmpty(newScreenProps.title);
@@ -1091,7 +1100,7 @@ index 1c844846a5c66e31cfa530ca462774d2fb6bbea1..a60b96b44e85d3f4b29dc0d190b95ab6
    if (newScreenProps.titleFontFamily != oldScreenProps.titleFontFamily) {
      _titleFontFamily = RCTNSStringFromStringNilIfEmpty(newScreenProps.titleFontFamily);
    }
-@@ -1048,6 +1819,7 @@ - (void)updateProps:(react::Props::Shared const &)props oldProps:(react::Props::
+@@ -1048,6 +1828,7 @@ - (void)updateProps:(react::Props::Shared const &)props oldProps:(react::Props::
    _disableBackButtonMenu = newScreenProps.disableBackButtonMenu;
    _backButtonDisplayMode =
        [RNSConvert UINavigationItemBackButtonDisplayModeFromCppEquivalent:newScreenProps.backButtonDisplayMode];
@@ -1099,7 +1108,7 @@ index 1c844846a5c66e31cfa530ca462774d2fb6bbea1..a60b96b44e85d3f4b29dc0d190b95ab6
  
    if (newScreenProps.userInterfaceStyle != oldScreenProps.userInterfaceStyle) {
      _userInterfaceStyle = [RNSConvert UIUserInterfaceStyleFromCppEquivalent:newScreenProps.userInterfaceStyle];
-@@ -1094,6 +1866,30 @@ - (void)updateProps:(react::Props::Shared const &)props oldProps:(react::Props::
+@@ -1094,6 +1875,30 @@ - (void)updateProps:(react::Props::Shared const &)props oldProps:(react::Props::
      _headerRightBarButtonItems = array;
    }
  

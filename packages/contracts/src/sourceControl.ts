@@ -5,6 +5,7 @@ import { VcsDriverKind } from "./vcs.ts";
 export const SourceControlProviderKind = Schema.Literals([
   "github",
   "gitlab",
+  "forgejo",
   "azure-devops",
   "bitbucket",
   "unknown",
@@ -63,6 +64,7 @@ export type SourceControlRepositoryInfo = typeof SourceControlRepositoryInfo.Typ
 
 export const SourceControlRepositoryLookupInput = Schema.Struct({
   provider: SourceControlProviderKind,
+  supportsForgejo: Schema.optional(Schema.Boolean),
   repository: TrimmedNonEmptyString,
   cwd: Schema.optional(TrimmedNonEmptyString),
 });
@@ -70,6 +72,7 @@ export type SourceControlRepositoryLookupInput = typeof SourceControlRepositoryL
 
 export const SourceControlCloneRepositoryInput = Schema.Struct({
   provider: Schema.optional(SourceControlProviderKind),
+  supportsForgejo: Schema.optional(Schema.Boolean),
   repository: Schema.optional(TrimmedNonEmptyString),
   remoteUrl: Schema.optional(TrimmedNonEmptyString),
   destinationPath: TrimmedNonEmptyString,

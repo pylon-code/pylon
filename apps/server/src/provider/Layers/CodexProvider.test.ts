@@ -240,6 +240,8 @@ it("labels non-ChatGPT account types", () => {
 });
 
 const CODEX_HOME = "/home/someone/.codex";
+const ACCOUNT_A = "email:a@example.com";
+const ACCOUNT_B = "email:b@example.com";
 
 const usageAt = (checkedAt: string): ServerProviderUsageLimits => ({
   source: "codexAppServer",
@@ -272,7 +274,7 @@ const readAfterMissedRead = (input: { readonly age: Duration.Duration }) =>
           else process.env[SHARED_USAGE_CACHE_DIR_ENV] = priorCache;
         }),
     );
-    const cacheKey = sharedUsageReadKey(["codex", CODEX_HOME]);
+    const cacheKey = sharedUsageReadKey(["codex", CODEX_HOME, ACCOUNT_A]);
     const readAt = DateTime.formatIso(DateTime.makeUnsafe(0));
     yield* writeSharedUsageEntry(cacheDir, cacheKey, {
       version: 1,
@@ -283,6 +285,7 @@ const readAfterMissedRead = (input: { readonly age: Duration.Duration }) =>
     yield* TestClock.adjust(input.age);
     const result = yield* readCodexRateLimitsShared({
       sharedHomePath: CODEX_HOME,
+      accountIdentity: ACCOUNT_A,
       read: MISSED_READ,
     });
     return { result, entry: yield* readSharedUsageEntry(cacheDir, cacheKey), readAt };
@@ -310,5 +313,35 @@ it.layer(NodeServices.layer)("codex capacity across a missed read", (it) => {
 
       assert.deepStrictEqual(result, {});
     }),
+  );
+
+  it.effect("does not read account A's shared quota after the same home signs into B", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cacheDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "pylon-codex-usage-" });
+      const priorCache = process.env[SHARED_USAGE_CACHE_DIR_ENV];
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          process.env[SHARED_USAGE_CACHE_DIR_ENV] = cacheDir;
+        }),
+        () =>
+          Effect.sync(() => {
+            if (priorCache === undefined) delete process.env[SHARED_USAGE_CACHE_DIR_ENV];
+            else process.env[SHARED_USAGE_CACHE_DIR_ENV] = priorCache;
+          }),
+      );
+      const readAt = DateTime.formatIso(yield* DateTime.now);
+      yield* writeSharedUsageEntry(cacheDir, sharedUsageReadKey(["codex", CODEX_HOME, ACCOUNT_A]), {
+        version: 1,
+        readAt,
+        usageLimits: usageAt(readAt),
+      });
+      const result = yield* readCodexRateLimitsShared({
+        sharedHomePath: CODEX_HOME,
+        accountIdentity: ACCOUNT_B,
+        read: MISSED_READ,
+      });
+      assert.deepStrictEqual(result, {});
+    }).pipe(Effect.scoped),
   );
 });

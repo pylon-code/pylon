@@ -31,6 +31,7 @@ interface ScopedSettingsEnvironment {
     readonly environment?: {
       readonly capabilities: {
         readonly projectSettingsOverrides?: boolean | undefined;
+        readonly worktreeSubmodules?: boolean | undefined;
         readonly projectDefaults?: boolean | undefined;
         readonly threadRestartContinuation?: boolean | undefined;
         readonly threadAutoSettlement?: boolean | undefined;
@@ -221,6 +222,7 @@ function supportsScopedPatch(
   const capabilities = environment.serverConfig?.environment?.capabilities;
   if (projectScope && capabilities?.projectSettingsOverrides !== true) return false;
   return keys.every((key) => {
+    if (key === "worktreeSubmodules") return capabilities?.worktreeSubmodules === true;
     if (key === "defaultRuntimeMode") return capabilities?.defaultRuntimeMode === true;
     if (key === "projectSettingsOverrides" || key === "pullRequestMergeMethod") {
       return capabilities?.projectSettingsOverrides === true;
@@ -344,8 +346,11 @@ export function planScopedSettingsClear(
 ) {
   const serverWrites =
     scope.kind === "project" || scope.kind === "checkout"
-      ? projectOverrideWrites(scope, environments, (_current, settings, projectId) =>
-          clearProjectSettingsOverrides(settings, projectId, keys),
+      ? projectOverrideWrites(
+          scope,
+          environments.filter((environment) => supportsScopedPatch(environment, keys, true)),
+          (_current, settings, projectId) =>
+            clearProjectSettingsOverrides(settings, projectId, keys),
         )
       : [];
   return {
@@ -404,7 +409,7 @@ export function planProjectOverridesClear(
     if (
       !environment?.serverConfig ||
       environment.connection.phase !== "connected" ||
-      environment.serverConfig.environment?.capabilities.projectSettingsOverrides !== true
+      !supportsScopedPatch(environment, keys, true)
     )
       continue;
     const settings = environment.serverConfig.settings;

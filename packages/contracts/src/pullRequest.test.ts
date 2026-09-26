@@ -1,12 +1,18 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
+import { VcsStatusInput } from "./git.ts";
+import { ThreadPullRequestLink } from "./orchestration.ts";
 
 import {
   PullRequestActionInput,
   PullRequestCapabilities,
+  PullRequestFilesViewedResult,
   PullRequestListInput,
   PullRequestListResult,
+  PullRequestRef,
   PullRequestReviewerRequestInput,
+  PullRequestSetFilesViewedInput,
+  pullRequestHostOf,
   resolvePullRequestAuthorFilter,
 } from "./pullRequest.ts";
 
@@ -14,6 +20,56 @@ const decodeListResult = Schema.decodeUnknownSync(PullRequestListResult);
 const decodeListInput = Schema.decodeUnknownSync(PullRequestListInput);
 const decodeReviewerRequest = Schema.decodeUnknownSync(PullRequestReviewerRequestInput);
 const decodeAction = Schema.decodeUnknownSync(PullRequestActionInput);
+const { supportsForgejo: _listCapability, ...oldListFields } = PullRequestListInput.fields;
+const { supportsForgejo: _statusCapability, ...oldStatusFields } = VcsStatusInput.fields;
+const { supportsForgejo: _refCapability, ...oldRefFields } = PullRequestRef.fields;
+const decodeOldListInput = Schema.decodeUnknownSync(Schema.Struct(oldListFields));
+const decodeOldStatusInput = Schema.decodeUnknownSync(Schema.Struct(oldStatusFields));
+const decodeOldRef = Schema.decodeUnknownSync(Schema.Struct(oldRefFields));
+const decodeOldDiscoveryInput = Schema.decodeUnknownSync(Schema.Struct({}));
+const decodeLegacyThreadLink = Schema.decodeUnknownSync(ThreadPullRequestLink);
+
+it("lets the prior server request schemas discard Forgejo capability fields", () => {
+  expect(
+    decodeOldListInput({
+      state: "open",
+      supportsForgejo: true,
+    }),
+  ).toEqual({ state: "open" });
+  expect(
+    decodeOldStatusInput({
+      cwd: "/repo",
+      supportsForgejo: true,
+    }),
+  ).toEqual({ cwd: "/repo" });
+  expect(
+    decodeOldRef({
+      projectId: "project-1",
+      repository: "team/app",
+      number: 3,
+      supportsForgejo: true,
+    }),
+  ).toEqual({ projectId: "project-1", repository: "team/app", number: 3 });
+  expect(decodeOldDiscoveryInput({ supportsForgejo: true })).toEqual({
+    supportsForgejo: true,
+  });
+});
+
+it("keeps an already-linked Forgejo thread decodable by the prior provider-neutral schema", () => {
+  const link = {
+    host: "code.example",
+    repository: "team/app",
+    number: 3,
+    url: "https://code.example/team/app/pulls/3",
+    source: "manual",
+    linkedAt: "2026-09-24T00:00:00Z",
+    snapshot: null,
+    stack: null,
+  };
+  expect(decodeLegacyThreadLink(link)).toMatchObject(link);
+});
+const decodeSetFilesViewed = Schema.decodeUnknownSync(PullRequestSetFilesViewedInput);
+const decodeFilesViewed = Schema.decodeUnknownSync(PullRequestFilesViewedResult);
 
 const LIST_RESULT: PullRequestListResult = {
   viewers: { "github.com": "bilal", "gitlab.com": "bilal.hassan" },
@@ -65,6 +121,20 @@ const LIST_RESULT: PullRequestListResult = {
 };
 
 describe("PullRequestListResult", () => {
+  it("separates Forgejo HTTP ports while preserving other provider host identities", () => {
+    const identity = {
+      canonicalKey: "forge.example/team/repo",
+      locator: { remoteUrl: "http://forge.example:3000/team/repo.git" },
+    };
+    expect(pullRequestHostOf(identity, "forgejo")).toBe("forge.example:3000");
+    expect(pullRequestHostOf(identity, "gitlab")).toBe("forge.example");
+    expect(
+      pullRequestHostOf(
+        { ...identity, locator: { remoteUrl: "ssh://git@forge.example:2222/team/repo.git" } },
+        "forgejo",
+      ),
+    ).toBe("forge.example");
+  });
   /**
    * The RPC builds this codec at call time, so a shape it cannot lower — an open-keyed record
    * with an optional value, for one — fails as an interrupted request rather than as a schema
@@ -254,5 +324,80 @@ describe("naming the reader as the author to narrow by", () => {
   it("stands as typed where the host has not said who the reader is", () => {
     expect(resolvePullRequestAuthorFilter("me", null)).toBe("me");
     expect(resolvePullRequestAuthorFilter("me", "  ")).toBe("me");
+  });
+});
+
+describe("naming the file a tick belongs to", () => {
+  it("accepts only canonical bounded displayed-file digests", () => {
+    const input = (digest: string) => ({
+      projectId: "p1",
+      repository: "group/project",
+      number: 7,
+      expectedViewer: "bilal",
+      files: [{ path: "src/a.ts", viewed: true, digest }],
+    });
+    expect(() => decodeSetFilesViewed(input("a".repeat(64)))).not.toThrow();
+    expect(() => decodeSetFilesViewed(input("A".repeat(64)))).toThrow();
+    expect(() => decodeSetFilesViewed(input("a".repeat(65)))).toThrow();
+  });
+  // A space on either end of a name is part of the name as far as git is concerned. The patch on
+  // screen and the environment's record of what was cleared are both keyed by it, so a path
+  // tidied in transit ticks a file that does not exist and leaves the one on screen unticked.
+  it("keeps the spaces around a path being ticked", () => {
+    expect(
+      decodeSetFilesViewed({
+        projectId: "p1",
+        repository: "group/project",
+        number: 7,
+        files: [{ path: "docs/readme.md ", viewed: true }],
+      }).files,
+    ).toEqual([{ path: "docs/readme.md ", viewed: true }]);
+  });
+
+  it("keeps the spaces around a path being reported back", () => {
+    expect(
+      decodeFilesViewed({
+        files: [{ path: " leading.md", state: "viewed" }],
+        truncated: false,
+      }).files,
+    ).toEqual([{ path: " leading.md", state: "viewed" }]);
+  });
+
+  it("still refuses a path that is nothing at all", () => {
+    expect(() =>
+      decodeSetFilesViewed({
+        projectId: "p1",
+        repository: "group/project",
+        number: 7,
+        files: [{ path: "", viewed: true }],
+      }),
+    ).toThrow();
+  });
+
+  it("refuses a batch larger than a reader can press", () => {
+    // Every element of a batch is a statement of its own inside one transaction on an
+    // environment-kept host, or a field of its own in one GraphQL document on GitHub, so what a
+    // client may send has to be bounded rather than trusted to be a burst of presses.
+    const press = (path: string) => ({ path, viewed: true });
+    const batch = (count: number) => ({
+      projectId: "p1",
+      repository: "group/project",
+      number: 7,
+      files: Array.from({ length: count }, (_, at) => press(`src/f${at}.ts`)),
+    });
+
+    expect(() => decodeSetFilesViewed(batch(500))).not.toThrow();
+    expect(() => decodeSetFilesViewed(batch(501))).toThrow();
+  });
+
+  it("refuses a path far longer than any real one", () => {
+    expect(() =>
+      decodeSetFilesViewed({
+        projectId: "p1",
+        repository: "group/project",
+        number: 7,
+        files: [{ path: `src/${"a".repeat(4096)}.ts`, viewed: true }],
+      }),
+    ).toThrow();
   });
 });

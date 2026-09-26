@@ -1,8 +1,11 @@
 import * as NodeAssert from "node:assert/strict";
 
 import { it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vite-plus/test";
 import { DEFAULT_MODEL, ThreadId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -13,9 +16,12 @@ import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.t
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
+  codexSkillNamesForCwd,
+  resolveCodexSkillNamesForPrompt,
   describeMcpElicitation,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
+  isThreadWriterLockedError,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
   readCodexThread,
@@ -154,6 +160,136 @@ function makeThreadOpenResponse(
 }
 
 describe("buildTurnStartParams", () => {
+  it.effect("cancels a stalled catalog lookup and preserves the Unicode prompt", () =>
+    Effect.gen(function* () {
+      const response = yield* Deferred.make<{
+        readonly data: ReadonlyArray<{
+          readonly cwd: string;
+          readonly skills: ReadonlyArray<{ readonly name: string; readonly enabled: boolean }>;
+        }>;
+      }>();
+      let interrupted = false;
+      const request = Deferred.await(response).pipe(
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            interrupted = true;
+          }),
+        ),
+      );
+      const lookup = yield* resolveCodexSkillNamesForPrompt("€review", "/project", request).pipe(
+        Effect.forkScoped,
+      );
+      yield* TestClock.adjust("2 seconds");
+      NodeAssert.equal(yield* Fiber.join(lookup), undefined);
+      NodeAssert.equal(interrupted, true);
+      yield* Deferred.succeed(response, {
+        data: [{ cwd: "/project", skills: [{ name: "review", enabled: true }] }],
+      });
+      NodeAssert.equal(yield* Fiber.join(lookup), undefined);
+
+      const turn = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "€review",
+      });
+      NodeAssert.deepEqual(turn.input, [{ type: "text", text: "€review" }]);
+    }),
+  );
+
+  it.effect("leaves literal text when the catalog request fails", () =>
+    Effect.gen(function* () {
+      const names = yield* resolveCodexSkillNamesForPrompt(
+        "€review",
+        "/project",
+        Effect.fail(
+          new CodexErrors.CodexAppServerRequestError({
+            code: -32603,
+            errorMessage: "catalog unavailable",
+          }),
+        ),
+      );
+      NodeAssert.equal(names, undefined);
+    }),
+  );
+  it("uses only the requested Codex cwd, allowing a sole canonicalized response cwd", () => {
+    NodeAssert.deepEqual(
+      [
+        ...codexSkillNamesForCwd(
+          { data: [{ cwd: "/canonical/project", skills: [{ name: "review", enabled: true }] }] },
+          "/symlink/project",
+        ),
+      ],
+      ["review"],
+    );
+    NodeAssert.deepEqual(
+      [
+        ...codexSkillNamesForCwd(
+          {
+            data: [
+              { cwd: "/other", skills: [{ name: "private", enabled: true }] },
+              { cwd: "/requested", skills: [{ name: "review", enabled: true }] },
+            ],
+          },
+          "/requested",
+        ),
+      ],
+      ["review"],
+    );
+    NodeAssert.deepEqual(
+      [
+        ...codexSkillNamesForCwd(
+          {
+            data: [
+              { cwd: "/other", skills: [{ name: "private", enabled: true }] },
+              { cwd: "/different", skills: [{ name: "review", enabled: true }] },
+            ],
+          },
+          "/requested",
+        ),
+      ],
+      [],
+    );
+  });
+  it.effect("sends currency skill aliases in Codex's canonical dollar form", () =>
+    Effect.gen(function* () {
+      for (const symbol of ["€", "£", "¥", "₹", "₩", "₿", "𑿝"]) {
+        const prose = `${symbol}20 ${symbol}20k ${symbol}100M ${symbol}1e6 5${symbol}review`;
+        const params = yield* buildTurnStartParams({
+          threadId: "provider-thread-1",
+          runtimeMode: "full-access",
+          prompt: `${symbol}review ${symbol}2spec $existing ${prose} ${symbol}last`,
+          skillNames: new Set(["review", "2spec", "last"]),
+        });
+
+        NodeAssert.deepEqual(params.input, [
+          { type: "text", text: `$review $2spec $existing ${prose} $last` },
+        ]);
+      }
+    }),
+  );
+
+  it.effect("preserves unknown Unicode skill words and catalog-unavailable prompts", () =>
+    Effect.gen(function* () {
+      const prompt = "Use €review and €unknown with $existing";
+      const known = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt,
+        skillNames: new Set(["review"]),
+      });
+      NodeAssert.deepEqual(known.input, [
+        { type: "text", text: "Use $review and €unknown with $existing" },
+      ]);
+
+      const unavailable = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt,
+      });
+      NodeAssert.deepEqual(unavailable.input, [{ type: "text", text: prompt }]);
+    }),
+  );
+
   it("keeps invalid turn values only in the schema cause", () => {
     const secret = "codex-turn-input-secret-sentinel";
     const error = Effect.runSync(
@@ -871,6 +1007,44 @@ describe("isRecoverableThreadResumeError", () => {
   });
 });
 
+describe("isThreadWriterLockedError", () => {
+  it("matches the app-server writer-lock refusal", () => {
+    NodeAssert.equal(
+      isThreadWriterLockedError(
+        new CodexErrors.CodexAppServerRequestError({
+          code: -32603,
+          errorMessage: "thread 01a0ccd7-23c1-7c00-9cbd-eafe286d36b5 already has an active writer",
+        }),
+      ),
+      true,
+    );
+  });
+
+  it("ignores other resume failures", () => {
+    NodeAssert.equal(
+      isThreadWriterLockedError(
+        new CodexErrors.CodexAppServerRequestError({
+          code: -32603,
+          errorMessage: "thread not found",
+        }),
+      ),
+      false,
+    );
+  });
+
+  it("is not treated as a recoverable resume error", () => {
+    NodeAssert.equal(
+      isRecoverableThreadResumeError(
+        new CodexErrors.CodexAppServerRequestError({
+          code: -32603,
+          errorMessage: "thread 01a0ccd7-23c1-7c00-9cbd-eafe286d36b5 already has an active writer",
+        }),
+      ),
+      false,
+    );
+  });
+});
+
 describe("openCodexThread", () => {
   it.effect("resumes metadata when historical turns contain unknown error values", () =>
     Effect.gen(function* () {
@@ -1095,6 +1269,35 @@ describe("openCodexThread", () => {
 
       NodeAssert.ok(isCodexAppServerRequestError(error));
       NodeAssert.equal(error.errorMessage, "timed out waiting for server");
+    }),
+  );
+
+  it.effect("explains a writer-locked conversation without starting a fresh thread", () =>
+    Effect.gen(function* () {
+      const refusal = new CodexErrors.CodexAppServerRequestError({
+        code: -32603,
+        errorMessage: "thread 01a0ccd7-23c1-7c00-9cbd-eafe286d36b5 already has an active writer",
+      });
+      const client = {
+        request: () => Effect.die("A writer-locked conversation must not start a fresh thread"),
+        raw: { request: () => Effect.fail(refusal) },
+      };
+
+      const error = yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: "01a0ccd7-23c1-7c00-9cbd-eafe286d36b5",
+      }).pipe(Effect.flip);
+
+      NodeAssert.ok(isCodexAppServerRequestError(error));
+      NodeAssert.ok(error.errorMessage.includes("01a0ccd7-23c1-7c00-9cbd-eafe286d36b5"));
+      NodeAssert.match(error.errorMessage, /writer lock/i);
+      NodeAssert.match(error.errorMessage, /close/i);
+      NodeAssert.equal(error.cause, refusal);
     }),
   );
 });

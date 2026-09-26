@@ -5,10 +5,14 @@ import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
+  authenticatedUsageIdentity,
   isRetainedUsageFresh,
+  matchingAccountUsage,
   retainSnapshotUsageLimits,
-  retainUsageLimits,
+  retainUsageLimitsForAccount,
   preferFreshUsageReading,
+  usageReadingForAuth,
+  type AccountUsageReading,
 } from "./providerUsageRetention.ts";
 
 const NOW = Date.parse("2026-08-06T12:00:00.000Z");
@@ -71,17 +75,67 @@ describe("isRetainedUsageFresh", () => {
   });
 });
 
-describe("retainUsageLimits", () => {
+const ACCOUNT_A = "email:a@example.com";
+const ACCOUNT_B = "email:b@example.com";
+
+it("binds an authenticated Codex reading to both account id and live email", () => {
+  assert.strictEqual(
+    authenticatedUsageIdentity({
+      status: "authenticated",
+      accountId: "account-1",
+      email: "A@Example.com",
+    }),
+    "account:account-1|email:a@example.com",
+  );
+  assert.isUndefined(authenticatedUsageIdentity({ status: "unknown", email: "a@example.com" }));
+});
+
+it("does not overlay a direct reset reading onto another or unverified account", () => {
+  const direct = { identity: ACCOUNT_A, usageLimits: usage("2026-08-06T11:59:00.000Z") };
+  assert.strictEqual(
+    usageReadingForAuth(direct, { status: "authenticated", email: "a@example.com" }),
+    direct.usageLimits,
+  );
+  assert.isUndefined(
+    usageReadingForAuth(direct, { status: "authenticated", email: "b@example.com" }),
+  );
+  assert.isUndefined(usageReadingForAuth(direct, { status: "unknown" }));
+});
+
+it("accepts a Claude OAuth read only when its account probe agrees with the current account", () => {
+  const limits = usage("2026-08-06T11:59:00.000Z");
+  assert.strictEqual(
+    matchingAccountUsage("B@Example.com", {
+      accountIdentity: "b@example.com",
+      usageLimits: limits,
+    }),
+    limits,
+  );
+  assert.isUndefined(
+    matchingAccountUsage("b@example.com", {
+      accountIdentity: "a@example.com",
+      usageLimits: limits,
+    }),
+  );
+  assert.isUndefined(
+    matchingAccountUsage("b@example.com", { accountIdentity: undefined, usageLimits: limits }),
+  );
+});
+
+describe("retainUsageLimitsForAccount", () => {
   it.effect("remembers a successful reading", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
-      const lastKnown = yield* Ref.make<ServerProviderUsageLimits | undefined>(undefined);
+      const lastKnown = yield* Ref.make<AccountUsageReading | undefined>(undefined);
       const fresh = usage("2026-08-06T11:59:00.000Z");
 
-      const result = yield* retainUsageLimits(lastKnown, fresh);
+      const result = yield* retainUsageLimitsForAccount(lastKnown, ACCOUNT_A, fresh);
 
       assert.strictEqual(result, fresh);
-      assert.strictEqual(yield* Ref.get(lastKnown), fresh);
+      assert.deepStrictEqual(yield* Ref.get(lastKnown), {
+        identity: ACCOUNT_A,
+        usageLimits: fresh,
+      });
     }),
   );
 
@@ -90,9 +144,12 @@ describe("retainUsageLimits", () => {
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const previous = usage("2026-08-06T11:59:00.000Z");
-      const lastKnown = yield* Ref.make<ServerProviderUsageLimits | undefined>(previous);
+      const lastKnown = yield* Ref.make<AccountUsageReading | undefined>({
+        identity: ACCOUNT_A,
+        usageLimits: previous,
+      });
 
-      const result = yield* retainUsageLimits(lastKnown, undefined);
+      const result = yield* retainUsageLimitsForAccount(lastKnown, ACCOUNT_A, undefined);
 
       assert.strictEqual(result, previous);
     }),
@@ -102,9 +159,12 @@ describe("retainUsageLimits", () => {
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const ancient = usage("2020-01-01T00:00:00.000Z");
-      const lastKnown = yield* Ref.make<ServerProviderUsageLimits | undefined>(ancient);
+      const lastKnown = yield* Ref.make<AccountUsageReading | undefined>({
+        identity: ACCOUNT_A,
+        usageLimits: ancient,
+      });
 
-      const result = yield* retainUsageLimits(lastKnown, undefined);
+      const result = yield* retainUsageLimitsForAccount(lastKnown, ACCOUNT_A, undefined);
 
       assert.isUndefined(result);
       // Cleared as well, so it cannot resurface later.
@@ -114,9 +174,53 @@ describe("retainUsageLimits", () => {
 
   it.effect("has nothing to show before any reading succeeds", () =>
     Effect.gen(function* () {
-      const lastKnown = yield* Ref.make<ServerProviderUsageLimits | undefined>(undefined);
+      const lastKnown = yield* Ref.make<AccountUsageReading | undefined>(undefined);
 
-      assert.isUndefined(yield* retainUsageLimits(lastKnown, undefined));
+      assert.isUndefined(yield* retainUsageLimitsForAccount(lastKnown, ACCOUNT_A, undefined));
+    }),
+  );
+
+  it.effect("clears account A after an authenticated switch to B with a failed read", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const previous = usage("2026-08-06T11:59:00.000Z");
+      const lastKnown = yield* Ref.make<AccountUsageReading | undefined>({
+        identity: ACCOUNT_A,
+        usageLimits: previous,
+      });
+      assert.isUndefined(yield* retainUsageLimitsForAccount(lastKnown, ACCOUNT_B, undefined));
+      assert.isUndefined(yield* Ref.get(lastKnown));
+      assert.isUndefined(yield* retainUsageLimitsForAccount(lastKnown, ACCOUNT_A, undefined));
+    }),
+  );
+
+  it.effect("does not retain an unidentified account's reading", () =>
+    Effect.gen(function* () {
+      const lastKnown = yield* Ref.make<AccountUsageReading | undefined>(undefined);
+      const fresh = usage("2026-08-06T11:59:00.000Z");
+      assert.strictEqual(yield* retainUsageLimitsForAccount(lastKnown, undefined, fresh), fresh);
+      assert.isUndefined(yield* Ref.get(lastKnown));
+    }),
+  );
+
+  it.effect("hides an A reading during unknown auth, then reuses it only for verified A", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const previous = usage("2026-08-06T11:59:00.000Z");
+      const lastKnown = yield* Ref.make<AccountUsageReading | undefined>({
+        identity: ACCOUNT_A,
+        usageLimits: previous,
+      });
+      assert.isUndefined(yield* retainUsageLimitsForAccount(lastKnown, undefined, undefined));
+      assert.deepStrictEqual(yield* Ref.get(lastKnown), {
+        identity: ACCOUNT_A,
+        usageLimits: previous,
+      });
+      assert.strictEqual(
+        yield* retainUsageLimitsForAccount(lastKnown, ACCOUNT_A, undefined),
+        previous,
+      );
+      assert.isUndefined(yield* retainUsageLimitsForAccount(lastKnown, ACCOUNT_B, undefined));
     }),
   );
 });
@@ -124,9 +228,10 @@ describe("retainUsageLimits", () => {
 describe("retainSnapshotUsageLimits", () => {
   const snapshot = (input: {
     readonly auth: "authenticated" | "unauthenticated" | "unknown";
+    readonly email?: string;
     readonly usageLimits?: ServerProviderUsageLimits;
   }) => ({
-    auth: { status: input.auth },
+    auth: { status: input.auth, ...(input.email ? { email: input.email } : {}) },
     ...(input.usageLimits ? { usageLimits: input.usageLimits } : {}),
   });
 
@@ -136,11 +241,14 @@ describe("retainSnapshotUsageLimits", () => {
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const previous = usage("2026-08-06T11:59:00.000Z");
-      const lastKnown = yield* Ref.make<ServerProviderUsageLimits | undefined>(previous);
+      const lastKnown = yield* Ref.make<AccountUsageReading | undefined>({
+        identity: ACCOUNT_A,
+        usageLimits: previous,
+      });
 
       const result = yield* retainSnapshotUsageLimits(
         lastKnown,
-        snapshot({ auth: "authenticated" }),
+        snapshot({ auth: "authenticated", email: "a@example.com" }),
       );
 
       assert.strictEqual(result.usageLimits, previous);
@@ -150,16 +258,20 @@ describe("retainSnapshotUsageLimits", () => {
   it.effect("returns the probe untouched when it carries its own reading", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
-      const lastKnown = yield* Ref.make<ServerProviderUsageLimits | undefined>(undefined);
+      const lastKnown = yield* Ref.make<AccountUsageReading | undefined>(undefined);
       const probed = snapshot({
         auth: "authenticated",
+        email: "a@example.com",
         usageLimits: usage("2026-08-06T11:59:00.000Z"),
       });
 
       const result = yield* retainSnapshotUsageLimits(lastKnown, probed);
 
       assert.strictEqual(result, probed);
-      assert.strictEqual(yield* Ref.get(lastKnown), probed.usageLimits);
+      assert.deepStrictEqual(yield* Ref.get(lastKnown), {
+        identity: ACCOUNT_A,
+        usageLimits: probed.usageLimits,
+      });
     }),
   );
 
@@ -168,9 +280,10 @@ describe("retainSnapshotUsageLimits", () => {
   it.effect("clears the reading when the account signs out", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
-      const lastKnown = yield* Ref.make<ServerProviderUsageLimits | undefined>(
-        usage("2026-08-06T11:59:00.000Z"),
-      );
+      const lastKnown = yield* Ref.make<AccountUsageReading | undefined>({
+        identity: ACCOUNT_A,
+        usageLimits: usage("2026-08-06T11:59:00.000Z"),
+      });
 
       const result = yield* retainSnapshotUsageLimits(
         lastKnown,
@@ -179,6 +292,22 @@ describe("retainSnapshotUsageLimits", () => {
 
       assert.strictEqual(result.usageLimits, undefined);
       assert.strictEqual(yield* Ref.get(lastKnown), undefined);
+    }),
+  );
+
+  it.effect("does not attach account A's reading to an authenticated B snapshot", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const lastKnown = yield* Ref.make<AccountUsageReading | undefined>({
+        identity: ACCOUNT_A,
+        usageLimits: usage("2026-08-06T11:59:00.000Z"),
+      });
+      const result = yield* retainSnapshotUsageLimits(
+        lastKnown,
+        snapshot({ auth: "authenticated", email: "b@example.com" }),
+      );
+      assert.isUndefined(result.usageLimits);
+      assert.isUndefined(yield* Ref.get(lastKnown));
     }),
   );
 });

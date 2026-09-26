@@ -1,6 +1,7 @@
 import {
   type AgentSessionImportSource,
   ChatAttachment,
+  CommandId,
   ComposerContextId,
   CheckpointRef,
   EventId,
@@ -510,6 +511,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pinOrderKey: "gm",
           activeOrderKey: "hq",
           titleRegeneration: null,
+          titleState: null,
           continuedFromThreadId: null,
           deletedAt: null,
           messages: [
@@ -646,6 +648,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pinOrderKey: "gm",
           activeOrderKey: "hq",
           titleRegeneration: null,
+          titleState: null,
           continuedFromThreadId: null,
           session: {
             threadId: ThreadId.make("thread-1"),
@@ -781,7 +784,22 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
           title: "Thread 1",
-          session: snapshot.threads[0]?.session,
+          titleState: null,
+          session: snapshot.threads[0]?.session ?? null,
+        });
+      }
+
+      yield* sql`
+        UPDATE projection_threads
+        SET title_state_json = '{"source":"manual","version":"cmd-manual-title"}'
+        WHERE thread_id = 'thread-1'
+      `;
+      const ownedContext = yield* snapshotQuery.getThreadRuntimeContext(ThreadId.make("thread-1"));
+      assert.equal(ownedContext._tag, "Some");
+      if (ownedContext._tag === "Some") {
+        assert.deepEqual(ownedContext.value.titleState, {
+          source: "manual",
+          version: CommandId.make("cmd-manual-title"),
         });
       }
 
@@ -2670,6 +2688,27 @@ it.effect(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) => {
+  it.effect("does not return an orphaned question after a stopped-session reply failure", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        ) VALUES
+          ('orphaned-question', 'thread-orphaned', NULL, 'approval', 'user-input.requested',
+            'Question', '{"requestId":"request-orphaned"}', '2026-09-24T00:00:00.000Z'),
+          ('orphaned-failure', 'thread-orphaned', NULL, 'error',
+            'provider.user-input.respond.failed', 'Reply failed',
+            '{"requestId":"request-orphaned","detail":"No active provider session is bound to this thread."}',
+            '2026-09-24T00:00:01.000Z')
+      `;
+      const pending = yield* snapshotQuery.getPendingRequestActivities({
+        threadId: ThreadId.make("thread-orphaned"),
+      });
+      assert.deepStrictEqual(pending, []);
+    }),
+  );
   // A thread shaped like real fan-out usage: user turns interleaved with
   // subagent turns (no user pending message), plus a turnless straggler user
   // message and a turnless activity anchored between turns.
