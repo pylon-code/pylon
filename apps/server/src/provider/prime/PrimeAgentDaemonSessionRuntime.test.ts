@@ -283,6 +283,9 @@ function fixture(options?: {
   readonly setRlmImpl?: (maxDepth: number) => Promise<unknown>;
   readonly cancelRlmImpl?: (agentId: string) => Promise<unknown>;
   readonly sendAgentMessageImpl?: (activeSessionId: string, message: string) => Promise<unknown>;
+  readonly abortAndSendQueuedImpl?: () => Promise<unknown>;
+  readonly abortAndSendQueuedSupported?: boolean;
+  readonly omitAbortAndSendQueued?: boolean;
   readonly omitSendAgentMessage?: boolean;
   readonly omitWatchSession?: boolean;
   readonly watchSessionUndefined?: boolean;
@@ -572,6 +575,9 @@ function fixture(options?: {
       if (options?.omitNegotiatedCapabilityAccessor === true) {
         Object.defineProperty(this, "supportsNegotiatedCapability", { value: undefined });
       }
+      if (options?.omitAbortAndSendQueued === true) {
+        Object.defineProperty(this, "abortAndSendQueued", { value: undefined });
+      }
     }
     static attach(
       _client: PrimeAgentDaemonClient,
@@ -672,6 +678,9 @@ function fixture(options?: {
       return options?.getPromptLifecyclesImpl?.() ?? Promise.resolve({ records: [], expired: [] });
     }
     supportsNegotiatedCapability(capability: string): boolean {
+      if (capability === "abort_and_send_queued_v1") {
+        return options?.abortAndSendQueuedSupported ?? false;
+      }
       return capability === "caller_owned_session_environment_cleanup_v1"
         ? true
         : capability === "correlated_prompt_lifecycle_v1" &&
@@ -729,6 +738,10 @@ function fixture(options?: {
     abort(): Promise<unknown> {
       captures.connectionCalls.push({ method: "abort", args: [] });
       return Promise.resolve(undefined);
+    }
+    abortAndSendQueued(): Promise<unknown> {
+      captures.connectionCalls.push({ method: "abortAndSendQueued", args: [] });
+      return options?.abortAndSendQueuedImpl?.() ?? Promise.resolve(undefined);
     }
     abortAndClearQueue(): Promise<unknown> {
       captures.connectionCalls.push({ method: "abortAndClearQueue", args: [] });
@@ -14351,6 +14364,106 @@ describe("Prime Agent live activity privacy boundary", () => {
         expect(side.captures.disposeCount).toBe(1);
         expect(side.captures.unsubscribeCount).toBe(1);
         expect(side.captures.closeCount).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect(
+    "invokes connection.abortAndSendQueued when abort_and_send_queued_v1 is negotiated",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { captures, make } = fixture({ abortAndSendQueuedSupported: true });
+          const runtime = yield* make();
+
+          yield* runtime.abort;
+          expect(captures.connectionCalls).toContainEqual({
+            method: "abortAndSendQueued",
+            args: [],
+          });
+          expect(captures.connectionCalls).not.toContainEqual({
+            method: "abort",
+            args: [],
+          });
+
+          yield* runtime.abortAndSendQueued;
+          expect(
+            captures.connectionCalls.filter((call) => call.method === "abortAndSendQueued"),
+          ).toHaveLength(2);
+        }),
+      ),
+  );
+
+  it.effect("falls back to connection.abort when abort_and_send_queued_v1 is not negotiated", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { captures, make } = fixture({ abortAndSendQueuedSupported: false });
+        const runtime = yield* make();
+
+        yield* runtime.abort;
+        expect(captures.connectionCalls).toContainEqual({
+          method: "abort",
+          args: [],
+        });
+        expect(captures.connectionCalls).not.toContainEqual({
+          method: "abortAndSendQueued",
+          args: [],
+        });
+
+        yield* runtime.abortAndSendQueued;
+        expect(captures.connectionCalls.filter((call) => call.method === "abort")).toHaveLength(2);
+        expect(captures.connectionCalls).not.toContainEqual({
+          method: "abortAndSendQueued",
+          args: [],
+        });
+      }),
+    ),
+  );
+
+  it.effect(
+    "falls back to connection.abort when abort_and_send_queued_v1 is negotiated but method is missing",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { captures, make } = fixture({
+            abortAndSendQueuedSupported: true,
+            omitAbortAndSendQueued: true,
+          });
+          const runtime = yield* make();
+
+          yield* runtime.abort;
+          expect(captures.connectionCalls).toContainEqual({
+            method: "abort",
+            args: [],
+          });
+          expect(captures.connectionCalls).not.toContainEqual({
+            method: "abortAndSendQueued",
+            args: [],
+          });
+
+          yield* runtime.abortAndSendQueued;
+          expect(captures.connectionCalls.filter((call) => call.method === "abort")).toHaveLength(
+            2,
+          );
+        }),
+      ),
+  );
+
+  it.effect("propagates failure when abortAndSendQueued rejects", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { make } = fixture({
+          abortAndSendQueuedSupported: true,
+          abortAndSendQueuedImpl: () => Promise.reject(new Error("abort_and_send_queued failed")),
+        });
+        const runtime = yield* make();
+
+        const error = yield* runtime.abort.pipe(Effect.flip);
+        expect(error).toMatchObject({
+          operation: "abort",
+          reason: "request-failed",
+          detail: "The daemon operation failed.",
+        });
       }),
     ),
   );
