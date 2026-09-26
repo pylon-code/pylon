@@ -124,7 +124,16 @@ export function ComposerEditor({
   // first controlled payload must be a non-echo so a restored draft (or a
   // recycled native view) is applied rather than skipped.
   const nativeEventSnapshotsRef = useRef<ComposerNativeEventSnapshot[]>([]);
-  const [initialConfirmedTokens] = useState(() => collectComposerInlineTokens(props.value));
+  const [initialConfirmedTokens] = useState(() =>
+    collectComposerInlineTokens(props.value, {
+      allowUnicodeSkillAliases: props.allowUnicodeSkillAliases ?? false,
+      unicodeSkillNames: new Set(
+        skills
+          .filter((skill) => skill.enabled !== false && skill.userInvocable !== false)
+          .map((skill) => skill.name),
+      ),
+    }),
+  );
   const confirmedTokensRef = useRef(initialConfirmedTokens);
   const theme = useUniwindTheme();
   const handlePaste = useNativePaste((uris) => onPasteImages?.(uris));
@@ -147,6 +156,12 @@ export function ComposerEditor({
   const tokensJson = useMemo(() => {
     const tokens = collectComposerInlineTokens(props.value, {
       preserveTrailingFrom: confirmedTokensRef.current,
+      allowUnicodeSkillAliases: props.allowUnicodeSkillAliases ?? false,
+      unicodeSkillNames: new Set(
+        skills
+          .filter((skill) => skill.enabled !== false && skill.userInvocable !== false)
+          .map((skill) => skill.name),
+      ),
     });
     confirmedTokensRef.current = tokens;
     return JSON.stringify(
@@ -180,7 +195,7 @@ export function ComposerEditor({
         };
       }),
     );
-  }, [props.value, props.context, skillLabels]);
+  }, [props.value, props.context, props.allowUnicodeSkillAliases, skillLabels, skills]);
   // Every render resolves against the snapshot history, so a render whose
   // (value, selection) lags the acknowledged native state is stamped behind
   // the native revision and rejected by the editor instead of re-applying a

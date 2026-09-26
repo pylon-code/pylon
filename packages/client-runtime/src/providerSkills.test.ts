@@ -9,6 +9,7 @@ import {
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
   resolveProviderSkillSourceKind,
+  supportsUnicodeSkillAliases,
 } from "./providerSkills.ts";
 
 const provider = {
@@ -32,6 +33,18 @@ const provider = {
     },
   ],
 } satisfies ServerProvider;
+
+describe("supportsUnicodeSkillAliases", () => {
+  it("matches only adapters that normalize registered Unicode skill invocations", () => {
+    for (const driver of ["claudeAgent", "cursor", "codex"] as const) {
+      expect(supportsUnicodeSkillAliases(ProviderDriverKind.make(driver))).toBe(true);
+    }
+    for (const driver of ["grok", "openCode", "prime"] as const) {
+      expect(supportsUnicodeSkillAliases(ProviderDriverKind.make(driver))).toBe(false);
+    }
+    expect(supportsUnicodeSkillAliases(null)).toBe(false);
+  });
+});
 
 describe("formatProviderSkillDisplayName", () => {
   it("prefers the provider display name", () => {

@@ -1,5 +1,6 @@
 import * as Option from "effect/Option";
 import { foldUserInputActivities } from "@t3tools/client-runtime/work-log/user-input";
+import { collectBackgroundTaskIds } from "@t3tools/client-runtime/state/subagentRuntime";
 import * as Schema from "effect/Schema";
 import {
   requestKindFromRequestType,
@@ -377,7 +378,10 @@ function isTerminalTaskUpdate(activity: OrchestrationThreadActivity): boolean {
  * Terminal rows are kept regardless — with no Agents surface on mobile they
  * are the terminal signal.
  */
-function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean {
+function isAgentInternalActivity(
+  activity: OrchestrationThreadActivity,
+  backgroundTaskIds: ReadonlySet<string>,
+): boolean {
   const payload =
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
@@ -397,7 +401,11 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
     }
     // An agent's own shells stay internal; the agents themselves fold into
     // their batch. A bypassed batch marker keeps its terminal row.
-    if (typeof payload.taskId === "string" && payload.agentKind === "agent") {
+    if (
+      typeof payload.taskId === "string" &&
+      payload.agentKind === "agent" &&
+      !backgroundTaskIds.has(payload.taskId)
+    ) {
       return false;
     }
     if (ownedByAgent) {
@@ -409,18 +417,28 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
 }
 
 /** Agent (non-background) task.started rows seed spawn batches. */
-function isAgentTaskStartedActivity(activity: OrchestrationThreadActivity): boolean {
+function isAgentTaskStartedActivity(
+  activity: OrchestrationThreadActivity,
+  backgroundTaskIds: ReadonlySet<string>,
+): boolean {
   const payload =
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
       : null;
-  return typeof payload?.taskId === "string" && payload.agentKind === "agent";
+  return (
+    typeof payload?.taskId === "string" &&
+    payload.agentKind === "agent" &&
+    !backgroundTaskIds.has(payload.taskId)
+  );
 }
 
 function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): DerivedWorkLogEntry[] {
   const ordered = Arr.sort(activities, activityOrder);
+  // Resolved across the thread: a task that names a background type stays
+  // background even when a later bare terminal row carries the agent stamp.
+  const backgroundTaskIds = collectBackgroundTaskIds(ordered);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of foldUserInputActivities(ordered)) {
     // Ownership receipts feed Relay recovery and control routing, not the transcript.
@@ -436,7 +454,11 @@ function deriveWorkLogEntries(
     // id and timestamp, unlike progress ticks, whose stable per-task id is
     // rewritten with a new createdAt on every update (and would otherwise
     // make the batch row a "fresh" row again on each tick).
-    if (activity.kind === "task.started" && !isAgentTaskStartedActivity(activity)) continue;
+    if (
+      activity.kind === "task.started" &&
+      !isAgentTaskStartedActivity(activity, backgroundTaskIds)
+    )
+      continue;
     if (activity.kind === "task.updated" && !isTerminalTaskUpdate(activity)) {
       const payload = asRecord(activity.payload);
       if (payload?.agentKind !== "agent" || typeof payload.taskId !== "string") continue;
@@ -455,8 +477,8 @@ function deriveWorkLogEntries(
     if (activity.summary === "Checkpoint captured") continue;
     if (isNoContentRuntimeWarning(activity)) continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
-    if (isAgentInternalActivity(activity)) continue;
-    entries.push(toDerivedWorkLogEntry(activity));
+    if (isAgentInternalActivity(activity, backgroundTaskIds)) continue;
+    entries.push(toDerivedWorkLogEntry(activity, backgroundTaskIds));
   }
   return collapseDerivedWorkLogEntries(entries);
 }
@@ -486,7 +508,10 @@ function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): bool
 
 const decodeQuestionAttachmentAnswer = Schema.decodeUnknownOption(UserInputAttachmentAnswerPayload);
 
-function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
+function toDerivedWorkLogEntry(
+  activity: OrchestrationThreadActivity,
+  backgroundTaskIds: ReadonlySet<string>,
+): DerivedWorkLogEntry {
   const payload =
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
@@ -545,7 +570,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     entry.toolCallId = toolCallId;
   }
   if (isTaskActivity && payload) {
-    if (payload.agentKind !== "agent") {
+    if (
+      payload.agentKind !== "agent" ||
+      (typeof payload.taskId === "string" && backgroundTaskIds.has(payload.taskId))
+    ) {
       entry.isBackgroundTask = true;
     }
     const spawnToolCallId = asTrimmedString(payload.toolUseId);

@@ -5,6 +5,8 @@ export interface ServerConfigProjection {
   readonly config: ServerConfig;
   readonly latestEvent: ServerConfigStreamEvent;
   readonly source: "cache" | "live";
+  /** Local session owner that delivered this live event; never persisted. */
+  readonly sessionOwner?: object;
 }
 
 /**

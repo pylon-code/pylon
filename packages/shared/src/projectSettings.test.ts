@@ -19,6 +19,18 @@ const projectId = ProjectId.make("project-a");
 const otherProjectId = ProjectId.make("project-b");
 
 describe("resolveProjectSettings", () => {
+  it("lets a project override the worktree submodule mode and restore inheritance", () => {
+    const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      worktreeSubmodules: "top-level",
+      projectSettingsOverrides: { [projectId]: { worktreeSubmodules: "none" } },
+    });
+    expect(resolveProjectSettings(settings, projectId).settings.worktreeSubmodules).toBe("none");
+    expect(resolveProjectSettings(settings, otherProjectId).settings.worktreeSubmodules).toBe(
+      "top-level",
+    );
+    const inherited = clearProjectSettingsOverrides(settings, projectId, ["worktreeSubmodules"]);
+    expect(inherited).toBeNull();
+  });
   it("inherits every scopable key when the project has no overrides", () => {
     const resolved = resolveProjectSettings(DEFAULT_SERVER_SETTINGS, projectId);
     expect(resolved.settings).toBe(DEFAULT_SERVER_SETTINGS);

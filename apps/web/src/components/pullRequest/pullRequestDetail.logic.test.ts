@@ -10,6 +10,7 @@ import {
   type PullRequestRef,
   type PullRequestReviewThread,
   type RepositoryIdentity,
+  type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { formatInlineContextReference } from "~/lib/composerContextReferences";
@@ -29,7 +30,9 @@ import {
   isPullRequestVerdictStale,
   isStackedPullRequestBase,
   loadingPullRequestCheckoutCommand,
-  isThreadOwnPullRequest,
+  panelPullRequestCheckoutCommand,
+  pullRequestPanelContext,
+  pullRequestPanelHost,
   latestPullRequestReviewOutcomes,
   newestPullRequestCommitAt,
   mergePullRequestThreadComments,
@@ -37,7 +40,6 @@ import {
   pullRequestActionMenuHasGroup,
   pullRequestActionNeedsHostRefresh,
   pullRequestCheckoutCommand,
-  pullRequestComposerTarget,
   pullRequestFindingKey,
   pullRequestHandoffLabels,
   pullRequestReviewOutcome,
@@ -60,6 +62,7 @@ describe("pull request checkout commands", () => {
   it.each([
     ["github", "feature", null, "gh pr checkout 42"],
     ["gitlab", "feature", null, "glab mr checkout 42"],
+    ["forgejo", "feature", null, null],
     ["azure-devops", "feature", null, "az repos pr checkout --id 42"],
     [
       "bitbucket",
@@ -71,7 +74,6 @@ describe("pull request checkout commands", () => {
   ] as const)("builds the %s command", (provider, branch, repository, expected) => {
     expect(pullRequestCheckoutCommand(provider, 42, branch, repository)).toBe(expected);
   });
-
   const reference = (host?: string): PullRequestRef => ({
     projectId: ProjectId.make("project-1"),
     ...(host === undefined ? {} : { host }),
@@ -113,6 +115,99 @@ describe("pull request checkout commands", () => {
         identity("gitlab", "gitlab.com/acme/web"),
       ),
     ).toBeNull();
+  });
+
+  it("keeps a checkout command available from the list summary while detail loads", () => {
+    const pullRequest = reference("github.com");
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: pullRequest,
+        identity: undefined,
+        summary: { provider: "github", number: 42, headBranch: "topic" },
+      }),
+    ).toBe("gh pr checkout 42");
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: pullRequest,
+        identity: undefined,
+        summary: null,
+      }),
+    ).toBe("gh pr checkout 42");
+  });
+
+  it("does not invent a checkout command for an unknown host or incomplete Bitbucket detail", () => {
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: reference("forge.example"),
+        identity: undefined,
+        summary: null,
+      }),
+    ).toBeNull();
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: reference("bitbucket.org"),
+        identity: undefined,
+        summary: { provider: "bitbucket", number: 42, headBranch: "topic" },
+      }),
+    ).toBeNull();
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: reference("bitbucket.org"),
+        identity: undefined,
+        summary: { provider: "bitbucket", number: 42, headBranch: "topic" },
+        headRepositoryNameWithOwner: "acme/web",
+      }),
+    ).toBe(
+      "git clone --single-branch --branch topic https://bitbucket.org/acme/web.git t3code-pr-42",
+    );
+  });
+
+  it("fetches Forgejo pull refs from the actual repository, including a mounted host and port", () => {
+    expect(
+      pullRequestCheckoutCommand(
+        "forgejo",
+        42,
+        "feature",
+        null,
+        "https://forgejo.local:3000/git/maria/repo",
+      ),
+    ).toBe(
+      "git fetch 'https://forgejo.local:3000/git/maria/repo' refs/pull/42/head && git checkout -B pulls/42 FETCH_HEAD",
+    );
+  });
+  it("quotes shell metacharacters in Forgejo repository URLs", () => {
+    expect(
+      pullRequestCheckoutCommand(
+        "forgejo",
+        42,
+        "feature",
+        null,
+        "https://forgejo.local/maria/repo'$(echo nope)",
+      ),
+    ).toBe(
+      "git fetch 'https://forgejo.local/maria/repo'\\''$(echo nope)' refs/pull/42/head && git checkout -B pulls/42 FETCH_HEAD",
+    );
+  });
+  it("keeps Forgejo checkout unavailable until a trusted detail repository URL arrives", () => {
+    const forgejoReference = reference("forgejo.local:3000");
+    const summary = { provider: "forgejo" as const, number: 42, headBranch: "feature" };
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: forgejoReference,
+        identity: undefined,
+        summary,
+      }),
+    ).toBeNull();
+    expect(
+      panelPullRequestCheckoutCommand({
+        reference: forgejoReference,
+        identity: undefined,
+        summary,
+        repositoryUrl: "https://forgejo.local:3000/git/maria/repo",
+      }),
+    ).toBe(
+      "git fetch 'https://forgejo.local:3000/git/maria/repo' refs/pull/42/head && git checkout -B pulls/42 FETCH_HEAD",
+    );
   });
 });
 
@@ -284,15 +379,6 @@ describe("pull request handoff labels", () => {
       fixCheck: "Fix",
       fixFindings: "Fix findings in a thread",
     });
-  });
-});
-
-describe("pull request composer target", () => {
-  it("rejects a page composer so agent comments cannot open another thread", () => {
-    const target = { environmentId: "env-1", threadId: "thread-1" };
-
-    expect(pullRequestComposerTarget("page", target)).toBeNull();
-    expect(pullRequestComposerTarget("thread", target)).toBe(target);
   });
 });
 
@@ -1420,39 +1506,97 @@ describe("how the branch stands against its base", () => {
 });
 
 describe("whether the panel is showing the thread's own pull request", () => {
-  const surface = { projectId: "proj-a", repository: "acme/app", number: 7 };
-
-  it("matches on project, repository and number together", () => {
-    expect(
-      isThreadOwnPullRequest({ projectId: "proj-a", repository: "acme/app", number: 7 }, surface),
-    ).toBe(true);
+  const surface = { projectId: "proj-a", host: "github.com", repository: "acme/app", number: 7 };
+  const link = (overrides: Partial<ThreadPullRequestLink> = {}): ThreadPullRequestLink => ({
+    host: "github.com",
+    repository: "acme/app",
+    number: 7,
+    url: "https://github.com/acme/app/pull/7",
+    source: "manual",
+    linkedAt: "2026-09-24T00:00:00.000Z",
+    snapshot: null,
+    stack: null,
+    ...overrides,
   });
 
-  it("rejects a second checkout of the same repository under another project", () => {
+  it("recognizes every visible linked PR, including a lower stack layer", () => {
     expect(
-      isThreadOwnPullRequest({ projectId: "proj-b", repository: "acme/app", number: 7 }, surface),
-    ).toBe(false);
-  });
-
-  it("rejects another repository or another number", () => {
-    expect(
-      isThreadOwnPullRequest({ projectId: "proj-a", repository: "acme/web", number: 7 }, surface),
-    ).toBe(false);
-    expect(
-      isThreadOwnPullRequest({ projectId: "proj-a", repository: "acme/app", number: 8 }, surface),
-    ).toBe(false);
-  });
-
-  it("rejects a thread with no project or no pull request of its own", () => {
-    expect(
-      isThreadOwnPullRequest({ projectId: null, repository: "acme/app", number: 7 }, surface),
-    ).toBe(false);
-    expect(
-      isThreadOwnPullRequest(
-        { projectId: "proj-a", repository: "acme/app", number: null },
+      pullRequestPanelContext(
+        { projectId: "proj-a", pullRequests: [link({ number: 8 }), link()] },
         surface,
       ),
-    ).toBe(false);
+    ).toBe("thread");
+  });
+
+  it("rejects tombstones, another host, and another project for checkout context", () => {
+    expect(
+      pullRequestPanelContext(
+        {
+          projectId: "proj-a",
+          pullRequests: [link({ source: "stack-dismissed" })],
+          linkedPullRequest: { repository: "acme/app", number: 7 },
+        },
+        surface,
+      ),
+    ).toBe("page");
+    expect(
+      pullRequestPanelContext(
+        { projectId: "proj-a", pullRequests: [link({ host: "forge.example" })] },
+        surface,
+      ),
+    ).toBe("page");
+    expect(pullRequestPanelContext({ projectId: "proj-b", pullRequests: [link()] }, surface)).toBe(
+      "page",
+    );
+  });
+
+  it("does not confuse identical repository and number on two hosts", () => {
+    const github = link();
+    const forgejo = link({
+      host: "forge.example",
+      url: "https://forge.example/acme/app/pulls/7",
+    });
+    const thread = { projectId: "proj-a", pullRequests: [github, forgejo] };
+    expect(
+      pullRequestPanelContext(thread, {
+        projectId: surface.projectId,
+        repository: surface.repository,
+        number: surface.number,
+      }),
+    ).toBe("page");
+    expect(pullRequestPanelContext(thread, { ...surface, host: "forge.example" })).toBe("thread");
+    expect(
+      pullRequestPanelHost({
+        links: thread.pullRequests,
+        repository: surface.repository,
+        number: 7,
+        linkedUrl: forgejo.url,
+        projectHost: "github.com",
+      }),
+    ).toBe("forge.example");
+    expect(
+      pullRequestPanelHost({
+        links: thread.pullRequests,
+        repository: surface.repository,
+        number: 7,
+      }),
+    ).toBeNull();
+  });
+
+  it("uses legacy slots when a server has no link list", () => {
+    expect(
+      pullRequestPanelContext(
+        {
+          projectId: "proj-a",
+          linkedPullRequest: { repository: "acme/app", number: 8 },
+          branchPullRequest: { repository: "acme/app", number: 7 },
+        },
+        surface,
+      ),
+    ).toBe("thread");
+    expect(pullRequestPanelContext({ projectId: "proj-a", linkedPullRequest: null }, surface)).toBe(
+      "page",
+    );
   });
 });
 

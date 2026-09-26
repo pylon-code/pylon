@@ -12,7 +12,6 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   HammerIcon,
-  PencilIcon,
   TagIcon,
   UsersIcon,
 } from "lucide-react";
@@ -25,6 +24,7 @@ import { useOpenLink } from "~/browser/useOpenLink";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 
 import { Button } from "../ui/button";
+import { PullRequestEditButton } from "./PullRequestEditButton";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -194,15 +194,7 @@ function CommentBody({
         threadRef={editing.threadRef}
       />
       {editing.canEdit(comment) ? (
-        <Button
-          size="icon-xs"
-          variant="ghost"
-          className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
-          aria-label="Edit comment"
-          onClick={() => editing.onEdit(comment)}
-        >
-          <PencilIcon className="size-3" />
-        </Button>
+        <PullRequestEditButton aria-label="Edit comment" onClick={() => editing.onEdit(comment)} />
       ) : null}
     </div>
   );
@@ -871,15 +863,10 @@ export function PullRequestSummaryTab({
                 threadRef={threadRef}
               />
               {canEditPullRequestChangeRequest(detail) ? (
-                <Button
-                  size="icon-xs"
-                  variant="ghost"
-                  className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+                <PullRequestEditButton
                   aria-label="Edit description"
                   onClick={() => setBodyScope(detail.url)}
-                >
-                  <PencilIcon className="size-3" />
-                </Button>
+                />
               ) : null}
             </div>
           )}

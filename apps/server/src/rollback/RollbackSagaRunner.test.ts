@@ -11,10 +11,13 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import { CheckpointStore } from "../checkpointing/CheckpointStore.ts";
+import { checkpointRefForThreadTurn } from "../checkpointing/Utils.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import {
   RuntimeReceiptBus,
@@ -39,6 +42,7 @@ const now = "2026-08-31T00:00:00.000Z";
 const privateTargetCanary = "PRIVATE_TARGET_LEAF_CANARY";
 const privateSourceCanary = "PRIVATE_SOURCE_LEAF_CANARY";
 const privatePreimageCanary = "/private/preimage/canary";
+const privateFailureCanary = "PRIVATE_PROMPT_TOOL_CREDENTIAL_ERROR_CANARY";
 
 type ProviderMode = "success" | "unknown-target" | "stayed-source" | "wrong-target";
 
@@ -53,9 +57,9 @@ const makeState = (operationId: string): RollbackSagaState => ({
   targetRevision: 1,
   sourceTurnId: null,
   targetTurnId: null,
-  sourceCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-runner/turn/2"),
+  sourceCheckpointRef: checkpointRefForThreadTurn(threadId, 2),
   sourceCheckpointOid: "a".repeat(40),
-  targetCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-runner/turn/1"),
+  targetCheckpointRef: checkpointRefForThreadTurn(threadId, 1),
   targetCheckpointOid: "b".repeat(40),
   targetCheckpointDigest: "target-tree-digest",
   providerInstanceId,
@@ -111,6 +115,7 @@ const makeEnvironment = (
   const providerApplies: string[] = [];
   const commands: OrchestrationCommand[] = [];
   const runtimeReceipts: OrchestrationRuntimeReceipt[] = [];
+  const emittedLogs: Array<unknown> = [];
 
   const preimage: RollbackWorkspacePreimage = {
     backupPath: privatePreimageCanary,
@@ -235,9 +240,9 @@ const makeEnvironment = (
             return Effect.void;
           case "unknown-target":
             providerDigest = "provider-target";
-            return Effect.fail("provider-timeout");
+            return Effect.fail(privateFailureCanary);
           case "stayed-source":
-            return Effect.fail("provider-failed");
+            return Effect.fail(privateFailureCanary);
           case "wrong-target":
             providerDigest = "provider-wrong";
             return Effect.void;
@@ -296,7 +301,7 @@ const makeEnvironment = (
         workspaceCalls.push("cleanupPreimage");
         if (cleanupFailures > 0) {
           cleanupFailures -= 1;
-          return Effect.fail("cleanup-failed");
+          return Effect.fail(privateFailureCanary);
         }
         preimageCleaned = true;
         return Effect.void;
@@ -352,7 +357,19 @@ const makeEnvironment = (
       Effect.provideService(CheckpointStore, checkpointStore as never),
       Effect.provideService(RuntimeReceiptBus, receipts),
       Effect.provideService(RollbackFaultInjector, fault),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(
+        Layer.mergeAll(
+          Logger.layer(
+            [
+              Logger.make<unknown, void>(
+                (event) => void emittedLogs.push(Logger.formatStructured.log(event)),
+              ),
+            ],
+            { mergeWithExisting: false },
+          ),
+          NodeServices.layer,
+        ),
+      ),
     );
   };
 
@@ -389,7 +406,19 @@ const makeEnvironment = (
       projectionCommits,
       commands,
       runtimeReceipts,
+      emittedLogs,
     }),
+    assertPrivateDataAbsentFromPublicOutput: () => {
+      const publicOutput = JSON.stringify({ commands, runtimeReceipts, emittedLogs });
+      for (const canary of [
+        privateTargetCanary,
+        privateSourceCanary,
+        privatePreimageCanary,
+        privateFailureCanary,
+      ]) {
+        assert.notInclude(publicOutput, canary);
+      }
+    },
   };
 };
 
@@ -409,6 +438,7 @@ it.effect("commits last, clears private state, and never publishes private canar
     const runner = yield* environment.makeRunner();
     yield* runner.run("operation-success", false);
     const snapshot = environment.snapshot();
+    environment.assertPrivateDataAbsentFromPublicOutput();
 
     assert.equal(snapshot.record.state.phase, "complete");
     assert.isTrue(snapshot.record.terminal);
@@ -547,6 +577,21 @@ it.effect("compensates workspace and provider when the provider stays at source"
     );
     assert.equal(status?.status, "failed");
     assert.include(status?.detail ?? "", "no thread content was removed");
+  }),
+);
+
+it.effect("does not replay a persisted preimage under a mismatched checkpoint owner", () =>
+  Effect.gen(function* () {
+    const environment = makeEnvironment("operation-owner-mismatch", "stayed-source");
+    environment.setPersistedState({
+      sourceCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/foreign/turn/2"),
+    });
+    const runner = yield* environment.makeRunner();
+    yield* runner.run("operation-owner-mismatch", false);
+    const snapshot = environment.snapshot();
+    assert.equal(snapshot.record.state.phase, "manual-recovery");
+    assert.isFalse(snapshot.workspaceCalls.includes("restorePreimage"));
+    assert.equal(snapshot.workspaceDigest, "workspace-target");
   }),
 );
 
@@ -694,6 +739,7 @@ it.effect("releases only the worker owner and retries post-commit cleanup idempo
     assert.isFalse(complete.lease);
     assert.equal(complete.projectionCommits, 1);
     assert.isTrue(complete.preimageCleaned);
+    environment.assertPrivateDataAbsentFromPublicOutput();
   }),
 );
 
@@ -750,6 +796,7 @@ for (const faultLabel of compensationFaultLabels) {
       assert.equal(snapshot.providerDigest, "provider-source");
       assert.equal(snapshot.projectionCommits, 0);
       assert.isFalse(snapshot.lease);
+      environment.assertPrivateDataAbsentFromPublicOutput();
     }),
   );
 }
@@ -767,6 +814,7 @@ it.effect("restores durable manual recovery status after a crash before status p
     yield* restartedRunner.run(operationId, true);
     const snapshot = environment.snapshot();
     assert.equal(snapshot.record.state.phase, "manual-recovery");
+    environment.assertPrivateDataAbsentFromPublicOutput();
     assert.isFalse(snapshot.record.terminal);
     assert.isTrue(snapshot.lease);
     const statuses = snapshot.commands.filter(
@@ -810,6 +858,7 @@ for (const faultLabel of restartFaultLabels) {
       yield* restartedRunner.run(operationId, true);
       const snapshot = environment.snapshot();
       assert.equal(snapshot.record.state.phase, "complete");
+      environment.assertPrivateDataAbsentFromPublicOutput();
       assert.isTrue(snapshot.record.terminal);
       assert.isFalse(snapshot.lease);
       assert.equal(snapshot.workspaceDigest, "workspace-target");
@@ -874,6 +923,7 @@ for (const failure of ["provider", "projection"] as const) {
         snapshot.record.state.lastErrorCode,
         failure === "provider" ? "provider-target-retry-exhausted" : "projection-commit-cas-failed",
       );
+      environment.assertPrivateDataAbsentFromPublicOutput();
       if (failure === "projection")
         assert.deepEqual(snapshot.providerApplies, ["target", "source"]);
       const status = snapshot.commands.findLast(

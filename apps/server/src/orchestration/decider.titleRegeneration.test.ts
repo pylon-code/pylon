@@ -47,6 +47,141 @@ const readModel: OrchestrationReadModel = {
 };
 
 it.layer(NodeServices.layer)("title regeneration decider", (it) => {
+  const generatedCompletion = (model: OrchestrationReadModel, expectedVersion: CommandId) =>
+    decideOrchestrationCommand({
+      command: {
+        type: "thread.title.generate.complete",
+        commandId: CommandId.make("cmd-generation-complete"),
+        threadId: ThreadId.make("thread-1"),
+        expectedTitle: "Manual title",
+        expectedVersion,
+        title: "Generated title",
+      },
+      readModel: model,
+    });
+
+  it.effect("keeps a manual rename even when its text returns to the original title", () =>
+    Effect.gen(function* () {
+      const thread = readModel.threads[0]!;
+      const renamed = {
+        ...readModel,
+        threads: [
+          {
+            ...thread,
+            titleState: { source: "manual" as const, version: CommandId.make("cmd-rename-again") },
+          },
+        ],
+      };
+      const result = yield* generatedCompletion(renamed, CommandId.make("cmd-original-title"));
+      const event = Array.isArray(result) ? result[0] : result;
+      expect(event.type).toBe("thread.meta-updated");
+      if (event.type === "thread.meta-updated") {
+        expect(event.payload.title).toBeUndefined();
+        expect(event.payload.titleState).toBeUndefined();
+        expect(event.payload.updatedAt).toBe(UPDATED_AT);
+      }
+    }),
+  );
+
+  it.effect("accepts only the current generated version and an active thread", () =>
+    Effect.gen(function* () {
+      const thread = readModel.threads[0]!;
+      const version = CommandId.make("cmd-earlier-generated-title");
+      const current = {
+        ...readModel,
+        threads: [{ ...thread, titleState: { source: "generated" as const, version } }],
+      };
+      const accepted = yield* generatedCompletion(current, version);
+      const acceptedEvent = Array.isArray(accepted) ? accepted[0] : accepted;
+      expect(acceptedEvent.type).toBe("thread.meta-updated");
+      if (acceptedEvent.type === "thread.meta-updated") {
+        expect(acceptedEvent.payload.title).toBe("Generated title");
+        expect(acceptedEvent.payload.titleState).toEqual({
+          source: "generated",
+          version: CommandId.make("cmd-generation-complete"),
+        });
+      }
+      for (const changed of [
+        { titleState: { source: "generated" as const, version: CommandId.make("cmd-newer") } },
+        { archivedAt: UPDATED_AT },
+        { deletedAt: UPDATED_AT },
+        { titleRegeneration: { requestId: CommandId.make("cmd-regen"), startedAt: UPDATED_AT } },
+      ]) {
+        const result = yield* generatedCompletion(
+          {
+            ...readModel,
+            threads: [{ ...thread, titleState: current.threads[0]!.titleState, ...changed }],
+          },
+          version,
+        );
+        const event = Array.isArray(result) ? result[0] : result;
+        if (event.type === "thread.meta-updated") {
+          expect(event.payload.title).toBeUndefined();
+          expect(event.payload.updatedAt).toBe(UPDATED_AT);
+        }
+      }
+    }),
+  );
+
+  it.effect("does not rotate intent for an unchanged generated title", () =>
+    Effect.gen(function* () {
+      const version = CommandId.make("cmd-pending-title");
+      const thread = {
+        ...readModel.threads[0]!,
+        titleState: { source: "provisional" as const, version },
+      };
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.title.generate.complete",
+          commandId: CommandId.make("cmd-placeholder-title"),
+          threadId: thread.id,
+          expectedTitle: thread.title,
+          expectedVersion: version,
+          title: thread.title,
+        },
+        readModel: { ...readModel, threads: [thread] },
+      });
+      const event = Array.isArray(result) ? result[0] : result;
+      expect(event.type).toBe("thread.meta-updated");
+      if (event.type === "thread.meta-updated") {
+        expect(event.payload.title).toBeUndefined();
+        expect(event.payload.titleState).toBeUndefined();
+      }
+    }),
+  );
+
+  it.effect("invalidates a pending title when a thread is archived and later reopened", () =>
+    Effect.gen(function* () {
+      const version = CommandId.make("cmd-title-before-archive");
+      const thread = {
+        ...readModel.threads[0]!,
+        titleState: { source: "generated" as const, version },
+      };
+      const archive = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.archive",
+          commandId: CommandId.make("cmd-archive-during-title"),
+          threadId: thread.id,
+        },
+        readModel: { ...readModel, threads: [thread] },
+      });
+      const archiveEvent = Array.isArray(archive) ? archive[0] : archive;
+      expect(archiveEvent.type).toBe("thread.archived");
+      if (archiveEvent.type !== "thread.archived") return;
+      expect(archiveEvent.payload.titleState).toEqual({
+        source: "generated",
+        version: CommandId.make("cmd-archive-during-title"),
+      });
+      const reopened = {
+        ...readModel,
+        threads: [{ ...thread, titleState: archiveEvent.payload.titleState, archivedAt: null }],
+      };
+      const result = yield* generatedCompletion(reopened, version);
+      const event = Array.isArray(result) ? result[0] : result;
+      if (event.type === "thread.meta-updated") expect(event.payload.title).toBeUndefined();
+    }),
+  );
+
   it.effect("preserves updatedAt for a stale completion", () =>
     Effect.gen(function* () {
       const result = yield* decideOrchestrationCommand({
@@ -67,6 +202,35 @@ it.layer(NodeServices.layer)("title regeneration decider", (it) => {
           threadId: ThreadId.make("thread-1"),
           updatedAt: UPDATED_AT,
         });
+      }
+    }),
+  );
+
+  it.effect("ignores regeneration completion after archive or deletion", () =>
+    Effect.gen(function* () {
+      const requestId = CommandId.make("cmd-regenerate-pending");
+      const thread = {
+        ...readModel.threads[0]!,
+        titleRegeneration: { requestId, startedAt: UPDATED_AT },
+      };
+      for (const inactive of [{ archivedAt: UPDATED_AT }, { deletedAt: UPDATED_AT }]) {
+        const result = yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.title.regeneration.complete",
+            commandId: CommandId.make("cmd-regeneration-late"),
+            threadId: thread.id,
+            requestId,
+            title: "Generated title",
+          },
+          readModel: { ...readModel, threads: [{ ...thread, ...inactive }] },
+        });
+        const event = Array.isArray(result) ? result[0] : result;
+        expect(event.type).toBe("thread.meta-updated");
+        if (event.type === "thread.meta-updated") {
+          expect(event.payload.title).toBeUndefined();
+          expect(event.payload.titleState).toBeUndefined();
+          expect(event.payload.updatedAt).toBe(UPDATED_AT);
+        }
       }
     }),
   );

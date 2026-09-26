@@ -50,7 +50,9 @@ export const ProjectCloneSnapshot = Schema.Struct({
 });
 export type ProjectCloneSnapshot = typeof ProjectCloneSnapshot.Type;
 
-export const ProjectCloneSubscribeInput = Schema.Struct({});
+export const ProjectCloneSubscribeInput = Schema.Struct({
+  supportsForgejo: Schema.optional(Schema.Boolean),
+});
 export type ProjectCloneSubscribeInput = typeof ProjectCloneSubscribeInput.Type;
 
 /** Every tracked clone on the environment. Sent first, then after every change. */
@@ -59,6 +61,7 @@ export type ProjectCloneListEvent = typeof ProjectCloneListEvent.Type;
 
 export const ProjectCloneStartInput = Schema.Struct({
   projectId: ProjectId,
+  supportsForgejo: Schema.optional(Schema.Boolean),
   title: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
   provider: Schema.optional(SourceControlProviderKind),
@@ -79,6 +82,7 @@ export type ProjectCloneStartResult = typeof ProjectCloneStartResult.Type;
 
 export const ProjectCloneActionInput = Schema.Struct({
   projectId: ProjectId,
+  supportsForgejo: Schema.optional(Schema.Boolean),
 });
 export type ProjectCloneActionInput = typeof ProjectCloneActionInput.Type;
 

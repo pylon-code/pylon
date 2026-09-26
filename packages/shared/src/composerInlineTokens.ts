@@ -16,6 +16,8 @@ export type ComposerInlineToken =
 
 export interface CollectComposerInlineTokensOptions {
   readonly preserveTrailingFrom?: ReadonlyArray<ComposerInlineToken>;
+  readonly allowUnicodeSkillAliases?: boolean;
+  readonly unicodeSkillNames?: ReadonlySet<string>;
 }
 
 /**
@@ -26,7 +28,7 @@ export interface CollectComposerInlineTokensOptions {
  * contain at least one letter.
  */
 const SKILL_TOKEN_REGEX =
-  /(^|\s)\$(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=\s)/g;
+  /(^|\s)\p{Sc}(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=\s)/gu;
 const MENTION_TOKEN_REGEX = /(^|\s)@(?:"((?:\\.|[^"\\])*)"|([^\s@"]+))(?=\s)/g;
 /**
  * The label body is bounded rather than `*`. Unbounded, every whitespace in
@@ -117,6 +119,9 @@ export function collectComposerInlineTokens(
     }
     const start = (match.index ?? 0) + prefix.length;
     const end = start + fullMatch.length - prefix.length;
+    if (options.allowUnicodeSkillAliases === false && text[start] !== "$") continue;
+    if (text[start] !== "$" && options.unicodeSkillNames && !options.unicodeSkillNames.has(value))
+      continue;
     matches.push({
       type: "skill",
       value,
@@ -130,6 +135,13 @@ export function collectComposerInlineTokens(
     if (
       token.end === text.length &&
       text.slice(token.start, token.end) === token.source &&
+      (options.allowUnicodeSkillAliases !== false ||
+        token.type !== "skill" ||
+        token.source.startsWith("$")) &&
+      (token.type !== "skill" ||
+        token.source.startsWith("$") ||
+        !options.unicodeSkillNames ||
+        options.unicodeSkillNames.has(token.value)) &&
       !matches.some(
         (match) =>
           match.type === token.type && match.start === token.start && match.end === token.end,

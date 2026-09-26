@@ -16,6 +16,7 @@ export interface ComposerEditorHandle {
 export interface ComposerEditorProps {
   readonly ref?: Ref<ComposerEditorHandle>;
   readonly value: string;
+  readonly allowUnicodeSkillAliases?: boolean;
   readonly context?: OrchestrationMessageContext;
   readonly clipboardFragment?: string;
   readonly onPasteContext?: (clipboard: {
@@ -25,7 +26,7 @@ export interface ComposerEditorProps {
   }) => void;
   readonly skills?: ReadonlyArray<
     Pick<ServerProviderSkill, "name" | "displayName" | "shortDescription" | "description"> &
-      Partial<Pick<ServerProviderSkill, "path">>
+      Partial<Pick<ServerProviderSkill, "path" | "enabled" | "userInvocable">>
   >;
   readonly selection?: ComposerEditorSelection;
   readonly placeholder?: string;

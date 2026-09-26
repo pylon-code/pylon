@@ -660,6 +660,9 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
           tokenCount: 90,
           answerPreview: "private live answer",
           recap: "private recap",
+          progressNote: "Checking the failing test",
+          lastActivityAt: 1_700_000_000_000,
+          activityStaleMs: 600_000,
           error: "private transient error",
           activity: { kind: "executing", toolName: "bash" },
         },
@@ -676,6 +679,7 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
           taskId: RuntimeTaskId.make("child-1"),
           description: "Review tests",
           status: "running",
+          summary: "Checking the failing test",
           typedUsage: { totalTokens: 90, toolUses: 4, durationMs: 250 },
           lastToolName: "bash",
           taskType: "subagent",
@@ -693,6 +697,8 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
     expect(JSON.stringify(running)).not.toContain("private live answer");
     expect(JSON.stringify(running)).not.toContain("private recap");
     expect(JSON.stringify(running)).not.toContain("private transient error");
+    expect(JSON.stringify(running)).not.toContain("activityStaleMs");
+    expect(JSON.stringify(running)).not.toContain("lastActivityAt");
 
     const terminal = mapPrimeAgentDaemonRuntimeEventDrafts({
       ...context,
@@ -716,12 +722,12 @@ describe("mapPrimeAgentDaemonRuntimeEventDrafts", () => {
       payload: {
         taskId: RuntimeTaskId.make("child-1"),
         status: "failed",
+        summary: "Failed",
         typedUsage: { totalTokens: 100 },
         messageable: false,
         timelineBypass: true,
       },
     });
-    expect(terminal[0]?.payload).not.toHaveProperty("summary");
     expect(JSON.stringify(terminal)).not.toContain("private terminal");
   });
 

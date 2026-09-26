@@ -13,8 +13,10 @@ import {
   KeybindingShortcut,
   KeybindingWhenNode,
   MAX_KEYBINDINGS_COUNT,
+  MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   ResolvedKeybindingRule,
   ResolvedKeybindingsConfig,
+  THREAD_JUMP_KEYBINDING_COMMANDS,
   type ServerRemoveKeybindingInput,
   type ServerUpsertKeybindingInput,
   type ServerConfigIssue,
@@ -61,7 +63,7 @@ export {
 export const ResolvedKeybindingFromConfig = KeybindingRule.pipe(
   Schema.decodeTo(
     Schema.toType(ResolvedKeybindingRule),
-    SchemaTransformation.transformOrFail({
+    SchemaTransformation.transformEffect({
       decode: (rule) =>
         Effect.succeed(compileResolvedKeybindingRule(rule)).pipe(
           Effect.filterOrFail(
@@ -102,6 +104,43 @@ function isSameKeybindingRule(left: KeybindingRule, right: KeybindingRule): bool
     left.key === right.key &&
     (left.when ?? undefined) === (right.when ?? undefined)
   );
+}
+
+// Earlier releases persisted the entire default set, including browser-wide
+// Mod+digit bindings. Match their exact rows; a changed key or context belongs
+// to the user and must not be rewritten.
+const legacyNumberedDefaults = [
+  ...THREAD_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
+    key: `mod+${index + 1}`,
+    command,
+  })),
+  ...MODEL_PICKER_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
+    key: `mod+${index + 1}`,
+    command,
+    when: "modelPickerOpen",
+  })),
+] satisfies readonly KeybindingRule[];
+
+function migrateLegacyNumberedDefaults(
+  rules: readonly KeybindingRule[],
+): readonly KeybindingRule[] {
+  // Only the complete, unmodified legacy numbered block proves that these
+  // are inherited defaults. A partial block or a duplicate command may be a
+  // deliberate custom set; leave it alone even if many rows look identical.
+  if (
+    !legacyNumberedDefaults.every((legacy) => {
+      const matchingCommand = rules.filter((rule) => rule.command === legacy.command);
+      return matchingCommand.length === 1 && isSameKeybindingRule(matchingCommand[0]!, legacy);
+    })
+  ) {
+    return rules;
+  }
+
+  return rules.map((rule) => {
+    const legacy = legacyNumberedDefaults.find((entry) => isSameKeybindingRule(entry, rule));
+    if (!legacy) return rule;
+    return DEFAULT_KEYBINDINGS.find((entry) => entry.command === legacy.command) ?? rule;
+  });
 }
 
 function keybindingShortcutContext(rule: KeybindingRule): string | null {
@@ -267,6 +306,7 @@ const make = Effect.gen(function* () {
   const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const browserNumberedDefaultsMarker = `${keybindingsConfigPath}.desktop-numbered-defaults-v1`;
   const upsertSemaphore = yield* Semaphore.make(1);
   const resolvedConfigCacheKey = "resolved" as const;
   const changesPubSub = yield* PubSub.unbounded<KeybindingsChangeEvent>();
@@ -422,6 +462,22 @@ const make = Effect.gen(function* () {
     );
   };
 
+  const markBrowserNumberedDefaultsMigrated = writeFileStringAtomically({
+    filePath: browserNumberedDefaultsMarker,
+    contents: "1\n",
+  }).pipe(
+    Effect.provideService(FileSystem.FileSystem, fs),
+    Effect.provideService(Path.Path, path),
+    Effect.mapError(
+      (cause) =>
+        new KeybindingsConfigError({
+          configPath: browserNumberedDefaultsMarker,
+          detail: "failed to record numbered keybinding migration",
+          cause,
+        }),
+    ),
+  );
+
   const loadConfigStateFromDisk = loadRuntimeCustomKeybindingsConfig().pipe(
     Effect.map(({ keybindings, issues }) => ({
       keybindings: mergeWithDefaultKeybindings(compileResolvedKeybindingsConfig(keybindings)),
@@ -453,6 +509,7 @@ const make = Effect.gen(function* () {
       const configExists = yield* readConfigExists;
       if (!configExists) {
         yield* writeConfigAtomically(DEFAULT_KEYBINDINGS);
+        yield* markBrowserNumberedDefaultsMigrated;
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }
@@ -469,7 +526,20 @@ const make = Effect.gen(function* () {
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }
-      const customConfig = runtimeConfig.keybindings;
+      const migrationRecorded = yield* fs.exists(browserNumberedDefaultsMarker).pipe(
+        Effect.mapError(
+          (cause) =>
+            new KeybindingsConfigError({
+              configPath: browserNumberedDefaultsMarker,
+              detail: "failed to check numbered keybinding migration",
+              cause,
+            }),
+        ),
+      );
+      const customConfig = migrationRecorded
+        ? runtimeConfig.keybindings
+        : migrateLegacyNumberedDefaults(runtimeConfig.keybindings);
+      const migrated = customConfig !== runtimeConfig.keybindings;
       const existingCommands = new Set(customConfig.map((entry) => entry.command));
       const missingDefaults: KeybindingRule[] = [];
       const shortcutConflictWarnings: Array<{
@@ -506,7 +576,8 @@ const make = Effect.gen(function* () {
           reason: "shortcut context already used by existing rule",
         });
       }
-      if (missingDefaults.length === 0) {
+      if (missingDefaults.length === 0 && !migrated) {
+        if (!migrationRecorded) yield* markBrowserNumberedDefaultsMigrated;
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }
@@ -535,12 +606,14 @@ const make = Effect.gen(function* () {
           commands: skippedDefaults.map((rule) => rule.command),
         });
       }
-      if (defaultsToAppend.length === 0) {
+      if (defaultsToAppend.length === 0 && !migrated) {
+        if (!migrationRecorded) yield* markBrowserNumberedDefaultsMigrated;
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }
 
       yield* writeConfigAtomically([...customConfig, ...defaultsToAppend]);
+      if (!migrationRecorded) yield* markBrowserNumberedDefaultsMigrated;
       yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
     }),
   );
