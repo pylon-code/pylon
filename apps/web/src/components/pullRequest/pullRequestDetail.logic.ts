@@ -21,8 +21,14 @@ import {
   type PullRequestState,
   type PullRequestUpdateMethod,
   type SourceControlProviderKind,
+  type ThreadLinkedPullRequest,
+  type ThreadPullRequestLink,
   type VcsRef,
 } from "@t3tools/contracts";
+import {
+  threadPullRequestKeysEqual,
+  visibleThreadPullRequests,
+} from "@t3tools/shared/threadPullRequests";
 
 import { inferReviewCommentFenceLanguage, type ReviewCommentContext } from "~/reviewCommentContext";
 import { reviewCommentContextId } from "~/lib/composerContextRecords";
@@ -106,12 +112,17 @@ export function pullRequestCheckoutCommand(
   number: number,
   headBranch: string,
   headRepositoryNameWithOwner?: string | null,
+  repositoryUrl?: string | null,
 ): string | null {
   switch (provider) {
     case "github":
       return `gh pr checkout ${number}`;
     case "gitlab":
       return `glab mr checkout ${number}`;
+    case "forgejo":
+      return repositoryUrl
+        ? `git fetch '${repositoryUrl.replaceAll("'", "'\\''")}' refs/pull/${number}/head && git checkout -B pulls/${number} FETCH_HEAD`
+        : null;
     case "azure-devops":
       return `az repos pr checkout --id ${number}`;
     case "bitbucket": {
@@ -145,6 +156,25 @@ export function loadingPullRequestCheckoutCommand(
   return pullRequestCheckoutCommand(provider, reference.number, "");
 }
 
+/** Keep the checkout affordance stable while richer PR detail is loading. */
+export function panelPullRequestCheckoutCommand(input: {
+  readonly reference: PullRequestRef;
+  readonly identity: RepositoryIdentity | null | undefined;
+  readonly summary: Pick<PullRequestDetail, "provider" | "number" | "headBranch"> | null;
+  readonly headRepositoryNameWithOwner?: string | null | undefined;
+  readonly repositoryUrl?: string | null | undefined;
+}): string | null {
+  return input.summary
+    ? pullRequestCheckoutCommand(
+        input.summary.provider,
+        input.summary.number,
+        input.summary.headBranch,
+        input.headRepositoryNameWithOwner,
+        input.repositoryUrl,
+      )
+    : loadingPullRequestCheckoutCommand(input.reference, input.identity);
+}
+
 /** Activity changes only when the same host resource reports a newer revision. */
 export function shouldRefreshPullRequestActivity(
   previous: { readonly key: string; readonly updatedAt: string } | null,
@@ -174,28 +204,88 @@ export function editPullRequestThreadComment<
   return comments.map((comment) => (comment.id === commentId ? { ...comment, body } : comment));
 }
 
-/**
- * Whether the pull request on a right-panel surface is the thread's own one. Repository and
- * number are not enough: one environment can hold two checkouts of the same repository under
- * different projects, and the other project's checkout is somebody else's branch.
- */
-export function isThreadOwnPullRequest(
+/** Whether this surface is one of the current thread's visible links. Keep checkout actions
+ * tied to project and host identity; the composer handoff is decided separately. */
+export function pullRequestPanelContext(
   thread: {
     readonly projectId: string | null;
-    readonly repository: string | null;
-    readonly number: number | null;
+    readonly pullRequests?: ReadonlyArray<ThreadPullRequestLink> | undefined;
+    readonly linkedPullRequest?:
+      | Pick<ThreadLinkedPullRequest, "repository" | "number">
+      | null
+      | undefined;
+    readonly branchPullRequest?:
+      | Pick<ThreadLinkedPullRequest, "repository" | "number">
+      | null
+      | undefined;
   },
   surface: {
     readonly projectId: string;
+    readonly host?: string;
     readonly repository: string;
     readonly number: number;
   },
-): boolean {
-  return (
-    thread.projectId === surface.projectId &&
-    thread.repository === surface.repository &&
-    thread.number === surface.number
+): "thread" | "page" {
+  if (thread.projectId !== surface.projectId) return "page";
+  const links = visibleThreadPullRequests(thread.pullRequests ?? []);
+  if (links.length > 0) {
+    const host = surface.host;
+    // A hostless legacy surface cannot identify one of two otherwise identical host links.
+    const match =
+      host === undefined
+        ? new Set(
+            links
+              .filter(
+                (link) =>
+                  link.repository.toLowerCase() === surface.repository.toLowerCase() &&
+                  link.number === surface.number,
+              )
+              .map((link) => link.host.toLowerCase()),
+          ).size === 1
+        : links.some((link) =>
+            threadPullRequestKeysEqual(link, {
+              host,
+              repository: surface.repository,
+              number: surface.number,
+            }),
+          );
+    return match ? "thread" : "page";
+  }
+  if ((thread.pullRequests?.length ?? 0) > 0) return "page";
+  // Old servers expose one or both legacy slots without the full host-aware link list.
+  return [thread.linkedPullRequest, thread.branchPullRequest].some(
+    (link) =>
+      link !== null &&
+      link !== undefined &&
+      link.repository === surface.repository &&
+      link.number === surface.number,
+  )
+    ? "thread"
+    : "page";
+}
+
+/** Prefer the exact linked URL, then the checkout's remote host. A number shared by two hosts
+ * is ambiguous without either signal, so leave that surface hostless and let context fail safe. */
+export function pullRequestPanelHost(input: {
+  readonly links: ReadonlyArray<ThreadPullRequestLink>;
+  readonly repository: string;
+  readonly number: number;
+  readonly linkedUrl?: string | undefined;
+  readonly projectHost?: string | null | undefined;
+}): string | null {
+  const matches = visibleThreadPullRequests(input.links).filter(
+    (link) =>
+      link.number === input.number &&
+      link.repository.toLowerCase() === input.repository.toLowerCase(),
   );
+  const selected =
+    matches.find((link) => link.url === input.linkedUrl) ??
+    matches.find((link) => link.host.toLowerCase() === input.projectHost?.toLowerCase());
+  if (selected) return selected.host;
+  if (new Set(matches.map((link) => link.host.toLowerCase())).size === 1) {
+    return matches[0]?.host ?? null;
+  }
+  return input.projectHost ?? null;
 }
 
 /** Names where a pull-request task will land, without letting each surface guess independently. */
@@ -211,13 +301,6 @@ export function pullRequestHandoffLabels(inThisThread: boolean) {
         fixCheck: "Fix",
         fixFindings: "Fix findings in a thread",
       };
-}
-
-export function pullRequestComposerTarget<T>(
-  context: "page" | "thread",
-  target: T | null | undefined,
-): T | null {
-  return context === "thread" ? (target ?? null) : null;
 }
 
 /** Whether the open pull-request action group contains at least one action. */

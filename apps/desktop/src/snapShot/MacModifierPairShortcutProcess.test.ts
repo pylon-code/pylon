@@ -54,6 +54,11 @@ describe("macOS modifier pair poller", () => {
     const poller = spawnedPollers[0]!;
     expect(poller.command).toBe("/usr/bin/osascript");
     expect(poller.args.slice(-2)).toEqual(["8", "16"]);
+    const script = poller.args[3]!;
+    expect(script.indexOf("NSApplicationActivationPolicyProhibited")).toBeGreaterThan(0);
+    expect(script.indexOf("NSApplicationActivationPolicyProhibited")).toBeLessThan(
+      script.indexOf('ObjC.import("CoreGraphics")'),
+    );
 
     poller.emitStderr("ready\ntrig");
     const stop = await started;

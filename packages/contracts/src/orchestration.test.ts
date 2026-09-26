@@ -653,6 +653,39 @@ it.effect("decodes thread.created runtime mode for historical events", () =>
   }),
 );
 
+it.effect("keeps title intent optional for older event payload consumers", () =>
+  Effect.gen(function* () {
+    const { titleState: _createdTitleState, ...legacyCreatedFields } = ThreadCreatedPayload.fields;
+    const { titleState: _updatedTitleState, ...legacyUpdatedFields } =
+      ThreadMetaUpdatedPayload.fields;
+    const legacyCreated = Schema.decodeUnknownEffect(Schema.Struct(legacyCreatedFields));
+    const legacyUpdated = Schema.decodeUnknownEffect(Schema.Struct(legacyUpdatedFields));
+    const created = yield* legacyCreated({
+      threadId: "thread-1",
+      projectId: "project-1",
+      title: "Seed title",
+      titleState: { source: "provisional", version: "command-create" },
+      modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const updated = yield* legacyUpdated({
+      threadId: "thread-1",
+      title: "Generated title",
+      titleState: { source: "generated", version: "command-generation" },
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+    assert.strictEqual(created.title, "Seed title");
+    assert.strictEqual(updated.title, "Generated title");
+    assert.strictEqual("titleState" in created, false);
+    assert.strictEqual("titleState" in updated, false);
+  }),
+);
+
 it.effect("decodes thread.meta-updated payloads with explicit provider", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadMetaUpdatedPayload({
@@ -869,6 +902,37 @@ it.effect("decodes thread pull request links with snapshot and stack", () =>
     assert.strictEqual(shell.pullRequests.length, 2);
     assert.strictEqual(shell.pullRequests[1]?.stack?.layers.length, 2);
     assert.strictEqual(shell.pullRequests[1]?.snapshot?.state, "open");
+  }),
+);
+
+// A stored event that fails to decode stops the event store read, and with it
+// server startup, so rows written before `turnId` existed must still load.
+it.effect("decodes a legacy message-sent event persisted without turnId", () =>
+  Effect.gen(function* () {
+    const event = yield* decodeOrchestrationEvent({
+      sequence: 539,
+      eventId: "event-message-legacy-1",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      type: "thread.message-sent",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      commandId: "cmd-message-legacy-1",
+      causationEventId: null,
+      correlationId: "cmd-message-legacy-1",
+      metadata: {},
+      payload: {
+        threadId: "thread-1",
+        messageId: "message-1",
+        role: "user",
+        text: "written before turn ids were recorded",
+        streaming: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    assert.strictEqual(event.type, "thread.message-sent");
+    if (event.type !== "thread.message-sent") return;
+    assert.strictEqual(event.payload.turnId, null);
   }),
 );
 

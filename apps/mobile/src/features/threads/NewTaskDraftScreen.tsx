@@ -1,3 +1,4 @@
+import { supportsUnicodeSkillAliases } from "@t3tools/client-runtime/providerSkills";
 import { shouldHandleUsageLimitsCommand } from "@t3tools/shared/usageLimits";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
 import {
@@ -1495,6 +1496,7 @@ export function NewTaskDraftScreen(props: {
   const promptEditor = (
     <>
       <ComposerEditor
+        allowUnicodeSkillAliases={supportsUnicodeSkillAliases(flow.selectedProviderStatus?.driver)}
         draftKey={flow.draftKey}
         environmentId={selectedProject.environmentId}
         onOpenAttachment={openDraftDocument}

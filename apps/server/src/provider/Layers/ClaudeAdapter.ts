@@ -4346,6 +4346,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
 
     if (message.type === "tool_progress") {
+      // Claude omits task_id on subagent tool heartbeats but includes the
+      // launching Task tool's id. Recover only a still-live agent: a late
+      // heartbeat for a completed task must not revive its activity row.
+      const owningTaskId = agentIdForParentToolUse(context.taskAgents, message.parent_tool_use_id);
+      const taskId =
+        message.task_id ??
+        (owningTaskId && context.liveTaskIds.has(owningTaskId) ? owningTaskId : undefined);
       yield* offerRuntimeEvent(context.sessionIncarnationId, {
         ...base,
         type: "tool.progress",
@@ -4353,7 +4360,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           toolUseId: message.tool_use_id,
           toolName: message.tool_name,
           elapsedSeconds: message.elapsed_time_seconds,
-          ...(message.task_id ? { taskId: RuntimeTaskId.make(message.task_id) } : {}),
+          ...(taskId ? { taskId: RuntimeTaskId.make(taskId) } : {}),
           ...(message.parent_tool_use_id !== null
             ? { parentToolUseId: message.parent_tool_use_id }
             : {}),

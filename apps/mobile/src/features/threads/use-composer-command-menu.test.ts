@@ -220,6 +220,24 @@ describe("buildComposerCommandItems path results", () => {
 });
 
 describe("composerCommandReplacement", () => {
+  it.each(["$", "€", "£", "₹", "𑿝"])(
+    "preserves the %s trigger prefix when selecting a native skill",
+    (prefix) => {
+      expect(
+        composerCommandReplacement(
+          {
+            id: "skill:review-t3-upstream",
+            type: "skill",
+            skill: skill({ name: "review-t3-upstream" }),
+            label: "Review T3 Upstream",
+            description: "",
+          },
+          `${prefix}review`,
+        ),
+      ).toBe(`${prefix}review-t3-upstream `);
+    },
+  );
+
   it("writes a markdown link for a path and a skill token for a skill", () => {
     expect(
       composerCommandReplacement({

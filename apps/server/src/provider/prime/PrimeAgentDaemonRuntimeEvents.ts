@@ -307,7 +307,8 @@ function childDraft(
       };
     case "running": {
       const lastToolName = boundedNonEmpty(child.activity?.toolName, MAX_SCALAR_LENGTH);
-      if (child.activity?.kind === "waiting") {
+      const progressNote = boundedNonEmpty(child.progressNote?.trim(), 512);
+      if (child.activity?.kind === "waiting" && progressNote === undefined) {
         return {
           ...runtimeBase(input),
           type: "task.updated",
@@ -320,7 +321,8 @@ function childDraft(
         payload: {
           taskId,
           description,
-          status: "running",
+          status: child.activity?.kind === "waiting" ? "waiting" : "running",
+          ...(progressNote === undefined ? {} : { summary: progressNote }),
           ...(typedUsage === undefined ? {} : { typedUsage }),
           ...(lastToolName === undefined ? {} : { lastToolName }),
           ...linkage,
@@ -337,6 +339,8 @@ function childDraft(
           taskId,
           status:
             child.status === "done" ? "completed" : child.status === "error" ? "failed" : "stopped",
+          summary:
+            child.status === "done" ? "Completed" : child.status === "error" ? "Failed" : "Stopped",
           ...(typedUsage === undefined ? {} : { typedUsage }),
           ...linkage,
         },

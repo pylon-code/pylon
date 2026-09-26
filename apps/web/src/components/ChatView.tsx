@@ -112,7 +112,7 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
-import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate, useRouter } from "@tanstack/react-router";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { assistantCitationFromLocation } from "../lib/assistantCitationNavigation";
 import { isMacPlatform } from "../lib/utils";
@@ -227,7 +227,10 @@ import {
   selectThreadPreviewMiniPlayer,
   usePreviewMiniPlayerStore,
 } from "../previewMiniPlayerStore";
-import { isThreadOwnPullRequest } from "./pullRequest/pullRequestDetail.logic";
+import {
+  pullRequestPanelContext,
+  pullRequestPanelHost,
+} from "./pullRequest/pullRequestDetail.logic";
 import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
@@ -365,6 +368,13 @@ import {
 } from "../lib/composerContextRecords";
 import { type ReviewCommentContext } from "../reviewCommentContext";
 import { environmentCatalog } from "../connection/catalog";
+import { environmentPresentations } from "../state/presentation";
+import { canManuallyDisconnectEnvironment } from "../lib/environmentDisconnectEligibility";
+import { useEnvironmentDisconnectDelay } from "../hooks/useEnvironmentDisconnectDelay";
+import {
+  disconnectEnvironmentAndNavigate,
+  disconnectIfStillEligible,
+} from "../lib/environmentDisconnectNavigation";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { projectEnvironment } from "../state/projects";
@@ -398,6 +408,7 @@ import {
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
+import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -458,7 +469,6 @@ import {
 import { deriveLatestContextWindowSnapshot, formatContextWindowTokens } from "../lib/contextWindow";
 import {
   DRAFT_HERO_TRANSITION_ANIMATION_ID,
-  DRAFT_HERO_TRANSITION_DURATION_MS,
   DRAFT_HERO_TRANSITION_EASING,
   MOBILE_COMPOSER_VIEW_TRANSITION_NAME,
   MOBILE_DRAFT_HEADLINE_VIEW_TRANSITION_NAME,
@@ -478,8 +488,10 @@ import {
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  deriveIsCompacting,
   dismissBranchMismatchForSession,
   hasEnvironmentReconnectWarningGraceElapsed,
+  isCompactCommandMessage,
   latestTurnStartFailureId,
   scheduleEnvironmentReconnectWarning,
   hasServerAcknowledgedLocalDispatch,
@@ -527,7 +539,6 @@ import {
   shouldWriteThreadErrorToCurrentServerThread,
   startNewThreadForProject,
   codexArtifactTemplatePromptToAppend,
-  toolGroupConsumesUpwardNavigation,
   waitForStartedServerThread,
   shouldRefocusComposerOnWindowFocus,
 } from "./ChatView.logic";
@@ -591,7 +602,11 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
-function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
+function useDraftHeroLayoutTransition(
+  isDraftHeroState: boolean,
+  animationsActive: boolean,
+  animationDurationMs: number,
+) {
   const transitionGroupRef = useRef<HTMLDivElement | null>(null);
   const composerAnchorRef = useRef<HTMLDivElement | null>(null);
   const previousStateRef = useRef(isDraftHeroState);
@@ -611,9 +626,6 @@ function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
     const transitionGroup = transitionGroupRef.current;
     const nextComposerRect = composerAnchorRef.current?.getBoundingClientRect() ?? null;
     const stateChanged = previousStateRef.current !== isDraftHeroState;
-    const prefersReducedMotion =
-      typeof window !== "undefined" &&
-      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     const mobileComposerTransitionActive =
       typeof document !== "undefined" &&
       document.documentElement.dataset.mobileComposerRouteTransition === "true";
@@ -624,7 +636,7 @@ function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
     const previousComposerRect = previousComposerRectRef.current;
     if (
       stateChanged &&
-      !prefersReducedMotion &&
+      animationsActive &&
       !mobileComposerTransitionActive &&
       transitionGroup &&
       previousComposerRect &&
@@ -640,7 +652,7 @@ function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
             { transform: "translate3d(0, 0, 0)" },
           ],
           {
-            duration: DRAFT_HERO_TRANSITION_DURATION_MS,
+            duration: animationDurationMs,
             easing: DRAFT_HERO_TRANSITION_EASING,
           },
         );
@@ -659,7 +671,7 @@ function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
 
     previousStateRef.current = isDraftHeroState;
     previousComposerRectRef.current = nextComposerRect;
-  }, [isDraftHeroState]);
+  }, [animationDurationMs, animationsActive, isDraftHeroState]);
 
   return [attachTransitionGroupRef, attachComposerAnchorRef, captureComposerRect] as const;
 }
@@ -789,11 +801,6 @@ function formatOutgoingPrompt(params: {
 }
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
-
-function isCompactCommandMessage(message: ChatMessage): boolean {
-  const text = message.text.trim().toLowerCase();
-  return message.role === "user" && text === "/compact" && !message.attachments?.length;
-}
 
 type ChatViewProps =
   | {
@@ -1652,6 +1659,10 @@ export default function ChatView(props: ChatViewProps) {
   const { environments } = useEnvironments();
   const primaryEnvironment = usePrimaryEnvironment();
   const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, { reportFailure: false });
+  const router = useRouter();
+  const setEnvironmentEnabled = useAtomCommand(environmentCatalog.setEnabled, {
+    reportFailure: false,
+  });
   const environmentById = useMemo(
     () => new Map(environments.map((environment) => [environment.environmentId, environment])),
     [environments],
@@ -2518,6 +2529,61 @@ export default function ChatView(props: ChatViewProps) {
     },
     [retryEnvironment],
   );
+  const disconnectDelayElapsed = useEnvironmentDisconnectDelay(
+    activeEnvironmentUnavailable ? activeEnvironment.environmentId : null,
+  );
+  const canDisconnectActiveEnvironment =
+    disconnectDelayElapsed && canManuallyDisconnectEnvironment(activeEnvironment);
+  const [disconnectingEnvironmentId, setDisconnectingEnvironmentId] =
+    useState<EnvironmentId | null>(null);
+  const disconnectingEnvironmentRef = useRef<EnvironmentId | null>(null);
+  const handleDisconnectActiveEnvironment = useCallback(
+    async (environmentId: EnvironmentId) => {
+      if (disconnectingEnvironmentRef.current !== null) return;
+      disconnectingEnvironmentRef.current = environmentId;
+      setDisconnectingEnvironmentId(environmentId);
+      try {
+        const result = await disconnectIfStillEligible({
+          isEligibleNow: () =>
+            disconnectDelayElapsed &&
+            canManuallyDisconnectEnvironment(
+              appAtomRegistry.get(environmentPresentations.presentationAtom(environmentId)),
+            ),
+          disconnect: () =>
+            disconnectEnvironmentAndNavigate({
+              disconnect: () => setEnvironmentEnabled({ environmentId, enabled: false }),
+              readLocation: () => ({
+                href: router.state.location.href,
+                key: router.state.location.state.__TSR_key,
+              }),
+              navigateHome: () => {
+                void navigate({ to: "/", replace: true });
+              },
+            }),
+        });
+        if (result === null) return;
+        if (result._tag === "Failure") {
+          if (!isAtomCommandInterrupted(result)) {
+            const error = squashAtomCommandFailure(result);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Could not disconnect server",
+                description: error instanceof Error ? error.message : "Failed to disconnect.",
+              }),
+            );
+          }
+          return;
+        }
+      } finally {
+        if (disconnectingEnvironmentRef.current === environmentId) {
+          disconnectingEnvironmentRef.current = null;
+          setDisconnectingEnvironmentId(null);
+        }
+      }
+    },
+    [disconnectDelayElapsed, navigate, router, setEnvironmentEnabled],
+  );
   const logicalProjectEnvironments = useMemo(() => {
     if (!activeProject) return [];
     const logicalKey = deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings);
@@ -2805,6 +2871,20 @@ export default function ChatView(props: ChatViewProps) {
     const items: ComposerBannerStackItem[] = [];
     const updateRunning = serverUpdateState.status === "running";
     const unavailableConnection = activeEnvironmentUnavailableState?.connection ?? null;
+    const disconnectAction =
+      canDisconnectActiveEnvironment && activeEnvironmentUnavailableState ? (
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={disconnectingEnvironmentId === activeEnvironmentUnavailableState.environmentId}
+          title="Hide this server's threads. Switch it on again in Connections."
+          onClick={() =>
+            void handleDisconnectActiveEnvironment(activeEnvironmentUnavailableState.environmentId)
+          }
+        >
+          Disconnect server
+        </Button>
+      ) : null;
     const environmentReconnecting =
       unavailableConnection !== null &&
       (unavailableConnection.phase === "connecting" ||
@@ -2838,6 +2918,7 @@ export default function ChatView(props: ChatViewProps) {
           ),
           title: `${unavailableConnection.phase === "connecting" ? "Connecting" : "Reconnecting"} to ${activeEnvironmentUnavailableState.label}`,
           description: "Finishing an update",
+          actions: disconnectAction,
           compact: true,
         });
       } else {
@@ -2870,6 +2951,7 @@ export default function ChatView(props: ChatViewProps) {
               >
                 Connections
               </Button>
+              {disconnectAction}
             </>
           ),
         });
@@ -2924,22 +3006,24 @@ export default function ChatView(props: ChatViewProps) {
           (versionMismatchSelfUpdate !== "desktop-managed" || !versionMismatchDesktopAppUpdate)
             ? serverUpdateGuidance(versionMismatchSelfUpdate)
             : undefined,
-        actions:
-          updateInProgress ||
-          !versionMismatch ||
+        actions: updateInProgress ? (
+          suppressUnavailableBanner ? (
+            disconnectAction
+          ) : undefined
+        ) : !versionMismatch ||
           (versionMismatchSelfUpdate === "desktop-managed" &&
             !versionMismatchDesktopAppUpdate) ? undefined : (
-            <ServerUpdateAction
-              environmentId={serverUpdateEnvironmentId}
-              serverLabel={versionMismatchServerLabel}
-              selfUpdate={versionMismatchSelfUpdate}
-              desktopAppUpdate={versionMismatchDesktopAppUpdate}
-              threadContinuation={versionMismatchThreadContinuation}
-              targetVersion={versionMismatch.clientVersion}
-              label={updateFailed ? "Retry" : "Update"}
-              variant="ghost"
-            />
-          ),
+          <ServerUpdateAction
+            environmentId={serverUpdateEnvironmentId}
+            serverLabel={versionMismatchServerLabel}
+            selfUpdate={versionMismatchSelfUpdate}
+            desktopAppUpdate={versionMismatchDesktopAppUpdate}
+            threadContinuation={versionMismatchThreadContinuation}
+            targetVersion={versionMismatch.clientVersion}
+            label={updateFailed ? "Retry" : "Update"}
+            variant="ghost"
+          />
+        ),
         ...(updateInProgress || (!updateFailed && !versionMismatchDismissKey)
           ? {}
           : {
@@ -2967,6 +3051,9 @@ export default function ChatView(props: ChatViewProps) {
     activeEnvironmentUnavailableState,
     reconnectWarningGraceElapsed,
     handleReconnectActiveEnvironment,
+    canDisconnectActiveEnvironment,
+    disconnectingEnvironmentId,
+    handleDisconnectActiveEnvironment,
     navigate,
     setDismissedVersionMismatchKey,
     showVersionMismatchBanner,
@@ -3365,31 +3452,11 @@ export default function ChatView(props: ChatViewProps) {
     activePendingUserInput: activePendingUserInput?.requestId ?? null,
     threadError,
   });
-  const optimisticCompactionMessage = optimisticUserMessages.at(-1);
-  const pendingCompactionMessage =
-    isSendBusy &&
-    optimisticCompactionMessage !== undefined &&
-    isCompactCommandMessage(optimisticCompactionMessage)
-      ? optimisticCompactionMessage
-      : activeThread?.messages.findLast(isCompactCommandMessage);
-  const compactRequestIsActive =
-    pendingCompactionMessage !== undefined &&
-    (pendingCompactionMessage.createdAt >
-      (activeLatestTurn?.requestedAt ?? pendingCompactionMessage.createdAt) ||
-      (activeLatestTurn?.state === "running" &&
-        pendingCompactionMessage.createdAt === activeLatestTurn.requestedAt));
-  const compactionSettled =
-    pendingCompactionMessage !== undefined &&
-    (latestTurnStartFailureId(activeThread, pendingCompactionMessage.id) !== null ||
-      activeThread?.activities.some((activity) => {
-        if (activity.kind !== "context-compaction") return false;
-        const payload = activity.payload as { readonly requestId?: unknown } | null | undefined;
-        return payload?.requestId === pendingCompactionMessage.id;
-      }));
-  const isCompacting =
-    (isSendBusy || phase === "connecting" || phase === "running") &&
-    compactRequestIsActive &&
-    !compactionSettled;
+  const isCompacting = deriveIsCompacting({
+    activeThread,
+    optimisticCompactionMessage: optimisticUserMessages.at(-1),
+    isSendBusy,
+  });
   // The server records a running worktree setup on the thread for the whole
   // bootstrap window. That record, with no turn yet, is how a reload or another
   // client sees a worktree still being prepared, so it counts as working like
@@ -3817,7 +3884,11 @@ export default function ChatView(props: ChatViewProps) {
     attachDraftHeroTransitionGroupRef,
     attachDraftHeroComposerAnchorRef,
     captureDraftHeroComposerRect,
-  ] = useDraftHeroLayoutTransition(isDraftHeroState);
+  ] = useDraftHeroLayoutTransition(
+    isDraftHeroState,
+    panelAnimationsActive,
+    panelAnimationDurationMs,
+  );
   const rollbackActive = isRollbackActive(activeThread?.rollbackStatus);
   const rollbackTargetIdle =
     activeThread?.session !== null &&
@@ -4950,6 +5021,8 @@ export default function ChatView(props: ChatViewProps) {
       )
     : linkedThreadPullRequestKey;
   const activeProjectRepository = activeProject?.repositoryIdentity?.displayName ?? null;
+  const activeProjectHost =
+    activeProject?.repositoryIdentity?.canonicalKey.split("/")[0]?.trim().toLowerCase() || null;
   const threadRepository = linkedThreadPullRequest?.repository ?? activeProjectRepository;
   const openThreadPullRequest = useCallback(
     (number: number) => {
@@ -4959,18 +5032,28 @@ export default function ChatView(props: ChatViewProps) {
       const projectId = linkedThreadPullRequest?.projectId ?? activeProject?.id;
       const repository = linkedThreadPullRequest?.repository ?? activeProjectRepository;
       if (projectId === undefined || repository === null) return;
+      const host = pullRequestPanelHost({
+        links: visiblePullRequests,
+        repository,
+        number,
+        linkedUrl: linkedThreadPullRequest?.url,
+        projectHost: activeProjectHost,
+      });
       useRightPanelStore.getState().openPullRequest(activeThreadRef, {
         projectId,
+        ...(host ? { host } : {}),
         repository,
         number,
       });
     },
     [
       activeProject,
+      activeProjectHost,
       activeProjectRepository,
       activeThreadRef,
       linkedThreadPullRequest,
       supportsPullRequests,
+      visiblePullRequests,
     ],
   );
   const openProjectPullRequest = useCallback(
@@ -4985,11 +5068,18 @@ export default function ChatView(props: ChatViewProps) {
       }
       useRightPanelStore.getState().openPullRequest(activeThreadRef, {
         projectId: activeProject.id,
+        ...(activeProjectHost ? { host: activeProjectHost } : {}),
         repository: activeProjectRepository,
         number,
       });
     },
-    [activeProject, activeProjectRepository, activeThreadRef, supportsPullRequests],
+    [
+      activeProject,
+      activeProjectHost,
+      activeProjectRepository,
+      activeThreadRef,
+      supportsPullRequests,
+    ],
   );
   const proactivePanelObservationRef = useRef<ReturnType<
     typeof observeProactivePanelUserChoice
@@ -5695,6 +5785,8 @@ export default function ChatView(props: ChatViewProps) {
         // Only an upward wheel is a navigation intent; wheeling down while
         // following either does nothing (at the end) or moves toward it.
         const handleWheel = (event: WheelEvent) => {
+          if (event.ctrlKey || !isTimelineScrollTarget(event.target, scrollNode, event.deltaY))
+            return;
           if (event.deltaY > 0) {
             timelineScrollIntentRef.current = "toward-end";
             if (isAtEndRef.current) {
@@ -5703,11 +5795,7 @@ export default function ChatView(props: ChatViewProps) {
           } else if (event.deltaY < 0) {
             timelineScrollIntentRef.current = "away-from-end";
           }
-          if (
-            event.deltaY < 0 &&
-            contentScrollsUp() &&
-            !toolGroupConsumesUpwardNavigation(event.target)
-          ) {
+          if (event.deltaY < 0 && contentScrollsUp()) {
             handleManualNavigation();
           }
         };
@@ -5757,12 +5845,20 @@ export default function ChatView(props: ChatViewProps) {
           ) {
             return;
           }
+          if (!["PageUp", "Home", "ArrowUp", "PageDown", "End", "ArrowDown"].includes(event.key))
+            return;
+          const scrollDirection = ["PageUp", "Home", "ArrowUp"].includes(event.key) ? -1 : 1;
+          if (
+            scrollNode.contains(event.target) &&
+            !isTimelineScrollTarget(event.target, scrollNode, scrollDirection)
+          )
+            return;
           switch (event.key) {
             case "PageUp":
             case "Home":
             case "ArrowUp":
               timelineScrollIntentRef.current = "away-from-end";
-              if (contentScrollsUp() && !toolGroupConsumesUpwardNavigation(event.target)) {
+              if (contentScrollsUp()) {
                 handleManualNavigation();
                 composerRef.current?.collapseForTimelineScrollKey(event.key);
               }
@@ -7104,6 +7200,8 @@ export default function ChatView(props: ChatViewProps) {
       previewFocus: isPreviewFocused(),
       previewOpen: previewPanelOpen,
       modelPickerOpen: composerRef.current?.isModelPickerOpen() ?? false,
+      isWeb: !isElectron,
+      isDesktop: isElectron,
     }),
     [composerRef, previewPanelOpen, terminalUiState.terminalOpen],
   );
@@ -8145,13 +8243,16 @@ export default function ChatView(props: ChatViewProps) {
       const dockStarted = new Promise<void>((resolve) => {
         resolveDockStarted = resolve;
       });
-      const dockTransition = runMobileComposerTransition(() => {
-        flushSync(() => {
-          captureDraftHeroComposerRect();
-          setDockedDraftHeroThreadKey(activeThreadKey);
-        });
-        resolveDockStarted?.();
-      });
+      const dockTransition = runMobileComposerTransition(
+        () => {
+          flushSync(() => {
+            captureDraftHeroComposerRect();
+            setDockedDraftHeroThreadKey(activeThreadKey);
+          });
+          resolveDockStarted?.();
+        },
+        { active: panelAnimationsActive, durationMs: panelAnimationDurationMs },
+      );
       void dockTransition.catch(() => resolveDockStarted?.());
       await dockStarted;
     }
@@ -10341,22 +10442,15 @@ export default function ChatView(props: ChatViewProps) {
           repository: renderedRightPanelSurface.repository,
           number: renderedRightPanelSurface.number,
         }}
-        context={
-          isThreadOwnPullRequest(
-            {
-              projectId: linkedThreadPullRequest?.projectId ?? activeProject?.id ?? null,
-              repository: threadRepository,
-              number: activeThreadPr?.number ?? null,
-            },
-            {
-              projectId: renderedRightPanelSurface.projectId,
-              repository: renderedRightPanelSurface.repository,
-              number: renderedRightPanelSurface.number,
-            },
-          )
-            ? "thread"
-            : "page"
-        }
+        context={pullRequestPanelContext(
+          {
+            projectId: activeThreadMetadata?.projectId ?? activeProject?.id ?? null,
+            pullRequests: activeThreadMetadata?.pullRequests,
+            linkedPullRequest: activeThreadMetadata?.linkedPullRequest,
+            branchPullRequest: activeThreadMetadata?.branchPullRequest,
+          },
+          renderedRightPanelSurface,
+        )}
         composerDraftTarget={composerDraftTarget}
         onBack={
           activeThreadRef !== null && pullRequestsSurfaceAvailable
@@ -10442,6 +10536,8 @@ export default function ChatView(props: ChatViewProps) {
   const workspaceFileDropHandlers = makeWorkspaceFileDropHandlers({
     setDragActive: setIsWorkspaceFileDragActive,
     addFiles: (files) => composerRef.current?.addDroppedFiles(files),
+    addFolders: (folders, unresolvedCount) =>
+      composerRef.current?.addDroppedFolders(folders, unresolvedCount),
   });
   const externalComposerDrawerAttached =
     composerBannerItems.length > 0 || Boolean(threadSyncPhase && !activeEnvironmentUnavailable);

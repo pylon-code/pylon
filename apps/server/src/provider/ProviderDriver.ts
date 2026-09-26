@@ -84,6 +84,8 @@ export interface ProviderInstance {
   readonly enabled: boolean;
   readonly snapshot: ServerProviderShape;
   readonly snapshotForCwd?: (cwd: string) => Effect.Effect<ServerProvider, ProviderDriverError>;
+  /** Invalidate provider-owned discovery caches before an explicit refresh. */
+  readonly invalidateCaches?: Effect.Effect<void>;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
   readonly refreshModels?: () => Effect.Effect<void, ProviderDriverError>;

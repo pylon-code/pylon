@@ -225,22 +225,6 @@ export function shouldReleaseTimelineAnchorForToolActivity(input: {
   });
 }
 
-export function toolGroupConsumesUpwardNavigation(target: EventTarget | null): boolean {
-  const elementTarget = target instanceof Element ? target : null;
-  const group = elementTarget?.closest<HTMLElement>("[data-tool-group-scroll]");
-  if (!group) return false;
-
-  // A nested result or the group itself can consume an upward scroll.
-  for (let element = elementTarget; element; element = element.parentElement) {
-    if (element.scrollTop > 0) {
-      const overflowY = getComputedStyle(element).overflowY;
-      if (overflowY === "auto" || overflowY === "scroll") return true;
-    }
-    if (element === group) break;
-  }
-  return false;
-}
-
 export {
   findRecordedWorktreeSetup,
   resolveVisibleWorktreeSetup,
@@ -1323,6 +1307,41 @@ export function latestTurnStartFailureId(
           : null;
       return payload?.requestId === latestUserMessageId;
     })?.id ?? null
+  );
+}
+
+export function isCompactCommandMessage(message: ChatMessage): boolean {
+  const text = message.text.trim().toLowerCase();
+  return message.role === "user" && text === "/compact" && !message.attachments?.length;
+}
+
+// The server owns the compaction lifecycle end to end: it opens `compactionQueue`
+// when the request is admitted, moves it to "draining" while queued prompts
+// replay, and clears it on every terminal path, including a failed compaction
+// and a stopped or errored session. That record is the only durable answer to
+// "is this thread compacting", and it survives a reload or a second client.
+//
+// Deriving the indicator from the last `/compact` message instead left it lit
+// for the whole life of the turn that `/compact` opened, because the
+// continuation turn keeps that message's `requestedAt`. Nothing settled it
+// either: a local `/compact` never produces a `context-compaction` activity,
+// and the server's compaction request id is the command id, never the message
+// id the old check compared it against.
+export function deriveIsCompacting(input: {
+  readonly activeThread: Thread | undefined;
+  readonly optimisticCompactionMessage: ChatMessage | undefined;
+  readonly isSendBusy: boolean;
+}): boolean {
+  if (input.activeThread?.session?.compactionQueue !== undefined) return true;
+  // A `/compact` dispatched from this client has no server record until the
+  // command lands. Cover that window alone, and drop the indicator as soon as
+  // the dispatch fails admission.
+  const optimistic = input.optimisticCompactionMessage;
+  return (
+    input.isSendBusy &&
+    optimistic !== undefined &&
+    isCompactCommandMessage(optimistic) &&
+    latestTurnStartFailureId(input.activeThread, optimistic.id) === null
   );
 }
 

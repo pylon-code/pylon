@@ -1,12 +1,12 @@
 import type { EnvironmentId, PullRequestContextMetadata } from "@t3tools/contracts";
 import { CircleDashedIcon, FilmIcon, ImageIcon } from "lucide-react";
 import { createContext, use, type ComponentProps, type MouseEvent, type ReactNode } from "react";
-import { composerFloatingLayerProps } from "./chat/composerEventScope";
+import { useComposerMenuProps } from "./chat/composerEventScope";
 
 export const ComposerContextScope = createContext(false);
 
 import { cn } from "~/lib/utils";
-import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
+import { resolvePullRequestState } from "~/components/pullRequest/pullRequestPresentation";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import {
   COMPOSER_INLINE_CHIP_ICON_CLASS_NAME,
@@ -79,6 +79,7 @@ export function ContextChipPopover(props: {
   popupClassName?: string;
   viewportClassName?: string;
 }) {
+  const composerFloatingLayerProps = useComposerMenuProps();
   const composerOwned = use(ComposerContextScope);
   return (
     <Popover>
@@ -122,6 +123,7 @@ export function PullRequestChip(props: {
   onOpen: (event: MouseEvent<HTMLElement>, url: string) => void;
 }) {
   const previewTarget = usePullRequestPreviewTarget(props.environmentId, props.metadata.url);
+  const state = resolvePullRequestState(props.metadata);
   const button = (
     <Button
       variant="chip"
@@ -131,12 +133,13 @@ export function PullRequestChip(props: {
         CONTEXT_INLINE_CHIP_INTERACTIVE_CLASS_NAME,
         "cursor-pointer",
       )}
-      aria-label={`Open ${props.kindLabel} ${props.label}: ${props.metadata.title}`}
+      aria-label={`Open ${props.kindLabel} ${props.label}: ${props.metadata.title} (${state.label})`}
       data-markdown-copy={props.copyMarkdown}
       onClick={(event) => props.onOpen(event, props.metadata.url)}
     >
-      <PullRequestGlyph.pullRequest
-        className={cn(COMPOSER_INLINE_CHIP_ICON_CLASS_NAME, "size-3.5")}
+      <state.Icon
+        aria-hidden="true"
+        className={cn(COMPOSER_INLINE_CHIP_ICON_CLASS_NAME, "size-3.5", state.toneClassName)}
       />
       <span className={props.labelClassName}>{props.label}</span>
     </Button>

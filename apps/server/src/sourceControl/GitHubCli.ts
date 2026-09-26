@@ -10,6 +10,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as NodeCrypto from "node:crypto";
 
 import {
   TrimmedNonEmptyString,
@@ -29,11 +30,15 @@ import {
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** Server-local credential scope; never put its value in RPC payloads or cache keys. */
-export const PinnedGitHubCredential = Context.Reference<{
+export interface GitHubCredentialSnapshot {
   readonly host: string;
   readonly token: Redacted.Redacted<string>;
   readonly credentialFingerprint: string;
-} | null>("t3/sourceControl/PinnedGitHubCredential", { defaultValue: () => null });
+}
+export const PinnedGitHubCredential = Context.Reference<GitHubCredentialSnapshot | null>(
+  "t3/sourceControl/PinnedGitHubCredential",
+  { defaultValue: () => null },
+);
 
 export const AllowGitHubReserve = Context.Reference<boolean>(
   "t3/sourceControl/AllowGitHubReserve",
@@ -281,6 +286,10 @@ export interface GitHubRepositoryCloneUrls {
 export class GitHubCli extends Context.Service<
   GitHubCli,
   {
+    readonly snapshotCredential: (input: {
+      readonly cwd: string;
+      readonly host: string;
+    }) => Effect.Effect<GitHubCredentialSnapshot, GitHubCliError>;
     readonly execute: (input: {
       readonly cwd: string;
       readonly args: ReadonlyArray<string>;
@@ -400,6 +409,53 @@ export const make = Effect.gen(function* () {
   const budget = yield* GitHubGraphQlBudget.GitHubGraphQlBudget;
   const limits = yield* SourceControlRateLimit.SourceControlRateLimit;
 
+  const snapshotCredential: GitHubCli["Service"]["snapshotCredential"] = Effect.fn(
+    "GitHubCli.snapshotCredential",
+  )(function* (input) {
+    // Read the token once, then pass it only in child environment variables. Neither stderr nor
+    // the token is retained in a failure cause, including when gh exits with tracing enabled.
+    const output = yield* process
+      .run({
+        operation: "GitHubCli.snapshotCredential",
+        command: "gh",
+        args: ["auth", "token", "--hostname", input.host],
+        cwd: input.cwd,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        maxOutputBytes: 4096,
+        env: {
+          GH_DEBUG: "",
+          GH_PROMPT_DISABLED: "1",
+          GIT_TRACE: "0",
+          GIT_TRACE_PACKET: "0",
+          GIT_TRACE_SETUP: "0",
+          GIT_CURL_VERBOSE: "0",
+        },
+      })
+      .pipe(
+        Effect.mapError(
+          () =>
+            new GitHubCliAuthenticationError({
+              command: "gh",
+              cwd: input.cwd,
+              cause: new Error("Could not snapshot GitHub credentials."),
+            }),
+        ),
+      );
+    const token = output.stdout.trim();
+    if (output.stdoutTruncated || token.length === 0 || token.includes("\n")) {
+      return yield* new GitHubCliAuthenticationError({
+        command: "gh",
+        cwd: input.cwd,
+        cause: new Error("Could not snapshot GitHub credentials."),
+      });
+    }
+    return {
+      host: input.host.toLowerCase(),
+      token: Redacted.make(token),
+      credentialFingerprint: NodeCrypto.createHash("sha256").update(token).digest("hex"),
+    };
+  });
+
   const executeRaw: GitHubCli["Service"]["execute"] = Effect.fn("GitHubCli.executeRaw")(
     function* (input) {
       const credential = yield* PinnedGitHubCredential;
@@ -422,6 +478,10 @@ export const make = Effect.gen(function* () {
               GH_ENTERPRISE_TOKEN: token,
               GITHUB_ENTERPRISE_TOKEN: token,
               GH_DEBUG: "",
+              GIT_TRACE: "0",
+              GIT_TRACE_PACKET: "0",
+              GIT_TRACE_SETUP: "0",
+              GIT_CURL_VERBOSE: "0",
             };
       return yield* process
         .run({
@@ -520,6 +580,7 @@ export const make = Effect.gen(function* () {
   );
 
   return GitHubCli.of({
+    snapshotCredential,
     execute,
     listOpenPullRequests: (input) =>
       execute({

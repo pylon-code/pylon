@@ -29,6 +29,7 @@ import {
 import { CodexDriver } from "./CodexDriver.ts";
 import { writeFakeCli } from "../../testUtils/fakeCli.ts";
 import { SHARED_USAGE_CACHE_DIR_ENV } from "../sharedUsageReadCache.ts";
+import { readSharedUsageEntry, sharedUsageReadKey } from "../sharedUsageReadCache.ts";
 
 const encodeFixtureString = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 
@@ -61,32 +62,58 @@ const noSpawn = ChildProcessSpawner.make(() =>
 );
 
 it.layer(testLayer)("CodexDriver", (it) => {
-  for (const readFails of [false, true]) {
-    it.effect(
-      `redeems through the initialized CLI and ${readFails ? "preserves a confirmed result when refresh fails" : "reads fresh limits before returning"}`,
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const directory = yield* fs.makeTempDirectoryScoped({ prefix: "pylon-reset-credit-" });
-          const logPath = NodePath.join(directory, "requests.jsonl");
-          const priorCache = process.env[SHARED_USAGE_CACHE_DIR_ENV];
-          yield* Effect.acquireRelease(
+  for (const scenario of [
+    {
+      name: "reads fresh limits before returning",
+      readFails: false,
+      switchBefore: false,
+      switchOnConsume: false,
+    },
+    {
+      name: "preserves a confirmed result when refresh fails",
+      readFails: true,
+      switchBefore: false,
+      switchOnConsume: false,
+    },
+    {
+      name: "rejects a changed live account before consuming",
+      readFails: false,
+      switchBefore: true,
+      switchOnConsume: false,
+    },
+    {
+      name: "does not cache a result after the account changes mid-reset",
+      readFails: false,
+      switchBefore: false,
+      switchOnConsume: true,
+    },
+  ]) {
+    it.effect(`redeems through the initialized CLI and ${scenario.name}`, () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "pylon-reset-credit-" });
+        const logPath = NodePath.join(directory, "requests.jsonl");
+        const accountPath = NodePath.join(directory, "account.txt");
+        yield* fs.writeFileString(accountPath, "owner@example.test");
+        const priorCache = process.env[SHARED_USAGE_CACHE_DIR_ENV];
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            process.env[SHARED_USAGE_CACHE_DIR_ENV] = NodePath.join(directory, "usage-cache");
+          }),
+          () =>
             Effect.sync(() => {
-              process.env[SHARED_USAGE_CACHE_DIR_ENV] = NodePath.join(directory, "usage-cache");
+              if (priorCache === undefined) delete process.env[SHARED_USAGE_CACHE_DIR_ENV];
+              else process.env[SHARED_USAGE_CACHE_DIR_ENV] = priorCache;
             }),
-            () =>
-              Effect.sync(() => {
-                if (priorCache === undefined) delete process.env[SHARED_USAGE_CACHE_DIR_ENV];
-                else process.env[SHARED_USAGE_CACHE_DIR_ENV] = priorCache;
-              }),
-          );
-          const quotedLogPath = yield* encodeFixtureString(logPath);
-          const quotedDirectory = yield* encodeFixtureString(directory);
-          const binaryPath = writeFakeCli({
-            directory,
-            name: "codex",
-            source: `
-          import { appendFileSync } from "node:fs";
+        );
+        const quotedLogPath = yield* encodeFixtureString(logPath);
+        const quotedDirectory = yield* encodeFixtureString(directory);
+        const quotedAccountPath = yield* encodeFixtureString(accountPath);
+        const binaryPath = writeFakeCli({
+          directory,
+          name: "codex",
+          source: `
+          import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
           import { createInterface } from "node:readline";
           const lines = createInterface({ input: process.stdin });
           lines.on("line", line => {
@@ -95,9 +122,14 @@ it.layer(testLayer)("CodexDriver", (it) => {
             if (request.id === undefined) return;
             let result;
             if (request.method === "initialize") result = { userAgent: "codex/1.0", codexHome: ${quotedDirectory}, platformFamily: "unix", platformOs: "macos" };
-            else if (request.method === "account/rateLimitResetCredit/consume") result = { outcome: "reset" };
+            else if (request.method === "account/read") result = { account: { type: "chatgpt", email: readFileSync(${quotedAccountPath}, "utf8"), planType: "plus" }, requiresOpenaiAuth: false };
+            else if (request.method === "skills/list" || request.method === "model/list") result = { data: [] };
+            else if (request.method === "account/rateLimitResetCredit/consume") {
+              if (${scenario.switchOnConsume}) writeFileSync(${quotedAccountPath}, "other@example.test");
+              result = { outcome: "reset" };
+            }
             else if (request.method === "account/rateLimits/read") {
-              if (${readFails}) {
+              if (${scenario.readFails}) {
                 process.stdout.write(JSON.stringify({ id: request.id, error: { code: -32000, message: "read failed" } }) + "\\n");
                 return;
               }
@@ -106,28 +138,59 @@ it.layer(testLayer)("CodexDriver", (it) => {
             process.stdout.write(JSON.stringify({ id: request.id, result }) + "\\n");
           });
         `,
-          });
-          const instance = yield* CodexDriver.create({
-            instanceId: ProviderInstanceId.make("codex-reset-test"),
-            displayName: "Reset test",
-            enabled: false,
-            environment: [],
-            config: { ...CodexDriver.defaultConfig(), binaryPath, homePath: directory },
-          });
-          const result = yield* instance.consumeResetCredit!({ requestId: "stable-reset-attempt" });
-          expect(result.outcome).toBe("reset");
-          if (readFails) expect(result.warning).toContain("updated limits could not be read");
-          else expect(result.warning).toBeUndefined();
-          const requests = yield* fs.readFileString(logPath);
-          expect(requests).toContain('"method":"initialized"');
+        });
+        const instance = yield* CodexDriver.create({
+          instanceId: ProviderInstanceId.make("codex-reset-test"),
+          displayName: "Reset test",
+          enabled: true,
+          environment: [],
+          config: { ...CodexDriver.defaultConfig(), binaryPath, homePath: directory },
+        });
+        yield* instance.snapshot.refresh;
+        const accountCacheKey = sharedUsageReadKey([
+          "codex",
+          directory,
+          "email:owner@example.test",
+        ]);
+        const cacheBefore = yield* readSharedUsageEntry(
+          NodePath.join(directory, "usage-cache"),
+          accountCacheKey,
+        );
+        if (scenario.switchBefore) yield* fs.writeFileString(accountPath, "other@example.test");
+        const result = yield* instance.consumeResetCredit!({
+          requestId: "stable-reset-attempt",
+        }).pipe(Effect.exit);
+        if (scenario.switchBefore) expect(result._tag).toBe("Failure");
+        else {
+          expect(result._tag).toBe("Success");
+          if (result._tag === "Success") {
+            expect(result.value.outcome).toBe("reset");
+            if (scenario.readFails)
+              expect(result.value.warning).toContain("updated limits could not be read");
+            else if (scenario.switchOnConsume)
+              expect(result.value.warning).toContain("account changed");
+            else expect(result.value.warning).toBeUndefined();
+          }
+        }
+        const requests = yield* fs.readFileString(logPath);
+        expect(requests).toContain('"method":"initialized"');
+        if (scenario.switchBefore) {
+          expect(requests).not.toContain('"method":"account/rateLimitResetCredit/consume"');
+        } else {
           expect(requests).toContain('"idempotencyKey":"stable-reset-attempt"');
           expect(requests.indexOf('"method":"initialize"')).toBeLessThan(
             requests.indexOf('"method":"account/rateLimitResetCredit/consume"'),
           );
           expect(requests.indexOf('"method":"account/rateLimitResetCredit/consume"')).toBeLessThan(
-            requests.indexOf('"method":"account/rateLimits/read"'),
+            requests.lastIndexOf('"method":"account/rateLimits/read"'),
           );
-        }).pipe(Effect.scoped),
+        }
+        if (scenario.switchBefore || scenario.switchOnConsume) {
+          expect(
+            yield* readSharedUsageEntry(NodePath.join(directory, "usage-cache"), accountCacheKey),
+          ).toEqual(cacheBefore);
+        }
+      }).pipe(Effect.scoped),
     );
   }
 

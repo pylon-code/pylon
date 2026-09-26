@@ -397,6 +397,16 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           ),
         );
         const commandEvents = Array.isArray(eventBase) ? eventBase : [eventBase];
+        if (
+          (envelope.command.type === "thread.checkpoint.revert" ||
+            envelope.command.type === "thread.conversation.revert") &&
+          Option.isNone(rollbackAdmission)
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: envelope.command.type,
+            detail: "Rollback admission is unavailable.",
+          });
+        }
         const preparedRollback =
           (envelope.command.type === "thread.checkpoint.revert" ||
             envelope.command.type === "thread.conversation.revert") &&
@@ -408,6 +418,16 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 requestEventId: commandEvents[0].eventId,
               })
             : Option.none();
+        if (
+          (envelope.command.type === "thread.checkpoint.revert" ||
+            envelope.command.type === "thread.conversation.revert") &&
+          Option.isNone(preparedRollback)
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: envelope.command.type,
+            detail: "Rollback admission could not establish a durable operation.",
+          });
+        }
         const pendingRollbackEvent = Option.isSome(preparedRollback)
           ? yield* decideOrchestrationCommand({
               command: {

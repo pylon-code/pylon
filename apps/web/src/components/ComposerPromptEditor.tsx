@@ -71,10 +71,10 @@ import {
 } from "react";
 
 import {
-  clampCollapsedComposerCursor,
-  collapseExpandedComposerCursor,
-  expandCollapsedComposerCursor,
-  isCollapsedCursorAdjacentToInlineToken,
+  clampCollapsedComposerCursor as clampCollapsedComposerCursorRaw,
+  collapseExpandedComposerCursor as collapseExpandedComposerCursorRaw,
+  expandCollapsedComposerCursor as expandCollapsedComposerCursorRaw,
+  isCollapsedCursorAdjacentToInlineToken as isCollapsedCursorAdjacentToInlineTokenRaw,
 } from "~/composer-logic";
 import {
   selectionTouchesMentionBoundary,
@@ -146,6 +146,7 @@ type SerializedComposerSkillNode = Spread<
     skillName: string;
     skillLabel?: string;
     skillDescription?: string;
+    source?: string;
     type: "composer-skill";
     version: 1;
   },
@@ -315,6 +316,7 @@ class ComposerSkillNode extends DecoratorNode<React.ReactElement> {
   __skillName: string;
   __skillLabel: string;
   __skillDescription: string | null;
+  __skillSource: string;
 
   static override getType(): string {
     return "composer-skill";
@@ -325,6 +327,7 @@ class ComposerSkillNode extends DecoratorNode<React.ReactElement> {
       node.__skillName,
       node.__skillLabel,
       node.__skillDescription,
+      node.__skillSource,
       node.__key,
     );
   }
@@ -334,6 +337,7 @@ class ComposerSkillNode extends DecoratorNode<React.ReactElement> {
       serializedNode.skillName,
       serializedNode.skillLabel ?? serializedNode.skillName,
       serializedNode.skillDescription ?? null,
+      serializedNode.source,
     ).updateFromJSON(serializedNode);
   }
 
@@ -341,6 +345,7 @@ class ComposerSkillNode extends DecoratorNode<React.ReactElement> {
     skillName: string,
     skillLabel: string,
     skillDescription: string | null,
+    source?: string,
     key?: NodeKey,
   ) {
     super(key);
@@ -348,6 +353,7 @@ class ComposerSkillNode extends DecoratorNode<React.ReactElement> {
     this.__skillName = normalizedSkillName;
     this.__skillLabel = skillLabel;
     this.__skillDescription = skillDescription;
+    this.__skillSource = source ?? `$${normalizedSkillName}`;
   }
 
   override exportJSON(): SerializedComposerSkillNode {
@@ -355,6 +361,7 @@ class ComposerSkillNode extends DecoratorNode<React.ReactElement> {
       ...super.exportJSON(),
       skillName: this.__skillName,
       skillLabel: this.__skillLabel,
+      source: this.__skillSource,
       ...(this.__skillDescription ? { skillDescription: this.__skillDescription } : {}),
       type: "composer-skill",
       version: 1,
@@ -372,7 +379,7 @@ class ComposerSkillNode extends DecoratorNode<React.ReactElement> {
   }
 
   override getTextContent(): string {
-    return `$${this.__skillName}`;
+    return this.__skillSource;
   }
 
   override isInline(): true {
@@ -394,8 +401,11 @@ function $createComposerSkillNode(
   skillName: string,
   skillLabel: string,
   skillDescription: string | null,
+  source?: string,
 ): ComposerSkillNode {
-  return $applyNodeReplacement(new ComposerSkillNode(skillName, skillLabel, skillDescription));
+  return $applyNodeReplacement(
+    new ComposerSkillNode(skillName, skillLabel, skillDescription, source),
+  );
 }
 
 type ComposerInlineTokenNode =
@@ -428,6 +438,7 @@ function skillSignature(skills: ReadonlyArray<ServerProviderSkill>): string {
         skill.path,
         skill.scope ?? "",
         skill.enabled ? "1" : "0",
+        skill.userInvocable === false ? "0" : "1",
       ].join("\u001f"),
     )
     .join("\u001e");
@@ -779,13 +790,19 @@ function $appendTextWithLineBreaks(parent: ElementNode, text: string): void {
 function $setComposerEditorPrompt(
   prompt: string,
   skillMetadata: ReadonlyMap<string, ComposerSkillMetadata>,
+  allowUnicodeSkillAliases = true,
+  unicodeSkillNames: ReadonlySet<string> = new Set(skillMetadata.keys()),
 ): void {
   const root = $getRoot();
   root.clear();
   const paragraph = $createParagraphNode();
   root.append(paragraph);
 
-  const segments = splitPromptIntoComposerSegments(prompt);
+  const segments = splitPromptIntoComposerSegments(
+    prompt,
+    allowUnicodeSkillAliases,
+    unicodeSkillNames,
+  );
   for (const segment of segments) {
     if (segment.type === "citation") {
       paragraph.append($createComposerCitationNode(segment.citation, segment.source));
@@ -802,6 +819,7 @@ function $setComposerEditorPrompt(
           segment.name,
           metadata?.label ?? formatProviderSkillDisplayName({ name: segment.name }),
           metadata?.description ?? null,
+          segment.source,
         ),
       );
       continue;
@@ -870,6 +888,7 @@ interface ComposerPromptEditorProps {
     | ((fragment: ComposerContextClipboardFragment) => ReadonlyMap<string, string>)
     | undefined;
   skills: ReadonlyArray<ServerProviderSkill>;
+  allowUnicodeSkillAliases?: boolean;
   disabled: boolean;
   placeholder: string;
   containerClassName?: string;
@@ -1023,7 +1042,10 @@ function ComposerCommandKeyPlugin(props: {
   return null;
 }
 
-function ComposerInlineTokenArrowPlugin() {
+function ComposerInlineTokenArrowPlugin(props: {
+  allowUnicodeSkillAliases: boolean;
+  unicodeSkillNames: ReadonlySet<string>;
+}) {
   const [editor] = useLexicalComposerContext();
 
   useEffect(() => {
@@ -1037,7 +1059,15 @@ function ComposerInlineTokenArrowPlugin() {
           const currentOffset = $readSelectionOffsetFromEditorState(0);
           if (currentOffset <= 0) return;
           const promptValue = $getRoot().getTextContent();
-          if (!isCollapsedCursorAdjacentToInlineToken(promptValue, currentOffset, "left")) {
+          if (
+            !isCollapsedCursorAdjacentToInlineTokenRaw(
+              promptValue,
+              currentOffset,
+              "left",
+              props.allowUnicodeSkillAliases,
+              props.unicodeSkillNames,
+            )
+          ) {
             return;
           }
           nextOffset = currentOffset - 1;
@@ -1064,7 +1094,15 @@ function ComposerInlineTokenArrowPlugin() {
           const composerLength = $getComposerRootLength();
           if (currentOffset >= composerLength) return;
           const promptValue = $getRoot().getTextContent();
-          if (!isCollapsedCursorAdjacentToInlineToken(promptValue, currentOffset, "right")) {
+          if (
+            !isCollapsedCursorAdjacentToInlineTokenRaw(
+              promptValue,
+              currentOffset,
+              "right",
+              props.allowUnicodeSkillAliases,
+              props.unicodeSkillNames,
+            )
+          ) {
             return;
           }
           nextOffset = currentOffset + 1;
@@ -1084,7 +1122,7 @@ function ComposerInlineTokenArrowPlugin() {
       unregisterLeft();
       unregisterRight();
     };
-  }, [editor]);
+  }, [editor, props.allowUnicodeSkillAliases, props.unicodeSkillNames]);
 
   return null;
 }
@@ -1366,7 +1404,11 @@ function ComposerContextClipboardPlugin(props: {
   return null;
 }
 
-function ComposerSurroundSelectionPlugin(props: { skills: ReadonlyArray<ServerProviderSkill> }) {
+function ComposerSurroundSelectionPlugin(props: {
+  skills: ReadonlyArray<ServerProviderSkill>;
+  allowUnicodeSkillAliases: boolean;
+  unicodeSkillNames: ReadonlySet<string>;
+}) {
   const [editor] = useLexicalComposerContext();
   const skillMetadataRef = useRef(skillMetadataByName(props.skills));
   const pendingSurroundSelectionRef = useRef<{
@@ -1428,10 +1470,17 @@ function ComposerSurroundSelectionPlugin(props: { skills: ReadonlyArray<ServerPr
         selectionSnapshot.expandedEnd,
       );
       const nextValue = `${selectionSnapshot.value.slice(0, selectionSnapshot.expandedStart)}${inputData}${selectedText}${surroundCloseSymbol}${selectionSnapshot.value.slice(selectionSnapshot.expandedEnd)}`;
-      $setComposerEditorPrompt(nextValue, skillMetadataRef.current);
-      const selectionStart = collapseExpandedComposerCursor(
+      $setComposerEditorPrompt(
+        nextValue,
+        skillMetadataRef.current,
+        props.allowUnicodeSkillAliases,
+        props.unicodeSkillNames,
+      );
+      const selectionStart = collapseExpandedComposerCursorRaw(
         nextValue,
         selectionSnapshot.expandedStart,
+        props.allowUnicodeSkillAliases,
+        props.unicodeSkillNames,
       );
       $setSelectionRangeAtComposerOffsets(
         selectionStart + inputData.length,
@@ -1559,9 +1608,11 @@ function ComposerSurroundSelectionPlugin(props: { skills: ReadonlyArray<ServerPr
               pendingDeadKeySelection.expandedStart,
               pendingDeadKeySelection.expandedEnd,
             );
-            const replacementStart = collapseExpandedComposerCursor(
+            const replacementStart = collapseExpandedComposerCursorRaw(
               currentValue,
               pendingDeadKeySelection.expandedStart,
+              props.allowUnicodeSkillAliases,
+              props.unicodeSkillNames,
             );
             $setSelectionRangeAtComposerOffsets(replacementStart, replacementStart + 1);
             const replacementSelection = $getSelection();
@@ -1619,7 +1670,7 @@ function ComposerSurroundSelectionPlugin(props: { skills: ReadonlyArray<ServerPr
       }
       unregisterRootListener();
     };
-  }, [editor]);
+  }, [editor, props.allowUnicodeSkillAliases, props.unicodeSkillNames]);
 
   return null;
 }
@@ -1631,6 +1682,7 @@ function ComposerPromptEditorInner({
   buildContextClipboardFragment,
   importContextFragment,
   skills,
+  allowUnicodeSkillAliases = false,
   disabled,
   placeholder,
   containerClassName,
@@ -1646,13 +1698,41 @@ function ComposerPromptEditorInner({
   onPaste,
   editorRef,
 }: ComposerPromptEditorProps) {
+  const skillsSignature = skillSignature(skills);
+  const unicodeSkillNames = useMemo(
+    () =>
+      new Set(
+        skills
+          .filter((skill) => skill.enabled && skill.userInvocable !== false)
+          .map((skill) => skill.name),
+      ),
+    [skills],
+  );
+  const clampCollapsedComposerCursor = (text: string, cursor: number) =>
+    clampCollapsedComposerCursorRaw(text, cursor, allowUnicodeSkillAliases, unicodeSkillNames);
+  const collapseExpandedComposerCursor = (text: string, cursor: number) =>
+    collapseExpandedComposerCursorRaw(text, cursor, allowUnicodeSkillAliases, unicodeSkillNames);
+  const expandCollapsedComposerCursor = (text: string, cursor: number) =>
+    expandCollapsedComposerCursorRaw(text, cursor, allowUnicodeSkillAliases, unicodeSkillNames);
+  const isCollapsedCursorAdjacentToInlineToken = (
+    text: string,
+    cursor: number,
+    direction: "left" | "right",
+  ) =>
+    isCollapsedCursorAdjacentToInlineTokenRaw(
+      text,
+      cursor,
+      direction,
+      allowUnicodeSkillAliases,
+      unicodeSkillNames,
+    );
   const [editor] = useLexicalComposerContext();
   const onChangeRef = useRef(onChange);
   const onVisibleSelectionChangeRef = useRef(onVisibleSelectionChange);
   const initialCursor = clampCollapsedComposerCursor(value, cursor);
   const initialExpandedCursor = expandCollapsedComposerCursor(value, initialCursor);
-  const skillsSignature = skillSignature(skills);
   const skillsSignatureRef = useRef(skillsSignature);
+  const allowUnicodeSkillAliasesRef = useRef(allowUnicodeSkillAliases);
   const skillMetadataRef = useRef(skillMetadataByName(skills));
   const snapshotRef = useRef({
     value,
@@ -1720,10 +1800,12 @@ function ComposerPromptEditorInner({
     const normalizedCursor = clampCollapsedComposerCursor(value, cursor);
     const previousSnapshot = snapshotRef.current;
     const skillsChanged = skillsSignatureRef.current !== skillsSignature;
+    const aliasPolicyChanged = allowUnicodeSkillAliasesRef.current !== allowUnicodeSkillAliases;
     if (
       previousSnapshot.value === value &&
       previousSnapshot.cursor === normalizedCursor &&
-      !skillsChanged
+      !skillsChanged &&
+      !aliasPolicyChanged
     ) {
       return;
     }
@@ -1740,10 +1822,11 @@ function ComposerPromptEditorInner({
       end: normalizedExpandedCursor,
     };
     skillsSignatureRef.current = skillsSignature;
+    allowUnicodeSkillAliasesRef.current = allowUnicodeSkillAliases;
 
     const rootElement = editor.getRootElement();
     const isFocused = Boolean(rootElement && document.activeElement === rootElement);
-    if (previousSnapshot.value === value && !skillsChanged && !isFocused) {
+    if (previousSnapshot.value === value && !skillsChanged && !aliasPolicyChanged && !isFocused) {
       return;
     }
 
@@ -1752,9 +1835,15 @@ function ComposerPromptEditorInner({
     let citationToOpen: ComposerCitationCommentTarget | null = null;
     editor.update(
       () => {
-        const shouldRewriteEditorState = previousSnapshot.value !== value || skillsChanged;
+        const shouldRewriteEditorState =
+          previousSnapshot.value !== value || skillsChanged || aliasPolicyChanged;
         if (shouldRewriteEditorState) {
-          $setComposerEditorPrompt(value, skillMetadataRef.current);
+          $setComposerEditorPrompt(
+            value,
+            skillMetadataRef.current,
+            allowUnicodeSkillAliases,
+            unicodeSkillNames,
+          );
         }
         if (shouldRewriteEditorState || isFocused) {
           $setSelectionAtComposerOffset(normalizedCursor);
@@ -1771,7 +1860,7 @@ function ComposerPromptEditorInner({
     queueMicrotask(() => {
       isApplyingControlledUpdateRef.current = false;
     });
-  }, [cursor, editor, skillsSignature, value]);
+  }, [allowUnicodeSkillAliases, cursor, editor, skillsSignature, unicodeSkillNames, value]);
 
   const focusAt = useCallback(
     (nextCursor: number) => {
@@ -2052,9 +2141,16 @@ function ComposerPromptEditorInner({
           />
           <OnChangePlugin onChange={handleEditorChange} />
           <ComposerCommandKeyPlugin {...(onCommandKeyDown ? { onCommandKeyDown } : {})} />
-          <ComposerSurroundSelectionPlugin skills={skills} />
+          <ComposerSurroundSelectionPlugin
+            skills={skills}
+            allowUnicodeSkillAliases={allowUnicodeSkillAliases}
+            unicodeSkillNames={unicodeSkillNames}
+          />
           <ComposerHomeEndKeyPlugin />
-          <ComposerInlineTokenArrowPlugin />
+          <ComposerInlineTokenArrowPlugin
+            allowUnicodeSkillAliases={allowUnicodeSkillAliases}
+            unicodeSkillNames={unicodeSkillNames}
+          />
           <ComposerInlineTokenSelectionNormalizePlugin />
           <ComposerInlineTokenBackspacePlugin />
           <ComposerInlineTokenPastePlugin importContextFragment={importContextFragment} />
@@ -2076,6 +2172,7 @@ export function ComposerPromptEditor({
   buildContextClipboardFragment,
   importContextFragment,
   skills,
+  allowUnicodeSkillAliases = false,
   disabled,
   placeholder,
   containerClassName,
@@ -2104,7 +2201,16 @@ export function ComposerPromptEditor({
         ComposerContextReferenceNode,
       ],
       editorState: () => {
-        $setComposerEditorPrompt(initialValueRef.current, initialSkillMetadataRef.current);
+        $setComposerEditorPrompt(
+          initialValueRef.current,
+          initialSkillMetadataRef.current,
+          allowUnicodeSkillAliases,
+          new Set(
+            skills
+              .filter((skill) => skill.enabled && skill.userInvocable !== false)
+              .map((skill) => skill.name),
+          ),
+        );
       },
       onError: (error) => {
         throw error;
@@ -2123,6 +2229,7 @@ export function ComposerPromptEditor({
           buildContextClipboardFragment={buildContextClipboardFragment}
           importContextFragment={importContextFragment}
           skills={skills}
+          allowUnicodeSkillAliases={allowUnicodeSkillAliases}
           disabled={disabled}
           placeholder={placeholder}
           {...(containerClassName ? { containerClassName } : {})}

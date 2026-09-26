@@ -819,6 +819,26 @@ describe("PrimeAgentDaemonEvents", () => {
       _tag: "ChildUpdated",
       child: { id: "child-1", status: "running", activity: { toolName: "ipython" } },
     });
+    expect(
+      decodePrimeAgentDaemonEvent(
+        sessionEvent({
+          type: "rlm_child_update",
+          child: {
+            ...child,
+            progressNote: "Checking tests",
+            lastActivityAt: 1_700_000_000_000,
+            activityStaleMs: 600_000,
+          },
+        }),
+      ),
+    ).toMatchObject({
+      _tag: "ChildUpdated",
+      child: {
+        progressNote: "Checking tests",
+        lastActivityAt: 1_700_000_000_000,
+        activityStaleMs: 600_000,
+      },
+    });
     const queueChanged = decodePrimeAgentDaemonEvent(
       sessionEvent({ type: "session_action_update", actions }),
     );

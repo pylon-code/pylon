@@ -5,6 +5,8 @@ import { environmentThreadDetails } from "../../state/threads";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { trackPendingContextImport } from "./pendingContextImport";
 import { observeResponsiveBreakpointFade, usePanelAnimationSettings } from "../../panelAnimations";
+import { usePrimaryEnvironmentId } from "../../state/environments";
+import { readPrimaryEnvironmentTarget } from "../../environments/primary/target";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { runtimeModeConfig, runtimeModeOptions } from "./runtimeModeConfig";
 import { useRightPanelStore } from "~/rightPanelStore";
@@ -50,6 +52,7 @@ import {
   resolveServerProviderRuntimeMode,
   ProviderDriverKind,
   ProviderInstanceId,
+  PRIMARY_LOCAL_ENVIRONMENT_ID,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
@@ -98,6 +101,7 @@ import {
   wouldTextPasteExceedLimit,
 } from "@t3tools/client-runtime/text-paste";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
+import { folderDropTarget, resolveDroppedFolderPath } from "./folderDrop";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import {
   memo,
@@ -114,17 +118,13 @@ import {
 } from "react";
 import { createPortal, flushSync } from "react-dom";
 import {
-  clampCollapsedComposerCursor,
   type ComposerSubmissionIntent,
   type ComposerTrigger,
-  collapseExpandedComposerCursor,
-  composerStateAtPromptEnd,
   composerSubmissionIntentForEnter,
-  detectComposerTrigger,
-  expandCollapsedComposerCursor,
   formatAssistantCitationForComposer,
   replaceTextRange,
 } from "../../composer-logic";
+import { useComposerAliasPolicyReaders } from "../../useComposerAliasPolicyReaders";
 import { DISCONNECTED_COMPOSER_PLACEHOLDER } from "../../composerPlaceholder";
 import {
   buildRunningThreadTurnInterruptInput,
@@ -139,6 +139,7 @@ import {
 } from "./composerMentionDrag";
 import {
   composerFloatingLayerProps,
+  useComposerMenuProps,
   isInsideCollapsedComposerControls,
   isInsideRestingComposerControlScope,
 } from "./composerEventScope";
@@ -362,6 +363,7 @@ import {
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { pendingDraftWork } from "./pendingDraftWork";
+import { isTimelineScrollTarget } from "./timelineScrollTarget";
 import {
   createComposerScrollGestureState,
   recordComposerScrollGestureEvent,
@@ -447,7 +449,6 @@ const EMPTY_PULL_REQUEST_LIST_TARGETS: ReadonlyArray<EnvironmentQueryTarget<Pull
 
 const COMPOSER_SCROLL_COLLAPSE_THRESHOLD_PX = 24;
 const COMPOSER_SCROLL_GESTURE_RESET_MS = 120;
-const COMPOSER_RESTING_TRANSITION_DURATION_MS = 280;
 const COMPOSER_RESTING_TRANSITION_CLEANUP_BUFFER_MS = 50;
 const COMPOSER_RESTING_TRANSITION_EASING = "cubic-bezier(0.32, 0.72, 0, 1)";
 const COMPOSER_RESTING_CONTROLS_ARRIVAL_DRIFT_PX = 4;
@@ -457,6 +458,8 @@ function useComposerRestingTransition(
   isResting: boolean,
   restingControlsRef: React.RefObject<HTMLDivElement | null>,
   onOverlayHeightChange: (height: number) => void,
+  animationsActive: boolean,
+  animationDurationMs: number,
 ) {
   const elementRef = useRef<HTMLDivElement>(null);
   const isCollapsedRef = useRef(isCollapsed);
@@ -575,7 +578,6 @@ function useComposerRestingTransition(
       const previousHeight = interruptedHeight ?? previousHeightRef.current;
       const targetChanged =
         interruptedTargetHeight === null || Math.abs(interruptedTargetHeight - nextHeight) >= 0.5;
-      const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
       const shouldAnimate = shouldAnimateComposerRestingTransition({
         hasCompletedInitialLayout: hasCompletedInitialLayoutRef.current,
         stateChanged,
@@ -584,18 +586,16 @@ function useComposerRestingTransition(
 
       if (
         shouldAnimate &&
-        !prefersReducedMotion &&
+        animationsActive &&
         previousHeight !== null &&
         Math.abs(previousHeight - nextHeight) >= 0.5
       ) {
         const remainingDuration =
           typeof interruptedDuration === "number" && interruptedCurrentTime !== null
             ? Math.max(1, interruptedDuration - interruptedCurrentTime)
-            : COMPOSER_RESTING_TRANSITION_DURATION_MS;
+            : animationDurationMs;
         const duration =
-          interruptedHeight !== null && !targetChanged
-            ? remainingDuration
-            : COMPOSER_RESTING_TRANSITION_DURATION_MS;
+          interruptedHeight !== null && !targetChanged ? remainingDuration : animationDurationMs;
         element.style.overflow = "clip";
         surface.style.height = "100%";
 
@@ -795,7 +795,13 @@ function useComposerRestingTransition(
         actionFromBottom: nextActionTop === null ? null : nextRect.bottom - nextActionTop,
       };
     },
-    [clearTransitionStyles, onOverlayHeightChange, restingControlsRef],
+    [
+      animationDurationMs,
+      animationsActive,
+      clearTransitionStyles,
+      onOverlayHeightChange,
+      restingControlsRef,
+    ],
   );
 
   useLayoutEffect(() => {
@@ -1084,6 +1090,7 @@ import {
   getProviderSkillsForSlashMenu,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
+  supportsUnicodeSkillAliases,
 } from "@t3tools/client-runtime/providerSkills";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -1198,6 +1205,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
   const size = props.size ?? "sm";
+  const composerFloatingLayerProps = useComposerMenuProps();
   const [open, setOpen] = useComposerMenuState(props.hidden);
   const runtimeModeOption = runtimeModeConfig[props.runtimeMode];
   const RuntimeModeIcon = runtimeModeOption.icon;
@@ -1392,6 +1400,7 @@ export interface ChatComposerHandle {
   restoreAfterTimelineReachedEnd: () => void;
   collapseForTimelineScrollKey: (key: string) => void;
   addDroppedFiles: (files: File[]) => void;
+  addDroppedFolders: (folders: File[], unresolvedCount: number) => void;
   hasPendingAttachments: () => boolean;
   insertTextAtEnd: (
     text: string,
@@ -1764,7 +1773,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onFileOpen,
   } = props;
   const [isQuickQuestionOpen, setIsQuickQuestionOpen] = useState(false);
-
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const activeTasksProgress = props.threadSyncPhase === null ? props.activeTasksProgress : null;
   const activeTaskSteps = props.threadSyncPhase === null ? props.activeTaskSteps : null;
   // ------------------------------------------------------------------
@@ -2747,6 +2756,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedProviderSkills = selectedProviderStatus
     ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd)
     : [];
+  const unicodeSkillNames = new Set(
+    selectedProviderSkills
+      .filter((skill) => skill.enabled && skill.userInvocable !== false)
+      .map((skill) => skill.name),
+  );
+  const allowUnicodeSkillAliases = supportsUnicodeSkillAliases(selectedProvider);
+  const {
+    clampCollapsedComposerCursor,
+    collapseExpandedComposerCursor,
+    expandCollapsedComposerCursor,
+    detectComposerTrigger,
+    composerStateAtPromptEnd,
+  } = useComposerAliasPolicyReaders({ allowUnicodeSkillAliases, unicodeSkillNames });
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -5774,6 +5796,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isComposerResting,
     restingComposerControlsRef,
     onComposerOverlayHeightChange,
+    panelAnimationsActive,
+    panelAnimationDurationMs,
   );
   const canTrackComposerScrollGesture =
     routeKind === "server" && activeThreadId !== null && !isMobileViewport;
@@ -5833,8 +5857,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
       const scrollNode = getTimelineScrollableNode();
       if (!scrollNode) return;
-      const targetsTimeline = scrollNode.contains(event.target);
-      if (!targetsTimeline && !composerScrollGestureRef.current.collapseSuppressed) return;
+      const targetsTimeline = isTimelineScrollTarget(event.target, scrollNode, event.deltaY);
+      if (
+        !scrollNode.contains(event.target) &&
+        !composerScrollGestureRef.current.collapseSuppressed
+      )
+        return;
 
       if (composerScrollCollapseTimeoutRef.current !== null) {
         window.clearTimeout(composerScrollCollapseTimeoutRef.current);
@@ -6928,6 +6956,64 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           if (!inserted) focusComposer();
         });
       },
+      addDroppedFolders: (folders: File[], unresolvedCount: number) => {
+        let desktopManagedPrimary = false;
+        let primaryRunningDistro: string | null | undefined;
+        try {
+          desktopManagedPrimary = readPrimaryEnvironmentTarget().source === "desktop-managed";
+          primaryRunningDistro = window.desktopBridge
+            ?.getLocalEnvironmentBootstraps()
+            .find((entry) => entry.id === PRIMARY_LOCAL_ENVIRONMENT_ID)?.runningDistro;
+        } catch {
+          // An unavailable local bootstrap must not make a client path look server-local.
+        }
+        const target = folderDropTarget({
+          desktopManagedPrimary,
+          primaryRunningDistro,
+          hasNativePathBridge: window.desktopBridge?.getPathForFile !== undefined,
+          environmentId,
+          primaryEnvironmentId,
+        });
+        if (target !== "local") {
+          toastManager.add({
+            type: "error",
+            title:
+              target === "remote"
+                ? "Folders can't be dropped into remote environments"
+                : "Folder paths are available only in the desktop local environment",
+          });
+          return;
+        }
+        if (unresolvedCount > 0) {
+          toastManager.add({
+            type: "error",
+            title: "Some dropped items could not be read",
+            description: "Drop the items again or type folder paths with @ instead.",
+          });
+        }
+        for (const folder of folders) {
+          const path = resolveDroppedFolderPath(folder, window.desktopBridge?.getPathForFile);
+          if (path === null) {
+            toastManager.add({
+              type: "error",
+              title: `Couldn't get the path of "${folder.name}"`,
+              description: "Type the folder path with @ instead.",
+            });
+            continue;
+          }
+          const inserted = insertComposerTextAtEnd(`${serializeComposerFileLink(path)} `, {
+            ensureLeadingBoundary: true,
+          });
+          if (!inserted) {
+            toastManager.add({
+              type: "error",
+              title: `Couldn't add "${folder.name}" to the composer`,
+              description: "The composer is busy; try again when it is ready.",
+            });
+          }
+        }
+        focusComposer();
+      },
       hasPendingAttachments: () =>
         (pendingImageCompressionsRef.current.get(attachmentTargetKey) ?? 0) > 0 ||
         pendingDraftWork.has(attachmentTargetKey),
@@ -7121,6 +7207,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerPreviewAnnotations,
       composerReviewComments,
       focusComposer,
+      environmentId,
+      primaryEnvironmentId,
       isConnecting,
       isComposerApprovalState,
       pendingUserInputs.length,
@@ -7963,6 +8051,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         buildContextClipboardFragment={buildContextClipboardFragment}
                         importContextFragment={importContextFragment}
                         skills={selectedProviderSkills}
+                        allowUnicodeSkillAliases={allowUnicodeSkillAliases}
                         containerClassName={cn(isComposerResting && "min-w-0 flex-1")}
                         className={cn(
                           showMobilePendingAnswerActions && "max-sm:pb-11",
