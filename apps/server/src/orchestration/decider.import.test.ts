@@ -69,8 +69,14 @@ it.layer(NodeServices.layer)("thread history import", (it) => {
       expect(imported).toMatchObject({
         type: "thread.created",
         metadata: { historyImport: true },
+        payload: {
+          titleState: { source: "manual", version: `command-create-import:codex:session-1` },
+        },
       });
-      expect(live).toMatchObject({ type: "thread.created" });
+      expect(live).toMatchObject({
+        type: "thread.created",
+        payload: { titleState: { source: "provisional", version: "command-create-live-thread" } },
+      });
       expect(live).not.toMatchObject({ metadata: { historyImport: true } });
     }),
   );

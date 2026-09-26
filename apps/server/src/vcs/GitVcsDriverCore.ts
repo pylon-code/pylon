@@ -20,6 +20,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   GitCommandError,
+  T3_PROJECT_FILE_NAME,
   type ReviewDiffFileContentsInput,
   type ReviewDiffPreviewInput,
   type ReviewDiffFileStat,
@@ -30,6 +31,7 @@ import { dedupeRemoteBranchesWithLocalMatches, normalizeGitRemoteUrl } from "@t3
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { compactTraceAttributes } from "@t3tools/shared/observability";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
+import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import {
@@ -2282,13 +2284,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const readRangeContext: GitVcsDriver.GitVcsDriver["Service"]["readRangeContext"] = Effect.fn(
     "readRangeContext",
   )(function* (cwd, baseRef) {
-    const range = `${baseRef}..HEAD`;
+    const commitRange = `${baseRef}..HEAD`;
+    // PR diffs start at the common ancestor when the base branch has advanced.
+    const diffRange = `${baseRef}...HEAD`;
     const [commitSummary, diffSummary, diffPatch] = yield* Effect.all(
       [
         runGitStdoutWithOptions(
           "GitVcsDriver.readRangeContext.log",
           cwd,
-          ["log", "--oneline", range],
+          ["log", "--oneline", commitRange],
           {
             maxOutputBytes: RANGE_COMMIT_SUMMARY_MAX_OUTPUT_BYTES,
             appendTruncationMarker: true,
@@ -2297,7 +2301,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         runGitStdoutWithOptions(
           "GitVcsDriver.readRangeContext.diffStat",
           cwd,
-          ["diff", "--stat", range],
+          ["diff", "--stat", diffRange],
           {
             maxOutputBytes: RANGE_DIFF_SUMMARY_MAX_OUTPUT_BYTES,
             appendTruncationMarker: true,
@@ -2306,7 +2310,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         runGitStdoutWithOptions(
           "GitVcsDriver.readRangeContext.diffPatch",
           cwd,
-          ["diff", "--no-ext-diff", "--patch", "--minimal", range],
+          ["diff", "--no-ext-diff", "--patch", "--minimal", diffRange],
           {
             maxOutputBytes: RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES,
             appendTruncationMarker: true,
@@ -3070,23 +3074,32 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const progress = options?.progress;
     const onCheckoutProgress = progress?.onCheckoutProgress;
 
-    yield* executeGit("GitVcsDriver.createWorktree", input.cwd, args, {
-      fallbackErrorDetail: "git worktree add failed",
-      timeoutMs: WORKTREE_ADD_TIMEOUT_MS,
-      ...(onCheckoutProgress
-        ? {
-            // Git only prints checkout progress when stderr is a tty or the
-            // delay elapsed. GIT_PROGRESS_DELAY=0 forces it through the pipe.
-            env: { GIT_PROGRESS_DELAY: "0", LC_ALL: "C" },
-            progress: {
-              onStderrLine: (line) => {
-                const parsed = parseGitCheckoutProgressLine(line);
-                return parsed ? onCheckoutProgress(parsed) : Effect.void;
+    // Git defaults to a single checkout worker unless the caller opts in.
+    // Respect an explicit checkout.workers setting while enabling Git's
+    // automatic worker count for the common unset case.
+    const checkoutWorkers = (yield* readConfigValue(input.cwd, "checkout.workers")) ?? "0";
+    yield* executeGit(
+      "GitVcsDriver.createWorktree",
+      input.cwd,
+      ["-c", `checkout.workers=${checkoutWorkers}`, ...args],
+      {
+        fallbackErrorDetail: "git worktree add failed",
+        timeoutMs: WORKTREE_ADD_TIMEOUT_MS,
+        ...(onCheckoutProgress
+          ? {
+              // Git only prints checkout progress when stderr is a tty or the
+              // delay elapsed. GIT_PROGRESS_DELAY=0 forces it through the pipe.
+              env: { GIT_PROGRESS_DELAY: "0", LC_ALL: "C" },
+              progress: {
+                onStderrLine: (line) => {
+                  const parsed = parseGitCheckoutProgressLine(line);
+                  return parsed ? onCheckoutProgress(parsed) : Effect.void;
+                },
               },
-            },
-          }
-        : {}),
-    });
+            }
+          : {}),
+      },
+    );
 
     if (progress?.onWorktreeClaimed) {
       yield* progress.onWorktreeClaimed(worktreePath);
@@ -3100,7 +3113,30 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const hasSubmodules = yield* fileSystem
       .exists(path.join(worktreePath, ".gitmodules"))
       .pipe(Effect.orElseSucceed(() => false));
-    if (hasSubmodules) {
+    const submoduleSetting = options?.submodules;
+    const submoduleMode = !hasSubmodules
+      ? "none"
+      : submoduleSetting != null
+        ? submoduleSetting
+        : yield* fileSystem.readFileString(path.join(worktreePath, T3_PROJECT_FILE_NAME)).pipe(
+            Effect.flatMap((contents) => {
+              const file = parseT3ProjectFile(contents);
+              return file === null
+                ? Effect.logWarning("t3.json is invalid; initializing submodules recursively", {
+                    worktreePath,
+                  }).pipe(Effect.as("recursive" as const))
+                : Effect.succeed(file.worktreeSubmodules ?? "recursive");
+            }),
+            Effect.orElseSucceed(() => "recursive" as const),
+          );
+    if (hasSubmodules && submoduleMode === "none") {
+      if (progress?.onSubmodulesDisabled) {
+        yield* progress.onSubmodulesDisabled({
+          source: submoduleSetting == null ? "t3.json" : "settings",
+        });
+      }
+    }
+    if (submoduleMode !== "none") {
       if (progress?.onSubmodulesStarted) {
         yield* progress.onSubmodulesStarted();
       }
@@ -3108,7 +3144,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       yield* runGit(
         "GitVcsDriver.createWorktree.updateSubmodules",
         worktreePath,
-        ["submodule", "update", "--init", "--recursive"],
+        submoduleMode === "recursive"
+          ? ["submodule", "update", "--init", "--recursive"]
+          : ["submodule", "update", "--init"],
         onSubmoduleLine
           ? {
               env: { LC_ALL: "C" },
@@ -3273,28 +3311,89 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         env: STATUS_UPSTREAM_REFRESH_ENV,
         fallbackErrorDetail: `git fetch ${input.remoteName} failed`,
       };
-      yield* executeGitWithStableDiagnostics("GitVcsDriver.fetchRemote", input.cwd, args, {
-        ...options,
-        allowNonZeroExit: true,
-      }).pipe(
-        Effect.flatMap((result) =>
-          result.exitCode === 0
-            ? Effect.void
-            : Effect.fail(
-                new GitCommandError({
-                  ...gitCommandContext({
-                    operation: "GitVcsDriver.fetchRemote",
-                    cwd: input.cwd,
-                    args,
-                  }),
-                  detail: fetchFailureDetail(result.stderr) ?? options.fallbackErrorDetail,
-                  ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
-                  stdoutLength: result.stdout.length,
-                  stderrLength: result.stderr.length,
-                }),
-              ),
-        ),
-      );
+      const runFetch = (fetchArgs: ReadonlyArray<string>) =>
+        executeGitWithStableDiagnostics("GitVcsDriver.fetchRemote", input.cwd, [...fetchArgs], {
+          ...options,
+          allowNonZeroExit: true,
+        });
+      let fetchArgs: ReadonlyArray<string> = args;
+      let result;
+      // An explicit refspec must not silently override a repository's custom
+      // remote.fetch mapping or its force-update policy. Scope the common
+      // default mapping; keep the existing full fetch for all other setups.
+      const defaultFetchRefspec = `+refs/heads/*:refs/remotes/${input.remoteName}/*`;
+      const configuredFetchRefspecs = input.refName
+        ? (yield* runGitStdout(
+            "GitVcsDriver.fetchRemote.readRefspecs",
+            input.cwd,
+            ["config", "--get-all", `remote.${input.remoteName}.fetch`],
+            true,
+          ))
+            .split(/\r?\n/)
+            .filter((line) => line.length > 0)
+        : [];
+      const pruneSettings = input.refName
+        ? yield* Effect.forEach(
+            [
+              "fetch.prune",
+              "fetch.pruneTags",
+              `remote.${input.remoteName}.prune`,
+              `remote.${input.remoteName}.pruneTags`,
+            ],
+            (key) =>
+              runGitStdout(
+                "GitVcsDriver.fetchRemote.readPruneSetting",
+                input.cwd,
+                ["config", "--type=bool", "--get", key],
+                true,
+              ).pipe(Effect.map((value) => value.trim() === "true")),
+          )
+        : [];
+      const tagOption = input.refName
+        ? yield* readConfigValue(input.cwd, `remote.${input.remoteName}.tagOpt`)
+        : null;
+      if (
+        input.refName &&
+        parseRemoteRefWithRemoteNames(input.refName, [input.remoteName]) === null &&
+        configuredFetchRefspecs.length === 1 &&
+        configuredFetchRefspecs[0] === defaultFetchRefspec &&
+        !pruneSettings.some(Boolean) &&
+        tagOption !== "--tags"
+      ) {
+        const branch = input.refName;
+        const scopedArgs = [
+          ...args,
+          `+refs/heads/${branch}:refs/remotes/${input.remoteName}/${branch}`,
+        ];
+        fetchArgs = scopedArgs;
+        result = yield* runFetch(scopedArgs);
+        // A local-only base has no matching remote branch. Preserve the old
+        // full-fetch behavior so callers can still discover other remote refs.
+        if (
+          result.exitCode !== 0 &&
+          result.stderr
+            .split(/\r?\n/)
+            .includes(`fatal: couldn't find remote ref refs/heads/${branch}`)
+        ) {
+          fetchArgs = args;
+          result = yield* runFetch(args);
+        }
+      } else {
+        result = yield* runFetch(args);
+      }
+      if (result.exitCode !== 0) {
+        return yield* new GitCommandError({
+          ...gitCommandContext({
+            operation: "GitVcsDriver.fetchRemote",
+            cwd: input.cwd,
+            args: fetchArgs,
+          }),
+          detail: fetchFailureDetail(result.stderr) ?? options.fallbackErrorDetail,
+          ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+          stdoutLength: result.stdout.length,
+          stderrLength: result.stderr.length,
+        });
+      }
     },
   );
 
@@ -3504,7 +3603,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               ? ["checkout", localTrackingBranch]
               : ["checkout", input.refName];
 
-      yield* executeGit("GitVcsDriver.switchRef.checkout", input.cwd, checkoutArgs, {
+      // A stale ref must not turn into a path checkout that discards local edits.
+      yield* executeGit("GitVcsDriver.switchRef.checkout", input.cwd, [...checkoutArgs, "--"], {
         timeoutMs: 10_000,
         fallbackErrorDetail: "git checkout failed",
       });

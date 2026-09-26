@@ -17,6 +17,7 @@
  * folding (completion can create an agent; a late start only fills
  * metadata).
  */
+import { INERT_TASK_TYPES, MONITOR_TASK_TYPES } from "@t3tools/contracts";
 import type { OrchestrationThreadActivity, ServerProvider } from "@t3tools/contracts";
 
 export type RuntimeSubagentStatus =
@@ -178,8 +179,51 @@ const ROSTER_LIMIT = 100;
  * background by definition: they render in the ordinary work log, exactly
  * as they did before this feature existed.
  */
-export function isBackgroundTaskActivity(payload: Record<string, unknown>): boolean {
+export function isBackgroundTaskActivity(
+  payload: Record<string, unknown>,
+  backgroundTaskIds?: ReadonlySet<string>,
+): boolean {
+  const taskId = typeof payload.taskId === "string" ? payload.taskId : undefined;
+  if (taskId !== undefined && backgroundTaskIds?.has(taskId)) return true;
   return payload.agentKind !== "agent";
+}
+
+/**
+ * The classification belongs to the task, not to one row of it.
+ *
+ * Providers repeat the linkage on every row, but a terminal row can arrive
+ * without it: an orphaned shell task settled by a LATER process reports only
+ * its id and status, and the stamp derived from that bare row reads a typeless
+ * task as an agent. Folding a thread's rows first means a task that ever
+ * identified itself as background stays background, so a stray terminal row
+ * cannot promote a `local_bash` watcher into a phantom subagent.
+ *
+ * Deliberately one-directional and evidence-based: only a row that NAMES a
+ * background task type makes the claim sticky. A merely unstamped row is the
+ * absence of evidence, not background evidence, so a legacy or truncated row
+ * cannot demote a real agent. Tasks that never carry a type at all — Relay
+ * workers, native subagents — keep the per-row stamp.
+ */
+export function collectBackgroundTaskIds(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlySet<string> {
+  const background = new Set<string>();
+  for (const activity of activities) {
+    if (
+      activity.kind !== "task.started" &&
+      activity.kind !== "task.progress" &&
+      activity.kind !== "task.updated" &&
+      activity.kind !== "task.completed"
+    )
+      continue;
+    if (typeof activity.payload !== "object" || activity.payload === null) continue;
+    const payload = activity.payload as Record<string, unknown>;
+    const taskId = typeof payload.taskId === "string" ? payload.taskId : undefined;
+    const taskType = typeof payload.taskType === "string" ? payload.taskType : undefined;
+    if (taskId === undefined || taskType === undefined) continue;
+    if (MONITOR_TASK_TYPES.has(taskType) || INERT_TASK_TYPES.has(taskType)) background.add(taskId);
+  }
+  return background;
 }
 
 function bounded(value: string): string {
@@ -596,6 +640,10 @@ export function foldSubagentActivities(
   options?: { readonly sessionLive?: boolean },
 ): ReadonlyArray<RuntimeSubagent> {
   const agents = new Map<string, MutableAgent>();
+  // Resolved up front so the classification does not depend on arrival order:
+  // a task that names a background type anywhere stays off this surface even
+  // if its typeless terminal row is folded first.
+  const backgroundTaskIds = collectBackgroundTaskIds(activities);
 
   // The provider-owned activation id for each agent's current run. Claude
   // carries it on task.started; Codex carries the native child turn id on
@@ -693,7 +741,7 @@ export function foldSubagentActivities(
         // Only real agents join the roster. Shells, monitors, and plan-mode
         // tasks are background work — they render in the ordinary work log,
         // not the Agents surface (a "Run 12s stall" shell is not a subagent).
-        if (isBackgroundTaskActivity(payload)) break;
+        if (isBackgroundTaskActivity(payload, backgroundTaskIds)) break;
         if (!acceptRelayEvent(taskId, payload, activity.kind)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         const attemptBumped = fillMetadata(agent, payload);
@@ -737,7 +785,7 @@ export function foldSubagentActivities(
         // rows often carry only taskId+status, no marker fields) inherit the
         // first row's classification instead of being re-judged.
         const existed = agents.has(taskId);
-        if (!existed && isBackgroundTaskActivity(payload)) break;
+        if (!existed && isBackgroundTaskActivity(payload, backgroundTaskIds)) break;
         if (!acceptRelayEvent(taskId, payload, activity.kind)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         const attemptBumped = fillMetadata(agent, payload);
@@ -791,7 +839,7 @@ export function foldSubagentActivities(
         // Membership is sticky per taskId: rows after the first (terminal
         // rows often carry only taskId+status, no marker fields) inherit the
         // first row's classification instead of being re-judged.
-        if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
+        if (!agents.has(taskId) && isBackgroundTaskActivity(payload, backgroundTaskIds)) break;
         if (!acceptRelayEvent(taskId, payload, activity.kind)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         const attemptBumped = fillMetadata(agent, payload);
@@ -838,7 +886,7 @@ export function foldSubagentActivities(
         // Membership is sticky per taskId: rows after the first (terminal
         // rows often carry only taskId+status, no marker fields) inherit the
         // first row's classification instead of being re-judged.
-        if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
+        if (!agents.has(taskId) && isBackgroundTaskActivity(payload, backgroundTaskIds)) break;
         if (!acceptRelayEvent(taskId, payload, activity.kind)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         resetRelayAttempt(agent, fillMetadata(agent, payload));
