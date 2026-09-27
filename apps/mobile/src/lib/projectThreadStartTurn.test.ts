@@ -101,3 +101,32 @@ describe("new thread on an existing branch", () => {
     },
   );
 });
+
+it("keeps an explicit remote base in immediate and queued worktree bootstrap payloads", () => {
+  for (const startFromOrigin of [true, false]) {
+    const input = buildProjectThreadStartTurnInput({
+      projectId: ProjectId.make("project"),
+      projectCwd: "/workspace",
+      threadId: "new-thread",
+      commandId: "command",
+      messageId: "message",
+      createdAt: "2026-09-06T00:00:00Z",
+      text: "Start from selected remote",
+      uploadedAttachments: [],
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      workspaceMode: "worktree",
+      branch: "upstream/feature",
+      baseRemoteName: "upstream",
+      worktreePath: null,
+      startFromOrigin,
+      worktreeBranchName: "t3code/new-thread",
+    });
+    expect(input.bootstrap.prepareWorktree).toMatchObject({
+      baseBranch: "upstream/feature",
+      baseRemoteName: "upstream",
+      ...(startFromOrigin ? { startFromOrigin: true } : {}),
+    });
+  }
+});

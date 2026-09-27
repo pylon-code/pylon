@@ -38,6 +38,7 @@ export interface ProjectThreadStartTurnSpec {
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceMode: "local" | "worktree";
   readonly branch: string | null;
+  readonly baseRemoteName?: string;
   readonly worktreePath: string | null;
   readonly startFromOrigin: boolean;
   /** Generated temp branch for worktree mode; unused for local mode. */
@@ -82,6 +83,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
             prepareWorktree: {
               projectCwd: spec.projectCwd,
               baseBranch: spec.branch!,
+              ...(spec.baseRemoteName ? { baseRemoteName: spec.baseRemoteName } : {}),
               branch: spec.worktreeBranchName,
               ...(spec.startFromOrigin ? { startFromOrigin: true } : {}),
             },

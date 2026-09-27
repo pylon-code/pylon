@@ -11282,6 +11282,154 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   );
 
   it.effect.each([
+    {
+      caseName: "origin remote refresh",
+      remoteName: "origin",
+      baseRemoteName: "origin",
+      startFromOrigin: true,
+      exists: true,
+    },
+    {
+      caseName: "non-origin remote refresh",
+      remoteName: "upstream",
+      baseRemoteName: "upstream",
+      startFromOrigin: true,
+      exists: true,
+    },
+    {
+      caseName: "non-origin tracking without refresh",
+      remoteName: "upstream",
+      baseRemoteName: "upstream",
+      startFromOrigin: false,
+      exists: true,
+    },
+    {
+      caseName: "vanished remote tracking ref",
+      remoteName: "origin",
+      baseRemoteName: "origin",
+      startFromOrigin: true,
+      exists: false,
+    },
+    {
+      caseName: "local origin/feature name collision",
+      remoteName: "origin",
+      baseRemoteName: undefined,
+      startFromOrigin: false,
+      exists: true,
+    },
+  ])(
+    "uses the selected worktree base for $caseName",
+    ({ remoteName, baseRemoteName, startFromOrigin, exists }) =>
+      Effect.gen(function* () {
+        const fetchRemote = vi.fn(
+          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["fetchRemote"]>[0]) => Effect.void,
+        );
+        const remoteBranchExists = vi.fn(
+          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["remoteBranchExists"]>[0]) =>
+            Effect.succeed(exists),
+        );
+        const resolveRemoteTrackingCommit = vi.fn(
+          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["resolveRemoteTrackingCommit"]>[0]) =>
+            Effect.succeed({
+              commitSha: "0123456789abcdef0123456789abcdef01234567",
+              remoteRefName: `${remoteName}/feature`,
+            }),
+        );
+        const createWorktree = vi.fn(
+          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
+            Effect.succeed({
+              worktree: { refName: "t3code/bootstrap-refName", path: "/tmp/bootstrap-worktree" },
+            }),
+        );
+        yield* buildAppUnderTest({
+          layers: {
+            vcsDriver: { isInsideWorkTree: () => Effect.succeed(true) },
+            gitVcsDriver: {
+              execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
+              remoteExists: () => Effect.succeed(true),
+              fetchRemote,
+              remoteBranchExists,
+              resolveRemoteTrackingCommit,
+              createWorktree,
+            },
+          },
+        });
+        const wsUrl = yield* getWsServerUrl("/ws");
+        yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+              type: "thread.turn.start",
+              commandId: CommandId.make(
+                `cmd-remote-base-${remoteName}-${startFromOrigin}-${exists}`,
+              ),
+              threadId: ThreadId.make(
+                `thread-remote-base-${remoteName}-${startFromOrigin}-${exists}`,
+              ),
+              message: {
+                messageId: MessageId.make("msg-remote-base"),
+                role: "user",
+                text: "hello",
+                attachments: [],
+              },
+              modelSelection: defaultModelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              bootstrap: {
+                createThread: {
+                  projectId: defaultProjectId,
+                  title: "Remote Base",
+                  modelSelection: defaultModelSelection,
+                  runtimeMode: "full-access",
+                  interactionMode: "default",
+                  branch: `${remoteName}/feature`,
+                  worktreePath: null,
+                  createdAt: "2026-01-01T00:00:00.000Z",
+                },
+                prepareWorktree: {
+                  projectCwd: "/tmp/project",
+                  baseBranch: `${remoteName}/feature`,
+                  ...(baseRemoteName ? { baseRemoteName } : {}),
+                  branch: "t3code/bootstrap-refName",
+                  startFromOrigin,
+                },
+              },
+              createdAt: "2026-01-01T00:00:00.000Z",
+            }),
+          ),
+        );
+        assert.equal(fetchRemote.mock.calls.length, startFromOrigin ? 1 : 0);
+        if (startFromOrigin) {
+          assert.deepEqual(fetchRemote.mock.calls[0]?.[0], {
+            cwd: "/tmp/project",
+            remoteName,
+            refName: "feature",
+          });
+          assert.deepEqual(remoteBranchExists.mock.calls[0]?.[0], {
+            cwd: "/tmp/project",
+            remoteName,
+            refName: "feature",
+          });
+        }
+        assert.equal(createWorktree.mock.calls.length, exists ? 1 : 0);
+        if (exists) {
+          assert.deepEqual(createWorktree.mock.calls[0]?.[0], {
+            cwd: "/tmp/project",
+            refName: startFromOrigin
+              ? "0123456789abcdef0123456789abcdef01234567"
+              : `${remoteName}/feature`,
+            newRefName: "t3code/bootstrap-refName",
+            baseRefName: `${remoteName}/feature`,
+            path: null,
+          });
+        }
+        assert.equal(
+          resolveRemoteTrackingCommit.mock.calls.length,
+          startFromOrigin && exists ? 1 : 0,
+        );
+      }).pipe(Effect.provide(loopbackHttpServerTest)),
+  );
+
+  it.effect.each([
     { caseName: "the origin remote is missing", hasOrigin: false },
     { caseName: "the base branch exists only locally", hasOrigin: true },
   ])("falls back to the local base branch when $caseName", ({ hasOrigin }) =>

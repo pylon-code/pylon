@@ -153,6 +153,7 @@ type NewTaskFlowContextValue = {
   readonly selectedModelKey: string | null;
   readonly workspaceMode: WorkspaceMode;
   readonly selectedBranchName: string | null;
+  readonly selectedBranchRemoteName: string | null;
   readonly selectedWorktreePath: string | null;
   readonly startFromOrigin: boolean;
   readonly draftKey: string | null;
@@ -473,6 +474,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   });
   const workspaceMode = selectedProjectDraft.workspaceSelection?.mode ?? defaultWorkspaceMode;
   const selectedBranchName = selectedProjectDraft.workspaceSelection?.branch ?? null;
+  const selectedBranchRemoteName = selectedProjectDraft.workspaceSelection?.baseRemoteName ?? null;
   const selectedWorktreePath = selectedProjectDraft.workspaceSelection?.worktreePath ?? null;
   // Keep the user's explicit choice separate from the resolved display value:
   // only the explicit flag is ever written back to the draft, so the resolved
@@ -821,6 +823,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         workspaceSelection: {
           mode,
           branch: mode === "local" ? localSelection.branch : selectedBranchName,
+          ...(mode === "worktree" && selectedBranchRemoteName
+            ? { baseRemoteName: selectedBranchRemoteName }
+            : {}),
           worktreePath: mode === "local" ? localSelection.worktreePath : selectedWorktreePath,
           ...(draftStartFromOrigin !== undefined ? { startFromOrigin: draftStartFromOrigin } : {}),
         },
@@ -830,6 +835,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       availableBranches,
       draftStartFromOrigin,
       selectedBranchName,
+      selectedBranchRemoteName,
       selectedProject,
       selectedProjectDraftKey,
       selectedWorktreePath,
@@ -880,6 +886,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         workspaceSelection: {
           mode: workspaceMode,
           branch: branch.name,
+          ...(workspaceMode === "worktree" && branch.isRemote && branch.remoteName
+            ? { baseRemoteName: branch.remoteName }
+            : {}),
           worktreePath: resolveNewTaskBranchWorktreePath({
             workspaceMode,
             projectCwd: selectedProject.workspaceRoot,
@@ -901,12 +910,19 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         workspaceSelection: {
           mode: workspaceMode,
           branch: selectedBranchName,
+          ...(selectedBranchRemoteName ? { baseRemoteName: selectedBranchRemoteName } : {}),
           worktreePath: selectedWorktreePath,
           startFromOrigin: value,
         },
       });
     },
-    [selectedBranchName, selectedProjectDraftKey, selectedWorktreePath, workspaceMode],
+    [
+      selectedBranchName,
+      selectedBranchRemoteName,
+      selectedProjectDraftKey,
+      selectedWorktreePath,
+      workspaceMode,
+    ],
   );
 
   const refreshBranches = branchState.refresh;
@@ -1066,6 +1082,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
             selectedBranch: workspaceSelection?.branch ?? null,
             currentCheckoutBranch: options?.currentCheckoutBranch ?? null,
           }),
+          ...(mode === "worktree" && workspaceSelection?.baseRemoteName
+            ? { baseRemoteName: workspaceSelection.baseRemoteName }
+            : {}),
           worktreePath: mode === "worktree" ? null : (workspaceSelection?.worktreePath ?? null),
           // The draft only carries the flag when the user touched it; fall
           // back to the resolved default (server settings) so queued tasks
@@ -1202,6 +1221,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       selectedModelKey,
       workspaceMode,
       selectedBranchName,
+      selectedBranchRemoteName,
       selectedWorktreePath,
       startFromOrigin,
       draftKey: selectedProjectDraftKey,
@@ -1285,6 +1305,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       runtimeMode,
       supportedRuntimeModes,
       selectedBranchName,
+      selectedBranchRemoteName,
       hasMoreBranches,
       selectedEnvironmentId,
       selectedModel,

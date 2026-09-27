@@ -61,6 +61,7 @@ export function resolveNewTaskLocalWorkspaceSelection(input: {
 
 export function resolveNewTaskBranchLabel(input: {
   readonly branchName: string | null;
+  readonly branchRemoteName?: string | null;
   readonly startFromOrigin: boolean;
   readonly workspaceMode: WorkspaceMode;
 }): string {
@@ -72,7 +73,10 @@ export function resolveNewTaskBranchLabel(input: {
     return input.branchName;
   }
 
-  const baseRef = input.startFromOrigin ? `origin/${input.branchName}` : input.branchName;
+  const baseRef =
+    input.startFromOrigin && !input.branchRemoteName
+      ? `origin/${input.branchName}`
+      : input.branchName;
   return `From ${baseRef}`;
 }
 
