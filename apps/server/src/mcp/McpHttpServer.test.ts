@@ -28,6 +28,7 @@ const threadId = ThreadId.make("thread-mcp-test");
 const tabId = PreviewTabId.make("tab-mcp-test");
 const alternateTabId = PreviewTabId.make("tab-mcp-alternate");
 const decodeJsonText = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const encodeCallToolResult = Schema.encodeSync(McpSchema.CallToolResult);
 const invocation = {
   environmentId,
   threadId,
@@ -256,6 +257,7 @@ it.effect.each([
           ...boundedMetadata,
           omitted: ["accessibilityTree (use interactiveElements locators or preview_evaluate)"],
         });
+        expect(() => encodeCallToolResult(snapshot)).not.toThrow();
         const [identity, text, ...rest] = snapshot.content;
         expect(identity?.type === "text" ? decodeJsonText(identity.text) : null).toEqual({
           url: page.url,
@@ -353,6 +355,7 @@ it.effect("saves the snapshot PNG on request and reports its path", () =>
 
       // A save without the image skips the page dump.
       const pathOnly = yield* callSnapshot({ save: true, includeImage: false });
+      expect(() => encodeCallToolResult(pathOnly)).not.toThrow();
       const saved = pathOnly.structuredContent as { readonly screenshotPath: string };
       expect(saved).toEqual({ url: snapshotResult.url, screenshotPath: expect.any(String) });
       expect(Buffer.from(yield* fileSystem.readFile(saved.screenshotPath)).toString()).toBe("png");
@@ -733,6 +736,9 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(snapshotTool?.tool.annotations?.idempotentHint).toBe(true);
       expect(snapshotTool?.tool.annotations?.destructiveHint).toBe(false);
       expect(snapshotTool?.tool.annotations?.openWorldHint).toBe(true);
+      // The MCP result is intentionally a bounded or path-only variant of
+      // the full browser snapshot validated by the toolkit.
+      expect(snapshotTool?.tool.outputSchema).toBeUndefined();
 
       const clickTool = server.tools.find(({ tool }) => tool.name === "preview_click");
       expect(clickTool?.tool.annotations?.readOnlyHint).toBe(false);

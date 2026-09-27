@@ -383,6 +383,10 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
       name: tool.name,
       description: Tool.getDescription(tool),
       inputSchema: Tool.getJsonSchema(tool),
+      // The toolkit validates the full browser snapshot before this handler
+      // bounds it. Do not advertise that raw success schema for the MCP result:
+      // bounded snapshots omit the AX tree and image data, and save-only calls
+      // return a URL and path instead.
       annotations: {
         ...Context.getOption(tool.annotations, Tool.Title).pipe(
           Option.map((title) => ({ title })),
