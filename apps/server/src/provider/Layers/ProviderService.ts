@@ -662,6 +662,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       readonly completed: Deferred.Deferred<void, ProviderValidationError>;
     }
   >();
+  const antigravityStopRegistrationLock = yield* Semaphore.make(1);
+  const afterAntigravityStop = <A>(threadId: ThreadId, action: () => A) =>
+    Effect.gen(function* () {
+      while (true) {
+        const result = yield* antigravityStopRegistrationLock.withPermit(
+          Effect.sync(() => {
+            const fence = antigravityStopFences.get(threadId);
+            return fence
+              ? ({ kind: "wait", fence } as const)
+              : ({ kind: "ready", value: action() } as const);
+          }),
+        );
+        if (result.kind === "ready") return result.value;
+        yield* Deferred.await(result.fence.completed);
+      }
+    });
   const awaitAntigravityStop = (threadId: ThreadId) =>
     Effect.suspend(() => {
       const fence = antigravityStopFences.get(threadId);
@@ -1898,17 +1914,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
 
       const sessionIncarnationId = RuntimeSessionId.make(NodeCrypto.randomUUID());
-      const previousIncarnation = currentSessionIncarnations.get(input.binding.threadId);
+      const previousIncarnation = yield* afterAntigravityStop(input.binding.threadId, () => {
+        const previous = currentSessionIncarnations.get(input.binding.threadId);
+        currentSessionIncarnations.set(input.binding.threadId, {
+          id: sessionIncarnationId,
+          instanceId: bindingInstanceId,
+          adapter,
+        });
+        return previous;
+      });
       const restorePreviousIncarnation = restorePreviousIncarnationIfLive(
         input.binding.threadId,
         sessionIncarnationId,
         previousIncarnation,
       );
-      currentSessionIncarnations.set(input.binding.threadId, {
-        id: sessionIncarnationId,
-        instanceId: bindingInstanceId,
-        adapter,
-      });
       yield* prepareMcpSession(input.binding.threadId, bindingInstanceId, adapter);
       const resumed = yield* adapter
         .startSession({
@@ -2198,19 +2217,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             }
             const adapter = yield* registry.getByInstance(resolvedInstanceId);
             yield* requireAdapterGenerationCurrent(adapter, "ProviderService.startSession");
-            yield* awaitAntigravityStop(threadId);
             const sessionIncarnationId = RuntimeSessionId.make(NodeCrypto.randomUUID());
-            const previousIncarnation = currentSessionIncarnations.get(threadId);
+            const previousIncarnation = yield* afterAntigravityStop(threadId, () => {
+              const previous = currentSessionIncarnations.get(threadId);
+              currentSessionIncarnations.set(threadId, {
+                id: sessionIncarnationId,
+                instanceId: resolvedInstanceId,
+                adapter,
+              });
+              return previous;
+            });
             const restorePreviousIncarnation = restorePreviousIncarnationIfLive(
               threadId,
               sessionIncarnationId,
               previousIncarnation,
             );
-            currentSessionIncarnations.set(threadId, {
-              id: sessionIncarnationId,
-              instanceId: resolvedInstanceId,
-              adapter,
-            });
             yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
             yield* prepareMcpSession(threadId, resolvedInstanceId, adapter);
             const session = yield* adapter
@@ -2927,47 +2948,54 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         payload: rawInput,
       });
       yield* assertNotRollbackFenced(input.threadId, "ProviderService.interruptTurn");
-      const inFlightStop = antigravityStopFences.get(input.threadId);
-      if (inFlightStop) return yield* Deferred.await(inFlightStop.completed);
-      const incarnation = currentSessionIncarnations.get(input.threadId);
-      const oldSessionIsLive =
-        incarnation?.adapter.provider === "antigravity" &&
-        (yield* incarnation.adapter.listSessions()).some(
-          (session) =>
-            session.threadId === input.threadId && session.sessionIncarnationId === incarnation.id,
-        );
-      const stopFence =
-        oldSessionIsLive && incarnation
-          ? {
-              incarnationId: incarnation.id,
-              completed: yield* Deferred.make<void, ProviderValidationError>(),
-            }
-          : undefined;
-      if (stopFence) {
-        yield* Effect.gen(function* () {
-          antigravityStopFences.set(input.threadId, stopFence);
-          yield* Deferred.await(stopFence.completed).pipe(
+      const registration = yield* antigravityStopRegistrationLock.withPermit(
+        Effect.gen(function* () {
+          const existing = antigravityStopFences.get(input.threadId);
+          if (existing) return { kind: "existing", fence: existing } as const;
+          const incarnation = currentSessionIncarnations.get(input.threadId);
+          const oldSessionIsLive =
+            incarnation?.adapter.provider === "antigravity" &&
+            (yield* incarnation.adapter.listSessions()).some(
+              (session) =>
+                session.threadId === input.threadId &&
+                session.sessionIncarnationId === incarnation.id,
+            );
+          if (!oldSessionIsLive || !incarnation) {
+            return { kind: "none", incarnation } as const;
+          }
+          const fence = {
+            incarnationId: incarnation.id,
+            completed: yield* Deferred.make<void, ProviderValidationError>(),
+          };
+          antigravityStopFences.set(input.threadId, fence);
+          yield* Deferred.await(fence.completed).pipe(
             Effect.exit,
             Effect.timeoutOption(ANTIGRAVITY_STOP_RECEIPT_TIMEOUT),
             Effect.flatMap((result) =>
               Option.isSome(result)
                 ? Effect.void
                 : Effect.gen(function* () {
-                    if (antigravityStopFences.get(input.threadId) !== stopFence) return;
-                    antigravityStopFences.delete(input.threadId);
+                    if (antigravityStopFences.get(input.threadId) !== fence) return;
+                    // Keep the fence until an ordered exit or adapter replacement.
+                    // Teardown may still be running after the caller's wait ends.
                     yield* Deferred.fail(
-                      stopFence.completed,
+                      fence.completed,
                       toValidationError(
                         "ProviderService.interruptTurn",
-                        `Antigravity did not report session shutdown for thread '${input.threadId}'.`,
+                        `Antigravity did not report session shutdown for thread '${input.threadId}'. Recovery is paused; restart the provider or server to retry.`,
                       ),
                     );
                   }),
             ),
             Effect.forkIn(serviceScope),
           );
-        }).pipe(Effect.uninterruptible);
-      }
+          return { kind: "created", incarnation, fence } as const;
+        }).pipe(Effect.uninterruptible),
+      );
+      if (registration.kind === "existing")
+        return yield* Deferred.await(registration.fence.completed);
+      const incarnation = registration.incarnation;
+      const stopFence = registration.kind === "created" ? registration.fence : undefined;
       let metricProvider = "unknown";
       return yield* Effect.gen(function* () {
         const routed =
