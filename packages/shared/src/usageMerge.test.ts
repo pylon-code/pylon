@@ -395,14 +395,14 @@ describe("mergeUsage", () => {
     expect(merged.staleEnvironments).toEqual(["env-b"]);
   });
 
-  it("keeps the previous compatible contract version so additive provider expansions still merge", () => {
+  it("merges a v7 summary with an OpenCode v8 summary", () => {
     const merged = mergeUsage(
       [
         environment(
           "env-a",
           summary(
-            [bucket({ costUsd: 10 })],
-            [{ provider: "claude", hostId: "mac", homePath: "/a" }],
+            [bucket({ costUsd: 10, provider: "opencode", model: "openai/gpt-6" })],
+            [{ provider: "opencode", hostId: "mac", homePath: "/a" }],
           ),
         ),
         environment(
@@ -410,7 +410,7 @@ describe("mergeUsage", () => {
           summary(
             [bucket({ costUsd: 4, provider: "codex", model: "gpt-5.6-sol" })],
             [{ provider: "codex", hostId: "linux", homePath: "/b" }],
-            USAGE_CONTRACT_VERSION - 1,
+            7,
           ),
         ),
       ],

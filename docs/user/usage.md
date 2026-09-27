@@ -2,7 +2,7 @@
 
 ## Understand your usage
 
-**Usage** combines Codex, Claude Code, Grok Build, and Antigravity session history from your connected
+**Usage** combines Codex, Claude Code, Grok Build, Antigravity, and local OpenCode session history from your connected
 environments. It shows token use, cache savings, provider shares, model breakdowns, and estimated
 API-equivalent cost. These estimates are not your subscription bill.
 
@@ -20,6 +20,12 @@ identity is unavailable, Usage warns that shared history may be counted more tha
 Antigravity totals come from saved native conversations, including standalone CLI history when
 available. Models without known prices still contribute tokens; set a custom model price to include
 their estimated cost.
+
+OpenCode totals come from the local SQLite store and older JSON messages on each connected server.
+Pylon reads a local provider instance's `OPENCODE_DATA_DIR` or `XDG_DATA_HOME` when configured,
+and counts shared data directories once. An external OpenCode server URL does not expose its
+history to Pylon; its remote account and sessions are not included by reading a local directory.
+An oversized or unreadable store appears as partial coverage rather than a complete total.
 
 **Past 24h** shows an hourly chart of the rolling 24-hour period; **7 days**, **30 days**, and
 **90 days** use daily resolution. The environment filter applies to both Usage and Limits. On web and

@@ -1,6 +1,6 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 
-import { AntigravityIcon, ClaudeAI, GrokIcon, type Icon, OpenAI } from "../Icons";
+import { AntigravityIcon, ClaudeAI, GrokIcon, OpenCodeIcon, type Icon, OpenAI } from "../Icons";
 
 type UsageProviderPresentation = {
   readonly label: string;
@@ -34,6 +34,11 @@ export const PROVIDER_PRESENTATION = {
     label: "Antigravity",
     color: "#4285f4",
     mark: AntigravityIcon,
+  },
+  opencode: {
+    label: "OpenCode",
+    color: "#8b5cf6",
+    mark: OpenCodeIcon,
   },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 
