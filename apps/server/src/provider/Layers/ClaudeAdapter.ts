@@ -282,7 +282,8 @@ interface ClaudeTurnState {
    * steered instead (the queued message continues the same turn).
    */
   readonly synthetic?: boolean;
-  readonly items: Array<unknown>;
+  /** A message has arrived for this turn; used to distinguish a resume handshake result. */
+  hasReceivedSdkMessage: boolean;
   readonly assistantTextBlocks: Map<number, AssistantTextBlockState>;
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
   readonly capturedProposedPlanKeys: Set<string>;
@@ -437,10 +438,8 @@ interface ClaudeSessionContext {
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
-  readonly turns: Array<{
-    id: TurnId;
-    items: Array<unknown>;
-  }>;
+  /** Completed turn ids; Claude history is accessed through turnStartMessageIds. */
+  readonly turns: Array<{ readonly id: TurnId }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
   readonly taskAgents: Map<string, ClaudeTaskAgentState>;
@@ -2238,10 +2237,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
     return {
       threadId,
-      turns: context.turns.map((turn) => ({
-        id: turn.id,
-        items: [...turn.items],
-      })),
+      turns: context.turns.map((turn) => ({ id: turn.id, items: [] })),
     };
   });
 
@@ -3077,10 +3073,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
-    context.turns.push({
-      id: turnState.turnId,
-      items: [...turnState.items],
-    });
+    context.turns.push({ id: turnState.turnId });
 
     yield* emitThreadTokenUsage(context, usageSnapshot, {
       rawMethod: "claude/result",
@@ -3453,7 +3446,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (context.turnState) {
-      context.turnState.items.push(message.message);
+      context.turnState.hasReceivedSdkMessage = true;
     }
 
     for (const toolResult of toolResultBlocksFromUserMessage(message)) {
@@ -3655,7 +3648,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         turnId,
         startedAt,
         synthetic: true,
-        items: [],
+        hasReceivedSdkMessage: false,
         assistantTextBlocks: new Map(),
         assistantTextBlockOrder: [],
         capturedProposedPlanKeys: new Set(),
@@ -3736,7 +3729,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           cwd: path.resolve(context.session.cwd ?? "."),
         });
       }
-      context.turnState.items.push(message.message);
+      context.turnState.hasReceivedSdkMessage = true;
       if (
         normalizeClaudeActiveTokenUsage(
           message.message.usage,
@@ -3781,7 +3774,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       turnState !== undefined &&
       status === "completed" &&
       message.num_turns === 0 &&
-      turnState.items.length === 0 &&
+      !turnState.hasReceivedSdkMessage &&
       turnState.assistantTextBlockOrder.length === 0 &&
       context.inFlightTools.size === 0
     ) {
@@ -5688,7 +5681,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const turnState: ClaudeTurnState = {
         turnId,
         startedAt: yield* nowIso,
-        items: [],
+        hasReceivedSdkMessage: false,
         assistantTextBlocks: new Map(),
         assistantTextBlockOrder: [],
         capturedProposedPlanKeys: new Set(),
