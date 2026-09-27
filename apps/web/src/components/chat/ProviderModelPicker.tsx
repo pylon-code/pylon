@@ -25,6 +25,7 @@ import {
   type ComposerControlSize,
 } from "./ComposerControl";
 import { useComposerMenuProps } from "./composerEventScope";
+import { shortcutLabelForCommand } from "../../keybindings";
 
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   /**
@@ -156,6 +157,13 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     setIsMenuOpen(false);
   };
 
+  const shortcutLabel = props.keybindings
+    ? shortcutLabelForCommand(props.keybindings, "modelPicker.toggle")
+    : null;
+  const triggerTooltipContent = shortcutLabel
+    ? `${props.triggerLabel ?? triggerLabel} · ${shortcutLabel}`
+    : (props.triggerLabel ?? triggerLabel);
+
   return (
     <Popover
       open={isMenuOpen}
@@ -212,7 +220,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             >
               {props.triggerLabel ?? triggerTitle}
             </TooltipTrigger>
-            <TooltipPopup side="top">{props.triggerLabel ?? triggerLabel}</TooltipPopup>
+            <TooltipPopup side="top">{triggerTooltipContent}</TooltipPopup>
           </Tooltip>
           {selectedModel?.isUnavailable && props.triggerLabel === undefined ? (
             <Badge variant="outline" size="sm">
