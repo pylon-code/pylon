@@ -1870,6 +1870,45 @@ describe("cached pull request detail", () => {
     expect(readPullRequestDetailSnapshot(storage, "env-1", enterpriseRef)).toBeNull();
   });
 
+  it("retains Forgejo cached detail only for the matching host and port", () => {
+    const cached = detail({
+      provider: "forgejo",
+      url: "https://forgejo.example.com:3000/acme/web/pulls/7",
+    });
+    const input = {
+      live: null,
+      cached: { environmentId: "env-1", detail: cached },
+      environmentId: "env-1",
+    };
+    expect(
+      resolveDisplayedPullRequestDetail({
+        ...input,
+        reference: { ...reference, host: "forgejo.example.com:3000" },
+      }),
+    ).toBe(cached);
+    for (const host of ["forgejo.example.com", "forgejo.example.com:3001"]) {
+      expect(
+        resolveDisplayedPullRequestDetail({ ...input, reference: { ...reference, host } }),
+      ).toBeNull();
+    }
+  });
+
+  it.each(["github", "gitlab"] as const)(
+    "keeps %s cached detail keyed by hostname when the web URL has a port",
+    (provider) => {
+      const host = `${provider}.example.com`;
+      const cached = detail({ provider, url: `https://${host}:8443/acme/web/pull/7` });
+      expect(
+        resolveDisplayedPullRequestDetail({
+          live: null,
+          cached: { environmentId: "env-1", detail: cached },
+          environmentId: "env-1",
+          reference: { ...reference, host },
+        }),
+      ).toBe(cached);
+    },
+  );
+
   it("shrugs off corrupt storage and no storage at all", () => {
     const storage = makeStorage();
     storage.setItem("t3.pullRequests.detail:env-1:project-1:acme/web#7", "{not json");
