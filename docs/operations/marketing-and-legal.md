@@ -23,18 +23,28 @@ practices.
 - No terms of service, privacy policy, or security policy. Those pages do not
   exist, and the footer does not link to them.
 
-`apps/marketing/vercel.ts` now sets `git.deploymentEnabled: true`. The release
-workflow still deploys `apps/web` only; nothing in CI deploys the marketing
-site.
+`apps/marketing/vercel.ts` disables Vercel's Git deployments. The
+`Deploy marketing site` GitHub Actions workflow deploys production on a push
+to `pylon` that changes site source (`apps/marketing/src/**`), public assets
+(`apps/marketing/public/**`), `astro.config.mjs`, or the marketing package
+manifest. It also supports a deliberate `workflow_dispatch` rebuild. Changes
+to the three schema files used by the site's `/schema/t3.json` page
+also deploy: `packages/shared/src/t3ProjectFile.ts`,
+`packages/shared/src/schemaJson.ts`, and
+`packages/contracts/src/t3ProjectFile.ts`. Changes only to the Vercel config,
+workflow, lockfile, other shared files, or release files do not trigger a
+deployment. The schema also depends on `packages/contracts/src/environment.ts`
+and `packages/contracts/src/orchestration.ts`; dispatch the workflow when
+changes there affect the published schema, or when other changes need to be
+published.
 
-Vercel's git integration would otherwise build the site on every push to every
-branch. On 2026-09-18 that was well over a hundred builds of a site nobody had
-touched, which hit the account's build rate limit, failed the Vercel check on
-unrelated pull requests, and stalled the hosted app's release deploy (#655). The
-config's `ignoreCommand` now skips a build unless `apps/marketing`,
-`packages/shared`, or the lockfile changed since the branch's last deployment.
-A skipped build shows as a cancelled deployment in Vercel and a neutral check
-on the pull request. To force one, redeploy from the Vercel dashboard.
+Vercel's Git integration previously created deployments for unrelated pushes.
+The `ignoreCommand` cancelled their builds but still consumed deployment
+quota, which could block the hosted app's release deploy. The marketing
+workflow uses the marketing Vercel project with `VERCEL_TOKEN` and
+`VERCEL_ORG_ID` secrets. The separate release workflow deploys `apps/web` only.
+The download page resolves current releases from GitHub in the browser, so a
+stable or nightly release does not need a marketing rebuild.
 
 ## Before adding a legal page back
 
