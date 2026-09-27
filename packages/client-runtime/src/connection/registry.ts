@@ -28,6 +28,7 @@ import type {
   ConnectionAttemptError,
   ConnectionTarget,
   NetworkStatus,
+  RelayConnectionTarget,
   SupervisorConnectionState,
 } from "./model.ts";
 import { ConnectionBlockedError } from "./model.ts";
@@ -108,6 +109,7 @@ export class EnvironmentRegistry extends Context.Service<
     readonly setCompatibility: (
       environmentId: EnvironmentId,
       error: ConnectionBlockedError | null,
+      options?: { readonly expectedRelayTarget?: RelayConnectionTarget },
     ) => Effect.Effect<void, Persistence.ConnectionPersistenceError>;
     readonly state: (
       environmentId: EnvironmentId,
@@ -803,11 +805,15 @@ export const make = Effect.gen(function* () {
   const setCompatibility = Effect.fn("EnvironmentRegistry.setCompatibility")(function* (
     environmentId: EnvironmentId,
     error: ConnectionBlockedError | null,
+    options?: { readonly expectedRelayTarget?: RelayConnectionTarget },
   ) {
     yield* withLeaseLock(
       environmentId,
       Effect.gen(function* () {
         const entry = (yield* SubscriptionRef.get(entries)).get(environmentId);
+        // Discovery can race with a replacement registration for this ID.
+        // Match the observed relay target under the lock that protects the write.
+        if (options?.expectedRelayTarget && entry?.target !== options.expectedRelayTarget) return;
         if (entry === undefined || entry.unsupportedReason === (error?.message ?? undefined))
           return;
         const { unsupportedReason: _previousReason, ...rest } = entry;

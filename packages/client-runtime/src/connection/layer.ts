@@ -32,11 +32,19 @@ export const watchDiscoveredCompatibility = Effect.fn("connection.watchDiscovere
               if (!current.environments.has(environmentId)) seenChecks.delete(environmentId);
             }
           }
+          const registered = yield* SubscriptionRef.get(registry.entries);
           for (const entry of current.environments.values()) {
             const status = Option.getOrNull(entry.status);
             const descriptor = status?.descriptor;
             if (status === null || descriptor === undefined) continue;
             const environmentId = entry.environment.environmentId;
+            const target = registered.get(environmentId)?.target;
+            // Discovery describes the server behind the relay route. A direct
+            // connection (the desktop's own server, a saved URL, SSH) can reach
+            // a different server with the same environment id, such as a
+            // preview app that shares the home directory. Its socket handshake
+            // already checks the protocol.
+            if (target?._tag !== "RelayConnectionTarget") continue;
             const previous = seenChecks.get(environmentId);
             const fresh =
               previous?.checkedAt !== status.checkedAt ||
@@ -45,7 +53,10 @@ export const watchDiscoveredCompatibility = Effect.fn("connection.watchDiscovere
               previous.descriptor?.serverVersion !== descriptor.serverVersion;
             const error = orchestrationProtocolCompatibilityError(descriptor);
             // A replayed health result must not clear a newer socket rejection.
-            if (error !== null || fresh) yield* registry.setCompatibility(environmentId, error);
+            if (error !== null || fresh)
+              yield* registry.setCompatibility(environmentId, error, {
+                expectedRelayTarget: target,
+              });
             seenChecks.set(environmentId, status);
           }
         }).pipe(
