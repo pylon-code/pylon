@@ -5268,14 +5268,10 @@ describe("ProviderCommandReactor", () => {
           createdAt: now,
         });
 
-        yield* Effect.promise(() =>
-          waitFor(async () => {
-            const thread = (await harness.readModel()).threads.find(
-              (entry) => entry.id === ThreadId.make("thread-1"),
-            );
-            return thread?.session?.status === "stopped";
-          }),
-        );
+        // Dispatch can finish before the subscriber enqueues the event. Wait
+        // until interrupt starts, then drain its session and activity writes.
+        yield* Effect.promise(() => waitFor(() => harness.interruptTurn.mock.calls.length === 1));
+        yield* Effect.promise(() => harness.drain());
 
         const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
           (entry) => entry.id === ThreadId.make("thread-1"),
