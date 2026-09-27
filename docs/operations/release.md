@@ -104,9 +104,11 @@ The relay is a shared control plane versioned separately from client releases. S
 client builds must point at the same relay so users see the same linked environments when switching
 release channels.
 
-`.github/workflows/deploy-relay.yml` deploys Alchemy stage `prod` on every push to `main`. The
-release workflow reads the relay URL and Clerk client configuration from the existing `production`
-GitHub Actions environment before building desktop, CLI, or hosted web artifacts.
+`.github/workflows/deploy-relay.yml` deploys Alchemy stage `prod` on pushes to `pylon` when the
+`DEPLOY_RELAY` repository variable is `true`. Operators can also run it manually from `pylon`;
+runs selected from other branches do not deploy. The release workflow reads the relay URL and Clerk
+client configuration from the existing `production` GitHub Actions environment before building
+desktop, CLI, or hosted web artifacts.
 
 Required repository variables shared by relay deployments:
 
@@ -140,6 +142,10 @@ Required `production` environment secrets:
 
 - `CLERK_SECRET_KEY`
 - `APNS_PRIVATE_KEY`
+
+Alchemy may leave the Worker unchanged when only a deployment-time repository or environment value
+changes. After changing one, run **Deploy Pylon Connect relay** manually from `pylon` with **force**
+checked. The manual input defaults to checked; ordinary pushes continue using change detection.
 
 The account-scoped repository credentials are consumed by Alchemy while provisioning relay stages; they
 are not bound into the relay Worker. The production deployment uses an Axiom personal access token,
