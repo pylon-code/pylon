@@ -1,0 +1,68 @@
+name: Deploy marketing site
+
+on:
+  push:
+    branches:
+      - pylon
+    paths:
+      - apps/marketing/src/**
+      - apps/marketing/public/**
+      - apps/marketing/astro.config.mjs
+      - apps/marketing/package.json
+      - packages/shared/src/t3ProjectFile.ts
+      - packages/shared/src/schemaJson.ts
+      - packages/contracts/src/t3ProjectFile.ts
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-marketing
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: none
+
+jobs:
+  deploy:
+    name: Deploy marketing site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: prj_YWCHEkXDWIyfGb1K3AUnZ5OQfBp0
+    steps:
+      - name: Checkout product branch
+        uses: actions/checkout@v6
+        with:
+          ref: pylon
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/marketing...
+
+      - name: Deploy marketing site
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${VERCEL_TOKEN:-}" || -z "${VERCEL_ORG_ID:-}" ]]; then
+            echo "Missing one or more required Vercel secrets: VERCEL_TOKEN, VERCEL_ORG_ID." >&2
+            exit 1
+          fi
+
+          vp dlx vercel@53.1.1 deploy \
+            --archive=tgz \
+            --prod \
+            --yes \
+            --token "$VERCEL_TOKEN" \
+            --scope "$VERCEL_ORG_ID"
