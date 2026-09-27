@@ -366,7 +366,9 @@ export const make = Effect.gen(function* () {
         .execute(request)
         .pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
       const status = response.status;
-      if (status < 200 || status >= 300)
+      if (status < 200 || status >= 300) {
+        // The response body is untrusted and may contain credentials or HTML.
+        // Once the status is known, do not depend on reading a failing stream.
         return yield* new ForgejoCliError({
           command: "fj",
           cwd: input.cwd,
@@ -383,8 +385,13 @@ export const make = Effect.gen(function* () {
           detail:
             status === 404
               ? "Forgejo repository or pull request was not found."
-              : `Forgejo API request failed (HTTP ${status}). Check this server's fj credentials and permissions.`,
+              : status === 409
+                ? "Forgejo rejected the request because it conflicts with the current state (HTTP 409)."
+                : status === 422
+                  ? "Forgejo rejected the request as invalid (HTTP 422)."
+                  : `Forgejo API request failed (HTTP ${status}). Check this server's fj credentials and permissions.`,
         });
+      }
       const body =
         status === 204 || status === 205
           ? { text: "", truncated: false, invalidUtf8: false }
