@@ -878,6 +878,9 @@ function ThreadRouteContent(
   const rollbackActionAuthority = useRef({
     threadId: selectedThread?.id,
     environmentId: selectedThread?.environmentId,
+    sessionOwner: rollbackSessionOwner,
+    operationId: rollbackStatus?.operationId,
+    targets: rollbackTargets,
     targetIdle: rollbackTargetIdle,
     uncertain: resolvedRollback.uncertain,
     recoveryActions: rollbackStatus?.allowedActions ?? [],
@@ -886,6 +889,9 @@ function ThreadRouteContent(
     rollbackActionAuthority.current = {
       threadId: selectedThread?.id,
       environmentId: selectedThread?.environmentId,
+      sessionOwner: rollbackSessionOwner,
+      operationId: rollbackStatus?.operationId,
+      targets: rollbackTargets,
       targetIdle: rollbackTargetIdle,
       uncertain: resolvedRollback.uncertain,
       recoveryActions: rollbackStatus?.allowedActions ?? [],
@@ -893,6 +899,9 @@ function ThreadRouteContent(
   }, [
     selectedThread?.id,
     selectedThread?.environmentId,
+    rollbackSessionOwner,
+    rollbackStatus?.operationId,
+    rollbackTargets,
     rollbackTargetIdle,
     resolvedRollback.uncertain,
     rollbackStatus?.allowedActions,
@@ -900,22 +909,31 @@ function ThreadRouteContent(
 
   const onRevertMessage = useCallback(
     (target: RollbackTarget) => {
-      if (!selectedThread || !rollbackTargetIdle) return;
+      if (!selectedThread || !rollbackTargetIdle || rollbackSessionOwner === null) return;
+      const confirmedSessionOwner = rollbackSessionOwner;
+      const confirmedOperationId = rollbackStatus?.operationId;
       const revert = (restoreFiles: boolean) => {
         const current = rollbackActionAuthority.current;
+        const currentTarget = current.targets.get(target.messageId);
         if (
           !current.targetIdle ||
           current.threadId !== selectedThread.id ||
-          current.environmentId !== selectedThread.environmentId
+          current.environmentId !== selectedThread.environmentId ||
+          current.sessionOwner !== confirmedSessionOwner ||
+          current.operationId !== confirmedOperationId ||
+          currentTarget?.targetTurnCount !== target.targetTurnCount ||
+          currentTarget.expectedSourceRevision !== target.expectedSourceRevision
         )
           return;
         setRollbackCommandPending(true);
         void revertThreadCheckpoint({
           environmentId: selectedThread.environmentId,
+          expectedSessionOwner: confirmedSessionOwner,
           input: {
             threadId: selectedThread.id,
             turnCount: target.targetTurnCount,
             expectedSourceRevision: target.expectedSourceRevision,
+            expectedRollbackOperationId: confirmedOperationId ?? null,
             restoreFiles,
           },
         }).then((result) => {
@@ -939,15 +957,27 @@ function ThreadRouteContent(
         ],
       );
     },
-    [revertThreadCheckpoint, rollbackTargetIdle, selectedThread, setRollbackCommandPending],
+    [
+      revertThreadCheckpoint,
+      rollbackTargetIdle,
+      rollbackSessionOwner,
+      rollbackStatus?.operationId,
+      selectedThread,
+      setRollbackCommandPending,
+    ],
   );
 
   const onRecoverRollback = useCallback(
     async (action: "retry-verification" | "resume-compensation") => {
       if (!selectedThread || rollbackCommandPending) return;
       const current = rollbackActionAuthority.current;
+      const operationId = rollbackStatus?.operationId;
       if (
         current.uncertain ||
+        rollbackSessionOwner === null ||
+        operationId === undefined ||
+        current.sessionOwner !== rollbackSessionOwner ||
+        current.operationId !== operationId ||
         current.threadId !== selectedThread.id ||
         current.environmentId !== selectedThread.environmentId ||
         !current.recoveryActions.includes(action)
@@ -956,7 +986,8 @@ function ThreadRouteContent(
       setRollbackCommandPending(true);
       const result = await recoverThreadRollback({
         environmentId: selectedThread.environmentId,
-        input: { threadId: selectedThread.id, action },
+        expectedSessionOwner: rollbackSessionOwner,
+        input: { threadId: selectedThread.id, action, expectedOperationId: operationId },
       });
       setRollbackCommandPending(false);
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -967,7 +998,14 @@ function ThreadRouteContent(
         );
       }
     },
-    [recoverThreadRollback, rollbackCommandPending, selectedThread, setRollbackCommandPending],
+    [
+      recoverThreadRollback,
+      rollbackCommandPending,
+      rollbackSessionOwner,
+      rollbackStatus?.operationId,
+      selectedThread,
+      setRollbackCommandPending,
+    ],
   );
 
   const threadGitControlProps = {

@@ -30,6 +30,7 @@ import {
   environmentRpcKey,
   createAtomCommandScheduler,
   createEnvironmentQueryAtomFamily,
+  createEnvironmentCommand,
   createRuntimeCommand,
   scheduleAtomCommandEffect,
   executeAtomCommand,
@@ -115,9 +116,53 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
 
   return {
     atom: family({ environmentId: QUERY_ENVIRONMENT.environmentId, input: undefined }),
+    runtime,
     supervisorSession,
     supervisorState,
   };
+});
+
+describe("environment command session binding", () => {
+  it.effect("rejects a command when its captured session was replaced before dispatch", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeEnvironmentQueryHarness(Effect.void);
+      const firstOwner = {};
+      const secondOwner = {};
+      yield* SubscriptionRef.set(
+        harness.supervisorState,
+        queryConnectionState({ sessionOwner: firstOwner }),
+      );
+      let executions = 0;
+      const command = createEnvironmentCommand(harness.runtime, {
+        label: "test.bound-command",
+        execute: () =>
+          Effect.sync(() => {
+            executions += 1;
+          }),
+      });
+      const registry = AtomRegistry.make();
+      const target = {
+        environmentId: QUERY_ENVIRONMENT.environmentId,
+        input: undefined,
+        expectedSessionOwner: firstOwner,
+      };
+      const accepted = yield* Effect.promise(() => command.run(registry, target));
+      expect(accepted._tag).toBe("Success");
+      expect(executions).toBe(1);
+
+      yield* SubscriptionRef.set(
+        harness.supervisorState,
+        queryConnectionState({ sessionOwner: secondOwner }),
+      );
+      const stale = yield* Effect.promise(() => command.run(registry, target));
+      expect(stale._tag).toBe("Failure");
+      if (stale._tag === "Failure") {
+        expect(Cause.squash(stale.cause)).toBeInstanceOf(EnvironmentRpcUnavailableError);
+      }
+      expect(executions).toBe(1);
+      registry.dispose();
+    }),
+  );
 });
 
 const mountEnvironmentQuery = Effect.fn("TestEnvironmentQuery.mount")(function* <A, E>(

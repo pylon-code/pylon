@@ -437,6 +437,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 ),
                 threadId: preparedRollback.value.threadId,
                 status: "pending",
+                operationId: preparedRollback.value.operationId,
                 targetTurnCount: preparedRollback.value.targetRevision,
                 sourceRevision: preparedRollback.value.sourceRevision,
                 detail:

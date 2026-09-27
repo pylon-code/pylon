@@ -28,6 +28,7 @@ interface EnvironmentAtomOptions<Input, A, E, R> {
   readonly concurrency?: AtomCommandConcurrency<{
     readonly environmentId: EnvironmentIdType;
     readonly input: Input;
+    readonly expectedSessionOwner?: object;
   }>;
 }
 
@@ -597,7 +598,19 @@ export function createEnvironmentCommand<R, ER, Input, A, E>(
     execute: (target, registry) =>
       runInEnvironment(
         target.environmentId,
-        options.execute(target.input, registry, target.environmentId),
+        Effect.gen(function* () {
+          if (target.expectedSessionOwner !== undefined) {
+            const supervisor = yield* EnvironmentSupervisor;
+            const state = yield* SubscriptionRef.get(supervisor.state);
+            if (state.phase !== "connected" || state.sessionOwner !== target.expectedSessionOwner) {
+              return yield* new EnvironmentRpcUnavailableError({
+                environmentId: target.environmentId,
+                message: "The connection changed before this action could be sent.",
+              });
+            }
+          }
+          return yield* options.execute(target.input, registry, target.environmentId);
+        }),
       ),
   });
 }
@@ -672,6 +685,7 @@ export function createEnvironmentRpcCommand<R, ER, TTag extends EnvironmentUnary
     readonly concurrency?: AtomCommandConcurrency<{
       readonly environmentId: EnvironmentIdType;
       readonly input: EnvironmentRpcInput<TTag>;
+      readonly expectedSessionOwner?: object;
     }>;
     readonly onSuccess?: (
       target: {

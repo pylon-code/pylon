@@ -848,6 +848,8 @@ export const ServerConfig = Schema.Struct({
    * that do not advertise this capability.
    */
   rollbackStatusStreaming: Schema.optionalKey(Schema.Boolean),
+  /** Recovery requests must name the public operation shown in rollback status. */
+  rollbackRecoveryOperationIdentity: Schema.optionalKey(Schema.Boolean),
   /**
    * Palettes published by this environment's machine. Never sent in a config
    * snapshot: the theme stream emits the current set before any change, so a

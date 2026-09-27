@@ -1528,6 +1528,7 @@ describe("applyThreadDetailEvent", () => {
         payload: {
           threadId: ThreadId.make("thread-1"),
           status: "manual-recovery",
+          operationId: "operation-client-a",
           targetTurnCount: 1,
           sourceRevision: 3,
           detail: "The workspace could not be verified.",
@@ -1539,11 +1540,35 @@ describe("applyThreadDetailEvent", () => {
       if (pending.kind === "updated") {
         expect(pending.thread.rollbackStatus).toEqual({
           state: "manual-recovery",
+          operationId: "operation-client-a",
           targetTurnCount: 1,
           sourceRevision: 3,
           detail: "The workspace could not be verified.",
           allowedActions: ["resume-compensation"],
           updatedAt: "2026-04-01T03:30:00.000Z",
+        });
+      }
+    });
+
+    it("does not invent an operation identity for persisted legacy events", () => {
+      const result = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 14,
+        occurredAt: "2026-04-01T03:31:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.rollback-status-updated",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          status: "manual-recovery",
+          updatedAt: "2026-04-01T03:31:00.000Z",
+        },
+      });
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.rollbackStatus).toEqual({
+          state: "manual-recovery",
+          updatedAt: "2026-04-01T03:31:00.000Z",
         });
       }
     });

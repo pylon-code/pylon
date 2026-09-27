@@ -1668,6 +1668,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (detail._tag === "Some") {
         assert.deepEqual(detail.value.rollbackStatus, {
           state: "manual-recovery",
+          operationId: "operation-context",
           targetTurnCount: 1,
           sourceRevision: 2,
           detail:
@@ -1726,6 +1727,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (terminalDetail._tag === "Some") {
         assert.deepEqual(terminalDetail.value.rollbackStatus, {
           state: "completed",
+          operationId: "operation-context",
           targetTurnCount: 1,
           sourceRevision: 2,
           detail: "Rollback completed and all rewritten state was verified.",

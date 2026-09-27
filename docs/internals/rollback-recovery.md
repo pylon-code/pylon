@@ -32,8 +32,11 @@ Public thread state contains only:
 - source and target turn counts;
 - progress state and a redacted error code/detail;
 - server-authorized recovery actions.
+- an opaque server-generated rollback operation UUID for binding recovery requests to the displayed saga.
 
 Native session IDs, Prime leaf IDs, runtime generations, anchors, receipts, prompts, tool payloads, credentials, filesystem paths, and workspace pre-images stay in private persistence and provider adapter state.
+
+Recovery requests must name that exact operation UUID. Older clients can read status, but recovery requests that omit the UUID fail closed; they must upgrade before resuming a manual recovery.
 
 ## Eligibility
 

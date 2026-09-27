@@ -1918,6 +1918,7 @@ const makeWsRpcLayer = (
             threadResumeCompletionMarker: true,
             threadSnapshotPagination: true,
             rollbackStatusStreaming: true,
+            rollbackRecoveryOperationIdentity: true,
           };
         });
 
