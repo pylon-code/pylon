@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { DESKTOP_UPDATE_RESTART_MARKER_FILE } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -13,6 +14,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
+import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
 import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
@@ -597,6 +599,83 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
+  it.effect("marks the backend stop for an install as an update restart", () => {
+    let markersAtStop: ReadonlyArray<string> = [];
+    const harness = makeHarness({
+      stopBackend: Effect.sync(() => {
+        markersAtStop = [...harness.updateRestartMarkers];
+      }),
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        harness.emit("update-downloaded", { version: "1.2.4" });
+        yield* flushCallbacks;
+
+        assert.isTrue((yield* updates.install).accepted);
+        assert.deepEqual(markersAtStop, [
+          environment.path.join(environment.baseDir, "runtime", DESKTOP_UPDATE_RESTART_MARKER_FILE),
+        ]);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("marks the selected WSL backend before stopping it", () => {
+    let markersAtStop: readonly string[] = [];
+    const harness = makeHarness({
+      wslDistro: "Ubuntu",
+      stopWslBackend: Effect.sync(() => {
+        markersAtStop = [...harness.wslRestartMarkers];
+      }),
+    });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        harness.emit("update-downloaded", { version: "1.2.4" });
+        yield* flushCallbacks;
+
+        assert.isTrue((yield* updates.install).accepted);
+        assert.deepEqual(markersAtStop, ["Ubuntu"]);
+        assert.isTrue(
+          harness.wslMarkerSteps.indexOf("write:Ubuntu") <
+            harness.wslMarkerSteps.indexOf("stopWslBackend"),
+        );
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("drops the update restart marker when an install is interrupted", () =>
+    Effect.gen(function* () {
+      const stopping = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        wslDistro: "Ubuntu",
+        stopBackend: Deferred.succeed(stopping, undefined).pipe(Effect.andThen(Effect.never)),
+      });
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
+          harness.emit("update-downloaded", { version: "1.2.4" });
+          yield* flushCallbacks;
+
+          const installFiber = yield* updates.install.pipe(Effect.forkScoped);
+          yield* Deferred.await(stopping);
+          assert.equal(harness.updateRestartMarkers.size, 1);
+          assert.deepEqual([...harness.wslRestartMarkers], ["Ubuntu"]);
+
+          yield* Fiber.interrupt(installFiber);
+          assert.equal(harness.updateRestartMarkers.size, 0);
+          assert.equal(harness.wslRestartMarkers.size, 0);
+        }),
+      ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+    }),
+  );
+
   it.effect("keeps windows and restarts backends when quitAndInstall fails", () => {
     const harness = makeHarness({
       quitAndInstall: Effect.fail(
@@ -621,6 +700,8 @@ describe("DesktopUpdates", () => {
         assert.isTrue(result.accepted);
         assert.isFalse(yield* Ref.get(desktopState.quitting));
         assert.deepEqual(harness.installSteps, ["quitAndInstall", "startBackend"]);
+        // The restarted old backend must release its tunnel on a later quit.
+        assert.equal(harness.updateRestartMarkers.size, 0);
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });

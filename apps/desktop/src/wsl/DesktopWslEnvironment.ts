@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { DESKTOP_UPDATE_RESTART_MARKER_FILE } from "@t3tools/contracts";
 import { buildRemoteNodeEnvScript } from "@t3tools/ssh/tunnel";
 import { satisfiesSemverRange } from "@t3tools/shared/semver";
 
@@ -28,6 +29,7 @@ const RUNTIME_INSTALL_TIMEOUT = Duration.minutes(10);
 const RUNTIME_PRUNE_TIMEOUT = Duration.seconds(30);
 const RUNTIME_INVALIDATE_TIMEOUT = Duration.seconds(15);
 const USER_HOME_TIMEOUT = Duration.seconds(5);
+const UPDATE_MARKER_TIMEOUT = Duration.seconds(5);
 const TOOLCHAIN_TRANSPORT_RETRY_LIMIT = 12;
 const BUILD_TRANSPORT_RETRY_LIMIT = 2;
 
@@ -96,6 +98,8 @@ export class DesktopWslEnvironment extends Context.Service<
     // Resolves the user's Linux home dir inside the chosen distro (e.g.
     // "/home/josh"). Used by the folder picker to expand `~` correctly.
     readonly getUserHome: (distro: string | null) => Effect.Effect<Option.Option<string>>;
+    /** Operates in the Linux server's own default runtime home. */
+    readonly setUpdateRestartMarker: (distro: string, present: boolean) => Effect.Effect<boolean>;
     // Resolves the WSL distro's IPv4 address on the WSL vEthernet adapter
     // (e.g. "172.x.x.x"). The orchestrator uses this for the WSL backend's
     // httpBaseUrl so the renderer can reach it without relying on wslhost's
@@ -256,6 +260,26 @@ const runWslShell = (
 };
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+
+const setUpdateRestartMarkerImpl = (
+  distro: string,
+  present: boolean,
+): Effect.Effect<boolean, never, ChildProcessSpawner.ChildProcessSpawner> =>
+  runWslShell(
+    distro,
+    [
+      "set -eu",
+      // WSL bootstrap omits t3Home and removes Windows T3CODE_HOME, so the
+      // Linux server resolves this default home independently of the desktop.
+      'user_home=$(getent passwd "$(id -un)" | cut -d: -f6)',
+      'case "$user_home" in /*) ;; *) exit 1 ;; esac',
+      'runtime_dir="$user_home/.pylon-code/runtime"',
+      `marker="$runtime_dir/${DESKTOP_UPDATE_RESTART_MARKER_FILE}"`,
+      present ? 'mkdir -p "$runtime_dir" && : > "$marker"' : 'rm -f -- "$marker"',
+    ].join("\n"),
+    UPDATE_MARKER_TIMEOUT,
+    { resolveNode: false },
+  ).pipe(Effect.map((result) => result.transportFailure === null && result.exitCode === 0));
 
 // Holds the sha256 of the runtime's server entry, written when the install
 // promotes a verified tree. Presence alone only says an install once finished
@@ -1198,6 +1222,7 @@ export interface DesktopWslEnvironmentTestStub {
   readonly distroListError?: DesktopWslDistroListError;
   readonly windowsToWslPath?: (distro: string | null, windowsPath: string) => Option.Option<string>;
   readonly getUserHome?: (distro: string | null) => Option.Option<string>;
+  readonly setUpdateRestartMarker?: (distro: string, present: boolean) => boolean;
   readonly getDistroIp?: (distro: string | null) => Option.Option<string>;
   readonly prepareRuntime?: (
     distro: string | null,
@@ -1226,6 +1251,8 @@ export const layerTest = (stub: DesktopWslEnvironmentTestStub = {}) => {
       windowsToWslPath: (distro, windowsPath) =>
         Effect.succeed(stub.windowsToWslPath?.(distro, windowsPath) ?? Option.none()),
       getUserHome: (distro) => Effect.succeed(stub.getUserHome?.(distro) ?? Option.none<string>()),
+      setUpdateRestartMarker: (distro, present) =>
+        Effect.succeed(stub.setUpdateRestartMarker?.(distro, present) ?? true),
       getDistroIp: (distro) => Effect.succeed(stub.getDistroIp?.(distro) ?? Option.none<string>()),
       prepareRuntime: (distro, archive) =>
         Effect.succeed(
@@ -1318,6 +1345,10 @@ export const layer = Layer.effect(
         provideSpawner(preWarmImpl(distro)).pipe(Effect.withSpan("desktop.wsl.preWarm")),
       windowsToWslPath,
       getUserHome,
+      setUpdateRestartMarker: (distro, present) =>
+        provideSpawner(setUpdateRestartMarkerImpl(distro, present)).pipe(
+          Effect.withSpan("desktop.wsl.setUpdateRestartMarker"),
+        ),
       getDistroIp,
       prepareRuntime: (distro, archive) =>
         provideSpawner(
