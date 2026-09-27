@@ -977,6 +977,64 @@ it.effect("rejects HTTP failures even when tea exits successfully", () =>
   ),
 );
 
+for (const [body, expected] of [
+  [
+    '{"message":"Pull request is already closed"}',
+    "Forgejo API request failed (HTTP 409): Pull request is already closed",
+  ],
+  [
+    "<html>Authorization: token private</html>",
+    "Forgejo API request failed (HTTP 409). Check this server's fj credentials and permissions.",
+  ],
+  [
+    '{"message":"Authorization: token private"}',
+    "Forgejo API request failed (HTTP 409). Check this server's fj credentials and permissions.",
+  ],
+  [
+    '{"message":"test-token"}',
+    "Forgejo API request failed (HTTP 409). Check this server's fj credentials and permissions.",
+  ],
+] as const) {
+  it.effect(`limits Forgejo HTTP error detail for ${body.slice(0, 24)}`, () =>
+    Effect.gen(function* () {
+      const cli = yield* ForgejoCli.make;
+      const result = yield* cli
+        .api({ cwd: "/repo", host: "forgejo.test", path: "user" })
+        .pipe(Effect.result);
+      assert.strictEqual(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.strictEqual(result.failure.httpStatus, 409);
+        assert.strictEqual(result.failure.detail, expected);
+      }
+    }).pipe(
+      Effect.provideService(
+        FileSystem.FileSystem,
+        FileSystem.makeNoop({
+          exists: () => Effect.succeed(true),
+          readFileString: () =>
+            Effect.succeed(
+              encodeJson({
+                hosts: { "forgejo.test": { type: "Application", token: "test-token" } },
+              }),
+            ),
+        }),
+      ),
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.succeed(HttpClientResponse.fromWeb(request, new Response(body, { status: 409 }))),
+        ),
+      ),
+      Effect.provide(
+        Layer.mock(VcsProcess.VcsProcess)({
+          run: () =>
+            Effect.succeed(processOutput("", { exitCode: ChildProcessSpawner.ExitCode(2) })),
+        }),
+      ),
+    ),
+  );
+}
+
 it.effect("routes mounted Forgejo repositories without repeating the mount in API paths", () =>
   Effect.gen(function* () {
     const cli = yield* ForgejoCli.make;

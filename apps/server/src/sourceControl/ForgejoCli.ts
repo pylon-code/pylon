@@ -19,6 +19,26 @@ import type { SourceControlProviderContext } from "./SourceControlProvider.ts";
 
 const encodeApiBody = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
+function safeForgejoErrorMessage(body: string, token: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed !== "object" || parsed === null || !("message" in parsed)) return null;
+    const message = parsed.message;
+    if (typeof message !== "string" || message.length > 160 || !message.trim()) return null;
+    // Error text is shown to clients. Accept only plain prose, never server HTML,
+    // URLs, credential-looking strings, or the token used for this request.
+    if (
+      message.includes(token) ||
+      !/^[\p{L}\p{N} .,;:!?()'-]+$/u.test(message) ||
+      /(?:token|password|secret|authorization)\s*[:=]|[A-Za-z0-9_-]{24,}/i.test(message)
+    )
+      return null;
+    return message.trim();
+  } catch {
+    return null;
+  }
+}
+
 export class ForgejoCliError extends Schema.TaggedError<ForgejoCliError>()("ForgejoCliError", {
   command: Schema.Literals(["fj", "tea"]),
   cwd: Schema.String,
@@ -366,7 +386,12 @@ export const make = Effect.gen(function* () {
         .execute(request)
         .pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
       const status = response.status;
-      if (status < 200 || status >= 300)
+      if (status < 200 || status >= 300) {
+        const body = yield* collectUint8StreamText({ stream: response.stream, maxBytes: 4096 });
+        const message =
+          !body.truncated && !body.invalidUtf8 && status !== 404
+            ? safeForgejoErrorMessage(body.text, input.token)
+            : null;
         return yield* new ForgejoCliError({
           command: "fj",
           cwd: input.cwd,
@@ -383,8 +408,11 @@ export const make = Effect.gen(function* () {
           detail:
             status === 404
               ? "Forgejo repository or pull request was not found."
-              : `Forgejo API request failed (HTTP ${status}). Check this server's fj credentials and permissions.`,
+              : message
+                ? `Forgejo API request failed (HTTP ${status}): ${message}`
+                : `Forgejo API request failed (HTTP ${status}). Check this server's fj credentials and permissions.`,
         });
+      }
       const body =
         status === 204 || status === 205
           ? { text: "", truncated: false, invalidUtf8: false }
