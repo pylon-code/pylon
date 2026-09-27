@@ -10,6 +10,9 @@ vp i
 vp run dev
 ```
 
+New linked worktrees use the `t3.json` **Setup Worktree** action to install dependencies, reuse
+the main checkout's env files when no local version exists, and warm the web dependency cache.
+
 Open the one-time pairing URL printed by the dev runner. The bare origin does not authenticate
 a new browser. The dev runner needs a TTY: started from a non-interactive background shell, it
 exits without binding a port, so confirm the port is listening before relying on it.

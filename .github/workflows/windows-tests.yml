@@ -84,7 +84,8 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($files)) {
             vp test run
           } else {
-            $testFiles = $files -split '\s+' | Where-Object { $_ -ne '' }
+            # Keep one file as an array: PowerShell splats a scalar string into characters.
+            $testFiles = @($files -split '\s+' | Where-Object { $_ -ne '' })
             vp test run @testFiles
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

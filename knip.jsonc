@@ -17,11 +17,12 @@
     },
     "scripts": {
       // Knip loads its preprocessor through a CLI option. Pylon's maintainer
-      // screenshot scripts also run directly, without source imports.
+      // screenshot and worktree setup scripts also run directly, without source imports.
       "entry": [
         "knip-schemas.ts",
         "marketing-screenshot-capture.mjs",
         "marketing-screenshot-environment.ts",
+        "setup-worktree.ts",
       ],
     },
     "apps/server": {
@@ -59,7 +60,7 @@
       "ignoreDependencies": ["playwright-core", "electron-builder"],
     },
     "apps/web": {
-      // Worktree setup invokes this directly from t3.json.
+      // Worktree setup (scripts/setup-worktree.ts) runs this directly.
       "entry": ["scripts/warm-dep-cache.ts"],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
