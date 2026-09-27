@@ -20,6 +20,7 @@ import * as NodePath from "node:path";
 import {
   ClaudeSettings,
   CodexSettings,
+  OpenCodeSettings,
   type ProviderInstanceConfig,
   USAGE_CONTRACT_VERSION,
   type ServerSettings as ServerSettingsValue,
@@ -53,6 +54,7 @@ import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 import { resolveAntigravityProfileDirectory } from "../provider/antigravityAuthSupport.ts";
 import { readAntigravityDatabase } from "./antigravityUsageReader.ts";
+import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import {
   countKnownModels,
@@ -107,6 +109,7 @@ export const StandaloneAntigravityConversations = Context.Reference<string>(
 
 const decodeCodexSettings = Schema.decodeOption(CodexSettings);
 const decodeClaudeSettings = Schema.decodeOption(ClaudeSettings);
+const decodeOpenCodeSettings = Schema.decodeOption(OpenCodeSettings);
 
 /** On-disk shape of the rate snapshot. */
 const RatesCacheFile = Schema.Struct({
@@ -429,6 +432,65 @@ export const make = Effect.gen(function* () {
       dirs.push({ provider: "antigravity", dir, volumeId });
     }
 
+    // Each local OpenCode instance may use a different data home. External
+    // servers own their history, so a local home must not stand in for them.
+    const openCodeInstances: Array<Pick<ProviderInstanceConfig, "config" | "environment">> =
+      Object.values(settings.providerInstances).filter(
+        (instance) => instance.driver === "opencode",
+      );
+    if (!Object.hasOwn(settings.providerInstances, "opencode")) {
+      openCodeInstances.push({ config: settings.providers.opencode });
+    }
+    for (const instance of openCodeInstances) {
+      const decoded = decodeOpenCodeSettings(instance.config ?? {});
+      if (Option.isNone(decoded) || decoded.value.serverUrl.trim()) continue;
+      const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
+      const home = environment.HOME || environment.USERPROFILE || NodeOS.homedir();
+      const dataHome = environment.XDG_DATA_HOME?.trim();
+      const fallback = path.join(
+        dataHome && path.isAbsolute(dataHome) ? dataHome : path.join(home, ".local", "share"),
+        "opencode",
+      );
+      const configured = environment.OPENCODE_DATA_DIR?.trim();
+      const roots = configured
+        ? configured
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean)
+        : [fallback];
+      for (const root of roots) {
+        const directory = resolveProviderHomePath(root);
+        const sourceKey = `opencode\0${directory}`;
+        const previous = sourceCache.get(sourceKey);
+        const dir = yield* fileSystem
+          .realPath(directory)
+          .pipe(Effect.orElseSucceed(() => previous?.dir ?? directory));
+        const key = `opencode\0${dir}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const currentVolumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
+        const hasRetainedHistory = fileCache
+          .entries()
+          .some(
+            ([filePath, entry]) =>
+              entry.provider === "opencode" &&
+              entry.mtimeMs >= retentionCutoffMs &&
+              entry.records.length + entry.tailRecords.length > 0 &&
+              isWithinDirectory(filePath, dir),
+          );
+        const volumeId =
+          previous?.dir === dir && (hasRetainedHistory || !currentVolumeId)
+            ? previous.volumeId || currentVolumeId
+            : currentVolumeId;
+        if (previous?.dir !== dir || previous.volumeId !== volumeId) {
+          sourceCache.set(sourceKey, { dir, volumeId });
+          cacheDirty = true;
+        }
+        activeSourceKeys.add(sourceKey);
+        dirs.push({ provider: "opencode", dir, volumeId });
+      }
+    }
+
     // Old configured homes can disappear from settings. Keep their identity
     // only while an in-retention cached transcript could use it again.
     for (const [sourceKey, source] of sourceCache) {
@@ -604,6 +666,43 @@ export const make = Effect.gen(function* () {
         .pipe(Effect.catchCause(() => Effect.succeed(false)));
       if (!exists) {
         scanned.push({ provider, dir, volumeId, files: null });
+        continue;
+      }
+
+      if (provider === "opencode") {
+        const result = yield* Effect.promise(() =>
+          readOpenCodeUsage(dir, retentionCutoffMs, {
+            get: (filePath, stamp) => {
+              const cached = fileCache.get(filePath);
+              return cached?.provider === "opencode" &&
+                cached.size === stamp.size &&
+                cached.mtimeMs === stamp.mtimeMs
+                ? cached.records
+                : undefined;
+            },
+            set: (filePath, stamp, records) => {
+              fileCache.set(filePath, {
+                size: stamp.size,
+                mtimeMs: stamp.mtimeMs,
+                provider: "opencode",
+                records,
+                tailRecords: [],
+                position: { resumeOffset: 0, guardLength: 0, guardHash: 0, codexState: null },
+              });
+              cacheDirty = true;
+            },
+          }),
+        );
+        scanned.push({
+          provider,
+          dir,
+          volumeId,
+          files: result.missing ? null : result.files,
+          status: result.error || result.truncated ? "partial" : result.missing ? "missing" : "ok",
+          ...(result.error || result.truncated
+            ? { message: "Some local OpenCode history could not be read or exceeded scan limits." }
+            : {}),
+        });
         continue;
       }
 

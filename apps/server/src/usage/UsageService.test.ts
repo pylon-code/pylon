@@ -70,6 +70,25 @@ function seedAntigravityDb(
   db.close();
 }
 
+function seedOpenCodeDb(dbPath: string, id: string, outputTokens: number) {
+  const db = new NodeSqlite.DatabaseSync(dbPath);
+  db.exec("CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER)");
+  db.prepare("INSERT INTO message VALUES (?, ?, ?, ?)").run(
+    id,
+    `session-${id}`,
+    JSON.stringify({
+      id,
+      role: "assistant",
+      sessionID: `session-${id}`,
+      modelID: "openai/gpt-6",
+      time: { created: Date.parse("2026-08-01T10:00:00Z") },
+      tokens: { input: 2, output: outputTokens, cache: { read: 0, write: 0 } },
+    }),
+    Date.parse("2026-08-01T10:00:00Z"),
+  );
+  db.close();
+}
+
 const WINDOW: UsageSummaryInput = {
   timeZone: "UTC",
   sinceDay: UsageDay.make("2026-07-31"),
@@ -897,6 +916,119 @@ describe("UsageService", () => {
       assert.isUndefined(
         orphanedAt,
         `interruption left the next matching request pending at scheduler check ${orphanedAt}`,
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("attributes distinct local OpenCode stores once and skips external servers", () =>
+    Effect.flatMap(setup, ({ home }) => {
+      const firstData = NodePath.join(home, "first-data");
+      const secondData = NodePath.join(home, "second-data");
+      const externalData = NodePath.join(home, "external-data");
+      const firstRoot = NodePath.join(firstData, "opencode");
+      const secondRoot = NodePath.join(secondData, "opencode");
+      const externalRoot = NodePath.join(externalData, "opencode");
+      const alias = NodePath.join(home, "first-alias");
+      return Effect.gen(function* () {
+        yield* Effect.promise(async () => {
+          await Promise.all(
+            [firstRoot, secondRoot, externalRoot].map((root) =>
+              NodeFSP.mkdir(root, { recursive: true }),
+            ),
+          );
+          seedOpenCodeDb(NodePath.join(firstRoot, "opencode.db"), "first", 7);
+          const legacy = NodePath.join(firstRoot, "storage", "message", "session-first");
+          await NodeFSP.mkdir(legacy, { recursive: true });
+          await NodeFSP.writeFile(
+            NodePath.join(legacy, "first.json"),
+            encodeUnknownJsonString({
+              id: "first",
+              role: "assistant",
+              sessionID: "session-first",
+              modelID: "openai/gpt-6",
+              time: { created: Date.parse("2026-08-01T10:00:00Z") },
+              tokens: { input: 2, output: 7, cache: { read: 0, write: 0 } },
+            }),
+          );
+          seedOpenCodeDb(NodePath.join(secondRoot, "opencode.db"), "second", 11);
+          seedOpenCodeDb(NodePath.join(externalRoot, "opencode.db"), "external", 100);
+          await NodeFSP.symlink(firstRoot, alias, "junction");
+        });
+        const service = yield* UsageService.make;
+        const first = yield* service.readSummary(WINDOW);
+        const openCodeSources = first.sources.filter(
+          (source) => source.fingerprint.provider === "opencode",
+        );
+        assert.strictEqual(openCodeSources.length, 2);
+        const expectedRoots = yield* Effect.promise(() =>
+          Promise.all([firstRoot, secondRoot].map((root) => NodeFSP.realpath(root))),
+        );
+        assert.deepStrictEqual(
+          openCodeSources.map((source) => source.fingerprint.resolvedHomePath).sort(),
+          expectedRoots.sort(),
+        );
+        assert.strictEqual(
+          first.buckets
+            .filter((bucket) => bucket.provider === "opencode")
+            .reduce((sum, bucket) => sum + bucket.totals.outputTokens, 0),
+          18,
+        );
+        assert.deepStrictEqual(
+          openCodeSources.map((source) => source.status),
+          ["ok", "ok"],
+        );
+        const warm = yield* service.readSummary(WINDOW);
+        assert.deepStrictEqual(warm.buckets, first.buckets);
+        const restarted = yield* UsageService.make;
+        const retained = yield* restarted.readSummary(WINDOW);
+        assert.deepStrictEqual(retained.buckets, first.buckets);
+        yield* Effect.promise(async () => {
+          const legacy = NodePath.join(secondRoot, "storage", "message", "session-second");
+          await NodeFSP.mkdir(legacy, { recursive: true });
+          await NodeFSP.writeFile(
+            NodePath.join(legacy, "oversize.json"),
+            "x".repeat(2 * 1024 * 1024 + 1),
+          );
+        });
+        const partial = yield* restarted.readSummary(WINDOW);
+        assert.deepStrictEqual(partial.buckets, first.buckets);
+        const partialSource = partial.sources.find(
+          (source) => source.fingerprint.resolvedHomePath === expectedRoots[1],
+        );
+        assert.strictEqual(partialSource?.status, "partial");
+      }).pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-opencode-test",
+            home: "",
+            settings: {
+              providers: {},
+              providerInstances: {
+                [ProviderInstanceId.make("opencode")]: {
+                  driver: "opencode",
+                  enabled: true,
+                  environment: [{ name: "XDG_DATA_HOME", value: firstData, sensitive: false }],
+                },
+                [ProviderInstanceId.make("opencode-alias")]: {
+                  driver: "opencode",
+                  enabled: true,
+                  environment: [{ name: "OPENCODE_DATA_DIR", value: alias, sensitive: false }],
+                },
+                [ProviderInstanceId.make("opencode-second")]: {
+                  driver: "opencode",
+                  enabled: true,
+                  environment: [{ name: "XDG_DATA_HOME", value: secondData, sensitive: false }],
+                },
+                [ProviderInstanceId.make("opencode-external")]: {
+                  driver: "opencode",
+                  enabled: true,
+                  config: { serverUrl: "https://external.example" },
+                  environment: [{ name: "XDG_DATA_HOME", value: externalData, sensitive: false }],
+                },
+              },
+            },
+          }),
+        ),
       );
     }).pipe(Effect.scoped),
   );
