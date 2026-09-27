@@ -197,6 +197,15 @@ export class TerminalManager extends Context.Service<
      */
     readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
 
+    /** Close a setup shell after its caller observed successful completion.
+     * The expected write count excludes terminals reused or written by a user.
+     */
+    readonly closeCompletedSetup: (input: {
+      readonly threadId: string;
+      readonly terminalId: string;
+      readonly expectedInputCount: number;
+    }) => Effect.Effect<void>;
+
     /**
      * Subscribe to terminal runtime events with a direct callback.
      *
@@ -226,6 +235,7 @@ interface TerminalSubprocessInspectResult {
 interface TerminalSubprocessInspector {
   (
     terminalPid: number,
+    launchedShellName?: string | null,
   ): Effect.Effect<TerminalSubprocessInspectResult, TerminalSubprocessCheckError>;
 }
 
@@ -274,6 +284,10 @@ interface TerminalSessionState {
   exitSignal: number | null;
   updatedAt: string;
   eventSequence: number;
+  /** Counts writes, so closeCompletedSetup can see input that has not echoed yet. */
+  inputCount: number;
+  /** Executable originally spawned at the PTY PID; `exec` can replace it. */
+  launchedShellName: string | null;
   cols: number;
   rows: number;
   process: PtyAdapter.PtyProcess | null;
@@ -687,7 +701,26 @@ function deriveSubprocessInspectResult(
   snapshot: TerminalProcessTableSnapshot,
   terminalPid: number,
   platform: NodeJS.Platform,
+  launchedShellName?: string | null,
 ): TerminalSubprocessInspectResult {
+  const commandName = (pid: number) =>
+    normalizeChildCommandName(snapshot.commandById.get(pid) ?? "", platform);
+  const shellName = commandName(terminalPid);
+  // A shell can `exec` a command at its own PID, with no child to discover.
+  // Missing or unrecognized PID identity is also not proof of an idle shell.
+  if (
+    launchedShellName !== undefined &&
+    (shellName === null ||
+      launchedShellName === null ||
+      shellName.toLowerCase() !== launchedShellName.toLowerCase())
+  ) {
+    return {
+      hasRunningSubprocess: true,
+      childCommand: shellName ? truncateTerminalWireLabel(shellName) : null,
+      processIds: [terminalPid],
+    };
+  }
+  // Even a same-name shell child may be running an in-process builtin.
   const childPid = (snapshot.childrenByParent.get(terminalPid) ?? [])[0];
   if (childPid === undefined) {
     return { hasRunningSubprocess: false, childCommand: null, processIds: [] };
@@ -703,7 +736,7 @@ function deriveSubprocessInspectResult(
       pending.push(pid);
     }
   }
-  const normalized = normalizeChildCommandName(snapshot.commandById.get(childPid) ?? "", platform);
+  const normalized = commandName(childPid);
   return {
     hasRunningSubprocess: true,
     childCommand: normalized ? truncateTerminalWireLabel(normalized) : null,
@@ -1497,8 +1530,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             readonly inspector: TerminalSubprocessInspector;
             readonly snapshotSucceeded: boolean;
           } => ({
-            inspector: (terminalPid) =>
-              Effect.succeed(deriveSubprocessInspectResult(snapshot, terminalPid, platform)),
+            inspector: (terminalPid, launchedShellName) =>
+              Effect.succeed(
+                deriveSubprocessInspectResult(snapshot, terminalPid, platform, launchedShellName),
+              ),
             snapshotSucceeded,
           }),
         );
@@ -2125,7 +2160,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     index = 0,
     lastError: PtyAdapter.PtySpawnError | null = null,
   ): Effect.fn.Return<
-    { process: PtyAdapter.PtyProcess; shellLabel: string },
+    { process: PtyAdapter.PtyProcess; shellLabel: string; shellName: string | null },
     PtyAdapter.PtySpawnError
   > {
     if (index >= shellCandidates.length) {
@@ -2162,6 +2197,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       return {
         process: attempt.success,
         shellLabel: formatShellCandidate(candidate),
+        shellName: normalizeChildCommandName(candidate.shell, platform),
       };
     }
 
@@ -2197,6 +2233,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       session.exitSignal = null;
       session.hasRunningSubprocess = false;
       session.childCommandLabel = null;
+      session.launchedShellName = null;
       session.pendingProcessEvents = [];
       session.pendingProcessEventIndex = 0;
       session.processEventDrainRunning = false;
@@ -2216,6 +2253,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             const spawnResult = yield* trySpawn(shellCandidates, terminalEnv, session);
             ptyProcess = spawnResult.process;
             startedShell = spawnResult.shellLabel;
+            session.launchedShellName = spawnResult.shellName;
 
             const processPid = ptyProcess.pid;
             const unsubscribeData = ptyProcess.onData((data) => {
@@ -2381,7 +2419,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       session: TerminalSessionState & { pid: number },
     ) {
       const terminalPid = session.pid;
-      const inspectResult = yield* subprocessInspector(terminalPid).pipe(
+      const inspectResult = yield* subprocessInspector(terminalPid, session.launchedShellName).pipe(
         Effect.map(Option.some),
         Effect.catch((reason) =>
           Effect.logWarning("failed to check terminal subprocess activity", {
@@ -2533,6 +2571,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         exitSignal: null,
         updatedAt: yield* nowIso,
         eventSequence: 0,
+        inputCount: 0,
+        launchedShellName: null,
         cols,
         rows,
         process: null,
@@ -2867,6 +2907,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         terminalId,
       });
     }
+    session.inputCount += 1;
     yield* Effect.try({
       try: () => process.write(input.data),
       catch: (cause) =>
@@ -2948,6 +2989,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           exitSignal: null,
           updatedAt: yield* nowIso,
           eventSequence: 0,
+          inputCount: 0,
+          launchedShellName: null,
           cols,
           rows,
           process: null,
@@ -3025,6 +3068,44 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       }),
     );
 
+  const closeCompletedSetup: TerminalManager["Service"]["closeCompletedSetup"] = (input) =>
+    withThreadLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const candidate = yield* getSession(input.threadId, input.terminalId);
+        if (Option.isNone(candidate)) return;
+        const session = candidate.value;
+        if (
+          session.status !== "running" ||
+          !Number.isInteger(session.pid) ||
+          session.pid === null ||
+          session.inputCount !== input.expectedInputCount
+        ) {
+          return;
+        }
+        // A command started during the process check can miss the snapshot,
+        // but its input or echo still lands. Both counters only grow, so the
+        // sum changes when either one does.
+        const activityMark = (session: TerminalSessionState) =>
+          session.eventSequence + session.inputCount;
+        const mark = activityMark(session);
+        // Inspect now instead of trusting the last poll, so a command started
+        // since then keeps its terminal.
+        const { inspector } = yield* acquireSubprocessInspector;
+        const result = yield* inspector(session.pid, session.launchedShellName);
+        if (result.hasRunningSubprocess || activityMark(session) !== mark) return;
+        yield* closeSession(input.threadId, session.terminalId, false);
+      }),
+    ).pipe(
+      // A failed process check cannot prove this setup terminal is safe to close.
+      Effect.catch((error) =>
+        Effect.logWarning("failed to close completed setup terminal", {
+          threadId: input.threadId,
+          error: error.message,
+        }),
+      ),
+    );
+
   return TerminalManager.of({
     open,
     attachStream,
@@ -3033,6 +3114,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     clear,
     restart,
     close,
+    closeCompletedSetup,
     subscribe,
     subscribeMetadata,
   });

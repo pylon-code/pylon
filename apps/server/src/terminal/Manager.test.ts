@@ -1084,9 +1084,13 @@ it.layer(
       const runCalls: Array<{ command: string; args: ReadonlyArray<string> }> = [];
       // FakePtyAdapter assigns pids starting at 9000, so the two terminals
       // opened below run as pids 9000 and 9001.
-      const psStdout = ["  100  9000 vim", "  101   100 git", "  200  9001 /usr/bin/python3"].join(
-        "\n",
-      );
+      const psStdout = [
+        " 9000 1 zsh",
+        " 9001 1 zsh",
+        "  100  9000 vim",
+        "  101   100 git",
+        "  200  9001 /usr/bin/python3",
+      ].join("\n");
       const processRunner: ProcessRunner.ProcessRunner["Service"] = {
         run: (input) =>
           Effect.sync(() => {
@@ -1153,7 +1157,7 @@ it.layer(
           Effect.sync(() => {
             if (failSnapshots) failedCalls += 1;
             return {
-              stdout: failSnapshots ? "" : "  100  9000 vim",
+              stdout: failSnapshots ? "" : " 9000 1 zsh\n  100  9000 vim",
               stderr: "",
               code: ChildProcessSpawner.ExitCode(failSnapshots ? 1 : 0),
               timedOut: false,
@@ -1214,8 +1218,8 @@ it.layer(
                 return {
                   stdout:
                     platform === "win32"
-                      ? "100|9000|vim.exe\n101|9001|ping.exe"
-                      : "100 9000 vim\n101 9001 ping",
+                      ? "9000|1|pwsh.exe\n9001|1|pwsh.exe\n100|9000|vim.exe\n101|9001|ping.exe"
+                      : "9000 1 zsh\n9001 1 zsh\n100 9000 vim\n101 9001 ping",
                   stderr: "",
                   code: ChildProcessSpawner.ExitCode(0),
                   timedOut: false,
@@ -1237,6 +1241,8 @@ it.layer(
                 reason: "test sidecar unavailable",
               });
             return [
+              { pid: 9000, ppid: 1, name: "zsh" },
+              { pid: 9001, ppid: 1, name: "zsh" },
               { pid: 100, ppid: 9000, name: "vim" },
               { pid: 101, ppid: 9001, name: "ping" },
             ];
@@ -1271,6 +1277,141 @@ it.layer(
         expect(yield* Queue.take(ticks)).toBe(640);
         expect(fallbackCalls).toEqual([20, 60, 140, 300]);
       }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("closes a completed setup shell but keeps shells with child processes", () =>
+    Effect.gen(function* () {
+      // FakePtyAdapter assigns pids from 9000 in open order.
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        processTable: Effect.succeed([
+          { pid: 9000, ppid: 1, name: "zsh" },
+          { pid: 9001, ppid: 1, name: "zsh" },
+          // A same-name child may be running a builtin, so keep it.
+          { pid: 100, ppid: 9001, name: "zsh" },
+          { pid: 9002, ppid: 1, name: "zsh" },
+          { pid: 300, ppid: 9002, name: "node" },
+          { pid: 9003, ppid: 1, name: "zsh" },
+        ]),
+      }).pipe(Effect.provide(withHostPlatform("linux")));
+      yield* manager.open(openInput({ terminalId: "idle" }));
+      yield* manager.open(openInput({ terminalId: "builtin-subshell" }));
+      yield* manager.open(openInput({ terminalId: "dev-server" }));
+      yield* manager.open(openInput({ threadId: "thread-2" }));
+      yield* manager.write({ threadId: "thread-1", terminalId: "idle", data: "setup\r" });
+
+      yield* manager.closeCompletedSetup({
+        threadId: "thread-1",
+        terminalId: "idle",
+        expectedInputCount: 1,
+      });
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: "builtin-subshell",
+        data: "setup\r",
+      });
+      yield* manager.closeCompletedSetup({
+        threadId: "thread-1",
+        terminalId: "builtin-subshell",
+        expectedInputCount: 1,
+      });
+      yield* manager.write({ threadId: "thread-1", terminalId: "dev-server", data: "setup\r" });
+      yield* manager.closeCompletedSetup({
+        threadId: "thread-1",
+        terminalId: "dev-server",
+        expectedInputCount: 1,
+      });
+
+      expect(ptyAdapter.processes.map((process) => process.killed)).toEqual([
+        true,
+        false,
+        false,
+        false,
+      ]);
+    }),
+  );
+
+  it.effect("keeps a command that replaced its shell at the PTY PID", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        processTable: Effect.succeed([
+          { pid: 9000, ppid: 1, name: "sleep" },
+          // A missing PID cannot prove that a shell is idle.
+          { pid: 9002, ppid: 1, name: "zsh" },
+          { pid: 9003, ppid: 1, name: "zsh" },
+        ]),
+      }).pipe(Effect.provide(withHostPlatform("linux")));
+      yield* manager.open(openInput({ terminalId: "exec-command" }));
+      yield* manager.open(openInput({ terminalId: "unknown-process" }));
+      yield* manager.open(openInput({ terminalId: "idle" }));
+      yield* manager.open(openInput({ terminalId: "reused" }));
+      for (const terminalId of ["exec-command", "unknown-process", "idle"]) {
+        yield* manager.write({ threadId: "thread-1", terminalId, data: "setup\r" });
+        yield* manager.closeCompletedSetup({
+          threadId: "thread-1",
+          terminalId,
+          expectedInputCount: 1,
+        });
+      }
+      yield* manager.write({ threadId: "thread-1", terminalId: "reused", data: "setup\r" });
+      yield* manager.write({ threadId: "thread-1", terminalId: "reused", data: "read\r" });
+      yield* manager.closeCompletedSetup({
+        threadId: "thread-1",
+        terminalId: "reused",
+        expectedInputCount: 1,
+      });
+
+      expect(ptyAdapter.processes.map((process) => process.killed)).toEqual([
+        false,
+        false,
+        true,
+        false,
+      ]);
+    }),
+  );
+
+  it.effect("keeps terminals that get input or output while closeCompletedSetup checks them", () =>
+    Effect.gen(function* () {
+      const ptyAdapter = new FakePtyAdapter();
+      // The typed command's process misses the snapshot, but its input or echo lands.
+      let duringCheck: (pid: number) => Effect.Effect<void> = () => Effect.void;
+      const { manager, getEvents } = yield* createManager(5, {
+        ptyAdapter,
+        subprocessPollIntervalMs: 60_000,
+        subprocessInspector: (pid) =>
+          duringCheck(pid).pipe(
+            Effect.as({ hasRunningSubprocess: false, childCommand: null, processIds: [] }),
+          ),
+      });
+      yield* manager.open(openInput({ terminalId: "typed" }));
+      yield* manager.open(openInput({ terminalId: "echoed" }));
+      yield* manager.write({ threadId: "thread-1", terminalId: "typed", data: "setup\r" });
+      yield* manager.write({ threadId: "thread-1", terminalId: "echoed", data: "setup\r" });
+      const [typed, echoed] = ptyAdapter.processes;
+      duringCheck = (pid) =>
+        pid === typed!.pid
+          ? manager
+              .write({ threadId: "thread-1", terminalId: "typed", data: "make build\r" })
+              .pipe(Effect.orDie)
+          : Effect.gen(function* () {
+              echoed!.emitData("make build\r\n");
+              yield* waitFor(
+                Effect.map(getEvents, (events) => events.some((event) => event.type === "output")),
+              );
+            }).pipe(Effect.orDie);
+
+      yield* manager.closeCompletedSetup({
+        threadId: "thread-1",
+        terminalId: "typed",
+        expectedInputCount: 1,
+      });
+      yield* manager.closeCompletedSetup({
+        threadId: "thread-1",
+        terminalId: "echoed",
+        expectedInputCount: 1,
+      });
+
+      expect(ptyAdapter.processes.map((process) => process.killed)).toEqual([false, false]);
+    }),
   );
 
   it.effect("caps persisted history to configured line limit", () =>

@@ -33,7 +33,9 @@ If the server restarts during setup, the task is marked interrupted so you can r
 
 Project setup scripts normally run in the background. Enable **Wait for it to finish before the agent starts** for a script
 when the agent needs its results before starting. A failed required script prevents the first turn
-from starting.
+from starting. After a successful waited setup script, Pylon closes its terminal when no command
+remains active; its output stays in setup history. Failed scripts and terminals with active commands
+stay open.
 
 ## Pin and arrange threads
 
