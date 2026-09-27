@@ -17,6 +17,8 @@ import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { resolveShortcutCommand } from "../keybindings";
+import { isEditableFocused } from "../lib/editableFocus";
+import { undoLatestThreadAction } from "../hooks/showUndoToast";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { isPreviewSupportedInRuntime } from "../previewStateStore";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
@@ -67,6 +69,7 @@ function ChatRouteGlobalShortcuts() {
           terminalOpen,
           previewFocus: isPreviewFocused(),
           previewOpen,
+          editableFocus: isEditableFocused(event.target),
         },
       });
 
@@ -77,6 +80,20 @@ function ChatRouteGlobalShortcuts() {
       if (event.key === "Escape" && selectedThreadKeysSize > 0) {
         event.preventDefault();
         clearSelection();
+        return;
+      }
+
+      if (command === "thread.undo") {
+        // Even a user-defined rule must leave native text undo to the editor.
+        if (
+          !event.repeat &&
+          !isTerminalFocused() &&
+          !isEditableFocused(event.target) &&
+          undoLatestThreadAction()
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
         return;
       }
 

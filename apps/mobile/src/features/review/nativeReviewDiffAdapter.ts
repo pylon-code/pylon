@@ -51,11 +51,15 @@ function opaqueNativeHexColor(color: string, background: string): string {
   if (!rgba || !backgroundHex) return background;
 
   const alpha = rgba[4] === undefined ? 1 : Math.min(1, Math.max(0, Number(rgba[4])));
-  const channels = [1, 2, 3].map((index) => {
-    const foreground = Number(rgba[index]);
-    const behind = Number.parseInt(backgroundHex[index], 16);
-    return Math.round(foreground * alpha + behind * (1 - alpha));
-  });
+  const channels: number[] = [];
+  for (const index of [1, 2, 3]) {
+    const foregroundChannel = rgba[index];
+    const backgroundChannel = backgroundHex[index];
+    if (foregroundChannel === undefined || backgroundChannel === undefined) return background;
+    const foreground = Number(foregroundChannel);
+    const behind = Number.parseInt(backgroundChannel, 16);
+    channels.push(Math.round(foreground * alpha + behind * (1 - alpha)));
+  }
   return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 }
 
@@ -367,6 +371,9 @@ function addNativeWordDiffRanges(
     for (let pairIndex = 0; pairIndex < pairedCount; pairIndex += 1) {
       const deletedRowIndex = deletedRowIndexes[pairIndex];
       const addedRowIndex = addedRowIndexes[pairIndex];
+      if (deletedRowIndex === undefined || addedRowIndex === undefined) {
+        continue;
+      }
       const deletedRow = nextRows[deletedRowIndex];
       const addedRow = nextRows[addedRowIndex];
       if (!deletedRow?.content || !addedRow?.content) {

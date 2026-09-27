@@ -1,3 +1,4 @@
+import { ConnectionTraceId } from "./ConnectionTraceId";
 import {
   type EnvironmentConnectionPhase,
   type EnvironmentConnectionPresentation,
@@ -6,7 +7,6 @@ import { SymbolView } from "../../components/AppSymbol";
 import { ActivityIndicator, Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
-import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 
 function noticeTitle(phase: EnvironmentConnectionPhase, environmentLabel: string): string {
   switch (phase) {
@@ -80,24 +80,8 @@ export function EnvironmentConnectionNotice(props: {
         </Text>
         <Text className="text-center text-sm leading-normal text-foreground-muted">
           {noticeDetail(props.connection.phase, props.resourceName, props.connection.error)}
-          {props.connection.traceId ? (
-            <>
-              {" Trace ID: "}
-              <Text
-                accessibilityHint="Copies the trace ID"
-                accessibilityRole="button"
-                className="underline decoration-dotted"
-                onPress={() =>
-                  copyTextWithHaptic(props.connection.traceId!, {
-                    target: "connection-trace-id",
-                  })
-                }
-              >
-                {props.connection.traceId}
-              </Text>
-            </>
-          ) : null}
         </Text>
+        {props.connection.traceId ? <ConnectionTraceId traceId={props.connection.traceId} /> : null}
 
         {props.connection.phase !== "offline" && props.connection.phase !== "unsupported" ? (
           <Pressable

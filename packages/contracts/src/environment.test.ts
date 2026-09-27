@@ -30,6 +30,16 @@ describe("ExecutionEnvironmentDescriptor", () => {
     expect(decodeDescriptor(descriptor).capabilities.pullRequests).toBeUndefined();
   });
 
+  it("requires an explicit worktree submodules capability", () => {
+    expect(decodeDescriptor(descriptor).capabilities.worktreeSubmodules).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, worktreeSubmodules: true },
+      }).capabilities.worktreeSubmodules,
+    ).toBe(true);
+  });
+
   it("preserves an advertised pull-request capability", () => {
     expect(
       decodeDescriptor({
@@ -62,5 +72,15 @@ describe("ExecutionEnvironmentDescriptor", () => {
         },
       }).capabilities.fileAttachments,
     ).toEqual({ maxUploadBytes: 50 * 1024 * 1024 });
+  });
+
+  it("requires an explicit path-only pasted text capability under version skew", () => {
+    expect(decodeDescriptor(descriptor).capabilities.pastedTextAttachments).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, pastedTextAttachments: true },
+      }).capabilities.pastedTextAttachments,
+    ).toBe(true);
   });
 });

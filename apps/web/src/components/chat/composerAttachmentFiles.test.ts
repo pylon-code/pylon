@@ -195,6 +195,37 @@ describe("composer attachment files", () => {
     ).toBe(unsupportedReason);
   });
 
+  it("retains but blocks a marked paste after a server downgrade", () => {
+    const files = [
+      {
+        name: "pasted-text.txt",
+        sizeBytes: 32_768,
+        source: { _tag: "pasted-text" },
+      },
+    ];
+    const baseline = {
+      files,
+      attachmentUploadsCapabilityKnown: true,
+      supportsAttachmentUploads: true,
+      maxFileAttachmentBytes: 50 * 1024 * 1024,
+    };
+    expect(
+      fileAttachmentCapabilityBlockReason({
+        ...baseline,
+        supportsPastedTextAttachments: true,
+      }),
+    ).toBeNull();
+    expect(fileAttachmentCapabilityBlockReason(baseline)).toContain(
+      "cannot use a saved large-paste attachment",
+    );
+    expect(
+      fileAttachmentCapabilityBlockReason({
+        ...baseline,
+        files: [{ name: "report.txt", sizeBytes: 32_768 }],
+      }),
+    ).toBeNull();
+  });
+
   it("blocks retained files that exceed a newly lower server limit", () => {
     expect(
       fileAttachmentCapabilityBlockReason({

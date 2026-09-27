@@ -1,0 +1,56 @@
+import { useAtomValue } from "@effect/atom-react";
+import {
+  connectedInitialConfigForState,
+  type ConnectedInitialConfig,
+} from "@t3tools/client-runtime/state/session";
+import type { EnvironmentId } from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/unstable/reactivity";
+
+import { environmentCatalog } from "../connection/catalog";
+import { appAtomRegistry } from "./atom-registry";
+import { environmentSession } from "./session";
+
+const EMPTY_RESULT = Atom.make(AsyncResult.initial<never, never>(false));
+
+// Stream atoms can be waiting for their next emission while retaining a valid value.
+// The connected lease identity, rather than the waiting flag, fences stale config.
+export function connectedPastedTextAttachmentLease(
+  environmentId: EnvironmentId,
+): ConnectedInitialConfig | null {
+  const stateResult = appAtomRegistry.get(environmentCatalog.stateAtom(environmentId));
+  const configResult = appAtomRegistry.get(
+    environmentSession.connectedInitialConfigAtom(environmentId),
+  );
+  const state = Option.getOrNull(AsyncResult.value(stateResult));
+  const observed = Option.getOrElse(AsyncResult.value(configResult), () => Option.none());
+  const config = connectedInitialConfigForState(state, observed);
+  return config?.environment.capabilities.pastedTextAttachments === true &&
+    config.environment.capabilities.attachmentUploads === true &&
+    config.environment.capabilities.fileAttachments !== undefined &&
+    Option.isSome(observed)
+    ? observed.value
+    : null;
+}
+
+export function useConnectedPastedTextAttachmentCapability(
+  environmentId: EnvironmentId | null,
+): boolean {
+  const stateResult = useAtomValue(
+    environmentId === null ? EMPTY_RESULT : environmentCatalog.stateAtom(environmentId),
+  );
+  const configResult = useAtomValue(
+    environmentId === null
+      ? EMPTY_RESULT
+      : environmentSession.connectedInitialConfigAtom(environmentId),
+  );
+  if (environmentId === null) return false;
+  const state = Option.getOrNull(AsyncResult.value(stateResult));
+  const observed = Option.getOrElse(AsyncResult.value(configResult), () => Option.none());
+  const capabilities = connectedInitialConfigForState(state, observed)?.environment.capabilities;
+  return (
+    capabilities?.pastedTextAttachments === true &&
+    capabilities.attachmentUploads === true &&
+    capabilities.fileAttachments !== undefined
+  );
+}

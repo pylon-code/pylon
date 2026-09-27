@@ -83,7 +83,7 @@ export class TriageAgentSpawnError extends Schema.TaggedError<TriageAgentSpawnEr
  * playbook depends on.
  */
 const readOptionalUrlConfig = (name: string) =>
-  Config.string(name).pipe(
+  Config.String(name).pipe(
     Config.option,
     Config.map((value) => {
       const trimmed = Option.getOrUndefined(value)?.trim();
@@ -157,12 +157,12 @@ const runInteractiveSession = (input: {
     child.once("exit", (code, signal) => resume(Effect.succeed(code ?? (signal === null ? 0 : 1))));
   });
 
-const agentFlag = Flag.choice("agent", ["claude", "codex"]).pipe(
+const agentFlag = Flag.Literals("agent", ["claude", "codex"]).pipe(
   Flag.withDescription("Agent CLI to use. Default: ask when both are installed."),
   Flag.optional,
 );
 
-const modelFlag = Flag.string("model").pipe(
+const modelFlag = Flag.String("model").pipe(
   Flag.withDescription("Model passed through to the agent CLI. Default: the agent's default."),
   Flag.optional,
 );
@@ -184,7 +184,7 @@ export const triageCommand = Command.make("triage", {
       // --base-dir wins; T3CODE_HOME is its documented env equivalent (same
       // precedence as `t3 pair`).
       const explicitBaseDir = Option.getOrUndefined(flags.baseDir);
-      const envHome = yield* Config.string("T3CODE_HOME").pipe(Config.option);
+      const envHome = yield* Config.String("T3CODE_HOME").pipe(Config.option);
       const requestedBaseDir = explicitBaseDir ?? Option.getOrUndefined(envHome);
       // Unset lands on `~/.pylon-code`. Never `~/.t3`: handing an agent T3
       // Code's home would point it at another product's database, logs, and

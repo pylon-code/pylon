@@ -130,18 +130,32 @@ const proxyWebSocket = Effect.fn("DeviceHubProxy.proxyWebSocket")(function* (
   const upstream = yield* Socket.makeWebSocket(upstreamUrl, {
     openTimeout: "10 seconds",
   }).pipe(Effect.provide(NodeSocket.layerWebSocketConstructor));
-  yield* Effect.scoped(
+  yield* relayWebSocketFrames(client, upstream).pipe(Effect.catchCause(() => Effect.void));
+  return HttpServerResponse.empty();
+});
+
+const pumpFrames = (source: Socket.Socket, sink: Socket.Writer) =>
+  Effect.gen(function* () {
+    const { pull } = yield* source.reader;
+    while (true) {
+      yield* sink.writeAll(yield* pull);
+    }
+  });
+
+/** Both readers and writers share one scope so either closed side releases the other. */
+export const relayWebSocketFrames = (client: Socket.Socket, upstream: Socket.Socket) =>
+  Effect.scoped(
     Effect.gen(function* () {
       const writeToClient = yield* client.writer;
       const writeToUpstream = yield* upstream.writer;
-      const downstream = upstream.runRaw((data) => writeToClient(data));
-      const upstreamPump = client.runRaw((data) => writeToUpstream(data));
-      // Whichever side closes first ends the other via scope teardown.
-      yield* Effect.raceFirst(downstream, upstreamPump);
+      // Whichever side closes first ends the other via scope teardown: a close
+      // fails the pull with a SocketError, which loses the race.
+      return yield* Effect.raceFirst(
+        pumpFrames(upstream, writeToClient),
+        pumpFrames(client, writeToUpstream),
+      );
     }),
-  ).pipe(Effect.catchCause(() => Effect.void));
-  return HttpServerResponse.empty();
-});
+  );
 
 const proxyHttp = Effect.fn("DeviceHubProxy.proxyHttp")(function* (
   request: HttpServerRequest.HttpServerRequest,

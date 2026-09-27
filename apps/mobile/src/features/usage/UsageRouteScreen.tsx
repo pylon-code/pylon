@@ -1,5 +1,5 @@
 import { EnvironmentId, USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
-import { useNavigation } from "@react-navigation/native";
+import { useIsFocused, useNavigation } from "@react-navigation/native";
 import {
   isCompatibleUsageContractVersion,
   isModelCostUnknown,
@@ -83,7 +83,8 @@ export function UsageRouteScreen() {
     window,
     selectedEnvironmentIds,
   );
-  const limits = useRefreshLimits(selectedEnvironmentIds);
+  const isFocused = useIsFocused();
+  const limits = useRefreshLimits(selectedEnvironmentIds, isFocused && tab === "limits");
 
   const days = useMemo(
     () => enumerateDays(window.sinceDay, window.untilDay),
@@ -284,6 +285,19 @@ export function UsageRouteScreen() {
                 <Text className="text-sm text-foreground-muted">
                   Counted once across environments sharing a transcript directory:{" "}
                   {merged.duplicateSources.join(", ")}
+                </Text>
+              ) : null}
+              {merged.approximateEnvironments.length > 0 ? (
+                <Text className="text-sm text-foreground-muted">
+                  Totals may count shared usage more than once because these environments run older
+                  servers or have directories whose filesystem identity could not be read:{" "}
+                  {selectedEnvironments
+                    .filter((environment) =>
+                      merged.approximateEnvironments.includes(environment.environmentId),
+                    )
+                    .map((environment) => environment.label)
+                    .join(", ")}
+                  .
                 </Text>
               ) : null}
               {isPending ? (

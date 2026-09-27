@@ -55,7 +55,7 @@ import {
   sharedUsageReadKey,
   writeSharedUsageEntry,
 } from "../sharedUsageReadCache.ts";
-import { isRetainedUsageFresh } from "../providerUsageRetention.ts";
+import { authenticatedUsageIdentity, isRetainedUsageFresh } from "../providerUsageRetention.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
@@ -402,14 +402,22 @@ const failedRead = Effect.fn("readCodexRateLimitsShared.failed")(function* (
  */
 export const readCodexRateLimitsShared = Effect.fn("readCodexRateLimitsShared")(function* (input: {
   readonly sharedHomePath: string;
+  readonly accountIdentity: string | undefined;
   readonly read: Effect.Effect<CodexSchema.V2GetAccountRateLimitsResponse | undefined>;
 }): Effect.fn.Return<
   Pick<CodexAppServerProviderSnapshot, "rateLimits" | "sharedUsageLimits">,
   never,
   FileSystem.FileSystem | Path.Path
 > {
+  // A home can sign out and into another account without changing path. An
+  // unidentified account may make a live read, but must never reuse the old
+  // home's shared quota file.
+  if (!input.accountIdentity) {
+    const rateLimits = yield* input.read;
+    return rateLimits ? { rateLimits } : {};
+  }
   const cacheDir = yield* resolveSharedUsageCacheDir;
-  const cacheKey = sharedUsageReadKey(["codex", input.sharedHomePath]);
+  const cacheKey = sharedUsageReadKey(["codex", input.sharedHomePath, input.accountIdentity]);
   const nowMs = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
   const shared = decideSharedUsageRead(yield* readSharedUsageEntry(cacheDir, cacheKey), nowMs);
   if (shared.kind === "fresh") return { sharedUsageLimits: shared.usageLimits };
@@ -526,11 +534,14 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  // The account id is read alongside the app-server requests rather than
-  // before the spawn: the probe's timeout is measured from its start, and a
-  // filesystem read ahead of the spawn would let it expire with nothing to
-  // close.
-  const [skillsResponse, models, rateLimitsRead, accountId] = yield* Effect.all(
+  // Read the account id after the app-server starts, then bind the shared
+  // quota file to this account before looking it up. A home path alone is
+  // reused after sign-out and cannot identify a subscription.
+  const accountId = yield* readCodexAccountId(sharedHomePath);
+  const accountIdentity = authenticatedUsageIdentity(
+    accountProbeStatus(accountResponse, accountId).auth,
+  );
+  const [skillsResponse, models, rateLimitsRead] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
@@ -539,6 +550,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       accountResponse.account?.type === "chatgpt"
         ? readCodexRateLimitsShared({
             sharedHomePath,
+            accountIdentity,
             read: client
               .request("account/rateLimits/read", undefined)
               .pipe(
@@ -551,7 +563,6 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
         : Effect.succeed<Pick<CodexAppServerProviderSnapshot, "rateLimits" | "sharedUsageLimits">>(
             {},
           ),
-      readCodexAccountId(sharedHomePath),
     ],
     { concurrency: "unbounded" },
   );
@@ -659,7 +670,7 @@ const makePendingCodexProvider = (
     });
   });
 
-function accountProbeStatus(
+export function accountProbeStatus(
   account: CodexAppServerProviderSnapshot["account"],
   accountId: string | undefined,
 ): {

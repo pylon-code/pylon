@@ -1,4 +1,4 @@
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { loopbackHttpServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -65,7 +65,7 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
       );
       const runtimeLayer = telemetryLayer.pipe(
         Layer.provide(configLayer),
-        Layer.provideMerge(NodeHttpServer.layerTest),
+        Layer.provideMerge(loopbackHttpServerTest),
       );
 
       yield* Effect.gen(function* () {
@@ -116,7 +116,7 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
       );
       const runtimeLayer = telemetryLayer.pipe(
         Layer.provide(configLayer),
-        Layer.provideMerge(NodeHttpServer.layerTest),
+        Layer.provideMerge(loopbackHttpServerTest),
       );
 
       yield* Effect.gen(function* () {
@@ -188,7 +188,7 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
       );
       const runtimeLayer = telemetryLayer.pipe(
         Layer.provide(configLayer),
-        Layer.provideMerge(NodeHttpServer.layerTest),
+        Layer.provideMerge(loopbackHttpServerTest),
       );
 
       yield* Effect.gen(function* () {

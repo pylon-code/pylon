@@ -1,4 +1,4 @@
-import { act, type ReactNode } from "react";
+import { act, type KeyboardEventHandler, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { ExpandedImageDialog } from "./ExpandedImageDialog";
@@ -20,7 +20,17 @@ vi.mock("../ui/dialog", () => ({
     state.change = onOpenChange;
     return children;
   },
-  DialogPopup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogPopup: ({
+    children,
+    onKeyDown,
+  }: {
+    children: ReactNode;
+    onKeyDown: KeyboardEventHandler<HTMLDivElement>;
+  }) => (
+    <div data-test-dialog-popup onKeyDown={onKeyDown}>
+      {children}
+    </div>
+  ),
   DialogTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
 }));
 vi.mock("../ui/button", () => ({
@@ -85,5 +95,76 @@ describe("expanded media dismissal", () => {
     state.contextMenuOpen = false;
     state.change?.(false, { reason: "escape-key", cancel });
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("navigates gallery arrows inside the dialog and leaves video and snapshot keys alone", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal(
+      "HTMLElement",
+      class HTMLElement {
+        tagName = "PRE";
+      },
+    );
+    vi.stubGlobal("HTMLVideoElement", function HTMLVideoElement() {});
+    vi.stubGlobal("document", { activeElement: null });
+    vi.stubGlobal("window", { addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    const close = vi.fn();
+    await act(() => {
+      renderer = create(
+        <ExpandedImageDialog
+          preview={{
+            images: [
+              { src: "data:image/png;base64,AA==", name: "one.png" },
+              { src: "data:image/png;base64,BB==", name: "two.png" },
+            ],
+            index: 0,
+          }}
+          onClose={close}
+        />,
+      );
+    });
+    const dialog = renderer!.root.find((node) => node.props["data-test-dialog-popup"] === true);
+    const press = async (key: string, target: object) => {
+      const preventDefault = vi.fn();
+      const stopPropagation = vi.fn();
+      await act(() => {
+        dialog.props.onKeyDown({
+          key,
+          target,
+          defaultPrevented: false,
+          preventDefault,
+          stopPropagation,
+        });
+      });
+      return { preventDefault, stopPropagation };
+    };
+    const videoKey = await press("ArrowRight", new HTMLVideoElement());
+    expect(videoKey.preventDefault).not.toHaveBeenCalled();
+    expect(
+      renderer!.root.findAll((node) => node.type === "img" && node.props.alt === "preview"),
+    ).toHaveLength(1);
+
+    const snapshotKey = await press("ArrowRight", new HTMLElement());
+    expect(snapshotKey.preventDefault).not.toHaveBeenCalled();
+    expect(
+      renderer!.root.findAll(
+        (node) => node.type === "span" && node.children.join("").includes("one.png"),
+      ),
+    ).not.toHaveLength(0);
+
+    const next = await press("ArrowRight", {});
+    expect(next.preventDefault).toHaveBeenCalledOnce();
+    expect(next.stopPropagation).toHaveBeenCalledOnce();
+    expect(
+      renderer!.root.findAll(
+        (node) => node.type === "button" && node.props["aria-label"] === "Previous media",
+      ),
+    ).toHaveLength(1);
+    expect(
+      renderer!.root.findAll(
+        (node) => node.type === "span" && node.children.join("").includes("two.png"),
+      ),
+    ).not.toHaveLength(0);
+    expect(close).not.toHaveBeenCalled();
   });
 });

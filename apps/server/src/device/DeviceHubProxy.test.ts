@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import { it as effectIt } from "@effect/vitest";
 import {
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
@@ -7,8 +8,13 @@ import {
   type AuthEnvironmentScope,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import { HttpClient, HttpClientResponse, HttpRouter } from "effect/unstable/http";
+import * as Socket from "effect/unstable/socket/Socket";
 import {
   EnvironmentAuth,
   ServerAuthMissingCredentialError,
@@ -17,7 +23,7 @@ import {
   type ServerAuthInternalError,
 } from "../auth/EnvironmentAuth.ts";
 import { DeviceService } from "./DeviceService.ts";
-import { deviceHubProxyRouteLayer } from "./DeviceHubProxy.ts";
+import { deviceHubProxyRouteLayer, relayWebSocketFrames } from "./DeviceHubProxy.ts";
 
 const disposers: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -71,6 +77,85 @@ const fixture = (
 };
 
 describe("device hub proxy", () => {
+  effectIt.effect("forwards both socket directions and releases both sides when one closes", () =>
+    Effect.gen(function* () {
+      const clientFrames = yield* Queue.unbounded<readonly [string]>();
+      const upstreamFrames = yield* Queue.unbounded<readonly [string]>();
+      const clientClosed = yield* Deferred.make<never, Socket.SocketError>();
+      const upstreamClosed = yield* Deferred.make<never, Socket.SocketError>();
+      const clientReceived = yield* Deferred.make<void>();
+      const upstreamReceived = yield* Deferred.make<void>();
+      const released: string[] = [];
+      const toClient: string[] = [];
+      const toUpstream: string[] = [];
+      const makeSocket = (
+        name: string,
+        frames: Queue.Queue<readonly [string]>,
+        closed: Deferred.Deferred<never, Socket.SocketError>,
+        output: string[],
+        received: Deferred.Deferred<void>,
+      ) =>
+        Socket.make({
+          reader: Effect.acquireRelease(
+            Effect.succeed({
+              pull: Effect.raceFirst(Queue.take(frames), Deferred.await(closed)),
+              upgrade: Socket.SocketUpgradeError.unsupported,
+            }),
+            () =>
+              Effect.sync(() => {
+                released.push(`${name}:reader`);
+              }),
+          ),
+          writer: Effect.acquireRelease(
+            Effect.succeed({
+              write: (frame: Uint8Array | string | Socket.CloseEvent) =>
+                Effect.sync(() => {
+                  output.push(String(frame));
+                }),
+              writeAll: (batch: readonly [Uint8Array | string, ...(Uint8Array | string)[]]) =>
+                Effect.gen(function* () {
+                  output.push(...batch.map(String));
+                  yield* Deferred.succeed(received, undefined);
+                }),
+            }),
+            () =>
+              Effect.sync(() => {
+                released.push(`${name}:writer`);
+              }),
+          ),
+        });
+      const client = makeSocket("client", clientFrames, clientClosed, toClient, clientReceived);
+      const upstream = makeSocket(
+        "upstream",
+        upstreamFrames,
+        upstreamClosed,
+        toUpstream,
+        upstreamReceived,
+      );
+      const relay = yield* Effect.forkChild(Effect.exit(relayWebSocketFrames(client, upstream)));
+      yield* Queue.offer(clientFrames, ["client frame"]);
+      yield* Queue.offer(upstreamFrames, ["upstream frame"]);
+      yield* Deferred.await(clientReceived);
+      yield* Deferred.await(upstreamReceived);
+      yield* Deferred.fail(
+        clientClosed,
+        new Socket.SocketError({
+          reason: new Socket.SocketCloseError({ code: 1000 }),
+        }),
+      );
+      const exit = yield* Fiber.join(relay);
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(toClient).toEqual(["upstream frame"]);
+      expect(toUpstream).toEqual(["client frame"]);
+      expect(released.sort()).toEqual([
+        "client:reader",
+        "client:writer",
+        "upstream:reader",
+        "upstream:writer",
+      ]);
+    }),
+  );
+
   it("releases the upstream response after forwarding its body and strips tickets", async () => {
     const { handler, requests, finalized } = fixture([AuthOrchestrationReadScope]);
     const response = await handler(
