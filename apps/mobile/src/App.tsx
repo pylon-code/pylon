@@ -43,6 +43,7 @@ const appLinking = {
   // schemes `app.config.ts` registers, because iOS never delivers an
   // unregistered scheme to the app.
   prefixes: [Linking.createURL("/"), "pylon-code://", "pylon-code-dev://", "pylon-code-preview://"],
+  config: { initialRouteName: "Home" },
   filter: shouldHandleAppLink,
 };
 
