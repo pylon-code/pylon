@@ -1037,6 +1037,12 @@ for (const { platform, installPath, editor, args } of [
   },
   {
     platform: "win32",
+    installPath: "Programs/Antigravity IDE/resources/app/bin/antigravity-ide.cmd",
+    editor: "antigravity",
+    args: ['^"--goto^"', '^"/workspace^ with^ spaces/file.ts:12:4^"'],
+  },
+  {
+    platform: "win32",
     installPath: "Programs/Cursor/resources/app/bin/cursor.cmd",
     editor: "cursor",
     args: ['^"--classic^"', '^"--goto^"', '^"/workspace^ with^ spaces/file.ts:12:4^"'],

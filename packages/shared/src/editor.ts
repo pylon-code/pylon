@@ -79,24 +79,26 @@ export const resolveEditorCommand = Effect.fn("editor.resolveEditorCommand")(fun
         }
       }
     } else {
-      const name =
+      const windowsNames =
         editor.id === "vscode"
-          ? "Microsoft VS Code"
+          ? ["Microsoft VS Code"]
           : editor.id === "vscode-insiders"
-            ? "Microsoft VS Code Insiders"
-            : editor.label;
+            ? ["Microsoft VS Code Insiders"]
+            : names;
       for (const root of roots) {
-        candidates.push(
-          path.join(root, name, "resources/app/bin", `${command}.cmd`),
-          path.join(root, name, "resources/app/bin/code.cmd"),
-          path.join(root, name, "bin", `${command}.cmd`),
-          path.join(root, name, "bin/code.cmd"),
-        );
-        if (editor.id === "zed") {
+        for (const name of windowsNames) {
           candidates.push(
-            path.join(root, name, "bin", "zed.exe"),
-            path.join(root, name, "zed.exe"),
+            path.join(root, name, "resources/app/bin", `${command}.cmd`),
+            path.join(root, name, "resources/app/bin/code.cmd"),
+            path.join(root, name, "bin", `${command}.cmd`),
+            path.join(root, name, "bin/code.cmd"),
           );
+          if (editor.id === "zed") {
+            candidates.push(
+              path.join(root, name, "bin", "zed.exe"),
+              path.join(root, name, "zed.exe"),
+            );
+          }
         }
       }
     }
