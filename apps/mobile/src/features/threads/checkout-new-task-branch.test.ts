@@ -53,6 +53,22 @@ const switchRef: Parameters<typeof checkoutNewTaskBranch>[0]["switchRef"] = (req
   });
 
 describe("new-task branch checkout", () => {
+  it("selects a remote-only ref after checkout resolves its local branch", async () => {
+    const remote = { ...branch, name: "origin/remote-only", isRemote: true };
+    const result = await checkoutNewTaskBranch({
+      branch: remote,
+      project: { environmentId, workspaceRoot: cwd },
+      workspaceMode: "local",
+      switchRef: (request) => {
+        expect(request.input.refName).toBe("origin/remote-only");
+        return settlePromise(async () => ({ refName: "remote-only" }));
+      },
+    });
+    expect(result._tag).toBe("Success");
+    if (result._tag !== "Success") throw new Error("Remote checkout failed");
+    expect(result.value).toMatchObject({ name: "remote-only", current: true, isRemote: false });
+  });
+
   it("switches main to the older thread's feature branch before returning a selection", async () => {
     const result = await selectBranch(switchRef);
     expect(result._tag).toBe("Success");
