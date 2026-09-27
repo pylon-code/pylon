@@ -9,12 +9,12 @@ import { relayCliFromEnvironment } from "../provider/relayMcpConfig.ts";
 const decodeInstalledPlugins = Schema.decodeUnknownOption(
   Schema.fromJsonString(
     Schema.Struct({
-      plugins: Schema.Record(
-        Schema.String,
-        Schema.Array(Schema.Struct({ scope: Schema.String, installPath: Schema.String })),
-      ),
+      plugins: Schema.Record(Schema.String, Schema.Unknown),
     }),
   ),
+);
+const decodeInstallations = Schema.decodeUnknownOption(
+  Schema.Array(Schema.Struct({ scope: Schema.String, installPath: Schema.String })),
 );
 
 /** Observe an installed plugin without requiring GUI launches to inherit shell configuration. */
@@ -36,9 +36,13 @@ export const resolveRelayCliPath = Effect.fn("resolveRelayCliPath")(function* (
   if (installed._tag === "None") return undefined;
 
   const candidates = new Set<string>();
-  for (const [name, entries] of Object.entries(installed.value.plugins)) {
+  for (const [name, value] of Object.entries(installed.value.plugins)) {
     if (!name.startsWith("relay-orchestrator@")) continue;
-    for (const entry of entries) {
+    const entries = decodeInstallations(value);
+    // Unrelated registry entries do not govern Relay. A malformed Relay entry
+    // could hide another installation, though, so leave that selection explicit.
+    if (entries._tag === "None") return undefined;
+    for (const entry of entries.value) {
       // The bridge is environment-wide. A project-scoped plugin must not pick
       // the observer for other projects, nor should an old cached version.
       if (entry.scope !== "user" || !path.isAbsolute(entry.installPath)) continue;

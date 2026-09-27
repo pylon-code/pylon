@@ -50,6 +50,32 @@ it.layer(NodeServices.layer)("Relay CLI discovery", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("does not let unrelated plugin metadata disable Relay discovery", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      for (const unrelated of [null, { legacy: true }, [{ scope: "user" }]]) {
+        yield* f.writeRegistry({
+          "relay-orchestrator@relay-local": [{ scope: "user", installPath: f.plugin }],
+          "unrelated@other": unrelated,
+        });
+        expect(yield* resolveRelayCliPath({ CLAUDE_CONFIG_DIR: f.home })).toBe(f.cli);
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not guess an installation when another Relay entry is malformed", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      for (const malformed of [null, { legacy: true }, [{ scope: "user" }]]) {
+        yield* f.writeRegistry({
+          "relay-orchestrator@relay-local": [{ scope: "user", installPath: f.plugin }],
+          "relay-orchestrator@other": malformed,
+        });
+        expect(yield* resolveRelayCliPath({ CLAUDE_CONFIG_DIR: f.home })).toBeUndefined();
+      }
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("ignores project-only, unrelated, relative, and ambiguous installations", () =>
     Effect.gen(function* () {
       const f = yield* fixture;
