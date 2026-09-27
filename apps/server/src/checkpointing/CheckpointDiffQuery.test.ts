@@ -82,6 +82,7 @@ describe("CheckpointDiffQuery.layer", () => {
               Effect.die("CheckpointDiffQuery should not request the command read model"),
             getSnapshot: () =>
               Effect.die("CheckpointDiffQuery should not request the full orchestration snapshot"),
+            listThreadsWithPullRequests: () => Effect.succeed([]),
             getShellSnapshot: () =>
               Effect.die("CheckpointDiffQuery should not request the orchestration shell snapshot"),
             getArchivedShellSnapshot: () =>
@@ -199,6 +200,7 @@ describe("CheckpointDiffQuery.layer", () => {
               Effect.die("CheckpointDiffQuery should not request the command read model"),
             getSnapshot: () =>
               Effect.die("CheckpointDiffQuery should not request the full orchestration snapshot"),
+            listThreadsWithPullRequests: () => Effect.succeed([]),
             getShellSnapshot: () =>
               Effect.die("CheckpointDiffQuery should not request the orchestration shell snapshot"),
             getArchivedShellSnapshot: () =>
@@ -291,6 +293,7 @@ describe("CheckpointDiffQuery.layer", () => {
               Effect.die("CheckpointDiffQuery should not request the command read model"),
             getSnapshot: () =>
               Effect.die("CheckpointDiffQuery should not request the full orchestration snapshot"),
+            listThreadsWithPullRequests: () => Effect.succeed([]),
             getShellSnapshot: () =>
               Effect.die("CheckpointDiffQuery should not request the orchestration shell snapshot"),
             getArchivedShellSnapshot: () =>
@@ -368,6 +371,7 @@ describe("CheckpointDiffQuery.layer", () => {
               Effect.die("CheckpointDiffQuery should not request the command read model"),
             getSnapshot: () =>
               Effect.die("CheckpointDiffQuery should not request the full orchestration snapshot"),
+            listThreadsWithPullRequests: () => Effect.succeed([]),
             getShellSnapshot: () =>
               Effect.die("CheckpointDiffQuery should not request the orchestration shell snapshot"),
             getArchivedShellSnapshot: () =>
@@ -430,6 +434,7 @@ describe("CheckpointDiffQuery.layer", () => {
               Effect.die("CheckpointDiffQuery should not request the command read model"),
             getSnapshot: () =>
               Effect.die("CheckpointDiffQuery should not request the full orchestration snapshot"),
+            listThreadsWithPullRequests: () => Effect.succeed([]),
             getShellSnapshot: () =>
               Effect.die("CheckpointDiffQuery should not request the orchestration shell snapshot"),
             getArchivedShellSnapshot: () =>

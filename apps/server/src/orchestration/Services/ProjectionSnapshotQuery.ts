@@ -78,6 +78,12 @@ export interface ProjectionPendingTurnAdmission {
   readonly sessionIncarnationId: RuntimeSessionId | null;
 }
 
+/** Fields needed to refresh linked pull requests for one active thread. */
+export type ProjectionThreadPullRequests = Pick<
+  OrchestrationThreadShell,
+  "id" | "projectId" | "settledOverride" | "settledAt" | "pullRequests"
+>;
+
 export interface ProjectionThreadDetailQuery {
   /**
    * Limit activities before SQLite returns and decodes their payloads.
@@ -136,6 +142,12 @@ export interface ProjectionSnapshotQueryShape {
    */
   readonly getShellSnapshot: () => Effect.Effect<
     OrchestrationShellSnapshot,
+    ProjectionRepositoryError
+  >;
+
+  /** Read active threads with persisted pull request links in shell order. */
+  readonly listThreadsWithPullRequests: () => Effect.Effect<
+    ReadonlyArray<ProjectionThreadPullRequests>,
     ProjectionRepositoryError
   >;
 

@@ -1,7 +1,6 @@
 import { siblingPullRequestUrl } from "@t3tools/shared/changeRequestUrl";
 import {
   CommandId,
-  type OrchestrationThreadShell,
   type PullRequestSummary,
   type ThreadPullRequestKey,
   type ThreadPullRequestLink,
@@ -36,7 +35,7 @@ const SLOW_SYNC_INTERVAL_MS = 15 * 60 * 1_000;
 type SnapshotFields = Omit<ThreadPullRequestSnapshot, "syncedAt">;
 
 interface LinkEntry {
-  readonly thread: OrchestrationThreadShell;
+  readonly thread: ProjectionSnapshotQuery.ProjectionThreadPullRequests;
   readonly link: ThreadPullRequestLink;
 }
 
@@ -104,7 +103,7 @@ function stacksEqual(
   );
 }
 
-function isUnsettled(thread: OrchestrationThreadShell): boolean {
+function isUnsettled(thread: ProjectionSnapshotQuery.ProjectionThreadPullRequests): boolean {
   return thread.settledOverride !== "settled" && thread.settledAt === null;
 }
 
@@ -153,14 +152,13 @@ export const make = Effect.gen(function* () {
       Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : Effect.logWarning(message, fields);
 
   const sweep = Effect.fn("PullRequestSyncReactor.sweep")(function* (requestedKey?: string) {
-    const snapshot = yield* snapshots.getShellSnapshot();
+    const threads = yield* snapshots.listThreadsWithPullRequests();
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
     const nowIso = DateTime.formatIso(now);
 
     const groups = new Map<string, Array<LinkEntry>>();
-    for (const thread of snapshot.threads) {
-      if (thread.archivedAt !== null) continue;
+    for (const thread of threads) {
       for (const link of visibleThreadPullRequests(thread.pullRequests)) {
         const key = threadPullRequestKeyOf(link);
         const entries = groups.get(key) ?? [];

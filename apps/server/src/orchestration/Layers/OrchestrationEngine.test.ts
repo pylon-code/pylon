@@ -613,6 +613,7 @@ describe("OrchestrationEngine", () => {
               fullSnapshotReadCount += 1;
               return projectionSnapshot;
             }),
+          listThreadsWithPullRequests: () => Effect.succeed([]),
           getShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: projectionSnapshot.snapshotSequence,

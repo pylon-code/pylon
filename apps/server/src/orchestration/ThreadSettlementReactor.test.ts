@@ -21,6 +21,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -168,7 +169,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   const activation = yield* Deferred.make<void>();
   const snapshots = yield* Ref.make(options.snapshot);
   const snapshotReadCount = yield* Ref.make(0);
-  const snapshotReads = yield* Queue.unbounded<number>();
+  const snapshotReads = yield* Queue.unbounded<ThreadId | null>();
   const settings = yield* Ref.make(options.settings ?? DEFAULT_SERVER_SETTINGS);
   const settingsReads = yield* Queue.unbounded<ServerSettings>();
   const settingsChanges = yield* PubSub.unbounded<ServerSettings>();
@@ -244,9 +245,24 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
 
   const dependencies = Layer.mergeAll(
     Layer.mock(ProjectionSnapshotQuery)({
+      getSnapshotSequence: () =>
+        Ref.get(snapshots).pipe(Effect.map((s) => ({ snapshotSequence: s.snapshotSequence }))),
+      getThreadShellById: (id) =>
+        Ref.updateAndGet(snapshotReadCount, (count) => count + 1).pipe(
+          Effect.tap(() => Queue.offer(snapshotReads, id)),
+          Effect.andThen(Ref.get(snapshots)),
+          Effect.map((s) => {
+            const thread = s.threads.find((item) => item.id === id);
+            return thread === undefined ? Option.none() : Option.some(thread);
+          }),
+        ),
+      getProjectShells: (ids) =>
+        Ref.get(snapshots).pipe(
+          Effect.map((s) => s.projects.filter((project) => ids?.includes(project.id) ?? true)),
+        ),
       getShellSnapshot: () =>
         Ref.updateAndGet(snapshotReadCount, (count) => count + 1).pipe(
-          Effect.tap((count) => Queue.offer(snapshotReads, count)),
+          Effect.tap(() => Queue.offer(snapshotReads, null)),
           Effect.andThen(Ref.get(snapshots)),
         ),
     }),
@@ -303,7 +319,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
 const startHarness = Effect.fn("startThreadSettlementHarness")(function* (
   reactor: ThreadSettlementReactor.ThreadSettlementReactor["Service"],
   activation: Deferred.Deferred<void>,
-  snapshotReads: Queue.Queue<number>,
+  snapshotReads: Queue.Queue<ThreadId | null>,
 ) {
   yield* reactor.start();
   yield* Deferred.succeed(activation, undefined);
@@ -424,7 +440,7 @@ describe("ThreadSettlementReactor", () => {
               aggregateId: readySession.threadId,
               payload: { threadId: readySession.threadId, session: readySession },
             });
-            yield* Queue.take(fixture.snapshotReads);
+            assert.strictEqual(yield* Queue.take(fixture.snapshotReads), readySession.threadId);
             yield* reactor.drain;
             assert.deepStrictEqual(
               (yield* Ref.get(fixture.commands)).map(({ threadId }) => threadId),
