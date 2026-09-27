@@ -16,6 +16,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { MiddleTruncate } from "../ui/middle-truncate";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { openLinkPullRequestDialog } from "./LinkPullRequestDialog";
@@ -75,6 +76,7 @@ function LinkRow({
   const openPrLink = useOpenPrLink(threadRef);
   const { link, depth, stack } = line;
   const snapshot = link.snapshot;
+  const repositoryLabel = `${link.host}/${link.repository}`;
   return (
     <div
       className={cn(PULL_REQUEST_ROW_CLASS, "relative hover:bg-accent/60")}
@@ -161,11 +163,17 @@ function LinkRow({
                 />
               ) : null}
               {snapshot !== null ? (
-                <PullRequestRowBranches head={snapshot.headBranch} base={snapshot.baseBranch} />
+                <>
+                  <Tooltip>
+                    <TooltipTrigger render={<span className="flex min-w-0 max-w-32 font-mono" />}>
+                      <MiddleTruncate value={repositoryLabel} showTitle={false} />
+                    </TooltipTrigger>
+                    <TooltipPopup>{repositoryLabel}</TooltipPopup>
+                  </Tooltip>
+                  <PullRequestRowBranches head={snapshot.headBranch} base={snapshot.baseBranch} />
+                </>
               ) : (
-                <span className="truncate font-mono">
-                  {link.host}/{link.repository}
-                </span>
+                <span className="truncate font-mono">{repositoryLabel}</span>
               )}
             </>
           }
