@@ -267,6 +267,8 @@ function compactAccessibilityForPrompt(
 
 /** How long a manual context compaction may run before ProviderService gives up on it. */
 const COMPACTION_COMPLETION_TIMEOUT = "10 minutes";
+/** Allow process teardown and event ingestion beyond Antigravity ACP's 3-second cancel grace. */
+const ANTIGRAVITY_STOP_RECEIPT_TIMEOUT = "15 seconds";
 
 interface PendingCompaction {
   readonly completion: Deferred.Deferred<string>;
@@ -611,6 +613,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+  const serviceScope = yield* Effect.scope;
   const rollbackRepository = yield* Effect.serviceOption(RollbackSagaRepository);
   const assertNotRollbackFenced = Effect.fn("ProviderService.assertNotRollbackFenced")(function* (
     threadId: ThreadId,
@@ -650,6 +653,20 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
     }
   >();
+  // Only an explicit Antigravity Stop reserves this fence. Adapter events are
+  // queued, so a replacement incarnation must wait for the old exit receipt.
+  const antigravityStopFences = new Map<
+    ThreadId,
+    {
+      readonly incarnationId: RuntimeSessionId;
+      readonly completed: Deferred.Deferred<void, ProviderValidationError>;
+    }
+  >();
+  const awaitAntigravityStop = (threadId: ThreadId) =>
+    Effect.suspend(() => {
+      const fence = antigravityStopFences.get(threadId);
+      return fence ? Deferred.await(fence.completed) : Effect.void;
+    });
   const activeTurnAdmissions = new Map<
     ThreadId,
     {
@@ -1727,9 +1744,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           currentSessionIncarnations.delete(canonicalEvent.threadId);
         }
         const mcpSession = McpProviderSession.readMcpProviderSession(canonicalEvent.threadId);
-        if (mcpSession?.providerInstanceId !== source.instanceId) return;
-        if (!stillActive)
+        if (mcpSession?.providerInstanceId === source.instanceId && !stillActive)
           yield* clearMcpSession(canonicalEvent.threadId, source.adapter.runtimeFence);
+        const stopFence = antigravityStopFences.get(canonicalEvent.threadId);
+        if (stopFence?.incarnationId === currentIncarnation.id) {
+          // The subscriber processes task.completed before session.exited.
+          antigravityStopFences.delete(canonicalEvent.threadId);
+          yield* Deferred.succeed(stopFence.completed, undefined);
+        }
       }
     });
 
@@ -1760,6 +1782,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       if (oldAdapter.runtimeFence === undefined || next.get(instanceId) === oldAdapter) continue;
       for (const [threadId, incarnation] of currentSessionIncarnations) {
         if (incarnation.instanceId !== instanceId || incarnation.adapter !== oldAdapter) continue;
+        const stopFence = antigravityStopFences.get(threadId);
+        if (stopFence?.incarnationId === incarnation.id) {
+          antigravityStopFences.delete(threadId);
+          yield* Deferred.fail(
+            stopFence.completed,
+            toValidationError(
+              "ProviderService.interruptTurn",
+              `Antigravity was replaced before session shutdown completed for thread '${threadId}'.`,
+            ),
+          );
+        }
         yield* clearMcpSession(threadId, oldAdapter.runtimeFence);
         yield* clearTurnAnalyticsSession(instanceId, threadId);
         currentSessionIncarnations.delete(threadId);
@@ -1957,6 +1990,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     readonly operation: string;
     readonly allowRecovery: boolean;
   }) {
+    yield* awaitAntigravityStop(input.threadId);
     const bindingOption = yield* directory.getBinding(input.threadId);
     const binding = Option.getOrUndefined(bindingOption);
     if (!binding) {
@@ -2164,6 +2198,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             }
             const adapter = yield* registry.getByInstance(resolvedInstanceId);
             yield* requireAdapterGenerationCurrent(adapter, "ProviderService.startSession");
+            yield* awaitAntigravityStop(threadId);
             const sessionIncarnationId = RuntimeSessionId.make(NodeCrypto.randomUUID());
             const previousIncarnation = currentSessionIncarnations.get(threadId);
             const restorePreviousIncarnation = restorePreviousIncarnationIfLive(
@@ -2892,13 +2927,57 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         payload: rawInput,
       });
       yield* assertNotRollbackFenced(input.threadId, "ProviderService.interruptTurn");
+      const inFlightStop = antigravityStopFences.get(input.threadId);
+      if (inFlightStop) return yield* Deferred.await(inFlightStop.completed);
+      const incarnation = currentSessionIncarnations.get(input.threadId);
+      const oldSessionIsLive =
+        incarnation?.adapter.provider === "antigravity" &&
+        (yield* incarnation.adapter.listSessions()).some(
+          (session) =>
+            session.threadId === input.threadId && session.sessionIncarnationId === incarnation.id,
+        );
+      const stopFence =
+        oldSessionIsLive && incarnation
+          ? {
+              incarnationId: incarnation.id,
+              completed: yield* Deferred.make<void, ProviderValidationError>(),
+            }
+          : undefined;
+      if (stopFence) {
+        yield* Effect.gen(function* () {
+          antigravityStopFences.set(input.threadId, stopFence);
+          yield* Deferred.await(stopFence.completed).pipe(
+            Effect.exit,
+            Effect.timeoutOption(ANTIGRAVITY_STOP_RECEIPT_TIMEOUT),
+            Effect.flatMap((result) =>
+              Option.isSome(result)
+                ? Effect.void
+                : Effect.gen(function* () {
+                    if (antigravityStopFences.get(input.threadId) !== stopFence) return;
+                    antigravityStopFences.delete(input.threadId);
+                    yield* Deferred.fail(
+                      stopFence.completed,
+                      toValidationError(
+                        "ProviderService.interruptTurn",
+                        `Antigravity did not report session shutdown for thread '${input.threadId}'.`,
+                      ),
+                    );
+                  }),
+            ),
+            Effect.forkIn(serviceScope),
+          );
+        }).pipe(Effect.uninterruptible);
+      }
       let metricProvider = "unknown";
       return yield* Effect.gen(function* () {
-        const routed = yield* resolveRoutableSession({
-          threadId: input.threadId,
-          operation: "ProviderService.interruptTurn",
-          allowRecovery: true,
-        });
+        const routed =
+          stopFence && incarnation
+            ? { adapter: incarnation.adapter, threadId: input.threadId }
+            : yield* resolveRoutableSession({
+                threadId: input.threadId,
+                operation: "ProviderService.interruptTurn",
+                allowRecovery: true,
+              });
         metricProvider = routed.adapter.provider;
         yield* Effect.annotateCurrentSpan({
           "provider.operation": "interrupt-turn",
@@ -2906,7 +2985,32 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.thread_id": input.threadId,
           "provider.turn_id": input.turnId,
         });
-        yield* routed.adapter.interruptTurn(routed.threadId, input.turnId);
+        yield* routed.adapter.interruptTurn(routed.threadId, input.turnId).pipe(
+          Effect.ensuring(
+            stopFence
+              ? Effect.gen(function* () {
+                  const oldSessionStillActive = yield* routed.adapter.listSessions().pipe(
+                    Effect.map((sessions) =>
+                      sessions.some(
+                        (session) =>
+                          session.threadId === input.threadId &&
+                          session.sessionIncarnationId === stopFence.incarnationId,
+                      ),
+                    ),
+                    Effect.catchCause(() => Effect.succeed(false)),
+                  );
+                  if (oldSessionStillActive) {
+                    if (antigravityStopFences.get(input.threadId) === stopFence) {
+                      antigravityStopFences.delete(input.threadId);
+                    }
+                    yield* Deferred.succeed(stopFence.completed, undefined);
+                    return;
+                  }
+                })
+              : Effect.void,
+          ),
+        );
+        if (stopFence) yield* Deferred.await(stopFence.completed);
         yield* recordAdapterAnalytics(
           routed.adapter,
           analytics.record("provider.turn.interrupted", {
@@ -2914,6 +3018,30 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           }),
         );
       }).pipe(
+        Effect.ensuring(
+          stopFence
+            ? Effect.gen(function* () {
+                if (antigravityStopFences.get(input.threadId) !== stopFence) return;
+                const oldSessionStillActive =
+                  incarnation === undefined
+                    ? false
+                    : yield* incarnation.adapter.listSessions().pipe(
+                        Effect.map((sessions) =>
+                          sessions.some(
+                            (session) =>
+                              session.threadId === input.threadId &&
+                              session.sessionIncarnationId === stopFence.incarnationId,
+                          ),
+                        ),
+                        Effect.catchCause(() => Effect.succeed(false)),
+                      );
+                if (oldSessionStillActive) {
+                  antigravityStopFences.delete(input.threadId);
+                  yield* Deferred.succeed(stopFence.completed, undefined);
+                }
+              })
+            : Effect.void,
+        ),
         withMetrics({
           counter: providerTurnsTotal,
           outcomeAttributes: () =>
