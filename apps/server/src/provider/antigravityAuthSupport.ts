@@ -1,6 +1,7 @@
 import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Effect's symlink has no type argument, and Windows needs a junction to link without elevation.
 import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - resolveAntigravityProfileDirectory is a pure sync helper, so it cannot use the Path service.
 import * as NodePath from "node:path";
 
@@ -193,9 +194,25 @@ export function resolveAntigravityProfileDirectory(
   return NodePath.join(stateDir, "providers", "antigravity", directoryName);
 }
 
-/** Parent of the per-process runtime temp directories inside a profile. */
-export function resolveAntigravityRuntimeTempDirectory(profileDirectory: string): string {
-  return NodePath.join(profileDirectory, "antigravity-acp", "tmp");
+/** Short per-instance parent for per-process runtime unpack directories. */
+export function resolveAntigravityRuntimeTempDirectory(
+  stateDir: string,
+  instanceId: ProviderInstanceId,
+  options: { readonly platform: NodeJS.Platform; readonly systemTempDirectory?: string },
+): string | null {
+  // Leave 159 characters for run-*, _MEI* and the bundle's deepest member.
+  // MAX_PATH includes the terminating NUL, so a 100-character root is safe.
+  const platform = options.platform;
+  const path = platform === "win32" ? NodePath.win32 : NodePath;
+  const key = NodeCrypto.createHash("sha256").update(instanceId).digest("hex");
+  const ownedRoot = path.join(stateDir, "antigravity-tmp", key.slice(0, 12));
+  if (platform !== "win32" || ownedRoot.length <= 100) return ownedRoot;
+  const systemRoot = path.join(
+    options.systemTempDirectory ?? NodeOS.tmpdir(),
+    "pylon-ag",
+    key.slice(0, 12),
+  );
+  return systemRoot.length <= 100 ? systemRoot : null;
 }
 
 function quoteBrowserArgument(value: string): string {
@@ -299,6 +316,8 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
   readonly auth?: AntigravityAuthConfig;
   /** Home the agent expands `~` against. Defaults to the launch environment's. */
   readonly userHome?: string;
+  /** Parent of per-process unpack directories. */
+  readonly tempDirectory?: string;
 }) {
   const auth = input.auth ?? ANTIGRAVITY_PERSONAL_AUTH;
   const fs = yield* FileSystem.FileSystem;
@@ -326,7 +345,7 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
 
   const geminiHome = path.resolve(input.profileDirectory);
   const acpDirectory = path.join(geminiHome, "antigravity-acp");
-  const tempDirectory = resolveAntigravityRuntimeTempDirectory(geminiHome);
+  const tempDirectory = input.tempDirectory ?? path.join(acpDirectory, "tmp");
   const profile: AntigravityProfile = {
     platform,
     geminiHome,

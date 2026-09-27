@@ -475,6 +475,8 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
           profileDirectory,
           platform,
           baseEnv: environment,
+          // The disposable profile is shallow and cleans up validation unpacking.
+          tempDirectory: profileDirectory,
         });
         const runtime = yield* makeAntigravityAcpRuntime({
           spawn: buildAntigravityAcpSpawnInput({
