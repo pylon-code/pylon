@@ -13,6 +13,7 @@ import { Atom } from "effect/unstable/reactivity";
 import { projectFaviconUrlAtom } from "../state/assets";
 import { AppText } from "./AppText";
 import { ProjectMonogram } from "./ProjectMonogram";
+import { projectTitleInitial } from "../lib/projectTitleInitial";
 
 import {
   beginProjectFaviconRequest,
@@ -36,7 +37,7 @@ export function ProjectFavicon(props: {
 }) {
   const size = props.size ?? 42;
   const faviconUrl = useAtomValue(
-    props.workspaceRoot == null
+    props.workspaceRoot == null || props.projectIcon?.kind === "lucide"
       ? EMPTY_FAVICON_URL
       : projectFaviconUrlAtom({
           environmentId: props.environmentId,
@@ -57,6 +58,15 @@ export function ProjectFavicon(props: {
   if (props.projectIcon?.kind === "monogram") {
     return (
       <ProjectMonogram text={props.projectIcon.text} color={props.projectIcon.color} size={size} />
+    );
+  }
+  if (props.projectIcon?.kind === "lucide") {
+    return (
+      <ProjectMonogram
+        text={projectTitleInitial(props.projectTitle)}
+        color={props.projectIcon.color}
+        size={size}
+      />
     );
   }
   if (props.projectIcon?.kind === "emoji") {

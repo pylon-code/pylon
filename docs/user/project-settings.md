@@ -56,8 +56,9 @@ Icon and image choices apply to the selected checkouts in a project group and ap
 clients. Every environment in the group must support saved icons before custom icons are available.
 The monogram option appears only when every environment in the group supports it.
 Pylon supports SVG, PNG, ICO, JPEG, GIF, AVIF, and WebP images. Custom icons and emoji show on web and
-desktop; mobile shows saved emoji and custom monograms, and otherwise uses the project's image when
-one is available. Mobile **Client storage** includes
+desktop; mobile shows saved emoji and custom monograms, and shows a colored project-title initial
+for Lucide icons. Without a saved choice, mobile uses the project's image when one is available.
+Mobile **Client storage** includes
 cached project images and can clear them.
 
 When no custom icon or image is found, web and desktop show a two-character monogram with colors
