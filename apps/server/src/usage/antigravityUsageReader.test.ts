@@ -120,6 +120,7 @@ describe("antigravityUsageReader", () => {
         reasoningTokens: 150,
       });
       expect(outcome.record?.reportedCostUsd).toBeNull();
+      expect(outcome.record?.fast).toBe(false);
 
       expect(outcome.contextSnapshot).toEqual({
         timestampMs: 1785578400500,

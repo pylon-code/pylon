@@ -36,8 +36,14 @@ import { encodeSyntheticGenMetadataBlob } from "./antigravityTestFixtures.ts";
 import * as UsageService from "./UsageService.ts";
 
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeUnknownJsonString = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 
-function claudeLine(id: number, outputTokens: number, model = "claude-fable-5"): string {
+function claudeLine(
+  id: number,
+  outputTokens: number,
+  model = "claude-fable-5",
+  speed?: string,
+): string {
   return `${JSON.stringify({
     type: "assistant",
     timestamp: "2026-08-01T10:00:00Z",
@@ -46,7 +52,7 @@ function claudeLine(id: number, outputTokens: number, model = "claude-fable-5"):
     message: {
       id: `msg_${id}`,
       model,
-      usage: { input_tokens: 10, output_tokens: outputTokens },
+      usage: { input_tokens: 10, output_tokens: outputTokens, ...(speed ? { speed } : {}) },
     },
   })}\n`;
 }
@@ -573,6 +579,73 @@ describe("UsageService", () => {
             settings: { providers: { ...settings.providers, claudeAgent: { homePath: alias } } },
             ratesDocument: {
               "claude-fable-5": { input_cost_per_token: 1e-5, output_cost_per_token: 5e-5 },
+            },
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("migrates v3 history while reparsing live Claude fast transcripts", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      const deletedTranscript = NodePath.join(NodePath.dirname(transcript), "deleted.jsonl");
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(transcript, claudeLine(1, 5, "claude-fable-5", "fast"));
+        await NodeFSP.writeFile(deletedTranscript, claudeLine(2, 5, "claude-fable-5", "fast"));
+      });
+      const liveCachePath = yield* Effect.promise(() => NodeFSP.realpath(transcript));
+      const deletedCachePath = yield* Effect.promise(() => NodeFSP.realpath(deletedTranscript));
+
+      yield* Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const cachePath = NodePath.join(config.stateDir, "usage-scan-cache.json");
+        const first = yield* UsageService.make;
+        const before = yield* first.readSummary(WINDOW);
+        assert.strictEqual(totalOutputTokens(before), 10);
+
+        yield* Effect.promise(async () => {
+          const cache = decodeUnknownJsonString(await NodeFSP.readFile(cachePath, "utf8")) as {
+            version: number;
+            files: Record<string, { r: number[][]; t: number[][] }>;
+          };
+          cache.version = 3;
+          for (const entry of Object.values(cache.files) as Array<{
+            r: number[][];
+            t: number[][];
+          }>) {
+            entry.r = entry.r.map((row) => row.slice(0, 10));
+            entry.t = entry.t.map((row) => row.slice(0, 10));
+          }
+          await NodeFSP.writeFile(cachePath, encodeUnknownJsonString(cache));
+          await NodeFSP.rm(deletedTranscript);
+        });
+
+        const restarted = yield* UsageService.make;
+        const migrated = yield* restarted.readSummary(WINDOW);
+        assert.strictEqual(totalOutputTokens(migrated), 10);
+        // The deleted request survives at the old standard price; the live
+        // request is reparsed and receives the published 2x fast price.
+        assert.closeTo(migrated.buckets[0]?.costUsd ?? 0, 0.00105, 1e-10);
+        const persisted = decodeUnknownJsonString(
+          yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8")),
+        ) as { version: number; files: Record<string, { fr?: number }> };
+        assert.strictEqual(persisted.version, 4);
+        assert.isDefined(persisted.files[liveCachePath]);
+        assert.isUndefined(persisted.files[liveCachePath]?.fr);
+        assert.strictEqual(persisted.files[deletedCachePath]?.fr, 1);
+      }).pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-v3-fast-migration-test",
+            home,
+            settings,
+            ratesDocument: {
+              "claude-fable-5": {
+                input_cost_per_token: 1e-5,
+                output_cost_per_token: 5e-5,
+                provider_specific_entry: { fast: 2 },
+              },
             },
           }),
         ),
