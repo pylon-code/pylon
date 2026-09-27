@@ -23,6 +23,27 @@ const backgroundClasses: Record<ProjectIconColor, string> = {
   rose: "bg-rose-500/15",
 };
 
+const foregroundClasses: Record<ProjectIconColor, string> = {
+  gray: "text-gray-500",
+  red: "text-red-500",
+  orange: "text-orange-500",
+  amber: "text-amber-500",
+  yellow: "text-yellow-500",
+  lime: "text-lime-500",
+  green: "text-green-500",
+  emerald: "text-emerald-500",
+  teal: "text-teal-500",
+  cyan: "text-cyan-500",
+  sky: "text-sky-500",
+  blue: "text-blue-500",
+  indigo: "text-indigo-500",
+  violet: "text-violet-500",
+  purple: "text-purple-500",
+  fuchsia: "text-fuchsia-500",
+  pink: "text-pink-500",
+  rose: "text-rose-500",
+};
+
 export function ProjectMonogram(props: {
   readonly text: string;
   readonly color: ProjectIconColor;
@@ -34,7 +55,11 @@ export function ProjectMonogram(props: {
       className={`items-center justify-center ${backgroundClasses[props.color]}`}
       style={{ width: props.size, height: props.size, borderRadius: props.size * 0.25 }}
     >
-      <AppText className="font-t3-bold" style={{ fontSize: props.size * 0.5 }} numberOfLines={1}>
+      <AppText
+        className={`font-t3-bold ${foregroundClasses[props.color]}`}
+        style={{ fontSize: props.size * 0.5 }}
+        numberOfLines={1}
+      >
         {props.text}
       </AppText>
     </View>
