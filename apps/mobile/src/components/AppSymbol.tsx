@@ -2,6 +2,7 @@ import IconCloud from "@tabler/icons-react-native/IconCloud";
 import IconDeviceLaptop from "@tabler/icons-react-native/IconDeviceLaptop";
 import type { Icon } from "@tabler/icons-react-native";
 import IconAdjustmentsHorizontal from "@tabler/icons-react-native/IconAdjustmentsHorizontal";
+import IconAlignLeft from "@tabler/icons-react-native/IconAlignLeft";
 import IconAlertCircle from "@tabler/icons-react-native/IconAlertCircle";
 import IconAlertTriangle from "@tabler/icons-react-native/IconAlertTriangle";
 import IconApps from "@tabler/icons-react-native/IconApps";
@@ -29,11 +30,13 @@ import IconChevronLeft from "@tabler/icons-react-native/IconChevronLeft";
 import IconChevronRight from "@tabler/icons-react-native/IconChevronRight";
 import IconChevronUp from "@tabler/icons-react-native/IconChevronUp";
 import IconCircleCheck from "@tabler/icons-react-native/IconCircleCheck";
+import IconCircle from "@tabler/icons-react-native/IconCircle";
 import IconCircleXFilled from "@tabler/icons-react-native/IconCircleXFilled";
 import IconClock from "@tabler/icons-react-native/IconClock";
 import IconTicket from "@tabler/icons-react-native/IconTicket";
 import IconCopy from "@tabler/icons-react-native/IconCopy";
 import IconDeviceDesktop from "@tabler/icons-react-native/IconDeviceDesktop";
+import IconDeviceMobile from "@tabler/icons-react-native/IconDeviceMobile";
 import IconDots from "@tabler/icons-react-native/IconDots";
 import IconDotsCircleHorizontal from "@tabler/icons-react-native/IconDotsCircleHorizontal";
 import IconEdit from "@tabler/icons-react-native/IconEdit";
@@ -57,6 +60,7 @@ import IconLayoutColumns from "@tabler/icons-react-native/IconLayoutColumns";
 import IconLayoutSidebar from "@tabler/icons-react-native/IconLayoutSidebar";
 import IconLetterSpacing from "@tabler/icons-react-native/IconLetterSpacing";
 import IconMenu2 from "@tabler/icons-react-native/IconMenu2";
+import IconMicrophone from "@tabler/icons-react-native/IconMicrophone";
 import IconLink from "@tabler/icons-react-native/IconLink";
 import IconMessage from "@tabler/icons-react-native/IconMessage";
 import IconMinus from "@tabler/icons-react-native/IconMinus";
@@ -124,11 +128,13 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "chart.bar.xaxis": IconChartBar,
   checkmark: IconCheck,
   "checkmark.circle": IconCircleCheck,
+  circle: IconCircle,
   clock: IconClock,
   cloud: IconCloud,
   laptopcomputer: IconDeviceLaptop,
   macmini: IconServer,
   macstudio: IconDeviceDesktop,
+  mic: IconMicrophone,
   ticket: IconTicket,
   cube: IconBox,
   "chevron.down": IconChevronDown,
@@ -143,6 +149,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   moon: IconMoon,
   "ellipsis.circle": IconDotsCircleHorizontal,
   "exclamationmark.triangle": IconAlertTriangle,
+  "exclamationmark.circle": IconAlertCircle,
   eye: IconEye,
   folder: IconFolder,
   "folder.badge.plus": IconFolderPlus,
@@ -184,6 +191,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "sun.max": IconSun,
   "stop.fill": IconPlayerStopFilled,
   terminal: IconTerminal2,
+  "text.alignleft": IconAlignLeft,
   "text.bubble": IconMessage,
   "text.word.spacing": IconLetterSpacing,
   "textformat.size": IconTypography,
@@ -219,8 +227,10 @@ const ANDROID_ICON_BY_MATERIAL_NAME: Record<string, Icon> = {
   keyboard_arrow_up: IconChevronUp,
   keyboard_hide: IconKeyboardHide,
   lock: IconLock,
+  merge: IconGitMerge,
   public: IconWorld,
   remove: IconMinus,
+  smartphone: IconDeviceMobile,
   terminal: IconTerminal2,
   visibility: IconEye,
 };
