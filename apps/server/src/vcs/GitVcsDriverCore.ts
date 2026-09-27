@@ -2362,9 +2362,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const indexStat = indexExists
       ? yield* fileSystem.stat(indexPath).pipe(Effect.option)
       : Option.none();
+    // stat's Date has millisecond precision; flooring keeps same-second edits racy
+    // without forcing an unchanged file from the preceding second to be reread.
     const indexTime =
       Option.isSome(indexStat) && Option.isSome(indexStat.value.mtime)
-        ? Math.floor((indexStat.value.mtime.value.getTime() - 1) / 1000)
+        ? Math.floor(indexStat.value.mtime.value.getTime() / 1000)
         : null;
     if (indexExists) yield* fileSystem.copyFile(indexPath, tempIndexPath);
     const env = { GIT_INDEX_FILE: tempIndexPath } satisfies NodeJS.ProcessEnv;
