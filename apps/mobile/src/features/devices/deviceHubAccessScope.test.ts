@@ -35,7 +35,6 @@ describe("mobile device access scope", () => {
       currentDeviceHubAccess({
         prepared: input.prepared,
         connection: connected(input.generation),
-        connectionPending: false,
         reading: input.reading,
         readingPending: input.pending ?? false,
         readingError: null,
@@ -63,22 +62,39 @@ describe("mobile device access scope", () => {
       }),
     ).not.toBeNull();
 
+    const ownerA = {};
+    const ownerB = {};
     const oldPreview = { sessions: ["A"] };
+    const readingAState = { state: oldPreview, sessionOwner: ownerA, generation: 1 };
+    expect(
+      currentDeviceState({
+        connection: connected(1),
+        sessionOwner: ownerA,
+        reading: readingAState,
+        stateError: null,
+      }),
+    ).toBe(oldPreview);
     expect(
       currentDeviceState({
         connection: connected(2),
-        connectionPending: false,
-        state: oldPreview,
-        statePending: true,
+        sessionOwner: ownerA,
+        reading: readingAState,
         stateError: null,
       }),
     ).toBeNull();
     expect(
       currentDeviceState({
-        connection: { ...connected(2), phase: "connecting" },
-        connectionPending: false,
-        state: oldPreview,
-        statePending: false,
+        connection: connected(2),
+        sessionOwner: ownerB,
+        reading: readingAState,
+        stateError: null,
+      }),
+    ).toBeNull();
+    expect(
+      currentDeviceState({
+        connection: { ...connected(1), phase: "connecting" },
+        sessionOwner: ownerA,
+        reading: readingAState,
         stateError: null,
       }),
     ).toBeNull();

@@ -11,14 +11,12 @@ export interface ScopedDeviceHubAccess<Prepared extends object> {
 export function currentDeviceHubAccess<Prepared extends object>(input: {
   readonly prepared: Prepared | null;
   readonly connection: SupervisorConnectionState | null;
-  readonly connectionPending: boolean;
   readonly reading: ScopedDeviceHubAccess<Prepared> | null;
   readonly readingPending: boolean;
   readonly readingError: string | null;
   readonly hostId: string;
 }): DeviceHubAccess | null {
   if (
-    input.connectionPending ||
     input.connection?.phase !== "connected" ||
     input.prepared === null ||
     input.readingPending ||
@@ -37,15 +35,19 @@ export function currentDeviceHubAccess<Prepared extends object>(input: {
 
 export function currentDeviceState<State>(input: {
   readonly connection: SupervisorConnectionState | null;
-  readonly connectionPending: boolean;
-  readonly state: State | null;
-  readonly statePending: boolean;
+  readonly sessionOwner: object | null;
+  readonly reading: {
+    readonly state: State;
+    readonly sessionOwner: object;
+    readonly generation: number;
+  } | null;
   readonly stateError: string | null;
 }): State | null {
-  return !input.connectionPending &&
-    input.connection?.phase === "connected" &&
-    !input.statePending &&
+  return input.connection?.phase === "connected" &&
+    input.sessionOwner !== null &&
+    input.reading?.sessionOwner === input.sessionOwner &&
+    input.reading.generation === input.connection.generation &&
     input.stateError === null
-    ? input.state
+    ? input.reading.state
     : null;
 }

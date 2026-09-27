@@ -548,7 +548,7 @@ const RootStackConfig = createNativeStackNavigator({
       linking: `${THREAD_LINKING_PREFIX}/devices`,
       options: {
         presentation: "fullScreenModal",
-        headerShown: false,
+        headerShown: Platform.OS === "ios",
         gestureEnabled: false,
       },
     }),
