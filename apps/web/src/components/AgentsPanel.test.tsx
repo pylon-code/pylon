@@ -134,6 +134,77 @@ describe("background agent stop routing", () => {
 });
 
 describe("AgentsPanel agent cancellation", () => {
+  it("puts active states first and hides inactive history without changing status labels", () => {
+    const statuses: RuntimeSubagent["status"][] = [
+      "completed",
+      "failed",
+      "cancelled",
+      "interrupted",
+      "idle",
+      "running",
+      "waiting",
+      "pending",
+    ];
+    const markup = renderToStaticMarkup(
+      <AgentsPanel
+        model={{
+          ...model,
+          directAgents: statuses.map((status) =>
+            agent(`agent-${status}`, `Reviewer ${status}`, status),
+          ),
+        }}
+      />,
+    );
+    const history = markup.indexOf("<details");
+    for (const status of ["running", "waiting", "pending"]) {
+      expect(markup.indexOf(`Reviewer ${status}`)).toBeLessThan(history);
+    }
+    for (const status of ["completed", "failed", "cancelled", "interrupted", "idle"]) {
+      expect(markup.indexOf(`Reviewer ${status}`)).toBeGreaterThan(history);
+    }
+    expect(markup).not.toMatch(/<details[^>]*\bopen=/);
+    expect(markup).toContain("Idle · resumable");
+    expect(markup).toContain("Queued");
+    expect(markup).toContain("Waiting");
+  });
+
+  it("keeps a resumed member active even when its coordinator is settled", () => {
+    const coordinator = { ...completed, id: "workflow", kind: "workflow" as const };
+    const finished = { ...completed, parentAgentId: coordinator.id };
+    const resumed = { ...active, parentAgentId: coordinator.id };
+    const markup = renderToStaticMarkup(
+      <AgentsPanel
+        model={{
+          ...model,
+          directAgents: [],
+          workflows: [{ workflow: coordinator, phases: [], unphasedMembers: [finished, resumed] }],
+        }}
+      />,
+    );
+    expect(markup.indexOf("Active reviewer")).toBeLessThan(markup.indexOf("<details"));
+    expect(markup.lastIndexOf("Finished reviewer")).toBeGreaterThan(markup.indexOf("<details"));
+  });
+
+  it("keeps memberless active workflows visible and reports an entirely inactive roster", () => {
+    const coordinator = { ...active, kind: "workflow" as const, title: "Starting workflow" };
+    const markup = renderToStaticMarkup(
+      <AgentsPanel
+        model={{
+          ...model,
+          directAgents: [],
+          workflows: [{ workflow: coordinator, phases: [], unphasedMembers: [] }],
+        }}
+      />,
+    );
+    expect(markup).toContain("Starting workflow");
+    expect(markup).not.toContain("No active agents");
+    const settled = renderToStaticMarkup(
+      <AgentsPanel model={{ ...model, directAgents: [completed] }} />,
+    );
+    expect(settled).toContain("No active agents");
+    expect(settled).toContain("Finished reviewer");
+  });
+
   it("offers cancellation only for active agents when the capability is enabled", () => {
     const markup = renderToStaticMarkup(
       <AgentsPanel
