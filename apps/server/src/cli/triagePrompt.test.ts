@@ -56,7 +56,9 @@ const baseContextInput = {
     dbPath: "/home/u/.t3/userdata/state.sqlite",
     settingsPath: "/home/u/.t3/userdata/settings.json",
     logsDir: "/home/u/.t3/userdata/logs",
-    serverLogPath: "/home/u/.t3/userdata/logs/server.log",
+    serviceLogPath: "/home/u/.t3/userdata/logs/boot-service.log",
+    desktopBackendLogGlob: "/home/u/.t3/userdata/logs/server-child*.log*",
+    desktopDevelopmentBackendLogGlob: "/home/u/.pylon-code/dev/logs/server-child*.log*",
     serverTracePath: "/home/u/.t3/userdata/logs/server.trace.ndjson",
     providerEventLogPath: "/home/u/.t3/userdata/logs/provider/events.log",
     terminalLogsDir: "/home/u/.t3/userdata/logs/terminals",
@@ -70,6 +72,13 @@ it("context file carries every path the playbook depends on", () => {
   const context = buildTriageContext(baseContextInput);
   assert.include(context, "/home/u/.t3/userdata/state.sqlite");
   assert.include(context, "/home/u/.t3/userdata/logs/server.trace.ndjson");
+  assert.include(context, "/home/u/.t3/userdata/logs/boot-service.log");
+  assert.include(context, "/home/u/.t3/userdata/logs/server-child*.log*");
+  assert.include(context, "/home/u/.pylon-code/dev/logs/server-child*.log*");
+  assert.include(context, "Desktop development backend logs (development without T3CODE_HOME");
+  assert.include(context, "selected base/profile for packaged app");
+  assert.include(context, "t3 triage --base-dir ~/.pylon-code-nightly");
+  assert.notInclude(context, "/home/u/.t3/userdata/logs/server.log");
   assert.include(context, "/home/u/.t3/userdata/logs/provider/events.log");
   assert.include(context, "/home/u/.t3/userdata/secrets");
   assert.include(context, "/home/u/.t3/source");
