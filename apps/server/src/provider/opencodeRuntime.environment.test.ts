@@ -234,23 +234,24 @@ describe("verifyOpenCodeServerVersion", () => {
 });
 
 describe("OpenCode server output", () => {
-  effectIt.live(
-    "drains stdout and stderr after startup so server requests can finish",
-    () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const environment = yield* HostProcessEnvironment;
-        const executablePath = yield* HostProcessExecutablePath;
-        const platform = yield* HostProcessPlatform;
-        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-output-" });
-        const isWindows = platform === "win32";
-        const binaryPath = path.join(tempDir, isWindows ? "opencode.cmd" : "opencode");
-        const scriptPath = path.join(tempDir, "opencode.mjs");
+  for (const readyPrefix of ["opencode server listening on", "server listening on"]) {
+    effectIt.live(
+      `starts from ${readyPrefix} and drains stdout and stderr`,
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const environment = yield* HostProcessEnvironment;
+          const executablePath = yield* HostProcessExecutablePath;
+          const platform = yield* HostProcessPlatform;
+          const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-output-" });
+          const isWindows = platform === "win32";
+          const binaryPath = path.join(tempDir, isWindows ? "opencode.cmd" : "opencode");
+          const scriptPath = path.join(tempDir, "opencode.mjs");
 
-        yield* fs.writeFileString(
-          scriptPath,
-          `import { createServer } from "node:http";
+          yield* fs.writeFileString(
+            scriptPath,
+            `import { createServer } from "node:http";
 const writeOutput = (stream) => new Promise((resolve, reject) => {
   stream.write("x".repeat(2 * 1024 * 1024), (error) => error ? reject(error) : resolve());
 });
@@ -264,46 +265,48 @@ const server = createServer(async (request, response) => {
   response.end("drained");
 });
 server.listen(0, "127.0.0.1", () => {
-  process.stdout.write("opencode server listening on http://127.0.0.1:" + server.address().port + "\\n");
+  process.stdout.write("unrelated server listening on http://127.0.0.1:1\\n");
+  process.stdout.write("${readyPrefix} http://127.0.0.1:" + server.address().port + "\\n");
 });
 `,
-        );
-        yield* fs.writeFileString(
-          binaryPath,
-          [
-            ...(isWindows ? ["@echo off"] : ["#!/bin/sh"]),
-            isWindows
-              ? '"%T3_TEST_NODE_BINARY%" "%T3_TEST_OPENCODE_SCRIPT%" %*'
-              : 'exec "$T3_TEST_NODE_BINARY" "$T3_TEST_OPENCODE_SCRIPT" "$@"',
-            "",
-          ].join("\n"),
-        );
-        if (!isWindows) {
-          yield* fs.chmod(binaryPath, 0o755);
-        }
+          );
+          yield* fs.writeFileString(
+            binaryPath,
+            [
+              ...(isWindows ? ["@echo off"] : ["#!/bin/sh"]),
+              isWindows
+                ? '"%T3_TEST_NODE_BINARY%" "%T3_TEST_OPENCODE_SCRIPT%" %*'
+                : 'exec "$T3_TEST_NODE_BINARY" "$T3_TEST_OPENCODE_SCRIPT" "$@"',
+              "",
+            ].join("\n"),
+          );
+          if (!isWindows) {
+            yield* fs.chmod(binaryPath, 0o755);
+          }
 
-        const runtime = yield* OpenCodeRuntime;
-        const server = yield* runtime.startOpenCodeServerProcess({
-          binaryPath,
-          directory: tempDir,
-          port: 0,
-          environment: {
-            ...environment,
-            T3_TEST_NODE_BINARY: executablePath,
-            T3_TEST_OPENCODE_SCRIPT: scriptPath,
-          },
-        });
-        const response = yield* HttpClient.get(`${server.url}/output`);
+          const runtime = yield* OpenCodeRuntime;
+          const server = yield* runtime.startOpenCodeServerProcess({
+            binaryPath,
+            directory: tempDir,
+            port: 0,
+            environment: {
+              ...environment,
+              T3_TEST_NODE_BINARY: executablePath,
+              T3_TEST_OPENCODE_SCRIPT: scriptPath,
+            },
+          });
+          const response = yield* HttpClient.get(`${server.url}/output`);
 
-        expect(yield* response.text).toBe("drained");
-        expect(yield* server.isRunning).toBe(true);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide([
-          OpenCodeRuntimeLive.pipe(Layer.provideMerge(NodeServices.layer)),
-          FetchHttpClient.layer,
-        ]),
-      ),
-    10_000,
-  );
+          expect(yield* response.text).toBe("drained");
+          expect(yield* server.isRunning).toBe(true);
+        }).pipe(
+          Effect.scoped,
+          Effect.provide([
+            OpenCodeRuntimeLive.pipe(Layer.provideMerge(NodeServices.layer)),
+            FetchHttpClient.layer,
+          ]),
+        ),
+      10_000,
+    );
+  }
 });
