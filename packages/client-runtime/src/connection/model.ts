@@ -142,7 +142,7 @@ export interface SupervisorConnectionState {
   readonly stage: ConnectionAttemptStage | null;
   readonly attempt: number;
   readonly generation: number;
-  /** Opaque, local-only identity for the currently connected RPC session. */
+  /** Opaque local lease identity; only a connected state has an authoritative session. */
   readonly sessionOwner?: object;
   readonly lastFailure: ConnectionAttemptError | null;
   readonly retryAt: number | null;

@@ -23,6 +23,7 @@ import { appAtomRegistry } from "./state/atom-registry";
 import { OverlayPortalHost } from "./components/OverlayPortal";
 import { useUniwindTheme } from "./lib/useUniwindTheme";
 import { appBlurTargetRef } from "./lib/appBlurTarget";
+import { SubscriptionUsageCoordinator } from "./widgets/SubscriptionUsageCoordinator";
 import { useMobileNavigationTheme } from "./lib/useMobileNavigationTheme";
 import { shouldHandleAppLink } from "./lib/appLinking";
 
@@ -42,6 +43,7 @@ const appLinking = {
   // schemes `app.config.ts` registers, because iOS never delivers an
   // unregistered scheme to the app.
   prefixes: [Linking.createURL("/"), "pylon-code://", "pylon-code-dev://", "pylon-code-preview://"],
+  config: { initialRouteName: "Home" },
   filter: shouldHandleAppLink,
 };
 
@@ -77,6 +79,7 @@ function AppContent() {
   return (
     <>
       <SplashScreenCoordinator />
+      <SubscriptionUsageCoordinator />
       <GestureHandlerRootView className="flex-1">
         <KeyboardProvider statusBarTranslucent>
           <SafeAreaProvider>

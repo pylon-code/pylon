@@ -272,6 +272,56 @@ export function resolveSnoozePresets(now: Date): ReadonlyArray<SnoozePreset> {
  * round up so a snooze never reads "0m" while still hidden. Shared by web
  * and mobile so the same wake time never reads differently per client.
  */
+export type CustomSnoozeInput =
+  | { readonly mode: "date"; readonly date: string; readonly time: string }
+  | {
+      readonly mode: "duration";
+      readonly amount: string;
+      readonly unit: "minutes" | "hours" | "days";
+    };
+
+/** Interpret a chosen wall time locally, or a duration as elapsed time. */
+export function resolveCustomSnooze(input: CustomSnoozeInput, now: Date): string | null {
+  let wake: Date;
+  if (input.mode === "duration") {
+    const amount = Number(input.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    const unitMs = { minutes: 60_000, hours: HOUR_MS, days: DAY_MS }[input.unit];
+    wake = new Date(now.getTime() + amount * unitMs);
+  } else {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date) || !/^\d{2}:\d{2}$/.test(input.time)) return null;
+    wake = new Date(`${input.date}T${input.time}:00`);
+    // Reject impossible dates and spring-forward wall times that JS normalizes forward.
+    if (localSnoozeDate(wake) !== input.date || localSnoozeTime(wake) !== input.time) return null;
+    if (wake.getTime() <= now.getTime()) {
+      // Date parsing chooses the first occurrence of a repeated fall-back hour.
+      // If that one has passed, the later occurrence may still be in the future.
+      const laterOffset = new Date(wake.getTime() + DAY_MS).getTimezoneOffset();
+      const offsetChangeMs = (laterOffset - wake.getTimezoneOffset()) * 60_000;
+      if (offsetChangeMs > 0) {
+        const secondOccurrence = new Date(wake.getTime() + offsetChangeMs);
+        if (
+          localSnoozeDate(secondOccurrence) === input.date &&
+          localSnoozeTime(secondOccurrence) === input.time
+        ) {
+          wake = secondOccurrence;
+        }
+      }
+    }
+  }
+  return Number.isFinite(wake.getTime()) && wake.getTime() > now.getTime()
+    ? wake.toISOString()
+    : null;
+}
+
+export function localSnoozeDate(date: Date): string {
+  return `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+export function localSnoozeTime(date: Date): string {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
 export function snoozeWakeLabel(snoozedUntil: string, options: { readonly now: string }): string {
   const wakeMs = Date.parse(snoozedUntil);
   const nowMs = Date.parse(options.now);

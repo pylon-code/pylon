@@ -15,6 +15,7 @@ import {
   type HomeListItem,
 } from "./homeListItems";
 import type { HomeThreadGroup } from "./homeThreadList";
+import { threadJumpTarget, visibleThreadJumpCommands } from "../keyboard/threadKeyboardShortcuts";
 
 const environmentId = EnvironmentId.make("environment-1");
 
@@ -86,6 +87,43 @@ function displayStates(
 ): ReadonlyMap<string, HomeGroupDisplayState> {
   return new Map(Object.entries(entries));
 }
+
+describe("threadJumpTarget", () => {
+  it("lets the visible split sidebar own shortcuts when Home and sidebar order differ", () => {
+    const home = buildHomeListLayout({
+      groups: [makeGroup("home", 2)],
+      displayStates: displayStates({}),
+    });
+    const sidebar = buildHomeListLayout({
+      groups: [makeGroup("sidebar", 2)],
+      displayStates: displayStates({}),
+    });
+    expect(threadJumpTarget(home.items, "thread.jump.1")?.id).toBe("home-thread-0");
+    expect(threadJumpTarget(sidebar.items, "thread.jump.1")?.id).toBe("sidebar-thread-0");
+    expect(visibleThreadJumpCommands(false)).toEqual([]);
+    expect(visibleThreadJumpCommands(true)).toContain("thread.jump.1");
+  });
+
+  it("numbers only displayed threads across groups, skipping collapsed groups and pagination rows", () => {
+    const layout = buildHomeListLayout({
+      groups: [makeGroup("collapsed", 3), makeGroup("alpha", 8), makeGroup("beta", 3)],
+      displayStates: displayStates({ collapsed: { collapsed: true, visibleCount: 6 } }),
+    });
+    expect(threadJumpTarget(layout.items, "thread.jump.1")?.id).toBe("alpha-thread-0");
+    expect(threadJumpTarget(layout.items, "thread.jump.7")?.id).toBe("beta-thread-0");
+    expect(threadJumpTarget(layout.items, "thread.jump.9")?.id).toBe("beta-thread-2");
+  });
+
+  it("ignores missing positions and unrelated commands", () => {
+    const layout = buildHomeListLayout({
+      groups: [makeGroup("alpha", 1)],
+      displayStates: displayStates({}),
+    });
+    expect(threadJumpTarget(layout.items, "thread.jump.2")).toBeNull();
+    expect(threadJumpTarget([], "thread.jump.1")).toBeNull();
+    expect(threadJumpTarget(layout.items, "commandPalette")).toBeNull();
+  });
+});
 
 describe("buildHomeListLayout", () => {
   it("renders a header plus all threads for a small group without a show-more row", () => {

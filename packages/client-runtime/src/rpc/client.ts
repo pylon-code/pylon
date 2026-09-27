@@ -18,6 +18,7 @@ import { RpcClientError } from "effect/unstable/rpc";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
+import { rpcSessionOwner } from "../rpc/sessionOwner.ts";
 
 export class EnvironmentRpcUnavailableError extends Schema.TaggedError<EnvironmentRpcUnavailableError>()(
   "EnvironmentRpcUnavailableError",
@@ -139,13 +140,28 @@ const currentSession = Effect.fn("EnvironmentRpc.currentSession")(function* () {
 
 export const request = Effect.fn("EnvironmentRpc.request")(function* <
   TTag extends EnvironmentUnaryRpcTag,
->(tag: TTag, input: EnvironmentRpcInput<TTag>) {
+>(
+  tag: TTag,
+  input: EnvironmentRpcInput<TTag>,
+  options?: { readonly expectedSessionOwner?: object },
+) {
   const supervisor = yield* EnvironmentSupervisor;
   yield* Effect.annotateCurrentSpan({
     "environment.id": supervisor.target.environmentId,
     "rpc.method": tag,
   });
   const session = yield* currentSession();
+  // An Undo may wait behind another command. Check the same session that will
+  // receive the request, before any capability preflight or RPC binding.
+  if (
+    options?.expectedSessionOwner !== undefined &&
+    rpcSessionOwner(session) !== options.expectedSessionOwner
+  ) {
+    return yield* new EnvironmentRpcUnavailableError({
+      environmentId: supervisor.target.environmentId,
+      message: "The environment reconnected before Undo could run.",
+    });
+  }
   if (tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
     const command = input as ClientOrchestrationCommand;
     const requiresPastedTextSupport =
