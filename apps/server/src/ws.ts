@@ -1399,6 +1399,9 @@ const makeWsRpcLayer = (
               const remoteRefName = qualifiedPrefix
                 ? prepareWorktree.baseBranch.slice(qualifiedPrefix.length)
                 : prepareWorktree.baseBranch;
+              if (baseRemoteName && validRemoteSelection) {
+                worktreeBaseRef = `refs/remotes/${remoteName}/${remoteRefName}`;
+              }
               if (!validRemoteSelection) shouldPrepareWorktree = false;
               // "Start from origin" is a stored default for local bases. A
               // selected remote ref instead refreshes its own named remote.

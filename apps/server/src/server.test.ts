@@ -11304,6 +11304,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       exists: true,
     },
     {
+      caseName: "explicit origin tracking despite a colliding local branch",
+      remoteName: "origin",
+      baseRemoteName: "origin",
+      startFromOrigin: false,
+      exists: true,
+    },
+    {
       caseName: "vanished remote tracking ref",
       remoteName: "origin",
       baseRemoteName: "origin",
@@ -11416,7 +11423,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             cwd: "/tmp/project",
             refName: startFromOrigin
               ? "0123456789abcdef0123456789abcdef01234567"
-              : `${remoteName}/feature`,
+              : baseRemoteName
+                ? `refs/remotes/${remoteName}/feature`
+                : `${remoteName}/feature`,
             newRefName: "t3code/bootstrap-refName",
             baseRefName: `${remoteName}/feature`,
             path: null,
