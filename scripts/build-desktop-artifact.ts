@@ -4267,7 +4267,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     packageManager: rootPackageJson.packageManager,
     description: "Pylon desktop build",
     author: "Pylon",
-    main: "apps/desktop/dist-electron/main.cjs",
+    main: "apps/desktop/dist-electron/boot.cjs",
     build: yield* createBuildConfig(
       options.platform,
       options.target,
