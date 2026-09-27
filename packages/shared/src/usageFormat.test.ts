@@ -6,8 +6,20 @@ import {
   formatDateTimeShort,
   formatHourShort,
   formatRelativeHourShort,
+  formatUsageContractMismatch,
   makeWindow,
 } from "./usageFormat.ts";
+
+describe("usage contract mismatch wording", () => {
+  it("identifies which side needs updating", () => {
+    expect(formatUsageContractMismatch("Office", { direction: "serverBehind" })).toBe(
+      "Office runs an older server version and is excluded from totals.",
+    );
+    expect(formatUsageContractMismatch("Home", { direction: "clientBehind" })).toBe(
+      "This client is older than the server on Home; its usage is excluded from totals.",
+    );
+  });
+});
 
 describe("hourly usage formatting", () => {
   it("keeps requested zones separate when formatting repeated calls", () => {

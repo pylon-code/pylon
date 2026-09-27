@@ -149,7 +149,13 @@ describe("mergeUsage", () => {
     const decoded = decodeSummary(current);
     const merged = mergeUsage([environment("env-a", decoded)], USAGE_CONTRACT_VERSION);
     expect(merged.costUsd).toBe(0);
-    expect(merged.staleEnvironments).toEqual(["env-a"]);
+    expect(merged.contractMismatches).toEqual([
+      {
+        environmentId: "env-a",
+        direction: "clientBehind",
+        contractVersion: USAGE_CONTRACT_VERSION + 1,
+      },
+    ]);
   });
 
   it("keeps unique older homes while taking a newer shared-home scan", () => {
@@ -299,7 +305,7 @@ describe("mergeUsage", () => {
 
     expect(merged.costUsd).toBe(19);
     expect(merged.approximateEnvironments).toEqual(["env-b"]);
-    expect(merged.staleEnvironments).toEqual([]);
+    expect(merged.contractMismatches).toEqual([]);
   });
 
   it("falls back to flat provider totals when a source claims buckets for another provider", () => {
@@ -447,7 +453,7 @@ describe("mergeUsage", () => {
     expect(bothInvalid.contributingEnvironments).toEqual(["env-a"]);
   });
 
-  it("excludes an environment reporting an older contract version", () => {
+  it("identifies an environment reporting an older contract version", () => {
     const merged = mergeUsage(
       [
         environment(
@@ -467,7 +473,13 @@ describe("mergeUsage", () => {
     );
 
     expect(merged.costUsd).toBe(10);
-    expect(merged.staleEnvironments).toEqual(["env-b"]);
+    expect(merged.contractMismatches).toEqual([
+      {
+        environmentId: "env-b",
+        direction: "serverBehind",
+        contractVersion: USAGE_MERGE_COMPATIBLE_SINCE - 1,
+      },
+    ]);
   });
 
   it("merges a v7 summary with an OpenCode v8 summary", () => {
@@ -493,7 +505,7 @@ describe("mergeUsage", () => {
     );
 
     expect(merged.costUsd).toBe(14);
-    expect(merged.staleEnvironments).toEqual([]);
+    expect(merged.contractMismatches).toEqual([]);
   });
 
   it("derives provider shares and cost quality", () => {
@@ -699,7 +711,7 @@ describe("mergeUsage", () => {
     );
 
     expect(merged.costUsd).toBe(15);
-    expect(merged.staleEnvironments).toEqual([]);
+    expect(merged.contractMismatches).toEqual([]);
     expect(merged.contributingEnvironments).toEqual(["env-v4", "env-v5", "env-v6"]);
   });
 });
