@@ -1291,8 +1291,14 @@ export function resolveDisplayedPullRequestDetail(input: {
   if (input.reference.host === undefined) return input.cached.detail;
   try {
     const url = new URL(input.cached.detail.url);
+    // Thread/SSH references may know only the hostname; parsed Forgejo links
+    // carry an explicit web port and must not read another port's snapshot.
+    const host =
+      input.cached.detail.provider === "forgejo" && /:\d+$/.test(input.reference.host)
+        ? url.host
+        : url.hostname;
     return (url.protocol === "https:" || url.protocol === "http:") &&
-      url.hostname.toLowerCase() === input.reference.host.toLowerCase()
+      host.toLowerCase() === input.reference.host.toLowerCase()
       ? input.cached.detail
       : null;
   } catch {
