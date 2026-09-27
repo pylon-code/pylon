@@ -402,6 +402,55 @@ describe("ThreadPullRequestReactor", () => {
       ),
   );
 
+  it.effect("refreshes project identity when a completed turn adds its remote", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = thread("new-remote");
+        const refreshes = yield* Ref.make(0);
+        const fixture = yield* makeHarness({
+          threads: [current],
+          project: { ...project, repositoryIdentity: null },
+          branchPullRequest: () => Effect.succeed(branchPullRequest()),
+          resolveRepositoryIdentity: (_cwd, options) =>
+            Ref.update(refreshes, (count) => count + (options?.refresh ? 1 : 0)).pipe(
+              Effect.as(options?.refresh ? project.repositoryIdentity : null),
+            ),
+        });
+        yield* Effect.gen(function* () {
+          const reactor = yield* fixture.start();
+          expect(yield* Ref.get(fixture.commands)).toHaveLength(0);
+          yield* fixture.publish({
+            type: "thread.turn-diff-completed",
+            sequence: 2,
+            eventId: EventId.make("checkpoint-finished"),
+            aggregateKind: "thread",
+            aggregateId: current.id,
+            occurredAt: NOW,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            payload: {
+              threadId: current.id,
+              turnId: TurnId.make("turn"),
+              checkpointTurnCount: 1,
+              checkpointRef: CheckpointRef.make("checkpoint"),
+              status: "ready",
+              files: [],
+              assistantMessageId: null,
+              completedAt: NOW,
+            },
+          });
+          expect(yield* Queue.take(fixture.reads)).toBe(current.id);
+          yield* reactor.drain;
+          // One refresh admits discovery; the second rechecks before saving.
+          expect(yield* Ref.get(refreshes)).toBe(2);
+          expect((yield* Ref.get(fixture.commands))[0]?.branchPullRequest).toEqual(reference(42));
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
   it.effect("uses live worktrees and falls back to the project for removed worktrees", () =>
     Effect.scoped(
       Effect.gen(function* () {

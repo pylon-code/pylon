@@ -201,6 +201,7 @@ import {
   vcsStatusForClient,
 } from "./sourceControl/forgejoClientCompatibility.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
+import { withPublishedRepositoryIdentityRefresh } from "./sourceControl/refreshPublishedRepositoryIdentities.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
 import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
 import * as GitHubCli from "./sourceControl/GitHubCli.ts";
@@ -3421,9 +3422,12 @@ const makeWsRpcLayer = (
         [WS_METHODS.sourceControlPublishRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlPublishRepository,
-            sourceControlRepositories
-              .publishRepository(input)
-              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            withPublishedRepositoryIdentityRefresh(
+              sourceControlRepositories.publishRepository(input),
+              input.cwd,
+              projectionSnapshotQuery,
+              repositoryIdentityResolver,
+            ).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             {
               "rpc.aggregate": "source-control",
             },
