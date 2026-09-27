@@ -228,6 +228,7 @@ export const make = Effect.gen(function* () {
       threadRestartContinuation: true,
       projectSettingsOverrides: true,
       worktreeSubmodules: true,
+      projectMonogramIcons: true,
       defaultRuntimeMode: true,
       threadSnooze: true,
       environmentThemes: true,

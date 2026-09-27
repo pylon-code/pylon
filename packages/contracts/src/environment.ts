@@ -118,6 +118,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   projectSettingsOverrides: Schema.optionalKey(Schema.Boolean),
   /** Server applies the worktree submodule initialization setting. */
   worktreeSubmodules: Schema.optionalKey(Schema.Boolean),
+  /** Server preserves explicit custom project monograms; old servers drop their legacy wire hint. */
+  projectMonogramIcons: Schema.optionalKey(Schema.Boolean),
   /** Server accepts and applies the default permission mode for new threads. */
   defaultRuntimeMode: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.snooze / thread.unsnooze commands. Same
