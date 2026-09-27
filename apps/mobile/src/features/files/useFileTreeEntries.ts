@@ -178,7 +178,9 @@ export function useFileTreeEntries(input: {
     refreshRoot();
     if (searching) refreshSearch();
     const paths = new Set(
-      [...directories.requested].filter((path) => snapshot.reachableDirectories.has(path)),
+      [...directories.requested].filter(
+        (path) => path === "" || snapshot.reachableDirectories.has(path),
+      ),
     );
     if (legacyEntries !== null) {
       render();
