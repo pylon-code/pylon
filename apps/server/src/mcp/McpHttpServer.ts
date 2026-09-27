@@ -354,7 +354,7 @@ const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
       ? firstFailure._tag
       : "PreviewSnapshotError";
   // Preview errors build their message on the server, never from page output,
-  // and it tells the agent what to do next, such as falling back to a shell browser.
+  // and it tells the agent what to do next, such as opening a preview tab.
   const message = isPreviewAutomationError(firstFailure) ? firstFailure.message : undefined;
   const result = new McpSchema.CallToolResult({
     isError: true,
