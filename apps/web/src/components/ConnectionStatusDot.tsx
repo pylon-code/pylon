@@ -68,7 +68,9 @@ export function ConnectionStatusDot({
 
   return (
     <Tooltip>
-      <TooltipTrigger render={dot} />
+      {/* The status can change while the tooltip is open, and base-ui only
+          re-measures the popup when the trigger's payload changes. */}
+      <TooltipTrigger payload={tooltipText} render={dot} />
       <TooltipPopup side="top" className="max-w-80 whitespace-pre-wrap leading-tight">
         {tooltipText}
       </TooltipPopup>
