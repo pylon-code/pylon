@@ -81,17 +81,24 @@ export const ForwardCompatibleNullable = <Value extends Schema.Top>(value: Value
  * has to keep decoding configs sent by servers newer than itself, and
  * rejecting the payload would take down the connection over data the client
  * couldn't act on anyway. Encoding is the plain array encoding.
+ * When `isFutureVariant` is supplied, malformed known variants still fail the
+ * array decode; only recognized future variants are skipped.
  */
-export const ForwardCompatibleArray = <Element extends Schema.Top>(element: Element) => {
+export const ForwardCompatibleArray = <Element extends Schema.Top>(
+  element: Element,
+  isFutureVariant?: (value: unknown) => boolean,
+) => {
   const decodeElement = Schema.decodeUnknownOption(element as never);
   return Schema.Array(Schema.Unknown).pipe(
     Schema.decodeTo(
       Schema.Array(element),
       SchemaTransformation.transform<ReadonlyArray<Element["Encoded"]>, ReadonlyArray<unknown>>({
         decode: (values) =>
-          values.filter((value) => Option.isSome(decodeElement(value))) as ReadonlyArray<
-            Element["Encoded"]
-          >,
+          values.filter(
+            (value) =>
+              Option.isSome(decodeElement(value)) ||
+              (isFutureVariant !== undefined && !isFutureVariant(value)),
+          ) as ReadonlyArray<Element["Encoded"]>,
         encode: (values) => values,
       }),
     ),

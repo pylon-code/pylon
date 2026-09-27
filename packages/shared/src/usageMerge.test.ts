@@ -5,11 +5,15 @@ import {
   type UsageBucket,
   type UsageDay,
   type UsageProviderKind,
-  type UsageSummary,
+  UsageSummary,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
+import * as Schema from "effect/Schema";
 
 import { isModelCostUnknown, mergeUsage, type EnvironmentUsage } from "./usageMerge.ts";
+
+const decodeSummary = Schema.decodeUnknownSync(UsageSummary);
+const encodeSummary = Schema.encodeSync(UsageSummary);
 
 function bucket(overrides: Partial<UsageBucket> = {}): UsageBucket {
   return {
@@ -77,6 +81,77 @@ function environment(id: string, usageSummary: UsageSummary): EnvironmentUsage {
 }
 
 describe("mergeUsage", () => {
+  it("preserves known usage across future provider and pricing variants", () => {
+    const known = bucket();
+    const current = summary(
+      [known],
+      [
+        {
+          provider: "claude",
+          hostId: "mac",
+          homePath: "/a",
+          buckets: [known],
+        },
+      ],
+    );
+    const decoded = decodeSummary({
+      ...current,
+      buckets: [
+        known,
+        { ...known, provider: "future-provider" },
+        { ...known, costSource: "future-pricing" },
+      ],
+      sources: [
+        { ...current.sources[0], buckets: [known, { ...known, provider: "future-provider" }] },
+        {
+          ...current.sources[0],
+          fingerprint: { ...current.sources[0]?.fingerprint, provider: "future-provider" },
+        },
+      ],
+    });
+    expect(decoded).toEqual(current);
+    expect(mergeUsage([environment("env-a", decoded)], USAGE_CONTRACT_VERSION).costUsd).toBe(10);
+    expect(encodeSummary(current)).toEqual(current);
+  });
+
+  it("rejects malformed known usage and malformed summary envelopes", () => {
+    const known = bucket();
+    const current = summary(
+      [known],
+      [
+        {
+          provider: "claude",
+          hostId: "mac",
+          homePath: "/a",
+          buckets: [known],
+        },
+      ],
+    );
+    expect(() => decodeSummary({ ...current, buckets: [{ ...known, costUsd: "bad" }] })).toThrow();
+    expect(() =>
+      decodeSummary({ ...current, sources: [{ ...current.sources[0], scannedFiles: "bad" }] }),
+    ).toThrow();
+    expect(() =>
+      decodeSummary({
+        ...current,
+        sources: [{ ...current.sources[0], buckets: [{ ...known, costUsd: "bad" }] }],
+      }),
+    ).toThrow();
+    expect(() => decodeSummary({ ...current, buckets: null })).toThrow();
+  });
+
+  it("excludes a future incompatible contract after decoding its known buckets", () => {
+    const current = summary(
+      [bucket()],
+      [{ provider: "claude", hostId: "mac", homePath: "/a" }],
+      USAGE_CONTRACT_VERSION + 1,
+    );
+    const decoded = decodeSummary(current);
+    const merged = mergeUsage([environment("env-a", decoded)], USAGE_CONTRACT_VERSION);
+    expect(merged.costUsd).toBe(0);
+    expect(merged.staleEnvironments).toEqual(["env-a"]);
+  });
+
   it("keeps unique older homes while taking a newer shared-home scan", () => {
     const shared = { provider: "claude" as const, hostId: "mac", homePath: "/shared" };
     const old = summary(

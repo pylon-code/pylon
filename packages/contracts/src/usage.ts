@@ -14,12 +14,14 @@
  */
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /**
  * Bumped whenever the shape of {@link UsageSummary} changes incompatibly. The
  * client renders partial coverage when an environment reports an older version
  * rather than failing the whole page.
+ * New provider and bucket literal variants are additive and can be skipped by
+ * older clients without changing the version.
  */
 export const USAGE_CONTRACT_VERSION = 8 as const;
 
@@ -66,6 +68,29 @@ export type UsageResolution = typeof UsageResolution.Type;
  */
 export const UsageCostSource = Schema.Literals(["providerReported", "modelPriced", "unpriced"]);
 export type UsageCostSource = typeof UsageCostSource.Type;
+
+const isKnownProvider = Schema.is(UsageProviderKind);
+const isKnownCostSource = Schema.is(UsageCostSource);
+
+function field(value: unknown, key: string): unknown {
+  return typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
+}
+
+function isFutureProvider(value: unknown): boolean {
+  const provider = field(value, "provider");
+  return typeof provider === "string" && !isKnownProvider(provider);
+}
+
+function isFutureBucketVariant(value: unknown): boolean {
+  const costSource = field(value, "costSource");
+  return (
+    isFutureProvider(value) || (typeof costSource === "string" && !isKnownCostSource(costSource))
+  );
+}
+
+function isFutureSourceVariant(value: unknown): boolean {
+  return isFutureProvider(field(value, "fingerprint"));
+}
 
 /**
  * Token counts for a bucket.
@@ -160,7 +185,7 @@ export const UsageSource = Schema.Struct({
    * de-duplication. Added in v7; older peers only report provider-wide buckets.
    * Raw transcript records never cross the wire.
    */
-  buckets: Schema.optional(Schema.Array(UsageBucket)),
+  buckets: Schema.optional(ForwardCompatibleArray(UsageBucket, isFutureBucketVariant)),
   message: Schema.NullOr(TrimmedNonEmptyString),
 });
 export type UsageSource = typeof UsageSource.Type;
@@ -205,8 +230,8 @@ export const UsageSummary = Schema.Struct({
   timeZone: TrimmedNonEmptyString,
   sinceDay: UsageDay,
   untilDay: UsageDay,
-  buckets: Schema.Array(UsageBucket),
-  sources: Schema.Array(UsageSource),
+  buckets: ForwardCompatibleArray(UsageBucket, isFutureBucketVariant),
+  sources: ForwardCompatibleArray(UsageSource, isFutureSourceVariant),
   pricing: UsagePricing,
   /** Wall-clock cost of the scan, surfaced in diagnostics. */
   scanDurationMs: NonNegativeInt,

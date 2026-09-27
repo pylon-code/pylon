@@ -27,6 +27,9 @@ and counts shared data directories once. An external OpenCode server URL does no
 history to Pylon; its remote account and sessions are not included by reading a local directory.
 An oversized or unreadable store appears as partial coverage rather than a complete total.
 
+When an app connects to a newer server with providers it does not recognize, Usage keeps the
+providers it understands. Update the app to include totals from newly supported providers.
+
 **Past 24h** shows an hourly chart of the rolling 24-hour period; **7 days**, **30 days**, and
 **90 days** use daily resolution. The environment filter applies to both Usage and Limits. On web and
 desktop, Pylon remembers your view, period, metric, and environment selection.
