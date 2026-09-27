@@ -7,6 +7,7 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as Tracer from "effect/Tracer";
 import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -80,6 +81,29 @@ const runWith =
     );
 
 describe("runProcess", () => {
+  it.effect("records only the executable name on its subprocess span", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          spans.push(span);
+          return span;
+        },
+      });
+      const spawner = makeSpawner(() => Effect.succeed(makeHandle({})));
+
+      yield* runWith(spawner)({
+        command: "/Users/private/.local/bin/claude",
+        args: ["private-argument"],
+      }).pipe(Effect.withTracer(tracer));
+
+      const processSpan = spans.find((span) => span.name === "processRunner.runProcessCore");
+      expect(processSpan?.attributes.get("process.command")).toBe("claude");
+      expect(processSpan?.attributes.has("process.args")).toBe(false);
+    }),
+  );
+
   it.effect("collects stdout through an injected ChildProcessSpawner", () =>
     Effect.gen(function* () {
       const spawner = makeSpawner((command) =>
@@ -399,6 +423,14 @@ describe("runProcess", () => {
       });
     }),
   );
+});
+
+describe("commandName", () => {
+  it("drops directories from POSIX and Windows command paths", () => {
+    expect(ProcessRunner.commandName("/Users/private/.local/bin/claude")).toBe("claude");
+    expect(ProcessRunner.commandName("C:\\Program Files\\nodejs\\npx.cmd")).toBe("npx.cmd");
+    expect(ProcessRunner.commandName("git")).toBe("git");
+  });
 });
 
 describe("isWindowsCommandNotFound", () => {
