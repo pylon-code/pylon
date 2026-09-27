@@ -1363,6 +1363,487 @@ it.effect("ProviderServiceLive rejects new sessions for disabled custom instance
 
 const routing = makeProviderServiceLayer();
 
+const antigravityStopDriver = ProviderDriverKind.make("antigravity");
+const antigravityStopInstanceId = ProviderInstanceId.make("antigravity-stop-fence");
+const antigravityStopAdapter = makeFakeCodexAdapter(antigravityStopDriver);
+let oldTaskAtSubscriber: Deferred.Deferred<void> | undefined;
+let releaseOldTask: Deferred.Deferred<void> | undefined;
+const antigravityStopRouting = makeProviderServiceLayer({
+  registry: makeInstanceAdapterRegistryMock([
+    [
+      antigravityStopInstanceId,
+      {
+        ...antigravityStopAdapter.adapter,
+        streamEvents: antigravityStopAdapter.adapter.streamEvents.pipe(
+          Stream.mapEffect((event) =>
+            Effect.gen(function* () {
+              if (event.type === "task.completed") {
+                if (!oldTaskAtSubscriber || !releaseOldTask) {
+                  return yield* Effect.die("Missing Antigravity stop test gate");
+                }
+                yield* Deferred.succeed(oldTaskAtSubscriber, undefined);
+                yield* Deferred.await(releaseOldTask);
+              }
+              return event;
+            }),
+          ),
+        ),
+      },
+    ],
+  ]),
+});
+
+antigravityStopRouting.layer("ProviderService Antigravity Stop fence", (it) => {
+  it.effect("publishes an old stopped task before admitting the next incarnation", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-antigravity-stop-fence");
+      const closeStarted = yield* Deferred.make<void>();
+      const closeRelease = yield* Deferred.make<void>();
+      const stoppedPublished = yield* Deferred.make<void>();
+      oldTaskAtSubscriber = yield* Deferred.make<void>();
+      releaseOldTask = yield* Deferred.make<void>();
+      const entered = oldTaskAtSubscriber;
+      const release = releaseOldTask;
+      yield* Effect.addFinalizer(() =>
+        Effect.all([
+          Deferred.succeed(closeRelease, undefined),
+          Deferred.succeed(release, undefined),
+        ]).pipe(Effect.asVoid),
+      );
+      const session = yield* provider.startSession(threadId, {
+        threadId,
+        provider: antigravityStopDriver,
+        providerInstanceId: antigravityStopInstanceId,
+        runtimeMode: "full-access",
+      });
+      const oldIncarnation = session.sessionIncarnationId;
+      assert.isDefined(oldIncarnation);
+      antigravityStopAdapter.interruptTurn.mockImplementationOnce(() =>
+        Effect.gen(function* () {
+          antigravityStopAdapter.removeSession(threadId);
+          yield* Deferred.succeed(closeStarted, undefined);
+          yield* Deferred.await(closeRelease);
+          antigravityStopAdapter.emit({
+            type: "task.completed",
+            eventId: asEventId("antigravity-old-task-stopped"),
+            provider: antigravityStopDriver,
+            createdAt: "2026-01-01T00:00:01.000Z",
+            threadId,
+            sessionIncarnationId: oldIncarnation,
+            payload: {
+              taskId: RuntimeTaskId.make("old-watcher"),
+              taskType: "local_bash",
+              toolUseId: "old-watcher",
+              status: "stopped",
+            },
+          });
+          antigravityStopAdapter.emit({
+            type: "session.exited",
+            eventId: asEventId("antigravity-old-session-exited"),
+            provider: antigravityStopDriver,
+            createdAt: "2026-01-01T00:00:02.000Z",
+            threadId,
+            sessionIncarnationId: oldIncarnation,
+            payload: { exitKind: "graceful" },
+          });
+        }),
+      );
+      const observed = yield* provider.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          event.type === "task.completed" && event.threadId === threadId
+            ? Deferred.succeed(stoppedPublished, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      const stopping = yield* provider
+        .interruptTurn({ threadId, turnId: asTurnId("old-turn") })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(closeStarted);
+      const next = yield* provider
+        .sendTurn({ threadId, input: "Continue", attachments: [] })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.succeed(closeRelease, undefined);
+      yield* Deferred.await(entered);
+      assert.isUndefined(next.pollUnsafe());
+      assert.equal(antigravityStopAdapter.startSession.mock.calls.length, 1);
+      yield* Deferred.succeed(release, undefined);
+      yield* Deferred.await(stoppedPublished);
+      yield* Fiber.join(stopping);
+      yield* Fiber.join(next);
+      assert.equal(antigravityStopAdapter.startSession.mock.calls.length, 2);
+      yield* Fiber.interrupt(observed);
+    }),
+  );
+
+  it.effect("fails explicitly and keeps recovery fenced when no exit arrives", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-antigravity-stop-no-exit");
+      const closeStarted = yield* Deferred.make<void>();
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: antigravityStopDriver,
+        providerInstanceId: antigravityStopInstanceId,
+        runtimeMode: "full-access",
+      });
+      antigravityStopAdapter.interruptTurn.mockImplementationOnce(() =>
+        Effect.sync(() => {
+          antigravityStopAdapter.removeSession(threadId);
+        }).pipe(Effect.andThen(Deferred.succeed(closeStarted, undefined)), Effect.asVoid),
+      );
+      const stopping = yield* provider
+        .interruptTurn({ threadId, turnId: asTurnId("old-turn") })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(closeStarted);
+      yield* advanceTestClock(15_000);
+      const error = yield* Fiber.join(stopping).pipe(Effect.flip);
+      assert.instanceOf(error, ProviderValidationError);
+      assert.include(error.issue, "did not report session shutdown");
+      const startsBeforeRetry = antigravityStopAdapter.startSession.mock.calls.length;
+      const retryError = yield* provider
+        .sendTurn({ threadId, input: "Retry after missing exit", attachments: [] })
+        .pipe(Effect.flip);
+      assert.instanceOf(retryError, ProviderValidationError);
+      assert.equal(antigravityStopAdapter.startSession.mock.calls.length, startsBeforeRetry);
+    }),
+  );
+
+  it.effect("keeps late stopped receipts after the Stop wait times out", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-antigravity-late-stop-exit");
+      const closeStarted = yield* Deferred.make<void>();
+      const closeRelease = yield* Deferred.make<void>();
+      const stoppedPublished = yield* Deferred.make<void>();
+      yield* Effect.addFinalizer(() =>
+        Deferred.succeed(closeRelease, undefined).pipe(Effect.asVoid),
+      );
+      const session = yield* provider.startSession(threadId, {
+        threadId,
+        provider: antigravityStopDriver,
+        providerInstanceId: antigravityStopInstanceId,
+        runtimeMode: "full-access",
+      });
+      const oldIncarnation = session.sessionIncarnationId;
+      assert.isDefined(oldIncarnation);
+      antigravityStopAdapter.interruptTurn.mockImplementationOnce(() =>
+        Effect.gen(function* () {
+          antigravityStopAdapter.removeSession(threadId);
+          yield* Deferred.succeed(closeStarted, undefined);
+          yield* Deferred.await(closeRelease);
+          antigravityStopAdapter.emit({
+            type: "task.completed",
+            eventId: asEventId("antigravity-late-task-stopped"),
+            provider: antigravityStopDriver,
+            createdAt: "2026-01-01T00:00:06.000Z",
+            threadId,
+            sessionIncarnationId: oldIncarnation,
+            payload: {
+              taskId: RuntimeTaskId.make("late-watcher"),
+              taskType: "local_bash",
+              toolUseId: "late-watcher",
+              status: "stopped",
+            },
+          });
+          antigravityStopAdapter.emit({
+            type: "session.exited",
+            eventId: asEventId("antigravity-late-session-exited"),
+            provider: antigravityStopDriver,
+            createdAt: "2026-01-01T00:00:07.000Z",
+            threadId,
+            sessionIncarnationId: oldIncarnation,
+            payload: { exitKind: "graceful" },
+          });
+        }),
+      );
+      const observed = yield* provider.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          event.type === "task.completed" && event.threadId === threadId
+            ? Deferred.succeed(stoppedPublished, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      const stopping = yield* provider
+        .interruptTurn({ threadId, turnId: asTurnId("old-turn") })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(closeStarted);
+      yield* advanceTestClock(15_000);
+      const startsBeforeExit = antigravityStopAdapter.startSession.mock.calls.length;
+      const earlyTurn = yield* provider
+        .sendTurn({ threadId, input: "Too early", attachments: [] })
+        .pipe(Effect.flip);
+      assert.instanceOf(earlyTurn, ProviderValidationError);
+      assert.equal(antigravityStopAdapter.startSession.mock.calls.length, startsBeforeExit);
+      yield* Deferred.succeed(closeRelease, undefined);
+      yield* Deferred.await(stoppedPublished);
+      const stopError = yield* Fiber.join(stopping).pipe(Effect.flip);
+      assert.instanceOf(stopError, ProviderValidationError);
+      yield* provider.sendTurn({ threadId, input: "After old receipt", attachments: [] });
+      assert.equal(antigravityStopAdapter.startSession.mock.calls.length, startsBeforeExit + 1);
+      yield* Fiber.interrupt(observed);
+    }),
+  );
+
+  it.effect("keeps the Stop fence after the caller is interrupted during close", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-antigravity-stop-interrupted");
+      const closeStarted = yield* Deferred.make<void>();
+      const closeRelease = yield* Deferred.make<void>();
+      const stoppedPublished = yield* Deferred.make<void>();
+      oldTaskAtSubscriber = yield* Deferred.make<void>();
+      releaseOldTask = yield* Deferred.make<void>();
+      const entered = oldTaskAtSubscriber;
+      const release = releaseOldTask;
+      yield* Effect.addFinalizer(() =>
+        Effect.all([
+          Deferred.succeed(closeRelease, undefined),
+          Deferred.succeed(release, undefined),
+        ]).pipe(Effect.asVoid),
+      );
+      const session = yield* provider.startSession(threadId, {
+        threadId,
+        provider: antigravityStopDriver,
+        providerInstanceId: antigravityStopInstanceId,
+        runtimeMode: "full-access",
+      });
+      const oldIncarnation = session.sessionIncarnationId;
+      assert.isDefined(oldIncarnation);
+      antigravityStopAdapter.interruptTurn.mockImplementationOnce(() =>
+        Effect.gen(function* () {
+          antigravityStopAdapter.removeSession(threadId);
+          yield* Deferred.succeed(closeStarted, undefined);
+          yield* Deferred.await(closeRelease);
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              antigravityStopAdapter.emit({
+                type: "task.completed",
+                eventId: asEventId("antigravity-interrupted-task-stopped"),
+                provider: antigravityStopDriver,
+                createdAt: "2026-01-01T00:00:03.000Z",
+                threadId,
+                sessionIncarnationId: oldIncarnation,
+                payload: {
+                  taskId: RuntimeTaskId.make("interrupted-watcher"),
+                  taskType: "local_bash",
+                  toolUseId: "interrupted-watcher",
+                  status: "stopped",
+                },
+              });
+              antigravityStopAdapter.emit({
+                type: "session.exited",
+                eventId: asEventId("antigravity-interrupted-session-exited"),
+                provider: antigravityStopDriver,
+                createdAt: "2026-01-01T00:00:04.000Z",
+                threadId,
+                sessionIncarnationId: oldIncarnation,
+                payload: { exitKind: "graceful" },
+              });
+            }),
+          ),
+        ),
+      );
+      const observed = yield* provider.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          event.type === "task.completed" && event.threadId === threadId
+            ? Deferred.succeed(stoppedPublished, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      const stopping = yield* provider
+        .interruptTurn({ threadId, turnId: asTurnId("old-turn") })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(closeStarted);
+      yield* Fiber.interrupt(stopping);
+      yield* Deferred.await(entered);
+      const startsBeforeNextTurn = antigravityStopAdapter.startSession.mock.calls.length;
+      const next = yield* provider
+        .sendTurn({ threadId, input: "Continue after interrupted Stop", attachments: [] })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      assert.isUndefined(next.pollUnsafe());
+      assert.equal(antigravityStopAdapter.startSession.mock.calls.length, startsBeforeNextTurn);
+      yield* Deferred.succeed(release, undefined);
+      yield* Deferred.await(stoppedPublished);
+      yield* Fiber.join(next);
+      assert.equal(antigravityStopAdapter.startSession.mock.calls.length, startsBeforeNextTurn + 1);
+      yield* Fiber.interrupt(observed);
+    }),
+  );
+
+  it.effect("recovers an already absent Antigravity session before Stop", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-antigravity-absent-before-stop");
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: antigravityStopDriver,
+        providerInstanceId: antigravityStopInstanceId,
+        runtimeMode: "full-access",
+      });
+      const startsBeforeRecovery = antigravityStopAdapter.startSession.mock.calls.length;
+      antigravityStopAdapter.removeSession(threadId);
+      yield* provider.interruptTurn({ threadId, turnId: asTurnId("old-turn") });
+      assert.equal(antigravityStopAdapter.startSession.mock.calls.length, startsBeforeRecovery + 1);
+    }),
+  );
+
+  it.effect("shares one Stop fence across concurrent interrupts", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-antigravity-concurrent-stop");
+      const firstListEntered = yield* Deferred.make<void>();
+      const releaseFirstList = yield* Deferred.make<void>();
+      const closeStarted = yield* Deferred.make<void>();
+      const closeRelease = yield* Deferred.make<void>();
+      yield* Effect.addFinalizer(() =>
+        Effect.all([
+          Deferred.succeed(releaseFirstList, undefined),
+          Deferred.succeed(closeRelease, undefined),
+        ]).pipe(Effect.asVoid),
+      );
+      const session = yield* provider.startSession(threadId, {
+        threadId,
+        provider: antigravityStopDriver,
+        providerInstanceId: antigravityStopInstanceId,
+        runtimeMode: "full-access",
+      });
+      const oldIncarnation = session.sessionIncarnationId;
+      assert.isDefined(oldIncarnation);
+      antigravityStopAdapter.listSessions.mockImplementationOnce(() =>
+        Deferred.succeed(firstListEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseFirstList)),
+          Effect.as([session]),
+        ),
+      );
+      antigravityStopAdapter.interruptTurn.mockImplementationOnce(() =>
+        Effect.gen(function* () {
+          antigravityStopAdapter.removeSession(threadId);
+          yield* Deferred.succeed(closeStarted, undefined);
+          yield* Deferred.await(closeRelease);
+          antigravityStopAdapter.emit({
+            type: "session.exited",
+            eventId: asEventId("antigravity-concurrent-stop-exit"),
+            provider: antigravityStopDriver,
+            createdAt: "2026-01-01T00:00:05.000Z",
+            threadId,
+            sessionIncarnationId: oldIncarnation,
+            payload: { exitKind: "graceful" },
+          });
+        }),
+      );
+      const interruptsBefore = antigravityStopAdapter.interruptTurn.mock.calls.length;
+      const first = yield* provider
+        .interruptTurn({ threadId, turnId: asTurnId("old-turn") })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(firstListEntered);
+      const second = yield* provider
+        .interruptTurn({ threadId, turnId: asTurnId("old-turn") })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.succeed(releaseFirstList, undefined);
+      yield* Deferred.await(closeStarted);
+      yield* Effect.yieldNow;
+      assert.isUndefined(second.pollUnsafe());
+      assert.equal(antigravityStopAdapter.interruptTurn.mock.calls.length, interruptsBefore + 1);
+      yield* Deferred.succeed(closeRelease, undefined);
+      yield* Fiber.join(first);
+      yield* Fiber.join(second);
+    }),
+  );
+
+  it.effect("rechecks the Stop fence at the recovery incarnation swap", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-antigravity-recovery-stop-race");
+      const recoveryCheckedSession = yield* Deferred.make<void>();
+      const releaseRecoveryCheck = yield* Deferred.make<void>();
+      const closeStarted = yield* Deferred.make<void>();
+      const closeRelease = yield* Deferred.make<void>();
+      const stoppedPublished = yield* Deferred.make<void>();
+      yield* Effect.addFinalizer(() =>
+        Effect.all([
+          Deferred.succeed(releaseRecoveryCheck, undefined),
+          Deferred.succeed(closeRelease, undefined),
+        ]).pipe(Effect.asVoid),
+      );
+      const session = yield* provider.startSession(threadId, {
+        threadId,
+        provider: antigravityStopDriver,
+        providerInstanceId: antigravityStopInstanceId,
+        runtimeMode: "full-access",
+      });
+      const oldIncarnation = session.sessionIncarnationId;
+      assert.isDefined(oldIncarnation);
+      antigravityStopAdapter.hasSession.mockImplementationOnce(() =>
+        Deferred.succeed(recoveryCheckedSession, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseRecoveryCheck)),
+          Effect.as(false),
+        ),
+      );
+      antigravityStopAdapter.interruptTurn.mockImplementationOnce(() =>
+        Effect.gen(function* () {
+          antigravityStopAdapter.removeSession(threadId);
+          yield* Deferred.succeed(closeStarted, undefined);
+          yield* Deferred.await(closeRelease);
+          antigravityStopAdapter.emit({
+            type: "task.completed",
+            eventId: asEventId("antigravity-recovery-race-task-stopped"),
+            provider: antigravityStopDriver,
+            createdAt: "2026-01-01T00:00:08.000Z",
+            threadId,
+            sessionIncarnationId: oldIncarnation,
+            payload: {
+              taskId: RuntimeTaskId.make("recovery-race-watcher"),
+              taskType: "local_bash",
+              toolUseId: "recovery-race-watcher",
+              status: "stopped",
+            },
+          });
+          antigravityStopAdapter.emit({
+            type: "session.exited",
+            eventId: asEventId("antigravity-recovery-race-session-exited"),
+            provider: antigravityStopDriver,
+            createdAt: "2026-01-01T00:00:09.000Z",
+            threadId,
+            sessionIncarnationId: oldIncarnation,
+            payload: { exitKind: "graceful" },
+          });
+        }),
+      );
+      const observed = yield* provider.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          event.type === "task.completed" && event.threadId === threadId
+            ? Deferred.succeed(stoppedPublished, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      const next = yield* provider
+        .sendTurn({ threadId, input: "Recover", attachments: [] })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(recoveryCheckedSession);
+      const stopping = yield* provider
+        .interruptTurn({ threadId, turnId: asTurnId("old-turn") })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(closeStarted);
+      const startsBeforeRelease = antigravityStopAdapter.startSession.mock.calls.length;
+      yield* Deferred.succeed(releaseRecoveryCheck, undefined);
+      assert.isUndefined(next.pollUnsafe());
+      assert.equal(antigravityStopAdapter.startSession.mock.calls.length, startsBeforeRelease);
+      yield* Deferred.succeed(closeRelease, undefined);
+      yield* Deferred.await(stoppedPublished);
+      yield* Fiber.join(stopping);
+      yield* Fiber.join(next);
+      assert.equal(antigravityStopAdapter.startSession.mock.calls.length, startsBeforeRelease + 1);
+      yield* Fiber.interrupt(observed);
+    }),
+  );
+});
+
 const customCompactionDriver = ProviderDriverKind.make("custom-compaction-provider");
 const nativeCompactionInstanceId = ProviderInstanceId.make("native-compaction");
 const slashCompactionInstanceId = ProviderInstanceId.make("slash-compaction");
