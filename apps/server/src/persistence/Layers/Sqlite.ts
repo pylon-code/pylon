@@ -8,6 +8,9 @@ import type { SqlError } from "effect/unstable/sql/SqlError";
 import { runMigrations } from "../Migrations.ts";
 import { ServerConfig } from "../../config.ts";
 
+// SQLite truncates a reset WAL to this size on the next write transaction.
+export const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
+
 type RuntimeSqliteLayerConfig = {
   readonly filename: string;
   readonly spanAttributes?: Record<string, unknown>;
@@ -37,6 +40,7 @@ const setup = Layer.effectDiscard(
     yield* sql`PRAGMA busy_timeout = 5000;`;
     yield* sql`PRAGMA foreign_keys = ON;`;
     yield* sql`PRAGMA journal_mode = WAL;`;
+    yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
     yield* runMigrations();
   }),
 );
