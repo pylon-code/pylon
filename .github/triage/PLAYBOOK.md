@@ -21,6 +21,9 @@ valuable thing you can extract from this conversation.
 Read the triage context file before investigating. It tells you the installed
 version, the OS, whether the server process is currently running, and the exact
 paths for state, logs, and the database.
+Confirm that its selected base directory matches the affected Pylon profile.
+For a nightly install, regenerate it with `t3 triage --base-dir ~/.pylon-code-nightly`
+on macOS/Linux, or pass the actual nightly profile directory on other systems.
 
 ## 3. Get the source
 

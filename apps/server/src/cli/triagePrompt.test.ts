@@ -76,6 +76,8 @@ it("context file carries every path the playbook depends on", () => {
   assert.include(context, "/home/u/.t3/userdata/logs/server-child*.log*");
   assert.include(context, "/home/u/.pylon-code/dev/logs/server-child*.log*");
   assert.include(context, "Desktop development backend logs (development without T3CODE_HOME");
+  assert.include(context, "selected base/profile for packaged app");
+  assert.include(context, "t3 triage --base-dir ~/.pylon-code-nightly");
   assert.notInclude(context, "/home/u/.t3/userdata/logs/server.log");
   assert.include(context, "/home/u/.t3/userdata/logs/provider/events.log");
   assert.include(context, "/home/u/.t3/userdata/secrets");
