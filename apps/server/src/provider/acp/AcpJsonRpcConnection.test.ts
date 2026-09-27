@@ -491,6 +491,107 @@ describe("AcpSessionRuntime", () => {
     ),
   );
 
+  it.effect("keeps one answer when an earlier tool reports progress mid-stream", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+      yield* runtime.prompt({ prompt: [{ type: "text", text: "hi" }] });
+
+      const notes = Array.from(yield* Stream.runCollect(Stream.take(runtime.getEvents(), 9)));
+      // The coalesced progress tick emits nothing, and neither the completion
+      // nor a repeated one splits the markdown table across items.
+      expect(notes.map((note) => note._tag)).toEqual([
+        "ToolCallUpdated",
+        "AssistantItemStarted",
+        "ContentDelta",
+        "ContentDelta",
+        "ToolCallUpdated",
+        "ContentDelta",
+        "ToolCallUpdated",
+        "ContentDelta",
+        "AssistantItemCompleted",
+      ]);
+      expect(
+        notes.flatMap((note) =>
+          note._tag === "ToolCallUpdated" ? [note.startsAssistantBoundary] : [],
+        ),
+      ).toEqual([true, false, false]);
+      const itemIds = new Set(
+        notes.flatMap((note) =>
+          note._tag === "ContentDelta" ||
+          note._tag === "AssistantItemStarted" ||
+          note._tag === "AssistantItemCompleted"
+            ? [note.itemId]
+            : [],
+        ),
+      );
+      expect(itemIds.size).toBe(1);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+            env: { T3_ACP_EMIT_BACKGROUND_TOOL_DURING_ANSWER: "1" },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
+  it.effect("keeps an answer intact when an active tool ages out of recent IDs", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      yield* runtime.start();
+      yield* runtime.prompt({ prompt: [{ type: "text", text: "hi" }] });
+
+      const notes = Array.from(yield* Stream.runCollect(Stream.take(runtime.getEvents(), 262)));
+      expect(notes.filter((note) => note._tag === "ToolCallUpdated")).toHaveLength(258);
+      expect(notes.slice(-5).map((note) => note._tag)).toEqual([
+        "AssistantItemStarted",
+        "ContentDelta",
+        "ToolCallUpdated",
+        "ContentDelta",
+        "AssistantItemCompleted",
+      ]);
+      const agedToolUpdate = notes.at(-3);
+      expect(agedToolUpdate?._tag).toBe("ToolCallUpdated");
+      if (agedToolUpdate?._tag === "ToolCallUpdated") {
+        expect(agedToolUpdate.startsAssistantBoundary).toBe(false);
+      }
+      const answerIds = new Set(
+        notes.flatMap((note) =>
+          note._tag === "ContentDelta" ||
+          note._tag === "AssistantItemStarted" ||
+          note._tag === "AssistantItemCompleted"
+            ? [note.itemId]
+            : [],
+        ),
+      );
+      expect(answerIds.size).toBe(1);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: mockAgentCommand,
+            args: mockAgentArgs,
+            env: { T3_ACP_EMIT_AGED_BACKGROUND_TOOL_DURING_ANSWER: "1" },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
   it.effect("emits status-only tool updates through completion", () =>
     Effect.gen(function* () {
       const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;

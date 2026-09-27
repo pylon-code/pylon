@@ -26,6 +26,12 @@ const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHO
 // here and holds every chunk until completion.
 const streamCommandChunks = Number(process.env.T3_ACP_STREAM_COMMAND_CHUNKS ?? "0");
 const streamCommandChunkChars = Number(process.env.T3_ACP_STREAM_COMMAND_CHUNK_CHARS ?? "64");
+const emitBackgroundToolDuringAnswer =
+  process.env.T3_ACP_EMIT_BACKGROUND_TOOL_DURING_ANSWER === "1";
+const completeBackgroundToolAfterFinalText =
+  process.env.T3_ACP_COMPLETE_BACKGROUND_TOOL_AFTER_FINAL_TEXT === "1";
+const emitAgedBackgroundToolDuringAnswer =
+  process.env.T3_ACP_EMIT_AGED_BACKGROUND_TOOL_DURING_ANSWER === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const emitCursorStartupPlan = process.env.T3_ACP_EMIT_CURSOR_STARTUP_PLAN === "1";
 const emitXAiAskUserQuestion = process.env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION === "1";
@@ -1037,6 +1043,100 @@ const program = Effect.gen(function* () {
           agentResult: null,
         });
         return yield* Effect.never;
+      }
+
+      if (emitAgedBackgroundToolDuringAnswer) {
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "old-active",
+            title: "Terminal",
+            kind: "execute",
+            status: "in_progress",
+          },
+        });
+        for (let index = 0; index < 256; index++) {
+          yield* agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: `finished-${index}`,
+              title: "Read file",
+              kind: "read",
+              status: "completed",
+            },
+          });
+        }
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "first" },
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "old-active",
+            status: "completed",
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: " second" },
+          },
+        });
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitBackgroundToolDuringAnswer) {
+        // A command backgrounded earlier reports progress and then finishes
+        // while the next answer is still streaming.
+        const toolCallId = "background-1";
+        const say = (text: string) =>
+          agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+          });
+        const progress = (status: "in_progress" | "completed", stdout: string) =>
+          agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId,
+              status,
+              rawOutput: { stdout },
+            },
+          });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: "Terminal",
+            kind: "execute",
+            status: "in_progress",
+            rawInput: { command: "sleep 3 && echo done" },
+          },
+        });
+        yield* say("| a | b |\n|---|---|\n| 1 ");
+        yield* progress("in_progress", ".");
+        yield* say("| x |\n");
+        if (completeBackgroundToolAfterFinalText) {
+          yield* say("| 2 | y |");
+          yield* progress("completed", "done");
+          return { stopReason: "end_turn" };
+        }
+        yield* progress("completed", "done");
+        yield* say("| 2 | y |\n");
+        // Agents can repeat a terminal update after the call finished.
+        yield* progress("completed", "done");
+        yield* say("| 3 | z |");
+        return { stopReason: "end_turn" };
       }
 
       if (emitInterleavedAssistantToolCalls) {

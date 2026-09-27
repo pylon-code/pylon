@@ -855,6 +855,31 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       assert.equal(toolOnlyTerminal?.payload.state, "completed");
       assert.isTrue(toolOnly.providerThread.turns.every((turn) => turn.items.length === 0));
 
+      const backgroundCompletion = yield* runTerminalTurn("background-completion", {
+        T3_ACP_EMIT_BACKGROUND_TOOL_DURING_ANSWER: "1",
+        T3_ACP_COMPLETE_BACKGROUND_TOOL_AFTER_FINAL_TEXT: "1",
+      });
+      assert.equal(backgroundCompletion.result._tag, "Success");
+      assert.deepEqual(
+        backgroundCompletion.turnEvents
+          .filter((event) => event.type === "content.delta")
+          .map((event) => event.payload.delta),
+        ["| a | b |\n|---|---|\n| 1 ", "| x |\n", "| 2 | y |"],
+      );
+      assert.isBelow(
+        backgroundCompletion.turnEvents.map((event) => event.type).lastIndexOf("content.delta"),
+        backgroundCompletion.turnEvents.findIndex(
+          (event) =>
+            event.type === "item.completed" && event.payload.itemType === "command_execution",
+        ),
+      );
+      assert.isFalse(
+        backgroundCompletion.turnEvents.some(
+          (event) => event.type === "runtime.warning" || event.type === "runtime.error",
+        ),
+      );
+      assert.equal(backgroundCompletion.turnEvents.at(-1)?.type, "turn.completed");
+
       const normalText = yield* runTerminalTurn("normal-text", {
         T3_ACP_PROMPT_RESPONSE_TEXT: "normal final response",
       });
