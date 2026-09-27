@@ -23,6 +23,7 @@ import {
   isModelCostUnknown,
   type DailyTotals,
   type HourlyTotals,
+  type MergedUsage,
 } from "@t3tools/shared/usageMerge";
 
 import { isElectron } from "../../env";
@@ -40,6 +41,7 @@ import {
   formatHourShort,
   formatPercent,
   formatTokens,
+  formatUsageContractMismatch,
   formatUsd,
   makeWindow,
 } from "@t3tools/shared/usageFormat";
@@ -276,7 +278,7 @@ export function UsagePage() {
             showUsageStatus={!showingLimits}
             isPartial={isPartial}
             duplicateSources={merged.duplicateSources}
-            staleEnvironments={merged.staleEnvironments}
+            contractMismatches={merged.contractMismatches}
             approximateEnvironments={merged.approximateEnvironments}
           />
         </WorkspaceBreadcrumbItem>
@@ -693,24 +695,28 @@ function Metric({ label, value }: { readonly label: string; readonly value: stri
 function UsageCoverageNotice({
   environments,
   duplicateSources,
-  staleEnvironments,
+  contractMismatches,
   approximateEnvironments,
 }: {
   readonly environments: readonly EnvironmentUsageStatus[];
   readonly duplicateSources: readonly string[];
-  readonly staleEnvironments: readonly string[];
+  readonly contractMismatches: MergedUsage["contractMismatches"];
   readonly approximateEnvironments: readonly string[];
 }) {
   const failed = environments.filter((environment) => environment.error !== null);
-  const stale = environments.filter((environment) =>
-    staleEnvironments.includes(environment.environmentId),
+  const mismatchByEnvironment = new Map(
+    contractMismatches.map((mismatch) => [mismatch.environmentId, mismatch]),
   );
+  const incompatible = environments.flatMap((environment) => {
+    const mismatch = mismatchByEnvironment.get(environment.environmentId);
+    return mismatch === undefined ? [] : [{ environment, mismatch }];
+  });
   const approximate = environments.filter((environment) =>
     approximateEnvironments.includes(environment.environmentId),
   );
   if (
     failed.length === 0 &&
-    stale.length === 0 &&
+    incompatible.length === 0 &&
     duplicateSources.length === 0 &&
     approximate.length === 0
   ) {
@@ -722,9 +728,9 @@ function UsageCoverageNotice({
       {failed.map((environment) => (
         <span key={environment.label}>{environment.label} could not report usage.</span>
       ))}
-      {stale.map((environment) => (
-        <span key={environment.label}>
-          {environment.label} runs an older server version and is excluded from totals.
+      {incompatible.map(({ environment, mismatch }) => (
+        <span key={environment.environmentId}>
+          {formatUsageContractMismatch(environment.label, mismatch)}
         </span>
       ))}
       {duplicateSources.length > 0 ? (
@@ -753,7 +759,7 @@ function UsageEnvironmentFilter({
   showUsageStatus,
   isPartial,
   duplicateSources,
-  staleEnvironments,
+  contractMismatches,
   approximateEnvironments,
 }: {
   readonly environments: readonly EnvironmentUsageStatus[];
@@ -763,7 +769,7 @@ function UsageEnvironmentFilter({
   readonly showUsageStatus: boolean;
   readonly isPartial: boolean;
   readonly duplicateSources: readonly string[];
-  readonly staleEnvironments: readonly string[];
+  readonly contractMismatches: MergedUsage["contractMismatches"];
   readonly approximateEnvironments: readonly string[];
 }) {
   const [modelPricesOpen, setModelPricesOpen] = useState(false);
@@ -779,8 +785,14 @@ function UsageEnvironmentFilter({
   ).length;
   const hasIssue =
     selectedEnvironments.some((environment) => environment.error !== null) ||
-    staleEnvironments.length > 0 ||
-    approximateEnvironments.length > 0;
+    contractMismatches.some((mismatch) =>
+      selectedEnvironments.some(
+        (environment) => environment.environmentId === mismatch.environmentId,
+      ),
+    ) ||
+    approximateEnvironments.some((id) =>
+      selectedEnvironments.some((environment) => environment.environmentId === id),
+    );
 
   return (
     <>
@@ -878,7 +890,7 @@ function UsageEnvironmentFilter({
             <UsageCoverageNotice
               environments={selectedEnvironments}
               duplicateSources={duplicateSources}
-              staleEnvironments={staleEnvironments}
+              contractMismatches={contractMismatches}
               approximateEnvironments={approximateEnvironments}
             />
           ) : null}
