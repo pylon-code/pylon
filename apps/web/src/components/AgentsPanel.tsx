@@ -4,11 +4,11 @@
  * spawn batch).
  *
  * Visualization rules (from live-test feedback):
- * - Spawn order is stable. Activity and completion update rows in place.
+ * - Spawn order is stable within active and inactive sections.
  * - Agent rows reserve three fixed lines for identity, activity, and metrics;
  *   changing data must never change their height.
- * - Workflow expansion is presentation state. A live run stays expanded when
- *   it settles; older collapsed runs can still be opened at run granularity.
+ * - Finished work moves to a collapsed history section; workflows retain
+ *   their phase context and script access there.
  * - Static status dots, DOM-write elapsed timers, plain token counters.
  */
 import { useAtomValue } from "@effect/atom-react";
@@ -42,7 +42,7 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
@@ -448,6 +448,8 @@ function PhaseSection({
 }) {
   const [open, setOpen] = useState(defaultOpen || phase.state === "running");
   const previousState = useRef(phase.state);
+  const activeMembers = phase.members.filter((member) => isActiveSubagentStatus(member.status));
+  const inactiveMembers = phase.members.filter((member) => !isActiveSubagentStatus(member.status));
 
   useEffect(() => {
     if (previousState.current !== "running" && phase.state === "running") {
@@ -494,7 +496,7 @@ function PhaseSection({
         ) : null}
       </button>
       {open
-        ? phase.members.map((member) => (
+        ? activeMembers.map((member) => (
             <AgentRow
               key={member.id}
               agent={member}
@@ -504,6 +506,19 @@ function PhaseSection({
             />
           ))
         : null}
+      {open && inactiveMembers.length > 0 ? (
+        <InactiveAgents count={inactiveMembers.length}>
+          {inactiveMembers.map((member) => (
+            <AgentRow
+              key={member.id}
+              agent={member}
+              cancelControls={cancelControls}
+              messageControls={messageControls}
+              liveActivityControls={liveActivityControls}
+            />
+          ))}
+        </InactiveAgents>
+      ) : null}
     </div>
   );
 }
@@ -591,15 +606,36 @@ function ExpandedWorkflowSection({
           defaultOpen={!workflowIsLive(group)}
         />
       ))}
-      {group.unphasedMembers.map((member) => (
-        <AgentRow
-          key={member.id}
-          agent={member}
-          cancelControls={cancelControls}
-          messageControls={messageControls}
-          liveActivityControls={liveActivityControls}
-        />
-      ))}
+      {group.unphasedMembers
+        .filter((member) => isActiveSubagentStatus(member.status))
+        .map((member) => (
+          <AgentRow
+            key={member.id}
+            agent={member}
+            cancelControls={cancelControls}
+            messageControls={messageControls}
+            liveActivityControls={liveActivityControls}
+          />
+        ))}
+      {group.unphasedMembers.some((member) => !isActiveSubagentStatus(member.status)) ? (
+        <InactiveAgents
+          count={
+            group.unphasedMembers.filter((member) => !isActiveSubagentStatus(member.status)).length
+          }
+        >
+          {group.unphasedMembers
+            .filter((member) => !isActiveSubagentStatus(member.status))
+            .map((member) => (
+              <AgentRow
+                key={member.id}
+                agent={member}
+                cancelControls={cancelControls}
+                messageControls={messageControls}
+                liveActivityControls={liveActivityControls}
+              />
+            ))}
+        </InactiveAgents>
+      ) : null}
       {group.phases.length === 0 && group.unphasedMembers.length === 0 ? (
         <AgentRow
           agent={group.workflow}
@@ -678,7 +714,7 @@ function WorkflowSection({
   messageControls: AgentMessageControls;
   liveActivityControls: AgentLiveActivityControls;
 }) {
-  const [open, setOpen] = useState(() => workflowIsLive(group));
+  const [open, setOpen] = useState(() => workflowIsLive(group) || workflowHasActiveAgents(group));
   return open ? (
     <ExpandedWorkflowSection
       group={group}
@@ -691,6 +727,26 @@ function WorkflowSection({
     />
   ) : (
     <CollapsedWorkflowSection group={group} onExpand={() => setOpen(true)} />
+  );
+}
+
+function workflowHasActiveAgents(group: AgentPanelWorkflowGroup): boolean {
+  return (
+    isActiveSubagentStatus(group.workflow.status) ||
+    workflowMembers(group).some((agent) => isActiveSubagentStatus(agent.status))
+  );
+}
+
+function InactiveAgents({ children, count }: { children: ReactNode; count: number }) {
+  return (
+    <details className="border-t border-border/60 pt-2 [&[open]>summary>svg:first-child]:hidden [&[open]>summary>svg:last-of-type]:block">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm px-1.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/40 [&::-webkit-details-marker]:hidden">
+        <ChevronRight aria-hidden className="size-3" />
+        <ChevronDown aria-hidden className="hidden size-3" />
+        Inactive <span className="font-mono tabular-nums">{count}</span>
+      </summary>
+      <div className="flex flex-col gap-2 pt-1">{children}</div>
+    </details>
   );
 }
 
@@ -855,6 +911,38 @@ export function AgentsPanel({
       if (messageScopeRef.current === expectedScopeKey) setMessagePending(false);
     }
   };
+  const activeDirect = model.directAgents.filter((agent) => isActiveSubagentStatus(agent.status));
+  const inactiveDirect = model.directAgents.filter(
+    (agent) => !isActiveSubagentStatus(agent.status),
+  );
+  const activeWorkflows = model.workflows.filter(workflowHasActiveAgents);
+  const inactiveWorkflows = model.workflows.filter((group) => !workflowHasActiveAgents(group));
+  const inactiveCount =
+    inactiveDirect.length +
+    inactiveWorkflows.reduce(
+      (count, group) => count + Math.max(1, workflowMembers(group).length),
+      0,
+    );
+  const renderWorkflow = (group: AgentPanelWorkflowGroup) => (
+    <WorkflowSection
+      key={group.workflow.id}
+      group={group}
+      environmentId={environmentId}
+      threadId={threadId}
+      cancelControls={cancelControls}
+      messageControls={messageControls}
+      liveActivityControls={liveActivityControls}
+    />
+  );
+  const renderAgent = (agent: RuntimeSubagent) => (
+    <AgentRow
+      key={agent.id}
+      agent={agent}
+      cancelControls={cancelControls}
+      messageControls={messageControls}
+      liveActivityControls={liveActivityControls}
+    />
+  );
   if (!model.hasAgents) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
@@ -887,32 +975,19 @@ export function AgentsPanel({
       ) : null}
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2 p-2">
-          {model.workflows.map((group) => (
-            <WorkflowSection
-              key={group.workflow.id}
-              group={group}
-              environmentId={environmentId}
-              threadId={threadId}
-              cancelControls={cancelControls}
-              messageControls={messageControls}
-              liveActivityControls={liveActivityControls}
-            />
-          ))}
-          {model.directAgents.length > 0 ? (
-            <section>
-              <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
-                Direct spawns
-              </div>
-              {model.directAgents.map((agent) => (
-                <AgentRow
-                  key={agent.id}
-                  agent={agent}
-                  cancelControls={cancelControls}
-                  messageControls={messageControls}
-                  liveActivityControls={liveActivityControls}
-                />
-              ))}
-            </section>
+          <section aria-label="Active agents" className="flex flex-col gap-2">
+            <h3 className="px-1.5 pt-1 text-xs font-medium text-muted-foreground">Active</h3>
+            {activeDirect.map(renderAgent)}
+            {activeWorkflows.map(renderWorkflow)}
+            {activeDirect.length === 0 && activeWorkflows.length === 0 ? (
+              <p className="px-1.5 text-xs text-muted-foreground">No active agents</p>
+            ) : null}
+          </section>
+          {inactiveCount > 0 ? (
+            <InactiveAgents key={JSON.stringify([environmentId, threadId])} count={inactiveCount}>
+              {inactiveDirect.map(renderAgent)}
+              {inactiveWorkflows.map(renderWorkflow)}
+            </InactiveAgents>
           ) : null}
         </div>
       </ScrollArea>
