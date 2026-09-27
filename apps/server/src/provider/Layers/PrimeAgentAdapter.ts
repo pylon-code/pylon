@@ -748,7 +748,10 @@ export function makePrimeAgentAdapter(
                     return;
                   }
                   case "ToolCallUpdated":
-                    if (ctx.activeTurn?.id === notificationTurnId) {
+                    if (
+                      event.startsAssistantBoundary === true &&
+                      ctx.activeTurn?.id === notificationTurnId
+                    ) {
                       ctx.activeTurn.hasPublicAssistantTextAfterLatestToolBoundary = false;
                     }
                     yield* offerRuntimeEvent(

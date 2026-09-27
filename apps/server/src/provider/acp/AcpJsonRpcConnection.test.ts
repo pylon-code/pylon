@@ -511,6 +511,11 @@ describe("AcpSessionRuntime", () => {
         "ContentDelta",
         "AssistantItemCompleted",
       ]);
+      expect(
+        notes.flatMap((note) =>
+          note._tag === "ToolCallUpdated" ? [note.startsAssistantBoundary] : [],
+        ),
+      ).toEqual([true, false, false]);
       const itemIds = new Set(
         notes.flatMap((note) =>
           note._tag === "ContentDelta" ||
@@ -554,6 +559,11 @@ describe("AcpSessionRuntime", () => {
         "ContentDelta",
         "AssistantItemCompleted",
       ]);
+      const agedToolUpdate = notes.at(-3);
+      expect(agedToolUpdate?._tag).toBe("ToolCallUpdated");
+      if (agedToolUpdate?._tag === "ToolCallUpdated") {
+        expect(agedToolUpdate.startsAssistantBoundary).toBe(false);
+      }
       const answerIds = new Set(
         notes.flatMap((note) =>
           note._tag === "ContentDelta" ||

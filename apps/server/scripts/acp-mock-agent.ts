@@ -28,6 +28,8 @@ const streamCommandChunks = Number(process.env.T3_ACP_STREAM_COMMAND_CHUNKS ?? "
 const streamCommandChunkChars = Number(process.env.T3_ACP_STREAM_COMMAND_CHUNK_CHARS ?? "64");
 const emitBackgroundToolDuringAnswer =
   process.env.T3_ACP_EMIT_BACKGROUND_TOOL_DURING_ANSWER === "1";
+const completeBackgroundToolAfterFinalText =
+  process.env.T3_ACP_COMPLETE_BACKGROUND_TOOL_AFTER_FINAL_TEXT === "1";
 const emitAgedBackgroundToolDuringAnswer =
   process.env.T3_ACP_EMIT_AGED_BACKGROUND_TOOL_DURING_ANSWER === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
@@ -1124,6 +1126,11 @@ const program = Effect.gen(function* () {
         yield* say("| a | b |\n|---|---|\n| 1 ");
         yield* progress("in_progress", ".");
         yield* say("| x |\n");
+        if (completeBackgroundToolAfterFinalText) {
+          yield* say("| 2 | y |");
+          yield* progress("completed", "done");
+          return { stopReason: "end_turn" };
+        }
         yield* progress("completed", "done");
         yield* say("| 2 | y |\n");
         // Agents can repeat a terminal update after the call finished.

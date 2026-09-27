@@ -58,7 +58,11 @@ export interface AcpSessionEventStreamBarrier {
 }
 
 export type AcpSessionRuntimeEvent =
-  | AcpParsedSessionEvent
+  | Exclude<AcpParsedSessionEvent, { readonly _tag: "ToolCallUpdated" }>
+  | (Extract<AcpParsedSessionEvent, { readonly _tag: "ToolCallUpdated" }> & {
+      /** True only when this call separates two assistant text segments. */
+      readonly startsAssistantBoundary?: boolean;
+    })
   | AcpSessionEventStreamBarrier
   | {
       readonly _tag: "ConnectionTerminated";
@@ -1456,19 +1460,24 @@ const handleSessionUpdate = ({
         }
         // A new tool call is a boundary in the prose. Progress on a call that
         // is already shown, such as a background command finishing, is not.
-        if (!shownToolCallIds.has(merged.toolCallId)) {
+        const newlyShown = !shownToolCallIds.has(merged.toolCallId);
+        const startsAssistantBoundary = newlyShown && !active;
+        if (newlyShown) {
           shownToolCallIds.add(merged.toolCallId);
           // Only recent calls get late updates; keep a long session bounded.
           if (shownToolCallIds.size > MAX_SHOWN_TOOL_CALL_IDS) {
             shownToolCallIds.delete(shownToolCallIds.values().next().value!);
           }
           // A call still running is already on screen, even if it aged out.
-          if (!active) yield* closeActiveAssistantSegment({ queue, assistantSegmentRef });
+          if (startsAssistantBoundary) {
+            yield* closeActiveAssistantSegment({ queue, assistantSegmentRef });
+          }
         }
         yield* Queue.offer(queue, {
           _tag: "ToolCallUpdated",
           toolCall: merged,
           rawPayload: event.rawPayload,
+          startsAssistantBoundary,
         });
         continue;
       }
