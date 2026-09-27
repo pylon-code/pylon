@@ -405,6 +405,7 @@ export interface ComposerDraftContent {
 export interface ComposerDraftWorkspaceSelection {
   readonly mode: "local" | "worktree";
   readonly branch: string | null;
+  readonly baseRemoteName?: string;
   readonly worktreePath: string | null;
   readonly startFromOrigin?: boolean;
 }
@@ -432,6 +433,7 @@ export interface PendingSendComposerSnapshot {
 const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
   mode: Schema.Literals(["local", "worktree"]),
   branch: Schema.NullOr(Schema.String),
+  baseRemoteName: Schema.optional(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   startFromOrigin: Schema.optional(Schema.Boolean),
 });
@@ -1228,6 +1230,7 @@ export async function removeDeliveredCloudQueuedMessage(
         (editor.workspaceSelection !== undefined &&
           (editor.workspaceSelection.mode !== message.creation?.workspaceMode ||
             editor.workspaceSelection.branch !== message.creation?.branch ||
+            editor.workspaceSelection.baseRemoteName !== message.creation?.baseRemoteName ||
             editor.workspaceSelection.worktreePath !== message.creation?.worktreePath ||
             (editor.workspaceSelection.startFromOrigin ?? false) !==
               (message.creation?.startFromOrigin ?? false))))

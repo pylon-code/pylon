@@ -1046,6 +1046,7 @@ export function NewTaskDraftScreen(props: {
   });
   const selectedBranchLabel = resolveNewTaskBranchLabel({
     branchName: selectedBranchName,
+    branchRemoteName: flow.selectedBranchRemoteName,
     startFromOrigin: flow.startFromOrigin,
     workspaceMode: flow.workspaceMode,
   });

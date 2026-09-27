@@ -1388,31 +1388,51 @@ const makeWsRpcLayer = (
             let worktreeBaseRef = prepareWorktree?.baseBranch ?? null;
 
             if (prepareWorktree && shouldPrepareWorktree) {
-              // "Start from origin" is a stored default; repos without the
-              // requested remote branch fall back to the local base branch.
+              // Remote-only selections carry their remote identity through
+              // drafts and queued sends. A branch string alone is ambiguous:
+              // a local branch can also be named origin/feature.
+              const baseRemoteName = prepareWorktree.baseRemoteName;
+              const qualifiedPrefix = baseRemoteName ? `${baseRemoteName}/` : null;
+              const validRemoteSelection =
+                qualifiedPrefix === null || prepareWorktree.baseBranch.startsWith(qualifiedPrefix);
+              const remoteName = baseRemoteName ?? "origin";
+              const remoteRefName = qualifiedPrefix
+                ? prepareWorktree.baseBranch.slice(qualifiedPrefix.length)
+                : prepareWorktree.baseBranch;
+              if (baseRemoteName && validRemoteSelection) {
+                worktreeBaseRef = `refs/remotes/${remoteName}/${remoteRefName}`;
+              }
+              if (!validRemoteSelection) shouldPrepareWorktree = false;
+              // "Start from origin" is a stored default for local bases. A
+              // selected remote ref instead refreshes its own named remote.
               const startFromOrigin =
+                validRemoteSelection &&
                 prepareWorktree.startFromOrigin === true &&
                 (yield* gitWorkflow.remoteExists({
                   cwd: prepareWorktree.projectCwd,
-                  remoteName: "origin",
+                  remoteName,
                 }));
+              let selectedRemoteUnavailable =
+                baseRemoteName !== undefined &&
+                prepareWorktree.startFromOrigin === true &&
+                !startFromOrigin;
               if (startFromOrigin) {
                 yield* track(worktreeSetupTracker.stageStatus(threadId, "fetch", "running"));
                 yield* gitWorkflow.fetchRemote({
                   cwd: prepareWorktree.projectCwd,
-                  remoteName: "origin",
-                  refName: prepareWorktree.baseBranch,
+                  remoteName,
+                  refName: remoteRefName,
                 });
                 const remoteBaseExists = yield* gitWorkflow.remoteBranchExists({
                   cwd: prepareWorktree.projectCwd,
-                  refName: prepareWorktree.baseBranch,
-                  remoteName: "origin",
+                  refName: remoteRefName,
+                  remoteName,
                 });
                 if (remoteBaseExists) {
                   const resolvedRemoteBase = yield* gitWorkflow.resolveRemoteTrackingCommit({
                     cwd: prepareWorktree.projectCwd,
                     refName: prepareWorktree.baseBranch,
-                    fallbackRemoteName: "origin",
+                    fallbackRemoteName: remoteName,
                   });
                   worktreeBaseRef = resolvedRemoteBase.commitSha;
                   yield* track(
@@ -1420,16 +1440,17 @@ const makeWsRpcLayer = (
                       threadId,
                       "fetch",
                       "done",
-                      `origin/${prepareWorktree.baseBranch} at ${resolvedRemoteBase.commitSha.slice(0, 7)}`,
+                      `${remoteName}/${remoteRefName} at ${resolvedRemoteBase.commitSha.slice(0, 7)}`,
                     ),
                   );
                 } else {
+                  selectedRemoteUnavailable = baseRemoteName !== undefined;
                   yield* track(
                     worktreeSetupTracker.stageStatus(
                       threadId,
                       "fetch",
                       "warning",
-                      `origin/${prepareWorktree.baseBranch} not found, using local branch`,
+                      `${remoteName}/${remoteRefName} not found, using ${selectedRemoteUnavailable ? "project checkout" : "local branch"}`,
                     ),
                   );
                 }
@@ -1438,10 +1459,13 @@ const makeWsRpcLayer = (
               }
 
               const resolvedWorktreeBaseRef = worktreeBaseRef ?? prepareWorktree.baseBranch;
-              shouldPrepareWorktree = yield* gitWorkflow.hasCommit({
-                cwd: prepareWorktree.projectCwd,
-                refName: resolvedWorktreeBaseRef,
-              });
+              shouldPrepareWorktree =
+                shouldPrepareWorktree &&
+                !selectedRemoteUnavailable &&
+                (yield* gitWorkflow.hasCommit({
+                  cwd: prepareWorktree.projectCwd,
+                  refName: resolvedWorktreeBaseRef,
+                }));
               worktreeBaseRef = resolvedWorktreeBaseRef;
               yield* track(
                 worktreeSetupTracker.update(threadId, (snapshot) => ({

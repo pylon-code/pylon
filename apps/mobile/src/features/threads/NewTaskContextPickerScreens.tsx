@@ -330,7 +330,7 @@ export function NewTaskBranchPickerRouteScreen() {
       <View className="mb-3 overflow-hidden rounded-2xl">
         <ToggleRow
           onValueChange={flow.setStartFromOrigin}
-          title="Start from origin"
+          title={`Start from ${flow.selectedBranchRemoteName ?? "origin"}`}
           value={flow.startFromOrigin}
         />
       </View>

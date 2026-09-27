@@ -34,6 +34,7 @@ export function hydratePendingTaskEditorDraft(message: QueuedThreadMessage): voi
     workspaceSelection: {
       mode: creation.workspaceMode,
       branch: creation.branch,
+      ...(creation.baseRemoteName ? { baseRemoteName: creation.baseRemoteName } : {}),
       worktreePath: creation.worktreePath,
       startFromOrigin: creation.startFromOrigin ?? false,
     },

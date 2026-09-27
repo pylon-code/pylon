@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  filterNewTaskBranches,
   resolveNewTaskBranchWorktreePath,
   resolveNewTaskBranchLabel,
   resolveNewTaskLocalWorkspaceSelection,
@@ -116,6 +117,30 @@ describe("resolveNewTaskBranchLabel", () => {
     ).toBe("From origin/main");
   });
 
+  it("does not prefix an explicitly selected remote when origin refresh is inherited or enabled", () => {
+    for (const branchRemoteName of ["origin", "upstream"]) {
+      expect(
+        resolveNewTaskBranchLabel({
+          branchName: `${branchRemoteName}/feature`,
+          branchRemoteName,
+          startFromOrigin: true,
+          workspaceMode: "worktree",
+        }),
+      ).toBe(`From ${branchRemoteName}/feature`);
+    }
+  });
+
+  it("keeps an explicitly selected remote unchanged when origin refresh is off", () => {
+    expect(
+      resolveNewTaskBranchLabel({
+        branchName: "upstream/feature",
+        branchRemoteName: "upstream",
+        startFromOrigin: false,
+        workspaceMode: "worktree",
+      }),
+    ).toBe("From upstream/feature");
+  });
+
   it("prompts when no branch is available", () => {
     expect(
       resolveNewTaskBranchLabel({
@@ -124,5 +149,33 @@ describe("resolveNewTaskBranchLabel", () => {
         workspaceMode: "worktree",
       }),
     ).toBe("Choose branch");
+  });
+});
+
+describe("filterNewTaskBranches", () => {
+  const branches = [
+    { name: "main", isRemote: false },
+    { name: "Feature/Login-Page", isRemote: false },
+    { name: "origin/fix/remote-only", isRemote: true },
+  ];
+  const search = (query: string) =>
+    filterNewTaskBranches(branches, query).map((branch) => branch.name);
+
+  it("ignores case in both the query and the branch name", () => {
+    expect(search("feature/login")).toEqual(["Feature/Login-Page"]);
+    expect(search("MAIN")).toEqual(["main"]);
+  });
+
+  it("keeps remote-only branches searchable", () => {
+    expect(search("remote-only")).toEqual(["origin/fix/remote-only"]);
+  });
+
+  it("matches a typed space against the dash a branch name uses", () => {
+    expect(search("  login page ")).toEqual(["Feature/Login-Page"]);
+  });
+
+  it("restores local and remote refs in their original order when search clears", () => {
+    expect(search("remote-only")).toEqual(["origin/fix/remote-only"]);
+    expect(search("")).toEqual(branches.map((branch) => branch.name));
   });
 });
