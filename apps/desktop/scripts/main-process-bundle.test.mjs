@@ -1,3 +1,4 @@
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -104,6 +105,135 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
     }
     assert.deepEqual(workers, [42, 42, 42, 42]);
     assert.deepEqual(startups, [42]);
+  } finally {
+    await NodeFSP.rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("loads the emitted packaged boot entry and backend cache preload", async () => {
+  const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pylon-desktop-boot-"));
+  try {
+    const entries = ["src/boot.ts", "src/compileCache.ts"];
+    await NodeFSP.mkdir(NodePath.join(directory, "src"));
+    await Promise.all(
+      entries.map((entry) =>
+        NodeFSP.copyFile(new URL(`../${entry}`, import.meta.url), NodePath.join(directory, entry)),
+      ),
+    );
+    assert.ok(Array.isArray(desktopConfig.pack));
+    for (const packConfig of desktopConfig.pack) {
+      if (!Array.isArray(packConfig.entry)) continue;
+      if (!packConfig.entry.some((entry) => entries.includes(entry))) continue;
+      await build({
+        ...packConfig,
+        config: false,
+        cwd: directory,
+        tsconfig: false,
+        sourcemap: false,
+        onSuccess: undefined,
+        logLevel: "silent",
+      });
+    }
+    const outputDirectory = NodePath.join(directory, "dist-electron");
+    const fixture = `console.log(require('node:module').getCompileCacheDir() ? 'cached' : 'uncached');`;
+    await NodeFSP.writeFile(NodePath.join(outputDirectory, "main.cjs"), fixture);
+    await NodeFSP.writeFile(
+      NodePath.join(outputDirectory, "backend.mjs"),
+      `import { getCompileCacheDir } from 'node:module'; console.log(getCompileCacheDir() ? 'cached' : 'uncached');`,
+    );
+    for (const { disabled, appImage } of [
+      { disabled: false, appImage: false },
+      { disabled: true, appImage: false },
+      { disabled: false, appImage: true },
+    ]) {
+      for (const args of [
+        [NodePath.join(outputDirectory, "boot.cjs")],
+        [
+          "--require",
+          NodePath.join(outputDirectory, "compileCache.cjs"),
+          NodePath.join(outputDirectory, "backend.mjs"),
+        ],
+      ]) {
+        const child = NodeChildProcess.spawnSync(process.execPath, args, {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            APPIMAGE: appImage ? "/tmp/.mount_pylon/Pylon.AppImage" : "",
+            NODE_COMPILE_CACHE: undefined,
+            NODE_DISABLE_COMPILE_CACHE: disabled ? "1" : undefined,
+            XDG_CACHE_HOME: directory,
+            TMPDIR: directory,
+            TEMP: directory,
+            TMP: directory,
+          },
+        });
+        assert.equal(child.status, 0, child.stderr);
+        assert.equal(child.stdout.trim(), disabled || appImage ? "uncached" : "cached");
+      }
+    }
+    const boot = NodePath.join(outputDirectory, "boot.cjs");
+    const runBoot = () =>
+      NodeChildProcess.spawnSync(process.execPath, [boot], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          APPIMAGE: "",
+          NODE_COMPILE_CACHE: undefined,
+          NODE_DISABLE_COMPILE_CACHE: undefined,
+          XDG_CACHE_HOME: directory,
+          TMPDIR: directory,
+          TEMP: directory,
+          TMP: directory,
+        },
+      });
+    await NodeFSP.writeFile(NodePath.join(outputDirectory, "main.cjs"), "console.log('before');");
+    const before = runBoot();
+    assert.equal(before.status, 0, before.stderr);
+    assert.equal(before.stdout.trim(), "before");
+    await NodeFSP.writeFile(NodePath.join(outputDirectory, "main.cjs"), "console.log('after');");
+    const after = runBoot();
+    assert.equal(after.status, 0, after.stderr);
+    assert.equal(after.stdout.trim(), "after");
+    const blockedCacheRoot = NodePath.join(directory, "not-a-directory");
+    await NodeFSP.writeFile(blockedCacheRoot, "occupied");
+    const blocked = NodeChildProcess.spawnSync(process.execPath, [boot], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        APPIMAGE: "",
+        NODE_COMPILE_CACHE: undefined,
+        NODE_DISABLE_COMPILE_CACHE: undefined,
+        XDG_CACHE_HOME: blockedCacheRoot,
+        TMPDIR: blockedCacheRoot,
+        TEMP: blockedCacheRoot,
+        TMP: blockedCacheRoot,
+      },
+    });
+    assert.equal(blocked.status, 0, blocked.stderr);
+    assert.equal(blocked.stdout.trim(), "after");
+    const blockedBackend = NodeChildProcess.spawnSync(
+      process.execPath,
+      [
+        "--require",
+        NodePath.join(outputDirectory, "compileCache.cjs"),
+        NodePath.join(outputDirectory, "backend.mjs"),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          APPIMAGE: "",
+          NODE_COMPILE_CACHE: undefined,
+          NODE_DISABLE_COMPILE_CACHE: undefined,
+          XDG_CACHE_HOME: blockedCacheRoot,
+          TMPDIR: blockedCacheRoot,
+          TEMP: blockedCacheRoot,
+          TMP: blockedCacheRoot,
+        },
+      },
+    );
+    assert.equal(blockedBackend.status, 0, blockedBackend.stderr);
+    assert.equal(blockedBackend.stdout.trim(), "uncached");
   } finally {
     await NodeFSP.rm(directory, { recursive: true, force: true });
   }
