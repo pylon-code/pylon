@@ -31,6 +31,7 @@ import {
   isAntigravitySignInRequiredError,
   prepareAntigravityProfile,
   resolveAntigravityProfileDirectory,
+  resolveAntigravityRuntimeTempDirectory,
   type AntigravityAuthConfig,
 } from "../antigravityAuthSupport.ts";
 import {
@@ -99,10 +100,16 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       };
       const authConfigIssue = antigravityAuthConfigIssue(auth);
       const processEnvironment = mergeProviderInstanceEnvironment(environment);
-      const userHome = resolveAntigravityUserHome(yield* HostProcessPlatform, processEnvironment);
+      const platform = yield* HostProcessPlatform;
+      const userHome = resolveAntigravityUserHome(platform, processEnvironment);
       const profileDirectory = resolveAntigravityProfileDirectory(
         serverConfig.stateDir,
         instanceId,
+      );
+      const tempDirectory = resolveAntigravityRuntimeTempDirectory(
+        serverConfig.stateDir,
+        instanceId,
+        { platform },
       );
       // Another driver or server can still own processes under this profile.
       // Only remove directories acquired by this runtime, after its child exits.
@@ -141,6 +148,13 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             detail: authConfigIssue,
           });
         }
+        if (tempDirectory === null) {
+          return yield* new ProviderSetupError({
+            instanceId,
+            operation: "start",
+            detail: "Antigravity needs a shorter Windows temp directory to unpack its runtime.",
+          });
+        }
         const executable = yield* installation
           .acquire(settings.binaryPath, processEnvironment)
           .pipe(
@@ -159,6 +173,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           baseEnv: processEnvironment,
           auth,
           userHome,
+          tempDirectory,
         }).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),

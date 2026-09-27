@@ -1,5 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Win32 path length is tested on every host.
+import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProviderInstanceId } from "@t3tools/contracts";
@@ -33,6 +35,7 @@ import {
   parseAntigravityAuthorizationUrl,
   prepareAntigravityProfile,
   resolveAntigravityProfileDirectory,
+  resolveAntigravityRuntimeTempDirectory,
 } from "./antigravityAuthSupport.ts";
 
 const authorizationUrl =
@@ -255,6 +258,64 @@ describe("Antigravity process environment", () => {
     expect(
       resolveAntigravityProfileDirectory("/userdata", ProviderInstanceId.make("antigravity")),
     ).toBe(first);
+  });
+
+  it("keeps Windows runtime unpacking under MAX_PATH without moving existing profiles", () => {
+    const stateDir = "C:\\Users\\a-twenty-char-person\\.pylon-code\\userdata";
+    const instanceId = ProviderInstanceId.make("antigravity");
+    const profile = resolveAntigravityProfileDirectory(stateDir, instanceId);
+    const temp = resolveAntigravityRuntimeTempDirectory(stateDir, instanceId, {
+      platform: "win32",
+      systemTempDirectory: "C:\\Temp",
+    });
+    expect(temp).not.toBeNull();
+    if (temp === null) return;
+    const member =
+      "google3\\cloud\\developer_experience\\antigravity_extensions\\acp_server\\_private__agy_acp_server_bin.lazy_imports_info.json";
+    const extracted = (root: string) =>
+      NodePath.win32.join(root, "run-AbC123", "_MEI000012ab2", member);
+    expect(extracted(temp).length).toBeLessThan(260);
+    expect(
+      extracted(NodePath.win32.join(profile, "antigravity-acp", "tmp")).length,
+    ).toBeGreaterThanOrEqual(260);
+    expect(temp.toLowerCase()).not.toBe(
+      resolveAntigravityRuntimeTempDirectory(stateDir, ProviderInstanceId.make("Antigravity"), {
+        platform: "win32",
+        systemTempDirectory: "C:\\Temp",
+      })?.toLowerCase(),
+    );
+  });
+
+  it("uses a short system temp root when the state directory exceeds the Windows path budget", () => {
+    const instanceId = ProviderInstanceId.make("antigravity");
+    const stateDir = `C:\\Users\\${"long-name-".repeat(8)}\\.pylon-code\\userdata`;
+    const temp = resolveAntigravityRuntimeTempDirectory(stateDir, instanceId, {
+      platform: "win32",
+      systemTempDirectory: "C:\\Temp",
+    });
+    expect(temp).toMatch(/^C:\\Temp\\pylon-ag\\[0-9a-f]{12}$/u);
+    expect(temp?.length).toBeLessThanOrEqual(100);
+    if (temp === null) return;
+    const suffix = temp.slice("C:\\Temp".length);
+    const boundaryBase = `C:\\${"x".repeat(100 - "C:\\".length - suffix.length)}`;
+    expect(
+      resolveAntigravityRuntimeTempDirectory(stateDir, instanceId, {
+        platform: "win32",
+        systemTempDirectory: boundaryBase,
+      })?.length,
+    ).toBe(100);
+    expect(
+      resolveAntigravityRuntimeTempDirectory(stateDir, instanceId, {
+        platform: "win32",
+        systemTempDirectory: `${boundaryBase}x`,
+      }),
+    ).toBeNull();
+    expect(
+      resolveAntigravityRuntimeTempDirectory(stateDir, instanceId, {
+        platform: "win32",
+        systemTempDirectory: `C:\\Users\\${"long-name-".repeat(8)}\\AppData\\Local\\Temp`,
+      }),
+    ).toBeNull();
   });
 });
 

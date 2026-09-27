@@ -233,6 +233,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     fs,
     path,
     profileDirectory,
+    instanceId,
     instancePath,
     first,
     second,
@@ -468,7 +469,11 @@ it.layer(testLayer)("AntigravityDriver", (it) => {
     () =>
       Effect.gen(function* () {
         const h = yield* makeHarness();
-        const tempRoot = resolveAntigravityRuntimeTempDirectory(h.profileDirectory);
+        const config = yield* ServerConfig;
+        const tempRoot = resolveAntigravityRuntimeTempDirectory(config.stateDir, h.instanceId, {
+          platform: hostPlatform,
+        });
+        if (tempRoot === null) return yield* Effect.die("Expected a runtime temp root.");
         yield* h.refresh();
         yield* h.refresh();
         const directories = h.launches.flatMap((launch) =>
@@ -491,9 +496,10 @@ it.layer(testLayer)("AntigravityDriver", (it) => {
         const path = yield* Path.Path;
         const config = yield* ServerConfig;
         const instanceId = ProviderInstanceId.make("antigravity-orphan-sweep");
-        const tempRoot = resolveAntigravityRuntimeTempDirectory(
-          resolveAntigravityProfileDirectory(config.stateDir, instanceId),
-        );
+        const tempRoot = resolveAntigravityRuntimeTempDirectory(config.stateDir, instanceId, {
+          platform: hostPlatform,
+        });
+        if (tempRoot === null) return yield* Effect.die("Expected a runtime temp root.");
         const orphan = path.join(tempRoot, "run-orphan", "_MEI123", "google3");
         yield* fs.makeDirectory(orphan, { recursive: true });
         yield* fs.writeFileString(path.join(orphan, "payload.bin"), "stale");
