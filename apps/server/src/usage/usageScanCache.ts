@@ -23,7 +23,8 @@ import type { CodexScanState, UsageRecord } from "./usageTranscripts.ts";
 // entries would keep serving double-counted records forever.
 // v3: entries carry the parse position and reducer state so a grown file
 // re-parses only its appended bytes instead of starting over.
-// v4: records carry Claude fast mode, which v3 rows never captured.
+// v4: records carry Claude fast mode. v3 rows are migrated rather than dropped:
+// deleted transcripts have no other copy of their historical usage.
 const USAGE_SCAN_CACHE_VERSION = 4 as const;
 
 export interface CachedFile {
@@ -39,6 +40,8 @@ export interface CachedFile {
    */
   readonly tailRecords: readonly UsageRecord[];
   readonly position: TranscriptParsePosition;
+  /** A v3 Claude entry must be fully parsed if its transcript still exists. */
+  readonly needsFastRescan?: boolean;
 }
 
 export type ScanCache = Map<string, CachedFile>;
@@ -75,6 +78,8 @@ interface SerializedFile {
   readonly gh: number;
   /** Codex reducer state at `o`; `null` for stateless providers. */
   readonly cs: CodexScanState | null;
+  /** Keep the migration pending across restarts when the live file cannot be read. */
+  readonly fr?: 1;
 }
 
 interface SerializedCache {
@@ -126,6 +131,7 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
       gl: entry.position.guardLength,
       gh: entry.position.guardHash,
       cs: entry.position.codexState,
+      ...(entry.needsFastRescan ? { fr: 1 as const } : {}),
     };
   }
 
@@ -147,7 +153,8 @@ export function decodeScanCache(document: unknown): ScanCache {
   if (typeof document !== "object" || document === null) return cache;
 
   const root = document as Partial<SerializedCache>;
-  if (root.version !== USAGE_SCAN_CACHE_VERSION) return cache;
+  if (root.version !== USAGE_SCAN_CACHE_VERSION && root.version !== 3) return cache;
+  const legacy = root.version === 3;
   if (!isRecordArray(root.models) || !isRecordArray(root.sessions)) return cache;
   if (typeof root.files !== "object" || root.files === null) return cache;
 
@@ -168,7 +175,7 @@ export function decodeScanCache(document: unknown): ScanCache {
   ): UsageRecord[] | null => {
     const records: UsageRecord[] = [];
     for (const row of rows) {
-      if (!isRecordArray(row) || row.length < 11) return null;
+      if (!isRecordArray(row) || row.length < (legacy ? 10 : 11)) return null;
       const [
         timestampMs,
         modelIndex,
@@ -193,7 +200,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         !Number.isFinite(cacheCreation) ||
         !Number.isFinite(output) ||
         !Number.isFinite(reasoning) ||
-        (fast !== 0 && fast !== 1)
+        (!legacy && fast !== 0 && fast !== 1)
       ) {
         return null;
       }
@@ -211,7 +218,9 @@ export function decodeScanCache(document: unknown): ScanCache {
           reasoningTokens: reasoning,
         },
         reportedCostUsd: typeof reportedCostUsd === "number" ? reportedCostUsd : null,
-        fast: fast === 1,
+        // v3 never stored speed. Retained rows are conservatively standard;
+        // a live Claude transcript is fully reparsed before it becomes warm.
+        fast: !legacy && fast === 1,
         dedupeKey: typeof dedupeKey === "string" ? dedupeKey : null,
       });
     }
@@ -231,6 +240,7 @@ export function decodeScanCache(document: unknown): ScanCache {
       continue;
     }
     if (!isRecordArray(entry.r) || !isRecordArray(entry.t)) continue;
+    if (!legacy && entry.fr !== undefined && entry.fr !== 1) continue;
     // Position fields feed byte offsets and a Buffer allocation in the reader,
     // so anything outside their real ranges must reject the entry: a bogus
     // guard length would otherwise fail every parse of the file, silently
@@ -269,6 +279,8 @@ export function decodeScanCache(document: unknown): ScanCache {
         guardHash: entry.gh,
         codexState,
       },
+      ...(legacy && provider === "claude" ? { needsFastRescan: true } : {}),
+      ...(!legacy && entry.fr === 1 ? { needsFastRescan: true } : {}),
     });
   }
 

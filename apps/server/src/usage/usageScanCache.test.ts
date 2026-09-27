@@ -139,11 +139,39 @@ describe("scan cache round trip", () => {
     expect(decodeScanCache(JSON.parse(JSON.stringify(poisoned))).has("/a.jsonl")).toBe(false);
   });
 
-  it("rejects a document from the previous cache version", () => {
-    const encoded = encodeScanCache(cacheWith([["/a.jsonl", 100, [record()]]]));
-    const previous = { ...encoded, version: 3 };
+  it("migrates v3 rows and keeps Claude rescan pending across persistence", () => {
+    const original = cacheWith([["/deleted.jsonl", 100, [record({ fast: true })]]]);
+    original.set("/codex.jsonl", {
+      ...original.get("/deleted.jsonl")!,
+      provider: "codex",
+      records: [record({ provider: "codex", fast: false })],
+    });
+    original.set("/deleted.db", {
+      ...original.get("/deleted.jsonl")!,
+      provider: "antigravity",
+      records: [record({ provider: "antigravity", fast: false })],
+    });
+    const encoded = encodeScanCache(original);
+    const files = Object.fromEntries(
+      Object.entries(encoded.files).map(([path, entry]) => [
+        path,
+        {
+          ...entry,
+          r: entry.r.map((row) => row.slice(0, 10)),
+          t: entry.t.map((row) => row.slice(0, 10)),
+        },
+      ]),
+    );
+    const migrated = decodeScanCache({ ...encoded, version: 3, files });
 
-    expect(decodeScanCache(JSON.parse(JSON.stringify(previous))).size).toBe(0);
+    expect(migrated.get("/deleted.jsonl")?.records[0]?.fast).toBe(false);
+    expect(migrated.get("/deleted.jsonl")?.needsFastRescan).toBe(true);
+    expect(migrated.get("/codex.jsonl")?.records).toEqual(original.get("/codex.jsonl")?.records);
+    expect(migrated.get("/codex.jsonl")?.needsFastRescan).toBeUndefined();
+    expect(migrated.get("/deleted.db")?.records).toEqual(original.get("/deleted.db")?.records);
+    expect(decodeScanCache(encodeScanCache(migrated)).get("/deleted.jsonl")?.needsFastRescan).toBe(
+      true,
+    );
   });
 
   it("interns repeated model and session strings", () => {

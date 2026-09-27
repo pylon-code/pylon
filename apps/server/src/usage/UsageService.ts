@@ -466,6 +466,14 @@ export const make = Effect.gen(function* () {
       );
       if (document === null) return;
       for (const [path, entry] of decodeScanCache(document)) fileCache.set(path, entry);
+      if (
+        typeof document === "object" &&
+        document !== null &&
+        "version" in document &&
+        document.version === 3
+      ) {
+        cacheDirty = true;
+      }
       const sources = decodeCachedSources(document);
       if (Option.isSome(sources)) {
         for (const [key, source] of Object.entries(sources.value.sources))
@@ -513,7 +521,8 @@ export const make = Effect.gen(function* () {
         cached &&
         cached.size === size &&
         cached.mtimeMs === mtimeMs &&
-        cached.provider === provider
+        cached.provider === provider &&
+        !cached.needsFastRescan
       ) {
         return cached.tailRecords.length === 0
           ? cached.records
@@ -523,7 +532,10 @@ export const make = Effect.gen(function* () {
       // Only a strictly grown file may resume. Same size with a new mtime, or
       // a shrunken file, means rewritten content; re-parse it whole.
       const resumeFrom =
-        cached !== undefined && cached.provider === provider && size > cached.size
+        cached !== undefined &&
+        cached.provider === provider &&
+        !cached.needsFastRescan &&
+        size > cached.size
           ? cached.position
           : undefined;
 
