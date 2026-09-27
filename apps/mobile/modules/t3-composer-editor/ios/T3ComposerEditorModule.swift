@@ -39,6 +39,7 @@ enum T3ComposerClipboard {
 public class T3ComposerEditorModule: Module {
   public func definition() -> ModuleDefinition {
     Name("T3ComposerEditor")
+    Constants(["textPasteAttachmentRevision": 1])
 
     AsyncFunction("writeContextClipboard") { (text: String, fragment: String) in
       T3ComposerClipboard.write(text: text, fragment: fragment)
@@ -90,6 +91,12 @@ public class T3ComposerEditorModule: Module {
       Prop("enterBehavior") { (view: T3ComposerEditorView, behavior: String) in
         view.setEnterBehavior(behavior)
       }
+      Prop("textPasteThresholdBytes") { (view: T3ComposerEditorView, threshold: Int) in
+        view.setTextPasteThresholdBytes(threshold)
+      }
+      Prop("maxInputChars") { (view: T3ComposerEditorView, maxInputChars: Int) in
+        view.setMaxInputChars(maxInputChars)
+      }
 
       Events(
         "onComposerChange",
@@ -100,6 +107,7 @@ public class T3ComposerEditorModule: Module {
         "onComposerPasteImages",
         "onComposerContextPress",
         "onComposerPasteContext",
+        "onComposerPasteText",
         "onComposerContentSizeChange"
       )
 

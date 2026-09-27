@@ -1,0 +1,11 @@
+<resources>
+  <string name="pylon_subscription_widget_unknown_check">Last checked unavailable</string>
+  <string name="pylon_subscription_widget_name">Subscription usage</string>
+  <string name="pylon_subscription_widget_description">Saved subscription quotas from your Pylon environments. Tap to refresh in the app.</string>
+  <string name="pylon_subscription_widget_empty">Open Pylon and connect an environment to see limits.</string>
+  <string name="pylon_subscription_widget_open">Tap to open Usage</string>
+  <string name="pylon_subscription_widget_refresh">Open app to refresh</string>
+  <string name="pylon_subscription_widget_remaining">%1$d%% remaining</string>
+  <string name="pylon_subscription_widget_as_of">As of %1$s</string>
+  <string name="pylon_subscription_widget_more"> · +%1$d more</string>
+</resources>

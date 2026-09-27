@@ -2,6 +2,7 @@ import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests
 import type { CommandPaletteLinkedThreads } from "../commandPaletteBus";
 import {
   type EnvironmentId,
+  type ProjectId,
   type FilesystemBrowseEntry,
   type KeybindingCommand,
   THREAD_JUMP_KEYBINDING_COMMANDS,
@@ -11,7 +12,12 @@ import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { type ReactNode } from "react";
-import { sortThreads } from "../lib/threadSort";
+import {
+  getLatestThreadForProject,
+  getThreadSortTimestamp,
+  sortThreads,
+  type ThreadSortInput,
+} from "../lib/threadSort";
 import { normalizeSearchText } from "../lib/utils";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
@@ -19,6 +25,19 @@ import { type Project, type SidebarThreadSummary, type Thread } from "../types";
 export const RECENT_THREAD_LIMIT = 12;
 export const ITEM_ICON_CLASS = "size-4 text-icon-muted";
 export const ADDON_ICON_CLASS = "size-4";
+
+/** Adding an existing project should open its latest thread only while it remains active. */
+export function getExistingThreadForProjectAdd<
+  T extends {
+    readonly id: string;
+    readonly projectId: ProjectId;
+    readonly archivedAt: string | null;
+    readonly settledOverride: string | null;
+  } & ThreadSortInput,
+>(threads: readonly T[], projectId: ProjectId, sortOrder: SidebarThreadSortOrder): T | null {
+  const latestThread = getLatestThreadForProject(threads, projectId, sortOrder);
+  return latestThread?.settledOverride === "settled" ? null : latestThread;
+}
 
 /** A PR's relations include archived threads that normal palette search omits. */
 export function buildLinkedThreadActionItems(
@@ -60,8 +79,12 @@ export function browseInputEndPaddingClass(input: {
  */
 export type SearchOverlayMode = "command" | "files" | "content";
 
+export function nextAppearanceMode(mode: "system" | "light" | "dark") {
+  return mode === "system" ? "light" : mode === "light" ? "dark" : "system";
+}
+
 export type CommandPaletteOpenIntent =
-  | { readonly kind: "add-project" | "new-thread-in" }
+  | { readonly kind: "add-project" | "new-thread-in" | "change-theme" }
   | {
       readonly kind: "search";
       readonly query: string;
@@ -84,6 +107,7 @@ export type CommandPaletteUiAction =
     }
   | { readonly _tag: "OpenAddProject" }
   | { readonly _tag: "OpenNewThreadIn" }
+  | { readonly _tag: "OpenChangeTheme" }
   | { readonly _tag: "ClearOpenIntent" };
 
 export function reduceCommandPaletteUiState(
@@ -113,6 +137,8 @@ export function reduceCommandPaletteUiState(
       return { open: true, mode: "command", openIntent: { kind: "add-project" } };
     case "OpenNewThreadIn":
       return { open: true, mode: "command", openIntent: { kind: "new-thread-in" } };
+    case "OpenChangeTheme":
+      return { open: true, mode: "command", openIntent: { kind: "change-theme" } };
     case "ClearOpenIntent":
       return state.openIntent ? { ...state, openIntent: null } : state;
   }
@@ -132,6 +158,8 @@ export interface CommandPaletteItem {
   readonly description?: ReactNode;
   readonly threadContentMatch?: CommandPaletteThreadContentMatch;
   readonly timestamp?: string;
+  /** Activity time used only to break equally relevant search matches. */
+  readonly searchRecency?: number;
   readonly icon: ReactNode;
   readonly disabled?: boolean;
   /** Optional content rendered inline before the title text. */
@@ -139,6 +167,8 @@ export interface CommandPaletteItem {
   /** Optional content rendered inline after the title text (before the timestamp). */
   readonly titleTrailingContent?: ReactNode;
   readonly shortcutCommand?: KeybindingCommand;
+  /** Keep detailed settings rows after primary matches in their group. */
+  readonly secondary?: boolean;
 }
 
 export interface CommandPaletteActionItem extends CommandPaletteItem {
@@ -302,12 +332,15 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
           projectTitle ?? ``,
           thread.branch ?? ``,
           contentMatch?.snippet ?? ``,
+          // Keep IDs after human-readable terms so a shared substring favors titles.
+          thread.id,
         ],
         title: thread.title,
         description,
         timestamp: formatRelativeTimeLabel(
           thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
         ),
+        searchRecency: getThreadSortTimestamp(thread, "updated_at"),
         icon: input.icon,
       },
       leadingContent ? { titleLeadingContent: leadingContent } : {},
@@ -431,7 +464,16 @@ export function filterCommandPaletteGroups(input: {
         rank: rankCommandPaletteItemMatch(item, normalizedQuery, queryTokens),
       });
     })
-      .toSorted((left, right) => right.rank - left.rank || left.index - right.index)
+      .toSorted((left, right) => {
+        const secondaryOrder =
+          Number(left.item.secondary ?? false) - Number(right.item.secondary ?? false);
+        if (secondaryOrder !== 0) return secondaryOrder;
+        if (left.rank !== right.rank) return right.rank - left.rank;
+        const leftRecency = left.item.searchRecency ?? Number.NEGATIVE_INFINITY;
+        const rightRecency = right.item.searchRecency ?? Number.NEGATIVE_INFINITY;
+        if (leftRecency !== rightRecency) return rightRecency > leftRecency ? 1 : -1;
+        return left.index - right.index;
+      })
       .map((entry) => entry.item);
 
     if (items.length === 0) {

@@ -24,6 +24,7 @@ import {
   type VoiceInputState,
 } from "@t3tools/client-runtime/voice-input";
 import { normalizeVoiceInputDecibels, VOICE_WAVEFORM_SAMPLE_COUNT } from "./voiceInputMetering";
+import { holdRecordingAwake } from "./recordingKeepAwake";
 
 const INITIAL_STATE: VoiceInputState = { phase: "idle", error: null, errorAction: null };
 const VOICE_METERING_INTERVAL_MS = 80;
@@ -155,6 +156,11 @@ export function useVoiceInputController(input: {
   }, [controller]);
 
   useEffect(() => () => controller.dispose(), [controller]);
+
+  useEffect(() => {
+    if (state.phase !== "recording") return;
+    return holdRecordingAwake();
+  }, [state.phase]);
 
   useEffect(() => {
     if (state.phase !== "preparing" && state.phase !== "recording") return;

@@ -76,8 +76,14 @@ and Control elsewhere. Other modifiers are `cmd` / `meta`, `ctrl` / `control`, `
 
 ## When conditions
 
-Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`, `previewOpen`, and
-`modelPickerOpen`. Unknown keys evaluate to `false`.
+Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`, `previewOpen`,
+`editableFocus`, `modelPickerOpen`, `isWeb`, and `isDesktop`. `isWeb` is true in a browser tab;
+`isDesktop` is true in the desktop app. `editableFocus` is supplied for route-history shortcuts
+and Undo while a text field or editor owns the keyboard. Unknown keys evaluate to `false`.
+
+The default `mod+1` through `mod+9` thread and model jumps run only in the desktop app so a
+browser tab keeps its own numbered-tab shortcuts. Remove the `isDesktop` condition in Settings if
+you want those jumps in a browser.
 
 Combine keys with `!` for not, `&&` for and, `||` for or, and parentheses:
 
@@ -98,9 +104,17 @@ chooser. Both use your [new-thread defaults](./thread-sidebar.md#start-a-thread)
 `filePicker.toggle` (`mod+p`) opens file search for the active project, and `projectSearch.toggle`
 (`mod+shift+f`) searches inside its files. Repeating either shortcut closes that search.
 
+`navigation.back` (`mod+[`) and `navigation.forward` (`mod+]`) move through Pylon's route history in
+the desktop app. Back stops at the first route observed in the current app session; Forward only
+uses routes observed in that session. Browser tabs keep their native bracket history shortcuts;
+other custom bindings for these commands can navigate Pylon's observed routes. Both defaults leave
+focused editors, terminal input, and preview controls alone.
+
 `thread.copyReference` (`mod+shift+c`) copies the open pull request panel URL, then the thread's pull
 request link, or its thread ID when no pull request is available. `thread.settle` (`mod+shift+s`)
 settles the active thread or restores it, and `thread.pin` (`mod+shift+p`) pins or unpins it.
+`thread.undo` (`mod+z`) reverses the newest thread action whose **Undo** notification is still
+active. Text editors and terminals keep their native undo behavior.
 
 `thread.stop` stops the running turn in the focused thread, including a turn still waiting to
 start. `rightPanel.toggleMaximized` maximizes or restores the right panel. Neither has a default

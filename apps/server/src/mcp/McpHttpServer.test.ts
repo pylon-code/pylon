@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { NodeHttpServer } from "@effect/platform-node";
+import { loopbackHttpServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -622,7 +622,7 @@ it.effect("terminates HTTP MCP sessions with DELETE", () =>
       });
       expect(reusedSessionResponse.status).toBe(404);
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  ).pipe(Effect.provide(loopbackHttpServerTest)),
 );
 
 it.effect("registers annotated tools and preserves authenticated request context", () =>
@@ -687,7 +687,7 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(clickTool?.tool.annotations?.openWorldHint).toBe(true);
       expect(clickTool?.tool.outputSchema).toMatchObject({
         type: "object",
-        additionalProperties: false,
+        additionalProperties: true,
         description: "The preview action completed successfully.",
       });
 

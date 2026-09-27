@@ -3,6 +3,27 @@ import { describe, expect, it } from "vite-plus/test";
 import { collectComposerInlineTokens } from "./composerInlineTokens.ts";
 
 describe("collectComposerInlineTokens", () => {
+  it("chips only registered Unicode aliases while keeping dollar syntax", () => {
+    const tokens = collectComposerInlineTokens("Use €ui and €unknown and $unknown ", {
+      unicodeSkillNames: new Set(["ui"]),
+    });
+    expect(tokens.map((token) => token.source)).toEqual(["€ui", "$unknown"]);
+  });
+
+  it("treats Unicode aliases as literal text when provider dispatch is unsupported", () => {
+    const text = "Use €ui and 𑿝ui and $ui ";
+    expect(collectComposerInlineTokens(text, { allowUnicodeSkillAliases: false })).toEqual([
+      { type: "skill", value: "ui", source: "$ui", start: 21, end: 24 },
+    ]);
+    const confirmed = collectComposerInlineTokens("Use €ui ");
+    expect(
+      collectComposerInlineTokens("Use €ui", {
+        allowUnicodeSkillAliases: false,
+        preserveTrailingFrom: confirmed,
+      }),
+    ).toEqual([]);
+  });
+
   it("collects file links, mentions, and skills with source ranges", () => {
     const text = "Use $ui and inspect [Chat.tsx](src/Chat.tsx) with @AGENTS.md please";
 
@@ -31,16 +52,27 @@ describe("collectComposerInlineTokens", () => {
     ]);
   });
 
-  it("collects skill names that begin with a digit", () => {
-    expect(collectComposerInlineTokens("Use $2spec next")).toEqual([
-      {
-        type: "skill",
-        value: "2spec",
-        source: "$2spec",
-        start: 4,
-        end: 10,
-      },
-    ]);
+  it.each(["$", "€", "£", "¥", "₹", "₩", "₿", "𑿝"])(
+    "collects %s skill names that begin with a digit",
+    (prefix) => {
+      expect(collectComposerInlineTokens(`Use ${prefix}2spec next`)).toEqual([
+        {
+          type: "skill",
+          value: "2spec",
+          source: `${prefix}2spec`,
+          start: 4,
+          end: 9 + prefix.length,
+        },
+      ]);
+    },
+  );
+
+  it.each(["€", "£", "¥", "₹", "₩", "₿", "𑿝"])("leaves %s currency amounts as text", (prefix) => {
+    expect(
+      collectComposerInlineTokens(
+        `${prefix}20 ${prefix}1_000 ${prefix}20k ${prefix}100M ${prefix}1e6 `,
+      ),
+    ).toEqual([]);
   });
 
   it("leaves digits-only dollar amounts and compact monetary expressions as text", () => {

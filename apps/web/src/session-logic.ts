@@ -11,6 +11,7 @@ import { shallow } from "zustand/vanilla/shallow";
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
+  collectBackgroundTaskIds,
   isBackgroundTaskActivity,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
@@ -497,7 +498,10 @@ export function hasActionableProposedPlan(
  * Unattributed rows always stay: over-hiding loses the only terminal signal.
  */
 /** Agent (non-background) task.started rows seed spawn CTA batches. */
-function isAgentTaskStartedActivity(activity: OrchestrationThreadActivity): boolean {
+function isAgentTaskStartedActivity(
+  activity: OrchestrationThreadActivity,
+  backgroundTaskIds: ReadonlySet<string>,
+): boolean {
   const payload =
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
@@ -505,10 +509,13 @@ function isAgentTaskStartedActivity(activity: OrchestrationThreadActivity): bool
   if (!payload || typeof payload.taskId !== "string") {
     return false;
   }
-  return !isBackgroundTaskActivity(payload);
+  return !isBackgroundTaskActivity(payload, backgroundTaskIds);
 }
 
-function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean {
+function isAgentInternalActivity(
+  activity: OrchestrationThreadActivity,
+  backgroundTaskIds: ReadonlySet<string>,
+): boolean {
   const payload =
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
@@ -535,7 +542,7 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
       const isAgentTaskRow =
         activity.kind !== "task.updated" &&
         typeof payload.taskId === "string" &&
-        !isBackgroundTaskActivity(payload);
+        !isBackgroundTaskActivity(payload, backgroundTaskIds);
       return !isAgentTaskRow;
     }
     return false;
@@ -551,6 +558,11 @@ export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  // A task's agent-vs-background identity is resolved from the whole thread,
+  // not from each row: an orphaned shell task settled by a later process
+  // reports only its id and status, and judging that bare row alone turned
+  // watchers into phantom subagent cards.
+  const backgroundTaskIds = collectBackgroundTaskIds(ordered);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of foldUserInputActivities(ordered)) {
     // Ownership receipts feed Relay recovery and control routing, not the transcript.
@@ -572,7 +584,11 @@ export function deriveWorkLogEntries(
     // which is the batch key (completions of background subagents arrive
     // under later synthetic turns and must not start new batches). They
     // collapse into the batch's single CTA row, never render standalone.
-    if (activity.kind === "task.started" && !isAgentTaskStartedActivity(activity)) continue;
+    if (
+      activity.kind === "task.started" &&
+      !isAgentTaskStartedActivity(activity, backgroundTaskIds)
+    )
+      continue;
     if (activity.kind === "task.updated") continue;
     if (activity.kind === "tool.progress") continue;
     if (
@@ -589,8 +605,8 @@ export function deriveWorkLogEntries(
     if (activity.summary === "Checkpoint captured") continue;
     if (isNoContentRuntimeWarning(activity)) continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
-    if (isAgentInternalActivity(activity)) continue;
-    entries.push(toDerivedWorkLogEntry(activity));
+    if (isAgentInternalActivity(activity, backgroundTaskIds)) continue;
+    entries.push(toDerivedWorkLogEntry(activity, backgroundTaskIds));
   }
   return collapseDerivedWorkLogEntries(entries);
 }
@@ -620,9 +636,22 @@ function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): bool
 
 const decodeQuestionAttachmentAnswer = Schema.decodeUnknownOption(UserInputAttachmentAnswerPayload);
 
-function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
+function toDerivedWorkLogEntry(
+  activity: OrchestrationThreadActivity,
+  backgroundTaskIds: ReadonlySet<string>,
+): DerivedWorkLogEntry {
   const cachedEntry = derivedWorkLogEntryByActivity.get(activity);
   if (cachedEntry) {
+    // The row itself is immutable, but its task's classification is resolved
+    // from the whole thread, which grows: a later background row can settle a
+    // task whose row was already derived. Re-read that one flag on a hit.
+    if (
+      cachedEntry.taskId !== undefined &&
+      cachedEntry.isBackgroundTask !== true &&
+      backgroundTaskIds.has(cachedEntry.taskId)
+    ) {
+      cachedEntry.isBackgroundTask = true;
+    }
     return cachedEntry;
   }
   const payload =
@@ -749,7 +778,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   ) {
     entry.isWorkflowCoordinator = true;
   }
-  if (isTaskActivity && payload && isBackgroundTaskActivity(payload)) {
+  if (isTaskActivity && payload && isBackgroundTaskActivity(payload, backgroundTaskIds)) {
     entry.isBackgroundTask = true;
   }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);

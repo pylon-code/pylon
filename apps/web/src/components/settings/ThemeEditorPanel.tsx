@@ -35,6 +35,7 @@ import {
   type ThemeDefinition,
 } from "../../themePalette";
 import { cn } from "../../lib/utils";
+import { isGuestFocusPointerDown } from "../../browser/guestFocusPointer";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
@@ -682,6 +683,7 @@ export function ThemeEditorPanel({
       if (event.relatedTarget === null) clearHover();
     };
     const handlePointerDown = (event: PointerEvent) => {
+      if (isGuestFocusPointerDown(event)) return;
       const target = event.target;
       if (!(target instanceof Element) || target.closest("[data-theme-editor-panel]")) return;
       event.preventDefault();

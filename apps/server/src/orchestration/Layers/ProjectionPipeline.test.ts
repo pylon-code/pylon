@@ -973,6 +973,39 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-pull
         assert.deepEqual(yield* readLinks(), []);
         assert.deepEqual(yield* readThreadUpdatedAt(), [{ updatedAt: "2026-01-01T00:00:05.000Z" }]);
 
+        // Older Forgejo rows stored a portless host; unlink by their URL's authority.
+        yield* eventStore.append({
+          ...base("2026-01-01T00:00:05.100Z"),
+          type: "thread.pull-request-linked",
+          payload: {
+            threadId,
+            link: {
+              host: "forge.example",
+              repository: "team/repo",
+              number: 42,
+              url: "http://forge.example:3000/team/repo/pulls/42",
+              source: "agent",
+              linkedAt: "2026-01-01T00:00:05.100Z",
+              snapshot: null,
+              stack: null,
+            },
+            updatedAt: "2026-01-01T00:00:05.100Z",
+          },
+        });
+        yield* eventStore.append({
+          ...base("2026-01-01T00:00:05.200Z"),
+          type: "thread.pull-request-unlinked",
+          payload: {
+            threadId,
+            host: "forge.example:3000",
+            repository: "team/repo",
+            number: 42,
+            updatedAt: "2026-01-01T00:00:05.200Z",
+          },
+        });
+        yield* projectionPipeline.bootstrap;
+        assert.deepEqual(yield* readLinks(), []);
+
         // Deleting the thread clears whatever links it still had.
         yield* eventStore.append({
           ...base("2026-01-01T00:00:06.000Z"),
@@ -5235,6 +5268,32 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         (project) => project.id === "project-scripts",
       );
       assert.deepEqual(savedProject?.projectIcon, { kind: "emoji", emoji: "🚀" });
+
+      yield* engine.dispatch({
+        type: "project.meta.update",
+        commandId: CommandId.make("cmd-scripts-project-monogram"),
+        projectId: ProjectId.make("project-scripts"),
+        projectIcon: { kind: "monogram", text: "PX", color: "violet" },
+      });
+      const monogramRow = yield* sql<{ readonly icon: string | null }>`
+        SELECT project_icon_json AS icon FROM projection_projects WHERE project_id = 'project-scripts'
+      `;
+      assert.deepEqual(monogramRow, [
+        { icon: '{"kind":"lucide","name":"folder-code","color":"violet","monogramText":"PX"}' },
+      ]);
+      const eventIcon = yield* sql<{ readonly icon: string | null }>`
+        SELECT json_extract(payload_json, '$.projectIcon') AS icon FROM orchestration_events
+        WHERE command_id = ${CommandId.make("cmd-scripts-project-monogram")}
+      `;
+      assert.deepEqual(eventIcon, monogramRow);
+      const monogramProject = (yield* snapshotQuery.getSnapshot()).projects.find(
+        (project) => project.id === "project-scripts",
+      );
+      assert.deepEqual(monogramProject?.projectIcon, {
+        kind: "monogram",
+        text: "PX",
+        color: "violet",
+      });
 
       yield* engine.dispatch({
         type: "project.meta.update",

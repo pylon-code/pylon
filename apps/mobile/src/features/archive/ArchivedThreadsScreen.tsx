@@ -375,6 +375,7 @@ function ProjectGroupLabel(props: {
       <ProjectFavicon
         environmentId={props.project.environmentId}
         faviconPath={props.project.faviconPath}
+        projectIcon={props.project.projectIcon}
         projectTitle={props.project.title}
         size={18}
         workspaceRoot={props.project.workspaceRoot}
@@ -634,7 +635,8 @@ export function ArchivedThreadsScreen(props: {
   }, [isFiltered, isInitialLoad]);
 
   return (
-    <View className="flex-1 bg-sheet">
+    // Preserve this list container during iOS form-sheet search-bar resizing.
+    <View collapsable={false} className="flex-1 bg-sheet">
       <ArchivedThreadsHeader
         environments={props.environments}
         searchQuery={props.searchQuery}

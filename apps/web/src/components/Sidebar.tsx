@@ -2,6 +2,7 @@ import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePull
 import { useCompactSidebarEnabled } from "../hooks/useSettings";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import * as Schema from "effect/Schema";
 import {
@@ -119,6 +120,8 @@ import {
   useThreadSelectionStore,
 } from "../threadSelectionStore";
 import { useThreadActions } from "../hooks/useThreadActions";
+import * as ThreadUndo from "../hooks/threadUndo";
+import { showUndoToast } from "../hooks/showUndoToast";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
@@ -179,6 +182,7 @@ import {
   resolveSidebarThreadStatus,
   searchSidebarThreads,
   shouldCreateNewThreadInCurrentProject,
+  shouldNavigateAfterThreadPark,
   shouldRecedeSidebarThread,
   resolveWorkingStartedAt,
   sidebarListItemId,
@@ -218,12 +222,8 @@ import {
   type TerminalStatusIndicator,
   useLinkedThreadPullRequest,
 } from "./ThreadStatusIndicators";
-import {
-  resolveSnoozePresets,
-  snoozeWakeDescription,
-  snoozeWakeLabel,
-  type SnoozePreset,
-} from "./Sidebar.snooze";
+import { resolveSnoozePresets, snoozeWakeLabel } from "./Sidebar.snooze";
+import { requestCustomSnooze } from "./CustomSnoozeDialog";
 import { ProjectFavicon, type ProjectFaviconProject } from "./ProjectFavicon";
 import { ThreadSearchMatchExcerpt } from "./ThreadSearchMatch";
 import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
@@ -458,10 +458,12 @@ function SidebarThreadTooltip({
  * Controlled by the row (which also uses the open state to pin its hover
  * actions while the menu is up).
  */
+type SnoozeChoice = { readonly snoozedUntil: string };
+
 function SnoozePopoverButton(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSnooze: (preset: SnoozePreset) => void;
+  onSnooze: (choice: SnoozeChoice) => void;
   timestampFormat: TimestampFormat;
 }) {
   const { open, onOpenChange, onSnooze, timestampFormat } = props;
@@ -511,6 +513,19 @@ function SnoozePopoverButton(props: {
             </span>
           </button>
         ))}
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenChange(false);
+            void requestCustomSnooze().then((choice) => {
+              if (choice) onSnooze(choice);
+            });
+          }}
+          className="mt-1 flex w-full cursor-pointer rounded-md border-t border-border/60 px-2 py-1.5 text-left text-xs text-foreground/90 hover:bg-accent hover:text-foreground"
+        >
+          Custom…
+        </button>
       </PopoverPopup>
     </Popover>
   );
@@ -1095,7 +1110,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   onContextMenu: (threadRef: ScopedThreadRef, position: { x: number; y: number }) => void;
   onSettle: (threadRef: ScopedThreadRef) => void;
   onUnsettle: (threadRef: ScopedThreadRef) => void;
-  onSnooze: (threadRef: ScopedThreadRef, preset: SnoozePreset) => void;
+  onSnooze: (threadRef: ScopedThreadRef, choice: SnoozeChoice) => void;
   onUnsnooze: (threadRef: ScopedThreadRef) => void;
   onUnpin: (threadRef: ScopedThreadRef) => void;
   onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
@@ -1418,6 +1433,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             addFiles: (files) => {
               onFileDropThreads(threadRef, files);
             },
+            addFolders: () =>
+              toastManager.add({
+                type: "error",
+                title: "Drop folders into an open local thread composer",
+              }),
           })
         : null,
     [onFileDropThreads, threadRef],
@@ -1488,8 +1508,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     [onUnpin, threadRef],
   );
   const handleSnoozePreset = useCallback(
-    (preset: SnoozePreset) => {
-      onSnooze(threadRef, preset);
+    (choice: SnoozeChoice) => {
+      onSnooze(threadRef, choice);
     },
     [onSnooze, threadRef],
   );
@@ -2473,6 +2493,11 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
         addFiles: (files) => {
           props.onFileDropThreads(threadRef, files);
         },
+        addFolders: () =>
+          toastManager.add({
+            type: "error",
+            title: "Drop folders into an open local thread composer",
+          }),
       }),
     [props.onFileDropThreads, threadRef],
   );
@@ -3505,7 +3530,9 @@ export default function Sidebar() {
         settlingThreadKeysRef.current.add(threadKey);
         try {
           const navigateAfterSettle = planForwardNavigation(threadKey, opts.coSettlingKeys);
-          const result = await settleThread(threadRef);
+          const result = await settleThread(threadRef, {
+            undoToast: opts.coSettlingKeys === undefined,
+          });
           if (result._tag === "Failure") {
             // Never navigate away from a thread that did not settle.
             if (!isAtomCommandInterrupted(result)) {
@@ -3522,7 +3549,15 @@ export default function Sidebar() {
           }
           // Only move forward if the user is still on the settled thread —
           // a navigation made during the await wins over ours.
-          if (routeThreadKeyRef.current === threadKey) {
+          if (
+            shouldNavigateAfterThreadPark({
+              threadKey,
+              currentThreadKey: routeThreadKeyRef.current,
+              action: "settle",
+              now: new Date().toISOString(),
+              thread: readThreadShell(threadRef),
+            })
+          ) {
             navigateAfterSettle?.();
           }
         } finally {
@@ -3743,8 +3778,8 @@ export default function Sidebar() {
     [pinThread],
   );
   const attemptUnpin = useCallback(
-    async (threadRef: ScopedThreadRef) => {
-      const result = await confirmAndUnpinThread(threadRef);
+    async (threadRef: ScopedThreadRef, opts: { undoToast?: boolean } = {}) => {
+      const result = await confirmAndUnpinThread(threadRef, opts);
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
         toastManager.add(
@@ -4080,12 +4115,25 @@ export default function Sidebar() {
             const settled = await run(settleThread(threadRef), "Failed to settle thread").finally(
               () => settlingThreadKeysRef.current.delete(activeKey),
             );
-            if (settled && routeThreadKeyRef.current === activeKey) navigateAfterSettle?.();
+            if (
+              settled &&
+              shouldNavigateAfterThreadPark({
+                threadKey: activeKey,
+                currentThreadKey: routeThreadKeyRef.current,
+                action: "settle",
+                now: new Date().toISOString(),
+                thread: readThreadShell(threadRef),
+              })
+            )
+              navigateAfterSettle?.();
             return;
           }
           case "move-active":
             // The drag expresses unpin intent; button/menu confirmation is unchanged.
-            if (plan.unpin && !(await run(unpinThread(threadRef), "Failed to unpin thread")))
+            if (
+              plan.unpin &&
+              !(await run(unpinThread(threadRef, { undoToast: false }), "Failed to unpin thread"))
+            )
               return;
             if (
               plan.unsettle &&
@@ -4156,7 +4204,7 @@ export default function Sidebar() {
   const performSnooze = useCallback(
     async (
       threadRef: ScopedThreadRef,
-      preset: SnoozePreset,
+      choice: SnoozeChoice,
       opts: { coSnoozingKeys?: ReadonlySet<string> } = {},
     ) => {
       const threadKey = scopedThreadKey(threadRef);
@@ -4168,19 +4216,35 @@ export default function Sidebar() {
         // Snoozing the open thread moves you forward, same as settle —
         // both park the thread you're done with for now.
         const navigateAfterSnooze = planForwardNavigation(threadKey, opts.coSnoozingKeys);
-        const result = await snoozeThread(threadRef, preset.snoozedUntil);
+        const result = await snoozeThread(threadRef, choice.snoozedUntil, {
+          undoToast: opts.coSnoozingKeys === undefined,
+          claimForBatch: opts.coSnoozingKeys !== undefined,
+        });
         if (result._tag === "Failure") {
           // Never navigate away from a thread that did not snooze.
           return isAtomCommandInterrupted(result)
             ? ({ status: "interrupted" } as const)
             : ({ status: "failure", error: squashAtomCommandFailure(result) } as const);
         }
+        const undoClaim = opts.coSnoozingKeys
+          ? ThreadUndo.takeBatchClaim("snooze", threadKey, result.value.sequence)
+          : undefined;
+        // A successful no-op or superseded receipt did not earn an inverse.
+        if (opts.coSnoozingKeys && !undoClaim) return { status: "skipped" } as const;
         // Only move forward if the user is still on the snoozed thread —
         // a navigation made during the await wins over ours.
-        if (routeThreadKeyRef.current === threadKey) {
+        if (
+          shouldNavigateAfterThreadPark({
+            threadKey,
+            currentThreadKey: routeThreadKeyRef.current,
+            action: "snooze",
+            now: new Date().toISOString(),
+            thread: readThreadShell(threadRef),
+          })
+        ) {
           navigateAfterSnooze?.();
         }
-        return { status: "success" } as const;
+        return { status: "success", undoClaim } as const;
       } finally {
         snoozingThreadKeysRef.current.delete(threadKey);
       }
@@ -4190,11 +4254,11 @@ export default function Sidebar() {
   const attemptSnooze = useCallback(
     (
       threadRef: ScopedThreadRef,
-      preset: SnoozePreset,
+      choice: SnoozeChoice,
       opts: { coSnoozingKeys?: ReadonlySet<string> } = {},
     ) => {
       void (async () => {
-        const outcome = await performSnooze(threadRef, preset, opts);
+        const outcome = await performSnooze(threadRef, choice, opts);
         if (outcome.status === "failure") {
           toastManager.add(
             stackedThreadToast({
@@ -4206,23 +4270,9 @@ export default function Sidebar() {
           );
           return;
         }
-        if (outcome.status !== "success") return;
-        // Snooze hides the row, so the toast is the only confirmation —
-        // and the Undo is the escape hatch for a mis-click.
-        toastManager.add(
-          stackedThreadToast({
-            type: "success",
-            title: `Snoozed until ${snoozeWakeDescription(preset.snoozedUntil, new Date(), timestampFormat)}`,
-            timeout: 5_000,
-            actionProps: {
-              children: "Undo",
-              onClick: () => attemptUnsnooze(threadRef),
-            },
-          }),
-        );
       })();
     },
-    [attemptUnsnooze, performSnooze, timestampFormat],
+    [performSnooze],
   );
 
   const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
@@ -4317,9 +4367,12 @@ export default function Sidebar() {
               return { outcome, threadRef };
             }),
           );
-          const snoozedThreadRefs = outcomes.flatMap(({ outcome, threadRef }) =>
-            outcome.status === "success" ? [threadRef] : [],
+          const snoozedMembers = outcomes.flatMap(({ outcome, threadRef }) =>
+            outcome.status === "success" && outcome.undoClaim?.sessionOwner
+              ? [{ threadRef, claim: outcome.undoClaim }]
+              : [],
           );
+          const snoozedThreadRefs = snoozedMembers.map(({ threadRef }) => threadRef);
           const failures = outcomes.flatMap(({ outcome }) =>
             outcome.status === "failure" ? [outcome.error] : [],
           );
@@ -4327,26 +4380,39 @@ export default function Sidebar() {
           if (snoozedThreadRefs.length > 0) {
             const snoozedCount = snoozedThreadRefs.length;
             const failedCount = failures.length;
-            toastManager.add(
-              stackedThreadToast({
-                type: failedCount > 0 ? "warning" : "success",
-                title:
-                  failedCount > 0
-                    ? `Snoozed ${snoozedCount} of ${selectedThreads.length} threads`
-                    : `Snoozed ${snoozedCount} thread${snoozedCount === 1 ? "" : "s"}`,
-                description:
-                  failedCount > 0
-                    ? `${failedCount} thread${failedCount === 1 ? "" : "s"} couldn't be snoozed.`
-                    : undefined,
-                timeout: 5_000,
-                actionProps: {
-                  children: "Undo",
-                  onClick: () => {
-                    for (const threadRef of snoozedThreadRefs) attemptUnsnooze(threadRef);
-                  },
-                },
-              }),
+            // The batch notice owns only confirmed successes. A later action
+            // on any member invalidates the whole batch so Undo cannot revert
+            // a newer intent or touch a failed member.
+            const claims = outcomes.flatMap(({ outcome }) =>
+              outcome.status === "success" && outcome.undoClaim ? [outcome.undoClaim] : [],
             );
+            showUndoToast({
+              type: failedCount > 0 ? "warning" : "success",
+              title:
+                failedCount > 0
+                  ? `Snoozed ${snoozedCount} of ${selectedThreads.length} threads`
+                  : `Snoozed ${snoozedCount} thread${snoozedCount === 1 ? "" : "s"}`,
+              description:
+                failedCount > 0
+                  ? `${failedCount} thread${failedCount === 1 ? "" : "s"} couldn't be snoozed.`
+                  : undefined,
+              claim: {
+                isCurrent: () => claims.every((claim) => claim.isCurrent()),
+                finish: () => claims.forEach((claim) => claim.finish()),
+              },
+              undo: async () => {
+                const results = await Promise.all(
+                  snoozedMembers.map(({ threadRef, claim }) =>
+                    unsnoozeThread(threadRef, claim.sessionOwner ?? undefined),
+                  ),
+                );
+                return (
+                  results.find((result) => result._tag === "Failure") ??
+                  AsyncResult.success(undefined)
+                );
+              },
+              failureTitle: "Failed to wake threads",
+            });
           } else if (failures.length > 0) {
             const firstError = failures[0];
             toastManager.add(
@@ -4364,7 +4430,9 @@ export default function Sidebar() {
       if (clicked.value === "unpin") {
         // Await each confirmation so Pylon never opens overlapping dialogs.
         for (const thread of pinnedSelectedThreads) {
-          const result = await attemptUnpin(scopeThreadRef(thread.environmentId, thread.id));
+          const result = await attemptUnpin(scopeThreadRef(thread.environmentId, thread.id), {
+            undoToast: false,
+          });
           if (result._tag === "Failure" && isAtomCommandInterrupted(result)) break;
         }
         clearSelection();
@@ -4466,7 +4534,7 @@ export default function Sidebar() {
       performSnooze,
       removeFromSelection,
       serverConfigs,
-      attemptUnsnooze,
+      unsnoozeThread,
       updateThreadMetadata,
       timestampFormat,
     ],
@@ -4508,10 +4576,24 @@ export default function Sidebar() {
         const isPinned = thread.pinnedAt != null;
         // Presets resolve at menu-open time (same as the popover).
         const snoozePresets = resolveSnoozePresets(new Date(), timestampFormat);
+        const threadProjectGroup =
+          projectGroupsRef.current.find((project) =>
+            project.memberProjectRefs.some(
+              (projectRef) =>
+                projectRef.environmentId === thread.environmentId &&
+                projectRef.projectId === thread.projectId,
+            ),
+          ) ?? null;
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
               branch: thread.branch ?? null,
+              projectFilter: threadProjectGroup
+                ? {
+                    label: threadProjectGroup.displayName,
+                    isActive: projectScopeKey === threadProjectGroup.projectKey,
+                  }
+                : null,
               isPinned,
               isSettled,
               isSnoozed,
@@ -4532,24 +4614,26 @@ export default function Sidebar() {
         );
         if (clicked._tag === "Failure") return;
         if (clicked.value?.startsWith("snooze:")) {
-          const preset = snoozePresets.find(
-            (candidate) => `snooze:${candidate.id}` === clicked.value,
-          );
+          const preset =
+            clicked.value === "snooze:custom"
+              ? await requestCustomSnooze()
+              : snoozePresets.find((candidate) => `snooze:${candidate.id}` === clicked.value);
           if (preset) attemptSnooze(threadRef, preset);
           return;
         }
         switch (clicked.value) {
-          case "project-settings": {
-            const projectGroup = projectGroupsRef.current.find((group) =>
-              group.memberProjectRefs.some(
-                (projectRef) =>
-                  projectRef.environmentId === thread.environmentId &&
-                  projectRef.projectId === thread.projectId,
-              ),
-            );
-            if (projectGroup) openProjectSettings(projectGroup);
+          case "filter-by-project":
+            if (threadProjectGroup) {
+              setProjectScopeKey(
+                projectScopeKey === threadProjectGroup.projectKey
+                  ? null
+                  : threadProjectGroup.projectKey,
+              );
+            }
             return;
-          }
+          case "project-settings":
+            if (threadProjectGroup) openProjectSettings(threadProjectGroup);
+            return;
           case "new-thread-on-branch": {
             // Explicit branch carry-over: reuse the thread's worktree when it
             // has one, otherwise its branch on the local checkout.
@@ -4710,8 +4794,10 @@ export default function Sidebar() {
       handleMultiSelectContextMenu,
       markThreadUnread,
       openProjectSettings,
+      projectScopeKey,
       projectByKey,
       serverConfigs,
+      setProjectScopeKey,
       startThreadRename,
       updateThreadMetadata,
       timestampFormat,
@@ -5251,7 +5337,9 @@ export default function Sidebar() {
                             key={threadKey}
                             id={threadKey}
                             disabled={
-                              !draggableThreadKeys.has(threadKey) || optimisticDrop !== null
+                              renamingThreadKey === threadKey ||
+                              !draggableThreadKeys.has(threadKey) ||
+                              optimisticDrop !== null
                             }
                           >
                             {(bag) =>

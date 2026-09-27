@@ -25,6 +25,7 @@ import {
   OrchestrationThread,
   OrchestrationThreadShell,
   ProjectCreateCommand,
+  ProjectIconOverride,
   OrchestrationMessage,
   ThreadMessageSentPayload,
   ThreadMetaUpdatedPayload,
@@ -39,6 +40,8 @@ import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+
+const encodeProjectIconOverride = Schema.encodeSync(ProjectIconOverride);
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
 const decodeFullThreadDiffInput = Schema.decodeUnknownEffect(OrchestrationGetFullThreadDiffInput);
@@ -653,6 +656,39 @@ it.effect("decodes thread.created runtime mode for historical events", () =>
   }),
 );
 
+it.effect("keeps title intent optional for older event payload consumers", () =>
+  Effect.gen(function* () {
+    const { titleState: _createdTitleState, ...legacyCreatedFields } = ThreadCreatedPayload.fields;
+    const { titleState: _updatedTitleState, ...legacyUpdatedFields } =
+      ThreadMetaUpdatedPayload.fields;
+    const legacyCreated = Schema.decodeUnknownEffect(Schema.Struct(legacyCreatedFields));
+    const legacyUpdated = Schema.decodeUnknownEffect(Schema.Struct(legacyUpdatedFields));
+    const created = yield* legacyCreated({
+      threadId: "thread-1",
+      projectId: "project-1",
+      title: "Seed title",
+      titleState: { source: "provisional", version: "command-create" },
+      modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const updated = yield* legacyUpdated({
+      threadId: "thread-1",
+      title: "Generated title",
+      titleState: { source: "generated", version: "command-generation" },
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+    assert.strictEqual(created.title, "Seed title");
+    assert.strictEqual(updated.title, "Generated title");
+    assert.strictEqual("titleState" in created, false);
+    assert.strictEqual("titleState" in updated, false);
+  }),
+);
+
 it.effect("decodes thread.meta-updated payloads with explicit provider", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadMetaUpdatedPayload({
@@ -869,6 +905,37 @@ it.effect("decodes thread pull request links with snapshot and stack", () =>
     assert.strictEqual(shell.pullRequests.length, 2);
     assert.strictEqual(shell.pullRequests[1]?.stack?.layers.length, 2);
     assert.strictEqual(shell.pullRequests[1]?.snapshot?.state, "open");
+  }),
+);
+
+// A stored event that fails to decode stops the event store read, and with it
+// server startup, so rows written before `turnId` existed must still load.
+it.effect("decodes a legacy message-sent event persisted without turnId", () =>
+  Effect.gen(function* () {
+    const event = yield* decodeOrchestrationEvent({
+      sequence: 539,
+      eventId: "event-message-legacy-1",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      type: "thread.message-sent",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      commandId: "cmd-message-legacy-1",
+      causationEventId: null,
+      correlationId: "cmd-message-legacy-1",
+      metadata: {},
+      payload: {
+        threadId: "thread-1",
+        messageId: "message-1",
+        role: "user",
+        text: "written before turn ids were recorded",
+        streaming: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    assert.strictEqual(event.type, "thread.message-sent");
+    if (event.type !== "thread.message-sent") return;
+    assert.strictEqual(event.payload.turnId, null);
   }),
 );
 
@@ -1542,7 +1609,7 @@ it.effect("project favicon overrides accept only supported image files", () =>
   }),
 );
 
-it.effect("project icon overrides accept Lucide icons, colors, and emoji", () =>
+it.effect("project icon overrides accept Lucide icons, emoji, and compatible monograms", () =>
   Effect.gen(function* () {
     const lucide = yield* decodeOrchestrationCommand({
       type: "project.meta.update",
@@ -1559,6 +1626,45 @@ it.effect("project icon overrides accept Lucide icons, colors, and emoji", () =>
       projectIcon: { kind: "emoji", emoji: "👩🏽‍💻" },
     });
     assert.strictEqual(emoji.type, "project.meta.update");
+
+    const monogram = yield* decodeOrchestrationCommand({
+      type: "project.meta.update",
+      commandId: "cmd-project-monogram-icon",
+      projectId: "project-1",
+      projectIcon: { kind: "monogram", text: "Å", color: "violet" },
+    });
+    assert.strictEqual(monogram.type, "project.meta.update");
+    if (monogram.type !== "project.meta.update") return;
+    assert.deepEqual(monogram.projectIcon, { kind: "monogram", text: "Å", color: "violet" });
+    if (!monogram.projectIcon) return;
+
+    const legacy = yield* decodeOrchestrationCommand({
+      type: "project.meta.update",
+      commandId: "cmd-project-monogram-wire-icon",
+      projectId: "project-1",
+      projectIcon: { kind: "lucide", name: "folder-code", color: "violet", monogramText: "Å" },
+    });
+    assert.strictEqual(legacy.type, "project.meta.update");
+    if (legacy.type !== "project.meta.update") return;
+    assert.deepEqual(legacy.projectIcon, monogram.projectIcon);
+    const invalidSavedText = yield* decodeOrchestrationCommand({
+      type: "project.meta.update",
+      commandId: "cmd-project-invalid-saved-monogram",
+      projectId: "project-1",
+      projectIcon: { kind: "lucide", name: "folder-code", color: "violet", monogramText: "💥" },
+    });
+    if (invalidSavedText.type !== "project.meta.update") return;
+    assert.deepEqual(invalidSavedText.projectIcon, {
+      kind: "lucide",
+      name: "folder-code",
+      color: "violet",
+    });
+    assert.deepEqual(encodeProjectIconOverride(monogram.projectIcon), {
+      kind: "lucide",
+      name: "folder-code",
+      color: "violet",
+      monogramText: "Å",
+    });
 
     const invalid = yield* Effect.exit(
       decodeOrchestrationCommand({

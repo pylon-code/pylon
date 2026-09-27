@@ -13,6 +13,7 @@ import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitHubCli from "./GitHubCli.ts";
+import * as GitHubPullRequestCli from "../pullRequest/GitHubPullRequestCli.ts";
 import * as GitHubGraphQlBudget from "./githubGraphQlBudget.ts";
 import * as SourceControlRateLimit from "./SourceControlRateLimit.ts";
 
@@ -40,6 +41,70 @@ const layer = GitHubCli.layer.pipe(
         input.args[1] === "rate_limit" ? Effect.succeed(quotaOutput()) : mockRun(input),
     }),
   ),
+);
+
+it.effect("snapshots one credential with tracing suppressed and never exposes token failures", () =>
+  Effect.gen(function* () {
+    mockRun.mockImplementationOnce(() => Effect.succeed(processOutput("snapshot-secret\n")));
+    const gh = yield* GitHubCli.GitHubCli;
+    const credential = yield* gh.snapshotCredential({ cwd: "/repo", host: "github.com" });
+    expect(mockRun.mock.calls[0]?.[0]).toMatchObject({
+      args: ["auth", "token", "--hostname", "github.com"],
+      env: { GH_DEBUG: "", GIT_TRACE: "0", GIT_CURL_VERBOSE: "0" },
+    });
+    expect(String(credential.token)).not.toContain("snapshot-secret");
+    mockRun.mockImplementationOnce((input) =>
+      Effect.succeed(processOutput(input.env?.GH_TOKEN ?? "ambient")),
+    );
+    const result = yield* gh
+      .execute({
+        cwd: "/repo",
+        args: ["api", "user", "--hostname", "github.com"],
+        env: { GH_DEBUG: "api", GH_TOKEN: "ambient-secret" },
+      })
+      .pipe(Effect.provideService(GitHubCli.PinnedGitHubCredential, credential));
+    expect(result.stdout).toBe("snapshot-secret");
+    expect(mockRun.mock.calls[1]?.[0].env).toMatchObject({
+      GH_DEBUG: "",
+      GH_TOKEN: "snapshot-secret",
+      GITHUB_TOKEN: "snapshot-secret",
+    });
+    mockRun.mockImplementationOnce(() =>
+      Effect.fail(
+        new VcsProcessExitError({
+          operation: "GitHubCli.snapshotCredential",
+          command: "gh auth token",
+          cwd: "/repo",
+          exitCode: 1,
+          failureKind: "authentication",
+          detail: "snapshot-secret in stderr",
+        }),
+      ),
+    );
+    const failure = yield* gh
+      .snapshotCredential({ cwd: "/repo", host: "github.com" })
+      .pipe(Effect.flip);
+    expect(yield* encodeGitHubCliError(failure)).not.toContain("snapshot-secret");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("resolves the viewed-files viewer through the pinned host-aware GitHub driver", () =>
+  Effect.gen(function* () {
+    mockRun.mockReturnValueOnce(Effect.succeed(processOutput("the-reader\n")));
+    const driver = yield* GitHubPullRequestCli.make;
+    const viewer = yield* driver.getViewerLogin({ cwd: "/repo", host: "github.example.test" }).pipe(
+      Effect.provideService(GitHubCli.PinnedGitHubCredential, {
+        host: "github.example.test",
+        token: Redacted.make("pinned-secret"),
+        credentialFingerprint: "fingerprint",
+      }),
+    );
+    expect(viewer).toBe("the-reader");
+    expect(mockRun.mock.calls[0]?.[0]).toMatchObject({
+      args: ["api", "user", "--hostname", "github.example.test", "--jq", ".login"],
+      env: { GH_TOKEN: "pinned-secret", GH_DEBUG: "" },
+    });
+  }).pipe(Effect.provide(layer)),
 );
 
 afterEach(() => {

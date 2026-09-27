@@ -2,6 +2,9 @@ import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
 import { DeviceToolVersions } from "../device/DeviceToolVersions";
 import { ComputerIntegrationSettings } from "./ComputerIntegrationSettings";
 import { DeviceHostsSettings } from "./DeviceHostsSettings";
+import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
+import { ScopedSwitch } from "./ScopedSwitch";
+import { configureSelectedDeviceEnvironments } from "./deviceIntegrationSettings.logic";
 /**
  * Integrations settings - preferences for surfaces Pylon embeds rather than
  * owns. Browser is the first section: the defaults a preview tab opens at,
@@ -606,25 +609,21 @@ function BrowserLinkTargetSetting({ disabled }: { readonly disabled: boolean }) 
   );
 }
 
-/** Device helpers and hosts belong to the environment selected by the settings header. */
+/** Device status is shown for the representative; settings follow the selected scope. */
 function DeviceIntegrationSettings() {
-  const { scope, environment: selected, connectedEnvironments } = useSettingsScope();
+  const { search, environment: selected } = useSettingsScope();
+  const settings = useScopedSettings();
   const connected = selected?.connection.phase === "connected" && selected.serverConfig !== null;
   const environmentId = connected ? selected.environmentId : null;
-  const aggregate = scope.environmentIds.length !== 1 && connectedEnvironments.length > 1;
 
   return (
-    <SettingsSection
-      id="devices"
-      title={aggregate && selected ? `Devices · ${selected.label}` : "Devices"}
-    >
+    <SettingsSection id="devices" title="Devices">
       <DeviceIntegrationControls
-        key={selected?.environmentId ?? "none"}
+        key={`${environmentId}:${JSON.stringify(search)}`}
         environmentId={environmentId}
         hosts={selected?.serverConfig?.settings.deviceHosts ?? []}
-        enabled={selected?.serverConfig?.settings.enableDeviceSupport ?? false}
-        agentAccessEnabled={selected?.serverConfig?.settings.enableAgentDeviceAccess ?? false}
-        showAgentAccess={scope.kind !== "project" && scope.kind !== "checkout"}
+        enabled={settings.enableDeviceSupport}
+        agentAccessEnabled={settings.enableAgentDeviceAccess}
       />
     </SettingsSection>
   );
@@ -635,18 +634,24 @@ function DeviceIntegrationControls({
   hosts,
   enabled,
   agentAccessEnabled,
-  showAgentAccess,
 }: {
   environmentId: EnvironmentId | null;
   hosts: ReadonlyArray<SshDeviceHostConfig>;
   enabled: boolean;
   agentAccessEnabled: boolean;
-  showAgentAccess: boolean;
 }) {
   const { state, loaded } = useDeviceState(environmentId);
-  const configure = useAtomCommand(deviceEnvironment.configure);
+  const { scope, environments, connectedEnvironments } = useSettingsScope();
+  const updateSettings = useUpdateScopedSettings();
+  const projectScope = scope.kind === "project" || scope.kind === "checkout";
+  const anyHubEnabled = connectedEnvironments.some(
+    (environment) => environment.serverConfig?.settings.enableDeviceSupport,
+  );
+  const configure = useAtomCommand(deviceEnvironment.configure, { reportFailure: false });
   const list = useAtomCommand(deviceEnvironment.list, { reportFailure: false });
-  const [pending, setPending] = useState<"hub" | "check" | "agent" | null>(null);
+  const [pending, setPending] = useState<
+    "hub" | "check" | "agent" | "update-hub" | "update-agent" | null
+  >(null);
   const busy = state.hostStatus === "installing" || state.hostStatus === "starting";
   const [platformsRevealed, setPlatformsRevealed] = useState(false);
   // Keep diagnostics visible through subsequent agent setup and refresh phases.
@@ -662,46 +667,107 @@ function DeviceIntegrationControls({
     if (!environmentId) return;
     setPending(kind);
     try {
-      const result = await configure({ environmentId, input });
-      if (result._tag === "Success" && input.enabled === true && !state.onboardingCompleted) {
-        await configure({ environmentId, input: { onboardingCompleted: true } });
+      const failed = await configureSelectedDeviceEnvironments(
+        environments.map((environment) => ({
+          environmentId: environment.environmentId,
+          label: environment.label,
+          connected: environment.connection.phase === "connected",
+          loaded: environment.serverConfig !== null,
+        })),
+        input,
+        async (environmentId, selectedInput) =>
+          (await configure({ environmentId, input: selectedInput }))._tag === "Success",
+      );
+      if (failed.length > 0) {
+        toastManager.add({
+          type: "error",
+          title: "Device settings not saved on all environments",
+          description: `Could not update ${failed.join(", ")}.`,
+        });
       }
     } finally {
       setPending(null);
     }
   };
 
-  const checkVersions = state.supportsToolInspection ? (
-    <Button
-      size="sm"
-      variant="outline"
-      disabled={!environmentId || pending !== null || busy}
-      onClick={() => {
-        if (!environmentId) return;
-        setPending("check");
-        void list({ environmentId, input: { inspectOnly: true } }).finally(() => setPending(null));
-      }}
-    >
-      {pending === "check" ? "Checking…" : "Check versions"}
-    </Button>
-  ) : null;
+  const [updateError, setUpdateError] = useState<{ tool: "hub" | "agent"; message: string } | null>(
+    null,
+  );
+  const localTools = state.hosts.find((host) => host.kind === "local")?.tools;
+  const versionActions = (tool: "hub" | "agent") => {
+    const version = localTools?.[tool];
+    const needsUpdate = version && !version.installedVersions.includes(version.requiredVersion);
+    return (
+      <div className="space-y-2">
+        <div className="flex flex-wrap gap-2">
+          {!projectScope && state.supportsToolUpdate && needsUpdate ? (
+            <Button
+              size="sm"
+              disabled={!environmentId || pending !== null || busy}
+              onClick={() => {
+                if (!environmentId) return;
+                setUpdateError(null);
+                setPending(`update-${tool}`);
+                void list({ environmentId, input: { updateTool: tool } })
+                  .then((result) => {
+                    if (result._tag === "Failure")
+                      setUpdateError({
+                        tool,
+                        message:
+                          "Update failed. Check this host's network connection and try again.",
+                      });
+                  })
+                  .finally(() => setPending(null));
+              }}
+            >
+              {pending === `update-${tool}` ? "Updating…" : `Update to v${version.requiredVersion}`}
+            </Button>
+          ) : null}
+          {state.supportsToolInspection ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!environmentId || pending !== null || busy}
+              onClick={() => {
+                if (!environmentId) return;
+                setPending("check");
+                void list({ environmentId, input: { inspectOnly: true } }).finally(() =>
+                  setPending(null),
+                );
+              }}
+            >
+              {pending === "check" ? "Checking…" : "Check versions"}
+            </Button>
+          ) : null}
+        </div>
+        {updateError?.tool === tool ? (
+          <p role="alert" className="text-xs text-destructive">
+            {updateError.message}
+          </p>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <>
       <SettingsRow
         {...searchableSetting("device-hub")}
+        serverScoped
+        settingKeys={["enableDeviceSupport"]}
         description={deviceHubDescription}
         control={
           <>
             <DeviceToolVersions
-              action={checkVersions}
+              action={versionActions("hub")}
               kind="hub"
               tools={state.hosts.find((host) => host.kind === "local")?.tools}
             />
             {pending === "hub" ? <DeviceHubSetupStatus state={state} pending compact /> : null}
-            <Switch
+            <ScopedSwitch
+              settingKeys={["enableDeviceSupport"]}
               checked={enabled}
-              disabled={!loaded || !environmentId || busy || pending !== null}
+              disabled={projectScope || !loaded || !environmentId || busy || pending !== null}
               aria-label="Device hub"
               onCheckedChange={(checked) =>
                 void update("hub", {
@@ -717,6 +783,11 @@ function DeviceIntegrationControls({
         {platformsRevealed ? (
           <SettingsRow
             {...searchableSetting("device-platform-support")}
+            description={
+              connectedEnvironments.length > 1
+                ? `Status for ${connectedEnvironments.find((environment) => environment.environmentId === environmentId)?.label}. Select an environment to inspect its simulator support.`
+                : undefined
+            }
             status={
               <div className="flex flex-wrap gap-x-5 gap-y-2">
                 <PlatformStatus compact platform="iOS" status={platformSetupStatus(state, "ios")} />
@@ -744,32 +815,37 @@ function DeviceIntegrationControls({
           />
         ) : null}
       </AnimatedHeight>
-      {showAgentAccess ? (
-        <SettingsRow
-          {...searchableSetting("agent-device-access")}
-          description={agentDeviceDescription}
-          control={
-            <>
-              <DeviceToolVersions
-                action={checkVersions}
-                kind="agent"
-                tools={state.hosts.find((host) => host.kind === "local")?.tools}
-              />
-              {pending === "agent" ? (
-                <AgentDeviceSetupStatus state={state} pending compact />
-              ) : null}
-              <Switch
-                checked={agentAccessEnabled}
-                disabled={!loaded || !environmentId || !enabled || busy || pending !== null}
-                aria-label="Agent device access"
-                onCheckedChange={(checked) =>
-                  void update("agent", { agentAccessEnabled: Boolean(checked) })
-                }
-              />
-            </>
-          }
-        />
-      ) : null}
+      <SettingsRow
+        {...searchableSetting("agent-device-access")}
+        serverScoped
+        settingKeys={["enableAgentDeviceAccess"]}
+        description={agentDeviceDescription}
+        control={
+          <>
+            <DeviceToolVersions
+              action={versionActions("agent")}
+              kind="agent"
+              tools={state.hosts.find((host) => host.kind === "local")?.tools}
+            />
+            {pending === "agent" ? <AgentDeviceSetupStatus state={state} pending compact /> : null}
+            <ScopedSwitch
+              settingKeys={["enableAgentDeviceAccess"]}
+              checked={agentAccessEnabled}
+              disabled={
+                connectedEnvironments.length === 0 ||
+                (!projectScope && (!loaded || !anyHubEnabled || busy)) ||
+                pending !== null
+              }
+              aria-label="Agent device access"
+              onCheckedChange={(checked) =>
+                projectScope
+                  ? updateSettings({ enableAgentDeviceAccess: Boolean(checked) })
+                  : void update("agent", { agentAccessEnabled: Boolean(checked) })
+              }
+            />
+          </>
+        }
+      />
       {environmentId ? (
         <DeviceHostUpdates
           state={{ ...state, hosts: state.hosts.filter((host) => host.kind === "local") }}

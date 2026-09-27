@@ -1045,7 +1045,7 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
     });
   });
 
-  const stop = Effect.fn("desktop.backendInstance.stop")(function* (options?: {
+  const stopUnsafe = Effect.fn("desktop.backendInstance.stopUnsafe")(function* (options?: {
     readonly timeout?: Duration.Duration;
   }) {
     const { active, restartFiber, notifyShutdown } = yield* mutex.withPermits(1)(
@@ -1137,6 +1137,15 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
     });
   });
 
+  const stop: DesktopBackendInstance["stop"] = (options) => {
+    const timeout = options?.timeout;
+    if (timeout === undefined) return stopUnsafe();
+    return Effect.forkIn(stopUnsafe(), parentScope).pipe(
+      Effect.flatMap((fiber) => Fiber.join(fiber).pipe(Effect.timeoutOption(timeout))),
+      Effect.asVoid,
+    );
+  };
+
   const waitForReady = (timeout: Duration.Duration): Effect.Effect<boolean> =>
     Effect.gen(function* () {
       const current = yield* Ref.get(state);
@@ -1154,7 +1163,7 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
       Effect.map(Option.getOrElse(() => false)),
     );
 
-  yield* Effect.addFinalizer(() => stop());
+  yield* Effect.addFinalizer(() => stopUnsafe({ timeout: Duration.seconds(5) }));
 
   return {
     id: spec.id,
