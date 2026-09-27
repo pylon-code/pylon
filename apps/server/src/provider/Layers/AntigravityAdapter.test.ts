@@ -1435,6 +1435,108 @@ it.layer(layer)("AntigravityAdapter", (it) => {
     }),
   );
 
+  it.effect("Stop closes an idle session with a promoted native command", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      const sending = yield* h.adapter
+        .sendTurn({ threadId, input: "Start a watcher" })
+        .pipe(Effect.forkChild);
+      const prompt = yield* h.nextPrompt;
+      yield* h.emitNative({
+        _tag: "ToolCallUpdated",
+        toolCall: {
+          toolCallId: "watcher-stop",
+          kind: "execute",
+          status: "inProgress",
+          command: "tail -f log",
+          data: {},
+        },
+        rawPayload: {},
+      });
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* Fiber.join(sending);
+      const started = yield* h.waitForEvent((event) => event.type === "task.started");
+      yield* h.adapter.interruptTurn(threadId);
+      const stopped = yield* h.waitForEvent((event) => event.type === "task.completed");
+      expect(stopped.payload).toMatchObject({ taskId: started.payload.taskId, status: "stopped" });
+      yield* h.waitForEvent((event) => event.type === "session.exited");
+      expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+      expect(h.controls.closed).toBe(1);
+    }),
+  );
+
+  it.effect("Stop keeps the session during an active prompt with an older promoted command", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      const first = yield* h.adapter.sendTurn({ threadId, input: "Start a watcher" });
+      const firstPrompt = yield* h.nextPrompt;
+      yield* h.emitNative({
+        _tag: "ToolCallUpdated",
+        toolCall: {
+          toolCallId: "watcher-active-stop",
+          kind: "execute",
+          status: "inProgress",
+          command: "tail -f log",
+          data: {},
+        },
+        rawPayload: {},
+      });
+      yield* Deferred.succeed(firstPrompt.result, { stopReason: "end_turn" });
+      const started = yield* h.waitForEvent((event) => event.type === "task.started");
+      yield* h.waitForEvent(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "turn.completed" }> =>
+          event.type === "turn.completed" && event.turnId === first.turnId,
+      );
+      yield* h.adapter.sendTurn({ threadId, input: "Continue" });
+      yield* h.nextPrompt;
+      yield* h.adapter.interruptTurn(threadId);
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+      expect(yield* h.adapter.hasSession(threadId)).toBe(true);
+      expect(h.controls.closed).toBe(0);
+      expect(
+        h.seen.some(
+          (event) =>
+            event.type === "task.completed" && event.payload.taskId === started.payload.taskId,
+        ),
+      ).toBe(false);
+    }),
+  );
+
+  it.effect("rejects a new turn while Stop closes an idle promoted command", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ holdClose: true });
+      yield* h.adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* h.adapter.sendTurn({ threadId, input: "Start a watcher" });
+      const prompt = yield* h.nextPrompt;
+      yield* h.emitNative({
+        _tag: "ToolCallUpdated",
+        toolCall: {
+          toolCallId: "watcher-close-race",
+          kind: "execute",
+          status: "inProgress",
+          command: "tail -f log",
+          data: {},
+        },
+        rawPayload: {},
+      });
+      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+      yield* h.waitForEvent((event) => event.type === "task.started");
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+
+      const stopping = yield* h.adapter.interruptTurn(threadId).pipe(Effect.forkChild);
+      yield* Deferred.await(h.closeStarted);
+      const next = yield* h.adapter.sendTurn({ threadId, input: "New turn" }).pipe(Effect.result);
+      expect(next._tag).toBe("Failure");
+      expect(h.hasActivePrompt()).toBe(false);
+      yield* Deferred.succeed(h.closeRelease, undefined);
+      yield* Fiber.join(stopping);
+      yield* h.waitForEvent((event) => event.type === "session.exited");
+      expect(yield* h.adapter.hasSession(threadId)).toBe(false);
+    }),
+  );
+
   it.effect("keeps a launched batch active while child tools continue", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();

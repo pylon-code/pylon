@@ -2024,6 +2024,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
   const interruptTurn: Adapter["interruptTurn"] = (threadId) =>
     Effect.gen(function* () {
       const context = yield* requireSession(threadId);
+      let stopIdleCommands = false;
       if (context.promptFiber !== undefined || context.activeTurnId !== undefined) {
         context.userCancelRequested = true;
         context.explicitStopRequested = true;
@@ -2034,6 +2035,18 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       yield* context.promptLock
         .withPermit(
           Effect.gen(function* () {
+            // Native commands can outlive their turn. Cancellation only stops a
+            // prompt, so close the session to end promoted commands on Stop.
+            // Fence a new turn while still holding the prompt lock.
+            if (
+              !context.promptFiber &&
+              !context.activeTurnId &&
+              [...context.commands.values()].some((command) => command.promoted)
+            ) {
+              context.stopped = true;
+              stopIdleCommands = true;
+              return;
+            }
             yield* cancelRequests(context);
             if (!context.disconnected) {
               yield* Effect.ignore(context.runtime.cancel);
@@ -2043,7 +2056,16 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             }
           }),
         )
-        .pipe(Effect.mapError((cause) => mapAntigravityError(threadId, "session/cancel", cause)));
+        .pipe(
+          Effect.mapError((cause) => mapAntigravityError(threadId, "session/cancel", cause)),
+          Effect.ensuring(
+            Effect.suspend(() =>
+              stopIdleCommands
+                ? withThreadLock(threadId, stopContext(context)).pipe(Effect.ignore)
+                : Effect.void,
+            ),
+          ),
+        );
     });
 
   const respondToRequest: Adapter["respondToRequest"] = (threadId, requestId, decision) =>
