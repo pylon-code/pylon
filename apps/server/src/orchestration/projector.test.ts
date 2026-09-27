@@ -40,6 +40,105 @@ function makeEvent(input: {
 }
 
 describe("orchestration projector", () => {
+  effectIt.effect("patches one thread while preserving sibling references and event order", () =>
+    Effect.gen(function* () {
+      const at = "2026-04-01T00:00:00.000Z";
+      let model = createEmptyReadModel(at);
+      for (const [index, threadId] of ["thread-1", "thread-2"].entries()) {
+        model = yield* projectEvent(
+          model,
+          makeEvent({
+            sequence: index + 1,
+            type: "thread.created",
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: at,
+            commandId: `cmd-create-${threadId}`,
+            payload: {
+              threadId,
+              projectId: "project-1",
+              title: threadId,
+              modelSelection: { provider: ProviderDriverKind.make("codex"), model: "gpt-5-codex" },
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt: at,
+              updatedAt: at,
+            },
+          }),
+        );
+      }
+      const first = model.threads[0];
+      const second = model.threads[1];
+      const afterMessage = yield* projectEvent(
+        model,
+        makeEvent({
+          sequence: 3,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-2",
+          occurredAt: at,
+          commandId: "cmd-message",
+          payload: {
+            threadId: "thread-2",
+            messageId: "assistant:one",
+            role: "assistant",
+            text: "hello",
+            turnId: "turn-1",
+            streaming: true,
+            createdAt: at,
+            updatedAt: at,
+          },
+        }),
+      );
+      expect(afterMessage.threads[0]).toBe(first);
+      expect(afterMessage.threads[1]).not.toBe(second);
+      expect(afterMessage.threads[1]?.messages[0]?.text).toBe("hello");
+
+      const afterActivity = yield* projectEvent(
+        afterMessage,
+        makeEvent({
+          sequence: 4,
+          type: "thread.activity-appended",
+          aggregateKind: "thread",
+          aggregateId: "thread-2",
+          occurredAt: at,
+          commandId: "cmd-activity",
+          payload: {
+            threadId: "thread-2",
+            activity: {
+              id: "activity-1",
+              tone: "info",
+              kind: "tool.started",
+              summary: "Started",
+              payload: {},
+              turnId: "turn-1",
+              createdAt: at,
+            },
+          },
+        }),
+      );
+      expect(afterActivity.threads[0]).toBe(first);
+      expect(afterActivity.threads[1]?.messages).toBe(afterMessage.threads[1]?.messages);
+      expect(afterActivity.threads[1]?.activities).toHaveLength(1);
+
+      const afterMissing = yield* projectEvent(
+        afterActivity,
+        makeEvent({
+          sequence: 5,
+          type: "thread.deleted",
+          aggregateKind: "thread",
+          aggregateId: "missing",
+          occurredAt: at,
+          commandId: "cmd-delete-missing",
+          payload: { threadId: "missing", deletedAt: at },
+        }),
+      );
+      expect(afterMissing.snapshotSequence).toBe(5);
+      expect(afterMissing.threads).toBe(afterActivity.threads);
+    }),
+  );
+
   it("applies thread.created events", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const model = createEmptyReadModel(now);
