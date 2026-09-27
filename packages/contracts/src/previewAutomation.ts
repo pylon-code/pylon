@@ -649,6 +649,7 @@ const McpCapabilityErrorFields = {
   providerInstanceId: ProviderInstanceId,
 };
 
+/** Agents read this message, so it names the next step and not only the failure. */
 export class PreviewAutomationUnavailableError extends Schema.TaggedError<PreviewAutomationUnavailableError>()(
   "PreviewAutomationUnavailableError",
   {
@@ -657,7 +658,8 @@ export class PreviewAutomationUnavailableError extends Schema.TaggedError<Previe
   },
 ) {
   override get message(): string {
-    return `MCP credential does not grant the ${this.capability} capability.`;
+    const setting = this.capability === "preview" ? "Agent browser access" : "Agent device access";
+    return `MCP credential does not grant the ${this.capability} capability. These tools are off for this thread. Do not retry them in this session. The user can turn on "${setting}" in Settings; it applies when the agent session next starts.`;
   }
 }
 
@@ -722,8 +724,7 @@ export class PreviewAutomationNoAvailableHostError extends Schema.TaggedError<Pr
   },
 ) {
   override get message(): string {
-    const summary = `No preview automation host is available for ${this.operation} in environment ${this.environmentId}.`;
-    return summary;
+    return `No eligible preview automation host is available for ${this.operation} in this agent session. Open this thread in a Pylon desktop app connected to the environment. If this session is pinned to a different desktop or that desktop does not support the operation, start a fresh agent session after opening the app.`;
   }
 }
 
@@ -747,10 +748,9 @@ export class PreviewAutomationTabNotFoundError extends Schema.TaggedError<Previe
   },
 ) {
   override get message(): string {
-    const summary = this.tabId
-      ? `Preview tab ${this.tabId} was not found for ${this.operation}.`
-      : `No active preview tab was found for ${this.operation}.`;
-    return summary;
+    return this.tabId
+      ? `Preview tab ${this.tabId} was not found for ${this.operation}. Omit tabId to use the current tab, or call preview_open.`
+      : `No active preview tab was found for ${this.operation}. Call preview_open first.`;
   }
 }
 
