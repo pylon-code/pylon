@@ -980,19 +980,23 @@ it.effect("rejects HTTP failures even when tea exits successfully", () =>
 for (const [body, expected] of [
   [
     '{"message":"Pull request is already closed"}',
-    "Forgejo API request failed (HTTP 409): Pull request is already closed",
+    "Forgejo rejected the request because it conflicts with the current state (HTTP 409).",
   ],
   [
     "<html>Authorization: token private</html>",
-    "Forgejo API request failed (HTTP 409). Check this server's fj credentials and permissions.",
+    "Forgejo rejected the request because it conflicts with the current state (HTTP 409).",
   ],
   [
     '{"message":"Authorization: token private"}',
-    "Forgejo API request failed (HTTP 409). Check this server's fj credentials and permissions.",
+    "Forgejo rejected the request because it conflicts with the current state (HTTP 409).",
   ],
   [
     '{"message":"test-token"}',
-    "Forgejo API request failed (HTTP 409). Check this server's fj credentials and permissions.",
+    "Forgejo rejected the request because it conflicts with the current state (HTTP 409).",
+  ],
+  [
+    '{"message":"secret is hunter2"}',
+    "Forgejo rejected the request because it conflicts with the current state (HTTP 409).",
   ],
 ] as const) {
   it.effect(`limits Forgejo HTTP error detail for ${body.slice(0, 24)}`, () =>
@@ -1023,6 +1027,64 @@ for (const [body, expected] of [
         HttpClient.HttpClient,
         HttpClient.make((request) =>
           Effect.succeed(HttpClientResponse.fromWeb(request, new Response(body, { status: 409 }))),
+        ),
+      ),
+      Effect.provide(
+        Layer.mock(VcsProcess.VcsProcess)({
+          run: () =>
+            Effect.succeed(processOutput("", { exitCode: ChildProcessSpawner.ExitCode(2) })),
+        }),
+      ),
+    ),
+  );
+}
+
+for (const [status, reason] of [
+  [401, "authentication"],
+  [403, "forbidden"],
+  [429, "rate-limit"],
+] as const) {
+  it.effect(`preserves Forgejo HTTP ${status} when the error body stream fails`, () =>
+    Effect.gen(function* () {
+      const cli = yield* ForgejoCli.make;
+      const result = yield* cli
+        .api({ cwd: "/repo", host: "forgejo.test", path: "user" })
+        .pipe(Effect.result);
+      assert.strictEqual(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.strictEqual(result.failure.httpStatus, status);
+        assert.strictEqual(result.failure.reason, reason);
+        assert.include(result.failure.detail, `HTTP ${status}`);
+      }
+    }).pipe(
+      Effect.provideService(
+        FileSystem.FileSystem,
+        FileSystem.makeNoop({
+          exists: () => Effect.succeed(true),
+          readFileString: () =>
+            Effect.succeed(
+              encodeJson({
+                hosts: { "forgejo.test": { type: "Application", token: "test-token" } },
+              }),
+            ),
+        }),
+      ),
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(
+                new ReadableStream({
+                  pull(controller) {
+                    controller.error(new Error("body stream failed"));
+                  },
+                }),
+                { status },
+              ),
+            ),
+          ),
         ),
       ),
       Effect.provide(
