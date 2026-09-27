@@ -6,6 +6,7 @@ import {
   CommandId,
   type OrchestrationEvent,
   type OrchestrationProjectShell,
+  type OrchestrationShellSnapshot,
   type ThreadId,
   type ThreadLinkedPullRequest,
 } from "@t3tools/contracts";
@@ -16,11 +17,13 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import type { ProjectionRepositoryError } from "../persistence/Errors.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -69,6 +72,31 @@ export function pullRequestMatchesProject(
   );
 }
 
+/** Read only the requested thread and its relevant projects for targeted sweeps. */
+export const readSweepSnapshot = (
+  snapshots: ProjectionSnapshotQuery.ProjectionSnapshotQueryShape,
+  threadId: ThreadId | null,
+): Effect.Effect<
+  Pick<OrchestrationShellSnapshot, "snapshotSequence" | "projects" | "threads">,
+  ProjectionRepositoryError
+> =>
+  threadId === null
+    ? snapshots.getShellSnapshot()
+    : Effect.gen(function* () {
+        // Read the sequence first: later thread changes make a guarded command
+        // stale, while an earlier sequence cannot hide those changes.
+        const { snapshotSequence } = yield* snapshots.getSnapshotSequence();
+        const thread = yield* snapshots.getThreadShellById(threadId);
+        if (Option.isNone(thread)) return { snapshotSequence, projects: [], threads: [] };
+        const reference = thread.value.linkedPullRequest ?? thread.value.branchPullRequest;
+        const projects = yield* snapshots.getProjectShells(
+          reference == null
+            ? [thread.value.projectId]
+            : [thread.value.projectId, reference.projectId],
+        );
+        return { snapshotSequence, projects, threads: [thread.value] };
+      });
+
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
@@ -97,7 +125,7 @@ export const make = Effect.gen(function* () {
   const synchronize = Effect.fn("ThreadPullRequestReactor.synchronize")(function* (
     request: RefreshRequest,
   ) {
-    const snapshot = yield* snapshots.getShellSnapshot();
+    const snapshot = yield* readSweepSnapshot(snapshots, request.threadId);
     const projects = new Map(snapshot.projects.map((project) => [project.id, project]));
     if (request.backfill) {
       for (const thread of snapshot.threads) {
@@ -110,13 +138,13 @@ export const make = Effect.gen(function* () {
       }
     }
     const threadIds = new Set(snapshot.threads.map((thread) => thread.id));
-    for (const threadId of pendingBackfill.keys()) {
+    const checkedIds = request.threadId === null ? pendingBackfill.keys() : [request.threadId];
+    for (const threadId of checkedIds) {
       if (!threadIds.has(threadId)) pendingBackfill.delete(threadId);
     }
     const threads = snapshot.threads.filter(
       (thread) =>
         thread.archivedAt === null &&
-        (request.threadId === null || thread.id === request.threadId) &&
         ((thread.settledOverride !== "settled" && thread.settledAt === null) ||
           request.threadId !== null ||
           pendingBackfill.has(thread.id)) &&

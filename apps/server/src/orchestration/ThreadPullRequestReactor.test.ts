@@ -21,6 +21,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -142,7 +143,7 @@ const makeHarness = Effect.fn("makeThreadPullRequestHarness")(function* (options
     threads: options.threads,
     updatedAt: NOW,
   });
-  const reads = yield* Queue.unbounded<void>();
+  const reads = yield* Queue.unbounded<ThreadId | null>();
   const events = yield* PubSub.unbounded<OrchestrationEvent>();
   const commands = yield* Ref.make<ReadonlyArray<SyncCommand>>([]);
   const branchCalls = yield* Ref.make<
@@ -152,8 +153,21 @@ const makeHarness = Effect.fn("makeThreadPullRequestHarness")(function* (options
   let uuid = 0;
   const dependencies = Layer.mergeAll(
     Layer.mock(ProjectionSnapshotQuery)({
-      getShellSnapshot: () =>
-        Ref.get(snapshots).pipe(Effect.tap(() => Queue.offer(reads, undefined))),
+      getSnapshotSequence: () =>
+        Ref.get(snapshots).pipe(Effect.map((s) => ({ snapshotSequence: s.snapshotSequence }))),
+      getThreadShellById: (id) =>
+        Ref.get(snapshots).pipe(
+          Effect.tap(() => Queue.offer(reads, id)),
+          Effect.map((s) => {
+            const thread = s.threads.find((item) => item.id === id);
+            return thread === undefined ? Option.none() : Option.some(thread);
+          }),
+        ),
+      getProjectShells: (ids) =>
+        Ref.get(snapshots).pipe(
+          Effect.map((s) => s.projects.filter((project) => ids?.includes(project.id) ?? true)),
+        ),
+      getShellSnapshot: () => Ref.get(snapshots).pipe(Effect.tap(() => Queue.offer(reads, null))),
     }),
     Layer.mock(GitManager)({
       branchPullRequest: (input, readOptions) =>
@@ -376,7 +390,7 @@ describe("ThreadPullRequestReactor", () => {
                 : [checkpointEvent, sessionEvent];
             for (const event of events) {
               yield* fixture.publish(event);
-              yield* Queue.take(fixture.reads);
+              expect(yield* Queue.take(fixture.reads)).toBe(current.id);
               yield* reactor.drain;
             }
             expect((yield* Ref.get(fixture.commands))[0]?.branchPullRequest).toEqual(reference(42));

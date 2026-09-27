@@ -42,6 +42,7 @@ const makeProjectionSnapshotQueryLayer = (importedWorkspaceRoots: ReadonlyArray<
     getTurnStartMessage: () => Effect.die("unused"),
     listActivitiesByKind: () => Effect.die("unused"),
     getSnapshot: () => Effect.die("unused"),
+    listThreadsWithPullRequests: () => Effect.succeed([]),
     getShellSnapshot: () =>
       Effect.succeed({
         snapshotSequence: 0,
