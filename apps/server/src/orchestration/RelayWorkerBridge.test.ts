@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { describe, expect, it } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -28,6 +29,7 @@ import {
   parseObservation,
   relayBindingFromToolEvent,
 } from "./RelayWorkerBridge.ts";
+import { resolveRelayCliPath } from "./RelayCli.ts";
 
 const jobId = "job-11111111-1111-4111-8111-111111111111";
 const panelInitialJobId = "job-44444444-4444-4444-8444-444444444444";
@@ -313,7 +315,9 @@ describe("Relay observe v1", () => {
 
 function fakeRelayCli() {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "pylon-relay-bridge-"));
-  const path = NodePath.join(dir, "relay-fixture.mjs");
+  const scripts = NodePath.join(dir, "scripts");
+  NodeFS.mkdirSync(scripts);
+  const path = NodePath.join(scripts, "relay.mjs");
   NodeFS.writeFileSync(
     path,
     `
@@ -334,12 +338,20 @@ else if (args[0] === "cancel" && state[id]) console.log(JSON.stringify({id, stat
 else process.exit(1);
 `,
   );
-  const statePath = NodePath.join(dir, "state.json");
-  const callsPath = NodePath.join(dir, "calls.json");
+  const statePath = NodePath.join(scripts, "state.json");
+  const callsPath = NodePath.join(scripts, "calls.json");
   NodeFS.writeFileSync(statePath, "{}");
   NodeFS.writeFileSync(callsPath, "[]");
+  NodeFS.mkdirSync(NodePath.join(dir, "plugins"));
+  NodeFS.writeFileSync(
+    NodePath.join(dir, "plugins", "installed_plugins.json"),
+    encodeJson({
+      plugins: { "relay-orchestrator@relay-local": [{ scope: "user", installPath: dir }] },
+    }),
+  );
   return {
     path,
+    environment: { CLAUDE_CONFIG_DIR: dir },
     setState: (state: unknown) => NodeFS.writeFileSync(statePath, JSON.stringify(state)),
     calls: (): ReadonlyArray<ReadonlyArray<string>> =>
       JSON.parse(NodeFS.readFileSync(callsPath, "utf8")),
@@ -356,7 +368,7 @@ const persistence = effectIt.layer(SqlitePersistenceMemory);
 
 persistence("Relay persisted observer and controls", (it) => {
   it.effect(
-    "retains exact thread ownership across recovery, emits stable lifecycle, and rejects another thread's cancel",
+    "discovers the plugin without an override, recovers owned workers, and emits stable lifecycle and cancel controls",
     () => {
       const cli = fakeRelayCli();
       const job = {
@@ -414,7 +426,11 @@ persistence("Relay persisted observer and controls", (it) => {
             }),
         } as unknown as OrchestrationEngineService["Service"];
         const liveness = makeLiveness();
-        const bridge = yield* makeWithCliPath(cli.path).pipe(
+        const discoveredCli = yield* resolveRelayCliPath(cli.environment).pipe(
+          Effect.provide(NodeServices.layer),
+        );
+        expect(discoveredCli).toBe(cli.path);
+        const bridge = yield* makeWithCliPath(discoveredCli).pipe(
           Effect.provideService(OrchestrationEngineService, engine),
           Effect.provideService(ServerEnvironment, fakeEnvironment),
           Effect.provideService(ThreadBackgroundLivenessService, liveness),

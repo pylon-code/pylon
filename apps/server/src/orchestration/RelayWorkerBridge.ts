@@ -31,6 +31,7 @@ import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ThreadBackgroundLivenessService } from "./ThreadBackgroundLiveness.ts";
 import { forkParked } from "../serverActivation.ts";
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
+import { resolveRelayCliPath } from "./RelayCli.ts";
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 const decodeJson = Schema.decodeOption(Schema.fromJsonString(Schema.Unknown));
@@ -1784,4 +1785,7 @@ export const makeWithCliPath = Effect.fn("RelayWorkerBridge.makeWithCliPath")(fu
   };
 });
 
-export const layer = Layer.effect(RelayWorkerBridge, makeWithCliPath(process.env.PYLON_RELAY_CLI));
+export const layer = Layer.effect(
+  RelayWorkerBridge,
+  resolveRelayCliPath(process.env).pipe(Effect.flatMap(makeWithCliPath)),
+);

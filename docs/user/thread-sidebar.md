@@ -157,10 +157,13 @@ from its agent row or the background Stop banner; Relay keeps the worker's parti
 Relay workers do not accept direct messages or expose a live private transcript in Pylon. A panel groups dispatched members
 and shows how many have not yet dispatched.
 
-To enable Relay workers in Agents, install Relay Orchestrator on the computer running the Pylon
-environment server and set `PYLON_RELAY_CLI` to the absolute path of Relay's `scripts/relay.mjs`
-before starting that server. Relay and Pylon must run under the same local account and use the same
-Relay home. A remote Pylon client reads the server's agent status; it does not need local access to
+Pylon automatically finds a user-scoped Relay Orchestrator installation in Claude Code's plugin
+registry on the computer running the environment server (`CLAUDE_CONFIG_DIR`, or `~/.claude`).
+Restart the Pylon server after installing the plugin. For other installation methods, project-only
+installs, provider-specific Claude homes, or multiple user installations, set `PYLON_RELAY_CLI` to
+the absolute path of Relay's `scripts/relay.mjs` before starting the server. This setting overrides
+automatic discovery. Relay and Pylon must run under the same local account and use the same Relay
+home. A remote Pylon client reads the server's agent status; it does not need local access to
 Relay's worker files.
 
 Expand a tool group in the conversation to see its calls, and expand a call to see its full command
