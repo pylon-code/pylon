@@ -35,8 +35,22 @@ it.effect("reports the scoped credential context when preview capability is unav
       providerInstanceId: invocation.providerInstanceId,
     });
     expect(error.message).toContain("MCP credential does not grant the preview capability");
-    expect(error.message).toContain("use a headless browser from the shell");
+    expect(error.message).toContain('"Agent browser access"');
+    expect(error.message).not.toMatch(/Playwright|headless browser|curl/);
   });
+});
+
+it("names the device setting in a preview automation device error", () => {
+  const scope = {
+    environmentId: EnvironmentId.make("environment-1"),
+    threadId: ThreadId.make("thread-1"),
+    providerSessionId: "provider-session-1",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+  };
+  const error = new PreviewAutomationUnavailableError({ capability: "device", ...scope });
+  expect(error.message).toContain('"Agent device access"');
+  expect(error.message).not.toContain("browser");
+  expect(error.message).not.toMatch(/Playwright|headless browser|curl/);
 });
 
 it.effect("reports other missing capabilities with the neutral error", () => {

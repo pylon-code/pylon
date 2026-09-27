@@ -658,7 +658,8 @@ export class PreviewAutomationUnavailableError extends Schema.TaggedError<Previe
   },
 ) {
   override get message(): string {
-    return `MCP credential does not grant the ${this.capability} capability: browser preview tools are off for this thread. Do not retry them. To check a page, use a headless browser from the shell, such as Playwright, or curl. The user can turn on "Agent browser access" in Settings; it applies when the agent session next starts.`;
+    const setting = this.capability === "preview" ? "Agent browser access" : "Agent device access";
+    return `MCP credential does not grant the ${this.capability} capability. These tools are off for this thread. Do not retry them in this session. The user can turn on "${setting}" in Settings; it applies when the agent session next starts.`;
   }
 }
 
@@ -723,7 +724,7 @@ export class PreviewAutomationNoAvailableHostError extends Schema.TaggedError<Pr
   },
 ) {
   override get message(): string {
-    return `No preview automation host is available for ${this.operation} in environment ${this.environmentId}. Preview tools run in a Pylon desktop app that is open and connected to this environment; a headless server has no browser of its own. Do not retry. To check a page, use a headless browser from the shell, such as Playwright, or curl, or ask the user to open this thread in the Pylon desktop app.`;
+    return `No eligible preview automation host is available for ${this.operation} in this agent session. Open this thread in a Pylon desktop app connected to the environment. If this session is pinned to a different desktop or that desktop does not support the operation, start a fresh agent session after opening the app.`;
   }
 }
 

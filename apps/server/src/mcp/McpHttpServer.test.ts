@@ -218,15 +218,16 @@ it.effect.each([
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("tells the agent how to fall back when no desktop app can run the snapshot", () =>
+it.effect("describes recovery when no desktop app can run the snapshot", () =>
   Effect.gen(function* () {
     const snapshot = yield* callSnapshot({});
 
     expect(snapshot.isError).toBe(true);
     const [text] = snapshot.content;
-    expect(text?.type === "text" ? text.text : "").toContain(
-      "use a headless browser from the shell",
-    );
+    const message = text?.type === "text" ? text.text : "";
+    expect(message).toContain("Open this thread in a Pylon desktop app");
+    expect(message).toContain("start a fresh agent session");
+    expect(message).not.toMatch(/Playwright|headless browser|curl/);
     expect(snapshot.structuredContent).toMatchObject({
       error: { _tag: "PreviewAutomationNoAvailableHostError" },
     });

@@ -783,6 +783,9 @@ it.effect("prefers the live tab owner for new sessions without moving existing l
         })
         .pipe(Effect.flip);
       expect(wrongHostError).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+      expect(wrongHostError.message).toContain("pinned to a different desktop");
+      expect(wrongHostError.message).toContain("start a fresh agent session");
+      expect(wrongHostError.message).not.toContain("No preview automation host is available");
       expect(yield* broker.invoke<string>({ scope, operation: "evaluate", input: {} })).toBe(
         "owner",
       );
@@ -1009,6 +1012,8 @@ it.effect("does not move a live legacy assignment to another runtime for resize"
         .invoke<void>({ scope, operation: "resize", input: { mode: "fill" } })
         .pipe(Effect.flip);
       expect(error).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+      expect(error.message).toContain("pinned to a different desktop");
+      expect(error.message).toContain("start a fresh agent session");
       expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
         "legacy",
       );
