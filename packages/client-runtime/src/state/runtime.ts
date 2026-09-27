@@ -28,6 +28,7 @@ interface EnvironmentAtomOptions<Input, A, E, R> {
   readonly concurrency?: AtomCommandConcurrency<{
     readonly environmentId: EnvironmentIdType;
     readonly input: Input;
+    readonly expectedSessionOwner?: object;
   }>;
 }
 
@@ -39,6 +40,7 @@ interface EnvironmentCommandAtomOptions<Input, A, E, R> extends Omit<
     input: Input,
     registry: AtomRegistry.AtomRegistry,
     environmentId: EnvironmentIdType,
+    expectedSessionOwner: object | undefined,
   ) => Effect.Effect<A, E, R>;
 }
 
@@ -597,7 +599,24 @@ export function createEnvironmentCommand<R, ER, Input, A, E>(
     execute: (target, registry) =>
       runInEnvironment(
         target.environmentId,
-        options.execute(target.input, registry, target.environmentId),
+        Effect.gen(function* () {
+          if (target.expectedSessionOwner !== undefined) {
+            const supervisor = yield* EnvironmentSupervisor;
+            const state = yield* SubscriptionRef.get(supervisor.state);
+            if (state.phase !== "connected" || state.sessionOwner !== target.expectedSessionOwner) {
+              return yield* new EnvironmentRpcUnavailableError({
+                environmentId: target.environmentId,
+                message: "The connection changed before this action could be sent.",
+              });
+            }
+          }
+          return yield* options.execute(
+            target.input,
+            registry,
+            target.environmentId,
+            target.expectedSessionOwner,
+          );
+        }),
       ),
   });
 }
@@ -672,6 +691,7 @@ export function createEnvironmentRpcCommand<R, ER, TTag extends EnvironmentUnary
     readonly concurrency?: AtomCommandConcurrency<{
       readonly environmentId: EnvironmentIdType;
       readonly input: EnvironmentRpcInput<TTag>;
+      readonly expectedSessionOwner?: object;
     }>;
     readonly onSuccess?: (
       target: {
@@ -694,12 +714,16 @@ export function createEnvironmentRpcCommand<R, ER, TTag extends EnvironmentUnary
     label: options.label,
     ...(options.scheduler === undefined ? {} : { scheduler: options.scheduler }),
     ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
-    execute: (input: EnvironmentRpcInput<TTag>, registry, environmentId) => {
+    execute: (input: EnvironmentRpcInput<TTag>, registry, environmentId, expectedSessionOwner) => {
       const target = {
         environmentId,
         input,
       };
-      return request(options.tag, options.transformInput?.(input) ?? input).pipe(
+      return request(
+        options.tag,
+        options.transformInput?.(input) ?? input,
+        expectedSessionOwner === undefined ? undefined : { expectedSessionOwner },
+      ).pipe(
         Effect.tap(() => options.onSuccess?.(target, registry) ?? Effect.void),
         Effect.ensuring(options.onSettled?.(target, registry) ?? Effect.void),
       );

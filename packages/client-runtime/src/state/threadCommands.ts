@@ -254,7 +254,16 @@ export function createThreadEnvironmentAtoms<R, E>(
     }),
     revertCheckpoint: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:revert-checkpoint",
-      execute: (input: RevertThreadCheckpointInput) => revertThreadCheckpoint(input),
+      execute: (
+        input: RevertThreadCheckpointInput,
+        _registry,
+        _environmentId,
+        expectedSessionOwner,
+      ) =>
+        revertThreadCheckpoint({
+          ...input,
+          ...(expectedSessionOwner === undefined ? {} : { expectedSessionOwner }),
+        }),
       scheduler,
       concurrency,
     }),

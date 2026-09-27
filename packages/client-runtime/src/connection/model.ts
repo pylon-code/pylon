@@ -142,7 +142,7 @@ export interface SupervisorConnectionState {
   readonly stage: ConnectionAttemptStage | null;
   readonly attempt: number;
   readonly generation: number;
-  /** Local lease identity; only a connected state has an authoritative session. */
+  /** Opaque local lease identity; only a connected state has an authoritative session. */
   readonly sessionOwner?: object;
   readonly lastFailure: ConnectionAttemptError | null;
   readonly retryAt: number | null;

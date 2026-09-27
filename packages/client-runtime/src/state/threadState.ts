@@ -22,6 +22,12 @@ export interface EnvironmentThreadState {
   readonly status: EnvironmentThreadStatus;
   readonly error: Option.Option<string>;
   readonly page: Option.Option<EnvironmentThreadPageState>;
+  /** Server event sequence of the loaded thread, never a wall-clock estimate. */
+  readonly snapshotSequence?: number;
+  /** Opaque owner of live data; null for cached or synchronizing data. */
+  readonly sessionOwner?: object | null;
+  /** Current server capability; undefined until this session's config is known. */
+  readonly rollbackStatusStreaming?: boolean;
 }
 
 export const EMPTY_ENVIRONMENT_THREAD_STATE: EnvironmentThreadState = {

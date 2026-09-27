@@ -253,6 +253,55 @@ it.effect("admits turn 0 only from explicit immutable workspace and provider bas
   }),
 );
 
+it.effect("rejects a delayed revert when the projected rollback operation changed", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness();
+    const admission = yield* harness.admission;
+    const currentThread = harness.readModel.threads[0]!;
+    const readModel = {
+      ...harness.readModel,
+      threads: [
+        {
+          ...currentThread,
+          rollbackStatus: {
+            state: "completed" as const,
+            updatedAt: now,
+            operationId: "new-operation",
+          },
+        },
+      ],
+    };
+    const command = {
+      type: "thread.checkpoint.revert" as const,
+      commandId: CommandId.make("delayed-revert"),
+      threadId,
+      turnCount: 1,
+      expectedSourceRevision: 2,
+      createdAt: now,
+    };
+    const stale = yield* admission
+      .prepare({
+        command: { ...command, expectedRollbackOperationId: "previous-operation" },
+        readModel,
+        requestEventId: "delayed-revert-stale",
+      })
+      .pipe(Effect.result);
+    assert.equal(stale._tag, "Failure");
+    const current = yield* admission.prepare({
+      command: { ...command, expectedRollbackOperationId: "new-operation" },
+      readModel,
+      requestEventId: "delayed-revert-current",
+    });
+    assert.isTrue(Option.isSome(current));
+    const noStatus = yield* admission.prepare({
+      command: { ...command, expectedRollbackOperationId: null },
+      readModel: harness.readModel,
+      requestEventId: "delayed-revert-no-status",
+    });
+    assert.isTrue(Option.isSome(noStatus));
+  }),
+);
+
 it.effect(
   "leaves every relative or unsupported production-style adapter on the fail-closed path",
   () =>

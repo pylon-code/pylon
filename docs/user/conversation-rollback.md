@@ -1,6 +1,6 @@
 # Revert a conversation to an earlier message
 
-Pylon can revert an eligible thread to an earlier user message. The action moves the provider conversation, Pylon history, and the project workspace to the same verified point.
+Pylon can revert an eligible thread to an earlier user message. The action moves the provider conversation and Pylon history to the same verified point. When you choose to restore files, it also moves the project workspace to that point.
 
 ## When the action is available
 
@@ -14,15 +14,20 @@ ACP sessions, supervised or unmanaged Prime sessions, other providers, and check
 
 ## What a revert changes
 
-Before Pylon starts, the confirmation names the selected message and explains the full effect. A revert rewrites:
+Before Pylon starts, the confirmation names the selected message and explains the choice. Every revert rewrites:
 
 - the provider conversation;
-- Pylon message and turn history;
+- Pylon message and turn history.
+
+**Restore files** also rewrites:
+
 - the worktree and Git index;
 - staged and unstaged changes;
 - untracked files.
 
-Newer history is retained until the rollback commits. Pylon then removes it only after the workspace and provider conversation both match the selected point.
+**Keep changes** leaves the current files and Git index in place while rewinding only the provider conversation and Pylon history. Threads that share the project directory keep files in place.
+
+Newer history is retained until the rollback commits. Pylon then removes it only after the provider conversation and, when files are restored, the workspace match the selected point.
 
 ## Queued messages
 

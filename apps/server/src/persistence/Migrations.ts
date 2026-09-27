@@ -76,6 +76,7 @@ import Migration0062 from "./Migrations/062_RepairStoppedSessionRequests.ts";
 import Migration0063 from "./Migrations/063_ClearUnprojectedRelayOutages.ts";
 import Migration0064 from "./Migrations/064_PullRequestFilesViewed.ts";
 import Migration0065 from "./Migrations/065_ProjectionThreadTitleState.ts";
+import Migration0066 from "./Migrations/066_ProjectionRollbackOperationId.ts";
 /**
  * Migration loader with all migrations defined inline.
  *
@@ -185,6 +186,7 @@ const migrationEntries = [
   // Upstream used 53 for viewed files; Pylon's persisted lineage already runs through 63.
   [64, "PullRequestFilesViewed", Migration0064],
   [65, "ProjectionThreadTitleState", Migration0065],
+  [66, "ProjectionRollbackOperationId", Migration0066],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

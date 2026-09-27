@@ -3,7 +3,7 @@ import {
   OrchestrationRollbackRecoveryError,
   type CheckpointRef,
   type OrchestrationRollbackRecoveryAction,
-  type ThreadId,
+  type OrchestrationRollbackRecoveryInput,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -32,10 +32,9 @@ export const RollbackFaultInjector = Context.Reference<RollbackFaultHook>(
 
 export interface RollbackSagaRunnerShape {
   readonly run: (operationId: string, recovering: boolean) => Effect.Effect<void>;
-  readonly recover: (input: {
-    readonly threadId: ThreadId;
-    readonly action: OrchestrationRollbackRecoveryAction;
-  }) => Effect.Effect<void, OrchestrationRollbackRecoveryError>;
+  readonly recover: (
+    input: OrchestrationRollbackRecoveryInput,
+  ) => Effect.Effect<void, OrchestrationRollbackRecoveryError>;
 }
 export class RollbackSagaRunner extends Context.Service<
   RollbackSagaRunner,
@@ -110,6 +109,7 @@ export const make = Effect.gen(function* () {
       ),
       threadId: state.threadId,
       status,
+      operationId: state.operationId,
       targetTurnCount: state.targetRevision,
       sourceRevision: state.sourceRevision,
       ...(detail === undefined ? {} : { detail }),
@@ -683,6 +683,16 @@ export const make = Effect.gen(function* () {
     message: string,
   ) => new OrchestrationRollbackRecoveryError({ reason, message });
 
+  const recoveryActionAllowed = (
+    state: RollbackSagaState,
+    action: OrchestrationRollbackRecoveryAction,
+  ) =>
+    state.phase === "manual-recovery" &&
+    ((action === "retry-verification" && state.projectionCommitSequence !== null) ||
+      (action === "resume-compensation" &&
+        state.projectionCommitSequence === null &&
+        state.compensation === "manual"));
+
   const recover: RollbackSagaRunnerShape["recover"] = Effect.fn("RollbackSagaRunner.recover")(
     function* (input) {
       const active = yield* repository
@@ -698,14 +708,23 @@ export const make = Effect.gen(function* () {
           "No fenced rollback operation exists for this thread.",
         );
       }
+      if (input.expectedOperationId === undefined) {
+        return yield* recoveryError(
+          "action-not-allowed",
+          "This client must refresh its rollback status before requesting recovery.",
+        );
+      }
+      if (
+        active.value.operationId !== input.expectedOperationId ||
+        active.value.state.operationId !== input.expectedOperationId
+      ) {
+        return yield* recoveryError(
+          "not-found",
+          "The requested rollback operation is no longer active for this thread.",
+        );
+      }
       const state = active.value.state;
-      const allowed =
-        state.phase === "manual-recovery" &&
-        ((input.action === "retry-verification" && state.projectionCommitSequence !== null) ||
-          (input.action === "resume-compensation" &&
-            state.projectionCommitSequence === null &&
-            state.compensation === "manual"));
-      if (!allowed) {
+      if (!recoveryActionAllowed(state, input.action)) {
         return yield* recoveryError(
           "action-not-allowed",
           "That recovery action is not safe for the rollback's current durable phase.",
@@ -726,6 +745,18 @@ export const make = Effect.gen(function* () {
         );
       }
       const claimedState = claimed.value.state;
+      if (
+        claimed.value.operationId !== input.expectedOperationId ||
+        claimedState.operationId !== input.expectedOperationId ||
+        claimedState.threadId !== input.threadId ||
+        !recoveryActionAllowed(claimedState, input.action)
+      ) {
+        yield* repository.releaseOwnerOwned(claimed.value.operationId, ownerId).pipe(Effect.ignore);
+        return yield* recoveryError(
+          "action-not-allowed",
+          "The rollback recovery phase changed before it could be claimed.",
+        );
+      }
       const nextState: RollbackSagaState = {
         ...claimedState,
         phase:

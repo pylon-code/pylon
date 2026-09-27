@@ -634,6 +634,9 @@ export function applyThreadDetailEvent(
               : {
                   state: event.payload.status,
                   updatedAt: event.payload.updatedAt,
+                  ...(event.payload.operationId === undefined
+                    ? {}
+                    : { operationId: event.payload.operationId }),
                   ...(event.payload.targetTurnCount === undefined
                     ? {}
                     : { targetTurnCount: event.payload.targetTurnCount }),

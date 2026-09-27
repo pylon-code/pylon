@@ -1081,6 +1081,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             rollbackStatus: event.payload.status,
             rollbackUpdatedAt: event.payload.updatedAt,
+            rollbackOperationId: event.payload.operationId ?? null,
             updatedAt: event.payload.updatedAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);

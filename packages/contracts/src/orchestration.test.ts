@@ -38,10 +38,12 @@ import {
   compactSnapShotSource,
   isProviderSendTurnSupportedImageMimeType,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+  OrchestrationRollbackRecoveryInput,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const encodeProjectIconOverride = Schema.encodeSync(ProjectIconOverride);
+const encodeOrchestrationThreadShell = Schema.encodeEffect(OrchestrationThreadShell);
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
 const decodeFullThreadDiffInput = Schema.decodeUnknownEffect(OrchestrationGetFullThreadDiffInput);
@@ -65,6 +67,9 @@ const decodeOrchestrationCheckpointSummary = Schema.decodeUnknownEffect(
   OrchestrationCheckpointSummary,
 );
 const decodeOrchestrationRollbackStatus = Schema.decodeUnknownEffect(OrchestrationRollbackStatus);
+const decodeOrchestrationRollbackRecoveryInput = Schema.decodeUnknownEffect(
+  OrchestrationRollbackRecoveryInput,
+);
 const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
 
 function getOptionValue(
@@ -821,7 +826,7 @@ it.effect("defaults settled fields when decoding historical thread data", () =>
     const oldLinkFields = Schema.Struct({
       linkedPullRequest: Schema.optional(ThreadLinkedPullRequest),
     });
-    const newServerWire = yield* Schema.encodeEffect(OrchestrationThreadShell)({
+    const newServerWire = yield* encodeOrchestrationThreadShell({
       ...oldServerShell,
       pullRequests: [
         {
@@ -1741,6 +1746,29 @@ it.effect("rollback public contracts retain exact UX state without native provid
       allowedActions: ["retry-verification"],
       updatedAt: "2026-04-01T00:00:01.000Z",
     });
+    assert.strictEqual(Object.hasOwn(status, "operationId"), false);
+
+    const current = yield* decodeOrchestrationRollbackStatus({
+      ...status,
+      operationId: "opaque-operation-1",
+      nativeSessionId: "PRIVATE_SESSION_CANARY",
+      anchor: { leafId: "PRIVATE_ANCHOR_CANARY" },
+    });
+    assert.strictEqual(current.operationId, "opaque-operation-1");
+    assert.strictEqual("nativeSessionId" in current, false);
+    assert.strictEqual("anchor" in current, false);
+
+    const legacyRecovery = yield* decodeOrchestrationRollbackRecoveryInput({
+      threadId: "thread-1",
+      action: "retry-verification",
+    });
+    assert.strictEqual(Object.hasOwn(legacyRecovery, "expectedOperationId"), false);
+    const currentRecovery = yield* decodeOrchestrationRollbackRecoveryInput({
+      threadId: "thread-1",
+      action: "retry-verification",
+      expectedOperationId: "opaque-operation-1",
+    });
+    assert.strictEqual(currentRecovery.expectedOperationId, "opaque-operation-1");
   }),
 );
 

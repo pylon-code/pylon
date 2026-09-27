@@ -111,6 +111,7 @@ const makeEnvironment = (
   let staleRefsDeleted = false;
   let projectionCommitted = false;
   let projectionCommits = 0;
+  let beforeClaim: (() => void) | undefined;
   const workspaceCalls: string[] = [];
   const providerApplies: string[] = [];
   const commands: OrchestrationCommand[] = [];
@@ -147,6 +148,7 @@ const makeEnvironment = (
       }),
     claim: (id, ownerId) =>
       Effect.sync(() => {
+        beforeClaim?.();
         if (
           id !== operationId ||
           record.terminal ||
@@ -389,6 +391,9 @@ const makeEnvironment = (
         phase: patch.phase ?? record.phase,
       };
     },
+    setBeforeClaim: (callback: (() => void) | undefined) => {
+      beforeClaim = callback;
+    },
     setWorkspaceDigest: (digest: string) => {
       workspaceDigest = digest;
     },
@@ -576,6 +581,7 @@ it.effect("compensates workspace and provider when the provider stays at source"
       (command) => command.type === "thread.rollback.status.set",
     );
     assert.equal(status?.status, "failed");
+    assert.equal(status?.operationId, "operation-compensate");
     assert.include(status?.detail ?? "", "no thread content was removed");
   }),
 );
@@ -635,7 +641,11 @@ it.effect("resumes server-authorized compensation and reports a safe durable fai
     yield* runner.run(operationId, false);
     assert.equal(environment.snapshot().record.state.phase, "manual-recovery");
 
-    yield* runner.recover({ threadId, action: "resume-compensation" });
+    yield* runner.recover({
+      threadId,
+      action: "resume-compensation",
+      expectedOperationId: operationId,
+    });
     const snapshot = environment.snapshot();
     assert.equal(snapshot.record.state.phase, "compensated");
     assert.isTrue(snapshot.record.terminal);
@@ -670,7 +680,11 @@ it.effect("retries post-commit verification without committing projection twice"
     assert.deepEqual(manualStatus?.allowedActions, ["retry-verification"]);
 
     environment.setProviderMode("success");
-    yield* recovering.recover({ threadId, action: "retry-verification" });
+    yield* recovering.recover({
+      threadId,
+      action: "retry-verification",
+      expectedOperationId: operationId,
+    });
     const complete = environment.snapshot();
     assert.equal(complete.record.state.phase, "complete");
     assert.isTrue(complete.record.terminal);
@@ -688,14 +702,93 @@ it.effect("rejects recovery actions that the durable phase does not authorize", 
   Effect.gen(function* () {
     const environment = makeEnvironment("operation-action-not-allowed");
     const runner = yield* environment.makeRunner();
-    const error = yield* runner.recover({ threadId, action: "retry-verification" }).pipe(
-      Effect.match({
-        onFailure: (failure) => failure,
-        onSuccess: () => null,
-      }),
-    );
+    const error = yield* runner
+      .recover({
+        threadId,
+        action: "retry-verification",
+        expectedOperationId: "operation-action-not-allowed",
+      })
+      .pipe(
+        Effect.match({
+          onFailure: (failure) => failure,
+          onSuccess: () => null,
+        }),
+      );
     assert.equal(error?.reason, "action-not-allowed");
     assert.equal(environment.snapshot().record.state.phase, "source-anchor-capture-started");
+  }),
+);
+
+it.effect("rejects a stale recovery request for an earlier rollback operation", () =>
+  Effect.gen(function* () {
+    const currentOperationId = "operation-current-b";
+    const environment = makeEnvironment(currentOperationId, "wrong-target");
+    const runner = yield* environment.makeRunner();
+    yield* runner.run(currentOperationId, false);
+    assert.equal(environment.snapshot().record.state.phase, "manual-recovery");
+    const before = environment.snapshot();
+
+    const staleRequest = {
+      threadId,
+      action: "resume-compensation" as const,
+      expectedOperationId: "operation-earlier-a",
+    };
+    const result = yield* runner.recover(staleRequest).pipe(Effect.result);
+    assert.equal(result._tag, "Failure");
+    const snapshot = environment.snapshot();
+    assert.equal(snapshot.record.state.phase, "manual-recovery");
+    assert.equal(snapshot.workspaceDigest, "workspace-target");
+    assert.equal(snapshot.providerDigest, "provider-wrong");
+    assert.equal(snapshot.record.version, before.record.version);
+    assert.equal(snapshot.record.ownerId, before.record.ownerId);
+    assert.equal(snapshot.commands.length, before.commands.length);
+    assert.equal(snapshot.workspaceCalls.length, before.workspaceCalls.length);
+    assert.equal(snapshot.providerApplies.length, before.providerApplies.length);
+  }),
+);
+
+it.effect("rejects an old client that omits the expected rollback operation", () =>
+  Effect.gen(function* () {
+    const operationId = "operation-legacy-client";
+    const environment = makeEnvironment(operationId, "wrong-target");
+    const runner = yield* environment.makeRunner();
+    yield* runner.run(operationId, false);
+    const before = environment.snapshot();
+    const result = yield* runner
+      .recover({ threadId, action: "resume-compensation" })
+      .pipe(Effect.result);
+    assert.equal(result._tag, "Failure");
+    if (result._tag === "Failure") assert.equal(result.failure.reason, "action-not-allowed");
+    const after = environment.snapshot();
+    assert.equal(after.record.version, before.record.version);
+    assert.equal(after.record.ownerId, before.record.ownerId);
+    assert.equal(after.commands.length, before.commands.length);
+    assert.equal(after.workspaceCalls.length, before.workspaceCalls.length);
+  }),
+);
+
+it.effect("rechecks recovery phase after claiming the expected operation", () =>
+  Effect.gen(function* () {
+    const operationId = "operation-phase-changed-before-claim";
+    const environment = makeEnvironment(operationId, "wrong-target");
+    const runner = yield* environment.makeRunner();
+    yield* runner.run(operationId, false);
+    const before = environment.snapshot();
+    environment.setBeforeClaim(() => {
+      environment.setBeforeClaim(undefined);
+      environment.setPersistedState({ phase: "compensation-workspace-started" });
+    });
+    const result = yield* runner
+      .recover({ threadId, action: "resume-compensation", expectedOperationId: operationId })
+      .pipe(Effect.result);
+    assert.equal(result._tag, "Failure");
+    if (result._tag === "Failure") assert.equal(result.failure.reason, "action-not-allowed");
+    const after = environment.snapshot();
+    assert.equal(after.record.state.phase, "compensation-workspace-started");
+    assert.equal(after.record.ownerId, null);
+    assert.equal(after.record.version, before.record.version);
+    assert.equal(after.commands.length, before.commands.length);
+    assert.equal(after.workspaceCalls.length, before.workspaceCalls.length);
   }),
 );
 
@@ -708,12 +801,14 @@ it.effect("lets only one client claim a permitted recovery action", () =>
     const claimed = yield* environment.repository.claim(operationId, "other-client");
     assert.equal(claimed._tag, "Some");
 
-    const error = yield* runner.recover({ threadId, action: "resume-compensation" }).pipe(
-      Effect.match({
-        onFailure: (failure) => failure,
-        onSuccess: () => null,
-      }),
-    );
+    const error = yield* runner
+      .recover({ threadId, action: "resume-compensation", expectedOperationId: operationId })
+      .pipe(
+        Effect.match({
+          onFailure: (failure) => failure,
+          onSuccess: () => null,
+        }),
+      );
     assert.equal(error?.reason, "operation-busy");
     assert.equal(environment.snapshot().record.state.phase, "manual-recovery");
   }),
@@ -821,6 +916,7 @@ it.effect("restores durable manual recovery status after a crash before status p
       (command) => command.type === "thread.rollback.status.set",
     );
     assert.equal(statuses.at(-1)?.status, "manual-recovery");
+    assert.equal(statuses.at(-1)?.operationId, operationId);
   }),
 );
 

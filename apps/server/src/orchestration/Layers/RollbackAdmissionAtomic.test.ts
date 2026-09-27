@@ -412,11 +412,15 @@ for (const commandType of ["thread.checkpoint.revert", "thread.conversation.reve
           assert.isTrue(Option.isSome(yield* repository.get(operationId)));
           const snapshot = yield* snapshots.getSnapshot();
           const thread = snapshot.threads.find((candidate) => candidate.id === threadId);
-          assert.deepEqual(thread?.rollbackStatus, { state: "pending", updatedAt: now });
+          assert.deepEqual(thread?.rollbackStatus, {
+            state: "pending",
+            updatedAt: now,
+            operationId,
+          });
           const shell = yield* snapshots.getShellSnapshot();
           assert.deepEqual(
             shell.threads.find((candidate) => candidate.id === threadId)?.rollbackStatus,
-            { state: "pending", updatedAt: now },
+            { state: "pending", updatedAt: now, operationId: "operation-atomic-rollback" },
           );
 
           const events = yield* Stream.runCollect(orchestration.readEvents(0)).pipe(
@@ -448,6 +452,7 @@ for (const commandType of ["thread.checkpoint.revert", "thread.conversation.reve
             );
           }
           const pending = events.find((event) => event.type === "thread.rollback-status-updated");
+          assert.equal(pending?.payload.operationId, operationId);
           if (commandType === "thread.conversation.revert") {
             assert.include(pending?.payload.detail ?? "", "keeping current files");
             assert.notInclude(pending?.payload.detail ?? "", "and workspace");

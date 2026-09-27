@@ -23,7 +23,9 @@ import { connectionProjectionPhase } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
-import { subscribeDynamic } from "../rpc/client.ts";
+import { subscribeDynamicWithSession } from "../rpc/client.ts";
+import type { RpcSession } from "../rpc/session.ts";
+import { rpcSessionOwner } from "../rpc/sessionOwner.ts";
 import { ThreadSnapshotLoader, type ThreadSnapshotWindow } from "./threadSnapshotHttp.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyThreadDetailEvent } from "./threadReducer.ts";
@@ -140,6 +142,8 @@ interface ThreadResumeSnapshot {
 interface ThreadResumeCache {
   snapshot: ThreadResumeSnapshot | undefined;
   owner: object | undefined;
+  /** Local-only session that proved the retained cursor; never persisted. */
+  authoritativeSession?: RpcSession | null;
 }
 
 function matchesThreadSnapshot(
@@ -203,8 +207,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         )
       : Option.none<OrchestrationThreadDetailSnapshot>();
   const cachedThread = Option.map(cached, (snapshot) => snapshot.thread);
+  const initialSequence =
+    retained?.sequence ??
+    Option.match(cached, { onNone: () => 0, onSome: (snapshot) => snapshot.snapshotSequence });
   const initialState: EnvironmentThreadState = retained
-    ? cachedThreadState(retained.state)
+    ? {
+        ...cachedThreadState(retained.state),
+        snapshotSequence: initialSequence,
+        sessionOwner: null,
+      }
     : {
         data: cachedThread,
         status: statusWithoutLiveData(cachedThread),
@@ -212,14 +223,18 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         // A cached windowed snapshot restores its page cursor so "load earlier"
         // works while rendering from cache; a cached full snapshot has no page.
         page: Option.flatMap(cached, (snapshot) => pageStateFromSnapshot(snapshot.page)),
+        snapshotSequence: initialSequence,
+        sessionOwner: null,
       };
   const state = yield* SubscriptionRef.make(initialState);
   // Seed the resume cursor from the cached snapshot so a warm cache can catch up
   // via `afterSequence` instead of re-downloading the full thread body.
-  const initialSequence =
-    retained?.sequence ??
-    Option.match(cached, { onNone: () => 0, onSome: (snapshot) => snapshot.snapshotSequence });
   const lastSequence = yield* SubscriptionRef.make(initialSequence);
+  const activeSubscriptionSession = yield* Ref.make<RpcSession | null>(null);
+  const lastAuthoritativeSession = yield* Ref.make<RpcSession | null>(
+    retained === undefined ? null : (resumeCache?.authoritativeSession ?? null),
+  );
+  const rollbackStatusSupported = yield* Ref.make(false);
   let committed: ThreadResumeSnapshot = {
     state: initialState,
     sequence: initialSequence,
@@ -316,6 +331,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       : {
           ...current,
           status: "synchronizing" as const,
+          sessionOwner: null,
           error: Option.none(),
         },
   );
@@ -325,6 +341,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       : {
           ...current,
           status: "synchronizing" as const,
+          sessionOwner: null,
           error: Option.none(),
         },
   );
@@ -339,6 +356,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     yield* SubscriptionRef.update(state, (current) => ({
       ...current,
       status: current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
+      sessionOwner: null,
     }));
   });
   const setStreamError = (message: string) =>
@@ -348,6 +366,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           ...current,
           status:
             current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
+          sessionOwner: null,
           error: current.status === "deleted" ? Option.none() : Option.some(message),
         })),
       ),
@@ -383,6 +402,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     page: Option.Option<EnvironmentThreadPageState> | "keep",
   ) {
     const waiting = yield* Ref.get(awaitingCompletion);
+    const session = yield* Ref.get(activeSubscriptionSession);
+    const sequence = yield* SubscriptionRef.get(lastSequence);
+    const rollbackStatusStreaming = yield* Ref.get(rollbackStatusSupported);
     yield* SubscriptionRef.update(state, (current) => ({
       data: Option.some(thread),
       // Buffered values from the failed attempt can still arrive after its error.
@@ -393,6 +415,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           : ("live" as const),
       error: current.error,
       page: page === "keep" ? current.page : page,
+      snapshotSequence: sequence,
+      sessionOwner: waiting || session === null ? null : rpcSessionOwner(session),
+      rollbackStatusStreaming,
     }));
     // Active threads can update many times per second and retain large tool
     // payloads. The server remains the source of truth while a turn is active;
@@ -411,6 +436,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       status: "deleted",
       error: Option.none(),
       page: Option.none(),
+      snapshotSequence: yield* SubscriptionRef.get(lastSequence),
+      sessionOwner: null,
+      rollbackStatusStreaming: yield* Ref.get(rollbackStatusSupported),
     });
     yield* remember;
     if (resumeCache !== undefined && resumeCache.owner !== owner) return;
@@ -433,9 +461,21 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   ) {
     if (item.kind === "synchronized") {
       yield* Ref.set(awaitingCompletion, false);
+      const session = yield* Ref.get(activeSubscriptionSession);
+      if (
+        session === null ||
+        ((yield* Ref.get(rollbackStatusSupported)) &&
+          (yield* Ref.get(lastAuthoritativeSession)) !== session)
+      )
+        return;
       yield* SubscriptionRef.update(state, (current) =>
         Option.isSome(current.data) && current.status !== "deleted" && Option.isNone(current.error)
-          ? { ...current, status: "live" as const, error: Option.none() }
+          ? {
+              ...current,
+              status: "live" as const,
+              sessionOwner: session === null ? null : rpcSessionOwner(session),
+              error: Option.none(),
+            }
           : current,
       );
       return;
@@ -452,6 +492,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       yield* Ref.set(pendingOlderPage, null);
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
       yield* setThread(item.snapshot.thread, pageStateFromSnapshot(item.snapshot.page));
+      const session = yield* Ref.get(activeSubscriptionSession);
+      if (session !== null) {
+        yield* Ref.set(lastAuthoritativeSession, session);
+        if (resumeCache?.owner === owner) resumeCache.authoritativeSession = session;
+      }
       return;
     }
 
@@ -517,16 +562,28 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   );
 
   const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
+    sourceSession: RpcSession,
     item: OrchestrationThreadStreamItem,
-  ) {
-    yield* applyLock.withPermits(1)(applyItemLocked(item).pipe(Effect.andThen(remember)));
-  });
-
-  const applyItems = Effect.fn("EnvironmentThreadState.applyItems")(function* (
-    items: ReadonlyArray<OrchestrationThreadStreamItem>,
   ) {
     yield* applyLock.withPermits(1)(
       Effect.gen(function* () {
+        if ((yield* Ref.get(activeSubscriptionSession)) !== sourceSession) return;
+        yield* applyItemLocked(item);
+        yield* remember;
+      }),
+    );
+  });
+
+  const applyItems = Effect.fn("EnvironmentThreadState.applyItems")(function* (
+    taggedItems: ReadonlyArray<readonly [RpcSession, OrchestrationThreadStreamItem]>,
+  ) {
+    yield* applyLock.withPermits(1)(
+      Effect.gen(function* () {
+        const activeSession = yield* Ref.get(activeSubscriptionSession);
+        const items = taggedItems
+          .filter(([sourceSession]) => sourceSession === activeSession)
+          .map(([, item]) => item);
+        if (items.length === 0) return;
         const current = yield* SubscriptionRef.get(state);
         if (
           Option.isNone(current.data) ||
@@ -735,9 +792,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
   yield* markSynchronizing;
   yield* Effect.forkScoped(
-    subscribeDynamic(
+    subscribeDynamicWithSession(
       ORCHESTRATION_WS_METHODS.subscribeThread,
       Effect.fn("EnvironmentThreadState.makeSubscribeInput")(function* (session) {
+        yield* applyLock.withPermits(1)(Ref.set(activeSubscriptionSession, session));
         const config = yield* session.initialConfig.pipe(
           Effect.orElseSucceed(
             () =>
@@ -754,6 +812,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         // such a server would silently hide history.
         const supportsPagination = config.threadSnapshotPagination === true;
         const supportsRollbackStatusStreaming = config.rollbackStatusStreaming === true;
+        yield* Ref.set(rollbackStatusSupported, supportsRollbackStatusStreaming);
+        yield* SubscriptionRef.update(state, (current) => ({
+          ...current,
+          rollbackStatusStreaming: supportsRollbackStatusStreaming,
+        }));
         yield* Ref.set(paginationSupported, supportsPagination);
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* markSynchronizing;
@@ -802,17 +865,25 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             supportsPagination ? { turnLimit: INITIAL_THREAD_USER_TURN_LIMIT } : undefined,
           );
           if (Option.isSome(httpSnapshot)) {
-            yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
+            yield* applyItem(session, { kind: "snapshot", snapshot: httpSnapshot.value });
             current = yield* SubscriptionRef.get(state);
           }
         }
 
         const sequence = yield* SubscriptionRef.get(lastSequence);
-        const canResume = Option.isSome(current.data);
+        // A new rollback-capable session must replace a retained detail before
+        // its status is treated as current. Old peers without rollback-status
+        // streaming retain their existing warm-cursor behavior.
+        const sameAuthoritativeSession = (yield* Ref.get(lastAuthoritativeSession)) === session;
+        const canResume =
+          Option.isSome(current.data) &&
+          (sameAuthoritativeSession ||
+            (!supportsRollbackStatusStreaming && current.data.value.rollbackStatus == null));
         if (!supportsCompletionMarker && canResume) {
           yield* SubscriptionRef.update(state, (value) => ({
             ...value,
             status: value.status === "deleted" ? value.status : ("live" as const),
+            sessionOwner: rpcSessionOwner(session),
             error: Option.none(),
           }));
         }
@@ -836,7 +907,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       },
     ).pipe(
       Stream.runForEachArray((items) =>
-        items.length === 1 ? applyItem(items[0]!) : applyItems(items),
+        items.length === 1 ? applyItem(items[0]![0], items[0]![1]) : applyItems(items),
       ),
     ),
   );

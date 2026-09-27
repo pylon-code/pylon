@@ -67,6 +67,12 @@ export const make = Effect.gen(function* () {
         new OrchestrationCommandInvariantError({ commandType: command.type, detail });
       const thread = readModel.threads.find((candidate) => candidate.id === command.threadId);
       if (!thread) return yield* invariant("Thread does not exist.");
+      if (
+        command.expectedRollbackOperationId !== undefined &&
+        command.expectedRollbackOperationId !== (thread.rollbackStatus?.operationId ?? null)
+      ) {
+        return yield* invariant("The rollback operation changed before this request was admitted.");
+      }
       const capabilities = yield* provider
         .getCapabilities(thread.modelSelection.instanceId)
         .pipe(Effect.option);

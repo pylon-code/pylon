@@ -924,6 +924,8 @@ export type OrchestrationRollbackRecoveryAction = typeof OrchestrationRollbackRe
 export const OrchestrationRollbackStatus = Schema.Struct({
   state: OrchestrationRollbackPublicState,
   updatedAt: IsoDateTime,
+  /** Opaque public operation identity used to bind a manual recovery action. */
+  operationId: Schema.optional(TrimmedNonEmptyString),
   targetTurnCount: Schema.optional(NonNegativeInt),
   sourceRevision: Schema.optional(NonNegativeInt),
   detail: Schema.optional(TrimmedNonEmptyString),
@@ -934,6 +936,8 @@ export type OrchestrationRollbackStatus = typeof OrchestrationRollbackStatus.Typ
 export const OrchestrationRollbackRecoveryInput = Schema.Struct({
   threadId: ThreadId,
   action: OrchestrationRollbackRecoveryAction,
+  /** Optional for old-client decoding; new servers require an exact match. */
+  expectedOperationId: Schema.optional(TrimmedNonEmptyString),
 });
 export type OrchestrationRollbackRecoveryInput = typeof OrchestrationRollbackRecoveryInput.Type;
 
@@ -1693,6 +1697,8 @@ const ThreadCheckpointRevertCommand = Schema.Struct({
   turnCount: NonNegativeInt,
   /** Exact current checkpoint revision. Required when an absolute adapter is admitted. */
   expectedSourceRevision: Schema.optional(NonNegativeInt),
+  /** New clients bind a delayed request to the rollback status they displayed. */
+  expectedRollbackOperationId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   createdAt: IsoDateTime,
 });
 
@@ -1934,6 +1940,7 @@ const ThreadRollbackStatusSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   status: Schema.NullOr(OrchestrationRollbackPublicState),
+  operationId: Schema.optional(TrimmedNonEmptyString),
   targetTurnCount: Schema.optional(NonNegativeInt),
   sourceRevision: Schema.optional(NonNegativeInt),
   detail: Schema.optional(TrimmedNonEmptyString),
@@ -2378,6 +2385,7 @@ export const ThreadCheckpointRevertRequestedPayload = Schema.Struct({
 export const ThreadRollbackStatusUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   status: Schema.NullOr(OrchestrationRollbackPublicState),
+  operationId: Schema.optional(TrimmedNonEmptyString),
   targetTurnCount: Schema.optional(NonNegativeInt),
   sourceRevision: Schema.optional(NonNegativeInt),
   detail: Schema.optional(TrimmedNonEmptyString),

@@ -3111,6 +3111,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           status: command.status,
+          ...(command.operationId === undefined ? {} : { operationId: command.operationId }),
           ...(command.targetTurnCount === undefined
             ? {}
             : { targetTurnCount: command.targetTurnCount }),

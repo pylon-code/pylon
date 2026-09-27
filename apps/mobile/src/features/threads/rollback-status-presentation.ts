@@ -1,4 +1,6 @@
 import type { OrchestrationRollbackStatus } from "@t3tools/contracts";
+import type { SupervisorConnectionState } from "@t3tools/client-runtime/connection";
+import { AsyncResult } from "effect/unstable/reactivity";
 
 export interface MobileRollbackStatusPresentation {
   readonly title: string;
@@ -9,11 +11,105 @@ export interface MobileRollbackStatusPresentation {
   readonly actions: ReadonlyArray<"retry-verification" | "resume-compensation">;
 }
 
-export function resolveMobileRollbackStatus(
-  detailStatus: OrchestrationRollbackStatus | null | undefined,
-  shellStatus: OrchestrationRollbackStatus | null | undefined,
-): OrchestrationRollbackStatus | null | undefined {
-  return detailStatus ?? shellStatus;
+export interface RollbackStatusSource {
+  readonly status: OrchestrationRollbackStatus | null | undefined;
+  readonly sequence: number | undefined;
+  readonly sessionOwner: object | null | undefined;
+  readonly live: boolean;
+}
+
+/** A waiting success may retain the previous connection's value during replacement. */
+export function currentMobileRollbackSessionOwner(
+  result: AsyncResult.AsyncResult<SupervisorConnectionState, unknown>,
+): object | null {
+  return AsyncResult.isSuccess(result) && !result.waiting && result.value.phase === "connected"
+    ? (result.value.sessionOwner ?? null)
+    : null;
+}
+
+/** Revert targets and idle session state must come from this live connection. */
+export function mobileRollbackDetailIsCurrent(input: {
+  readonly detail: Pick<RollbackStatusSource, "sessionOwner" | "live">;
+  readonly currentSessionOwner: object | null;
+  readonly uncertain: boolean;
+}): boolean {
+  return (
+    !input.uncertain &&
+    input.currentSessionOwner !== null &&
+    input.detail.live &&
+    input.detail.sessionOwner === input.currentSessionOwner
+  );
+}
+
+/** Both streams use the server's global event sequence, scoped to one RPC session. */
+export function resolveMobileRollbackStatus(input: {
+  readonly detail: RollbackStatusSource;
+  readonly shell: RollbackStatusSource;
+  readonly currentSessionOwner: object | null;
+  readonly rollbackStatusStreaming?: boolean | undefined;
+}): {
+  readonly status: OrchestrationRollbackStatus | null | undefined;
+  readonly uncertain: boolean;
+} {
+  const { detail, shell, currentSessionOwner, rollbackStatusStreaming } = input;
+  if (currentSessionOwner === null) {
+    // Keep a cached status visible offline, but never enable recovery actions
+    // or sends using state from a session whose authority is no longer live.
+    const cached = [detail, shell].filter((source) => source.sequence !== undefined);
+    const latest = cached.sort((a, b) => (b.sequence ?? 0) - (a.sequence ?? 0))[0];
+    return { status: latest?.status, uncertain: true };
+  }
+  const current = [detail, shell].filter(
+    (source) => source.live && source.sessionOwner === currentSessionOwner,
+  );
+  if (current.length === 0) return { status: undefined, uncertain: true };
+  const withoutUnprovedActions = (status: OrchestrationRollbackStatus | null | undefined) =>
+    status == null ? status : { ...status, allowedActions: [] };
+  if (current.length === 1) {
+    // Legacy peers cannot stream rollback status. An absent status on their
+    // fresh live source remains usable, but modern peers must await both views.
+    const legacyNoStatus =
+      rollbackStatusStreaming === false && current[0] === detail && current[0]!.status == null;
+    return { status: withoutUnprovedActions(current[0]!.status), uncertain: !legacyNoStatus };
+  }
+  if (detail.sequence === undefined || shell.sequence === undefined) {
+    return { status: undefined, uncertain: true };
+  }
+  const detailStatus = detail.status;
+  const shellStatus = shell.status;
+  // Shell snapshots deliberately omit the detail's explanation, revisions,
+  // and recovery actions. An unrelated global event can advance shell's
+  // sequence without changing this thread's rollback state.
+  const sameProjectedStatus =
+    detailStatus == null || shellStatus == null
+      ? detailStatus == null && shellStatus == null
+      : detailStatus.state === shellStatus.state &&
+        detailStatus.updatedAt === shellStatus.updatedAt;
+  if (!sameProjectedStatus) {
+    const newer = detail.sequence > shell.sequence ? detailStatus : shellStatus;
+    return { status: withoutUnprovedActions(newer), uncertain: true };
+  }
+  // UpdatedAt identifies the projected display state, not the durable saga.
+  // Recovery requires the exact operation identity on both projections.
+  const detailOperationId =
+    detailStatus != null && "operationId" in detailStatus ? detailStatus.operationId : undefined;
+  const shellOperationId =
+    shellStatus != null && "operationId" in shellStatus ? shellStatus.operationId : undefined;
+  if (
+    typeof detailOperationId === "string" &&
+    typeof shellOperationId === "string" &&
+    detailOperationId !== shellOperationId
+  ) {
+    return { status: withoutUnprovedActions(shellStatus), uncertain: true };
+  }
+  const sameOperation =
+    typeof detailOperationId === "string" &&
+    detailOperationId.length > 0 &&
+    detailOperationId === shellOperationId;
+  return {
+    status: sameOperation ? detailStatus : withoutUnprovedActions(detailStatus ?? shellStatus),
+    uncertain: false,
+  };
 }
 
 export function getMobileRollbackStatusPresentation(

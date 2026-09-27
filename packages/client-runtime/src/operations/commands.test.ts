@@ -138,12 +138,16 @@ describe("environment commands", () => {
     Effect.gen(function* () {
       const dispatched: ClientOrchestrationCommand[] = [];
       const supervisor = yield* makeSupervisor(dispatched);
+      const current = yield* SubscriptionRef.get(supervisor.session);
+      if (Option.isNone(current)) throw new Error("Expected a connected test session");
+      const expectedSessionOwner = rpcSessionOwner(current.value);
       for (const restoreFiles of [undefined, true, false]) {
         yield* revertThreadCheckpoint({
           commandId: CommandId.make("rewind-command"),
           threadId: ThreadId.make("thread-1"),
           turnCount: 0,
           ...(restoreFiles !== undefined ? { restoreFiles } : {}),
+          expectedSessionOwner,
           createdAt: "2026-06-06T00:01:00.000Z",
         }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
       }
@@ -152,6 +156,7 @@ describe("environment commands", () => {
         "thread.checkpoint.revert",
         "thread.conversation.revert",
       ]);
+      for (const command of dispatched) expect(command).not.toHaveProperty("expectedSessionOwner");
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 

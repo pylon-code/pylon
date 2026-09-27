@@ -282,6 +282,7 @@ const ProjectionThreadCheckpointContextThreadRowSchema = Schema.Struct({
   worktreePath: Schema.NullOr(Schema.String),
 });
 const RollbackPublicDbRowSchema = Schema.Struct({
+  operationId: Schema.String,
   targetRevision: NonNegativeInt,
   sourceRevision: NonNegativeInt,
   phase: Schema.String,
@@ -516,6 +517,9 @@ function mapRollbackStatus(
   return {
     state: effectiveStatus as "pending" | "recovering" | "manual-recovery" | "completed" | "failed",
     updatedAt: effectiveUpdatedAt,
+    ...(saga !== null && (shouldPreferSaga || sagaStatus === effectiveStatus)
+      ? { operationId: saga.operationId }
+      : {}),
     ...(saga === null
       ? {}
       : {
@@ -714,6 +718,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
+          rollback_operation_id AS "rollbackOperationId",
           source_epoch AS "sourceEpoch",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -759,6 +764,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
+          rollback_operation_id AS "rollbackOperationId",
           source_epoch AS "sourceEpoch",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -806,6 +812,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
+          rollback_operation_id AS "rollbackOperationId",
           source_epoch AS "sourceEpoch",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1459,6 +1466,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           latest_turn_id AS "latestTurnId",
           rollback_status AS "rollbackStatus",
           rollback_updated_at AS "rollbackUpdatedAt",
+          rollback_operation_id AS "rollbackOperationId",
           source_epoch AS "sourceEpoch",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1493,6 +1501,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: ({ threadId }) =>
       sql`
         SELECT
+          operation_id AS "operationId",
           json_extract(private_state_json, '$.targetRevision') AS "targetRevision",
           json_extract(private_state_json, '$.sourceRevision') AS "sourceRevision",
           phase,
@@ -2760,7 +2769,13 @@ pending_approval_requests AS (
                 rollbackStatus:
                   row.rollbackStatus == null || row.rollbackUpdatedAt == null
                     ? null
-                    : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
+                    : {
+                        state: row.rollbackStatus,
+                        updatedAt: row.rollbackUpdatedAt,
+                        ...(row.rollbackOperationId == null
+                          ? {}
+                          : { operationId: row.rollbackOperationId }),
+                      },
                 sourceEpoch: row.sourceEpoch,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -3011,7 +3026,13 @@ pending_approval_requests AS (
                   rollbackStatus:
                     row.rollbackStatus == null || row.rollbackUpdatedAt == null
                       ? null
-                      : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
+                      : {
+                          state: row.rollbackStatus,
+                          updatedAt: row.rollbackUpdatedAt,
+                          ...(row.rollbackOperationId == null
+                            ? {}
+                            : { operationId: row.rollbackOperationId }),
+                        },
                   sourceEpoch: row.sourceEpoch,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -3173,7 +3194,13 @@ pending_approval_requests AS (
                         rollbackStatus:
                           row.rollbackStatus == null || row.rollbackUpdatedAt == null
                             ? null
-                            : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
+                            : {
+                                state: row.rollbackStatus,
+                                updatedAt: row.rollbackUpdatedAt,
+                                ...(row.rollbackOperationId == null
+                                  ? {}
+                                  : { operationId: row.rollbackOperationId }),
+                              },
                         sourceEpoch: row.sourceEpoch,
                         createdAt: row.createdAt,
                         updatedAt: row.updatedAt,
@@ -3345,7 +3372,13 @@ pending_approval_requests AS (
                   rollbackStatus:
                     row.rollbackStatus == null || row.rollbackUpdatedAt == null
                       ? null
-                      : { state: row.rollbackStatus, updatedAt: row.rollbackUpdatedAt },
+                      : {
+                          state: row.rollbackStatus,
+                          updatedAt: row.rollbackUpdatedAt,
+                          ...(row.rollbackOperationId == null
+                            ? {}
+                            : { operationId: row.rollbackOperationId }),
+                        },
                   sourceEpoch: row.sourceEpoch,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -3360,7 +3393,6 @@ pending_approval_requests AS (
                   pinOrderKey: row.pinOrderKey ?? null,
                   activeOrderKey: row.activeOrderKey ?? null,
                   titleRegeneration: mapTitleRegeneration(row),
-                  titleState: row.titleState,
                   session: sessionByThread.get(row.threadId) ?? null,
                   latestUserMessageAt: row.latestUserMessageAt,
                   hasPendingApprovals: row.pendingApprovalCount > 0,
@@ -3726,6 +3758,9 @@ pending_approval_requests AS (
             : {
                 state: threadRow.value.rollbackStatus,
                 updatedAt: threadRow.value.rollbackUpdatedAt,
+                ...(threadRow.value.rollbackOperationId == null
+                  ? {}
+                  : { operationId: threadRow.value.rollbackOperationId }),
               },
         sourceEpoch: threadRow.value.sourceEpoch,
         createdAt: threadRow.value.createdAt,
