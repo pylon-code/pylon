@@ -1,4 +1,5 @@
 import {
+  DESKTOP_UPDATE_RESTART_MARKER_FILE,
   type DesktopRuntimeInfo,
   type DesktopUpdateActionResult,
   type DesktopUpdateChannel,
@@ -26,6 +27,7 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
@@ -245,6 +247,7 @@ export const make = Effect.gen(function* () {
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
+  const wslEnvironment = yield* DesktopWslEnvironment.DesktopWslEnvironment;
 
   // Stable and nightly ship as separate applications, each with its own bundle
   // id and runtime home, so no in-place update can carry one across to the
@@ -461,8 +464,55 @@ export const make = Effect.gen(function* () {
     );
   }).pipe(Effect.withSpan("desktop.updates.downloadAvailableUpdate"));
 
+  // Each backend has its own runtime home. WSL cannot see the Windows marker.
+  const updateRestartMarkerDir = environment.path.join(environment.baseDir, "runtime");
+  const updateRestartMarkerPath = environment.path.join(
+    updateRestartMarkerDir,
+    DESKTOP_UPDATE_RESTART_MARKER_FILE,
+  );
+  const writeUpdateRestartMarker = fileSystem
+    .makeDirectory(updateRestartMarkerDir, { recursive: true })
+    .pipe(
+      Effect.andThen(fileSystem.writeFileString(updateRestartMarkerPath, "")),
+      Effect.catch((error) =>
+        logUpdaterWarning("Could not write the update restart marker.", { errorTag: error._tag }),
+      ),
+    );
+
+  // A failed or interrupted install brings no updated backend, so a later
+  // quit must release the tunnel.
+  const removeUpdateRestartMarker = fileSystem
+    .remove(updateRestartMarkerPath, { force: true })
+    .pipe(Effect.ignore);
+  const markedWslDistros = yield* Ref.make<readonly string[]>([]);
+  const setWslMarkers = (distros: readonly string[], present: boolean) =>
+    Effect.forEach(
+      distros,
+      (distro) =>
+        wslEnvironment.setUpdateRestartMarker(distro, present).pipe(
+          Effect.flatMap((ok) =>
+            ok
+              ? Effect.void
+              : logUpdaterWarning("Could not update the WSL restart marker.", {
+                  distro,
+                  present,
+                }),
+          ),
+        ),
+      { concurrency: "unbounded", discard: true },
+    );
+  const clearUpdateRestartMarkers = Effect.gen(function* () {
+    yield* removeUpdateRestartMarker;
+    const distros = yield* Ref.getAndSet(markedWslDistros, []);
+    yield* setWslMarkers(distros, false);
+  });
+
   const resetInstallAction = Effect.all(
-    [finishUpdateAction("install"), Ref.set(desktopState.quitting, false)],
+    [
+      finishUpdateAction("install"),
+      Ref.set(desktopState.quitting, false),
+      clearUpdateRestartMarkers,
+    ],
     { discard: true },
   );
 
@@ -477,6 +527,7 @@ export const make = Effect.gen(function* () {
     if (!ownsRecovery) return;
 
     yield* Ref.set(desktopState.quitting, false);
+    yield* clearUpdateRestartMarkers;
     yield* Effect.gen(function* () {
       const instances = yield* pool.list;
       const restartExit = yield* Effect.forEach(instances, (instance) => instance.start, {
@@ -546,6 +597,22 @@ export const make = Effect.gen(function* () {
         yield* Ref.set(desktopState.quitting, true);
 
         return yield* Effect.gen(function* () {
+          const instances = yield* pool.list;
+          const wslConfigs = yield* Effect.forEach(instances, (instance) => instance.currentConfig);
+          const distros = Array.from(
+            new Set(
+              wslConfigs.flatMap((config) =>
+                Option.isSome(config) && config.value.runningDistro !== undefined
+                  ? [config.value.runningDistro]
+                  : [],
+              ),
+            ),
+          );
+          yield* Ref.set(markedWslDistros, distros);
+          yield* Effect.all([writeUpdateRestartMarker, setWslMarkers(distros, true)], {
+            concurrency: "unbounded",
+            discard: true,
+          });
           // Stop every backend in the pool, not just the primary. With
           // parallel WSL + Windows backends, leaving the WSL instance up
           // means quitAndInstall's app.quit() exits before the pool's
@@ -553,7 +620,6 @@ export const make = Effect.gen(function* () {
           // WSL child gets hard-killed by the OS instead of receiving
           // SIGTERM + grace. Stops run concurrently with the same 5s
           // budget the primary had on its own.
-          const instances = yield* pool.list;
           yield* Effect.forEach(
             instances,
             (instance) => instance.stop({ timeout: Duration.seconds(5) }),

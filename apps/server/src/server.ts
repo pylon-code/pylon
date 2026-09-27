@@ -120,6 +120,7 @@ import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import {
   connectHttpApiLayer,
+  clearDesktopUpdateRestartMarker,
   pendingServiceUpdateExists,
   reconcileDesiredCloudLink,
   releaseManagedTunnelOnShutdown,
@@ -765,6 +766,9 @@ const makeServerLayer = Layer.unwrap(
       : Layer.empty;
     const cloudDesiredLinkReconcileLayer = Layer.effectDiscard(
       Effect.gen(function* () {
+        // A force-killed desktop backend never ran its tunnel finalizer. The
+        // replacement must discard that handoff before its own normal quit.
+        yield* clearDesktopUpdateRestartMarker;
         if (!hasCloudPublicConfig) {
           yield* Deferred.succeed(cloudLinkParked, undefined).pipe(Effect.orDie);
           return;

@@ -1,17 +1,20 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Config from "effect/Config";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
+import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
 
 /** Shared DesktopUpdates test harness: a fully stubbed updater layer whose
@@ -29,6 +32,8 @@ export interface UpdatesHarnessOptions {
   readonly downloadUpdate?: Effect.Effect<void>;
   readonly quitAndInstall?: Effect.Effect<void, ElectronUpdater.ElectronUpdaterQuitAndInstallError>;
   readonly stopBackend?: Effect.Effect<void>;
+  readonly wslDistro?: string;
+  readonly stopWslBackend?: Effect.Effect<void>;
   readonly startBackend?: Effect.Effect<void>;
   readonly env?: Record<string, string | undefined>;
   /** Drives the update channel: nightly versions select the nightly feed. */
@@ -52,6 +57,9 @@ interface UpdatesHarness {
   readonly checkCount: () => number;
   readonly quitAndInstalls: () => number;
   readonly installSteps: string[];
+  readonly updateRestartMarkers: ReadonlySet<string>;
+  readonly wslRestartMarkers: ReadonlySet<string>;
+  readonly wslMarkerSteps: readonly string[];
   readonly downloadCount: () => number;
   readonly feedUrls: () => ReadonlyArray<ElectronUpdater.ElectronUpdaterFeedUrl>;
   readonly allowPrerelease: () => boolean;
@@ -72,6 +80,8 @@ export function makeHarness(options: UpdatesHarnessOptions = {}): UpdatesHarness
   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
   const sentStates: DesktopUpdateState[] = [];
   const installSteps: string[] = [];
+  const wslMarkerSteps: string[] = [];
+  const wslRestartMarkers = new Set<string>();
 
   const addListener = (eventName: string, listener: (...args: readonly unknown[]) => void) => {
     const eventListeners = listeners.get(eventName) ?? new Set();
@@ -171,7 +181,40 @@ export function makeHarness(options: UpdatesHarnessOptions = {}): UpdatesHarness
     }),
     waitForReady: () => Effect.succeed(true),
   };
-  const backendLayer = DesktopBackendPool.layerTest([stubBackendInstance]);
+  const wslConfig: DesktopBackendManager.DesktopBackendStartConfig = {
+    executablePath: "wsl.exe",
+    args: [],
+    entryPath: "/app/bin.mjs",
+    cwd: "/app",
+    env: {},
+    extendEnv: false,
+    bootstrap: {
+      mode: "desktop",
+      noBrowser: true,
+      port: 3774,
+      host: "0.0.0.0",
+      desktopBootstrapToken: "bootstrap-token",
+      tailscaleServeEnabled: false,
+      tailscaleServePort: 443,
+    },
+    bootstrapDelivery: "stdin",
+    httpBaseUrl: new URL("http://127.0.0.1:3774"),
+    captureOutput: true,
+    preflightFailure: Option.none(),
+    runningDistro: options.wslDistro ?? "Ubuntu",
+  };
+  const wslInstance: DesktopBackendPool.DesktopBackendInstance = {
+    ...stubBackendInstance,
+    id: DesktopBackendPool.BackendInstanceId("wsl:Ubuntu"),
+    currentConfig: Effect.succeed(Option.some(wslConfig)),
+    stop: () =>
+      Effect.sync(() => {
+        wslMarkerSteps.push("stopWslBackend");
+      }).pipe(Effect.andThen(options.stopWslBackend ?? Effect.void)),
+  };
+  const backendLayer = DesktopBackendPool.layerTest(
+    options.wslDistro ? [stubBackendInstance, wslInstance] : [stubBackendInstance],
+  );
 
   const environmentLayer = DesktopEnvironment.layer({
     dirname: "/repo/apps/desktop/src",
@@ -199,7 +242,33 @@ export function makeHarness(options: UpdatesHarnessOptions = {}): UpdatesHarness
 
   const settingsLayer = DesktopAppSettings.layer;
 
+  // Tracks the restart markers installs leave, so installs stay free of real
+  // disk I/O that would outrun the tests' settle loops.
+  const updateRestartMarkers = new Set<string>();
+  const fileSystemLayer = FileSystem.layerNoop({
+    makeDirectory: () => Effect.void,
+    writeFileString: (path) =>
+      Effect.sync(() => {
+        updateRestartMarkers.add(path);
+      }),
+    remove: (path) =>
+      Effect.sync(() => {
+        updateRestartMarkers.delete(path);
+      }),
+  });
+
   const layer: UpdatesHarnessLayer = DesktopUpdates.layer.pipe(
+    Layer.provide(
+      DesktopWslEnvironment.layerTest({
+        setUpdateRestartMarker: (distro, present) => {
+          wslMarkerSteps.push(`${present ? "write" : "remove"}:${distro}`);
+          if (present) wslRestartMarkers.add(distro);
+          else wslRestartMarkers.delete(distro);
+          return true;
+        },
+      }),
+    ),
+    Layer.provide(fileSystemLayer),
     Layer.provideMerge(updaterLayer),
     Layer.provideMerge(windowLayer),
     Layer.provideMerge(backendLayer),
@@ -222,6 +291,9 @@ export function makeHarness(options: UpdatesHarnessOptions = {}): UpdatesHarness
     checkCount: () => checkCount,
     quitAndInstalls: () => quitAndInstallCount,
     installSteps,
+    updateRestartMarkers,
+    wslRestartMarkers,
+    wslMarkerSteps,
     downloadCount: () => downloadCount,
     feedUrls: () => feedUrls,
     allowPrerelease: () => allowPrerelease,
