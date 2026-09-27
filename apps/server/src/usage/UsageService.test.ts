@@ -941,7 +941,7 @@ describe("UsageService", () => {
           await NodeFSP.mkdir(legacy, { recursive: true });
           await NodeFSP.writeFile(
             NodePath.join(legacy, "first.json"),
-            JSON.stringify({
+            encodeUnknownJsonString({
               id: "first",
               role: "assistant",
               sessionID: "session-first",
