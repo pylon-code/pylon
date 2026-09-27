@@ -3,12 +3,15 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   ProjectReadFileError,
+  ProjectListEntriesInput,
+  ProjectListEntriesResult,
   ProjectSearchContentsError,
   ProjectSearchContentsInput,
   ProjectSearchEntriesError,
   ProjectSearchEntriesInput,
   ProjectWriteFileError,
 } from "./project.ts";
+import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 const decodeSearchEntriesInput = Schema.decodeUnknownSync(ProjectSearchEntriesInput);
 const decodeSearchContentsInput = Schema.decodeUnknownSync(ProjectSearchContentsInput);
@@ -34,6 +37,41 @@ describe("project search inputs", () => {
       useRegex: false,
     });
     expect(decoded.query).toBe(" foo ");
+  });
+});
+
+describe("project directory listing compatibility", () => {
+  it("marks opt-in responses while leaving legacy listing shapes intact", () => {
+    const decodeInput = Schema.decodeUnknownSync(ProjectListEntriesInput);
+    const decodeResult = Schema.decodeUnknownSync(ProjectListEntriesResult);
+    expect(decodeInput({ cwd: "/workspace", directoryPath: "" })).toEqual({
+      cwd: "/workspace",
+      directoryPath: "",
+    });
+    expect(decodeResult({ entries: [], truncated: false })).toEqual({
+      entries: [],
+      truncated: false,
+    });
+    expect(decodeResult({ entries: [], truncated: false, directoryPath: "" }).directoryPath).toBe(
+      "",
+    );
+  });
+
+  it("decodes a new request with the pre-change RPC payload schema", () => {
+    // This is the exact projects.listEntries payload schema at the frozen origin/pylon base.
+    // Rpc.make uses it to decode a request before the old list handler receives the payload.
+    const oldInput = Schema.Struct({ cwd: TrimmedNonEmptyString });
+    const oldServerPayload = Schema.decodeUnknownSync(oldInput)({
+      cwd: "/workspace",
+      directoryPath: "src",
+      directoryCursor: "a.ts",
+    });
+    expect(oldServerPayload).toEqual({ cwd: "/workspace" });
+    const oldResponse = Schema.decodeUnknownSync(ProjectListEntriesResult)({
+      entries: [{ path: "src/a.ts", kind: "file" }],
+      truncated: false,
+    });
+    expect(oldResponse.directoryPath).toBeUndefined();
   });
 });
 
