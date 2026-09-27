@@ -7,6 +7,11 @@ on:
   # Infrastructure drifts and deploys fail for reasons unrelated to a commit,
   # so the stack can be reapplied without pushing one.
   workflow_dispatch:
+    inputs:
+      force:
+        description: Redeploy resources even when Alchemy detects no changes
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -23,7 +28,7 @@ jobs:
     # Opt-in: the relay needs Neon, Cloudflare, Axiom, Clerk, and APNs
     # credentials. Set the DEPLOY_RELAY repository variable to "true" once they
     # exist, so merges to pylon do not fail on a stack that cannot deploy.
-    if: ${{ vars.DEPLOY_RELAY == 'true' }}
+    if: ${{ vars.DEPLOY_RELAY == 'true' && github.ref == 'refs/heads/pylon' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
@@ -71,7 +76,7 @@ jobs:
 
       - name: Deploy production relay stage
         id: deploy
-        run: vp run --filter t3code-relay deploy --stage prod --yes --github-output
+        run: vp run --filter t3code-relay deploy --stage prod --yes --github-output ${{ inputs.force && '--force' || '' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
