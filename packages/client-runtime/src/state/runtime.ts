@@ -40,6 +40,7 @@ interface EnvironmentCommandAtomOptions<Input, A, E, R> extends Omit<
     input: Input,
     registry: AtomRegistry.AtomRegistry,
     environmentId: EnvironmentIdType,
+    expectedSessionOwner: object | undefined,
   ) => Effect.Effect<A, E, R>;
 }
 
@@ -609,7 +610,12 @@ export function createEnvironmentCommand<R, ER, Input, A, E>(
               });
             }
           }
-          return yield* options.execute(target.input, registry, target.environmentId);
+          return yield* options.execute(
+            target.input,
+            registry,
+            target.environmentId,
+            target.expectedSessionOwner,
+          );
         }),
       ),
   });
@@ -708,12 +714,16 @@ export function createEnvironmentRpcCommand<R, ER, TTag extends EnvironmentUnary
     label: options.label,
     ...(options.scheduler === undefined ? {} : { scheduler: options.scheduler }),
     ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
-    execute: (input: EnvironmentRpcInput<TTag>, registry, environmentId) => {
+    execute: (input: EnvironmentRpcInput<TTag>, registry, environmentId, expectedSessionOwner) => {
       const target = {
         environmentId,
         input,
       };
-      return request(options.tag, options.transformInput?.(input) ?? input).pipe(
+      return request(
+        options.tag,
+        options.transformInput?.(input) ?? input,
+        expectedSessionOwner === undefined ? undefined : { expectedSessionOwner },
+      ).pipe(
         Effect.tap(() => options.onSuccess?.(target, registry) ?? Effect.void),
         Effect.ensuring(options.onSettled?.(target, registry) ?? Effect.void),
       );

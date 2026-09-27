@@ -1,6 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
-import { EnvironmentId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EnvironmentId,
+  ORCHESTRATION_WS_METHODS,
+  ThreadId,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -25,12 +32,15 @@ import {
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
+import { revertThreadCheckpoint } from "../operations/commands.ts";
 import type * as RpcSession from "../rpc/session.ts";
+import { rpcSessionOwner } from "../rpc/sessionOwner.ts";
 import {
   environmentRpcKey,
   createAtomCommandScheduler,
   createEnvironmentQueryAtomFamily,
   createEnvironmentCommand,
+  createEnvironmentRpcCommand,
   createRuntimeCommand,
   scheduleAtomCommandEffect,
   executeAtomCommand,
@@ -106,7 +116,16 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     stateChanges: () => SubscriptionRef.changes(supervisorState),
   } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]);
   const runtime = Atom.runtime(
-    Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+    Layer.mergeAll(
+      Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+      Layer.succeed(
+        Crypto.Crypto,
+        Crypto.make({
+          randomBytes: (size) => new Uint8Array(size),
+          digest: (_algorithm, data) => Effect.succeed(data),
+        }),
+      ),
+    ),
   );
   const family = createEnvironmentQueryAtomFamily(runtime, {
     label: "test.environment-query",
@@ -160,6 +179,110 @@ describe("environment command session binding", () => {
         expect(Cause.squash(stale.cause)).toBeInstanceOf(EnvironmentRpcUnavailableError);
       }
       expect(executions).toBe(1);
+      registry.dispose();
+    }),
+  );
+
+  it.effect("rejects recovery when the session reference has replaced a stale state owner", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeEnvironmentQueryHarness(Effect.void);
+      const sessionA = {} as RpcSession.RpcSession;
+      let replacementCalls = 0;
+      const sessionB = {
+        client: {
+          [WS_METHODS.rollbackRecover]: () => {
+            replacementCalls += 1;
+            return Effect.void;
+          },
+        },
+      } as unknown as RpcSession.RpcSession;
+      const ownerA = rpcSessionOwner(sessionA);
+      yield* SubscriptionRef.set(
+        harness.supervisorState,
+        queryConnectionState({ sessionOwner: ownerA }),
+      );
+      // The state stream can still report A after the session reference swaps to B.
+      yield* SubscriptionRef.set(harness.supervisorSession, Option.some(sessionB));
+      const command = createEnvironmentRpcCommand(harness.runtime, {
+        label: "test.recovery-session-race",
+        tag: WS_METHODS.rollbackRecover,
+      });
+      const registry = AtomRegistry.make();
+      const result = yield* Effect.promise(() =>
+        command.run(registry, {
+          environmentId: QUERY_ENVIRONMENT.environmentId,
+          expectedSessionOwner: ownerA,
+          input: {
+            threadId: ThreadId.make("thread-1"),
+            action: "retry-verification",
+            expectedOperationId: "operation-a",
+          },
+        }),
+      );
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(Cause.squash(result.cause)).toBeInstanceOf(EnvironmentRpcUnavailableError);
+      }
+      expect(replacementCalls).toBe(0);
+      registry.dispose();
+    }),
+  );
+
+  it.effect("rejects revert when its session changes after the state guard", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeEnvironmentQueryHarness(Effect.void);
+      const sessionA = {} as RpcSession.RpcSession;
+      let replacementCalls = 0;
+      const sessionB = {
+        client: {
+          [ORCHESTRATION_WS_METHODS.dispatchCommand]: () => {
+            replacementCalls += 1;
+            return Effect.succeed({ sequence: 1 });
+          },
+        },
+      } as unknown as RpcSession.RpcSession;
+      const ownerA = rpcSessionOwner(sessionA);
+      yield* SubscriptionRef.set(
+        harness.supervisorState,
+        queryConnectionState({ sessionOwner: ownerA }),
+      );
+      yield* SubscriptionRef.set(harness.supervisorSession, Option.some(sessionA));
+      const command = createEnvironmentCommand(harness.runtime, {
+        label: "test.revert-session-race",
+        execute: (
+          input: Parameters<typeof revertThreadCheckpoint>[0],
+          _registry,
+          _environmentId,
+          expectedSessionOwner,
+        ) =>
+          SubscriptionRef.set(harness.supervisorSession, Option.some(sessionB)).pipe(
+            Effect.flatMap(() =>
+              revertThreadCheckpoint({
+                ...input,
+                ...(expectedSessionOwner === undefined ? {} : { expectedSessionOwner }),
+              }),
+            ),
+          ),
+      });
+      const registry = AtomRegistry.make();
+      const result = yield* Effect.promise(() =>
+        command.run(registry, {
+          environmentId: QUERY_ENVIRONMENT.environmentId,
+          expectedSessionOwner: ownerA,
+          input: {
+            threadId: ThreadId.make("thread-1"),
+            turnCount: 1,
+            expectedSourceRevision: 2,
+            expectedRollbackOperationId: null,
+            commandId: CommandId.make("race-revert"),
+          },
+        }),
+      );
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(Cause.squash(result.cause)).toBeInstanceOf(EnvironmentRpcUnavailableError);
+      }
+      expect(replacementCalls).toBe(0);
       registry.dispose();
     }),
   );
