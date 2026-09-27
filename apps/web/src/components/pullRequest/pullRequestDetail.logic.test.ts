@@ -1870,7 +1870,7 @@ describe("cached pull request detail", () => {
     expect(readPullRequestDetailSnapshot(storage, "env-1", enterpriseRef)).toBeNull();
   });
 
-  it("retains Forgejo cached detail only for the matching host and port", () => {
+  it("matches explicit Forgejo ports and accepts portless thread references", () => {
     const cached = detail({
       provider: "forgejo",
       url: "https://forgejo.example.com:3000/acme/web/pulls/7",
@@ -1886,7 +1886,13 @@ describe("cached pull request detail", () => {
         reference: { ...reference, host: "forgejo.example.com:3000" },
       }),
     ).toBe(cached);
-    for (const host of ["forgejo.example.com", "forgejo.example.com:3001"]) {
+    expect(
+      resolveDisplayedPullRequestDetail({
+        ...input,
+        reference: { ...reference, host: "forgejo.example.com" },
+      }),
+    ).toBe(cached);
+    for (const host of ["forgejo.example.com:3001", "other.example.com"]) {
       expect(
         resolveDisplayedPullRequestDetail({ ...input, reference: { ...reference, host } }),
       ).toBeNull();
