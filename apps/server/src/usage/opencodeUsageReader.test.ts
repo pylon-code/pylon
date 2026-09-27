@@ -134,6 +134,70 @@ describe("local OpenCode usage reader", () => {
       database.close();
       const read = await readOpenCodeUsage(root, SINCE);
       expect(read.truncated).toBe(true);
+      expect(read.error).toBe(true);
+      expect(read.files.flatMap((file) => file.records)).toHaveLength(0);
+    }));
+
+  it("bounds unrelated root entries before selecting databases", async () =>
+    withRoot(async (root) => {
+      for (let index = 0; index <= 1_000; index++) {
+        await NodeFSP.writeFile(NodePath.join(root, `unrelated-${index}`), "");
+      }
+      const database = new NodeSqlite.DatabaseSync(NodePath.join(root, "opencode.db"));
+      database.exec(
+        "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER)",
+      );
+      database
+        .prepare("INSERT INTO message VALUES (?, ?, ?, ?)")
+        .run("valid", "session-1", message("valid"), CREATED);
+      database.close();
+      const read = await readOpenCodeUsage(root, SINCE);
+      expect(read.truncated).toBe(true);
+      expect(read.files.length).toBeLessThanOrEqual(1);
+    }));
+
+  it("reports malformed SQLite and JSON without caching either as complete", async () =>
+    withRoot(async (root) => {
+      const database = new NodeSqlite.DatabaseSync(NodePath.join(root, "opencode.db"));
+      database.exec(
+        "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER)",
+      );
+      database
+        .prepare("INSERT INTO message VALUES (?, ?, ?, ?)")
+        .run("bad-db", "session-1", "{invalid", CREATED);
+      database.close();
+      const legacy = NodePath.join(root, "storage", "message", "session-1");
+      await NodeFSP.mkdir(legacy, { recursive: true });
+      await NodeFSP.writeFile(NodePath.join(legacy, "bad-json.json"), "{invalid");
+      const stored: string[] = [];
+      const cache: OpenCodeUsageCache = {
+        get: () => undefined,
+        set: (path) => {
+          stored.push(path);
+        },
+      };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const read = await readOpenCodeUsage(root, SINCE, cache);
+        expect(read.error).toBe(true);
+        expect(read.truncated).toBe(false);
+        expect(read.files.flatMap((file) => file.records)).toHaveLength(0);
+      }
+      expect(stored).toEqual([]);
+    }));
+
+  it("treats non-assistant and zero-token messages as normal skips", async () =>
+    withRoot(async (root) => {
+      const database = new NodeSqlite.DatabaseSync(NodePath.join(root, "opencode.db"));
+      database.exec(
+        "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER)",
+      );
+      const insert = database.prepare("INSERT INTO message VALUES (?, ?, ?, ?)");
+      insert.run("user", "session-1", JSON.stringify({ role: "user" }), CREATED);
+      insert.run("empty", "session-1", JSON.stringify({ role: "assistant", tokens: {} }), CREATED);
+      database.close();
+      const read = await readOpenCodeUsage(root, SINCE);
+      expect(read.error).toBe(false);
+      expect(read.truncated).toBe(false);
       expect(read.files.flatMap((file) => file.records)).toHaveLength(0);
     }));
 });

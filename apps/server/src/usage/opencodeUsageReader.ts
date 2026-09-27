@@ -21,6 +21,11 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+interface ParsedMessage {
+  readonly record: UsageRecord | null;
+  readonly malformed: boolean;
+}
+
 /** OpenCode stores uncached input and reasoning separately from input/output. */
 function parseOpenCodeMessage(
   source: string,
@@ -29,21 +34,25 @@ function parseOpenCodeMessage(
     readonly sessionId?: string;
     readonly timestampMs?: number;
   } = {},
-): UsageRecord | null {
+): ParsedMessage {
   let parsed: unknown;
   try {
     parsed = JSON.parse(source);
   } catch {
-    return null;
+    return { record: null, malformed: true };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { record: null, malformed: true };
   }
   const message = object(parsed);
-  if (message.role !== undefined && message.role !== "assistant") return null;
+  if (message.role !== undefined && message.role !== "assistant") {
+    return { record: null, malformed: false };
+  }
   const usage = object(message.tokens);
   const cache = object(usage.cache);
   const modelReference = object(message.model);
   const model = text(modelReference.id) || text(modelReference.modelID) || text(message.modelID);
   const timestampMs = object(message.time).created ?? fallback.timestampMs;
-  if (!model || typeof timestampMs !== "number" || !Number.isFinite(timestampMs)) return null;
   const reasoningTokens = tokens(usage.reasoning);
   const totals = {
     uncachedInputTokens: tokens(usage.input),
@@ -52,20 +61,26 @@ function parseOpenCodeMessage(
     outputTokens: tokens(usage.output) + reasoningTokens,
     reasoningTokens,
   };
-  if (totalTokens(totals) === 0) return null;
+  if (totalTokens(totals) === 0) return { record: null, malformed: false };
+  if (!model || typeof timestampMs !== "number" || !Number.isFinite(timestampMs)) {
+    return { record: null, malformed: true };
+  }
   const id = fallback.id || text(message.id);
   const cost = message.cost;
   return {
-    provider: "opencode",
-    timestampMs,
-    model,
-    sessionId: fallback.sessionId || text(message.sessionID),
-    totals,
-    // OpenCode writes zero for models without a known rate, including paid
-    // subscription models. Let the shared price table estimate those records.
-    reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) && cost > 0 ? cost : null,
-    fast: false,
-    dedupeKey: id ? `opencode:${id}` : null,
+    record: {
+      provider: "opencode",
+      timestampMs,
+      model,
+      sessionId: fallback.sessionId || text(message.sessionID),
+      totals,
+      // OpenCode writes zero for models without a known rate, including paid
+      // subscription models. Let the shared price table estimate those records.
+      reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) && cost > 0 ? cost : null,
+      fast: false,
+      dedupeKey: id ? `opencode:${id}` : null,
+    },
+    malformed: false,
   };
 }
 
@@ -80,6 +95,7 @@ const MAX_FILES = 500;
 const MAX_BYTES = 256 * 1024 * 1024;
 const MAX_RECORDS = 50_000;
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_ROOT_ENTRIES = 1_000;
 
 interface FileStamp {
   readonly size: number;
@@ -133,10 +149,23 @@ export async function readOpenCodeUsage(
 
   let databases: string[] = [];
   try {
-    databases = (await NodeFSP.readdir(root, { withFileTypes: true }))
-      .filter((entry) => entry.isFile() && /^opencode(?:-[a-zA-Z0-9_-]+)?\.db$/.test(entry.name))
-      .map((entry) => entry.name)
-      .sort((a, b) => (a === "opencode.db" ? -1 : b === "opencode.db" ? 1 : a.localeCompare(b)));
+    let rootEntries = 0;
+    for await (const entry of await NodeFSP.opendir(root)) {
+      rootEntries++;
+      if (rootEntries > MAX_ROOT_ENTRIES) {
+        truncated = true;
+        break;
+      }
+      if (!entry.isFile() || !/^opencode(?:-[a-zA-Z0-9_-]+)?\.db$/.test(entry.name)) continue;
+      if (databases.length >= MAX_FILES) {
+        truncated = true;
+        continue;
+      }
+      databases.push(entry.name);
+    }
+    databases.sort((a, b) =>
+      a === "opencode.db" ? -1 : b === "opencode.db" ? 1 : a.localeCompare(b),
+    );
   } catch (cause) {
     if (object(cause).code !== "ENOENT") error = true;
   }
@@ -172,6 +201,7 @@ export async function readOpenCodeUsage(
           .map((row) => row.name),
       );
       if (!tables.has("message") && !tables.has("session_message")) error = true;
+      let fileMalformed = false;
       for (const table of ["message", "session_message"] as const) {
         if (!tables.has(table)) continue;
         const columns = new Set(
@@ -194,18 +224,20 @@ export async function readOpenCodeUsage(
             break;
           }
           rowsVisited++;
-          append(
-            file.records,
-            parseOpenCodeMessage(text(row.data), {
-              id: text(row.id),
-              sessionId: text(row.session_id),
-              ...(typeof row.created === "number" ? { timestampMs: row.created } : {}),
-            }),
-          );
+          const parsed = parseOpenCodeMessage(text(row.data), {
+            id: text(row.id),
+            sessionId: text(row.session_id),
+            ...(typeof row.created === "number" ? { timestampMs: row.created } : {}),
+          });
+          if (parsed.malformed) {
+            error = true;
+            fileMalformed = true;
+          }
+          append(file.records, parsed.record);
           if (++count % 256 === 0) await NodeTimersPromises.setImmediate();
         }
       }
-      if (!truncated) cache?.set(file.path, fileStamp, file.records);
+      if (!truncated && !fileMalformed) cache?.set(file.path, fileStamp, file.records);
     } catch {
       error = true;
     } finally {
@@ -261,11 +293,10 @@ export async function readOpenCodeUsage(
               for (const record of cached) append(file.records, record);
               continue;
             }
-            append(
-              file.records,
-              parseOpenCodeMessage(await NodeFSP.readFile(path, "utf8"), { id }),
-            );
-            cache?.set(path, fileStamp, file.records);
+            const parsed = parseOpenCodeMessage(await NodeFSP.readFile(path, "utf8"), { id });
+            if (parsed.malformed) error = true;
+            append(file.records, parsed.record);
+            if (!parsed.malformed) cache?.set(path, fileStamp, file.records);
           } catch (cause) {
             if (object(cause).code !== "ENOENT") error = true;
           }
