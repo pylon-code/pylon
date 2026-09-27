@@ -335,6 +335,17 @@ describe("desktop app control server", () => {
 
         const closing = older.close();
         await ownedStatReached;
+        // The old listening socket must still pin its inode through this check.
+        await expect(
+          new Promise<void>((resolve, reject) => {
+            const socket = NodeNet.createConnection(target.address);
+            socket.once("connect", () => {
+              socket.destroy();
+              resolve();
+            });
+            socket.once("error", reject);
+          }),
+        ).resolves.toBeUndefined();
         let reachedTakeover: () => void = () => undefined;
         const takeoverReached = new Promise<void>((resolve) => {
           reachedTakeover = resolve;
@@ -363,6 +374,43 @@ describe("desktop app control server", () => {
           ok: true,
           threadId: "newer",
         });
+        await newer.close();
+        await NodeFSP.rm(root, { recursive: true, force: true });
+      });
+    }),
+  );
+
+  it.effect("aborts checked unlink when its ownership lock disappears", () =>
+    Effect.gen(function* () {
+      const platform = yield* HostProcessPlatform;
+      const userId = yield* HostProcessUserId;
+      if (platform === "win32") return;
+      yield* Effect.promise(async () => {
+        const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pylon-app-lock-loss-"));
+        const target = { address: NodePath.join(root, "control.sock"), directory: root };
+        let reachedOwnedStat: () => void = () => undefined;
+        const ownedStatReached = new Promise<void>((resolve) => {
+          reachedOwnedStat = resolve;
+        });
+        let resumeClose: () => void = () => undefined;
+        const closeCanResume = new Promise<void>((resolve) => {
+          resumeClose = resolve;
+        });
+        const older = await startOkServer(target, userId, "older", {
+          afterOwnedCloseStat: () => {
+            reachedOwnedStat();
+            return closeCanResume;
+          },
+        });
+        const closing = older.close();
+        await ownedStatReached;
+        await NodeFSP.rmdir(`${target.address}.lock`);
+        const newer = await startOkServer(target, userId, "newer");
+        resumeClose();
+        await expect(closing).rejects.toThrow("Lost ownership");
+        await expect(
+          exchange(target.address, request("after-lock-loss", platform)),
+        ).resolves.toMatchObject({ ok: true, threadId: "newer" });
         await newer.close();
         await NodeFSP.rm(root, { recursive: true, force: true });
       });

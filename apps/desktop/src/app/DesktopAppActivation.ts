@@ -109,17 +109,46 @@ function closeServer(server: NodeNet.Server): Promise<void> {
 
 // The address itself may not exist yet. All Pylon desktop processes sharing
 // this address use the same sibling lock directory for path mutations.
-async function withSocketOwnershipLock<A>(address: string, run: () => Promise<A>): Promise<A> {
+async function withSocketOwnershipLock<A>(
+  address: string,
+  onCompromised: (error: Error) => void,
+  run: (assertOwned: () => Promise<void>) => Promise<A>,
+): Promise<A> {
+  let compromised: Error | null = null;
+  const lockPath = `${address}.lock`;
   const release = await lockfile.lock(address, {
     realpath: false,
     stale: 10_000,
     update: 2_000,
     retries: { retries: 120, factor: 1, minTimeout: 100, maxTimeout: 100 },
+    onCompromised: (error) => {
+      compromised = error;
+      onCompromised(error);
+    },
   });
+  let runFailed = false;
   try {
-    return await run();
+    const lockInode = await inodeAt(lockPath);
+    const assertOwned = async () => {
+      if (compromised !== null) throw compromised;
+      if (lockInode === null || (await inodeAt(lockPath)) !== lockInode) {
+        throw new Error(`Lost ownership of desktop app control socket lock at ${lockPath}.`);
+      }
+      if (compromised !== null) throw compromised;
+    };
+    await assertOwned();
+    return await run(assertOwned);
+  } catch (error) {
+    runFailed = true;
+    throw error;
   } finally {
-    await release();
+    try {
+      await release();
+    } catch (error) {
+      // A stolen lease cannot be released by its former owner. Preserve the
+      // mutation's lost-ownership error while still closing the socket.
+      if (!runFailed) throw error;
+    }
   }
 }
 
@@ -232,11 +261,14 @@ export async function startDesktopAppControlServer(input: {
       await NodeFSP.chmod(staging, 0o600);
       const inode = await inodeAt(staging);
       if (mode === "take-over") input.testHooks?.beforeTakeoverLock?.();
-      await withSocketOwnershipLock(input.address, async () => {
+      await withSocketOwnershipLock(input.address, input.onReclaimError, async (assertOwned) => {
         if (mode === "take-over") {
+          await assertOwned();
           await NodeFSP.rename(staging, input.address);
         } else {
+          await assertOwned();
           await NodeFSP.link(staging, input.address);
+          await assertOwned();
           await NodeFSP.unlink(staging);
         }
       });
@@ -312,18 +344,28 @@ export async function startDesktopAppControlServer(input: {
       await pendingReclaim;
       watcher?.close();
       for (const socket of sockets) socket.destroy();
-      await closeServer(server);
-      server.removeAllListeners();
-      // If profile cleanup already removed the directory, no path remains to
-      // remove. This also avoids creating a lock under a missing parent.
-      if (inode !== null && (await inodeAt(input.address)) !== null) {
-        await withSocketOwnershipLock(input.address, async () => {
-          if ((await inodeAt(input.address)) !== inode) return;
-          await input.testHooks?.afterOwnedCloseStat?.();
-          await NodeFSP.unlink(input.address).catch((error: NodeJS.ErrnoException) => {
-            if (error.code !== "ENOENT") throw error;
-          });
-        });
+      try {
+        // Keep this server's inode pinned until the checked unlink finishes.
+        // Otherwise another socket may reuse its inode after closeServer.
+        if (inode !== null && (await inodeAt(input.address)) !== null) {
+          await withSocketOwnershipLock(
+            input.address,
+            input.onReclaimError,
+            async (assertOwned) => {
+              if ((await inodeAt(input.address)) !== inode) return;
+              await input.testHooks?.afterOwnedCloseStat?.();
+              await assertOwned();
+              if ((await inodeAt(input.address)) !== inode) return;
+              await assertOwned();
+              await NodeFSP.unlink(input.address).catch((error: NodeJS.ErrnoException) => {
+                if (error.code !== "ENOENT") throw error;
+              });
+            },
+          );
+        }
+      } finally {
+        await closeServer(server);
+        server.removeAllListeners();
       }
     },
   };
