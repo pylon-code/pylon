@@ -1283,6 +1283,7 @@ it.layer(
     Effect.gen(function* () {
       // FakePtyAdapter assigns pids from 9000 in open order.
       const { manager, ptyAdapter } = yield* createManager(5, {
+        shellResolver: () => "/bin/zsh",
         processTable: Effect.succeed([
           { pid: 9000, ppid: 1, name: "zsh" },
           { pid: 9001, ppid: 1, name: "zsh" },
@@ -1333,6 +1334,7 @@ it.layer(
   it.effect("keeps a command that replaced its shell at the PTY PID", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager(5, {
+        shellResolver: () => "/bin/zsh",
         processTable: Effect.succeed([
           { pid: 9000, ppid: 1, name: "sleep" },
           // A missing PID cannot prove that a shell is idle.

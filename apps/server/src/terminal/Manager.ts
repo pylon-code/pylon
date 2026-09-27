@@ -2419,7 +2419,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       session: TerminalSessionState & { pid: number },
     ) {
       const terminalPid = session.pid;
-      const inspectResult = yield* subprocessInspector(terminalPid, session.launchedShellName).pipe(
+      const inspectResult = yield* subprocessInspector(terminalPid).pipe(
         Effect.map(Option.some),
         Effect.catch((reason) =>
           Effect.logWarning("failed to check terminal subprocess activity", {
