@@ -20,14 +20,17 @@ export function createSourceControlEnvironmentAtoms<R, E>(
     discovery: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:source-control-discovery",
       tag: WS_METHODS.serverDiscoverSourceControl,
+      transformInput: (input) => ({ ...input, supportsForgejo: true }),
     }),
     repository: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:source-control:repository",
       tag: WS_METHODS.sourceControlLookupRepository,
+      transformInput: (input) => ({ ...input, supportsForgejo: true }),
     }),
     cloneRepository: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:source-control:clone-repository",
       tag: WS_METHODS.sourceControlCloneRepository,
+      transformInput: (input) => ({ ...input, supportsForgejo: true }),
       scheduler: commandScheduler,
       concurrency: {
         mode: "serial",
@@ -39,6 +42,7 @@ export function createSourceControlEnvironmentAtoms<R, E>(
     startProjectClone: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:source-control:project-clone-start",
       tag: WS_METHODS.projectCloneStart,
+      transformInput: (input) => ({ ...input, supportsForgejo: true }),
       scheduler: commandScheduler,
       concurrency: {
         mode: "serial",
@@ -59,6 +63,7 @@ export function createSourceControlEnvironmentAtoms<R, E>(
     retryProjectClone: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:source-control:project-clone-retry",
       tag: WS_METHODS.projectCloneRetry,
+      transformInput: (input) => ({ ...input, supportsForgejo: true }),
       scheduler: commandScheduler,
       concurrency: {
         mode: "serial",
@@ -70,6 +75,7 @@ export function createSourceControlEnvironmentAtoms<R, E>(
     projectClones: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:source-control:project-clones",
       tag: WS_METHODS.subscribeProjectClones,
+      transformInput: (input) => ({ ...input, supportsForgejo: true }),
     }),
     publishRepository: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:source-control:publish-repository",

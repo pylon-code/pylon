@@ -944,7 +944,9 @@ describe("PrimeAgentDaemonManager lifecycle", () => {
       shutdownRejects: true,
       shutdownDoesNotExit: true,
       postKillExitHangs: true,
-      shutdownTimeout: Duration.millis(5),
+      // This timeout also covers real private-socket cleanup before the exit wait.
+      // Leave room for filesystem scheduling under parallel CI load.
+      shutdownTimeout: Duration.millis(250),
     });
     return closeFixtureLive(fixture).pipe(
       Effect.andThen(

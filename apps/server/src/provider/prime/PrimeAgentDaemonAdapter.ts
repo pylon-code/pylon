@@ -531,6 +531,7 @@ type PrimeAgentDaemonChildDurableProjection = {
   readonly messageable: boolean;
   readonly waiting: boolean;
   readonly lastToolName: string | undefined;
+  readonly progressNote: string | undefined;
   readonly tokenCount: number | undefined;
   readonly toolUseCount: number | undefined;
   readonly terminalDurationMs: number | undefined;
@@ -560,6 +561,7 @@ function durableChildProjection(
       child.status === "running" && child.activity?.kind !== "waiting"
         ? durableChildText(child.activity?.toolName)
         : undefined,
+    progressNote: active ? durableChildText(child.progressNote) : undefined,
     tokenCount: durableChildCount(child.tokenCount),
     toolUseCount: durableChildCount(child.toolUseCount),
     terminalDurationMs: active ? undefined : durableChildCount(child.durationMs),
@@ -581,6 +583,7 @@ function durableChildChanged(
     left.messageable !== right.messageable ||
     left.waiting !== right.waiting ||
     left.lastToolName !== right.lastToolName ||
+    left.progressNote !== right.progressNote ||
     left.tokenCount !== right.tokenCount ||
     left.toolUseCount !== right.toolUseCount ||
     left.terminalDurationMs !== right.terminalDurationMs

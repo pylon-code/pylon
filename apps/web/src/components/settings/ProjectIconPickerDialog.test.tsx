@@ -41,11 +41,33 @@ import { ProjectIconPickerDialog } from "./ProjectIconPickerDialog";
 describe("ProjectIconPickerDialog", () => {
   it("shows icons first and selects them for an automatic project", () => {
     const markup = renderToStaticMarkup(
-      <ProjectIconPickerDialog current={null} open onOpenChange={() => {}} onSelect={() => {}} />,
+      <ProjectIconPickerDialog
+        current={null}
+        projectName="Project"
+        monogramSupported={false}
+        open
+        onOpenChange={() => {}}
+        onSelect={() => {}}
+      />,
     );
 
     expect(markup).toContain('data-current="lucide"');
     expect(markup.indexOf(">Icons<")).toBeLessThan(markup.indexOf(">Emoji<"));
     expect(markup).toContain('aria-label="Icon color"');
+    expect(markup).not.toContain(">Monogram<");
+  });
+
+  it("offers an explicit monogram only when the server advertises support", () => {
+    const markup = renderToStaticMarkup(
+      <ProjectIconPickerDialog
+        current={null}
+        projectName="Project"
+        monogramSupported
+        open
+        onOpenChange={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+    expect(markup).toContain(">Monogram<");
   });
 });

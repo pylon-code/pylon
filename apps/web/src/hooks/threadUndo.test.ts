@@ -1,0 +1,53 @@
+import { describe, expect, it } from "vite-plus/test";
+
+import * as ThreadUndo from "./threadUndo";
+
+const projection = { owner: Object.freeze({}), generation: 1, sequence: 1 };
+function begin(kind: string, threadKey: string) {
+  return ThreadUndo.begin(kind, threadKey, { projection, read: () => projection });
+}
+
+describe("thread action ownership", () => {
+  it("invalidates an older inverse when another action changes the same thread", () => {
+    const pin = begin("pin", "env/shared");
+    const archive = begin("archive", "env/shared");
+    expect(pin.isCurrent()).toBe(false);
+    expect(archive.isCurrent()).toBe(true);
+    ThreadUndo.invalidate("pin", "env/shared");
+    expect(pin.isCurrent()).toBe(false);
+    expect(archive.isCurrent()).toBe(true);
+    ThreadUndo.invalidateThread("env/shared");
+    expect(archive.isCurrent()).toBe(false);
+    archive.finish();
+  });
+
+  it("does not revive the first Undo after a later pin and unpin", () => {
+    const firstUnpin = begin("pin", "env/thread");
+    ThreadUndo.invalidate("pin", "env/thread");
+    const secondUnpin = begin("pin", "env/thread");
+    expect(firstUnpin.isCurrent()).toBe(false);
+    expect(secondUnpin.isCurrent()).toBe(true);
+    firstUnpin.finish();
+    expect(secondUnpin.isCurrent()).toBe(true);
+    secondUnpin.finish();
+    expect(firstUnpin.isCurrent()).toBe(false);
+  });
+
+  it("rejects a late unpin completion after a newer pin started", () => {
+    const pendingUnpin = begin("pin", "env/late");
+    ThreadUndo.invalidate("pin", "env/late");
+    expect(pendingUnpin.isCurrent()).toBe(false);
+  });
+
+  it("expires an Undo without invalidating another environment or thread", () => {
+    const first = begin("pin", "one/thread");
+    const otherEnvironment = begin("pin", "two/thread");
+    const otherThread = begin("pin", "one/other");
+    first.finish();
+    expect(first.isCurrent()).toBe(false);
+    expect(otherEnvironment.isCurrent()).toBe(true);
+    expect(otherThread.isCurrent()).toBe(true);
+    otherEnvironment.finish();
+    otherThread.finish();
+  });
+});

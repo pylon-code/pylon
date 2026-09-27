@@ -10,22 +10,66 @@ import { RemoteEnvironmentAuthorization } from "../authorization/service.ts";
 import { EnvironmentRegistry } from "../connection/registry.ts";
 import type { PreparedConnection } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
+import type { SupervisorConnectionState } from "../connection/model.ts";
 import { environmentEndpointUrl } from "../environment/endpoint.ts";
 import { ManagedRelayDpopSigner } from "../relay/managedRelay.ts";
+import { rpcSessionOwner } from "../rpc/sessionOwner.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "./environmentHttpAuth.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 
-export function initialConfigOption<E>(
-  initialConfig: Effect.Effect<ServerConfig, E>,
-): Effect.Effect<Option.Option<ServerConfig>> {
+export function initialConfigOption<T, E>(
+  initialConfig: Effect.Effect<T, E>,
+): Effect.Effect<Option.Option<T>> {
   return initialConfig.pipe(
     Effect.map(Option.some),
     Effect.catch((error) =>
       Effect.logWarning("Could not load the initial environment configuration.").pipe(
         Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),
-        Effect.as(Option.none<ServerConfig>()),
+        Effect.as(Option.none<T>()),
       ),
+    ),
+  );
+}
+
+export interface ConnectedInitialConfig<T = ServerConfig> {
+  readonly state: SupervisorConnectionState;
+  readonly config: T;
+}
+
+/** A capability is usable only with the exact connected lease that supplied it. */
+export function connectedInitialConfigForState<T>(
+  currentState: SupervisorConnectionState | null,
+  observed: Option.Option<ConnectedInitialConfig<T>>,
+): T | null {
+  return currentState?.phase === "connected" &&
+    Option.isSome(observed) &&
+    observed.value.state === currentState
+    ? observed.value.config
+    : null;
+}
+
+/** Derive config and connection identity from one supervisor, fencing delayed reads. */
+export function connectedInitialConfigChanges<T, E>(
+  stateRef: SubscriptionRef.SubscriptionRef<SupervisorConnectionState>,
+  readSession: Effect.Effect<Option.Option<{ readonly initialConfig: Effect.Effect<T, E> }>>,
+): Stream.Stream<Option.Option<ConnectedInitialConfig<T>>> {
+  return SubscriptionRef.changes(stateRef).pipe(
+    Stream.mapEffect((state) =>
+      Effect.gen(function* () {
+        if (state.phase !== "connected") return Option.none<ConnectedInitialConfig<T>>();
+        const session = yield* readSession;
+        if (Option.isNone(session)) return Option.none<ConnectedInitialConfig<T>>();
+        const config = yield* initialConfigOption(session.value.initialConfig);
+        const currentState = yield* SubscriptionRef.get(stateRef);
+        const currentSession = yield* readSession;
+        return currentState === state &&
+          Option.isSome(currentSession) &&
+          currentSession.value === session.value &&
+          Option.isSome(config)
+          ? Option.some({ state, config: config.value })
+          : Option.none<ConnectedInitialConfig<T>>();
+      }),
     ),
   );
 }
@@ -59,6 +103,39 @@ export const fetchEnvironmentSessionState = Effect.fn(
   });
 });
 
+/** A session response can finish after its connection has been replaced. */
+export const currentSessionStateReceipt = Effect.fn(
+  "clientRuntime.state.currentSessionStateReceipt",
+)(function* <E, R>(
+  supervisor: EnvironmentSupervisor["Service"],
+  prepared: PreparedConnection,
+  load: Effect.Effect<AuthSessionState, E, R>,
+) {
+  const [currentSession, livePrepared] = yield* Effect.all([
+    SubscriptionRef.get(supervisor.session),
+    SubscriptionRef.get(supervisor.prepared),
+  ]);
+  if (
+    Option.isNone(currentSession) ||
+    Option.isNone(livePrepared) ||
+    livePrepared.value !== prepared
+  )
+    return Option.none<AuthSessionState & { readonly sessionOwner: object }>();
+  const session = yield* load;
+  const [latestSession, latestPrepared] = yield* Effect.all([
+    SubscriptionRef.get(supervisor.session),
+    SubscriptionRef.get(supervisor.prepared),
+  ]);
+  if (
+    Option.isNone(latestSession) ||
+    latestSession.value !== currentSession.value ||
+    Option.isNone(latestPrepared) ||
+    latestPrepared.value !== prepared
+  )
+    return Option.none<AuthSessionState & { readonly sessionOwner: object }>();
+  return Option.some({ ...session, sessionOwner: rpcSessionOwner(currentSession.value) });
+});
+
 export function createEnvironmentSessionAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | HttpClient.HttpClient | R, E>,
 ) {
@@ -83,6 +160,31 @@ export function createEnvironmentSessionAtoms<R, E>(
       ),
       { initialValue: Option.none() },
     ),
+  );
+
+  // Read the connection state and session from the same supervisor. A cached
+  // config or a lagging independent session stream must never authorize a
+  // semantic attachment marker after a same-ID server replacement. Consumers
+  // compare the state object to their current connection projection as well.
+  const connectedInitialConfigAtom = Atom.family((environmentId: EnvironmentId) =>
+    runtime
+      .atom(
+        followStreamInEnvironment(
+          environmentId,
+          Stream.unwrap(
+            EnvironmentSupervisor.pipe(
+              Effect.map((supervisor) =>
+                connectedInitialConfigChanges(
+                  supervisor.state,
+                  SubscriptionRef.get(supervisor.session),
+                ),
+              ),
+            ),
+          ),
+        ),
+        { initialValue: Option.none<ConnectedInitialConfig>() },
+      )
+      .pipe(Atom.withLabel(`environment-current-config:${environmentId}`)),
   );
 
   // This is only the bootstrap config captured when a transport session is
@@ -120,6 +222,24 @@ export function createEnvironmentSessionAtoms<R, E>(
     ).pipe(Atom.withLabel(`environment-prepared-connection:${environmentId}`)),
   );
 
+  const rpcSessionOwnerAtom = Atom.family((environmentId: EnvironmentId) =>
+    runtime.atom(
+      followStreamInEnvironment(
+        environmentId,
+        Stream.unwrap(
+          EnvironmentSupervisor.pipe(
+            Effect.map((supervisor) =>
+              SubscriptionRef.changes(supervisor.session).pipe(
+                Stream.map(Option.map(rpcSessionOwner)),
+              ),
+            ),
+          ),
+        ),
+      ),
+      { initialValue: Option.none<object>() },
+    ),
+  );
+
   // Keyed on the prepared connection's identity: a reconnect (new credential,
   // new base URL) swaps the prepared value, which re-runs the fetch, so scope
   // changes from re-pairing are picked up without an explicit refresh.
@@ -127,14 +247,35 @@ export function createEnvironmentSessionAtoms<R, E>(
     runtime
       .atom((get) => {
         const prepared = Option.getOrNull(get(preparedConnectionValueAtom(environmentId)));
+        // Session admission may follow the prepared-connection event. Subscribe
+        // to both so an early no-session read retries when admission arrives.
+        get(rpcSessionOwnerAtom(environmentId));
         if (prepared === null) {
           return Effect.never;
         }
-        return Effect.gen(function* () {
-          const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
-          const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
-          return yield* fetchEnvironmentSessionState({ prepared, signer, remoteAuthorization });
-        });
+        return EnvironmentRegistry.pipe(
+          Effect.flatMap((registry) =>
+            registry.run(
+              environmentId,
+              EnvironmentSupervisor.pipe(
+                Effect.flatMap((supervisor) =>
+                  Effect.gen(function* () {
+                    const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
+                    const remoteAuthorization = yield* Effect.serviceOption(
+                      RemoteEnvironmentAuthorization,
+                    );
+                    const receipt = yield* currentSessionStateReceipt(
+                      supervisor,
+                      prepared,
+                      fetchEnvironmentSessionState({ prepared, signer, remoteAuthorization }),
+                    );
+                    return Option.isSome(receipt) ? receipt.value : yield* Effect.never;
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
       })
       .pipe(
         Atom.swr({ staleTime: 30_000, revalidateOnMount: true }),
@@ -152,9 +293,11 @@ export function createEnvironmentSessionAtoms<R, E>(
 
   return {
     initialConfigAtom,
+    connectedInitialConfigAtom,
     initialConfigValueAtom,
     preparedConnectionAtom,
     preparedConnectionValueAtom,
+    rpcSessionOwnerAtom,
     sessionStateAtom,
     sessionStateValueAtom,
   };

@@ -8,7 +8,7 @@ import type {
   DesktopSnapShotEvent,
 } from "@t3tools/contracts";
 import { exposeClerkBridge } from "@clerk/electron/preload";
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
 
@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     }
     return result as ReturnType<DesktopBridge["getAppBranding"]>;
   },
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
   // oxlint-disable-next-line t3code/no-global-process-runtime -- The sandboxed Electron preload exposes the client platform, not the server platform.
   getClientPlatform: () => process.platform,
   setNotificationBadge: (badge) =>
@@ -181,6 +182,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   openSystemSettings: (pane: string) =>
     ipcRenderer.invoke(IpcChannels.OPEN_SYSTEM_SETTINGS_CHANNEL, pane),
   probeRemoteEditors: () => ipcRenderer.invoke(IpcChannels.PROBE_REMOTE_EDITORS_CHANNEL, undefined),
+  pasteAsText: () => ipcRenderer.invoke(IpcChannels.PASTE_AS_TEXT_CHANNEL, undefined),
   onMenuAction: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, action: unknown) => {
       if (typeof action !== "string") return;

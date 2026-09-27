@@ -22,10 +22,19 @@ import {
   shouldRefreshProviderModelCatalog,
 } from "../lib/providerModelSelection";
 import { createQueuedModelCatalogRefresh } from "./queued-model-catalog-refresh";
+import {
+  reportOutboxDeliveryFailure,
+  reportOutboxEditedAfterDelivery,
+  reportOutboxUploadFailure,
+} from "./thread-outbox-failure-log";
 
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
-import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
+import {
+  prepareTurnAttachments,
+  preparedPastedTextLeaseCurrent,
+  type PreparedTurnAttachments,
+} from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
 import {
   retainAcknowledgedThreadMessage,
@@ -53,7 +62,6 @@ import {
   resolveConfirmedThreadOutboxPlan,
   resolveThreadOutboxDeliveryAction,
   resolveThreadOutboxDispatchStep,
-  resolveThreadOutboxFailureAction,
   shouldRetryThreadOutboxDelivery,
   threadOutboxDeliveryHoldsEqual,
   sourceEpochMismatchHold,
@@ -237,14 +245,7 @@ export async function completeQueuedMessageDelivery(
     );
     if (!removed) {
       forgetAcknowledgedThreadMessage(queuedMessage);
-      console.warn(
-        "[thread-outbox] delivered message was edited before cleanup; keeping the newer message",
-        {
-          environmentId: queuedMessage.environmentId,
-          threadId: queuedMessage.threadId,
-          messageId: queuedMessage.messageId,
-        },
-      );
+      reportOutboxEditedAfterDelivery(queuedMessage);
       return "edited";
     }
     return "removed";
@@ -677,18 +678,16 @@ export function useThreadOutboxDrain(): void {
         return null;
       }
       const error = Cause.squash(commandResult.cause);
-      const action = resolveThreadOutboxFailureAction({
+      const action = reportOutboxDeliveryFailure({
         stage,
         error,
         interrupted: Cause.hasInterruptsOnly(commandResult.cause),
-      });
-      console.warn("[thread-outbox] queued message delivery failed", {
-        environmentId: queuedMessage.environmentId,
-        threadId: queuedMessage.threadId,
-        messageId: queuedMessage.messageId,
-        stage,
-        cause: commandResult.cause,
-        action,
+        context: {
+          environmentId: queuedMessage.environmentId,
+          threadId: queuedMessage.threadId,
+          messageId: queuedMessage.messageId,
+          cause: commandResult.cause,
+        },
       });
       const epochHold = stage === "start-turn" ? sourceEpochMismatchHold(error) : null;
       return {
@@ -764,7 +763,7 @@ export function useThreadOutboxDrain(): void {
           return "complete";
         }
       } catch (error) {
-        console.warn("[thread-outbox] failed to upload attachments", error);
+        reportOutboxUploadFailure(queuedMessage, error);
         if (!shouldRetryThreadOutboxDelivery(error)) {
           const restored = await restoreQueuedMessage(
             queuedMessage,
@@ -798,6 +797,10 @@ export function useThreadOutboxDrain(): void {
           },
         );
 
+      if (!preparedPastedTextLeaseCurrent(queuedMessage.environmentId, prepared)) {
+        await prepared.releaseUploads();
+        return "retry";
+      }
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: {
@@ -882,7 +885,7 @@ export function useThreadOutboxDrain(): void {
           return "complete";
         }
       } catch (error) {
-        console.warn("[thread-outbox] failed to upload attachments", error);
+        reportOutboxUploadFailure(queuedMessage, error);
         if (!shouldRetryThreadOutboxDelivery(error)) {
           const restored = await restoreQueuedMessage(
             queuedMessage,
@@ -910,6 +913,10 @@ export function useThreadOutboxDrain(): void {
           },
         );
 
+      if (!preparedPastedTextLeaseCurrent(queuedMessage.environmentId, prepared)) {
+        await prepared.releaseUploads();
+        return "retry";
+      }
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: buildProjectThreadStartTurnInput({

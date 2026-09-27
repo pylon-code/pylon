@@ -2,7 +2,7 @@ import { SymbolView } from "./AppSymbol";
 import { Image } from "expo-image";
 import { useLayoutEffect, useMemo, useState } from "react";
 import { View } from "react-native";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectIconOverride } from "@t3tools/contracts";
 import {
   getProjectFaviconCacheKey,
   getProjectFaviconResourceKey,
@@ -11,6 +11,8 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/unstable/reactivity";
 import { projectFaviconUrlAtom } from "../state/assets";
+import { AppText } from "./AppText";
+import { ProjectMonogram } from "./ProjectMonogram";
 
 import {
   beginProjectFaviconRequest,
@@ -30,6 +32,7 @@ export function ProjectFavicon(props: {
   readonly projectTitle: string;
   readonly workspaceRoot?: string | null;
   readonly faviconPath?: string | null;
+  readonly projectIcon?: ProjectIconOverride | null;
 }) {
   const size = props.size ?? 42;
   const faviconUrl = useAtomValue(
@@ -50,6 +53,24 @@ export function ProjectFavicon(props: {
         ? getProjectFaviconResourceKey(props.environmentId, props.workspaceRoot, props.faviconPath)
         : getProjectFaviconCacheKey(props.environmentId, props.workspaceRoot, renderableFaviconUrl)
       : null;
+
+  if (props.projectIcon?.kind === "monogram") {
+    return (
+      <ProjectMonogram text={props.projectIcon.text} color={props.projectIcon.color} size={size} />
+    );
+  }
+  if (props.projectIcon?.kind === "emoji") {
+    return (
+      <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+        <AppText
+          style={{ fontSize: size * 0.75 }}
+          accessibilityLabel={`${props.projectTitle} icon`}
+        >
+          {props.projectIcon.emoji}
+        </AppText>
+      </View>
+    );
+  }
 
   return (
     <ProjectFaviconImage

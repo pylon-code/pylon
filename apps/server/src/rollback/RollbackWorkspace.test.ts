@@ -8,6 +8,8 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import * as NodeUtil from "node:util";
+import { ThreadId } from "@t3tools/contracts";
+import { checkpointRefForThreadTurn } from "../checkpointing/Utils.ts";
 
 import * as ServerConfig from "../config.ts";
 import { RollbackWorkspace, layer as RollbackWorkspaceLive } from "./RollbackWorkspace.ts";
@@ -33,6 +35,9 @@ layer("RollbackWorkspace", (it) => {
       (cwd) =>
         Effect.gen(function* () {
           const workspace = yield* RollbackWorkspace;
+          const threadId = ThreadId.make("thread-test");
+          const targetRef = checkpointRefForThreadTurn(threadId, 1);
+          const sourceRef = checkpointRefForThreadTurn(threadId, 2);
 
           yield* Effect.promise(async () => {
             await run(cwd, ["init", "-b", "main"]);
@@ -64,7 +69,7 @@ layer("RollbackWorkspace", (it) => {
               "-m",
               "target checkpoint",
             ]);
-            await run(cwd, ["update-ref", "refs/t3/checkpoints/thread-test/turn/1", targetOid]);
+            await run(cwd, ["update-ref", targetRef, targetOid]);
             await run(cwd, ["reset", "--hard", "HEAD"]);
 
             await NodeFSP.writeFile(NodePath.join(cwd, "tracked.txt"), "staged\n");
@@ -83,7 +88,7 @@ layer("RollbackWorkspace", (it) => {
               NodePath.join(cwd, "ignored-target.txt"),
               "source ignored path\n",
             );
-            await run(cwd, ["update-ref", "refs/t3/checkpoints/thread-test/turn/2", "HEAD"]);
+            await run(cwd, ["update-ref", sourceRef, "HEAD"]);
           });
 
           const sourceStatus = yield* Effect.promise(() =>
@@ -95,11 +100,12 @@ layer("RollbackWorkspace", (it) => {
           );
           const target = yield* workspace.resolveCheckpoint({
             cwd,
-            checkpointRef: "refs/t3/checkpoints/thread-test/turn/1",
+            checkpointRef: targetRef,
           });
           const preimage = yield* workspace.capturePreimage({
             operationId: "operation-workspace",
             cwd,
+            threadId,
             targetCheckpointOid: target.oid,
           });
           assert.notEqual(preimage.digest.length, 0);
@@ -149,17 +155,11 @@ layer("RollbackWorkspace", (it) => {
             "refs/heads/main",
           );
           assert.equal(
-            yield* Effect.promise(() =>
-              run(cwd, ["rev-parse", "refs/t3/checkpoints/thread-test/turn/2"]),
-            ),
+            yield* Effect.promise(() => run(cwd, ["rev-parse", sourceRef])),
             yield* Effect.promise(() => run(cwd, ["rev-parse", "HEAD"])),
           );
 
-          yield* Effect.promise(async () => {
-            await run(cwd, ["update-ref", "-d", "refs/t3/checkpoints/thread-test/turn/2"]);
-            await run(cwd, ["update-ref", "refs/t3/checkpoints/rogue/turn/99", "HEAD"]);
-          });
-          const restored = yield* workspace.restorePreimage({ cwd, preimage });
+          const restored = yield* workspace.restorePreimage({ cwd, threadId, preimage });
           assert.equal(restored.digest, preimage.digest);
           assert.equal(
             yield* Effect.promise(() => run(cwd, ["status", "--porcelain=v1", "-uall"])),
@@ -178,6 +178,16 @@ layer("RollbackWorkspace", (it) => {
               ]),
             ),
             sourceRefs,
+          );
+          const driftRef = checkpointRefForThreadTurn(threadId, 3);
+          yield* Effect.promise(() => run(cwd, ["update-ref", driftRef, "HEAD"]));
+          const driftRestore = yield* workspace
+            .restorePreimage({ cwd, threadId, preimage })
+            .pipe(Effect.exit);
+          assert.equal(driftRestore._tag, "Failure");
+          assert.equal(
+            yield* Effect.promise(() => run(cwd, ["rev-parse", driftRef])),
+            yield* Effect.promise(() => run(cwd, ["rev-parse", "HEAD"])),
           );
           assert.equal(
             yield* Effect.promise(() =>
@@ -222,6 +232,11 @@ layer("RollbackWorkspace", (it) => {
       (root) =>
         Effect.gen(function* () {
           const workspace = yield* RollbackWorkspace;
+          const threadId = ThreadId.make("linked");
+          const siblingThreadId = ThreadId.make("sibling");
+          const targetRef = checkpointRefForThreadTurn(threadId, 1);
+          const siblingFirstRef = checkpointRefForThreadTurn(siblingThreadId, 1);
+          const siblingSecondRef = checkpointRefForThreadTurn(siblingThreadId, 2);
           const main = NodePath.join(root, "main");
           const linked = NodePath.join(root, "linked");
           yield* Effect.promise(async () => {
@@ -237,7 +252,7 @@ layer("RollbackWorkspace", (it) => {
             await run(linked, ["add", "tracked.txt"]);
             const tree = await run(linked, ["write-tree"]);
             const checkpoint = await run(linked, ["commit-tree", tree, "-m", "linked checkpoint"]);
-            await run(linked, ["update-ref", "refs/t3/checkpoints/linked/turn/1", checkpoint]);
+            await run(linked, ["update-ref", targetRef, checkpoint]);
             await run(linked, ["reset", "--hard", "HEAD"]);
             await NodeFSP.writeFile(NodePath.join(linked, "tracked.txt"), "linked pre-image\n");
             await run(linked, ["add", "tracked.txt"]);
@@ -249,14 +264,36 @@ layer("RollbackWorkspace", (it) => {
           assert.equal(mainIdentity.gitCommonDir, linkedIdentity.gitCommonDir);
           assert.notEqual(mainIdentity.workspaceKey, linkedIdentity.workspaceKey);
 
+          const siblingFirst = yield* Effect.promise(async () => {
+            const oid = await run(main, [
+              "commit-tree",
+              "HEAD^{tree}",
+              "-m",
+              "sibling first checkpoint",
+            ]);
+            await run(main, ["update-ref", siblingFirstRef, oid]);
+            return oid;
+          });
+
           const checkpoint = yield* workspace.resolveCheckpoint({
             cwd: linked,
-            checkpointRef: "refs/t3/checkpoints/linked/turn/1",
+            checkpointRef: targetRef,
           });
           const preimage = yield* workspace.capturePreimage({
             operationId: "operation-linked",
             cwd: linked,
+            threadId,
             targetCheckpointOid: checkpoint.oid,
+          });
+          assert.deepEqual(preimage.ownedRefs, [{ ref: targetRef, oid: checkpoint.oid }]);
+          const siblingAdvanced = yield* Effect.promise(() =>
+            run(main, ["commit-tree", "HEAD^{tree}", "-m", "sibling advanced checkpoint"]),
+          );
+          yield* Effect.promise(async () => {
+            // Both worktrees share the Git common dir, but hold different
+            // rollback leases. B may write its refs while A is compensating.
+            await run(main, ["update-ref", siblingFirstRef, siblingAdvanced]);
+            await run(main, ["update-ref", siblingSecondRef, siblingFirst]);
           });
           yield* workspace.applyCheckpoint({ cwd: linked, checkpointOid: checkpoint.oid });
           assert.equal(
@@ -265,8 +302,26 @@ layer("RollbackWorkspace", (it) => {
             ),
             "checkpoint\n",
           );
-          const restored = yield* workspace.restorePreimage({ cwd: linked, preimage });
+          // Simulate a pre-upgrade persisted preimage containing all repository
+          // checkpoint refs. B's saved OID must have no recovery authority.
+          const legacyPreimage = {
+            ...preimage,
+            ownedRefs: [...preimage.ownedRefs, { ref: siblingFirstRef, oid: siblingFirst }],
+          };
+          const restored = yield* workspace.restorePreimage({
+            cwd: linked,
+            threadId,
+            preimage: legacyPreimage,
+          });
           assert.equal(restored.digest, preimage.digest);
+          assert.equal(
+            yield* Effect.promise(() => run(main, ["rev-parse", siblingFirstRef])),
+            siblingAdvanced,
+          );
+          assert.equal(
+            yield* Effect.promise(() => run(main, ["rev-parse", siblingSecondRef])),
+            siblingFirst,
+          );
           assert.equal(
             yield* Effect.promise(() =>
               NodeFSP.readFile(NodePath.join(linked, "tracked.txt"), "utf8"),

@@ -3,6 +3,7 @@ import type { DesktopUpdateState } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Config from "effect/Config";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
@@ -34,7 +35,33 @@ export interface UpdatesHarnessOptions {
   readonly appVersion?: string;
 }
 
-export function makeHarness(options: UpdatesHarnessOptions = {}) {
+type UpdatesHarnessLayer = Layer.Layer<
+  | DesktopAppSettings.DesktopAppSettings
+  | DesktopBackendPool.DesktopBackendPool
+  | DesktopEnvironment.DesktopEnvironment
+  | DesktopState.DesktopState
+  | DesktopUpdates.DesktopUpdates
+  | ElectronUpdater.ElectronUpdater
+  | ElectronWindow.ElectronWindow
+  | NodeServices.NodeServices,
+  Config.ConfigError
+>;
+
+interface UpdatesHarness {
+  readonly layer: UpdatesHarnessLayer;
+  readonly checkCount: () => number;
+  readonly quitAndInstalls: () => number;
+  readonly installSteps: string[];
+  readonly downloadCount: () => number;
+  readonly feedUrls: () => ReadonlyArray<ElectronUpdater.ElectronUpdaterFeedUrl>;
+  readonly allowPrerelease: () => boolean;
+  readonly fullChangelog: () => boolean;
+  readonly listenerCount: () => number;
+  readonly sentStates: DesktopUpdateState[];
+  readonly emit: (eventName: string, payload?: unknown) => void;
+}
+
+export function makeHarness(options: UpdatesHarnessOptions = {}): UpdatesHarness {
   let checkCount = 0;
   let quitAndInstallCount = 0;
   let downloadCount = 0;
@@ -172,7 +199,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
 
   const settingsLayer = DesktopAppSettings.layer;
 
-  const layer = DesktopUpdates.layer.pipe(
+  const layer: UpdatesHarnessLayer = DesktopUpdates.layer.pipe(
     Layer.provideMerge(updaterLayer),
     Layer.provideMerge(windowLayer),
     Layer.provideMerge(backendLayer),

@@ -19,6 +19,7 @@ import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
 import { ConfirmDialogHost } from "../components/ConfirmDialogHost";
+import { CustomSnoozeDialogHost } from "../components/CustomSnoozeDialog";
 import { FirstRunGate } from "../components/onboarding/FirstRunGate";
 import { ConnectOnboardingDialog } from "../components/cloud/ConnectOnboardingDialog";
 import { RelayClientInstallDialog } from "../components/cloud/RelayClientInstallDialog";
@@ -71,6 +72,7 @@ import {
 } from "../components/KeybindingsUpdateToast.logic";
 
 import { getDesktopSnapShotBridge } from "../lib/desktopSnapShot";
+import { installDesktopPasteAsText } from "../lib/desktopPasteAsText";
 import { shouldResumeSnapShotSetupOnStartup } from "../lib/snapShotSetupResume";
 
 export const Route = createRootRoute({
@@ -128,6 +130,7 @@ function RootRouteNotFoundView() {
 }
 
 function RootRouteView() {
+  useEffect(() => installDesktopPasteAsText(window.desktopBridge, window), []);
   const pathname = useLocation({ select: (location) => location.pathname });
   const { authGateState } = Route.useRouteContext();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
@@ -219,6 +222,7 @@ function RootRouteView() {
           <SnapShotCoordinator />
           <ThreadNotificationCoordinator />
           <ConfirmDialogHost />
+          <CustomSnoozeDialogHost />
           <SlowRpcRequestToastCoordinator />
           <ProjectCloneToastCoordinator />
           <HostedStaticEnvironmentBootstrap />

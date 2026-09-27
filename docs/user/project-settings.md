@@ -39,18 +39,25 @@ on each selected environment, and reset returns to the environment's shared list
 `t3.json` actions can be imported there.
 
 For workspace mode, a project's `t3.json` preference applies when the project has no override.
+For new worktrees, choose whether git initializes submodules recursively, only at the top level,
+or not at all. A project override takes precedence over its environment setting; when neither
+is set, `worktreeSubmodules` in the newly checked out branch's `t3.json` applies, otherwise
+initialization is recursive. This does not change existing worktrees.
 Browser access changes apply when an agent session next starts.
 
 ## Project icons
 
-Select the project and open Project to choose an icon, emoji, or image. The choice applies to
+Select the project and open Project to choose an icon, emoji, custom one- or two-character monogram,
+or image. The choice applies to
 every checkout in the project group and appears on connected clients. Choose **Automatic** to let
 Pylon detect an icon again.
 
 Icon and image choices apply to the selected checkouts in a project group and appear on connected
 clients. Every environment in the group must support saved icons before custom icons are available.
+The monogram option appears only when every environment in the group supports it.
 Pylon supports SVG, PNG, ICO, JPEG, GIF, AVIF, and WebP images. Custom icons and emoji show on web and
-desktop; mobile uses the project's image when one is available. Mobile **Client storage** includes
+desktop; mobile shows saved emoji and custom monograms, and otherwise uses the project's image when
+one is available. Mobile **Client storage** includes
 cached project images and can clear them.
 
 When no custom icon or image is found, web and desktop show a two-character monogram with colors

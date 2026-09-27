@@ -84,6 +84,7 @@ import {
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
+  PullRequestUnavailableError,
   WS_METHODS,
   WsRpcGroup,
   WORKTREE_SETUP_ACTIVITY_KIND,
@@ -91,6 +92,7 @@ import {
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { isDriveOrPosixAbsolutePath, isWindowsAbsolutePath } from "@t3tools/shared/path";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
@@ -121,6 +123,8 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ModelManifest from "./provider/ModelManifest.ts";
+import * as ProviderMaintenance from "./provider/providerMaintenance.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
@@ -150,6 +154,7 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import { withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import { deletePendingAttachment, issueAttachmentUploadUrl } from "./assets/AttachmentUpload.ts";
@@ -187,11 +192,20 @@ import { pullRequestSyncKey } from "./pullRequest/pullRequestSyncKey.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
+import {
+  projectCloneListForClient,
+  repositoryMetadataForClient,
+  sourceControlErrorForClient,
+  sourceControlDiscoveryForClient,
+  vcsStatusEventForClient,
+  vcsStatusForClient,
+} from "./sourceControl/forgejoClientCompatibility.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
 import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
 import * as GitHubCli from "./sourceControl/GitHubCli.ts";
 import * as GitLabCli from "./sourceControl/GitLabCli.ts";
+import * as ForgejoCli from "./sourceControl/ForgejoCli.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
@@ -564,8 +578,12 @@ const makeWsRpcLayer = (
       const terminalManager = yield* TerminalManager.TerminalManager;
       const previewManager = yield* PreviewManager.PreviewManager;
       const deviceService = yield* DeviceService.DeviceService;
+      const deviceHostContext =
+        yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const modelManifest = yield* ModelManifest.ModelManifest;
+      const providerVersionCache = yield* ProviderMaintenance.ProviderVersionCache;
       const providerService = yield* ProviderService.ProviderService;
       const relayWorkerBridge = Option.getOrUndefined(
         yield* Effect.serviceOption(RelayWorkerBridge),
@@ -1074,6 +1092,41 @@ const makeWsRpcLayer = (
           return output;
         });
 
+      // The branch checked out into a new worktree may have its own t3.json,
+      // so a null settings value intentionally leaves that read to the driver.
+      const resolveBootstrapWorktreeSubmodules = Effect.fnUntraced(function* (input: {
+        readonly threadId: ThreadId;
+        readonly projectId: ProjectId | null;
+      }) {
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => null));
+        if (settings === null) return null;
+        const projectId =
+          input.projectId ??
+          (yield* projectionSnapshotQuery.getThreadShellById(input.threadId).pipe(
+            Effect.map((thread) => Option.getOrNull(thread)?.projectId ?? null),
+            Effect.orElseSucceed(() => null),
+          ));
+        const project =
+          projectId === null
+            ? null
+            : yield* projectionSnapshotQuery.getProjectShellById(projectId).pipe(
+                Effect.map(Option.getOrNull),
+                Effect.orElseSucceed(() => null),
+              );
+        return resolveProjectSettings(settings, projectId, project).settings.worktreeSubmodules;
+      });
+
+      const resolveWorktreeSubmodulesForCwd = Effect.fnUntraced(function* (cwd: string) {
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => null));
+        if (settings === null) return null;
+        const project = yield* projectionSnapshotQuery.getActiveProjectByWorkspaceRoot(cwd).pipe(
+          Effect.map(Option.getOrNull),
+          Effect.orElseSucceed(() => null),
+        );
+        return resolveProjectSettings(settings, project?.id ?? null, project).settings
+          .worktreeSubmodules;
+      });
+
       const dispatchBootstrapTurnStart = (
         command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
@@ -1348,6 +1401,7 @@ const makeWsRpcLayer = (
                 yield* gitWorkflow.fetchRemote({
                   cwd: prepareWorktree.projectCwd,
                   remoteName: "origin",
+                  refName: prepareWorktree.baseBranch,
                 });
                 const remoteBaseExists = yield* gitWorkflow.remoteBranchExists({
                   cwd: prepareWorktree.projectCwd,
@@ -1497,6 +1551,10 @@ const makeWsRpcLayer = (
               }
               yield* worktreeSetupTracker.stageStatus(threadId, "checkout", "running");
               let checkoutTotal: number | null = null;
+              const submodules = yield* resolveBootstrapWorktreeSubmodules({
+                threadId,
+                projectId: targetProjectId ?? null,
+              });
               const worktree = yield* gitWorkflow.createWorktree(
                 {
                   cwd: prepareWorktree.projectCwd,
@@ -1506,6 +1564,7 @@ const makeWsRpcLayer = (
                   path: null,
                 },
                 {
+                  submodules,
                   progress: {
                     // Git has registered the directory at this point, so a
                     // cancel during the submodule step can still remove it.
@@ -1535,6 +1594,13 @@ const makeWsRpcLayer = (
                             worktreeSetupTracker.stageStatus(threadId, "submodules", "running"),
                           ),
                         ),
+                    onSubmodulesDisabled: ({ source }) =>
+                      worktreeSetupTracker.stageStatus(
+                        threadId,
+                        "submodules",
+                        "skipped",
+                        `disabled in ${source}`,
+                      ),
                     onSubmoduleLine: (line) => {
                       const submodulePath = /Submodule path '([^']+)'/.exec(line)?.[1];
                       return submodulePath === undefined
@@ -2351,6 +2417,29 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverRefreshProviders,
             Effect.gen(function* () {
+              if (input.refreshModels) {
+                // Explicit refresh bypasses Pylon-owned caches; background probes
+                // keep their normal freshness windows.
+                yield* modelManifest.forceRefresh;
+                const instances = yield* providerInstances.listInstances;
+                yield* Effect.forEach(
+                  instances.filter(
+                    (instance) =>
+                      input.instanceId === undefined || input.instanceId === instance.instanceId,
+                  ),
+                  (instance) =>
+                    Effect.gen(function* () {
+                      yield* instance.invalidateCaches ?? Effect.void;
+                      const maintenance = yield* instance.snapshot.resolveMaintenance({
+                        fresh: true,
+                      });
+                      if (maintenance.packageName) {
+                        providerVersionCache.delete(maintenance.packageName);
+                      }
+                    }),
+                  { concurrency: "unbounded", discard: true },
+                );
+              }
               let providers = yield* input.cwd !== undefined && input.instanceId !== undefined
                 ? providerRegistry.refreshWorkspaceSnapshot({
                     instanceId: input.instanceId,
@@ -2855,9 +2944,18 @@ const makeWsRpcLayer = (
               serverSettings.getSettings.pipe(
                 Effect.map((current) => providerSettingsMutationInstanceIds(current, patch)),
               ),
-              serverSettings
-                .updateSettings(patch)
-                .pipe(Effect.map(ServerSettings.redactServerSettingsForClient)),
+              Effect.gen(function* () {
+                const deviceHosts = patch.deviceHosts
+                  ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(
+                      Effect.provide(deviceHostContext),
+                    )
+                  : undefined;
+                const settings = yield* serverSettings.updateSettings({
+                  ...patch,
+                  ...(deviceHosts ? { deviceHosts } : {}),
+                });
+                return ServerSettings.redactServerSettingsForClient(settings);
+              }),
             ),
             {
               "rpc.aggregate": "server",
@@ -2876,10 +2974,14 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
-        [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
+        [WS_METHODS.serverDiscoverSourceControl]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,
-            sourceControlDiscovery.discover,
+            sourceControlDiscovery.discover.pipe(
+              Effect.map((result) =>
+                sourceControlDiscoveryForClient(result, input.supportsForgejo === true),
+              ),
+            ),
             {
               "rpc.aggregate": "server",
             },
@@ -3005,9 +3107,21 @@ const makeWsRpcLayer = (
             "rpc.aggregate": "pull-requests",
           }),
         [WS_METHODS.pullRequestsSummary]: (input) =>
-          observeRpcEffect(WS_METHODS.pullRequestsSummary, pullRequests.summary(input), {
-            "rpc.aggregate": "pull-requests",
-          }),
+          observeRpcEffect(
+            WS_METHODS.pullRequestsSummary,
+            pullRequests
+              .summary(input)
+              .pipe(
+                Effect.flatMap((summary) =>
+                  !input.supportsForgejo && summary.provider === "forgejo"
+                    ? Effect.fail(
+                        new PullRequestUnavailableError({ reason: "provider-unsupported" }),
+                      )
+                    : Effect.succeed(summary),
+                ),
+              ),
+            { "rpc.aggregate": "pull-requests" },
+          ),
         [WS_METHODS.pullRequestsStack]: (input) =>
           observeRpcEffect(WS_METHODS.pullRequestsStack, pullRequests.stack(input), {
             "rpc.aggregate": "pull-requests",
@@ -3027,9 +3141,21 @@ const makeWsRpcLayer = (
             { "rpc.aggregate": "pull-requests" },
           ),
         [WS_METHODS.pullRequestsDetail]: (input) =>
-          observeRpcEffect(WS_METHODS.pullRequestsDetail, pullRequests.detail(input), {
-            "rpc.aggregate": "pull-requests",
-          }),
+          observeRpcEffect(
+            WS_METHODS.pullRequestsDetail,
+            pullRequests
+              .detail(input)
+              .pipe(
+                Effect.flatMap((detail) =>
+                  !input.supportsForgejo && detail.provider === "forgejo"
+                    ? Effect.fail(
+                        new PullRequestUnavailableError({ reason: "provider-unsupported" }),
+                      )
+                    : Effect.succeed(detail),
+                ),
+              ),
+            { "rpc.aggregate": "pull-requests" },
+          ),
         [WS_METHODS.pullRequestsActivity]: (input) =>
           observeRpcEffect(WS_METHODS.pullRequestsActivity, pullRequests.activity(input), {
             "rpc.aggregate": "pull-requests",
@@ -3046,6 +3172,16 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.pullRequestsDiffFileContents,
             pullRequests.diffFileContents(input),
+            { "rpc.aggregate": "pull-requests" },
+          ),
+        [WS_METHODS.pullRequestsFilesViewed]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestsFilesViewed, pullRequests.filesViewed(input), {
+            "rpc.aggregate": "pull-requests",
+          }),
+        [WS_METHODS.pullRequestsSetFilesViewed]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestsSetFilesViewed,
+            pullRequests.setFilesViewed(input),
             { "rpc.aggregate": "pull-requests" },
           ),
         [WS_METHODS.pullRequestsRunAction]: (input) =>
@@ -3103,11 +3239,11 @@ const makeWsRpcLayer = (
         [WS_METHODS.pullRequestsInvalidate]: (input) =>
           observeRpcEffect(
             WS_METHODS.pullRequestsInvalidate,
-            pullRequests.invalidate(input).pipe(
+            pullRequests.invalidate(input, { notifyReaders: true }).pipe(
               // A reader asking for fresh host state also wants the thread badges it feeds to
               // catch up, including a merged link the sweep would otherwise never revisit.
               Effect.andThen(
-                input.reference === undefined
+                input.reference === undefined || input.filesViewedOnly === true
                   ? Effect.void
                   : resolvePullRequestSyncKey(input.reference).pipe(
                       Effect.flatMap((key) =>
@@ -3157,7 +3293,18 @@ const makeWsRpcLayer = (
         [WS_METHODS.sourceControlCloneRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlCloneRepository,
-            sourceControlRepositories.cloneRepository(input),
+            sourceControlRepositories.cloneRepository(input).pipe(
+              Effect.map((result) => ({
+                ...result,
+                repository: repositoryMetadataForClient(
+                  result.repository,
+                  input.supportsForgejo === true,
+                ),
+              })),
+              Effect.mapError((error) =>
+                sourceControlErrorForClient(error, input.supportsForgejo === true),
+              ),
+            ),
             {
               "rpc.aggregate": "source-control",
             },
@@ -3165,41 +3312,56 @@ const makeWsRpcLayer = (
         [WS_METHODS.projectCloneStart]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectCloneStart,
-            projectCloneTracker.start(input, {
-              createProject: (project) =>
-                Effect.gen(function* () {
-                  const normalizedCommand = yield* normalizeDispatchCommand({
-                    type: "project.create",
-                    commandId: yield* serverCommandId("project-clone-create"),
-                    projectId: project.projectId,
-                    title: project.title,
-                    workspaceRoot: project.workspaceRoot,
-                    createWorkspaceRootIfMissing: true,
-                    createdAt: project.createdAt,
-                  });
-                  yield* dispatchNormalizedCommand(normalizedCommand);
-                }).pipe(Effect.provideContext(normalizerContext)),
-              onCloned: (project) =>
-                // The project was created against an empty directory, so its
-                // cached identity is "not a repository" until this refresh.
-                // Re-emitting the project shell carries the new identity to
-                // every client without a round trip.
-                repositoryIdentityResolver.resolve(project.workspaceRoot, { refresh: true }).pipe(
-                  Effect.andThen(
-                    Effect.gen(function* () {
-                      const command = yield* normalizeDispatchCommand({
-                        type: "project.meta.update",
-                        commandId: yield* serverCommandId("project-clone-done"),
-                        projectId: project.projectId,
-                      });
-                      yield* dispatchNormalizedCommand(command);
-                    }),
+            projectCloneTracker
+              .start(input, {
+                createProject: (project) =>
+                  Effect.gen(function* () {
+                    const normalizedCommand = yield* normalizeDispatchCommand({
+                      type: "project.create",
+                      commandId: yield* serverCommandId("project-clone-create"),
+                      projectId: project.projectId,
+                      title: project.title,
+                      workspaceRoot: project.workspaceRoot,
+                      createWorkspaceRootIfMissing: true,
+                      createdAt: project.createdAt,
+                    });
+                    yield* dispatchNormalizedCommand(normalizedCommand);
+                  }).pipe(Effect.provideContext(normalizerContext)),
+                onCloned: (project) =>
+                  // The project was created against an empty directory, so its
+                  // cached identity is "not a repository" until this refresh.
+                  // Re-emitting the project shell carries the new identity to
+                  // every client without a round trip.
+                  repositoryIdentityResolver.resolve(project.workspaceRoot, { refresh: true }).pipe(
+                    Effect.andThen(
+                      Effect.gen(function* () {
+                        const command = yield* normalizeDispatchCommand({
+                          type: "project.meta.update",
+                          commandId: yield* serverCommandId("project-clone-done"),
+                          projectId: project.projectId,
+                        });
+                        yield* dispatchNormalizedCommand(command);
+                      }),
+                    ),
+                    Effect.andThen(refreshGitStatus(project.workspaceRoot)),
+                    Effect.ignoreCause({ log: true }),
+                    Effect.provideContext(normalizerContext),
                   ),
-                  Effect.andThen(refreshGitStatus(project.workspaceRoot)),
-                  Effect.ignoreCause({ log: true }),
-                  Effect.provideContext(normalizerContext),
+              })
+              .pipe(
+                Effect.map((result) => ({
+                  ...result,
+                  repository: repositoryMetadataForClient(
+                    result.repository,
+                    input.supportsForgejo === true,
+                  ),
+                })),
+                Effect.mapError((error) =>
+                  error._tag === "SourceControlRepositoryError"
+                    ? sourceControlErrorForClient(error, input.supportsForgejo === true)
+                    : error,
                 ),
-            }),
+              ),
             { "rpc.aggregate": "source-control" },
           ),
         [WS_METHODS.projectCloneCancel]: (input) =>
@@ -3213,13 +3375,24 @@ const makeWsRpcLayer = (
         [WS_METHODS.projectCloneRetry]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectCloneRetry,
-            projectCloneTracker.retry(input.projectId).pipe(Effect.map((applied) => ({ applied }))),
+            projectCloneTracker.retry(input.projectId).pipe(
+              Effect.map((applied) => ({ applied })),
+              Effect.mapError((error) =>
+                sourceControlErrorForClient(error, input.supportsForgejo === true),
+              ),
+            ),
             { "rpc.aggregate": "source-control" },
           ),
-        [WS_METHODS.subscribeProjectClones]: () =>
-          observeRpcStream(WS_METHODS.subscribeProjectClones, projectCloneTracker.stream, {
-            "rpc.aggregate": "source-control",
-          }),
+        [WS_METHODS.subscribeProjectClones]: (input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeProjectClones,
+            projectCloneTracker.stream.pipe(
+              Stream.map((snapshots) =>
+                projectCloneListForClient(snapshots, input.supportsForgejo === true),
+              ),
+            ),
+            { "rpc.aggregate": "source-control" },
+          ),
         [WS_METHODS.sourceControlPublishRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlPublishRepository,
@@ -3484,9 +3657,15 @@ const makeWsRpcLayer = (
         [WS_METHODS.subscribeVcsStatus]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeVcsStatus,
-            vcsStatusBroadcaster.streamStatus(input, {
-              automaticRemoteRefreshInterval: automaticGitFetchInterval,
-            }),
+            vcsStatusBroadcaster
+              .streamStatus(input, {
+                automaticRemoteRefreshInterval: automaticGitFetchInterval,
+              })
+              .pipe(
+                Stream.map((event) =>
+                  vcsStatusEventForClient(event, input.supportsForgejo === true),
+                ),
+              ),
             {
               "rpc.aggregate": "vcs",
             },
@@ -3508,7 +3687,11 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsRefreshStatus]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsRefreshStatus,
-            vcsStatusBroadcaster.refreshStatus(input.cwd),
+            vcsStatusBroadcaster
+              .refreshStatus(input.cwd)
+              .pipe(
+                Effect.map((status) => vcsStatusForClient(status, input.supportsForgejo === true)),
+              ),
             {
               "rpc.aggregate": "vcs",
             },
@@ -3588,7 +3771,10 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateWorktree,
-            gitWorkflow.createWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            resolveWorktreeSubmodulesForCwd(input.cwd).pipe(
+              Effect.flatMap((submodules) => gitWorkflow.createWorktree(input, { submodules })),
+              Effect.tap(() => refreshGitStatus(input.cwd)),
+            ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsRemoveWorktree]: (input) =>
@@ -3745,13 +3931,15 @@ const makeWsRpcLayer = (
         [WS_METHODS.deviceList]: (input) =>
           observeRpcEffect(
             WS_METHODS.deviceList,
-            input.inspectOnly
+            input.inspectOnly && !input.updateTool
               ? deviceService.inspect
               : authorizeEffect(
                   requiredScopeForDeviceList(input),
-                  input.retryHostId
-                    ? deviceService.retryHost(input.retryHostId)
-                    : deviceService.list,
+                  input.updateTool
+                    ? deviceService.updateTool(input.updateTool)
+                    : input.retryHostId
+                      ? deviceService.retryHost(input.retryHostId)
+                      : deviceService.list,
                 ),
             {
               "rpc.aggregate": "device",
@@ -4080,6 +4268,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                           BitbucketApi.layer,
                           GitHubCli.layer,
                           GitLabCli.layer,
+                          ForgejoCli.layer,
                         ),
                       ),
                       Layer.provideMerge(GitVcsDriver.layer),

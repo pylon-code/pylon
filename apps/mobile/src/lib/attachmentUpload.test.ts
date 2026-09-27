@@ -15,6 +15,11 @@ const mocks = vi.hoisted(() => ({
   writeFile: vi.fn(),
   deleteFile: vi.fn(),
   readBase64: vi.fn(),
+  pastedTextLease: null as null | { readonly state: object },
+}));
+
+vi.mock("../state/pasted-text-capability", () => ({
+  connectedPastedTextAttachmentLease: () => mocks.pastedTextLease,
 }));
 
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({
@@ -93,6 +98,7 @@ vi.mock("expo-file-system", () => ({
 
 import {
   prepareTurnAttachments,
+  preparedPastedTextLeaseCurrent,
   releasePendingAttachmentUploads,
   withUploadedMobileAttachmentReferences,
   validateDraftFileAttachments,
@@ -194,6 +200,7 @@ function removeCallsFor(attachmentId: string): number {
 
 describe("prepareTurnAttachments", () => {
   beforeEach(() => {
+    mocks.pastedTextLease = null;
     mocks.documentUri = "file:///documents";
     mocks.createAssetUrl.mockReset();
     mocks.createAssetUrl.mockImplementation((target: unknown) => target);
@@ -238,6 +245,36 @@ describe("prepareTurnAttachments", () => {
     ]);
     expect(prepared.pendingAttachmentIds).toEqual([]);
     expect(mocks.upload).not.toHaveBeenCalled();
+  });
+
+  it("keeps a marked draft when an old server lacks the pasted-text capability", async () => {
+    const marked = { ...file, source: { _tag: "pasted-text" as const } };
+    await expect(prepareTurnAttachments({ environmentId, attachments: [marked] })).rejects.toThrow(
+      "Pasted-text attachments require the connected server",
+    );
+    expect(mocks.upload).not.toHaveBeenCalled();
+  });
+
+  it("rejects a same-ID server replacement after upload without sending old marked bytes", async () => {
+    const oldState = {};
+    mocks.pastedTextLease = { state: oldState };
+    mocks.upload.mockImplementation(async () => {
+      mocks.pastedTextLease = { state: {} };
+      return { status: 204, body: "", headers: {} };
+    });
+    const marked = { ...file, source: { _tag: "pasted-text" as const } };
+    await expect(prepareTurnAttachments({ environmentId, attachments: [marked] })).rejects.toThrow(
+      "Pasted-text attachments require the connected server",
+    );
+    expect(removeCallsFor(MINTED_ID)).toBe(1);
+    mocks.pastedTextLease = { state: oldState };
+    mocks.upload.mockResolvedValue({ status: 204, body: "", headers: {} });
+    const prepared = await prepareTurnAttachments({ environmentId, attachments: [marked] });
+    expect(prepared.status).toBe("ready");
+    if (prepared.status !== "ready") return;
+    expect(preparedPastedTextLeaseCurrent(environmentId, prepared)).toBe(true);
+    mocks.pastedTextLease = { state: {} };
+    expect(preparedPastedTextLeaseCurrent(environmentId, prepared)).toBe(false);
   });
 
   it("inlines a file-backed image lazily when the server lacks image uploads", async () => {
@@ -360,7 +397,15 @@ describe("prepareTurnAttachments", () => {
   });
 
   it("uploads generic file bytes directly and keeps mixed attachment order", async () => {
-    const prepared = await prepareTurnAttachments({ environmentId, attachments: [file, image] });
+    mocks.pastedTextLease = { state: {} };
+    const pastedFile = {
+      ...file,
+      source: { _tag: "pasted-text" as const },
+    };
+    const prepared = await prepareTurnAttachments({
+      environmentId,
+      attachments: [pastedFile, image],
+    });
 
     expect(mocks.upload).toHaveBeenCalledWith(
       "file:///documents/report.pdf",
@@ -379,11 +424,12 @@ describe("prepareTurnAttachments", () => {
       name: "report.pdf",
       mimeType: "application/pdf",
       sizeBytes: 42,
+      source: { _tag: "pasted-text" },
     });
     expect(prepared.attachments[1]?.type).toBe("image");
     expect(prepared.pendingAttachmentIds).toEqual([MINTED_ID]);
     expect(prepared.draftAttachments[0]).toEqual({
-      ...file,
+      ...pastedFile,
       uploadedAttachmentId: MINTED_ID,
       uploadEnvironmentId: environmentId,
     });

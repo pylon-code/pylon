@@ -7,7 +7,7 @@ import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelector } from "@pierre/trees/react";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { ChevronsDownUpIcon, ChevronsUpDownIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { InputGroup, InputGroupInput } from "~/components/ui/input-group";
@@ -19,6 +19,7 @@ import { useTheme } from "~/hooks/useTheme";
 import { useWorkspaceMutationRefresh } from "~/hooks/useWorkspaceMutationRefresh";
 import { useProjectPathSearch } from "~/state/queries";
 import { readLocalApi } from "~/localApi";
+import { useFileContextMenu, type FileContextMenuAction } from "~/fileContextMenu";
 import { T3_PIERRE_ICONS } from "~/pierre-icons";
 import { PIERRE_TREE_UNSAFE_CSS, pierreTreeStyle } from "~/pierre-tree-theme";
 
@@ -105,6 +106,7 @@ function FileBrowserPanelScoped({
 }: FileBrowserPanelProps) {
   const { resolvedTheme } = useTheme();
   const composerRef = useComposerHandleContext();
+  const fileContextMenu = useFileContextMenu(environmentId, cwd);
   const {
     entries: directoryEntries,
     load,
@@ -167,6 +169,14 @@ function FileBrowserPanelScoped({
       return;
     }
     const relativePath = item.path.replace(/\/$/, "");
+    const fileTarget = {
+      environmentId,
+      filePath: relativePath,
+      workspaceRoot: cwd,
+      fileExists: entryKinds.get(relativePath) === "file",
+    };
+    const fileMenuItems = fileContextMenu.buildItems(fileTarget);
+    const fileMenuScope = fileContextMenu.captureScope(fileTarget);
     const mention = serializeComposerFileLink(relativePath);
     const pointer = contextMenuPointerRef.current;
     const pointerIsFresh = pointer !== null && performance.now() - pointer.at < 1000;
@@ -179,9 +189,11 @@ function FileBrowserPanelScoped({
         [
           { id: "copy-mention", label: "Copy mention" },
           { id: "add-to-chat", label: "Add to chat" },
+          ...fileMenuItems,
         ],
         position,
       );
+      if (!fileContextMenu.isCurrent(fileTarget, fileMenuScope)) return;
       if (clicked === "copy-mention") {
         try {
           await writeTextToClipboard(mention);
@@ -213,13 +225,22 @@ function FileBrowserPanelScoped({
             description: "The chat isn't ready to accept input right now.",
           });
         }
+        return;
+      }
+      if (
+        clicked &&
+        fileMenuItems.some(
+          (item) => item.id === clicked || item.children?.some((child) => child.id === clicked),
+        )
+      ) {
+        await fileContextMenu.activate(clicked as FileContextMenuAction, fileTarget, fileMenuScope);
       }
     } finally {
       context.close();
     }
   };
   const showEntryContextMenuRef = useRef(showEntryContextMenu);
-  useEffect(() => {
+  useLayoutEffect(() => {
     showEntryContextMenuRef.current = showEntryContextMenu;
   });
 

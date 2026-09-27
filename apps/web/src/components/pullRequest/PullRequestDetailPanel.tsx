@@ -36,7 +36,6 @@ import {
   LinkIcon,
   MoreHorizontalIcon,
   PanelRightIcon,
-  PencilIcon,
   PlayIcon,
   RotateCcwIcon,
   TriangleAlertIcon,
@@ -74,7 +73,6 @@ import {
 import {
   changeRequestRepositoryUrl,
   fallbackPullRequestBrowserUrl,
-  gitHubPullRequestBrowserUrl,
 } from "~/lib/openPullRequestLink";
 import { usePreparePullRequestThreadAction } from "~/lib/sourceControlActions";
 import { cn } from "~/lib/utils";
@@ -112,6 +110,7 @@ import {
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { PullRequestEditButton } from "./PullRequestEditButton";
 import { Input } from "../ui/input";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import {
@@ -136,7 +135,7 @@ import { PullRequestsUnavailableState } from "./PullRequestsUnavailableState";
 import type { PullRequestAgentSelectionInput } from "./PullRequestCodeTab";
 import { openOnHostLabel, showPullRequestLinkContextMenu } from "./pullRequestLinkContextMenu";
 import { PullRequestMarkdownContext } from "./PullRequestMarkdown";
-import { PullRequestCommentComposer } from "./PullRequestCommentComposer";
+import { PullRequestComposer } from "./PullRequestComposer";
 import { PullRequestSummaryTab } from "./PullRequestSummaryTab";
 import { PullRequestTimelineTab } from "./PullRequestTimelineTab";
 import {
@@ -149,12 +148,10 @@ import {
   handoffPrompt,
   handoffReviewComments,
   latestPullRequestReviewOutcomes,
-  loadingPullRequestCheckoutCommand,
   isStackedPullRequestBase,
   pullRequestActionMenuHasGroup,
   pullRequestActionNeedsHostRefresh,
-  pullRequestComposerTarget,
-  pullRequestCheckoutCommand,
+  panelPullRequestCheckoutCommand,
   pullRequestFindingKey,
   pullRequestHandoffLabels,
   PULL_REQUEST_MERGE_METHOD_LABELS,
@@ -466,7 +463,16 @@ export function PullRequestDetailPanel({
    * An action changed this pull request on the host, so a list showing it is now out of date.
    * Told rather than assumed: only the page knows whether it is showing one.
    */
-  onActed?: () => void;
+  /**
+   * Each host action as it goes: "sent" the moment it leaves, so a list can answer before the
+   * host does; "done" or "failed" when the host has spoken. Undefined for one the caller cannot
+   * name, which is only ever "done".
+   */
+  onActed?: (
+    action?: PullRequestAction,
+    phase?: "sent" | "done" | "failed",
+    receipt?: symbol,
+  ) => void;
   /** Page-owned detail columns use this to clear the selected pull request. */
   onClose?: () => void;
   /** Keeps surrounding thread state in step with refreshed host state. */
@@ -765,14 +771,13 @@ export function PullRequestDetailPanel({
     repositoryUrl !== null
       ? new URL(`/${encodeURIComponent(detail.author.login)}`, repositoryUrl).toString()
       : null;
-  const checkoutCommand = detail
-    ? pullRequestCheckoutCommand(
-        detail.provider,
-        detail.number,
-        detail.headBranch,
-        detail.headRepositoryNameWithOwner,
-      )
-    : null;
+  const checkoutCommand = panelPullRequestCheckoutCommand({
+    reference,
+    identity: repositoryIdentity,
+    summary: handoffSummary,
+    headRepositoryNameWithOwner: detail?.headRepositoryNameWithOwner,
+    repositoryUrl,
+  });
   const onCheckoutCommandError = useCallback((error: Error) => {
     toastManager.add({
       type: "error",
@@ -835,11 +840,14 @@ export function PullRequestDetailPanel({
     if (!coreDetail) return;
     const next = { key: tabScopeKey, updatedAt: coreDetail.updatedAt };
     if (shouldRefreshPullRequestActivity(activityRevision.current, next)) {
+      // Let an existing read settle before revalidating the new revision. Interrupting a
+      // mutation's activity refresh can leave SWR displaying its previous value.
+      if (activityQuery.isPending) return;
       activityQuery.refresh();
       setRefreshToken((token) => token + 1);
     }
     activityRevision.current = next;
-  }, [activityQuery.refresh, coreDetail, tabScopeKey]);
+  }, [activityQuery.isPending, activityQuery.refresh, coreDetail, tabScopeKey]);
   useLayoutEffect(() => {
     if (!resolvedCoreDetail) return;
     onStateChange?.({
@@ -994,6 +1002,8 @@ export function PullRequestDetailPanel({
     method?: PullRequestMergeMethod,
     updateMethod?: PullRequestUpdateMethod,
   ) => {
+    const receipt = Symbol("pull-request-action");
+    onActed?.(action, "sent", receipt);
     const result = await runAction({
       environmentId,
       input: {
@@ -1021,6 +1031,7 @@ export function PullRequestDetailPanel({
         title: ACTION_FAILURE_LABELS[action],
         description: readableFailure(failure, hint),
       });
+      onActed?.(action, "failed", receipt);
       return false;
     }
     toastManager.add({ type: "success", title: ACTION_SUCCESS_LABELS[action] });
@@ -1034,7 +1045,7 @@ export function PullRequestDetailPanel({
     } else {
       refreshDetail();
     }
-    onActed?.();
+    onActed?.(action, "done", receipt);
     return true;
   };
 
@@ -1099,10 +1110,9 @@ export function PullRequestDetailPanel({
     reviewComments?: ReadonlyArray<ReviewCommentContext>;
   };
 
-  // Beside the thread whose own pull request this is, a task belongs in that thread's composer:
-  // the branch is already checked out under it, so opening a second thread would only scatter
-  // the work.
-  const attachTarget = pullRequestComposerTarget(context, composerDraftTarget);
+  // A detail panel beside an active composer keeps hand-offs in that thread even when the
+  // inspected pull request is not its checkout. `context` still controls checkout-only actions.
+  const attachTarget = composerDraftTarget ?? null;
   const handoffLabels = pullRequestHandoffLabels(attachTarget !== null);
 
   const writeTaskToComposer = (target: ScopedThreadRef | DraftId, task: ThreadTask) => {
@@ -2417,15 +2427,10 @@ export function PullRequestDetailPanel({
                       <TooltipPopup side="top">{detail.title}</TooltipPopup>
                     </Tooltip>
                     {canEditPullRequestChangeRequest(detail) ? (
-                      <Button
-                        size="icon-xs"
-                        variant="ghost"
-                        className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+                      <PullRequestEditButton
                         aria-label="Edit title"
                         onClick={() => setTitleScope({ pullRequestKey, text: detail.title })}
-                      >
-                        <PencilIcon className="size-3" />
-                      </Button>
+                      />
                     ) : null}
                   </div>
                 ) : (
@@ -2833,9 +2838,9 @@ export function PullRequestDetailPanel({
       </div>
 
       {/* Float over the content; do not reserve a footer or padding in the PR tabs. */}
-      {detail?.capabilities.comment && detail.viewerPermissions.comment ? (
+      {detail ? (
         <div className="absolute right-4 bottom-3 z-20">
-          <PullRequestCommentComposer
+          <PullRequestComposer
             key={JSON.stringify([
               environmentId,
               reference.projectId,
@@ -2849,6 +2854,7 @@ export function PullRequestDetailPanel({
             actionPending={actionPending}
             onCommentAction={performCommentAction}
             onCommented={refreshDetail}
+            onReviewSubmitted={refreshDetail}
           />
         </div>
       ) : null}

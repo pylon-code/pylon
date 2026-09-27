@@ -4,11 +4,42 @@ import { describe, expect, it } from "vite-plus/test";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { HomeProjectScope } from "../home/homeThreadList";
 import {
+  filterProjectScopes,
   getProjectScopeAccessibilityLabel,
   getProjectScopeSelectionTarget,
   resolveDraftProjectSelection,
   resolveEnvironmentProjectMatch,
 } from "./new-task-project-selection";
+
+describe("filterProjectScopes", () => {
+  const local = makeProject("code", "mac", { title: "Desktop checkout" });
+  const remote = makeProject("remote-code", "server", {
+    workspaceRoot: "/srv/remote-workspace",
+  });
+  const code = makeScope([local, remote]);
+  const docs = { ...makeScope([makeProject("docs")]), key: "docs", title: "Documentation" };
+  const scopes = [code, docs];
+
+  it("keeps all scopes for an empty or whitespace query", () => {
+    expect(filterProjectScopes(scopes, "")).toBe(scopes);
+    expect(filterProjectScopes(scopes, "  ")).toBe(scopes);
+  });
+
+  it("finds logical names, project titles and workspace paths without case sensitivity", () => {
+    expect(filterProjectScopes(scopes, "  T3 CODE ")).toEqual([code]);
+    expect(filterProjectScopes(scopes, "DESKTOP")).toEqual([code]);
+    expect(filterProjectScopes(scopes, "REMOTE-WORKSPACE")).toEqual([code]);
+    expect(filterProjectScopes(scopes, "documentation")).toEqual([docs]);
+    expect(filterProjectScopes(scopes, "missing-project")).toEqual([]);
+  });
+
+  it("keeps every workspace and the preferred environment when one workspace matches", () => {
+    const matches = filterProjectScopes(scopes, "REMOTE-WORKSPACE");
+    expect(matches[0]).toBe(code);
+    expect(getProjectScopeSelectionTarget(matches[0]!, EnvironmentId.make("mac"))).toBe(local);
+    expect(code.projects).toEqual([local, remote]);
+  });
+});
 
 function makeProject(
   id: string,

@@ -54,6 +54,7 @@ import { AndroidHomeFabLayout } from "../home/AndroidHomeFab";
 import { HomeListOptionsProvider } from "../home/home-list-options";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { ThreadNavigationSidebar } from "../threads/ThreadNavigationSidebar";
+import { RenderErrorBoundary, RenderFailureView } from "../../components/RenderErrorBoundary";
 import { WORKSPACE_PANE_TIMING } from "./workspace-pane-animation";
 import { WorkspaceInspectorPane } from "./workspace-inspector-pane";
 import { WorkspaceContentWidthContext } from "./workspace-content-width";
@@ -561,21 +562,31 @@ function AdaptiveWorkspaceLayoutContent(
               style={sidebarAnimatedStyle}
             >
               <View className="flex-1" style={{ width: layout.listPaneWidth }}>
-                <AndroidHomeFabLayout onStartNewTask={handleStartNewTask}>
-                  <ThreadNavigationSidebar
-                    width={layout.listPaneWidth}
-                    visible={panes.primarySidebarVisible}
-                    onRequestVisibility={revealPrimarySidebar}
-                    selectedThreadKey={selectedThreadKey}
-                    onOpenSettings={handleOpenSettings}
-                    onOpenEnvironmentSettings={handleOpenEnvironmentSettings}
-                    onNewThreadInProject={handleNewThreadInProject}
-                    onNewThreadOnBranch={handleNewThreadOnBranch}
-                    onSelectThread={handleSelectThread}
-                    onSearchQueryChange={setPrimarySidebarSearchQuery}
-                    searchQuery={primarySidebarSearchQuery}
-                  />
-                </AndroidHomeFabLayout>
+                <RenderErrorBoundary
+                  renderFallback={(fallback) => (
+                    <RenderFailureView
+                      {...fallback}
+                      title="The sidebar couldn't be displayed"
+                      exit={{ label: "Open settings", onPress: handleOpenSettings }}
+                    />
+                  )}
+                >
+                  <AndroidHomeFabLayout onStartNewTask={handleStartNewTask}>
+                    <ThreadNavigationSidebar
+                      width={layout.listPaneWidth}
+                      visible={panes.primarySidebarVisible}
+                      onRequestVisibility={revealPrimarySidebar}
+                      selectedThreadKey={selectedThreadKey}
+                      onOpenSettings={handleOpenSettings}
+                      onOpenEnvironmentSettings={handleOpenEnvironmentSettings}
+                      onNewThreadInProject={handleNewThreadInProject}
+                      onNewThreadOnBranch={handleNewThreadOnBranch}
+                      onSelectThread={handleSelectThread}
+                      onSearchQueryChange={setPrimarySidebarSearchQuery}
+                      searchQuery={primarySidebarSearchQuery}
+                    />
+                  </AndroidHomeFabLayout>
+                </RenderErrorBoundary>
               </View>
             </Animated.View>
           ) : null}
@@ -601,6 +612,7 @@ function AdaptiveWorkspaceLayoutContent(
             </View>
           </View>
           <WorkspaceInspectorPane
+            pathname={props.pathname}
             renderedInspectorWidth={renderedInspectorWidth}
             active={workspaceInspector?.active ?? false}
             panes={panes}

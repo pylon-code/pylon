@@ -69,3 +69,12 @@ can retry the message after checking that the selected provider is signed in and
 If a late provider response arrives after that timeout, Pylon ignores it. The late response cannot
 revive the failed turn. If retries keep timing out, run the triage command above and include the
 provider name and the time of the failed attempt.
+
+## A Codex thread says it already has an active writer
+
+Codex allows one writer per conversation across every app on your machine. When the same
+conversation is already open somewhere else, most often the Codex desktop app, Pylon cannot resume
+it and the turn fails with a message naming that conversation.
+
+Close the conversation in the other app and send your message again. Pylon does not silently start a
+fresh conversation here, so the thread keeps its history.

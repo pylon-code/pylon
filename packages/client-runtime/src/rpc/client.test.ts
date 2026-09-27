@@ -1,11 +1,14 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  ORCHESTRATION_WS_METHODS,
+  CommandId,
   PreviewTabId,
   ThreadId,
   type PreviewAutomationStreamEvent,
   type PreviewSessionSnapshot,
   type ServerConfig,
+  type ClientOrchestrationCommand,
   type RelayClientInstallProgressEvent,
   type ServerConfigStreamEvent,
   type ServerLifecycleStreamEvent,
@@ -15,6 +18,8 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Latch from "effect/Latch";
+import * as Layer from "effect/Layer";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
@@ -23,6 +28,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
+import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { RpcClientError } from "effect/unstable/rpc";
 
 import {
@@ -34,6 +40,8 @@ import {
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
+import { createAtomCommandScheduler, createRuntimeCommand } from "../state/runtime.ts";
+import { rpcSessionOwner } from "./sessionOwner.ts";
 import {
   EnvironmentRpcRequestObserver,
   request,
@@ -94,6 +102,68 @@ const makeHarness = Effect.fn("TestEnvironmentRpc.makeHarness")(function* () {
 });
 
 describe("environment RPC", () => {
+  it.effect("rejects a queued A-owned inverse after same-ID session B replaces A", () =>
+    Effect.gen(function* () {
+      let bDispatches = 0;
+      const clientA = {
+        [ORCHESTRATION_WS_METHODS.dispatchCommand]: () => Effect.succeed({ sequence: 1 }),
+      } as unknown as WsRpcProtocolClient;
+      const clientB = {
+        [ORCHESTRATION_WS_METHODS.dispatchCommand]: () => {
+          bDispatches += 1;
+          return Effect.succeed({ sequence: 1 });
+        },
+      } as unknown as WsRpcProtocolClient;
+      const harness = yield* makeHarness();
+      const sessionA = session(clientA);
+      yield* SubscriptionRef.set(harness.activeSession, Option.some(sessionA));
+      const runtime = Atom.runtime(
+        Layer.succeed(EnvironmentSupervisor.EnvironmentSupervisor, harness.supervisor),
+      );
+      const scheduler = createAtomCommandScheduler();
+      const concurrency = { mode: "serial" as const, key: () => "thread-1" };
+      const gate = Latch.makeUnsafe();
+      const blocker = createRuntimeCommand(runtime, {
+        label: "test.blocking-command",
+        scheduler,
+        concurrency,
+        execute: () => gate.await,
+      });
+      const inverse = createRuntimeCommand(runtime, {
+        label: "test.queued-inverse",
+        scheduler,
+        concurrency,
+        execute: () =>
+          request(
+            ORCHESTRATION_WS_METHODS.dispatchCommand,
+            {
+              type: "thread.unarchive",
+              commandId: CommandId.make("undo-queued-under-A"),
+              threadId: ThreadId.make("thread-1"),
+            },
+            {
+              expectedSessionOwner: rpcSessionOwner(sessionA),
+            },
+          ),
+      });
+      const registry = AtomRegistry.make();
+      try {
+        const first = blocker.run(registry, undefined);
+        const second = inverse.run(registry, undefined);
+        yield* Effect.promise(() => Promise.resolve());
+        yield* SubscriptionRef.set(harness.activeSession, Option.some(session(clientB)));
+        gate.openUnsafe();
+        yield* Effect.promise(() => first);
+        const result = yield* Effect.promise(() => second);
+        expect(result._tag).toBe("Failure");
+        expect(bDispatches).toBe(0);
+      } finally {
+        gate.openUnsafe();
+        registry.dispose();
+      }
+    }),
+  );
+
   it.effect("registers a fresh preview host after completion without replaying requests", () =>
     Effect.gen(function* () {
       const firstCompleted = yield* Deferred.make<void>();
@@ -332,6 +402,99 @@ describe("environment RPC", () => {
         }),
     );
   }
+
+  it.effect("rejects a queued pasted-text command when its receiving session is older", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const { activeSession, supervisor } = yield* makeHarness();
+      const ready = yield* Deferred.make<void>();
+      const command = {
+        type: "thread.turn.start",
+        message: {
+          attachments: [
+            {
+              type: "file",
+              id: "paste-1",
+              name: "paste.txt",
+              mimeType: "text/plain",
+              sizeBytes: 4,
+              source: { _tag: "pasted-text" },
+            },
+          ],
+        },
+      } as unknown as ClientOrchestrationCommand;
+      const receiver = (label: string, supported: boolean) => ({
+        ...session({
+          [ORCHESTRATION_WS_METHODS.dispatchCommand]: () =>
+            Effect.sync(() => {
+              calls.push(label);
+              return { status: "accepted" };
+            }),
+        } as unknown as WsRpcProtocolClient),
+        initialConfig: Effect.succeed({
+          environment: { capabilities: { pastedTextAttachments: supported } },
+        } as unknown as ServerConfig),
+      });
+      yield* SubscriptionRef.set(activeSession, Option.some(receiver("new", true)));
+      const queued = yield* Deferred.await(ready).pipe(
+        Effect.flatMap(() => request(ORCHESTRATION_WS_METHODS.dispatchCommand, command)),
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.exit,
+        Effect.forkChild,
+      );
+      yield* SubscriptionRef.set(activeSession, Option.some(receiver("old", false)));
+      yield* Deferred.succeed(ready, undefined);
+      const rejected = yield* Fiber.join(queued);
+      expect(Exit.isFailure(rejected)).toBe(true);
+      expect(calls).toEqual([]);
+
+      const question = {
+        type: "thread.user-input.respond",
+        attachmentsByQuestionId: {
+          question: [
+            {
+              type: "file",
+              id: "paste-1",
+              name: "paste.txt",
+              mimeType: "text/plain",
+              sizeBytes: 4,
+              source: { _tag: "pasted-text" },
+            },
+          ],
+        },
+      } as unknown as ClientOrchestrationCommand;
+      const rejectedQuestion = yield* request(
+        ORCHESTRATION_WS_METHODS.dispatchCommand,
+        question,
+      ).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.exit,
+      );
+      expect(Exit.isFailure(rejectedQuestion)).toBe(true);
+      expect(calls).toEqual([]);
+
+      const ordinary = {
+        type: "thread.turn.start",
+        message: {
+          attachments: [
+            {
+              type: "file",
+              id: "normal",
+              name: "normal.txt",
+              mimeType: "text/plain",
+              sizeBytes: 4,
+            },
+          ],
+        },
+      } as unknown as ClientOrchestrationCommand;
+      const allowed = yield* request(ORCHESTRATION_WS_METHODS.dispatchCommand, ordinary).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.exit,
+      );
+      expect(Exit.isSuccess(allowed)).toBe(true);
+      expect(calls).toEqual(["old"]);
+    }),
+  );
 
   it.effect("observes unary requests until they complete", () =>
     Effect.gen(function* () {

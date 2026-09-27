@@ -189,7 +189,7 @@ function ProviderAuthEmail(props: {
   if (!trimmed) return null;
 
   return (
-    <span className="inline-flex min-w-0 items-center gap-1.5">
+    <span className="inline-flex min-w-0 max-w-full items-baseline gap-1.5">
       {props.separator ? <span aria-hidden>·</span> : null}
       {props.prefix ? <span className="text-muted-foreground/80">{props.prefix}</span> : null}
       <RedactedSensitiveText
@@ -917,7 +917,7 @@ export function ProviderInstanceCard({
     <span className={cn("size-1.5 shrink-0 rounded-full", statusStyle.dot)} aria-hidden />
   ) : null;
   const statusLineClassName =
-    "flex min-w-0 flex-wrap items-center gap-x-1.5 text-[13px] leading-[1.45] text-muted-foreground/80";
+    "flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-[13px] leading-[1.45] text-muted-foreground/80";
 
   // The editor's status line. It doubles as the account identity row, so the
   // redacted email lives here rather than in the list, where a masked address
