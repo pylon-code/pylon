@@ -1369,10 +1369,9 @@ it.layer(
     }),
   );
 
-  it.effect("keeps terminals that get input or output while closeCompletedSetup checks them", () =>
+  it.effect("keeps a terminal that emits output during completion inspection", () =>
     Effect.gen(function* () {
       const ptyAdapter = new FakePtyAdapter();
-      // The typed command's process misses the snapshot, but its input or echo lands.
       let duringCheck: (pid: number) => Effect.Effect<void> = () => Effect.void;
       const { manager, getEvents } = yield* createManager(5, {
         ptyAdapter,
@@ -1382,35 +1381,65 @@ it.layer(
             Effect.as({ hasRunningSubprocess: false, childCommand: null, processIds: [] }),
           ),
       });
-      yield* manager.open(openInput({ terminalId: "typed" }));
       yield* manager.open(openInput({ terminalId: "echoed" }));
-      yield* manager.write({ threadId: "thread-1", terminalId: "typed", data: "setup\r" });
       yield* manager.write({ threadId: "thread-1", terminalId: "echoed", data: "setup\r" });
-      const [typed, echoed] = ptyAdapter.processes;
-      duringCheck = (pid) =>
-        pid === typed!.pid
-          ? manager
-              .write({ threadId: "thread-1", terminalId: "typed", data: "make build\r" })
-              .pipe(Effect.orDie)
-          : Effect.gen(function* () {
-              echoed!.emitData("make build\r\n");
-              yield* waitFor(
-                Effect.map(getEvents, (events) => events.some((event) => event.type === "output")),
-              );
-            }).pipe(Effect.orDie);
+      const [echoed] = ptyAdapter.processes;
+      duringCheck = () =>
+        Effect.gen(function* () {
+          echoed!.emitData("make build\r\n");
+          yield* waitFor(
+            Effect.map(getEvents, (events) => events.some((event) => event.type === "output")),
+          );
+        }).pipe(Effect.orDie);
 
-      yield* manager.closeCompletedSetup({
-        threadId: "thread-1",
-        terminalId: "typed",
-        expectedInputCount: 1,
-      });
       yield* manager.closeCompletedSetup({
         threadId: "thread-1",
         terminalId: "echoed",
         expectedInputCount: 1,
       });
 
-      expect(ptyAdapter.processes.map((process) => process.killed)).toEqual([false, false]);
+      expect(echoed?.killed).toBe(false);
+    }),
+  );
+
+  it.effect("rejects input queued while a completed setup shell closes", () =>
+    Effect.gen(function* () {
+      const inspectionStarted = yield* Deferred.make<void>();
+      const releaseInspection = yield* Deferred.make<void>();
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        subprocessPollIntervalMs: 60_000,
+        subprocessInspector: () =>
+          Deferred.succeed(inspectionStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseInspection)),
+            Effect.as({ hasRunningSubprocess: false, childCommand: null, processIds: [] }),
+          ),
+      });
+      yield* manager.open(openInput({ terminalId: "setup" }));
+      yield* manager.write({ threadId: "thread-1", terminalId: "setup", data: "setup\r" });
+      const closeFiber = yield* manager
+        .closeCompletedSetup({ threadId: "thread-1", terminalId: "setup", expectedInputCount: 1 })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(inspectionStarted);
+      const writeStarted = yield* Deferred.make<void>();
+      const writeFiber = yield* Deferred.succeed(writeStarted, undefined).pipe(
+        Effect.andThen(
+          manager.write({ threadId: "thread-1", terminalId: "setup", data: "read\r" }),
+        ),
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(writeStarted);
+      yield* Effect.yieldNow;
+      expect(ptyAdapter.processes[0]?.writes).toEqual(["setup\r"]);
+      yield* Deferred.succeed(releaseInspection, undefined);
+      yield* Fiber.join(closeFiber);
+      const writeError = yield* Effect.flip(Fiber.join(writeFiber));
+      expect(writeError).toMatchObject({
+        _tag: "TerminalSessionLookupError",
+        threadId: "thread-1",
+        terminalId: "setup",
+      });
+      expect(ptyAdapter.processes[0]?.writes).toEqual(["setup\r"]);
+      expect(ptyAdapter.processes[0]?.killed).toBe(true);
     }),
   );
 

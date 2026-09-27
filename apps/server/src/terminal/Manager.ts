@@ -2896,7 +2896,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     );
   };
 
-  const write: TerminalManager["Service"]["write"] = Effect.fn("terminal.write")(function* (input) {
+  const writeLocked = Effect.fn("terminal.write")(function* (input: TerminalWriteInput) {
     const terminalId = input.terminalId;
     const session = yield* requireSession(input.threadId, terminalId);
     const process = session.process;
@@ -2919,6 +2919,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         }),
     });
   });
+
+  const write: TerminalManager["Service"]["write"] = (input) =>
+    withThreadLock(input.threadId, writeLocked(input));
 
   const resizeLocked = Effect.fn("terminal.resize")(function* (input: TerminalResizeInput) {
     const session = yield* getSession(input.threadId, input.terminalId);
@@ -3083,9 +3086,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         ) {
           return;
         }
-        // A command started during the process check can miss the snapshot,
-        // but its input or echo still lands. Both counters only grow, so the
-        // sum changes when either one does.
+        // Writes share this thread lock, while PTY output can still arrive
+        // during inspection. Keep the activity check for that output.
         const activityMark = (session: TerminalSessionState) =>
           session.eventSequence + session.inputCount;
         const mark = activityMark(session);
