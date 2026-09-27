@@ -58,6 +58,7 @@ const baseContextInput = {
     logsDir: "/home/u/.t3/userdata/logs",
     serviceLogPath: "/home/u/.t3/userdata/logs/boot-service.log",
     desktopBackendLogGlob: "/home/u/.t3/userdata/logs/server-child*.log*",
+    desktopDevelopmentBackendLogGlob: "/home/u/.pylon-code/dev/logs/server-child*.log*",
     serverTracePath: "/home/u/.t3/userdata/logs/server.trace.ndjson",
     providerEventLogPath: "/home/u/.t3/userdata/logs/provider/events.log",
     terminalLogsDir: "/home/u/.t3/userdata/logs/terminals",
@@ -73,6 +74,8 @@ it("context file carries every path the playbook depends on", () => {
   assert.include(context, "/home/u/.t3/userdata/logs/server.trace.ndjson");
   assert.include(context, "/home/u/.t3/userdata/logs/boot-service.log");
   assert.include(context, "/home/u/.t3/userdata/logs/server-child*.log*");
+  assert.include(context, "/home/u/.pylon-code/dev/logs/server-child*.log*");
+  assert.include(context, "Desktop development backend logs (development without T3CODE_HOME");
   assert.notInclude(context, "/home/u/.t3/userdata/logs/server.log");
   assert.include(context, "/home/u/.t3/userdata/logs/provider/events.log");
   assert.include(context, "/home/u/.t3/userdata/secrets");

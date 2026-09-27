@@ -191,6 +191,9 @@ export const triageCommand = Command.make("triage", {
       // Code's home would point it at another product's database, logs, and
       // secrets, and the scratch dir below would write into a live T3 install.
       const baseDir = yield* resolveBaseDir(requestedBaseDir);
+      // An implicit desktop development launch writes to the default home's
+      // dev/logs, even when triage itself was invoked with a custom base dir.
+      const defaultBaseDir = yield* resolveBaseDir(undefined);
 
       // Unset by default. `pylon-code/pylon` is private, so pointing triage at
       // it would send users to a tracker they cannot open; inheriting T3's
@@ -241,10 +244,16 @@ export const triageCommand = Command.make("triage", {
             settingsPath: paths.settingsPath,
             logsDir: paths.logsDir,
             // The server writes no log file of its own. Service installs and the
-            // desktop app capture its output. The glob covers every desktop backend
+            // desktop app capture its output. The globs cover all desktop backends
             // (such as WSL) and rotated copies; names come from DesktopObservability.ts.
             serviceLogPath: path.join(paths.logsDir, BootService.BOOT_SERVICE_LOG_FILE),
             desktopBackendLogGlob: path.join(paths.logsDir, "server-child*.log*"),
+            desktopDevelopmentBackendLogGlob: path.join(
+              defaultBaseDir,
+              "dev",
+              "logs",
+              "server-child*.log*",
+            ),
             serverTracePath: paths.serverTracePath,
             providerEventLogPath: paths.providerEventLogPath,
             terminalLogsDir: paths.terminalLogsDir,
