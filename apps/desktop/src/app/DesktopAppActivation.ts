@@ -5,6 +5,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import lockfile from "proper-lockfile";
 
 import {
   DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION,
@@ -106,6 +107,22 @@ function closeServer(server: NodeNet.Server): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
+// The address itself may not exist yet. All Pylon desktop processes sharing
+// this address use the same sibling lock directory for path mutations.
+async function withSocketOwnershipLock<A>(address: string, run: () => Promise<A>): Promise<A> {
+  const release = await lockfile.lock(address, {
+    realpath: false,
+    stale: 10_000,
+    update: 2_000,
+    retries: { retries: 120, factor: 1, minTimeout: 100, maxTimeout: 100 },
+  });
+  try {
+    return await run();
+  } finally {
+    await release();
+  }
+}
+
 /**
  * Serves `t3 app` requests on the local control address until `close`.
  *
@@ -123,6 +140,11 @@ export async function startDesktopAppControlServer(input: {
   readonly handle: (request: DesktopAppActivationRequest) => Promise<DesktopAppActivationResponse>;
   readonly cancel: (requestId: string) => void;
   readonly onReclaimError: (error: unknown) => void;
+  /** Test-only barriers for the cross-process close/takeover interleaving. */
+  readonly testHooks?: {
+    readonly beforeTakeoverLock?: () => void;
+    readonly afterOwnedCloseStat?: () => Promise<void>;
+  };
 }): Promise<RunningControlServer> {
   const sockets = new Set<NodeNet.Socket>();
   const handleConnection = (socket: NodeNet.Socket) => {
@@ -209,12 +231,15 @@ export async function startDesktopAppControlServer(input: {
     try {
       await NodeFSP.chmod(staging, 0o600);
       const inode = await inodeAt(staging);
-      if (mode === "take-over") {
-        await NodeFSP.rename(staging, input.address);
-      } else {
-        await NodeFSP.link(staging, input.address);
-        await NodeFSP.unlink(staging);
-      }
+      if (mode === "take-over") input.testHooks?.beforeTakeoverLock?.();
+      await withSocketOwnershipLock(input.address, async () => {
+        if (mode === "take-over") {
+          await NodeFSP.rename(staging, input.address);
+        } else {
+          await NodeFSP.link(staging, input.address);
+          await NodeFSP.unlink(staging);
+        }
+      });
       return { server, inode };
     } catch (error) {
       await closeServer(server);
@@ -289,9 +314,15 @@ export async function startDesktopAppControlServer(input: {
       for (const socket of sockets) socket.destroy();
       await closeServer(server);
       server.removeAllListeners();
-      if (inode !== null && (await inodeAt(input.address)) === inode) {
-        await NodeFSP.unlink(input.address).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw error;
+      // If profile cleanup already removed the directory, no path remains to
+      // remove. This also avoids creating a lock under a missing parent.
+      if (inode !== null && (await inodeAt(input.address)) !== null) {
+        await withSocketOwnershipLock(input.address, async () => {
+          if ((await inodeAt(input.address)) !== inode) return;
+          await input.testHooks?.afterOwnedCloseStat?.();
+          await NodeFSP.unlink(input.address).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT") throw error;
+          });
         });
       }
     },
