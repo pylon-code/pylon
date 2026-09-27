@@ -735,8 +735,8 @@ describe("EnvironmentRegistry", () => {
         yield* watchDiscoveredCompatibility().pipe(
           Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, {
             ...registry,
-            setCompatibility: (environmentId, error) =>
-              registry.setCompatibility(environmentId, error).pipe(
+            setCompatibility: (environmentId, error, options) =>
+              registry.setCompatibility(environmentId, error, options).pipe(
                 Effect.andThen(
                   Effect.gen(function* () {
                     if (environmentId === RELAY_TARGET.environmentId) {
@@ -869,9 +869,9 @@ describe("EnvironmentRegistry", () => {
         yield* watchDiscoveredCompatibility().pipe(
           Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, {
             ...registry,
-            setCompatibility: (environmentId, error) =>
+            setCompatibility: (environmentId, error, options) =>
               registry
-                .setCompatibility(environmentId, error)
+                .setCompatibility(environmentId, error, options)
                 .pipe(
                   Effect.andThen(
                     environmentId === RELAY_TARGET.environmentId
@@ -907,6 +907,102 @@ describe("EnvironmentRegistry", () => {
         expect((yield* registry.state(TARGET.environmentId)).phase).toBe("connected");
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
+  );
+
+  it.effect.each(["reject", "clear"] as const)(
+    "discovery cannot $1 a direct connection installed while its relay check is paused",
+    (outcome) =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness([RELAY_TARGET]);
+        const environmentId = RELAY_TARGET.environmentId;
+        const entered = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        const applied = yield* Deferred.make<void>();
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          if (outcome === "clear") {
+            yield* registry.setCompatibility(
+              environmentId,
+              new ConnectionBlockedError({ reason: "unsupported", detail: "Old relay error." }),
+            );
+          }
+          const endpoint = {
+            httpBaseUrl: "https://relay.example.test",
+            wsBaseUrl: "wss://relay.example.test",
+            providerKind: "manual" as const,
+          };
+          const discoveryState =
+            yield* SubscriptionRef.make<RelayEnvironmentDiscovery.RelayEnvironmentDiscoveryState>({
+              ...RelayEnvironmentDiscovery.EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE,
+              environments: new Map([
+                [
+                  environmentId,
+                  {
+                    environment: {
+                      environmentId,
+                      label: "Preview server",
+                      endpoint,
+                      linkedAt: "2026-09-25T00:00:00Z",
+                    },
+                    availability: "online" as const,
+                    status: Option.some<RelayEnvironmentStatusResponse>({
+                      environmentId,
+                      endpoint,
+                      status: "online",
+                      checkedAt: "2026-09-25T00:00:00Z",
+                      descriptor: {
+                        environmentId,
+                        label: "Preview server",
+                        platform: { os: "darwin", arch: "arm64" },
+                        serverVersion: "2.0.0",
+                        orchestrationProtocolVersion:
+                          ORCHESTRATION_PROTOCOL_VERSION + (outcome === "reject" ? 1 : 0),
+                        capabilities: { repositoryIdentity: true },
+                      },
+                    }),
+                    error: Option.none(),
+                  },
+                ],
+              ]),
+            });
+          yield* watchDiscoveredCompatibility().pipe(
+            Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, {
+              ...registry,
+              setCompatibility: (id, error, options) =>
+                Effect.gen(function* () {
+                  yield* Deferred.succeed(entered, undefined);
+                  yield* Deferred.await(resume);
+                  yield* registry.setCompatibility(id, error, options);
+                  yield* Deferred.succeed(applied, undefined);
+                }),
+            }),
+            Effect.provideService(
+              RelayEnvironmentDiscovery.RelayEnvironmentDiscovery,
+              RelayEnvironmentDiscovery.RelayEnvironmentDiscovery.of({
+                state: discoveryState,
+                refresh: Effect.void,
+              }),
+            ),
+            Effect.forkScoped,
+          );
+          yield* Deferred.await(entered);
+          yield* registry.registerPlatform(
+            new PrimaryConnectionRegistration({
+              target: new PrimaryConnectionTarget({ ...TARGET, environmentId }),
+            }),
+          );
+          if (outcome === "clear") {
+            yield* registry.setCompatibility(
+              environmentId,
+              new ConnectionBlockedError({ reason: "unsupported", detail: "Direct socket error." }),
+            );
+          }
+          const before = (yield* SubscriptionRef.get(registry.entries)).get(environmentId);
+          yield* Deferred.succeed(resume, undefined);
+          yield* Deferred.await(applied);
+          expect((yield* SubscriptionRef.get(registry.entries)).get(environmentId)).toEqual(before);
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+      }),
   );
 
   it.effect("discovery keeps unsupported environments off until compatibility changes", () =>
