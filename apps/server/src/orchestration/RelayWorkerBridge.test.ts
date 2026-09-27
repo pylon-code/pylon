@@ -1291,6 +1291,284 @@ persistence("Relay progress-only outage", (it) => {
 });
 
 persistence("Relay startup receipt adoption", (it) => {
+  it.effect(
+    "does not replay retained terminal history, but recovers active work and later resumes",
+    () => {
+      const cli = fakeRelayCli();
+      return Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const engine = recordingEngine(sql);
+        const boot = () =>
+          makeWithCliPath(cli.path).pipe(
+            Effect.provideService(OrchestrationEngineService, engine),
+            Effect.provideService(ServerEnvironment, fakeEnvironment),
+            Effect.provideService(ThreadBackgroundLivenessService, makeLiveness()),
+          );
+        const statuses = [
+          "completed",
+          "failed",
+          "cancelled",
+          "interrupted",
+          "timed_out",
+          "output_limit",
+          "blocked_permissions",
+          "needs_review",
+        ];
+        const jobs = statuses.map((status, index) => ({
+          schemaVersion: 1 as const,
+          kind: "job" as const,
+          id: `job-aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, "0")}`,
+          attempt: 1,
+          sequence: 1,
+          status,
+        }));
+        const activeJob = { ...jobs[0]!, id: jobId, status: "running" };
+        const pendingJob = { ...jobs[0]!, id: replacementJobId, pending: true };
+        const state = Object.fromEntries(
+          [...jobs, activeJob, pendingJob].map((job, index) => [
+            job.id,
+            index < jobs.length && index % 2 === 1
+              ? {
+                  id: job.id,
+                  status: job.status,
+                  createdAt: "2026-09-20T00:00:00.000Z",
+                  updatedAt: "2026-09-20T00:01:00.000Z",
+                }
+              : job,
+          ]),
+        );
+        cli.setState(state);
+        // Mix old bindings from the previously disabled observer with direct
+        // receipts lost in the crash window before binding registration.
+        const old = yield* boot();
+        for (const [index, job] of [...jobs, activeJob, pendingJob].entries()) {
+          const event = toolEvent({
+            toolName: "mcp__relay__relay_delegate",
+            itemId: `dispatch-${index}`,
+            result: { structuredContent: { schemaVersion: 1, kind: "job", jobId: job.id } },
+          });
+          if (index % 2 === 0) yield* old.recordToolResult(event);
+          else
+            yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+          ) VALUES (
+            ${`receipt-${index}`}, 'thread-a', 'turn-a', 'tool', 'tool.completed', 'Relay delegate',
+            ${encodeJson({ ...event.payload, toolCallId: String(event.itemId) })},
+            '2026-09-20T00:00:00.000Z'
+          )
+        `;
+        }
+        const bridge = yield* boot();
+        yield* bridge.reconcile;
+        const taskIds = yield* sql`
+        SELECT DISTINCT json_extract(payload_json, '$.taskId') AS taskId
+        FROM projection_thread_activities WHERE kind LIKE 'task.%' ORDER BY taskId
+      `;
+        expect(taskIds).toEqual(
+          [jobId, replacementJobId].sort().map((id) => ({ taskId: `relay:${id}` })),
+        );
+        const retired = yield* sql`
+        SELECT COUNT(*) AS n FROM projection_thread_activities
+        WHERE kind = 'relay.binding' AND json_extract(payload_json, '$.retiredAfterRowId') IS NOT NULL
+      `;
+        expect(retired[0]?.n).toBe(jobs.length);
+
+        // The workers shown as active before shutdown must still settle if
+        // they finish while Pylon is offline.
+        cli.setState({
+          ...state,
+          [jobId]: { ...activeJob, sequence: 2, status: "completed" },
+          [replacementJobId]: { ...pendingJob, pending: false, sequence: 2 },
+        });
+        const beforeRestart = cli.calls().length;
+        const restarted = yield* boot();
+        yield* restarted.reconcile;
+        expect(
+          cli
+            .calls()
+            .slice(beforeRestart)
+            .some((args) => jobs.some((job) => args.includes(job.id))),
+        ).toBe(false);
+        const completed =
+          yield* sql`SELECT activity_id FROM projection_thread_activities WHERE kind = 'task.completed'`;
+        expect(completed).toHaveLength(2);
+        const beforeSecondRestart = cli.calls().length;
+        yield* (yield* boot()).reconcile;
+        expect(cli.calls()).toHaveLength(beforeSecondRestart);
+
+        // A live dispatch that finishes before the first poll still belongs
+        // in the UI, and a suppressed historical worker can be resumed.
+        yield* restarted.recordToolResult(
+          toolEvent({
+            toolName: "mcp__relay__relay_delegate",
+            result: {
+              structuredContent: { schemaVersion: 1, kind: "job", jobId: panelInitialJobId },
+            },
+          }),
+        );
+        cli.setState({
+          ...state,
+          [panelInitialJobId]: { ...activeJob, id: panelInitialJobId, status: "completed" },
+        });
+        yield* restarted.reconcile;
+        yield* restarted.recordToolResult(
+          toolEvent({
+            toolName: "mcp__relay__relay_resume",
+            itemId: "resume-old",
+            turnId: "turn-new",
+            result: {
+              structuredContent: { schemaVersion: 1, kind: "job", jobId: jobs[0]!.id, attempt: 2 },
+            },
+          }),
+        );
+        const resuming = yield* boot();
+        yield* resuming.reconcile;
+        const premature =
+          yield* sql`SELECT activity_id FROM projection_thread_activities WHERE activity_id = ${`relay-start:${jobs[0]!.id}:2`}`;
+        expect(premature).toHaveLength(0);
+        cli.setState({ ...state, [jobs[0]!.id]: { ...jobs[0]!, attempt: 2, status: "running" } });
+        yield* resuming.reconcile;
+        const resumed =
+          yield* sql`SELECT turn_id AS turnId FROM projection_thread_activities WHERE activity_id = ${`relay-start:${jobs[0]!.id}:2`}`;
+        expect(resumed).toEqual([{ turnId: "turn-new" }]);
+        const fast =
+          yield* sql`SELECT activity_id FROM projection_thread_activities WHERE activity_id = ${`relay-complete:${panelInitialJobId}:1`}`;
+        expect(fast).toHaveLength(1);
+      }).pipe(Effect.ensuring(Effect.sync(() => cli.cleanup())));
+    },
+  );
+});
+
+persistence("Relay startup panel adoption", (it) => {
+  it.effect("skips settled panels and old members while recovering a running panel", () => {
+    const cli = fakeRelayCli();
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const engine = recordingEngine(sql);
+      const boot = () =>
+        makeWithCliPath(cli.path).pipe(
+          Effect.provideService(OrchestrationEngineService, engine),
+          Effect.provideService(ServerEnvironment, fakeEnvironment),
+          Effect.provideService(ThreadBackgroundLivenessService, makeLiveness()),
+        );
+      const job = {
+        schemaVersion: 1,
+        kind: "job",
+        id: jobId,
+        attempt: 1,
+        sequence: 1,
+        status: "completed",
+      };
+      const running = { ...job, id: replacementJobId, status: "running" };
+      const panel = {
+        schemaVersion: 1,
+        kind: "panel",
+        id: panelId,
+        complete: true,
+        members: [{ index: 0, slotAttempt: 1, state: "started", jobId, job }],
+      };
+      const partialPanelId = "panel-88888888-8888-4888-8888-888888888888";
+      const partial = {
+        ...panel,
+        id: partialPanelId,
+        complete: false,
+        members: [
+          ...panel.members,
+          { index: 1, slotAttempt: 1, state: "unstarted", jobId: null, job: null },
+        ],
+      };
+      const active = {
+        ...panel,
+        id: completedPanelId,
+        complete: false,
+        members: [
+          ...panel.members,
+          { index: 1, slotAttempt: 1, state: "started", jobId: replacementJobId, job: running },
+        ],
+      };
+      cli.setState({
+        [panelId]: panel,
+        [partialPanelId]: partial,
+        [completedPanelId]: active,
+        [jobId]: job,
+        [replacementJobId]: running,
+      });
+      const old = yield* boot();
+      for (const id of [panelId, partialPanelId, completedPanelId])
+        yield* old.recordToolResult(
+          toolEvent({
+            toolName: "mcp__relay__relay_panel",
+            itemId: id,
+            result: { structuredContent: { schemaVersion: 1, kind: "panel", panelId: id } },
+          }),
+        );
+      yield* (yield* boot()).reconcile;
+      const tasks =
+        yield* sql`SELECT DISTINCT json_extract(payload_json, '$.taskId') AS taskId FROM projection_thread_activities WHERE kind LIKE 'task.%' ORDER BY taskId`;
+      expect(tasks).toEqual([
+        { taskId: `relay-panel:${completedPanelId}` },
+        { taskId: `relay-panel:${completedPanelId}:member:1` },
+      ]);
+      const beforeRestart = cli.calls().length;
+      yield* (yield* boot()).reconcile;
+      expect(
+        cli
+          .calls()
+          .slice(beforeRestart)
+          .some(
+            (args) =>
+              args.includes(panelId) || args.includes(partialPanelId) || args.includes(jobId),
+          ),
+      ).toBe(false);
+      // A continuation receipt can be durable before the panel snapshot
+      // catches up. Do not retire it again on the stale, settled snapshot.
+      yield* old.recordToolResult(
+        toolEvent({
+          toolName: "mcp__relay__relay_panel_continue",
+          itemId: "continue-partial",
+          result: {
+            structuredContent: {
+              schemaVersion: 1,
+              kind: "panel",
+              panelId: partialPanelId,
+              jobIds: [panelInitialJobId],
+            },
+          },
+        }),
+      );
+      const continuing = yield* boot();
+      yield* continuing.reconcile;
+      const premature =
+        yield* sql`SELECT activity_id FROM projection_thread_activities WHERE kind = 'task.started' AND json_extract(payload_json, '$.taskId') = ${`relay-panel:${partialPanelId}`}`;
+      expect(premature).toHaveLength(0);
+      const continuedJob = { ...running, id: panelInitialJobId };
+      cli.setState({
+        [partialPanelId]: {
+          ...partial,
+          members: [
+            {
+              index: 0,
+              slotAttempt: 2,
+              state: "started",
+              jobId: panelInitialJobId,
+              job: continuedJob,
+            },
+          ],
+        },
+        [panelInitialJobId]: continuedJob,
+        [completedPanelId]: active,
+        [replacementJobId]: running,
+      });
+      yield* continuing.reconcile;
+      const continued =
+        yield* sql`SELECT activity_id FROM projection_thread_activities WHERE kind = 'task.started' AND json_extract(payload_json, '$.taskId') = ${`relay-panel:${partialPanelId}:member:0`}`;
+      expect(continued).toHaveLength(1);
+    }).pipe(Effect.ensuring(Effect.sync(() => cli.cleanup())));
+  });
+});
+
+persistence("Relay missing historical jobs", (it) => {
   it.effect("stays silent about adopted historical jobs it never projected", () => {
     const cli = fakeRelayCli();
     // The startup scan adopts every persisted Relay receipt, including turns

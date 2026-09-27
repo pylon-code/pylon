@@ -558,6 +558,14 @@ export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const toolOrigins = new Map<string, string>();
+  for (const activity of ordered) {
+    if (activity.kind !== "tool.started" && activity.kind !== "tool.completed") continue;
+    const toolCallId = extractToolCallId(asRecord(activity.payload));
+    if (!toolCallId) continue;
+    const key = `${activity.turnId ?? ""}:${toolCallId}`;
+    if (!toolOrigins.has(key)) toolOrigins.set(key, activity.createdAt);
+  }
   // A task's agent-vs-background identity is resolved from the whole thread,
   // not from each row: an orphaned shell task settled by a later process
   // reports only its id and status, and judging that bare row alone turned
@@ -606,7 +614,16 @@ export function deriveWorkLogEntries(
     if (isNoContentRuntimeWarning(activity)) continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     if (isAgentInternalActivity(activity, backgroundTaskIds)) continue;
-    entries.push(toDerivedWorkLogEntry(activity, backgroundTaskIds));
+    const entry = toDerivedWorkLogEntry(activity, backgroundTaskIds);
+    const payload = asRecord(activity.payload);
+    const origin =
+      payload?.source === "relay" && typeof payload.toolUseId === "string"
+        ? toolOrigins.get(`${activity.turnId ?? ""}:${payload.toolUseId}`)
+        : undefined;
+    // Older servers backfilled Relay lifecycle rows at restart time. Keep
+    // their cards beside the exact dispatch, without rewriting saved history
+    // or moving native agents and unrelated invocations with reused IDs.
+    entries.push(origin && origin < entry.createdAt ? { ...entry, createdAt: origin } : entry);
   }
   return collapseDerivedWorkLogEntries(entries);
 }

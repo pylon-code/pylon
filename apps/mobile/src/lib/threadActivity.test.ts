@@ -3667,6 +3667,70 @@ describe("quiet timeline: nested agents", () => {
     },
   );
 
+  it("places recovered Relay cards beside their original dispatch after history pagination", () => {
+    const oldTime = "2026-09-24T10:00:00.000Z";
+    const restartTime = "2026-09-27T11:00:00.000Z";
+    const receipt = makeActivity({
+      id: EventId.make("original-dispatch"),
+      kind: "tool.completed",
+      summary: "Relay dispatch",
+      turnId: TurnId.make("old-turn"),
+      createdAt: oldTime,
+      sequence: 1,
+      payload: { toolCallId: "dispatch", status: "completed", itemType: "mcp_tool_call" },
+    });
+    const start = makeActivity({
+      id: EventId.make("recovered-start"),
+      kind: "task.started",
+      summary: "Relay worker started",
+      turnId: TurnId.make("old-turn"),
+      createdAt: restartTime,
+      sequence: 100,
+      payload: {
+        taskId: "relay:job-old",
+        agentKind: "agent",
+        source: "relay",
+        toolUseId: "dispatch",
+        timelineBypass: true,
+      },
+    });
+    const recent = makeActivity({
+      id: EventId.make("recent-work"),
+      kind: "tool.completed",
+      summary: "Recent work",
+      turnId: TurnId.make("new-turn"),
+      createdAt: "2026-09-27T10:00:00.000Z",
+      sequence: 2,
+      payload: { toolCallId: "new-dispatch", status: "completed" },
+    });
+    const rows = (activities: ReadonlyArray<OrchestrationThreadActivity>) =>
+      buildThreadFeed(
+        makeThread({
+          id: ThreadId.make("relay-thread"),
+          projectId: ProjectId.make("project-1"),
+          title: "Relay recovery",
+          activities,
+        }),
+      ).flatMap((entry) => (entry.type === "activity-group" ? entry.activities : []));
+    expect(rows([start, recent]).find((entry) => entry.workEntry.agentSpawn)?.createdAt).toBe(
+      restartTime,
+    );
+    const recoveredRows = rows([receipt, recent, start]);
+    expect(recoveredRows.find((entry) => entry.workEntry.agentSpawn)?.createdAt).toBe(oldTime);
+    expect(recoveredRows.findIndex((entry) => entry.workEntry.agentSpawn)).toBeLessThan(
+      recoveredRows.findIndex((entry) => entry.id === "recent-work"),
+    );
+    expect(start.createdAt).toBe(restartTime);
+    const native = {
+      ...start,
+      id: EventId.make("native-start"),
+      payload: { taskId: "native", agentKind: "agent", toolUseId: "dispatch" },
+    };
+    expect(rows([receipt, native]).find((entry) => entry.workEntry.agentSpawn)?.createdAt).toBe(
+      restartTime,
+    );
+  });
+
   it("folds bypassed Claude workflow members into the coordinator's batch and settles them with it", () => {
     const turnId = TurnId.make("turn-workflow");
     const at = (seconds: number) => `2026-04-01T00:00:${String(seconds).padStart(2, "0")}.000Z`;

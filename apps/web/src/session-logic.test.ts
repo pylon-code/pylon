@@ -2463,6 +2463,79 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
     expect(entries[0]!.agentSpawn?.agentTaskIds).toEqual(["child-1", "child-2"]);
   });
 
+  it("anchors recovered Relay cards to their exact dispatch instead of restart time", () => {
+    const oldTime = "2026-09-24T10:00:00.000Z";
+    const newTime = "2026-09-27T10:00:00.000Z";
+    const restartTime = "2026-09-27T11:00:00.000Z";
+    const receipt = makeActivity({
+      id: "original-dispatch",
+      kind: "tool.completed",
+      turnId: "old-turn",
+      createdAt: oldTime,
+      sequence: 1,
+      payload: { toolCallId: "dispatch", status: "completed", itemType: "mcp_tool_call" },
+    });
+    const start = makeActivity({
+      id: "recovered-start",
+      kind: "task.started",
+      turnId: "old-turn",
+      createdAt: restartTime,
+      sequence: 100,
+      payload: {
+        taskId: "relay:job-old",
+        source: "relay",
+        toolUseId: "dispatch",
+        timelineBypass: true,
+      },
+    });
+    const recent = makeActivity({
+      id: "recent-work",
+      kind: "tool.completed",
+      turnId: "new-turn",
+      createdAt: newTime,
+      sequence: 2,
+      payload: { toolCallId: "dispatch", status: "completed" },
+    });
+    // Deriving a paginated window first must not poison the cached row when
+    // its exact receipt later arrives. Reused IDs in another turn do not match.
+    expect(deriveWorkLogEntries([start, recent]).find((entry) => entry.agentSpawn)?.createdAt).toBe(
+      restartTime,
+    );
+    const entries = deriveWorkLogEntries([
+      receipt,
+      recent,
+      start,
+      makeActivity({
+        kind: "task.completed",
+        turnId: "old-turn",
+        createdAt: restartTime,
+        sequence: 101,
+        payload: {
+          taskId: "relay:job-old",
+          source: "relay",
+          toolUseId: "dispatch",
+          status: "completed",
+          timelineBypass: true,
+        },
+      }),
+    ]);
+    expect(entries.find((entry) => entry.agentSpawn)?.createdAt).toBe(oldTime);
+    expect(deriveTimelineEntries([], [], entries).map((entry) => entry.id)).toEqual([
+      "original-dispatch",
+      "recovered-start",
+      "recent-work",
+    ]);
+    expect(start.createdAt).toBe(restartTime);
+    const native = {
+      ...start,
+      id: EventId.make("native-start"),
+      payload: { taskId: "native", agentKind: "agent", toolUseId: "dispatch" },
+    };
+    expect(
+      deriveWorkLogEntries([receipt, native]).find((entry) => entry.agentSpawn)?.createdAt,
+    ).toBe(restartTime);
+  });
+
   it("groups Relay panel members with their coordinator in one Agents CTA", () => {
     const panel = "relay-panel:panel-22222222-2222-4222-8222-222222222222";
     const entries = deriveWorkLogEntries([
