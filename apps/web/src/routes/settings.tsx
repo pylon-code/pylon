@@ -1,18 +1,12 @@
-import {
-  Outlet,
-  createFileRoute,
-  redirect,
-  useCanGoBack,
-  useLocation,
-  useNavigate,
-} from "@tanstack/react-router";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Outlet, createFileRoute, redirect, useLocation } from "@tanstack/react-router";
+import { useEffect, useState, type ReactNode } from "react";
 import { RotateCcwIcon } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 
 import { SettingsBreadcrumb } from "../components/settings/SettingsBreadcrumb";
 import { SidebarInset } from "../components/ui/sidebar";
+import { useNavigateToMainApp } from "../components/sidebar/mainAppLocation";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import {
@@ -116,20 +110,12 @@ function SettingsScopeBoundary({ pathname, children }: { pathname: string; child
 
 function SettingsContentLayout() {
   const location = useLocation();
-  const navigate = useNavigate();
-  const canGoBack = useCanGoBack();
+  const navigateToMainApp = useNavigateToMainApp();
   const { search, selectScope } = useSettingsScope();
   const groups = useSettingsProjectGroups();
   const { environments } = useEnvironments();
   const [restoreSignal, setRestoreSignal] = useState(0);
   const showScope = !DEVICE_ONLY_PATHS.has(location.pathname);
-  const navigateBackWithinApp = useCallback(() => {
-    if (canGoBack) {
-      window.history.back();
-      return;
-    }
-    void navigate({ to: "/" });
-  }, [canGoBack, navigate]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -142,7 +128,7 @@ function SettingsContentLayout() {
           activeElement.blur();
         }
 
-        navigateBackWithinApp();
+        void navigateToMainApp();
       }
     };
 
@@ -150,7 +136,7 @@ function SettingsContentLayout() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [navigateBackWithinApp]);
+  }, [navigateToMainApp]);
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
