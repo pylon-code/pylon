@@ -7,6 +7,7 @@ import {
   loopbackHttpServerTestWithWsDeflate,
 } from "./testUtils/loopbackHttpServer.ts";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "node:crypto";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -189,10 +190,12 @@ import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
+import { REPLAY_MARKER_MAX_AGE } from "./auth/replayMarkers.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as CloudManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts";
+import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import * as CloudCliTokenManager from "./cloud/CliTokenManager.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as HostResources from "./resourceTelemetry/HostResources.ts";
@@ -554,6 +557,7 @@ const buildAppUnderTest = (options?: {
       CloudManagedEndpointRuntime.CloudManagedEndpointRuntime["Service"]
     >;
     relayClient?: Partial<RelayClient.RelayClient["Service"]>;
+    agentAwarenessRelay?: Partial<AgentAwarenessRelay.AgentAwarenessRelay["Service"]>;
     cloudCliTokenManager?: Partial<CloudCliTokenManager.CloudCliTokenManager["Service"]>;
     nativeTelemetryClient?: Partial<NativeTelemetryClient.NativeTelemetryClient["Service"]>;
     desktopTelemetryReceiver?: Partial<
@@ -1212,11 +1216,17 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.succeed(
-          CloudManagedEndpointRuntime.CloudManagedEndpointRuntime,
-          CloudManagedEndpointRuntime.CloudManagedEndpointRuntime.of({
-            applyConfig: () => Effect.succeed({ status: "disabled" }),
-            ...options?.layers?.cloudManagedEndpointRuntime,
+        Layer.mergeAll(
+          Layer.succeed(
+            CloudManagedEndpointRuntime.CloudManagedEndpointRuntime,
+            CloudManagedEndpointRuntime.CloudManagedEndpointRuntime.of({
+              applyConfig: () => Effect.succeed({ status: "disabled" }),
+              ...options?.layers?.cloudManagedEndpointRuntime,
+            }),
+          ),
+          Layer.mock(AgentAwarenessRelay.AgentAwarenessRelay)({
+            requestCatchUp: () => Effect.void,
+            ...options?.layers?.agentAwarenessRelay,
           }),
         ),
       ),
@@ -2654,6 +2664,40 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(loopbackHttpServerTest)),
   );
 
+  it.effect("rejects a DPoP replay by time alone once its marker can be pruned", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+      const credentialResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+        headers: { cookie: ownerCookie },
+        body: yield* HttpBody.json({}),
+      });
+      const credential = (yield* credentialResponse.json) as { readonly credential: string };
+      const tokenUrl = yield* getHttpServerUrl("/oauth/token");
+      const acceptedAt = yield* DateTime.now;
+      // The longest-lived proof: `iat` at the 5 s future skew the verifier allows.
+      const dpop = makeDpopProof({
+        method: "POST",
+        url: tokenUrl,
+        iat: Math.floor(acceptedAt.epochMilliseconds / 1_000) + 5,
+      });
+      const exchange = exchangeAccessToken(credential.credential, {
+        headers: { dpop: dpop.proof },
+        scope: "orchestration:read orchestration:operate terminal:operate review:write",
+      });
+
+      assert.equal((yield* exchange).response.status, 200);
+      // While the proof is fresh, only the replay marker rejects it.
+      assert.equal((yield* exchange).body.dpopFailureReason, "replay");
+      // Once the marker can be pruned, the time check rejects the proof by itself.
+      yield* TestClock.setTime(
+        acceptedAt.epochMilliseconds + Duration.toMillis(REPLAY_MARKER_MAX_AGE),
+      );
+      assert.equal((yield* exchange).body.dpopFailureReason, "time_window");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("ignores forwarded host headers when validating token exchange DPoP URLs", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();
@@ -3088,6 +3132,55 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(pairedBody._tag, "EnvironmentScopeRequiredError");
       assert.equal(pairedBody.requiredScope, "relay:write");
     }).pipe(Effect.provide(loopbackHttpServerTest)),
+  );
+
+  it.effect("wakes the agent awareness relay when this server links or changes publishing", () =>
+    Effect.gen(function* () {
+      let catchUpRequests = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          agentAwarenessRelay: {
+            requestCatchUp: () =>
+              Effect.sync(() => {
+                catchUpRequests += 1;
+              }),
+          },
+        },
+      });
+
+      const cloudKeyPair = NodeCrypto.generateKeyPairSync("ed25519", {
+        privateKeyEncoding: { format: "pem", type: "pkcs8" },
+        publicKeyEncoding: { format: "pem", type: "spki" },
+      });
+      const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+      const relayConfigResponse = yield* fetchEffect(
+        yield* getHttpServerUrl("/api/connect/relay-config"),
+        {
+          method: "POST",
+          headers: { cookie: ownerCookie, "content-type": "application/json" },
+          body: jsonRequestBody({
+            relayUrl: "https://relay.example.test",
+            cloudUserId: "user_123",
+            environmentCredential: "t3env_test_credential",
+            cloudMintPublicKey: cloudKeyPair.publicKey,
+            endpointRuntime: null,
+          }),
+        },
+      );
+      assert.equal(relayConfigResponse.status, 200);
+      assert.equal(catchUpRequests, 1);
+
+      const preferencesResponse = yield* fetchEffect(
+        yield* getHttpServerUrl("/api/connect/preferences"),
+        {
+          method: "POST",
+          headers: { cookie: ownerCookie, "content-type": "application/json" },
+          body: jsonRequestBody({ publishAgentActivity: true }),
+        },
+      );
+      assert.equal(preferencesResponse.status, 200);
+      assert.equal(catchUpRequests, 2);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("rejects relay config with an invalid cloud mint public key", () =>
@@ -3647,6 +3740,82 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(replayBody._tag, "EnvironmentHttpConflictError");
       assert.equal(replayBody.message, "Cloud health request was already consumed.");
     }).pipe(Effect.provide(loopbackHttpServerTest)),
+  );
+
+  it.effect("rejects cloud replays by time alone once their markers can be pruned", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const cloudKeyPair = NodeCrypto.generateKeyPairSync("ed25519", {
+        privateKeyEncoding: { format: "pem", type: "pkcs8" },
+        publicKeyEncoding: { format: "pem", type: "spki" },
+      });
+      const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+      const relayConfigResponse = yield* fetchEffect(
+        yield* getHttpServerUrl("/api/connect/relay-config"),
+        {
+          method: "POST",
+          headers: { cookie: ownerCookie, "content-type": "application/json" },
+          body: jsonRequestBody({
+            relayUrl: "https://relay.example.test",
+            cloudUserId: "user_123",
+            environmentCredential: "t3env_test_credential",
+            cloudMintPublicKey: cloudKeyPair.publicKey,
+            endpointRuntime: null,
+          }),
+        },
+      );
+      assert.equal(relayConfigResponse.status, 200);
+
+      const acceptedAt = yield* DateTime.now;
+      // The longest-lived proofs: `iat` at the 60 s future skew the handlers
+      // allow, and the 5 minute maximum lifetime.
+      const issuedAt = DateTime.add(acceptedAt, { minutes: 1 });
+      const proofTimes = {
+        issuedAt: DateTime.formatIso(issuedAt),
+        expiresAt: DateTime.formatIso(DateTime.add(issuedAt, { minutes: 5 })),
+      };
+      const requests = [
+        [
+          "/api/t3-connect/health",
+          makeCloudEnvironmentHealthRequest({
+            privateKey: cloudKeyPair.privateKey,
+            environmentId: testEnvironmentDescriptor.environmentId,
+            nonce: "cloud-health-nonce-pruned",
+            ...proofTimes,
+          }),
+        ],
+        [
+          "/api/t3-connect/mint-credential",
+          makeCloudMintCredentialRequest({
+            privateKey: cloudKeyPair.privateKey,
+            environmentId: testEnvironmentDescriptor.environmentId,
+            clientProofKeyThumbprint: "client-proof-key-thumbprint",
+            nonce: "cloud-mint-nonce-pruned",
+            ...proofTimes,
+          }),
+        ],
+      ] as const;
+      const postAll = Effect.forEach(requests, ([pathname, request]) =>
+        Effect.gen(function* () {
+          const response = yield* fetchEffect(yield* getHttpServerUrl(pathname), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: jsonRequestBody(request),
+          });
+          return response.status;
+        }),
+      );
+
+      assert.deepStrictEqual(yield* postAll, [200, 200]);
+      // While the proofs are fresh, only the replay markers reject them (409).
+      assert.deepStrictEqual(yield* postAll, [409, 409]);
+      // Once the markers can be pruned, the time checks reject the proofs by themselves (401).
+      yield* TestClock.setTime(
+        acceptedAt.epochMilliseconds + Duration.toMillis(REPLAY_MARKER_MAX_AGE),
+      );
+      assert.deepStrictEqual(yield* postAll, [401, 401]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect(

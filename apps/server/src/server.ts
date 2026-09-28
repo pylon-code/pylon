@@ -116,6 +116,7 @@ import { ObservabilityLive } from "./observability/Layers/Observability.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import { authHttpApiLayer, environmentAuthenticatedAuthLayer } from "./auth/http.ts";
+import * as ReplayMarkers from "./auth/replayMarkers.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import {
@@ -536,8 +537,9 @@ const ProviderRuntimeLayerLive = composeProviderRuntimeLayer({
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services
-  Layer.provideMerge(ServerSettingsLayerLive),
-  Layer.provideMerge(CheckpointingLayerLive),
+  Layer.provideMerge(
+    Layer.mergeAll(ReplayMarkers.layer, ServerSettingsLayerLive, CheckpointingLayerLive),
+  ),
   // `GitHubCli` is the registry's own instance, exposed because the asset route fetches
   // GitHub-hosted pull request media with the repository's credential.
   Layer.provideMerge(
