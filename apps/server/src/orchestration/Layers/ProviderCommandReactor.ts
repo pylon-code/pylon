@@ -812,6 +812,9 @@ const make = Effect.gen(function* () {
       readonly pendingTurnMessageId?: MessageId;
       readonly pendingTurnRequestedAt?: string;
       readonly pendingTurnDeadlineAt?: string;
+      // First-turn prompt seed. A manual title that still equals this seed was
+      // written by the client's auto-title, not a user rename.
+      readonly titleSeed?: string;
       readonly expectedProviderInstanceId?: ProviderInstanceId | null;
       readonly expectedSessionIncarnationId?: TurnAdmissionIntent["expectedSessionIncarnationId"];
     },
@@ -1025,6 +1028,16 @@ const make = Effect.gen(function* () {
           .pipe(Effect.forkIn(reactorScope))
       : Effect.void;
 
+    // OpenCode skips SessionPrompt.ensureTitle when session.create already has
+    // a title. Prompt seeds and "New thread" are not user titles, so omit them
+    // and let the provider generate one. A real rename is source "manual" and
+    // differs from the first-turn prompt seed (the web client writes that seed
+    // through thread.meta.update, which also marks the title manual).
+    const manualTitle = thread.titleState?.source === "manual" ? thread.title.trim() : "";
+    const promptSeed = options?.titleSeed?.trim();
+    const sessionTitle =
+      manualTitle.length > 0 && manualTitle !== promptSeed ? thread.title : undefined;
+
     const startProviderSession = (input?: {
       readonly resumeCursor?: unknown;
       readonly provider?: ProviderDriverKind;
@@ -1035,7 +1048,7 @@ const make = Effect.gen(function* () {
           ...(preferredProvider ? { provider: preferredProvider } : {}),
           providerInstanceId: desiredInstanceId,
           ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
-          ...(thread.title ? { title: thread.title } : {}),
+          ...(sessionTitle ? { title: sessionTitle } : {}),
           modelSelection: desiredModelSelection,
           ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
           runtimeMode: desiredRuntimeMode,
@@ -1290,6 +1303,7 @@ const make = Effect.gen(function* () {
     readonly admissionRequestedAt: string;
     readonly admissionDeadlineAt: string;
     readonly createdAt: string;
+    readonly titleSeed?: string;
   }) {
     const thread = yield* resolveThreadShell(input.threadId);
     if (!thread) {
@@ -1307,6 +1321,7 @@ const make = Effect.gen(function* () {
       runtimeMode: input.runtimeMode,
       interactionMode: input.interactionMode,
       pendingTurnStart: requiresExactAdmission,
+      ...(input.titleSeed !== undefined ? { titleSeed: input.titleSeed } : {}),
       ...(admissionIntent === undefined
         ? {}
         : {
@@ -2010,6 +2025,11 @@ const make = Effect.gen(function* () {
         admissionRequestedAt,
         admissionDeadlineAt,
         createdAt: event.payload.createdAt,
+        // Later turns must not reuse the current title as titleSeed. Only the
+        // first prompt seed should suppress a not-yet-renamed session title.
+        ...(!hasOtherUserMessages && event.payload.titleSeed !== undefined
+          ? { titleSeed: event.payload.titleSeed }
+          : {}),
       });
       if (admissionStopTokens.get(requestId) !== admissionStopToken) {
         return yield* Effect.interrupt;

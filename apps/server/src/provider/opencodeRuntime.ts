@@ -302,7 +302,7 @@ export interface OpenCodeRuntimeShape {
   }) => Effect.Effect<ReadonlyArray<OpenCodeSkill>, OpenCodeRuntimeError>;
 }
 
-function parseServerUrlFromOutput(output: string): string | null {
+export function parseServerUrlFromOutput(output: string): string | null {
   for (const line of output.split("\n")) {
     const match = line.match(/^(?:opencode )?server listening on\s+(https?:\/\/[^\s]+)\s*$/i);
     if (match?.[1]) return match[1];

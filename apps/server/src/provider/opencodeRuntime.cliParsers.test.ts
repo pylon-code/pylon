@@ -6,6 +6,7 @@ import {
   parseAgentListCliOutput,
   parseModelsCliOutput,
   parseSkillsCliOutput,
+  parseServerUrlFromOutput,
   toOpenCodeFileParts,
 } from "./opencodeRuntime.ts";
 
@@ -331,5 +332,27 @@ describe("toOpenCodeFileParts", () => {
     });
 
     NodeAssert.deepEqual(parts, []);
+  });
+});
+
+describe("parseServerUrlFromOutput", () => {
+  it("parses v1 server ready output", () => {
+    const output = "opencode server listening on http://127.0.0.1:4096\n";
+    NodeAssert.equal(parseServerUrlFromOutput(output), "http://127.0.0.1:4096");
+  });
+
+  it("parses v2 server ready output without leading binary name", () => {
+    const output = "server listening on http://127.0.0.1:5123\n";
+    NodeAssert.equal(parseServerUrlFromOutput(output), "http://127.0.0.1:5123");
+  });
+
+  it("ignores unrelated server ready output", () => {
+    const output = "unrelated server listening on http://127.0.0.1:1\n";
+    NodeAssert.equal(parseServerUrlFromOutput(output), null);
+  });
+
+  it("returns null when no ready line is found", () => {
+    const output = "starting server...\nbound to port\n";
+    NodeAssert.equal(parseServerUrlFromOutput(output), null);
   });
 });
