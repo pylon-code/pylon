@@ -304,7 +304,7 @@ export interface OpenCodeRuntimeShape {
 
 export function parseServerUrlFromOutput(output: string): string | null {
   for (const line of output.split("\n")) {
-    const match = line.match(/server listening on\s+(https?:\/\/[^\s]+)/i);
+    const match = line.match(/^(?:opencode )?server listening on\s+(https?:\/\/[^\s]+)\s*$/i);
     if (match?.[1]) return match[1];
   }
   return null;

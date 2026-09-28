@@ -346,9 +346,9 @@ describe("parseServerUrlFromOutput", () => {
     NodeAssert.equal(parseServerUrlFromOutput(output), "http://127.0.0.1:5123");
   });
 
-  it("parses server ready output with prefixes and ANSI codes", () => {
-    const output = "[12:34:56] info: server listening on http://localhost:8080/path?key=1\n";
-    NodeAssert.equal(parseServerUrlFromOutput(output), "http://localhost:8080/path?key=1");
+  it("ignores unrelated server ready output", () => {
+    const output = "unrelated server listening on http://127.0.0.1:1\n";
+    NodeAssert.equal(parseServerUrlFromOutput(output), null);
   });
 
   it("returns null when no ready line is found", () => {
