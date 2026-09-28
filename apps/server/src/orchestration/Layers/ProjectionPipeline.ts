@@ -2456,9 +2456,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ]);
             }),
           );
+          const hasCleanup =
+            attachmentSideEffects.deletedThreadIds.size > 0 ||
+            attachmentSideEffects.prunedThreadRelativePaths.size > 0;
+          if (!hasCleanup) {
+            if (cleanupDone !== null) {
+              cleanupDone = {
+                projector: ATTACHMENT_CLEANUP_CURSOR,
+                lastAppliedSequence: event.sequence,
+                updatedAt: event.occurredAt,
+              };
+            }
+            return Effect.void;
+          }
           // Return the cleanup effect so the caller runs it after the outer transaction commits.
+          // Most events have no cleanup, so they skip the call and write no cleanup span.
           // @effect-diagnostics-next-line returnEffectInGen:off
-          return applyAttachmentSideEffects(event, attachmentSideEffects);
+          return applyAttachmentSideEffects(event, attachmentSideEffects).pipe(Effect.asVoid);
         },
         Effect.catchTag("SqlError", (sqlError) =>
           Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
