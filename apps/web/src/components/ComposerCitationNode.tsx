@@ -16,7 +16,12 @@ import {
   type SerializedLexicalNode,
   type Spread,
 } from "lexical";
-import { createContext, use, type ReactElement } from "react";
+import {
+  createContext,
+  use,
+  type ReactElement,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
 
 import { AssistantCitationChip } from "./chat/AssistantCitationChip";
@@ -115,12 +120,41 @@ function ComposerCitationDecorator(props: { citation: AssistantCitation; nodeKey
     );
     editor.getRootElement()?.focus({ preventScroll: true });
   };
+  const onRestoreFocus = () => {
+    if (!editor.isEditable()) return;
+    editor.update(
+      () => {
+        const node = $getNodeByKey(props.nodeKey);
+        if (node instanceof ComposerCitationNode && node.isAttached()) {
+          node.selectNext();
+        }
+      },
+      { discrete: true },
+    );
+    editor.getRootElement()?.focus({ preventScroll: true });
+  };
   return (
     <span
       className="inline-flex min-w-0 max-w-full"
       contentEditable={false}
       spellCheck={false}
       data-composer-citation-chip="true"
+      onKeyDown={(event: ReactKeyboardEvent<HTMLElement>) => {
+        if (
+          !editor.isEditable() ||
+          event.key !== "Tab" ||
+          event.shiftKey ||
+          event.altKey ||
+          event.metaKey ||
+          event.ctrlKey ||
+          !(event.target instanceof HTMLElement) ||
+          event.target.dataset.citationCommentTrigger === undefined
+        ) {
+          return;
+        }
+        event.preventDefault();
+        onRestoreFocus();
+      }}
     >
       <AssistantCitationChip
         citation={props.citation}
@@ -139,6 +173,7 @@ function ComposerCitationDecorator(props: { citation: AssistantCitation; nodeKey
             commentContext.onSubmitAndSend();
             return true;
           },
+          onRestoreFocus,
         }}
       />
     </span>

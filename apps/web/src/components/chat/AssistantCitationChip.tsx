@@ -52,10 +52,13 @@ export function AssistantCitationChip({
     onCancel?: () => void;
     onSave: (comment: string) => boolean;
     onSaveAndSend?: (comment: string) => boolean;
+    /** Returns focus to the host editor when the popover closes instead of to the pencil trigger. */
+    onRestoreFocus?: () => void;
   };
 }) {
   const navigate = useNavigate();
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
+  const commentPopupRef = useRef<HTMLDivElement>(null);
   const draftCommentRef = useRef<string | null>(null);
   const [unavailableSourceAnchor, setUnavailableSourceAnchor] =
     useState<AssistantCitationSourceAnchor | null>(null);
@@ -172,6 +175,7 @@ export function AssistantCitationChip({
           <PopoverTrigger
             aria-label={citation.comment ? "Edit citation comment" : "Add comment to citation"}
             className={CITATION_ACTION_BUTTON_CLASS_NAME}
+            data-citation-comment-trigger="true"
           >
             <PencilIcon aria-hidden="true" className="size-[0.85em]" />
           </PopoverTrigger>
@@ -185,6 +189,22 @@ export function AssistantCitationChip({
                 commentInputRef.current?.focus({ preventScroll: true });
                 return false;
               }}
+              finalFocus={
+                commentEditor.onRestoreFocus
+                  ? () => {
+                      // Leave focus alone when the user closed the popover by moving to another control.
+                      const activeElement = document.activeElement;
+                      if (
+                        activeElement === document.body ||
+                        (activeElement !== null && commentPopupRef.current?.contains(activeElement))
+                      ) {
+                        commentEditor.onRestoreFocus?.();
+                      }
+                      return false;
+                    }
+                  : undefined
+              }
+              ref={commentPopupRef}
               aria-label="Edit citation comment"
               className="w-72 max-w-[calc(100vw-1rem)]"
               viewportClassName="p-3"
