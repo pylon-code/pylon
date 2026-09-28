@@ -188,6 +188,8 @@ Command-line management is available through `npx t3 auth --help`.
 To remove an environment from Pylon Connect, open your account menu's **Pylon Connect** page, or
 **Settings → Pylon Connect** on mobile, and choose **Deregister**. This revokes its cloud access, removes
 any managed tunnel, and frees its host space even when the environment is offline or has been wiped.
+Removing an environment from a device's connection settings only forgets it on that device; it stays
+registered to your account.
 
 On a command-line host, `t3 connect unlink` disables exposure while retaining your login;
 `t3 connect logout` also clears that login. Background-service
