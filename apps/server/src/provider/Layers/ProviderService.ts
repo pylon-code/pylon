@@ -539,9 +539,9 @@ const appendAttachmentContext = (
   attachmentsDir: string,
   input: string | undefined,
   attachments: ReadonlyArray<ChatAttachment>,
-): { readonly input: string | undefined; readonly pastedTextOverflow: boolean } => {
+): { readonly input: string | undefined; readonly filePathOverflow: boolean } => {
   let inputWithContext = input;
-  let pastedTextOverflow = false;
+  let filePathOverflow = false;
   const append = (context: string | undefined) => {
     if (context === undefined) return true;
     const candidate = inputWithContext ? `${inputWithContext}\n\n${context}` : context;
@@ -564,7 +564,8 @@ const appendAttachmentContext = (
           ? `[Pasted text "${attachment.name}" is saved at: ${attachmentPath}. Inspect it as needed.]`
           : `[Attached ${attachment.type} "${attachment.name}" is saved at: ${attachmentPath}]`,
     );
-    if (isPastedText && (attachmentPath === null || !appended)) pastedTextOverflow = true;
+    if (attachment.type === "file" && (attachmentPath === null || !appended))
+      filePathOverflow = true;
   }
   for (const attachment of attachments) {
     const source = isChatImageAttachment(attachment) ? attachment.source : undefined;
@@ -596,7 +597,7 @@ const appendAttachmentContext = (
         : undefined,
     );
   }
-  return { input: inputWithContext, pastedTextOverflow };
+  return { input: inputWithContext, filePathOverflow };
 };
 
 const makeProviderService = Effect.fn("makeProviderService")(function* (
@@ -2398,10 +2399,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       inputTextWithCitations,
       attachments,
     );
-    if (attachmentContext.pastedTextOverflow) {
+    if (attachmentContext.filePathOverflow) {
       return yield* toValidationError(
         "ProviderService.sendTurn",
-        `Pasted-text attachment path is unavailable or exceeds the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS} character input limit`,
+        `Input plus attachment context exceeds the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS} character limit`,
       );
     }
     const inputTextWithAttachmentContext = attachmentContext.input;
@@ -3537,10 +3538,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       input.input,
       input.attachments,
     );
-    if (followUpContext.pastedTextOverflow) {
+    if (followUpContext.filePathOverflow) {
       return yield* toValidationError(
         "ProviderService.followUp",
-        `Pasted-text attachment path is unavailable or exceeds the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS} character input limit`,
+        `Input plus attachment context exceeds the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS} character limit`,
       );
     }
     const followUpInputText = followUpContext.input;
