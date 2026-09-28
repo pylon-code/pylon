@@ -15,7 +15,7 @@ Do not switch to global browser skills, Chrome, Node REPL browser automation, st
 const DEVICE_INSTRUCTIONS = `<pylon_devices>
 ## Pylon devices
 
-The \`t3-code\` MCP server also exposes \`device_*\` tools for iOS Simulators and Android Emulators on this environment. For mobile verification, call \`device_list\`, then \`device_open\` so the user can watch the device in their Device panel; its result explains how to drive the device. Driving happens through the \`agent-device\` CLI, which is on PATH. Keep the host config and session flags returned by \`device_open\` on every command so concurrent devices stay independent: prefer \`agent-device snapshot -i\` refs over coordinates, and use \`device_screenshot\` when you need to see the screen. Do not call simctl, adb, xcrun, or serve-sim directly while these tools are present. If \`device_list\` reports a platform as unavailable, say so instead of trying another route.
+The \`t3-code\` MCP server also exposes \`device_*\` tools for iOS Simulators and Android Emulators on this environment. For mobile verification, call \`device_list\`, then \`device_open\` so the user can watch the device in their Device panel; its result explains how to drive the device. Driving happens through the \`agent-device\` CLI, which is on PATH. Keep the host config and session flags returned by \`device_open\` on every command so concurrent devices stay independent: prefer \`agent-device snapshot -i\` refs over coordinates, and use \`device_screenshot\` when you need to see the screen. Prefer these tools and \`agent-device\` for opening and driving devices. Platform tools such as \`xcrun simctl\ and \`adb\` remain available for anything they do not cover, such as builds, logs, or port forwarding. If \`device_list\` reports a platform as unavailable, say so.
 </pylon_devices>`;
 
 const ANTIGRAVITY_PROGRESS_INSTRUCTIONS = `<pylon_progress>
@@ -25,9 +25,14 @@ Summarize results rather than echoing raw output or logs.
 Respect user preferences and never fabricate progress.
 </pylon_progress>`;
 
+/**
+ * Shared runtime context; omit model and effort when the harness manages them dynamically.
+ * `modelName` is the display name users see in the model picker; `model` is the slug.
+ */
 export interface RuntimeInstructionsOptions {
   readonly harness: string;
   readonly model?: string | undefined;
+  readonly modelName?: string | undefined;
   readonly reasoningEffort?: string | undefined;
   /** Whether this session's MCP credential grants the collaborative browser preview tools. */
   readonly browserAvailable?: boolean | undefined;
@@ -39,8 +44,11 @@ export interface RuntimeInstructionsOptions {
 export function buildRuntimeInstructions(runtime: RuntimeInstructionsOptions): string {
   const harness = toSingleLine(runtime.harness);
   const model = toSingleLine(runtime.model ?? "");
+  const modelName = toSingleLine(runtime.modelName ?? "");
   const effort = toSingleLine(runtime.reasoningEffort ?? "");
-  const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${model}` : "";
+  const modelLabel =
+    modelName && modelName !== model ? `${modelName} (model slug: ${model})` : model;
+  const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${modelLabel}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
   const progressInstructions =
     runtime.harness === "Antigravity" ? `\n\n${ANTIGRAVITY_PROGRESS_INSTRUCTIONS}` : "";
