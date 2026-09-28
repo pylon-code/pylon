@@ -979,7 +979,7 @@ describe("ProviderCommandReactor", () => {
   effectIt.effect("forwards only a user-renamed title when starting a provider session", () =>
     Effect.gen(function* () {
       const harness = yield* Effect.promise(() =>
-        createHarness({ initialTitle: "Add a progressive blur as you scroll" }),
+        createHarness({ initialThreadTitle: "Add a progressive blur as you scroll" }),
       );
       const now = "2026-01-01T00:00:00.000Z";
       const modelSelection = {
