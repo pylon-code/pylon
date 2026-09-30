@@ -12,8 +12,8 @@ import { type AppSymbolName, SymbolView } from "./AppSymbol";
 import { AppText as Text } from "./AppText";
 import { OverlayPortal } from "./OverlayPortal";
 import { GlassBackdrop } from "./GlassBackdrop";
+import { useAndroidControlSizing } from "./useAndroidControlSizing";
 
-const MENU_WIDTH = 250;
 const SCREEN_MARGIN = 12;
 const ANCHOR_GAP = 6;
 
@@ -62,6 +62,7 @@ export type AndroidAnchoredMenuProps = {
  * trailing check glyph); submenus drill in under a muted parent-title header.
  */
 export function AndroidAnchoredMenu(props: AndroidAnchoredMenuProps) {
+  const { scale, menuWidth: desiredMenuWidth } = useAndroidControlSizing();
   const [anchor, setAnchor] = useState<AnchorSnapshot | null>(null);
   const [path, setPath] = useState<readonly MenuAction[]>([]);
   // Height of the modal's root view, in the modal's own coordinate space.
@@ -75,6 +76,10 @@ export function AndroidAnchoredMenu(props: AndroidAnchoredMenuProps) {
   // are converted into this frame, so the menu lands correctly no matter
   // where the portal host sits (status bar, keyboard resize, etc.).
   const [overlay, setOverlay] = useState<OverlayFrame | null>(null);
+  const menuWidth =
+    overlay === null
+      ? desiredMenuWidth
+      : Math.min(desiredMenuWidth, Math.max(0, overlay.width - 2 * SCREEN_MARGIN));
   const anchorRef = useRef<View>(null);
   const overlayRef = useRef<View>(null);
 
@@ -145,14 +150,11 @@ export function AndroidAnchoredMenu(props: AndroidAnchoredMenuProps) {
       ? 0
       : local.x + local.width / 2 <= overlay.width / 2
         ? local.x
-        : local.x + local.width - MENU_WIDTH;
+        : local.x + local.width - menuWidth;
   const left =
     overlay === null
       ? 0
-      : Math.min(
-          Math.max(preferredLeft, SCREEN_MARGIN),
-          overlay.width - MENU_WIDTH - SCREEN_MARGIN,
-        );
+      : Math.min(Math.max(preferredLeft, SCREEN_MARGIN), overlay.width - menuWidth - SCREEN_MARGIN);
   // The keyboard stays up while the menu is open (in-window overlay, no
   // focus change), so the space it covers is not usable — without this the
   // composer-pill menus "open down" into the IME and can't be tapped.
@@ -215,10 +217,11 @@ export function AndroidAnchoredMenu(props: AndroidAnchoredMenuProps) {
             {!placeable || local === null ? null : (
               <Animated.View
                 entering={FadeIn.duration(120)}
-                className="absolute w-[250px] overflow-hidden rounded-[12px] border border-border shadow-2xl"
+                className="absolute overflow-hidden rounded-[12px] border border-border shadow-2xl"
                 style={{
                   left,
                   maxHeight,
+                  width: menuWidth,
                   ...(opensDown
                     ? { top: local.y + local.height + ANCHOR_GAP }
                     : { bottom: (rootHeight ?? 0) - local.y + ANCHOR_GAP }),
@@ -287,21 +290,21 @@ export function AndroidAnchoredMenu(props: AndroidAnchoredMenuProps) {
                         {hasSubmenu ? (
                           <SymbolView
                             name="chevron.right"
-                            size={13}
+                            size={Math.round(13 * scale)}
                             tintColorClassName={"accent-icon-subtle"}
                             type="monochrome"
                           />
                         ) : action.state === "on" ? (
                           <SymbolView
                             name="checkmark"
-                            size={15}
+                            size={Math.round(15 * scale)}
                             tintColorClassName={"accent-icon"}
                             type="monochrome"
                           />
                         ) : action.image ? (
                           <SymbolView
                             name={action.image as AppSymbolName}
-                            size={15}
+                            size={Math.round(15 * scale)}
                             tintColorClassName={
                               destructive ? "accent-danger-foreground" : "accent-icon"
                             }

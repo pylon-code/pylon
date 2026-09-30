@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { SearchBarCommands } from "react-native-screens";
 
 import { AppText as Text } from "../../components/AppText";
+import { useAndroidControlSizing } from "../../components/useAndroidControlSizing";
 import { CompactBrandTitle } from "../../components/CompactBrandTitle";
 import { ControlPillMenu } from "../../components/ControlPill";
 import { SymbolView } from "../../components/AppSymbol";
@@ -154,6 +155,7 @@ function ThreadNavigationSidebarPane(
   const mutedColor = materialTheme["--color-foreground-muted"];
 
   const insets = useSafeAreaInsets();
+  const { fabClearance } = useAndroidControlSizing();
   const projects = useProjects();
   const threads = useThreadShells();
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
@@ -1331,7 +1333,7 @@ function ThreadNavigationSidebarPane(
                 {
                   paddingBottom:
                     Platform.OS === "android"
-                      ? Math.max(insets.bottom, 16) + 88 - insets.bottom
+                      ? Math.max(insets.bottom, 16) + fabClearance - insets.bottom
                       : 16 + insets.bottom,
                   paddingTop: materialYouStyleLayoutActive ? 6 : topListInset,
                 },
