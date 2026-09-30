@@ -27,10 +27,12 @@ import * as Socket from "effect/unstable/socket/Socket";
 
 import {
   AVAILABLE_CONNECTION_STATE,
+  BearerConnectionTarget,
   ConnectionBlockedError,
   ConnectionTransientError,
   PrimaryConnectionTarget,
   RelayConnectionTarget,
+  SshConnectionTarget,
   type PreparedConnection,
 } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
@@ -288,6 +290,81 @@ const publishConfigEvents = Effect.fn("TestRpcSessionFactory.publishConfigEvents
 });
 
 describe("RpcSessionFactory", () => {
+  for (const target of [
+    TARGET,
+    new BearerConnectionTarget({
+      environmentId: TARGET.environmentId,
+      label: TARGET.label,
+      connectionId: "direct-test",
+    }),
+    new RelayConnectionTarget({ environmentId: TARGET.environmentId, label: TARGET.label }),
+    new SshConnectionTarget({
+      environmentId: TARGET.environmentId,
+      label: TARGET.label,
+      connectionId: "ssh-test",
+    }),
+  ]) {
+    it.effect(`rejects a config from another environment for ${target._tag}`, () =>
+      Effect.gen(function* () {
+        const { factory, sockets } = yield* makeFactory();
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const session = yield* factory.connect({ ...PREPARED, target });
+            const readyFiber = yield* Effect.forkChild(Effect.exit(session.ready));
+            const configFiber = yield* session
+              .subscribeServerConfig({})
+              .pipe(Stream.runHead, Effect.exit, Effect.forkChild);
+            const customConfigFiber = yield* session
+              .subscribeServerConfig({ environmentThemes: true })
+              .pipe(Stream.runHead, Effect.exit, Effect.forkChild);
+            const socket = yield* awaitSocket(sockets);
+            socket.open();
+            yield* completeInitialConfig(socket, {
+              ...ENCODED_SERVER_CONFIG,
+              environment: {
+                ...ENCODED_SERVER_CONFIG.environment,
+                environmentId: "other-environment",
+              },
+            });
+
+            const ready = yield* Fiber.join(readyFiber);
+            expect(Exit.isFailure(ready)).toBe(true);
+            if (Exit.isFailure(ready)) {
+              expect(Cause.findErrorOption(ready.cause)).toEqual(
+                Option.some(
+                  new ConnectionBlockedError({
+                    reason: "configuration",
+                    detail: `Connected environment other-environment does not match ${TARGET.environmentId}.`,
+                  }),
+                ),
+              );
+            }
+            for (const result of [
+              yield* Fiber.join(configFiber),
+              yield* Fiber.join(customConfigFiber),
+            ]) {
+              expect(Exit.isFailure(result)).toBe(true);
+              if (Exit.isFailure(result)) {
+                expect(Option.getOrThrow(Cause.findErrorOption(result.cause))).toMatchObject({
+                  _tag: "RpcClientError",
+                });
+              }
+            }
+            const initialConfig = yield* Effect.exit(session.initialConfig);
+            const probe = yield* Effect.exit(session.probe);
+            expect(Exit.isFailure(initialConfig)).toBe(true);
+            expect(Exit.isFailure(probe)).toBe(true);
+            // Custom subscriptions and probes must not send another request to the wrong host.
+            expect(
+              socket.sent.map((message) => decodeJson(message)).filter(isRpcRequest),
+            ).toHaveLength(1);
+          }),
+        );
+        expect(sockets[0]?.readyState).toBe(TestWebSocket.CLOSED);
+      }),
+    );
+  }
+
   it.effect("owns one scoped websocket attempt and exposes readiness and closure", () =>
     Effect.gen(function* () {
       const { factory, sockets } = yield* makeFactory();
