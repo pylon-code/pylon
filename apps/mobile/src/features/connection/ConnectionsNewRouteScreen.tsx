@@ -263,10 +263,15 @@ export function ConnectionsNewRouteScreen({
           ) : (
             <View collapsable={false} className="gap-4 rounded-[24px] bg-card p-4">
               <View collapsable={false} className="gap-1.5">
-                <Text className="text-2xs font-t3-bold tracking-[0.8px] uppercase text-foreground-muted">
+                <Text
+                  accessibilityElementsHidden
+                  importantForAccessibility="no-hide-descendants"
+                  className="text-2xs font-t3-bold tracking-[0.8px] uppercase text-foreground-muted"
+                >
                   Host
                 </Text>
                 <TextInput
+                  accessibilityLabel="Host"
                   autoCapitalize="none"
                   autoCorrect={false}
                   keyboardType="url"
@@ -278,10 +283,15 @@ export function ConnectionsNewRouteScreen({
               </View>
 
               <View collapsable={false} className="gap-1.5">
-                <Text className="text-2xs font-t3-bold tracking-[0.8px] uppercase text-foreground-muted">
+                <Text
+                  accessibilityElementsHidden
+                  importantForAccessibility="no-hide-descendants"
+                  className="text-2xs font-t3-bold tracking-[0.8px] uppercase text-foreground-muted"
+                >
                   Pairing code
                 </Text>
                 <TextInput
+                  accessibilityLabel="Pairing code"
                   autoCapitalize="none"
                   autoCorrect={false}
                   placeholder="abc-123-xyz"

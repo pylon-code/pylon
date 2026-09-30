@@ -257,6 +257,10 @@ function Sidebar({
               <SheetDescription>Displays the mobile sidebar.</SheetDescription>
             </SheetHeader>
             <div
+              // The sheet root renders no element, so the landmark the caller
+              // names has to sit on the content wrapper.
+              role={props.role}
+              aria-label={props["aria-label"]}
               className={cn(
                 "flex h-full w-full flex-col pb-safe pt-safe",
                 side === "left" ? "pl-safe" : "pr-safe",
@@ -609,6 +613,10 @@ function SidebarContent({
         hideScrollbars
         scrollFade
         scrollFadePadding={false}
+        // Sidebar rows provide keyboard access to this scroll region. Keeping
+        // Base UI's viewport out of the tab order lets its presentational role
+        // flatten in WebKit instead of becoming a VoiceOver interaction group.
+        viewportTabIndex={-1}
         className="h-auto min-h-0 flex-1"
       >
         <div

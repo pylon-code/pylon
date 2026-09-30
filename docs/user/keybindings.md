@@ -77,9 +77,10 @@ and Control elsewhere. Other modifiers are `cmd` / `meta`, `ctrl` / `control`, `
 ## When conditions
 
 Available context keys are `terminalFocus`, `terminalOpen`, `previewFocus`, `previewOpen`,
-`editableFocus`, `modelPickerOpen`, `isWeb`, and `isDesktop`. `isWeb` is true in a browser tab;
-`isDesktop` is true in the desktop app. `editableFocus` is supplied for route-history shortcuts
-and Undo while a text field or editor owns the keyboard. Unknown keys evaluate to `false`.
+`editableFocus`, `modelPickerOpen`, `usagePageOpen`, `isWeb`, and `isDesktop`. `isWeb` is true in a
+browser tab; `isDesktop` is true in the desktop app. `editableFocus` is supplied for route-history
+shortcuts and Undo while a text field or editor owns the keyboard. `usagePageOpen` is true on the
+Usage page. Unknown keys evaluate to `false`.
 
 The default `mod+1` through `mod+9` thread and model jumps run only in the desktop app so a
 browser tab keeps its own numbered-tab shortcuts. Remove the `isDesktop` condition in Settings if
