@@ -107,7 +107,7 @@ const SessionInteractionCard = memo(function SessionInteractionCard(props: {
     >
       <div className="mb-3 flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-secondary-label text-[11px] font-semibold tracking-widest uppercase">
+          <p className="text-secondary-label text-2xs font-semibold tracking-widest uppercase">
             Session request
           </p>
           <h2
@@ -118,7 +118,7 @@ const SessionInteractionCard = memo(function SessionInteractionCard(props: {
           </h2>
         </div>
         {pendingCount > 1 ? (
-          <span className="shrink-0 rounded-md bg-muted/60 px-1.5 py-0.5 text-secondary-label text-[10px] tabular-nums">
+          <span className="shrink-0 rounded-md bg-muted/60 px-1.5 py-0.5 text-secondary-label text-3xs tabular-nums">
             1/{pendingCount}
           </span>
         ) : null}

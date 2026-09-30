@@ -33,7 +33,7 @@ function DeliveryModeButtons(props: {
           aria-pressed={props.value === mode}
           disabled={props.disabled}
           className={cn(
-            "min-h-7 rounded px-2 text-[11px] font-medium transition-colors",
+            "min-h-7 rounded px-2 text-2xs font-medium transition-colors",
             props.value === mode
               ? "bg-background text-foreground shadow-xs"
               : "text-muted-foreground hover:text-foreground",
@@ -65,11 +65,11 @@ export function SessionInputQueueDeliveryPanel(props: {
     <div className="grid gap-3 p-3" data-session-input-queue-delivery="true">
       <div className="grid gap-1">
         <div className="text-xs font-semibold text-foreground">Session input delivery</div>
-        <div className="text-[11px] leading-4 text-muted-foreground">
+        <div className="text-2xs leading-4 text-muted-foreground">
           Choose whether queued inputs are delivered together or across separate agent steps.
         </div>
       </div>
-      <div className="grid gap-1 text-[11px] font-medium text-muted-foreground">
+      <div className="grid gap-1 text-2xs font-medium text-muted-foreground">
         Steering inputs
         <DeliveryModeButtons
           label="Steering input delivery"
@@ -78,7 +78,7 @@ export function SessionInputQueueDeliveryPanel(props: {
           onChange={(value) => props.onSetMode("steering", value)}
         />
       </div>
-      <div className="grid gap-1 text-[11px] font-medium text-muted-foreground">
+      <div className="grid gap-1 text-2xs font-medium text-muted-foreground">
         Follow-up inputs
         <DeliveryModeButtons
           label="Follow-up input delivery"
@@ -88,7 +88,7 @@ export function SessionInputQueueDeliveryPanel(props: {
         />
       </div>
       {props.isSettingMode ? (
-        <div aria-live="polite" className="text-[11px] text-muted-foreground">
+        <div aria-live="polite" className="text-2xs text-muted-foreground">
           Updating delivery…
         </div>
       ) : null}

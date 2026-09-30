@@ -34,7 +34,7 @@ export function useViewedFileHeaderMetadata<T>(
         <PullRequestDiffStat
           additions={additions}
           deletions={deletions}
-          className="font-mono text-[11px]"
+          className="font-mono text-2xs"
         />
       );
       if (!filesViewed.enabled || !filesViewed.isTrackable(path)) return stat;
@@ -45,7 +45,7 @@ export function useViewedFileHeaderMetadata<T>(
           {stat}
           <label
             data-viewed-toggle=""
-            className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] text-muted-foreground"
+            className="flex cursor-pointer select-none items-center gap-1.5 text-2xs text-muted-foreground"
             onClick={(event) => event.stopPropagation()}
           >
             <Checkbox

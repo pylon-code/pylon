@@ -305,11 +305,11 @@ export const ComposerTasksContent = memo(function ComposerTasksContent({
                   {step.step}
                 </ComposerBanner.Content>
                 <ComposerBanner.Actions>
-                  <span className="text-[10px] text-muted-foreground">
+                  <span className="text-3xs text-muted-foreground">
                     {TASK_PROGRESS_STATUS_LABEL[step.status]}
                   </span>
                   <span
-                    className="w-10 text-right text-[10px] text-muted-foreground/45 tabular-nums"
+                    className="w-10 text-right text-3xs text-muted-foreground/45 tabular-nums"
                     data-composer-task-duration="true"
                   >
                     {step.status === "waiting"

@@ -59,7 +59,7 @@ export function SessionResourceList({
               </span>
             )}
             {item.scope === undefined ? null : (
-              <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+              <span className="rounded-full bg-muted px-2 py-0.5 text-2xs text-muted-foreground">
                 {item.scope}
               </span>
             )}

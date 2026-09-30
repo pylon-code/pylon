@@ -103,7 +103,7 @@ export function SidebarThreadHeader({
           compact && "hidden",
         )}
       >
-        <SearchIcon className="size-4 shrink-0 text-[var(--sidebar-icon-color)]" />
+        <SearchIcon className="size-4 shrink-0 text-(--sidebar-icon-color)" />
         <Input
           ref={searchInputRef}
           nativeInput

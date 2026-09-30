@@ -111,7 +111,7 @@ export function TaskStatusIndicator({
   return (
     <span
       className={cn(
-        "inline-block w-3 shrink-0 text-center font-mono text-[10px]",
+        "inline-block w-3 shrink-0 text-center font-mono text-3xs",
         visual.className,
         className,
       )}

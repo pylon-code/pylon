@@ -287,7 +287,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                 <XIcon className="size-3" />
               </Button>
             ) : (
-              <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px]">/</Kbd>
+              <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-3xs">/</Kbd>
             )}
           </div>
           {isSearching && results.length === 0 ? (
@@ -323,7 +323,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                       <span className="block truncate text-sm font-medium text-sidebar-foreground">
                         {item.title}
                       </span>
-                      <span className="block truncate text-[11px] text-sidebar-muted-foreground/75">
+                      <span className="block truncate text-2xs text-sidebar-muted-foreground/75">
                         {SETTINGS_SECTION_LABELS[item.to]}
                       </span>
                     </span>

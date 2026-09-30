@@ -192,7 +192,7 @@ export function SnapShotContentsButton({
           {hasAccessibilityDetails ? (
             <SnapShotAccessibilityData
               source={source}
-              className="max-h-64 rounded-md border border-border/70 bg-muted/45 p-2.5 text-[11px] leading-4"
+              className="max-h-64 rounded-md border border-border/70 bg-muted/45 p-2.5 text-2xs leading-4"
             />
           ) : includesAccessibility ? (
             <div className="rounded-md border border-border/70 bg-muted/45 p-2.5 text-muted-foreground text-xs leading-4">
@@ -227,19 +227,19 @@ export function SnapShotAttachmentDetails({
       {source.appIconDataUrl ? (
         <img src={source.appIconDataUrl} alt="" className="size-7 shrink-0 rounded-md" />
       ) : (
-        <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-white/20 text-[10px] font-medium text-white uppercase">
+        <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-white/20 text-3xs font-medium text-white uppercase">
           {source.appName.slice(0, 1)}
         </div>
       )}
       <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium leading-3.5 text-white">
+        <div className="flex min-w-0 items-center gap-1.5 text-2xs font-medium leading-3.5 text-white">
           <span className="truncate">{source.appName}</span>
           <SnapShotContentsButton
             source={source}
             className="pointer-events-auto text-white/60 hover:bg-white/10 hover:text-white focus-visible:ring-white/70"
           />
         </div>
-        <div className="truncate text-[9px] leading-3.5 text-white/70">
+        <div className="truncate text-3xs leading-3.5 text-white/70">
           {source.windowTitle || "Captured window"}
         </div>
       </div>
