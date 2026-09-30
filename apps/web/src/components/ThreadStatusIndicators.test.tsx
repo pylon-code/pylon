@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   terminalStatusFromRunningIds,
   linkedPullRequestSnapshotStatus,
+  ThreadPullRequestBadgeControl,
   ThreadStatusLabel,
   ThreadWorktreeIndicator,
 } from "./ThreadStatusIndicators";
@@ -120,5 +121,39 @@ describe("linked pull request snapshots", () => {
       },
       sourceControlProvider: { kind: "gitlab", name: "gitlab", baseUrl: "" },
     });
+  });
+});
+
+describe("ThreadPullRequestBadgeControl", () => {
+  const render = (badge: Parameters<typeof ThreadPullRequestBadgeControl>[0]["badge"]) =>
+    renderToStaticMarkup(
+      <ThreadPullRequestBadgeControl
+        variant="underline"
+        badge={badge}
+        number={42}
+        url="https://github.com/acme/web/pull/42"
+        status={null}
+        onOpenList={() => undefined}
+        onOpenPullRequest={() => undefined}
+      />,
+    );
+
+  it("links a single pull request to its host page", () => {
+    const markup = render({ kind: "pull-request", state: "open", others: 0 });
+
+    expect(markup).toContain('href="https://github.com/acme/web/pull/42"');
+    expect(markup).not.toContain("<button");
+  });
+
+  it("opens the list for a stack or several linked pull requests", () => {
+    for (const badge of [
+      { kind: "pull-request", state: "open", others: 2 },
+      { kind: "stack", state: "open", layers: 3 },
+    ] as const) {
+      const markup = render(badge);
+
+      expect(markup).toContain("<button");
+      expect(markup).not.toContain("href=");
+    }
   });
 });

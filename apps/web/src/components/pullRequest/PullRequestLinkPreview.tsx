@@ -15,6 +15,7 @@ import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useEnvironmentQuery } from "~/state/query";
 
 import { PreviewCard, PreviewCardPopup, PreviewCardTrigger } from "../ui/preview-card";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { PullRequestActorAvatar, resolvePullRequestState } from "./pullRequestPresentation";
 
 interface PullRequestLinkPreviewTarget {
@@ -75,6 +76,8 @@ export function PullRequestLinkPreview({
         })
       : link;
   const summary = summaryQuery.data;
+  const showCard = summary !== null || (summaryQuery.error !== null && fallback !== undefined);
+  const showUrlTooltip = open && summaryQuery.error !== null && !showCard;
   const state =
     summary === null
       ? null
@@ -89,15 +92,18 @@ export function PullRequestLinkPreview({
 
   return (
     <PreviewCard open={open} onOpenChange={setOpen}>
-      <PreviewCardTrigger render={trigger} delay={350} closeDelay={120} />
-      {summary !== null || summaryQuery.error !== null ? (
+      <Tooltip open={showUrlTooltip}>
+        <PreviewCardTrigger
+          render={<TooltipTrigger render={trigger} />}
+          delay={350}
+          closeDelay={120}
+        />
+        <TooltipPopup side="top">{originalUrl}</TooltipPopup>
+      </Tooltip>
+      {showCard ? (
         <PreviewCardPopup align="center" className="w-80 max-w-[calc(100vw-2rem)] p-3">
           {summary === null ? (
-            (fallback ?? (
-              <p className="text-xs leading-relaxed text-muted-foreground wrap-anywhere">
-                {originalUrl}
-              </p>
-            ))
+            fallback
           ) : (
             <div className="min-w-0">
               <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">

@@ -47,7 +47,7 @@ vi.mock("@tanstack/react-router", () => ({
   useCanGoBack: () => false,
 }));
 vi.mock("../../state/usage", () => ({ useUsage: testState.useUsage }));
-vi.mock("../ui/button", () => ({ Button: "button" }));
+vi.mock("../ui/button", () => ({ Button: "button", InlineButton: "button" }));
 vi.mock("../ui/scroll-area", () => ({ ScrollArea: "div" }));
 vi.mock("../ui/select", () => ({
   Select: "div",
@@ -183,6 +183,29 @@ describe("UsagePage hourly breakdown", () => {
     const body = markup.match(/<tbody>(.*?)<\/tbody>/)?.[1] ?? "";
 
     expect(body).toMatch(/\$11\.00.*\$13\.00/);
+  });
+});
+
+describe("UsagePage summary", () => {
+  it("keeps the cost summary on one short line when records are unpriced", () => {
+    // Read the default view through a render; the hook's input is branded.
+    renderToStaticMarkup(<UsagePage />);
+    const result = testState.useUsage.mock.results.at(-1);
+    if (result?.type !== "return") throw new Error("useUsage did not return");
+    const usage = result.value;
+    testState.useUsage.mockReturnValue({
+      ...usage,
+      merged: {
+        ...usage.merged,
+        costQuality: { ...usage.merged.costQuality, unpricedShare: 0.25 },
+      },
+    });
+
+    const markup = renderToStaticMarkup(<UsagePage />);
+
+    expect(markup).toContain("sessions · API estimate");
+    expect(markup).toContain('aria-label="Unpriced usage details"');
+    expect(markup).not.toContain("API estimate excludes");
   });
 });
 
