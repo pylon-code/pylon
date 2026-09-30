@@ -8,6 +8,7 @@ import {
 } from "@t3tools/shared/usageMerge";
 import {
   enumerateDays,
+  collectUsageSourceWarnings,
   enumerateHourStarts,
   formatCount,
   formatDayShort,
@@ -141,9 +142,13 @@ export function UsageRouteScreen() {
 
   const showEnvironmentFilter = environments.length > 0 || selectedEnvironmentIds !== null;
   const hasLoadingEnvironments = selectedEnvironments.some(isUsageLoading);
+  const sourceWarnings = collectUsageSourceWarnings(selectedEnvironments);
+  const hasSourceWarnings = !showingLimits && sourceWarnings.length > 0;
   const filterAccessibilityLabel = hasLoadingEnvironments
     ? "Filter usage environments, some environments are loading"
-    : "Filter usage environments";
+    : hasSourceWarnings
+      ? "Filter usage environments, some history scans are incomplete"
+      : "Filter usage environments";
   const filterIcon =
     selectedEnvironmentIds === null
       ? "line.3.horizontal.decrease"
@@ -199,7 +204,7 @@ export function UsageRouteScreen() {
             )}
           >
             <SymbolView name={filterIcon} size={22} tintColorClassName="accent-icon" />
-            {hasLoadingEnvironments ? (
+            {hasLoadingEnvironments || hasSourceWarnings ? (
               <View
                 pointerEvents="none"
                 className="absolute -right-[2px] -top-[2px] size-[9px] rounded-full bg-amber-500"
@@ -215,6 +220,7 @@ export function UsageRouteScreen() {
       filterAccessibilityLabel,
       filterIcon,
       hasLoadingEnvironments,
+      hasSourceWarnings,
     ],
   );
 
@@ -301,6 +307,11 @@ export function UsageRouteScreen() {
                   .
                 </Text>
               ) : null}
+              {sourceWarnings.map((warning) => (
+                <Text key={warning.key} className="text-sm text-foreground-muted">
+                  {warning.environmentLabel} · {PROVIDER_LABEL[warning.provider]}: {warning.message}
+                </Text>
+              ))}
               {isPending ? (
                 <Text className="py-16 text-center text-base text-foreground-muted">
                   Scanning provider transcripts…
@@ -666,5 +677,6 @@ function usageEnvironmentStatus(environment: EnvironmentUsageStatus): string {
     return environment.summary ? "Usage unavailable · showing saved totals" : "Usage unavailable";
   if (isUsageLoading(environment))
     return environment.summary ? "Updating usage…" : "Loading usage…";
+  if (collectUsageSourceWarnings([environment]).length > 0) return "History incomplete";
   return "Usage up to date";
 }
