@@ -62,7 +62,7 @@ for (const threadId of threads.keys()) persistNative(threadId, [nativeHeader(thr
 const metadata = (threadId) => ({
   id: threadId, cwd, path: nativePath(threadId), ephemeral: false,
   status: { type: config.unloadedSnapshots && !loaded.has(threadId) ? "notLoaded" : "idle" }, turns: threads.get(threadId) ?? [],
-  cliVersion: "test", createdAt: 1, updatedAt: 1, modelProvider: "openai", preview: "",
+  cliVersion: "test", createdAt: 1, updatedAt: 1, modelProvider: "openai", preview: "", projectId: null,
   sessionId: threadId, source: "appServer"
 });
 const opened = (threadId) => ({
@@ -187,6 +187,7 @@ const approvalRequests = [
     params: {
       turnId: "native-turn",
       itemId: "native-input",
+      isBlocking: true,
       questions: [{ id: "question", header: "Choice", question: "Choose" }],
     },
   },

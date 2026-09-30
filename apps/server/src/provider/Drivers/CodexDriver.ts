@@ -367,7 +367,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
                     return { client, sharedHomePath, outcome };
                   }).pipe(Effect.timeout(CODEX_RESET_CREDIT_TIMEOUT));
                   const reading = yield* client
-                    .request("account/rateLimits/read", undefined)
+                    .request("account/rateLimits/read", null)
                     .pipe(Effect.timeout("5 seconds"), Effect.result);
                   if (reading._tag === "Failure")
                     return {

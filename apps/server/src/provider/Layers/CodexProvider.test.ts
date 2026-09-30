@@ -18,6 +18,7 @@ import {
 import {
   applyPreferredCodexDefaultModel,
   codexAccountAuthLabel,
+  codexVersionFloorMessage,
   mapCodexModelCapabilities,
   readCodexRateLimitsShared,
 } from "./CodexProvider.ts";
@@ -101,6 +102,11 @@ it("uses standard routing when the catalog has no default service tier", () => {
         name: "Fast",
         description: "1.5x speed, increased usage",
       },
+      {
+        id: "ultrafast",
+        name: "Ultrafast",
+        description: "The fastest available responses for latency-sensitive work.",
+      },
     ],
     supportedReasoningEfforts: [],
   });
@@ -116,6 +122,11 @@ it("uses standard routing when the catalog has no default service tier", () => {
           id: "priority",
           label: "Fast",
           description: "1.5x speed, increased usage",
+        },
+        {
+          id: "ultrafast",
+          label: "Ultrafast",
+          description: "Even faster, more expensive",
         },
       ],
       currentValue: "default",
@@ -182,6 +193,17 @@ it("ignores custom models that shadow a preferred slug", () => {
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");
 });
 
+it("warns only when the Codex CLI predates the regenerated protocol", () => {
+  assert.strictEqual(codexVersionFloorMessage("0.156.0"), undefined);
+  assert.strictEqual(codexVersionFloorMessage("0.159.2"), undefined);
+  assert.strictEqual(codexVersionFloorMessage(undefined), undefined);
+  assert.strictEqual(codexVersionFloorMessage("not-a-version"), undefined);
+  assert.strictEqual(
+    codexVersionFloorMessage("0.155.4"),
+    "Codex CLI v0.155.4 is older than Pylon supports. Update Codex to v0.156.0 or newer; threads can fail to start or roll back until then.",
+  );
+});
+
 it("labels every account plan Codex can report", () => {
   // `planType` is an open string, so exhaustiveness no longer pins these
   // mappings — this table is what does. Reordering a plan into the wrong group,
@@ -193,6 +215,7 @@ it("labels every account plan Codex can report", () => {
     ["plus", "ChatGPT Plus Subscription"],
     ["pro", "ChatGPT Pro 20x Subscription"],
     ["prolite", "ChatGPT Pro 5x Subscription"],
+    ["promax", "ChatGPT Pro Max Subscription"],
     ["team", "ChatGPT Team Subscription"],
     ["self_serve_business_prolite", "ChatGPT Business Subscription"],
     ["self_serve_business_usage_based", "ChatGPT Business Subscription"],

@@ -230,7 +230,7 @@ export const readPrimeAgentCodexWindows = Effect.fn("readPrimeAgentCodexWindows"
         accessToken: signIn.accessToken,
         chatgptAccountId: signIn.accountId,
       });
-      return yield* client.request("account/rateLimits/read", undefined);
+      return yield* client.request("account/rateLimits/read", null);
     }).pipe(
       Effect.scoped,
       Effect.timeoutOption(CODEX_CAPACITY_READ_TIMEOUT_MS),
