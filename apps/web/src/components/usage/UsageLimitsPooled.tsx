@@ -2,7 +2,8 @@ import {
   collectLimitAccounts,
   collectLimitNotices,
   collectLimitPools,
-  formatDuration,
+  cursorUsageWindowDetails,
+  displayLimitWindows,
   formatResetsIn,
   type LimitAccount,
   type LimitPool,
@@ -224,6 +225,7 @@ function PoolSegment({
   color,
   now,
   index,
+  showAccountName,
 }: {
   readonly account: LimitAccount;
   readonly window: LimitPoolMember["window"];
@@ -232,6 +234,7 @@ function PoolSegment({
   readonly now: number;
   /** 1-based position in the bar, shown on the strip and its legend row to tie them together. */
   readonly index: number;
+  readonly showAccountName: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const remaining = remainingPercent(window);
@@ -274,7 +277,12 @@ function PoolSegment({
           {index}
         </span>
         <div className="relative hidden h-full min-w-0 items-center gap-1.5 px-2 text-xs @2xl/pool:flex">
-          <AccountName account={account} className="min-w-0 truncate font-medium text-foreground" />
+          {showAccountName ? (
+            <AccountName
+              account={account}
+              className="min-w-0 truncate font-medium text-foreground"
+            />
+          ) : null}
           <span className="shrink-0 font-semibold text-foreground tabular-nums">{remaining}%</span>
           {/* Countdown and badge get their own plate: fill and hatching run under them otherwise. */}
           <span className="ms-auto flex shrink-0 items-center gap-1.5 rounded-sm bg-background/85 px-1.5 py-0.5 text-2xs text-foreground tabular-nums">
@@ -462,6 +470,7 @@ function PoolBar({
               color={color}
               now={now}
               index={position + 1}
+              showAccountName={pool.columns.length > 1}
             />
           ) : null,
         )}
@@ -478,17 +487,21 @@ function PoolWindowCard({
   pool,
   color,
   now,
+  label,
+  description,
 }: {
   readonly pool: LimitPoolWindow;
   readonly color: string;
   readonly now: number;
+  readonly label?: string | undefined;
+  readonly description?: string | undefined;
 }) {
   // The soonest reset that hands anything back; an untouched account resets to no effect.
   const nextRefill = pool.resets.find((reset) => reset.restoresPercent > 0);
   return (
     <div className="grid items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 p-4 md:grid-cols-[11rem_minmax(0,1fr)]">
       <div className="flex flex-col gap-1">
-        <span className="text-sm font-medium text-foreground">{pool.label}</span>
+        <span className="text-sm font-medium text-foreground">{label ?? pool.label}</span>
         <span className="flex items-baseline gap-2">
           <span className="text-3xl font-semibold text-foreground tabular-nums">
             {pool.remainingPercent}%
@@ -496,14 +509,16 @@ function PoolWindowCard({
           <span className="text-sm text-muted-foreground">left</span>
           {pool.pace ? <PaceIcon pace={pool.pace} /> : null}
         </span>
-        {nextRefill ? (
-          <span className="text-xs text-muted-foreground tabular-nums">
-            <span className="font-medium text-foreground">↻ +{nextRefill.restoresPercent}%</span>{" "}
-            {nextRefill.at <= now ? "now" : `in ${formatDuration(nextRefill.at - now)}`}
+        {nextRefill && pool.columns.length > 1 ? (
+          <span className="text-xs font-medium text-foreground tabular-nums">
+            ↻ +{nextRefill.restoresPercent}%
           </span>
         ) : null}
       </div>
       <PoolBar pool={pool} color={color} now={now} />
+      {description ? (
+        <p className="text-xs text-muted-foreground md:col-span-2">{description}</p>
+      ) : null}
     </div>
   );
 }
@@ -523,9 +538,19 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
         />
         {label}
       </h2>
-      {pool.windows.map((window) => (
-        <PoolWindowCard key={`${window.kind}:${window.id}`} pool={window} color={color} now={now} />
-      ))}
+      {displayLimitWindows(pool).map((window) => {
+        const details = pool.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
+        return (
+          <PoolWindowCard
+            key={`${window.kind}:${window.id}`}
+            pool={window}
+            color={color}
+            now={now}
+            label={details?.label}
+            description={details?.description}
+          />
+        );
+      })}
     </section>
   );
 }

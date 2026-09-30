@@ -5,10 +5,22 @@ import {
   enumerateHourStarts,
   formatDateTimeShort,
   formatHourShort,
+  formatPercent,
   formatRelativeHourShort,
   formatUsageContractMismatch,
   makeWindow,
 } from "./usageFormat.ts";
+
+describe("formatPercent", () => {
+  it("distinguishes small positive usage from zero at the requested precision", () => {
+    expect(formatPercent(0)).toBe("0.0%");
+    expect(formatPercent(0.0004)).toBe("<0.1%");
+    expect(formatPercent(0.0009)).toBe("<0.1%");
+    expect(formatPercent(0.001)).toBe("0.1%");
+    expect(formatPercent(0.023)).toBe("2.3%");
+    expect(formatPercent(0.00004, 2)).toBe("<0.01%");
+  });
+});
 
 describe("usage contract mismatch wording", () => {
   it("identifies which side needs updating", () => {

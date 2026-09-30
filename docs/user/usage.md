@@ -100,10 +100,12 @@ proxy through `ANTHROPIC_AUTH_TOKEN`.
 OpenCode Go reports its session, weekly, and monthly allowance when OpenCode runs locally in
 the environment. Pylon cannot report limits for external OpenCode servers because their credentials
 belong to the remote server. Cursor reports
-its monthly allowance, including separate Auto and API usage, using a file-based CLI login or
+its monthly allowance as **Cursor Models** and **Other Models** pools, using a file-based CLI login or
 `CURSOR_AUTH_TOKEN`. Cursor's default macOS keychain login does not currently report limits.
 On macOS, use `AGENT_CLI_CREDENTIAL_STORE=file` when signing in and in the provider's environment
 to use a file-based login.
+When both pools are reported, Pylon shows them separately; their combined percentage is not a
+third allowance. Accounts that report only a combined total keep an **Overall** reading.
 
 Grok reports the remaining subscription allowance and reset time for its current billing period
 after signing in with `grok login`. Explicit `XAI_API_KEY` connections and custom authentication
