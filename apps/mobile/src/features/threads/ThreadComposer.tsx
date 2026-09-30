@@ -2028,14 +2028,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       <ComposerInlineControl
                         accessibilityLabel="Model and reasoning settings"
                         emphasized
-                        iconNode={
+                        renderIcon={(size) => (
                           <ProviderIcon
                             provider={
                               currentModelOption?.providerDriver ?? selectedProviderStatus?.driver
                             }
-                            size={16}
+                            size={size}
                           />
-                        }
+                        )}
                         label={
                           currentModelOption?.label ??
                           modelSelectionDisplayName(currentModelSelection)

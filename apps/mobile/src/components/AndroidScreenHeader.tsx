@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SymbolView, type AppSymbolName } from "./AppSymbol";
 import { AppText as Text } from "./AppText";
 import { cn } from "../lib/cn";
+import { useAndroidControlSizing } from "./useAndroidControlSizing";
 
 export interface AndroidHeaderAction {
   readonly accessibilityLabel: string;
@@ -19,6 +20,7 @@ export function AndroidHeaderIconButton(props: {
   readonly onPress?: () => void;
   readonly disabled?: boolean;
 }) {
+  const { scale, buttonSize } = useAndroidControlSizing();
   return (
     <Pressable
       accessibilityLabel={props.accessibilityLabel}
@@ -27,13 +29,14 @@ export function AndroidHeaderIconButton(props: {
       hitSlop={8}
       onPress={props.onPress}
       className={cn(
-        "size-11 items-center justify-center rounded-full bg-subtle",
+        "items-center justify-center rounded-full bg-subtle",
         props.disabled && "opacity-55",
       )}
+      style={{ width: buttonSize, height: buttonSize }}
     >
       <SymbolView
         name={props.icon}
-        size={20}
+        size={Math.round(20 * scale)}
         tintColorClassName={props.disabled ? "accent-icon-subtle" : "accent-foreground"}
         type="monochrome"
       />
@@ -51,6 +54,7 @@ export function AndroidScreenHeader(props: {
   readonly hideBottomBorder?: boolean;
 }) {
   const insets = useSafeAreaInsets();
+  const { buttonSize, iconSize } = useAndroidControlSizing();
 
   return (
     <View
@@ -67,11 +71,12 @@ export function AndroidScreenHeader(props: {
             accessibilityRole="button"
             hitSlop={8}
             onPress={props.onBack}
-            className="-mr-2 size-11 items-center justify-center"
+            className="-mr-2 items-center justify-center"
+            style={{ width: buttonSize, height: buttonSize }}
           >
             <SymbolView
               name="chevron.left"
-              size={24}
+              size={iconSize}
               tintColorClassName={"accent-foreground"}
               type="monochrome"
             />

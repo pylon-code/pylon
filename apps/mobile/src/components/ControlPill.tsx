@@ -25,6 +25,7 @@ import { withMenuActionIconColors } from "../lib/menu-action-colors";
 import { AndroidAnchoredMenu } from "./AndroidAnchoredMenu";
 import { SymbolView } from "./AppSymbol";
 import { AppText as Text } from "./AppText";
+import { useAndroidControlSizing } from "./useAndroidControlSizing";
 
 const ThemedMenuView = withUniwind(
   function NativeMenuView({
@@ -66,6 +67,7 @@ export function ControlPill(props: {
   readonly className?: string;
 }) {
   const variant = props.variant ?? "circle";
+  const { smallIconSize } = useAndroidControlSizing();
   const activatedOnPressInRef = useRef(false);
 
   const handlePressIn = () => {
@@ -136,7 +138,7 @@ export function ControlPill(props: {
       ) : props.icon ? (
         <SymbolView
           name={props.icon}
-          size={16}
+          size={smallIconSize}
           tintColorClassName={iconTintClassName}
           type="monochrome"
         />

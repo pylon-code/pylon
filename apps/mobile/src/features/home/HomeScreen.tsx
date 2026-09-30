@@ -29,6 +29,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { cn } from "../../lib/cn";
 import { AppText as Text } from "../../components/AppText";
+import { useAndroidControlSizing } from "../../components/useAndroidControlSizing";
 import { EmptyState } from "../../components/EmptyState";
 import type { WorkspaceEnvironment, WorkspaceState } from "../../state/workspaceModel";
 import type { SavedRemoteConnection } from "../../lib/connection";
@@ -237,6 +238,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const listRef = useRef<LegendListRef | null>(null);
   const insets = useSafeAreaInsets();
+  const { fabClearance } = useAndroidControlSizing();
   const iosBottomToolbarClearance =
     Platform.OS === "ios" && !NATIVE_LIQUID_GLASS_SUPPORTED
       ? PRE_LIQUID_GLASS_BOTTOM_TOOLBAR_HEIGHT
@@ -1287,7 +1289,7 @@ export function HomeScreen(props: HomeScreenProps) {
                 paddingBottom:
                   Platform.OS === "ios"
                     ? Math.max(insets.bottom, 24) + 96 + iosBottomToolbarClearance
-                    : Math.max(insets.bottom, 16) + 88,
+                    : Math.max(insets.bottom, 16) + fabClearance,
               }}
             />
           </SwipeableScrollGateProvider>
@@ -1334,14 +1336,14 @@ export function HomeScreen(props: HomeScreenProps) {
             scrollEventThrottle={16}
             contentContainerStyle={{
               // Android reserves room for the floating new-task FAB
-              // (56 button + 16 gap + bottom inset). Pre-glass iOS shows a
+              // (button + 16 gap + bottom inset). Pre-glass iOS shows a
               // standard 44pt bottom toolbar that overlays the list and is not
               // reflected in insets while contentInsetAdjustmentBehavior is
               // "never".
               paddingBottom:
                 Platform.OS === "ios"
                   ? Math.max(insets.bottom, 24) + 24 + iosBottomToolbarClearance
-                  : Math.max(insets.bottom, 16) + 88,
+                  : Math.max(insets.bottom, 16) + fabClearance,
             }}
             scrollIndicatorInsets={
               Platform.OS === "ios"

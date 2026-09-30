@@ -76,7 +76,8 @@ account signs in.
 
 On iOS and Android, you can add the **Subscription usage** home-screen widget. It shows the
 tightest recent Codex and Claude session, weekly, or monthly quota from connected environments;
-the iOS Lock Screen version shows one selected limit. Tap it to open **Usage → Limits**. The
+the iOS Lock Screen version shows one selected limit, and on Android 12L or later the list scrolls.
+Only providers set up in a connected environment are listed. Tap it to open **Usage → Limits**. The
 widget uses readings the app already received, so open Pylon and refresh Limits to update it.
 Readings expire after 15 minutes or when their reset time passes, and disconnected environments
 are hidden when the app republishes the widget. Android may keep an old rendering until the system
