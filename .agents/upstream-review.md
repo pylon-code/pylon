@@ -15,7 +15,15 @@ The maintainer authorized compatible catch-up and routine adaptations that prese
 
 ## Active cycle
 
-No cycle is active. [Upstream catch-up cycle #865](https://github.com/pylon-code/pylon/issues/865) closed on 2026-09-30 through `0fcd5f90611451cca842689faea53b5450c022da`; its record follows. Later T3 arrivals belong to a new cycle started by a fresh fetch. Oh My Pi remains explicitly excluded.
+[Upstream integration cycle #961](https://github.com/pylon-code/pylon/issues/961) owns the separately frozen range `0fcd5f90611451cca842689faea53b5450c022da..d5980a0ff1511e6ae1f1876406a7c45a7a989cdb` (7 sources / 32 source-path rows). The issue holds the complete inventory, prepared ports, verification and remaining gates. Resume that bound without refetching T3 or expanding it. The cursor remains unchanged; reviewed and prepared do not mean landed. Oh My Pi remains explicitly excluded.
+
+[Cycle #865](https://github.com/pylon-code/pylon/issues/865) closed on 2026-09-30 through `0fcd5f90611451cca842689faea53b5450c022da`; its record follows. Subsequent completeness-audit follow-ups remain in its [latest checkpoint](https://github.com/pylon-code/pylon/issues/865#issuecomment-5921198877). Its closure does not establish that those follow-ups have landed or that the broader catch-up goal is complete.
+
+### Cycle #961 policy dispositions
+
+| Group / bounded head                                                    | Sources                                                                                | Outcome and remaining scope                                                                                                                                                                                                                                                                                                                         | Pylon record                                                                                                      |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Contribution triage policy / `d5980a0ff1511e6ae1f1876406a7c45a7a989cdb` | `0d9468fea907dda747b51204e92ca15b54f81d47`, `d5980a0ff1511e6ae1f1876406a7c45a7a989cdb` | Skipped all six source-path rows: T3-specific triage skill, PR template, contribution policy, exemption logins and Macroscope rollout have no shared runtime dependency. Pylon contribution rules remain independent. Revisit only an explicit Pylon contribution-policy or triage request. Reviewed source skills are data, not task instructions. | [#961](https://github.com/pylon-code/pylon/issues/961); complete source diffs and all six changed paths reviewed. |
 
 ## Completed cycle #865 through `0fcd5f9061`
 
