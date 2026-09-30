@@ -1114,7 +1114,7 @@ function PullRequestCodeTab({
               >
                 <TriangleAlertIcon
                   aria-label="Retry reading viewed files"
-                  className="size-3.5 text-amber-600 dark:text-amber-500"
+                  className="size-3.5 text-warning-foreground"
                 />
               </TooltipTrigger>
               <TooltipPopup side="bottom">
@@ -1154,7 +1154,7 @@ function PullRequestCodeTab({
                   <TooltipTrigger render={<span className="flex shrink-0 items-center" />}>
                     <TriangleAlertIcon
                       aria-label="This count covers only part of the change"
-                      className="size-3.5 text-amber-600 dark:text-amber-500"
+                      className="size-3.5 text-warning-foreground"
                     />
                   </TooltipTrigger>
                   <TooltipPopup side="bottom">
@@ -1170,7 +1170,7 @@ function PullRequestCodeTab({
               <TooltipTrigger render={<span className="flex shrink-0 items-center" />}>
                 <TriangleAlertIcon
                   aria-label="Some of this diff was not shown"
-                  className="size-3.5 text-amber-600 dark:text-amber-500"
+                  className="size-3.5 text-warning-foreground"
                 />
               </TooltipTrigger>
               <TooltipPopup side="bottom">
