@@ -246,6 +246,7 @@ export const make = Effect.gen(function* () {
       projectDefaults: true,
       projectCloneTracking: true,
       worktreeSetupTracking: true,
+      bitbucketCredentials: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate
         ? {

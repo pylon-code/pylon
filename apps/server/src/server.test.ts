@@ -6657,6 +6657,52 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(loopbackHttpServerTest)),
   );
 
+  it.effect("never returns saved Bitbucket tokens from the settings RPCs", () =>
+    Effect.gen(function* () {
+      const patches: Array<unknown> = [];
+      const saved = {
+        ...DEFAULT_SERVER_SETTINGS,
+        bitbucket: {
+          email: "me@example.com",
+          accessToken: "bb-access-secret",
+          apiToken: "bb-api-secret",
+        },
+      };
+      yield* buildAppUnderTest({
+        layers: {
+          serverSettings: {
+            getSettings: Effect.succeed(saved),
+            updateSettings: (patch) =>
+              Effect.sync(() => {
+                patches.push(patch.bitbucket);
+                return saved;
+              }),
+          },
+        },
+      });
+      const wsUrl = yield* getWsServerUrl("/ws");
+
+      const [updated, read] = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.all([
+            client[WS_METHODS.serverUpdateSettings]({
+              patch: { bitbucket: saved.bitbucket },
+            }),
+            client[WS_METHODS.serverGetSettings]({}),
+          ]),
+        ),
+      );
+
+      assert.deepEqual(patches, [saved.bitbucket]);
+      for (const settings of [updated, read]) {
+        assert.strictEqual(settings.bitbucket.email, "me@example.com");
+        assert.isAbove(settings.bitbucket.accessToken.length, 0);
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        assert.notInclude(JSON.stringify(settings), "secret");
+      }
+    }).pipe(Effect.provide(loopbackHttpServerTest)),
+  );
+
   for (const mode of ["all", "targeted", "background"] as const) {
     it.effect(`provider refresh invalidates owned caches before probing (${mode})`, () => {
       const driver = ProviderDriverKind.make("codex");
