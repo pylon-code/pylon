@@ -248,6 +248,30 @@ const terminalSnapshot = (
   syncedAt: NOW,
 });
 
+describe("per-thread auto-settle opt out", () => {
+  it("never settles a thread whose auto-settle is turned off, by inactivity or merge", () => {
+    const held = makeThread({ autoSettleDisabledAt: "2026-08-21T00:00:00.000Z" });
+    expect(decide(held)).toBe(false);
+    expect(
+      decide(held, { state: "merged", mergedAt: "2026-08-21T00:00:00.000Z", closedAt: null }),
+    ).toBe(false);
+    expect(decide(makeThread({ autoSettleDisabledAt: null }))).toBe(true);
+  });
+
+  it("blocks both inactivity and merge settlement while auto-settle is off", () => {
+    const merged = linkedRequest(1, terminalSnapshot("merged", NOW));
+    expect(decide(makeThread({ latestUserMessageAt: "2026-08-01T00:00:00.000Z" }))).toBe(true);
+    expect(decide(makeThread({ pullRequests: [merged] }), null, { days: null })).toBe(true);
+    const held = { autoSettleDisabledAt: NOW };
+    expect(decide(makeThread({ ...held, latestUserMessageAt: "2026-08-01T00:00:00.000Z" }))).toBe(
+      false,
+    );
+    expect(decide(makeThread({ ...held, pullRequests: [merged] }), null, { days: null })).toBe(
+      false,
+    );
+  });
+});
+
 describe("linked request settlement", () => {
   it.each(["closed", "merged"] as const)(
     "uses the latest actual %s transition despite later comments on another PR",
