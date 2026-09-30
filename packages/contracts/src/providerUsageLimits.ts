@@ -55,6 +55,8 @@ export const ServerProviderUsageLimits = Schema.Struct({
   source: Schema.optional(TrimmedNonEmptyString),
   checkedAt: IsoDateTime,
   windows: ForwardCompatibleArray(ServerProviderUsageWindow),
+  /** Opaque credential identity when the provider does not report an account. */
+  credentialFingerprint: Schema.optional(TrimmedNonEmptyString),
   resetCredits: Schema.optional(ServerProviderResetCredits),
   unavailable: Schema.optional(
     Schema.Struct({
