@@ -88,69 +88,17 @@ class SubscriptionUsageWidget : AppWidgetProvider() {
       // Android 12L is the first release whose collection widgets need no compat service;
       // layout-v32 supplies the scrolling list, older releases keep the fitted rows.
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S_V2) {
-        // Count limits only; "Open app to refresh" placeholders are not entries.
-        val limits = rows.count { (_, window) -> window != null }
-        // Without limits the layout's plain title stays.
-        if (limits > 0) {
-          views.setTextViewText(
-            R.id.pylon_widget_title,
-            context.getString(R.string.pylon_subscription_widget_title_count, limits)
-          )
-          views.setContentDescription(
-            R.id.pylon_widget_title,
-            context.resources.getQuantityString(
-              R.plurals.pylon_subscription_widget_title_description,
-              limits,
-              limits
-            )
-          )
-        }
-        openAppIntent(context, id, snapshot, forCollection = true)?.let {
-          views.setPendingIntentTemplate(R.id.pylon_widget_rows, it)
-        }
-        val items = RemoteViews.RemoteCollectionItems.Builder()
-        rows.forEachIndexed { index, (provider, window) ->
-          val row = rowView(context, provider, window)
-          row.setOnClickFillInIntent(R.id.pylon_widget_row, Intent())
-          items.addItem(index.toLong(), row)
-        }
-        views.setRemoteAdapter(R.id.pylon_widget_rows, items.build())
-        views.setEmptyView(R.id.pylon_widget_rows, R.id.pylon_widget_empty)
-        val checked = if (checkedAt > 0) {
-          val formatted = DateFormat.getDateTimeInstance(
-            DateFormat.SHORT,
-            DateFormat.SHORT
-          ).format(Date(checkedAt))
-          context.getString(R.string.pylon_subscription_widget_last_checked, formatted)
-        } else {
-          context.getString(R.string.pylon_subscription_widget_unknown_check)
-        }
-        views.setTextViewText(R.id.pylon_widget_footer, checked)
+        val template = openAppIntent(context, id, snapshot, forCollection = true)
+        bindScrollingRows(context, views, rows, template, checkedAt)
       } else if (rows.isNotEmpty()) {
-        views.removeAllViews(R.id.pylon_widget_rows)
         val options = manager.getAppWidgetOptions(id)
         // Match the default 200dp widget height, which fits one row per provider.
         val height = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 200)
-        val count = ((height - 64) / 66).coerceIn(1, 12).coerceAtMost(rows.size)
-        for ((provider, window) in rows.take(count)) {
-          views.addView(R.id.pylon_widget_rows, rowView(context, provider, window))
-        }
-        val remaining = totalRows - count
-        val formatted = DateFormat.getDateTimeInstance(
-          DateFormat.SHORT,
-          DateFormat.SHORT
-        ).format(Date(checkedAt))
-        val more = if (remaining > 0) {
-          context.getString(R.string.pylon_subscription_widget_more, remaining)
-        } else {
-          ""
-        }
-        val checked = if (checkedAt > 0) {
-          context.getString(R.string.pylon_subscription_widget_as_of, formatted)
-        } else {
-          context.getString(R.string.pylon_subscription_widget_unknown_check)
-        }
-        views.setTextViewText(R.id.pylon_widget_footer, checked + more)
+        val count = bindFittedRows(context, views, rows, height)
+        views.setTextViewText(
+          R.id.pylon_widget_footer,
+          fittedFooter(context, checkedAt, totalRows - count)
+        )
       }
       val alarms = context.getSystemService(AlarmManager::class.java)
       alarms.cancel(expiryIntent(context))
@@ -159,6 +107,84 @@ class SubscriptionUsageWidget : AppWidgetProvider() {
         alarms.set(AlarmManager.RTC, nextExpiry, expiryIntent(context))
       }
       manager.updateAppWidget(id, views)
+    }
+
+    private fun bindScrollingRows(
+      context: Context,
+      views: RemoteViews,
+      rows: List<Pair<JSONObject, JSONObject?>>,
+      template: PendingIntent?,
+      checkedAt: Long
+    ) {
+      // Count limits only; "Open app to refresh" placeholders are not entries.
+      val limits = rows.count { (_, window) -> window != null }
+      // Without limits the layout's plain title stays.
+      if (limits > 0) {
+        views.setTextViewText(
+          R.id.pylon_widget_title,
+          context.getString(R.string.pylon_subscription_widget_title_count, limits)
+        )
+        views.setContentDescription(
+          R.id.pylon_widget_title,
+          context.resources.getQuantityString(
+            R.plurals.pylon_subscription_widget_title_description,
+            limits,
+            limits
+          )
+        )
+      }
+      template?.let { views.setPendingIntentTemplate(R.id.pylon_widget_rows, it) }
+      val items = RemoteViews.RemoteCollectionItems.Builder()
+      rows.forEachIndexed { index, (provider, window) ->
+        val row = rowView(context, provider, window)
+        row.setOnClickFillInIntent(R.id.pylon_widget_row, Intent())
+        items.addItem(index.toLong(), row)
+      }
+      views.setRemoteAdapter(R.id.pylon_widget_rows, items.build())
+      views.setEmptyView(R.id.pylon_widget_rows, R.id.pylon_widget_empty)
+      val checked = if (checkedAt > 0) {
+        val formatted = DateFormat.getDateTimeInstance(
+          DateFormat.SHORT,
+          DateFormat.SHORT
+        ).format(Date(checkedAt))
+        context.getString(R.string.pylon_subscription_widget_last_checked, formatted)
+      } else {
+        context.getString(R.string.pylon_subscription_widget_unknown_check)
+      }
+      views.setTextViewText(R.id.pylon_widget_footer, checked)
+    }
+
+    /** Adds as many rows as the widget height fits and returns that count. */
+    private fun bindFittedRows(
+      context: Context,
+      views: RemoteViews,
+      rows: List<Pair<JSONObject, JSONObject?>>,
+      height: Int
+    ): Int {
+      views.removeAllViews(R.id.pylon_widget_rows)
+      val count = ((height - 64) / 66).coerceIn(1, 12).coerceAtMost(rows.size)
+      for ((provider, window) in rows.take(count)) {
+        views.addView(R.id.pylon_widget_rows, rowView(context, provider, window))
+      }
+      return count
+    }
+
+    private fun fittedFooter(context: Context, checkedAt: Long, remaining: Int): String {
+      val more = if (remaining > 0) {
+        context.getString(R.string.pylon_subscription_widget_more, remaining)
+      } else {
+        ""
+      }
+      val checked = if (checkedAt > 0) {
+        val formatted = DateFormat.getDateTimeInstance(
+          DateFormat.SHORT,
+          DateFormat.SHORT
+        ).format(Date(checkedAt))
+        context.getString(R.string.pylon_subscription_widget_as_of, formatted)
+      } else {
+        context.getString(R.string.pylon_subscription_widget_unknown_check)
+      }
+      return checked + more
     }
 
     private fun openAppIntent(
