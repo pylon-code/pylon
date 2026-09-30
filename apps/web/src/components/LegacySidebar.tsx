@@ -190,6 +190,7 @@ import {
   isTrailingDoubleClick,
   resolveProjectStatusIndicator,
   resolveThreadRowClassName,
+  resolveSidebarRowAccessibility,
   resolveThreadStatusPill,
   orderItemsByPreferredIds,
   shouldClearThreadSelectionOnMouseDown,
@@ -756,6 +757,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     [attemptArchiveThread, threadRef],
   );
   const rowButtonRender = useMemo(() => <div role="button" tabIndex={0} />, []);
+  // Rows nest under their project header, so the project name stays out of the label.
+  const rowAccessibility = resolveSidebarRowAccessibility({
+    title: thread.title,
+    statusLabel: threadStatus?.label ?? null,
+    projectDisplayName: null,
+    isActive,
+  });
 
   return (
     <SidebarMenuSubItem
@@ -770,6 +778,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         render={rowButtonRender}
         size="sm"
         isActive={isActive}
+        aria-label={rowAccessibility.label}
+        aria-current={rowAccessibility.current}
         data-testid={`thread-row-${thread.id}`}
         className={`${resolveThreadRowClassName({
           isActive,
