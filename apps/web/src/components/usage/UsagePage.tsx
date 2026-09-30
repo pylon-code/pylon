@@ -9,6 +9,7 @@ import {
   CircleAlertIcon,
   ChevronDownIcon,
   CircleDashedIcon,
+  InfoIcon,
   SlidersHorizontalIcon,
 } from "lucide-react";
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
@@ -45,7 +46,7 @@ import {
   formatUsd,
   makeWindow,
 } from "@t3tools/shared/usageFormat";
-import { Button } from "../ui/button";
+import { Button, InlineButton } from "../ui/button";
 import {
   Menu,
   MenuCheckboxItem,
@@ -54,6 +55,7 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from "../ui/menu";
+import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { SidebarInset } from "../ui/sidebar";
@@ -425,13 +427,31 @@ export function UsagePage() {
                           : formatTokens(merged.totalTokens)}
                       </span>
                       <span className="text-xs text-muted-foreground">
-                        {metric !== "cost"
-                          ? `${formatCount(merged.sessions)} sessions`
-                          : merged.costQuality.unpricedShare > 0
-                            ? `${formatCount(merged.sessions)} sessions · API estimate excludes ${formatPercent(
-                                merged.costQuality.unpricedShare,
-                              )} unpriced records`
-                            : `${formatCount(merged.sessions)} sessions · API estimate`}
+                        {formatCount(merged.sessions)} sessions
+                        {metric === "cost" && (
+                          <>
+                            {" · API estimate"}
+                            {merged.costQuality.unpricedShare > 0 && (
+                              <>
+                                {" "}
+                                <Popover>
+                                  <PopoverTrigger
+                                    openOnHover
+                                    render={<InlineButton />}
+                                    aria-label="Unpriced usage details"
+                                  >
+                                    <InfoIcon className="size-3" aria-hidden />
+                                  </PopoverTrigger>
+                                  <PopoverPopup side="top" tooltipStyle>
+                                    API estimate excludes{" "}
+                                    {formatPercent(merged.costQuality.unpricedShare)} unpriced
+                                    records.
+                                  </PopoverPopup>
+                                </Popover>
+                              </>
+                            )}
+                          </>
+                        )}
                       </span>
                     </div>
 

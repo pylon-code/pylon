@@ -6773,12 +6773,15 @@ export default function ChatView(props: ChatViewProps) {
     interruptThreadTurn,
     setThreadError,
   ]);
+  const agentsSurfaceOnScreen = rightPanelOpen && activeRightPanelSurface?.kind === "agents";
   const backgroundLivenessBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
     if (activeBackgroundLiveness === null || !activeThread) {
       return null;
     }
     const working = activeBackgroundLiveness === "working";
     const liveCount = agentPanelModel.liveCount;
+    // Hidden once the Agents surface is on screen; the link would point at nothing.
+    const showViewAgents = liveCount > 0 && !agentsSurfaceOnScreen;
     return {
       id: `background-liveness:${activeThread.id}`,
       variant: "default",
@@ -6798,23 +6801,32 @@ export default function ChatView(props: ChatViewProps) {
           : "Background work"
         : "Monitoring",
       actions: (
-        <Button
-          size="xs"
-          variant="ghost"
-          disabled={isStoppingBackgroundWork || !backgroundStopPlan.canStopAll}
-          onClick={() => void handleStopBackgroundWork()}
-        >
-          {isStoppingBackgroundWork
-            ? "Stopping..."
-            : backgroundStopPlan.canStopAll
-              ? "Stop"
-              : "Stop unavailable"}
-        </Button>
+        <>
+          {showViewAgents ? (
+            <Button size="xs" variant="ghost" aria-label="View agents" onClick={addAgentsSurface}>
+              View
+            </Button>
+          ) : null}
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={isStoppingBackgroundWork || !backgroundStopPlan.canStopAll}
+            onClick={() => void handleStopBackgroundWork()}
+          >
+            {isStoppingBackgroundWork
+              ? "Stopping..."
+              : backgroundStopPlan.canStopAll
+                ? "Stop"
+                : "Stop unavailable"}
+          </Button>
+        </>
       ),
     };
   }, [
     activeBackgroundLiveness,
     activeThread,
+    addAgentsSurface,
+    agentsSurfaceOnScreen,
     agentPanelModel.liveCount,
     backgroundStopPlan.canStopAll,
     handleStopBackgroundWork,

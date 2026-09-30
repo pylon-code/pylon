@@ -199,7 +199,10 @@ export function resolveThreadPullRequestBadgePresentation({
   };
 }
 
-/** The complete linked-PR control shared by the sidebar and composer footer. */
+/**
+ * The complete linked-PR control shared by the sidebar and composer footer. A single PR is a link
+ * to it, while a stack or several linked PRs is a button that opens the thread's pull requests tab.
+ */
 export function ThreadPullRequestBadgeControl({
   variant,
   badge,
@@ -207,7 +210,7 @@ export function ThreadPullRequestBadgeControl({
   url,
   status,
   iconOnly = false,
-  onOpenStack,
+  onOpenList,
   onOpenPullRequest,
 }: {
   variant: "underline" | "ghost" | "badge";
@@ -217,12 +220,12 @@ export function ThreadPullRequestBadgeControl({
   status: PrStatusIndicator | null;
   /** Dense rows drop the number/layer count and keep only the state glyph. */
   iconOnly?: boolean;
-  onOpenStack: () => void;
+  onOpenList: () => void;
   onOpenPullRequest: (event: MouseEvent<HTMLAnchorElement>) => void;
 }) {
   const presentation = resolveThreadPullRequestBadgePresentation({ badge, number, url, status });
   if (presentation === null) return null;
-  const isStack = badge?.kind === "stack";
+  const opensList = badge !== null && (badge.kind === "stack" || badge.others > 0);
   const className = cn(
     variant === "ghost"
       ? buttonVariants({ variant: "ghost", size: "xs" })
@@ -247,7 +250,7 @@ export function ThreadPullRequestBadgeControl({
     <Tooltip>
       <TooltipTrigger
         render={
-          isStack ? (
+          opensList ? (
             <InlineButton
               className={className}
               aria-label={presentation.label}
@@ -255,7 +258,7 @@ export function ThreadPullRequestBadgeControl({
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                onOpenStack();
+                onOpenList();
               }}
             />
           ) : (
