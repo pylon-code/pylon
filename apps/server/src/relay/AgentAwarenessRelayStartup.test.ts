@@ -76,7 +76,7 @@ function makeMemorySecretStore() {
   };
 }
 
-describe.sequential("AgentAwarenessRelay startup", () => {
+describe("AgentAwarenessRelay startup", { concurrent: false }, () => {
   it.effect("does not alert for historical completions after startup", () =>
     Effect.scoped(
       Effect.gen(function* () {
