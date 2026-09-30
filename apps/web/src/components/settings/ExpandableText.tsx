@@ -37,7 +37,7 @@ export function ExpandableText({
           type="button"
           aria-expanded={expanded}
           aria-controls={textId}
-          className="cursor-pointer mt-1 text-[11px] font-medium text-foreground/70 underline-offset-2 hover:text-foreground hover:underline"
+          className="cursor-pointer mt-1 text-2xs font-medium text-foreground/70 underline-offset-2 hover:text-foreground hover:underline"
           onClick={() => setExpanded((value) => !value)}
         >
           {expanded ? "Show less" : expandLabel}

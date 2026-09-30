@@ -222,7 +222,7 @@ describe("deriveProviderModelsForDisplay", () => {
     // adopting both would render the same redacted address twice in one panel.
     expect(markup).toContain("Authenticated as");
     expect(markup).toContain('aria-label="Toggle account email visibility"');
-    expect(markup).toContain("blur-[2px]");
+    expect(markup).toContain("blur-xs");
     expect(markup).not.toContain("Account email");
     expect(markup).not.toContain("developer@example.com");
   });

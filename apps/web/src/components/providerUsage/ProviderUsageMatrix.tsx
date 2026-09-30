@@ -80,9 +80,7 @@ function UsageCell({
           {used}%
         </span>
         {countdown ? (
-          <span className="truncate text-[11px] tabular-nums text-muted-foreground">
-            {countdown}
-          </span>
+          <span className="truncate text-2xs tabular-nums text-muted-foreground">{countdown}</span>
         ) : null}
       </span>
       <div
@@ -195,7 +193,7 @@ export function ProviderUsageMatrix({
                     same thing, so the column is still identifiable in greyscale.
                 */}
                 {account.isActive ? (
-                  <span className="block ps-3 text-[10px] font-normal text-muted-foreground">
+                  <span className="block ps-3 text-3xs font-normal text-muted-foreground">
                     this thread
                   </span>
                 ) : null}
@@ -212,7 +210,7 @@ export function ProviderUsageMatrix({
                   <Tooltip>
                     <TooltipTrigger
                       render={
-                        <span className="block ps-3 text-[10px] font-normal whitespace-nowrap text-muted-foreground/50">
+                        <span className="block ps-3 text-3xs font-normal whitespace-nowrap text-muted-foreground/50">
                           {age} old
                         </span>
                       }

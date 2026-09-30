@@ -107,7 +107,7 @@ export function ProviderUsageRows(props: {
             {resetLabel ? (
               <div
                 className={cn(
-                  "text-[11px]",
+                  "text-2xs",
                   compact ? "text-muted-foreground" : "text-muted-foreground/70",
                 )}
               >
@@ -118,7 +118,7 @@ export function ProviderUsageRows(props: {
         );
       })}
       {isProbeFailedWithWindows ? (
-        <div className={cn("text-[11px] text-muted-foreground", compact ? "pt-1" : "pt-0.5")}>
+        <div className={cn("text-2xs text-muted-foreground", compact ? "pt-1" : "pt-0.5")}>
           {props.usageLimits.unavailable?.message ?? "Rate limits could not be refreshed."}
         </div>
       ) : null}
@@ -133,7 +133,7 @@ export function ProviderUsageSummary(props: { readonly usageLimits: ServerProvid
 
   if (props.usageLimits.unavailable && !isProbeFailedWithWindows) {
     return (
-      <span className="block min-w-0 truncate text-[11px] text-muted-foreground/80">
+      <span className="block min-w-0 truncate text-2xs text-muted-foreground/80">
         {props.usageLimits.unavailable.message ?? "Usage unavailable"}
       </span>
     );
@@ -149,7 +149,7 @@ export function ProviderUsageSummary(props: { readonly usageLimits: ServerProvid
   // an account with three usage windows is wider than the list column, and
   // without clipping the text runs under the enable switch beside it.
   return (
-    <span className="block min-w-0 truncate text-[11px] text-muted-foreground/80">
+    <span className="block min-w-0 truncate text-2xs text-muted-foreground/80">
       {summaryItems.map((item, index) => (
         <span key={item.key} className="whitespace-nowrap">
           {index > 0 ? <span className="mx-1.5 text-muted-foreground/40">·</span> : null}

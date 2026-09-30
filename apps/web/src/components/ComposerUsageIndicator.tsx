@@ -206,7 +206,7 @@ export const ComposerUsageIndicator = memo(function ComposerUsageIndicator({
             limited enough that it must not invite hammering them anyway.
           */}
           {view ? (
-            <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground/70">
+            <div className="flex items-center justify-between gap-3 text-2xs text-muted-foreground/70">
               <span>
                 {isRefreshing
                   ? "Checking…"

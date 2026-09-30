@@ -42,7 +42,7 @@ export function SessionGoalControl(props: { readonly snapshot: SessionGoalSnapsh
             aria-label={`Session goal ${status.toLowerCase()}: ${accessibilityObjective} ${accessibilityManagement}`}
           >
             <TargetIcon className="size-3.5" aria-hidden="true" />
-            <span className="max-w-20 truncate text-[11px] font-medium">{status}</span>
+            <span className="max-w-20 truncate text-2xs font-medium">{status}</span>
           </button>
         }
       />
@@ -56,7 +56,7 @@ export function SessionGoalControl(props: { readonly snapshot: SessionGoalSnapsh
         <div className="flex flex-col gap-2.5 p-[var(--floating-content-inset)]">
           <div className="flex items-center justify-between gap-3">
             <div className="font-medium text-muted-foreground text-xs">Session goal</div>
-            <div className="flex items-center gap-1.5 text-[11px]">
+            <div className="flex items-center gap-1.5 text-2xs">
               <span className="font-medium text-foreground">{status}</span>
               <span className="text-secondary-label">· Managed in chat</span>
             </div>
@@ -65,7 +65,7 @@ export function SessionGoalControl(props: { readonly snapshot: SessionGoalSnapsh
             {objective}
           </p>
           {hasGoal ? (
-            <dl className="grid gap-1.5 border-border/70 border-t pt-2 text-[11px] leading-4">
+            <dl className="grid gap-1.5 border-border/70 border-t pt-2 text-2xs leading-4">
               <div className="flex items-center justify-between gap-3">
                 <dt className="text-secondary-label">Tokens</dt>
                 <dd className="font-medium tabular-nums text-muted-foreground">
@@ -86,7 +86,7 @@ export function SessionGoalControl(props: { readonly snapshot: SessionGoalSnapsh
               </div>
             </dl>
           ) : (
-            <div className="border-border/70 border-t pt-2 text-pretty text-[11px] leading-4 text-muted-foreground">
+            <div className="border-border/70 border-t pt-2 text-pretty text-2xs leading-4 text-muted-foreground">
               Goals keep work moving across turns. Ask the agent: “Start a persistent goal to …”
             </div>
           )}

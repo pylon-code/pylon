@@ -39,14 +39,14 @@ function MobileClientRow({ device }: { readonly device: RelayClientDeviceRecord 
     <ClerkUserProfileRow icon={<SmartphoneIcon className="size-4" />}>
       <div className="flex flex-col gap-0.5 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
         <div className="min-w-0">
-          <h3 className="truncate text-[0.8125rem] leading-[1.125rem] font-medium text-foreground">
+          <h3 className="truncate text-sm leading-4.5 font-medium text-foreground">
             {device.label}
           </h3>
-          <p className="text-xs leading-[1.125rem] text-muted-foreground">
+          <p className="text-xs leading-4.5 text-muted-foreground">
             {mobileClientPlatformLabel(device)}
           </p>
         </div>
-        <p className="shrink-0 text-[0.6875rem] leading-4 text-muted-foreground/75">
+        <p className="shrink-0 text-2xs leading-4 text-muted-foreground/75">
           {mobileClientUpdatedAtLabel(device.updatedAt)}
         </p>
       </div>
@@ -60,7 +60,7 @@ function MobileClientRow({ device }: { readonly device: RelayClientDeviceRecord 
           label={mobileClientActivityLabel(device)}
         />
       </div>
-      <p className="mt-1.5 text-xs leading-[1.125rem] text-muted-foreground/80">
+      <p className="mt-1.5 text-xs leading-4.5 text-muted-foreground/80">
         {mobileClientNotificationDetail(device)}
       </p>
     </ClerkUserProfileRow>
@@ -97,7 +97,7 @@ function EmptyMobileClients() {
       </EmptyMedia>
       <EmptyHeader>
         <EmptyTitle className="text-[1.0625rem] leading-6">No mobile clients</EmptyTitle>
-        <EmptyDescription className="text-[0.8125rem] leading-[1.125rem]">
+        <EmptyDescription className="text-[0.8125rem] leading-4.5">
           Sign in to Pylon on your phone to register it for push notifications and agent activity
           updates.
         </EmptyDescription>
@@ -127,7 +127,7 @@ export function MobileClientsUserProfilePage() {
       <div>
         {devicesState.error ? (
           <div
-            className="mb-4 flex flex-col gap-3 border-t border-destructive/35 py-3 text-[0.8125rem] sm:flex-row sm:items-center sm:justify-between"
+            className="mb-4 flex flex-col gap-3 border-t border-destructive/35 py-3 text-xs sm:flex-row sm:items-center sm:justify-between"
             role="alert"
           >
             <div>

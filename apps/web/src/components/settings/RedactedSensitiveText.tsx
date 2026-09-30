@@ -44,8 +44,8 @@ export function RedactedSensitiveText(props: {
           <button
             type="button"
             className={cn(
-              "min-w-0 max-w-full cursor-pointer rounded-sm font-mono text-left text-[11px] leading-normal [overflow-wrap:anywhere] transition hover:text-foreground",
-              revealed ? "text-muted-foreground" : "select-none text-muted-foreground blur-[2px]",
+              "min-w-0 max-w-full cursor-pointer rounded-sm font-mono text-left text-2xs leading-normal [overflow-wrap:anywhere] transition hover:text-foreground",
+              revealed ? "text-muted-foreground" : "select-none text-muted-foreground blur-xs",
               props.className,
             )}
             onClick={() => setRevealed((current) => !current)}

@@ -45,7 +45,7 @@ export function HarnessRefinementControls(props: {
     <div className="mt-1 grid gap-2 border-border/70 border-t pt-2">
       <div className="grid gap-1 text-xs">
         <span className="font-medium text-muted-foreground">Local session harness</span>
-        <p id={descriptionId} className="text-pretty text-secondary-label text-[11px] leading-4">
+        <p id={descriptionId} className="text-pretty text-secondary-label text-2xs leading-4">
           Improves only this thread&apos;s private session harness. This may take time and cannot be
           cancelled or rolled back here.
         </p>
@@ -131,7 +131,7 @@ export function ContextCompactionControls(props: {
               aria-label="Automatic context compaction"
             />
           </label>
-          <p className="text-pretty text-secondary-label text-[11px] leading-4">
+          <p className="text-pretty text-secondary-label text-2xs leading-4">
             Changes the current session and this provider's default for future sessions.
           </p>
         </div>
@@ -223,11 +223,11 @@ export function ContextWindowMeter(props: {
         viewportClassName="overflow-y-auto p-0"
         className="w-64 max-w-none text-left whitespace-normal"
       >
-        <div className="flex flex-col gap-2 p-[var(--floating-content-inset)]">
+        <div className="flex flex-col gap-2 p-(--floating-content-inset)">
           <div className="flex items-center justify-between gap-3">
             <div className="font-medium text-muted-foreground text-xs">Context Window</div>
             {usage?.maxTokens !== null && usage !== null && usedPercentage ? (
-              <div className="text-secondary-label text-[11px] tabular-nums">
+              <div className="text-secondary-label text-2xs tabular-nums">
                 <span>{usedPercentage}</span>
                 <span className="mx-1">·</span>
                 <span>
@@ -238,7 +238,7 @@ export function ContextWindowMeter(props: {
                 </span>
               </div>
             ) : (
-              <div className="text-secondary-label text-[11px] tabular-nums">
+              <div className="text-secondary-label text-2xs tabular-nums">
                 {usage === null ? "Usage unavailable" : formatContextWindowTokens(usage.usedTokens)}
               </div>
             )}
@@ -259,7 +259,7 @@ export function ContextWindowMeter(props: {
             </div>
           ) : null}
           {showTotalProcessed ? (
-            <div className="flex items-center justify-between gap-3 text-[11px] leading-4">
+            <div className="flex items-center justify-between gap-3 text-2xs leading-4">
               <span className="text-secondary-label">Total processed</span>
               <span className="font-medium tabular-nums text-secondary-label">
                 {formatContextWindowTokens(totalProcessedTokens)}
@@ -267,7 +267,7 @@ export function ContextWindowMeter(props: {
             </div>
           ) : null}
           {usage?.compactsAutomatically && !props.compaction ? (
-            <div className="mt-1 text-pretty text-secondary-label text-[11px] font-medium">
+            <div className="mt-1 text-pretty text-secondary-label text-2xs font-medium">
               {formatContextWindowCompactionMessage(modelDisplayName, usage.autoCompactThreshold)}
             </div>
           ) : null}

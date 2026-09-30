@@ -570,7 +570,7 @@ function PrimeManagedMaintenanceSection(props: {
 
           {maintenance && maintenance.availableBuilds.length > 0 ? (
             <div className="grid gap-1.5 border-t border-border/60 pt-2">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <p className="text-2xs font-medium uppercase tracking-wide text-muted-foreground">
                 Verified rollback builds
               </p>
               {maintenance.availableBuilds.map((build) => (
@@ -578,7 +578,7 @@ function PrimeManagedMaintenanceSection(props: {
                   key={build.buildId}
                   className="flex min-w-0 items-center justify-between gap-2"
                 >
-                  <code className="min-w-0 truncate text-[11px] text-muted-foreground">
+                  <code className="min-w-0 truncate text-2xs text-muted-foreground">
                     {build.buildId} · {build.channel} #{build.sequence}
                   </code>
                   {build.buildId === selectedBuildId ? (
@@ -851,7 +851,7 @@ export function ProviderInstanceCard({
       showBadge={Boolean(accentColor)}
       className="size-5"
       iconClassName="size-4 text-foreground/80"
-      badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 px-0.5 text-[7px]"
+      badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 px-0.5 text-3xs"
     />
   ) : FallbackIconComponent ? (
     <span className="inline-flex size-5 shrink-0 items-center justify-center">
@@ -859,7 +859,7 @@ export function ProviderInstanceCard({
     </span>
   ) : (
     <span
-      className="inline-flex size-5 shrink-0 items-center justify-center text-[10px] font-semibold leading-none text-foreground/80"
+      className="inline-flex size-5 shrink-0 items-center justify-center text-3xs font-semibold leading-none text-foreground/80"
       aria-hidden
     >
       {providerInstanceInitials(displayName)}
@@ -1016,7 +1016,7 @@ export function ProviderInstanceCard({
             <span className="flex min-w-0 items-center gap-2">
               <span className="truncate text-sm font-medium text-foreground">{displayName}</span>
               {String(instanceId) !== String(instance.driver) ? (
-                <code className="min-w-0 truncate rounded bg-muted/60 px-1 py-0.5 text-[10px] text-muted-foreground">
+                <code className="min-w-0 truncate rounded bg-muted/60 px-1 py-0.5 text-3xs text-muted-foreground">
                   {instanceId}
                 </code>
               ) : null}
@@ -1027,7 +1027,7 @@ export function ProviderInstanceCard({
               ) : null}
               {listUpdateMarkerNode}
             </span>
-            <span className="mt-0.5 flex items-start gap-1.5 text-[13px] leading-[1.45] text-muted-foreground/80">
+            <span className="mt-0.5 flex items-start gap-1.5 text-xs leading-normal text-muted-foreground/80">
               {statusDotNode ? (
                 <span className="flex h-[1.45em] shrink-0 items-center">{statusDotNode}</span>
               ) : null}
@@ -1066,7 +1066,7 @@ export function ProviderInstanceCard({
       {versionCodeNode}
       {distributionLabel ? (
         <code
-          className="rounded bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+          className="rounded bg-muted/60 px-1.5 py-0.5 text-3xs text-muted-foreground"
           aria-label={liveProvider?.distribution?.message ?? distributionLabel}
         >
           {distributionLabel}
@@ -1106,7 +1106,7 @@ export function ProviderInstanceCard({
             >
               <div className="grid min-w-0 gap-3">
                 <div className="grid gap-0.5">
-                  <p className="text-[13px] font-semibold leading-tight text-foreground">
+                  <p className="text-sm font-semibold leading-tight text-foreground">
                     Update available
                   </p>
                   <p
@@ -1134,7 +1134,7 @@ export function ProviderInstanceCard({
                   </Button>
                 ) : null}
                 {onRunUpdate && updateCommand ? (
-                  <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  <div className="flex items-center gap-2 text-3xs font-medium uppercase tracking-wider text-muted-foreground">
                     <span aria-hidden className="h-px flex-1 bg-border" />
                     or, update manually using
                     <span aria-hidden className="h-px flex-1 bg-border" />
@@ -1142,7 +1142,7 @@ export function ProviderInstanceCard({
                 ) : null}
                 {updateCommand ? (
                   <div className="flex min-w-0 items-center gap-1 rounded-md border border-border/70 bg-muted/40 py-0.5 pr-0.5 pl-2">
-                    <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground">
+                    <code className="min-w-0 flex-1 truncate font-mono text-2xs text-foreground">
                       {updateCommand}
                     </code>
                     <Tooltip>

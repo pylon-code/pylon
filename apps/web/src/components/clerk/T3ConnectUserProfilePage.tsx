@@ -51,10 +51,10 @@ export function T3ConnectEnvironmentRow(props: {
       <Collapsible open={props.confirmationOpen} onOpenChange={props.onConfirmationChange}>
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
-            <h3 className="truncate text-[0.8125rem] leading-[1.125rem] font-medium text-foreground">
+            <h3 className="truncate text-sm leading-4.5 font-medium text-foreground">
               {environment.label}
             </h3>
-            <p className="mt-1 text-xs leading-[1.125rem] text-muted-foreground">
+            <p className="mt-1 text-xs leading-4.5 text-muted-foreground">
               {linkedAtLabel(environment.linkedAt)} · {endpointLabel(environment)}
             </p>
           </div>
@@ -79,13 +79,13 @@ export function T3ConnectEnvironmentRow(props: {
               role="group"
               aria-label={`Confirm deregistration of ${environment.label}`}
             >
-              <h4 className="text-[0.8125rem] leading-[1.125rem] font-semibold text-foreground">
+              <h4 className="text-sm leading-4.5 font-semibold text-foreground">
                 Deregister server
               </h4>
-              <p className="mt-1 text-[0.8125rem] leading-[1.125rem] text-muted-foreground">
+              <p className="mt-1 text-xs leading-4.5 text-muted-foreground">
                 “{environment.label}” will be removed from this account.
               </p>
-              <p className="mt-4 max-w-xl text-[0.8125rem] leading-[1.125rem] text-muted-foreground">
+              <p className="mt-4 max-w-xl text-xs leading-4.5 text-muted-foreground">
                 Pylon Connect access will be revoked, any managed tunnel will be removed, and a host
                 space will become available. Local connections on your devices are not changed.
               </p>
@@ -212,7 +212,7 @@ export function T3ConnectUserProfilePage() {
     >
       <div>
         {environmentsState.error ? (
-          <div className="mb-4 border-t border-destructive/35 py-3 text-[0.8125rem]" role="alert">
+          <div className="mb-4 border-t border-destructive/35 py-3 text-xs" role="alert">
             <p className="font-medium text-destructive-foreground">
               Could not load Pylon Connect environments
             </p>
@@ -221,7 +221,7 @@ export function T3ConnectUserProfilePage() {
         ) : null}
 
         {isInitialLoad ? (
-          <p className="border-t py-4 text-[0.8125rem] text-muted-foreground" role="status">
+          <p className="border-t py-4 text-xs text-muted-foreground" role="status">
             Loading environments…
           </p>
         ) : environments.length > 0 ? (
@@ -248,7 +248,7 @@ export function T3ConnectUserProfilePage() {
               <EmptyTitle className="text-[1.0625rem] leading-6">
                 No Pylon Connect environments
               </EmptyTitle>
-              <EmptyDescription className="text-[0.8125rem] leading-[1.125rem]">
+              <EmptyDescription className="text-[0.8125rem] leading-4.5">
                 Link an environment from its local Settings to make it available through Pylon
                 Connect.
               </EmptyDescription>

@@ -27,9 +27,7 @@ function ConnectCliAuthMessage({
   return (
     <>
       {eyebrow ? (
-        <p className="text-[10px] font-semibold tracking-[0.18em] text-primary uppercase">
-          {eyebrow}
-        </p>
+        <p className="text-3xs font-semibold tracking-widest text-primary uppercase">{eyebrow}</p>
       ) : null}
       <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{description}</p>
@@ -181,10 +179,10 @@ export function ConnectCliCallbackSurface() {
 
       <div className="mt-6 overflow-hidden rounded-xl border border-border/80 bg-background/65">
         <div className="flex items-center justify-between border-b border-border/70 px-4 py-2.5">
-          <span className="text-[10px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">
+          <span className="text-3xs font-semibold tracking-[0.16em] text-muted-foreground uppercase">
             One-time authorization code
           </span>
-          <span className="font-mono text-[10px] text-muted-foreground">expires shortly</span>
+          <span className="font-mono text-3xs text-muted-foreground">expires shortly</span>
         </div>
         <code
           className="block p-4 font-mono text-sm leading-relaxed break-all select-all"
