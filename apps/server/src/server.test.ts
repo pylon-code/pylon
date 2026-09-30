@@ -547,6 +547,7 @@ const buildAppUnderTest = (options?: {
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
     browserTraceCollector?: Partial<BrowserTraceCollector.BrowserTraceCollector["Service"]>;
+    httpClient?: HttpClient.HttpClient;
     serverLifecycleEvents?: Partial<ServerLifecycleEvents.ServerLifecycleEvents["Service"]>;
     serverRuntimeStartup?: Partial<ServerRuntimeStartup.ServerRuntimeStartup["Service"]>;
     serverEnvironment?: Partial<ServerEnvironment.ServerEnvironment["Service"]>;
@@ -1274,7 +1275,11 @@ const buildAppUnderTest = (options?: {
       Layer.provideMerge(makeAuthTestLayer()),
       Layer.provideMerge(ServerSecretStore.layer),
       Layer.provide(workspaceAndProjectServicesLayer),
-      Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(
+        options?.layers?.httpClient
+          ? Layer.succeed(HttpClient.HttpClient, options.layers.httpClient)
+          : FetchHttpClient.layer,
+      ),
       Layer.provide(GitHubCli.layer.pipe(Layer.provideMerge(VcsProcess.layer))),
       Layer.provide(layerConfig),
     );
@@ -5903,7 +5908,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const session = yield* HttpClient.get("/api/auth/session", { headers: { cookie } });
       assert.equal(session.status, 200);
       assert.include(spanNames, "http.server GET");
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    }).pipe(Effect.provide(loopbackHttpServerTest)),
   );
 
   it.effect("routes websocket rpc server.upsertKeybinding", () =>

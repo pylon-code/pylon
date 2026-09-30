@@ -597,6 +597,10 @@ an `http` or `https` URL, a protocol other than `http/protobuf` or `http/json` s
 headers that are not `key=value` pairs with percent-encoded values turn that signal's export off
 with a startup warning, rather than sending it to the Settings endpoint.
 
+WSL backends receive these variables through `WSLENV`. Existing entries and their flags are
+preserved; remove `/p` or `/w` flags on OTLP variables if they translate or prevent forwarding the
+Windows value.
+
 If the OTLP URLs are unset, local tracing still works, metrics stay in-process only, and logs stay
 on stdout only.
 

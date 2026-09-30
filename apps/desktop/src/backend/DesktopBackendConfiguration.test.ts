@@ -1116,6 +1116,10 @@ describe("DesktopBackendConfiguration", () => {
         const standard = {
           OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example.com:4318/base?api_key=secret",
           OTEL_EXPORTER_OTLP_LOGS_HEADERS: "authorization=Bearer%20token",
+          OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: "http/json",
+          OTEL_TRACES_EXPORTER: "none",
+          OTEL_METRICS_EXPORTER: "none",
+          OTEL_LOGS_EXPORTER: "none",
           T3CODE_OTLP_TRACES_URL: "http://t3.example.com:4318/v1/traces",
         };
         const previousWslEnv = process.env.WSLENV;
@@ -1146,6 +1150,10 @@ describe("DesktopBackendConfiguration", () => {
             assert.include(wslEnv, "OTEL_EXPORTER_OTLP_LOGS_HEADERS");
             assert.equal(config.env.T3CODE_OTLP_TRACES_URL, "http://t3.example.com:4318/v1/traces");
             assert.include(wslEnv, "T3CODE_OTLP_TRACES_URL");
+            for (const [name, value] of Object.entries(standard)) {
+              assert.equal(config.env[name], value);
+              assert.include(wslEnv, name);
+            }
           }).pipe(
             Effect.provide(
               DesktopBackendConfiguration.layer.pipe(
