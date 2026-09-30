@@ -3309,10 +3309,10 @@ const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(f
 });
 
 // Stage the prebuilt Linux node-pty binary into the packaged app so the WSL
-// backend never compiles on the user's machine. node-pty publishes no Linux
-// prebuilt and the WSL Linux Node can't load the Windows/Electron binary, so the
-// Linux CI job builds pty.node and hands it here. We drop it into the staged
-// node-pty's prebuilds/linux-<arch>/ with a t3code marker the WSL preflight
+// backend never compiles on the user's machine. The WSL Linux Node can't load
+// the Windows/Electron binary, so the Linux CI job builds pty.node and hands it
+// here. We drop it into the staged node-pty's prebuilds/linux-<arch>/ (replacing
+// the prebuild node-pty itself ships) with a t3code marker the WSL preflight
 // checks (arch + node-pty version; the binary is N-API, hence ABI-stable across
 // Node versions). A missing prebuild is a warning, not an error, so local and
 // non-Windows builds still succeed — they just won't ship a working WSL backend.
