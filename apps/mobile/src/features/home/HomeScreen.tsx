@@ -1110,6 +1110,8 @@ export function HomeScreen(props: HomeScreenProps) {
               onRenameThread={handleRenameThread}
               onRegenerateThreadTitle={handleRegenerateThreadTitle}
               titleRegenerationSupported={titleRegenerationEnvironmentIds.has(thread.environmentId)}
+              autoSettleOptOutSupported={autoSettleOptOutEnvironmentIds.has(thread.environmentId)}
+              onSetThreadAutoSettle={handleSetThreadAutoSettle}
               onSelectThread={props.onSelectThread}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
@@ -1132,6 +1134,8 @@ export function HomeScreen(props: HomeScreenProps) {
       handleSwipeableClose,
       handleSwipeableWillOpen,
       handleRegenerateThreadTitle,
+      handleSetThreadAutoSettle,
+      autoSettleOptOutEnvironmentIds,
       handleRenameThread,
       machineByEnvironmentId,
       projectCwdByKey,
