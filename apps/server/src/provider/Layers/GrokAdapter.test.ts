@@ -9,6 +9,7 @@ import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -376,27 +377,32 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
   it.effect("retires a crashed process so a deliberate retry can resume", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-crash-recovery");
-      const tempDir = yield* Effect.promise(() =>
-        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-crash-recovery-")),
-      );
+      const incarnation = RuntimeSessionId.make("grok-crashed-incarnation");
+      const fs = yield* FileSystem.FileSystem;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "grok-crash-recovery-" });
       const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
-      const wrapper = yield* Effect.promise(() =>
-        makeMockGrokWrapper({
-          T3_ACP_CRASH_PROMPT: "1",
-          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+      const wrapper = yield* Effect.sync(() =>
+        writeFakeCli({
+          directory: tempDir,
+          name: "fake-grok",
+          env: { T3_ACP_CRASH_PROMPT: "1", T3_ACP_REQUEST_LOG_PATH: requestLogPath },
+          source: execScriptSource({ scriptPath: mockAgentPath }),
         }),
       );
       const adapter = yield* makeTestAdapter(wrapper);
       const exited =
         yield* Deferred.make<Extract<ProviderRuntimeEvent, { type: "session.exited" }>>();
+      const crashEvents: Array<ProviderRuntimeEvent> = [];
       const events = yield* Stream.runForEach(adapter.streamEvents, (event) =>
-        event.type === "session.exited"
-          ? Deferred.succeed(exited, event).pipe(Effect.asVoid)
-          : Effect.void,
+        Effect.gen(function* () {
+          crashEvents.push(event);
+          if (event.type === "session.exited") yield* Deferred.succeed(exited, event);
+        }),
       ).pipe(Effect.forkChild);
       const input = {
         threadId,
         provider: ProviderDriverKind.make("grok"),
+        sessionIncarnationId: incarnation,
         cwd: process.cwd(),
         runtimeMode: "full-access" as const,
       };
@@ -410,10 +416,23 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         adapter.sendTurn({ threadId, input: "retry during teardown", attachments: [] }),
       );
       assert.equal(retryDuringTeardown._tag, "ProviderAdapterSessionNotFoundError");
-      assert.equal((yield* Deferred.await(exited)).payload.exitKind, "error");
+      const exitEvent = yield* Deferred.await(exited);
+      assert.equal(exitEvent.payload.exitKind, "error");
+      assert.equal(exitEvent.sessionIncarnationId, incarnation);
+      const failedTurns = crashEvents.filter((event) => event.type === "turn.completed");
+      assert.lengthOf(failedTurns, 1);
+      assert.equal(failedTurns[0]?.sessionIncarnationId, incarnation);
+      assert.equal(failedTurns[0]?.payload.state, "failed");
       assert.deepStrictEqual(yield* adapter.listSessions(), []);
       yield* Fiber.interrupt(events);
-      yield* adapter.startSession({ ...input, resumeCursor: session.resumeCursor });
+      const replacementIncarnation = RuntimeSessionId.make("grok-resumed-incarnation");
+      yield* adapter.startSession({
+        ...input,
+        sessionIncarnationId: replacementIncarnation,
+        resumeCursor: session.resumeCursor,
+      });
+      const liveSessions = yield* adapter.listSessions();
+      assert.equal(liveSessions[0]?.sessionIncarnationId, replacementIncarnation);
       const turn = yield* adapter.sendTurn({ threadId, input: "retry now", attachments: [] });
       assert.equal(turn.threadId, threadId);
       yield* adapter.stopSession(threadId);
