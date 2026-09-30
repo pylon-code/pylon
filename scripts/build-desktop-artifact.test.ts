@@ -186,6 +186,7 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
   readonly copyUnpackedNatives: boolean;
   readonly serverEntrySource?: string;
   readonly wslRuntime?: "valid" | "forbidden" | "bad-digest";
+  readonly wslPrebuildArch?: "x64" | "arm64";
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -224,7 +225,11 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
 
   if (input.wslRuntime !== undefined) {
     const wslSourceDir = path.join(tempDir, "wsl-source");
-    const linuxPrebuildDir = path.join(wslSourceDir, "node_modules/node-pty/prebuilds/linux-x64");
+    const wslPrebuildArch = input.wslPrebuildArch ?? "x64";
+    const linuxPrebuildDir = path.join(
+      wslSourceDir,
+      `node_modules/node-pty/prebuilds/linux-${wslPrebuildArch}`,
+    );
     yield* fs.makeDirectory(path.join(wslSourceDir, "apps/server/dist"), { recursive: true });
     yield* fs.makeDirectory(linuxPrebuildDir, { recursive: true });
     yield* fs.writeFileString(
@@ -238,7 +243,7 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
     yield* fs.writeFileString(path.join(linuxPrebuildDir, "pty.node"), "linux-pty");
     yield* fs.writeFileString(
       path.join(linuxPrebuildDir, "t3code-wsl-node-pty.json"),
-      '{"arch":"x64"}',
+      `{"arch":"${wslPrebuildArch}"}`,
     );
     if (input.wslRuntime === "forbidden") {
       const windowsPrebuildDir = path.join(
@@ -1541,6 +1546,31 @@ releaseDate: '2026-09-10T10:32:14.587Z'
         assert.equal(result.packagedAppDir, fixture.packagedAppDir);
       }),
     ).pipe(Effect.provideService(HostProcessPlatform, "linux")),
+  );
+
+  it.effect("rejects a WSL archive whose node-pty prebuild is for another architecture", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeWindowsPayloadFixture({
+          copyUnpackedNatives: true,
+          wslRuntime: "valid",
+          wslPrebuildArch: "arm64",
+        });
+        const error = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          expectWslRuntime: true,
+        }).pipe(Effect.flip);
+
+        assert.instanceOf(error, WindowsPackagedPayloadValidationError);
+        assert.equal(error.reason, "wsl-runtime-invalid");
+        assert.deepStrictEqual(error.missingFiles, [
+          "node_modules/node-pty/prebuilds/linux-x64/pty.node",
+          "node_modules/node-pty/prebuilds/linux-x64/t3code-wsl-node-pty.json",
+        ]);
+      }),
+    ),
   );
 
   it.effect("rejects a Windows package missing its expected WSL runtime", () =>
