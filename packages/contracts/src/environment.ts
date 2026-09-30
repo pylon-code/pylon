@@ -198,6 +198,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       desktop servers whose app predates the remote trigger, where clients
       must keep telling the user to update the app on that machine. */
   desktopAppUpdate: Schema.optionalKey(Schema.Boolean),
+  /** Server keeps Bitbucket credentials saved through the `bitbucket` settings patch in its
+      secret store. Older servers strip that patch key without an error, so clients leave the
+      credentials form inert rather than accept a token that would never be stored. */
+  bitbucketCredentials: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 
