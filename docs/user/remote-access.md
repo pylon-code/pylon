@@ -191,6 +191,11 @@ revokes its cloud access, removes any managed tunnel, and frees its host space e
 is offline or has been wiped. Removing an environment from a device's connection settings only forgets
 it on that device; it stays registered to your account.
 
+When idle tunnel cleanup is enabled, Pylon Connect removes a linked environment's tunnel after it
+stays offline, usually within about an hour. The environment stays linked and keeps the same address.
+When the host starts again or wakes, Pylon Connect creates a replacement tunnel on its own. You do not
+need to pair again.
+
 On a command-line host, `t3 connect unlink` disables exposure while retaining your login;
 `t3 connect logout` also clears that login. Background-service
 [removal](./background-service.md#manage-the-service) is separate.
