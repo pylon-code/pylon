@@ -1,19 +1,32 @@
 import { EnvironmentId, ProviderInstanceId, USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
 import { mergeUsage } from "@t3tools/shared/usageMerge";
 import { StrictMode, act } from "react";
+import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { create, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   presentations: new Map(),
   refreshProviders: vi.fn(async () => undefined),
+  navigate: vi.fn(),
+  canGoBack: false,
   metric: "limits",
 }));
-vi.mock("@effect/atom-react", () => ({ useAtomValue: () => state.presentations }));
+vi.mock("@effect/atom-react", () => ({
+  useAtomValue: (atom: unknown) =>
+    atom === "keybindings" ? DEFAULT_RESOLVED_KEYBINDINGS : state.presentations,
+}));
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => state.navigate,
+  useCanGoBack: () => state.canGoBack,
+}));
 vi.mock("../../state/presentation", () => ({
   environmentPresentations: { presentationsAtom: null },
 }));
-vi.mock("../../state/server", () => ({ serverEnvironment: { refreshProviders: null } }));
+vi.mock("../../state/server", () => ({
+  serverEnvironment: { refreshProviders: null },
+  primaryServerKeybindingsAtom: "keybindings",
+}));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.refreshProviders }));
 vi.mock("../../env", () => ({ isElectron: false }));
 vi.mock("../../hooks/useSettings", () => ({ usePrimarySettings: () => "24h" }));
@@ -86,11 +99,14 @@ import { UsagePage } from "./UsagePage";
 let renderer: ReactTestRenderer;
 let environmentNumber = 0;
 beforeEach(() => {
+  vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
   vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-11T12:00:00Z"));
   environmentNumber += 1;
   state.metric = "limits";
+  state.canGoBack = false;
+  state.navigate.mockClear();
   state.refreshProviders.mockClear();
   state.presentations = new Map([
     [
@@ -281,4 +297,89 @@ it("keeps manual refresh busy until the already-running automatic check settles"
     });
   }
   expect(button().props["aria-busy"]).toBe(false);
+});
+
+function keydown(properties: { key: string; repeat?: boolean; isComposing?: boolean }) {
+  const event = Object.assign(new Event("keydown", { cancelable: true }), {
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    repeat: false,
+    isComposing: false,
+    ...properties,
+  });
+  window.dispatchEvent(event);
+  return event;
+}
+
+function selectedMetric() {
+  return renderer.root.findAll(
+    (node) => node.type === "div" && node.props["aria-label"] === "Usage metric",
+  )[0]!.props.value;
+}
+
+describe("Usage keyboard navigation", () => {
+  beforeEach(() => {
+    vi.stubGlobal("HTMLElement", function HTMLElement() {});
+    vi.stubGlobal(
+      "document",
+      Object.assign(new EventTarget(), { visibilityState: "visible", querySelector: () => null }),
+    );
+    vi.stubGlobal("navigator", { platform: "Linux" });
+  });
+
+  it("switches the metric with its letter shortcut and names the shortcut on the control", async () => {
+    await act(() => {
+      renderer = create(<UsagePage />);
+    });
+    expect(selectedMetric()).toEqual(["limits"]);
+
+    let event!: Event;
+    await act(() => {
+      event = keydown({ key: "t" });
+    });
+    expect(event.defaultPrevented).toBe(true);
+    expect(selectedMetric()).toEqual(["tokens"]);
+    expect(renderer.root.findAllByProps({ title: "Tokens (T)" }).length).toBeGreaterThan(0);
+    // The consumed letter must not reach the page-level Escape handler either.
+    expect(state.navigate).not.toHaveBeenCalled();
+  });
+
+  it("returns home on Escape when there is no previous app page", async () => {
+    await act(() => {
+      renderer = create(<UsagePage />);
+    });
+    await act(() => {
+      keydown({ key: "Escape" });
+    });
+    expect(state.navigate).toHaveBeenCalledWith({ to: "/" });
+  });
+
+  it("returns to the previous page on Escape", async () => {
+    state.canGoBack = true;
+    const back = vi.fn();
+    vi.stubGlobal("window", Object.assign(new EventTarget(), { history: { back } }));
+    await act(() => {
+      renderer = create(<UsagePage />);
+    });
+    await act(() => {
+      keydown({ key: "Escape" });
+    });
+    expect(back).toHaveBeenCalledOnce();
+    expect(state.navigate).not.toHaveBeenCalled();
+  });
+
+  it.each([{ repeat: true }, { isComposing: true }])(
+    "ignores Escape with %j",
+    async (properties) => {
+      await act(() => {
+        renderer = create(<UsagePage />);
+      });
+      await act(() => {
+        keydown({ key: "Escape", ...properties });
+      });
+      expect(state.navigate).not.toHaveBeenCalled();
+    },
+  );
 });

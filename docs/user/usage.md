@@ -128,3 +128,10 @@ The hub's Codex and Claude quotas appear under **Usage → Limits** on all conne
 mobile, and a failed hub or account read is shown there. This connection supplies usage information;
 configure the provider separately to send agent requests through the hub. Remove the hub from the same
 settings section when you no longer need it.
+
+## Keyboard shortcuts
+
+While on Usage on web and desktop, press `C`, `T`, or `L` for Cost, Tokens, or Limits while not
+typing in a field. Use `Ctrl+Shift+1/2/3/4` (`Cmd+Shift+1/2/3/4` on macOS) for the past 24 hours,
+7 days, 30 days, or 90 days. Period shortcuts do nothing on Limits. Press `Escape` to return to the
+previous page. Customize these shortcuts in **Settings → Keybindings**.
