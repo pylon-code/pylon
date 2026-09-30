@@ -25,6 +25,7 @@ const SNAPSHOT_MAX_AGE = 15 * 60_000;
 function subscriptionUsageProps(
   accounts: readonly LimitAccount[],
   now: number,
+  configuredDrivers: ReadonlySet<string>,
 ): SubscriptionUsageSnapshot {
   const pools = collectLimitPools(accounts, now);
   const checked = accounts
@@ -35,60 +36,71 @@ function subscriptionUsageProps(
       checked.length > 0 && checked.every((value) => Number.isFinite(value) && value <= now)
         ? Math.min(...checked)
         : 0,
-    providers: (["codex", "claudeAgent"] as const).map((driver) => {
-      const pool = pools.find((candidate) => candidate.driver === driver);
-      const name = driver === "codex" ? "Codex" : "Claude";
-      if (!pool)
-        return { name, detail: "No limits available", windows: [], expiresAt: 0, totalWindows: 0 };
-      const checkedAt = Math.min(...pool.accounts.map((a) => Date.parse(a.limits.checkedAt)));
-      const expiresAt = Math.min(
-        checkedAt + SNAPSHOT_MAX_AGE,
-        ...pool.windows.flatMap((window) => window.resets.map((reset) => reset.at)),
-      );
-      const fresh = Number.isFinite(checkedAt) && checkedAt <= now && expiresAt > now;
-      const sortedWindows = [...pool.windows]
-        .filter(
-          (window) =>
-            window.kind === "session" || window.kind === "weekly" || window.kind === "monthly",
-        )
-        .sort((a, b) => a.remainingPercent - b.remainingPercent);
-      // Scope-specific window labels can contain model names. The widget only
-      // stores canonical kinds and the tightest reading in each kind.
-      const selectedWindows = ["session", "weekly", "monthly"].flatMap((kind) => {
-        const window = sortedWindows.find((candidate) => candidate.kind === kind);
-        return window ? [window] : [];
-      });
-      return {
-        name,
-        detail: !fresh
-          ? "Open Pylon to refresh"
-          : pool.accounts.length > 1
-            ? `${pool.accounts.length} accounts · pooled`
-            : "Subscription remaining",
-        expiresAt: fresh ? expiresAt : 0,
-        totalWindows: fresh ? selectedWindows.length : 0,
-        windows: fresh
-          ? selectedWindows.map((window) => ({
-              kind: window.kind,
-              label:
-                window.kind === "monthly"
-                  ? "Monthly"
-                  : window.kind === "weekly"
-                    ? "Weekly"
-                    : "Session",
-              remaining: Math.round(window.remainingPercent),
-              reset: window.resets[0]
-                ? `Next reset ${new Date(window.resets[0].at).toLocaleString(undefined, {
-                    month: "short",
-                    day: "numeric",
-                    hour: "numeric",
-                    minute: "2-digit",
-                  })}`
-                : "Reset time unavailable",
-            }))
-          : [],
-      };
-    }),
+    providers: (["codex", "claudeAgent"] as const)
+      .filter(
+        (driver) =>
+          configuredDrivers.has(driver) || accounts.some((account) => account.driver === driver),
+      )
+      .map((driver) => {
+        const pool = pools.find((candidate) => candidate.driver === driver);
+        const name = driver === "codex" ? "Codex" : "Claude";
+        if (!pool)
+          return {
+            name,
+            detail: "No limits available",
+            windows: [],
+            expiresAt: 0,
+            totalWindows: 0,
+          };
+        const checkedAt = Math.min(...pool.accounts.map((a) => Date.parse(a.limits.checkedAt)));
+        const expiresAt = Math.min(
+          checkedAt + SNAPSHOT_MAX_AGE,
+          ...pool.windows.flatMap((window) => window.resets.map((reset) => reset.at)),
+        );
+        const fresh = Number.isFinite(checkedAt) && checkedAt <= now && expiresAt > now;
+        const sortedWindows = [...pool.windows]
+          .filter(
+            (window) =>
+              window.kind === "session" || window.kind === "weekly" || window.kind === "monthly",
+          )
+          .sort((a, b) => a.remainingPercent - b.remainingPercent);
+        // Scope-specific window labels can contain model names. The widget only
+        // stores canonical kinds and the tightest reading in each kind.
+        const selectedWindows = ["session", "weekly", "monthly"].flatMap((kind) => {
+          const window = sortedWindows.find((candidate) => candidate.kind === kind);
+          return window ? [window] : [];
+        });
+        return {
+          name,
+          detail: !fresh
+            ? "Open Pylon to refresh"
+            : pool.accounts.length > 1
+              ? `${pool.accounts.length} accounts · pooled`
+              : "Subscription remaining",
+          expiresAt: fresh ? expiresAt : 0,
+          totalWindows: fresh ? selectedWindows.length : 0,
+          windows: fresh
+            ? selectedWindows.map((window) => ({
+                kind: window.kind,
+                label:
+                  window.kind === "monthly"
+                    ? "Monthly"
+                    : window.kind === "weekly"
+                      ? "Weekly"
+                      : "Session",
+                remaining: Math.round(window.remainingPercent),
+                reset: window.resets[0]
+                  ? `Next reset ${new Date(window.resets[0].at).toLocaleString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })}`
+                  : "Reset time unavailable",
+              }))
+            : [],
+        };
+      }),
   };
 }
 
@@ -121,7 +133,23 @@ export function buildSubscriptionUsageSnapshot(
       ];
     }),
   );
-  return { ...subscriptionUsageProps(collectLimitAccounts(connected), now), url };
+  const configuredDrivers = new Set(
+    [...connected.values()].flatMap((presentation) =>
+      (presentation.serverConfig?.providers ?? [])
+        // Servers report default-enabled drivers even when their CLI is missing.
+        .filter(
+          (provider) =>
+            provider.enabled &&
+            provider.installed &&
+            provider.usageLimits?.unavailable?.reason !== "unsupported",
+        )
+        .map((provider) => provider.driver),
+    ),
+  );
+  return {
+    ...subscriptionUsageProps(collectLimitAccounts(connected), now, configuredDrivers),
+    url,
+  };
 }
 
 export function subscriptionUsageTimeline(snapshot: SubscriptionUsageSnapshot, now: number) {

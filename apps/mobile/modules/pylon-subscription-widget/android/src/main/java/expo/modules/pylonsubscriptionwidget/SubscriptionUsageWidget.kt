@@ -8,6 +8,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.RemoteViews
@@ -58,10 +59,6 @@ class SubscriptionUsageWidget : AppWidgetProvider() {
     private fun update(context: Context, manager: AppWidgetManager, id: Int) {
       val saved = context.getSharedPreferences(PREFERENCES, 0).getString("snapshot", null)
       val snapshot = runCatching { JSONObject(saved.orEmpty()) }.getOrNull()
-      val views = RemoteViews(context.packageName, R.layout.pylon_subscription_widget)
-      openAppIntent(context, id, snapshot)?.let {
-        views.setOnClickPendingIntent(R.id.pylon_widget_root, it)
-      }
       val providers = snapshot?.optJSONArray("providers")
       val now = System.currentTimeMillis()
       var nextExpiry = Long.MAX_VALUE
@@ -83,7 +80,53 @@ class SubscriptionUsageWidget : AppWidgetProvider() {
       val rows = (0 until (groups.maxOfOrNull { it.size } ?: 0)).flatMap { index ->
         groups.mapNotNull { it.getOrNull(index) }
       }
-      if (rows.isNotEmpty()) {
+      val views = RemoteViews(context.packageName, R.layout.pylon_subscription_widget)
+      openAppIntent(context, id, snapshot)?.let {
+        views.setOnClickPendingIntent(R.id.pylon_widget_root, it)
+      }
+      val checkedAt = snapshot?.optLong("checkedAt") ?: 0
+      // Android 12L is the first release whose collection widgets need no compat service;
+      // layout-v32 supplies the scrolling list, older releases keep the fitted rows.
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S_V2) {
+        // Count limits only; "Open app to refresh" placeholders are not entries.
+        val limits = rows.count { (_, window) -> window != null }
+        // Without limits the layout's plain title stays.
+        if (limits > 0) {
+          views.setTextViewText(
+            R.id.pylon_widget_title,
+            context.getString(R.string.pylon_subscription_widget_title_count, limits)
+          )
+          views.setContentDescription(
+            R.id.pylon_widget_title,
+            context.resources.getQuantityString(
+              R.plurals.pylon_subscription_widget_title_description,
+              limits,
+              limits
+            )
+          )
+        }
+        openAppIntent(context, id, snapshot, forCollection = true)?.let {
+          views.setPendingIntentTemplate(R.id.pylon_widget_rows, it)
+        }
+        val items = RemoteViews.RemoteCollectionItems.Builder()
+        rows.forEachIndexed { index, (provider, window) ->
+          val row = rowView(context, provider, window)
+          row.setOnClickFillInIntent(R.id.pylon_widget_row, Intent())
+          items.addItem(index.toLong(), row)
+        }
+        views.setRemoteAdapter(R.id.pylon_widget_rows, items.build())
+        views.setEmptyView(R.id.pylon_widget_rows, R.id.pylon_widget_empty)
+        val checked = if (checkedAt > 0) {
+          val formatted = DateFormat.getDateTimeInstance(
+            DateFormat.SHORT,
+            DateFormat.SHORT
+          ).format(Date(checkedAt))
+          context.getString(R.string.pylon_subscription_widget_last_checked, formatted)
+        } else {
+          context.getString(R.string.pylon_subscription_widget_unknown_check)
+        }
+        views.setTextViewText(R.id.pylon_widget_footer, checked)
+      } else if (rows.isNotEmpty()) {
         views.removeAllViews(R.id.pylon_widget_rows)
         val options = manager.getAppWidgetOptions(id)
         // Match the default 200dp widget height, which fits one row per provider.
@@ -93,7 +136,6 @@ class SubscriptionUsageWidget : AppWidgetProvider() {
           views.addView(R.id.pylon_widget_rows, rowView(context, provider, window))
         }
         val remaining = totalRows - count
-        val checkedAt = snapshot?.optLong("checkedAt") ?: 0
         val formatted = DateFormat.getDateTimeInstance(
           DateFormat.SHORT,
           DateFormat.SHORT
@@ -119,7 +161,12 @@ class SubscriptionUsageWidget : AppWidgetProvider() {
       manager.updateAppWidget(id, views)
     }
 
-    private fun openAppIntent(context: Context, id: Int, snapshot: JSONObject?): PendingIntent? {
+    private fun openAppIntent(
+      context: Context,
+      id: Int,
+      snapshot: JSONObject?,
+      forCollection: Boolean = false
+    ): PendingIntent? {
       // Target this variant's launcher so co-installed builds cannot steal the tap.
       val intent =
         context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return null
@@ -132,9 +179,14 @@ class SubscriptionUsageWidget : AppWidgetProvider() {
       intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
       return PendingIntent.getActivity(
         context,
-        id,
+        id * 2 + if (forCollection) 1 else 0,
         intent,
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        PendingIntent.FLAG_UPDATE_CURRENT or if (forCollection) {
+          // Collection rows use fill-in intents with an explicit app target.
+          PendingIntent.FLAG_MUTABLE
+        } else {
+          PendingIntent.FLAG_IMMUTABLE
+        }
       )
     }
 

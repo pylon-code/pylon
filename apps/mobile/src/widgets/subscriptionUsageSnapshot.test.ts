@@ -91,6 +91,69 @@ describe("subscription usage widget snapshot", () => {
     }
   });
 
+  it("lists no provider after environments are removed", () => {
+    expect(buildSubscriptionUsageSnapshot(new Map(), deepLink, observedAt).providers).toEqual([]);
+  });
+
+  it.each<{ name: string; overrides: Partial<ServerProvider> }>([
+    { name: "disabled", overrides: { enabled: false } },
+    {
+      name: "missing",
+      overrides: { installed: false, status: "error", usageLimits: undefined },
+    },
+    {
+      name: "API-key",
+      overrides: {
+        usageLimits: { checkedAt, windows: [], unavailable: { reason: "unsupported" } },
+      },
+    },
+    { name: "signed-out", overrides: { auth: { status: "unauthenticated" } } },
+  ])("hides $name providers", ({ overrides }) => {
+    expect(
+      buildSubscriptionUsageSnapshot(presentations([provider(overrides)]), deepLink, observedAt)
+        .providers,
+    ).toEqual([]);
+  });
+
+  it.each([
+    { name: "Codex", driver: "codex" },
+    { name: "Claude", driver: "claudeAgent" },
+  ])("only shows $name when $name and OpenCode are configured", ({ name, driver }) => {
+    const snapshot = buildSubscriptionUsageSnapshot(
+      presentations([
+        provider({
+          instanceId: ProviderInstanceId.make(driver),
+          driver: ProviderDriverKind.make(driver),
+        }),
+        provider({
+          instanceId: ProviderInstanceId.make("opencode"),
+          driver: ProviderDriverKind.make("opencode"),
+          usageLimits: undefined,
+        }),
+      ]),
+      deepLink,
+      observedAt,
+    );
+    expect(snapshot.providers).toHaveLength(1);
+    expect(snapshot.providers[0]).toMatchObject({
+      name,
+      totalWindows: 1,
+      windows: [{ remaining: 60 }],
+    });
+  });
+
+  it("keeps an enabled provider visible before its first usage read", () => {
+    const snapshot = buildSubscriptionUsageSnapshot(
+      presentations([provider({ usageLimits: undefined })]),
+      deepLink,
+      observedAt,
+    );
+    expect(snapshot.checkedAt).toBe(0);
+    expect(snapshot.providers).toEqual([
+      { name: "Codex", detail: "No limits available", windows: [], expiresAt: 0, totalWindows: 0 },
+    ]);
+  });
+
   it("replaces the previous account reading when the connected identity changes", () => {
     const before = buildSubscriptionUsageSnapshot(presentations(), deepLink, observedAt);
     const after = buildSubscriptionUsageSnapshot(
