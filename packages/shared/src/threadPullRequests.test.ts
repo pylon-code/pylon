@@ -252,7 +252,9 @@ describe("legacyLinkedPullRequestOf", () => {
         remoteUrl: "/tmp/r/remote.git",
       },
     };
-    expect(legacyLinkedPullRequestOf([link(7)], "project-1" as never, localIdentity)).toBeNull();
+    expect(
+      legacyLinkedPullRequestOf([link(7)], ProjectId.make("project-1"), localIdentity),
+    ).toBeNull();
   });
 });
 
