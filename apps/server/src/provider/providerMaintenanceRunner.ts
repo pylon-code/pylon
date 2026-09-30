@@ -316,7 +316,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       provider,
     );
     const runtimeFence = yield* (
-      providerRegistry.getProviderRuntimeFence?.(instanceId) ?? Effect.succeed(undefined)
+      providerRegistry.getProviderRuntimeFence?.(instanceId) ?? Effect.undefined
     );
     const update = capabilities.update;
     if (!update) {

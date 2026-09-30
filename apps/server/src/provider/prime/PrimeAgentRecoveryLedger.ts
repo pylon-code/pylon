@@ -634,9 +634,7 @@ export const make = Effect.gen(function* () {
         input.expectedOwnerToken,
       ],
       options,
-    ).pipe(
-      Effect.flatMap((claimed) => (claimed ? get(input.threadId) : Effect.succeed(Option.none()))),
-    );
+    ).pipe(Effect.flatMap((claimed) => (claimed ? get(input.threadId) : Effect.succeedNone)));
 
   const beginAdoptionAttempt: PrimeAgentRecoveryLedgerShape["beginAdoptionAttempt"] = (
     input,
@@ -659,9 +657,7 @@ export const make = Effect.gen(function* () {
         PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS,
       ],
       options,
-    ).pipe(
-      Effect.flatMap((started) => (started ? get(input.threadId) : Effect.succeed(Option.none()))),
-    );
+    ).pipe(Effect.flatMap((started) => (started ? get(input.threadId) : Effect.succeedNone)));
 
   const releaseClaim: PrimeAgentRecoveryLedgerShape["releaseClaim"] = (input, options) =>
     conditionalUpdate(
@@ -733,9 +729,7 @@ export const make = Effect.gen(function* () {
         PRIME_AGENT_RECOVERY_ADOPTION_MAX_ATTEMPTS,
       ],
       options,
-    ).pipe(
-      Effect.flatMap((started) => (started ? get(input.threadId) : Effect.succeed(Option.none()))),
-    );
+    ).pipe(Effect.flatMap((started) => (started ? get(input.threadId) : Effect.succeedNone)));
 
   const finalizeAdoption: PrimeAgentRecoveryLedgerShape["finalizeAdoption"] = (input, options) => {
     const proofJson = encodeAdoptionProof(input.proof);

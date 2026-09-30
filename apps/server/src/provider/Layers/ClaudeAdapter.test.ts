@@ -1,5 +1,6 @@
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
+// @effect-diagnostics abortControllerInEffect:off - Tests hand-built AbortSignals to the SDK query stub to exercise cancellation.
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";

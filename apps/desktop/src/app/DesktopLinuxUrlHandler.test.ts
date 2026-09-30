@@ -85,7 +85,7 @@ const makeHandlerLayer = (
               icns: Option.none(),
               png: input.bundledIcon ? Option.some(BUNDLED_ICON_PATH) : Option.none(),
             }),
-            resolveResourcePath: () => Effect.succeed(Option.none()),
+            resolveResourcePath: () => Effect.succeedNone,
           }),
         ),
         FileSystem.layerNoop({

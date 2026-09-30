@@ -895,16 +895,16 @@ export const make = (
           acp.agent.resumeSession(resumePayload).pipe(
             Effect.timeoutOption(options.sessionLoadTimeout ?? defaultSessionLoadTimeout),
             Effect.flatMap((result) =>
-              Option.isSome(result)
-                ? Effect.succeed(result.value)
-                : Effect.fail(
-                    new EffectAcpErrors.AcpTransportError({
-                      operation: "call-rpc",
-                      method: "session/resume",
-                      detail: "session/resume timed out waiting for the agent response.",
-                      cause: undefined,
-                    }),
-                  ),
+              Effect.fromOption(
+                result,
+                () =>
+                  new EffectAcpErrors.AcpTransportError({
+                    operation: "call-rpc",
+                    method: "session/resume",
+                    detail: "session/resume timed out waiting for the agent response.",
+                    cause: undefined,
+                  }),
+              ),
             ),
           ),
         );
@@ -949,18 +949,16 @@ export const make = (
             Effect.ensuring(Fiber.interrupt(idleFiber).pipe(Effect.ignore)),
             Effect.timeoutOption(sessionLoadTimeout),
             Effect.flatMap((result) =>
-              Option.match(result, {
-                onNone: () =>
-                  Effect.fail(
-                    new EffectAcpErrors.AcpTransportError({
-                      operation: "call-rpc",
-                      method: "session/load",
-                      detail: "session/load timed out waiting for RPC response or replay idle gap",
-                      cause: undefined,
-                    }),
-                  ),
-                onSome: Effect.succeed,
-              }),
+              Effect.fromOption(
+                result,
+                () =>
+                  new EffectAcpErrors.AcpTransportError({
+                    operation: "call-rpc",
+                    method: "session/load",
+                    detail: "session/load timed out waiting for RPC response or replay idle gap",
+                    cause: undefined,
+                  }),
+              ),
             ),
             Effect.tap((result) =>
               logRequest({

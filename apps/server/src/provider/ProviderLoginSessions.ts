@@ -150,7 +150,7 @@ const make = Effect.gen(function* () {
       const urlOption = yield* Deferred.await(urlFound).pipe(Effect.timeoutOption(URL_TIMEOUT));
       if (urlOption._tag === "None") {
         yield* close;
-        return yield* Effect.fail(loginError("The sign-in command did not return a link in time."));
+        return yield* loginError("The sign-in command did not return a link in time.");
       }
       const url = urlOption.value;
 
@@ -199,7 +199,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const session = (yield* Ref.get(sessions)).get(input.sessionId);
       if (!session) {
-        return yield* Effect.fail(loginError("That sign-in is no longer running. Start it again."));
+        return yield* loginError("That sign-in is no longer running. Start it again.");
       }
       yield* forget(input.sessionId);
       return yield* session.submitCode(input.code);

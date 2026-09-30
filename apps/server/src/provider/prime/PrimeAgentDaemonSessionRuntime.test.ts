@@ -1,3 +1,4 @@
+// @effect-diagnostics abortControllerInEffect:off - Tests hand-built AbortSignals to the runtime to exercise cancellation.
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";

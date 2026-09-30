@@ -2,7 +2,6 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
-import * as Option from "effect/Option";
 import { SourceControlProviderError } from "@t3tools/contracts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ForgejoCli from "./ForgejoCli.ts";
@@ -270,15 +269,15 @@ export const make = Effect.gen(function* () {
       }).pipe(
         Effect.timeoutOption(BRANCH_PULL_SCAN_TIMEOUT_MS),
         Effect.flatMap((result) =>
-          Option.isSome(result)
-            ? Effect.succeed(result.value)
-            : Effect.fail(
-                new ForgejoCli.ForgejoCliError({
-                  command: "fj",
-                  cwd: input.cwd,
-                  detail: "Forgejo pull request search timed out before finding the branch.",
-                }),
-              ),
+          Effect.fromOption(
+            result,
+            () =>
+              new ForgejoCli.ForgejoCliError({
+                command: "fj",
+                cwd: input.cwd,
+                detail: "Forgejo pull request search timed out before finding the branch.",
+              }),
+          ),
         ),
         mapError("listChangeRequests", input.cwd),
       ),

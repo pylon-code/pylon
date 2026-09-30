@@ -130,7 +130,7 @@ const proxyWebSocket = Effect.fn("DeviceHubProxy.proxyWebSocket")(function* (
   const upstream = yield* Socket.makeWebSocket(upstreamUrl, {
     openTimeout: "10 seconds",
   }).pipe(Effect.provide(NodeSocket.layerWebSocketConstructor));
-  yield* relayWebSocketFrames(client, upstream).pipe(Effect.catchCause(() => Effect.void));
+  yield* relayWebSocketFrames(client, upstream).pipe(Effect.ignoreCause);
   return HttpServerResponse.empty();
 });
 

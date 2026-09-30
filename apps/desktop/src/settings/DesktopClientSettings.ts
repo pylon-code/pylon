@@ -80,7 +80,7 @@ const readClientSettings = (
   settingsPath: string,
 ): Effect.Effect<Option.Option<StoredClientSettings>, DesktopClientSettingsReadError> =>
   fileSystem.readFileString(settingsPath).pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catchTags({
       PlatformError: (cause) =>
         cause.reason._tag === "NotFound"

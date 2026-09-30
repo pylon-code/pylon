@@ -67,7 +67,7 @@ describe("project directory listing compatibility", () => {
       directoryCursor: "a.ts",
     });
     expect(oldServerPayload).toEqual({ cwd: "/workspace" });
-    const oldResponse = Schema.decodeUnknownSync(ProjectListEntriesResult)({
+    const oldResponse = Schema.decodeSync(ProjectListEntriesResult)({
       entries: [{ path: "src/a.ts", kind: "file" }],
       truncated: false,
     });

@@ -29,9 +29,9 @@ describe("pinned Effect schema-local parse options", () => {
         items: [{ kind: "known", value: "ok", extra: true }],
       }),
     ).toThrow();
-    expect(Schema.decodeUnknownSync(envelope)({ items: [{ kind: "known", value: "ok" }] })).toEqual(
-      { items: [{ kind: "known", value: "ok" }] },
-    );
+    expect(Schema.decodeSync(envelope)({ items: [{ kind: "known", value: "ok" }] })).toEqual({
+      items: [{ kind: "known", value: "ok" }],
+    });
   });
 
   it("preserves rc.112 check annotation precedence in both directions", () => {

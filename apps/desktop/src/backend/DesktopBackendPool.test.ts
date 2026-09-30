@@ -68,7 +68,7 @@ function makePoolLayer(
             } satisfies DesktopObservability.DesktopBackendOutputLogShape),
         } satisfies DesktopObservability.DesktopBackendOutputLogFactory["Service"]),
         Layer.succeed(DesktopTelemetryPublisher.DesktopTelemetryPublisher, {
-          latest: Effect.succeed(Option.none()),
+          latest: Effect.succeedNone,
           changes: Stream.empty,
           encoded: Stream.empty,
           handleControl: () => Effect.void,
@@ -137,9 +137,10 @@ describe("DesktopBackendPool", () => {
 
   it.effect("layerTest dies when no instances are supplied", () =>
     Effect.exit(
-      Effect.gen(function* () {
-        yield* DesktopBackendPool.DesktopBackendPool;
-      }).pipe(Effect.provide(DesktopBackendPool.layerTest([]))),
+      DesktopBackendPool.DesktopBackendPool.pipe(
+        Effect.asVoid,
+        Effect.provide(DesktopBackendPool.layerTest([])),
+      ),
     ).pipe(Effect.map((exit) => assert.equal(exit._tag, "Failure"))),
   );
 

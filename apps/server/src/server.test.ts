@@ -787,7 +787,7 @@ const buildAppUnderTest = (options?: {
             ...options?.layers?.usageLimitSources,
           }),
           Layer.mock(ProviderInstanceRegistry)({
-            getInstance: () => Effect.succeed(undefined),
+            getInstance: () => Effect.undefined,
             ...options?.layers?.providerInstances,
           }),
           Layer.mock(ModelManifest.ModelManifest)({
@@ -830,7 +830,7 @@ const buildAppUnderTest = (options?: {
           }),
           Layer.mock(ProviderSessionDirectory.ProviderSessionDirectory)({
             upsert: () => Effect.void,
-            getBinding: () => Effect.succeed(Option.none()),
+            getBinding: () => Effect.succeedNone,
             listThreadIds: () => Effect.succeed([]),
             listBindings: () => Effect.succeed([]),
             ...options?.layers?.providerSessionDirectory,
@@ -856,7 +856,7 @@ const buildAppUnderTest = (options?: {
         Layer.mergeAll(
           Layer.mock(ExternalLauncher.ExternalLauncher)({
             resolveAvailableEditors: () => Effect.succeed([]),
-            resolveFileManagerRevealKind: () => Effect.sync((): undefined => undefined),
+            resolveFileManagerRevealKind: () => Effect.undefined,
             ...options?.layers?.externalLauncher,
           }),
           Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
@@ -1012,19 +1012,19 @@ const buildAppUnderTest = (options?: {
             withMutationFence: (effect) => effect,
             withProviderMutationFence: (_providerInstanceIds, effect) => effect,
             admit: () => Effect.void,
-            get: () => Effect.succeed(Option.none()),
-            getByRequestEvent: () => Effect.succeed(Option.none()),
-            getActiveByThread: () => Effect.succeed(Option.none()),
+            get: () => Effect.succeedNone,
+            getByRequestEvent: () => Effect.succeedNone,
+            getActiveByThread: () => Effect.succeedNone,
             listNonterminal: () => Effect.succeed([]),
             listNonterminalForFence: () => Effect.succeed([]),
             clearOwnersForStartup: () => Effect.void,
-            claim: () => Effect.succeed(Option.none()),
-            updateOwned: () => Effect.succeed(Option.none()),
+            claim: () => Effect.succeedNone,
+            updateOwned: () => Effect.succeedNone,
             releaseOwnerOwned: () => Effect.void,
-            releaseLeaseOwned: () => Effect.succeed(Option.none()),
-            findLeaseByWorkspace: () => Effect.succeed(Option.none()),
+            releaseLeaseOwned: () => Effect.succeedNone,
+            findLeaseByWorkspace: () => Effect.succeedNone,
             putCheckpointAnchor: () => Effect.void,
-            getCheckpointAnchor: () => Effect.succeed(Option.none()),
+            getCheckpointAnchor: () => Effect.succeedNone,
             deleteCheckpointAnchorsAfter: () => Effect.void,
             ...options?.layers?.rollbackSagaRepository,
           }),
@@ -1057,20 +1057,20 @@ const buildAppUnderTest = (options?: {
             }),
           searchThreads: () => Effect.succeed({ matches: [] }),
           getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
-          getProjectShellById: () => Effect.succeed(Option.none()),
-          getThreadShellById: () => Effect.succeed(Option.none()),
-          getThreadDetailById: () => Effect.succeed(Option.none()),
-          getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
+          getProjectShellById: () => Effect.succeedNone,
+          getThreadShellById: () => Effect.succeedNone,
+          getThreadDetailById: () => Effect.succeedNone,
+          getThreadDetailSnapshot: () => Effect.succeedNone,
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getEventReplayStats: ({ fromSequenceExclusive, toSequenceInclusive }) =>
             Effect.succeed({
               eventCount: Math.max(0, toSequenceInclusive - fromSequenceExclusive),
               payloadBytes: 0,
             }),
-          getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
-          getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+          getActiveProjectByWorkspaceRoot: () => Effect.succeedNone,
+          getFirstActiveThreadIdByProjectId: () => Effect.succeedNone,
           getImportedAgentSessionSources: () => Effect.succeed([]),
-          getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+          getThreadCheckpointContext: () => Effect.succeedNone,
           ...options?.layers?.projectionSnapshotQuery,
         }),
       ),
@@ -1248,7 +1248,7 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(CloudCliTokenManager.CloudCliTokenManager)({
           get: Effect.die(new Error("Unexpected Pylon Connect CLI authorization request.")),
-          getExisting: Effect.succeed(Option.none()),
+          getExisting: Effect.succeedNone,
           hasCredential: Effect.succeed(false),
           clear: Effect.void,
           ...options?.layers?.cloudCliTokenManager,
@@ -6205,7 +6205,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const lookup = vi.fn<
         ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]["getActiveProjectByWorkspaceRoot"]
-      >(() => Effect.succeed(Option.none()));
+      >(() => Effect.succeedNone);
       yield* buildAppUnderTest({
         layers: { projectionSnapshotQuery: { getActiveProjectByWorkspaceRoot: lookup } },
       });
@@ -8971,8 +8971,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           projectionSnapshotQuery: {
-            getThreadDetailSnapshot: () =>
-              Effect.succeed(Option.some({ snapshotSequence: 1, thread })),
+            getThreadDetailSnapshot: () => Effect.succeedSome({ snapshotSequence: 1, thread }),
           },
         },
       });
@@ -9145,16 +9144,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               streamDomainEvents: Stream.concat(Stream.make(event), Stream.never),
             },
             projectionSnapshotQuery: {
-              getThreadDetailSnapshot: () =>
-                Effect.succeed(Option.some({ snapshotSequence: 1, thread })),
+              getThreadDetailSnapshot: () => Effect.succeedSome({ snapshotSequence: 1, thread }),
               getThreadShellById: (threadId) =>
-                Effect.succeed(
-                  Option.some({
-                    ...makeDefaultOrchestrationThreadShell(),
-                    id: threadId,
-                    title: "Build complete",
-                  }),
-                ),
+                Effect.succeedSome({
+                  ...makeDefaultOrchestrationThreadShell(),
+                  id: threadId,
+                  title: "Build complete",
+                }),
             },
           },
         });
@@ -9432,7 +9428,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             },
             projectionSnapshotQuery: {
               getThreadDetailSnapshot: () =>
-                Effect.succeed(Option.some({ snapshotSequence: 100_000, thread })),
+                Effect.succeedSome({ snapshotSequence: 100_000, thread }),
             },
           },
         });
@@ -9750,8 +9746,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               }),
           },
           projectionSnapshotQuery: {
-            getThreadDetailSnapshot: () =>
-              Effect.succeed(Option.some({ snapshotSequence: 5, thread })),
+            getThreadDetailSnapshot: () => Effect.succeedSome({ snapshotSequence: 5, thread }),
           },
         },
       });
@@ -9839,7 +9834,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           projectionSnapshotQuery: {
             getThreadDetailSnapshot: (_threadId, options) => {
               requestedTurnLimit = options?.turnLimit;
-              return Effect.succeed(Option.some({ snapshotSequence: 5, thread }));
+              return Effect.succeedSome({ snapshotSequence: 5, thread });
             },
           },
         },
@@ -9932,7 +9927,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 readEvents: store.readFromSequence,
               },
               projectionSnapshotQuery: {
-                getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
+                getThreadDetailSnapshot: () => Effect.succeedNone,
               },
             },
           });
@@ -10330,8 +10325,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 replayStatsCalls += 1;
                 return { eventCount: 5, payloadBytes: 8 * 1024 * 1024 + 1 };
               }),
-            getThreadDetailSnapshot: () =>
-              Effect.succeed(Option.some({ snapshotSequence: 5, thread })),
+            getThreadDetailSnapshot: () => Effect.succeedSome({ snapshotSequence: 5, thread }),
             getShellSnapshot: () =>
               Effect.succeed({
                 snapshotSequence: 5,
@@ -10635,7 +10629,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               ]),
           },
           projectionSnapshotQuery: {
-            getThreadShellById: () => Effect.succeed(Option.none()),
+            getThreadShellById: () => Effect.succeedNone,
           },
         },
       });
@@ -10693,9 +10687,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                         detail: "transient failure",
                       }),
                     )
-                  : Effect.succeed(
-                      Option.some(makeDefaultOrchestrationThreadShell({ id: threadId })),
-                    );
+                  : Effect.succeedSome(makeDefaultOrchestrationThreadShell({ id: threadId }));
               }),
           },
         },
@@ -10755,7 +10747,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               ]),
           },
           projectionSnapshotQuery: {
-            getProjectShellById: () => Effect.succeed(Option.none()),
+            getProjectShellById: () => Effect.succeedNone,
           },
         },
       });
@@ -10801,22 +10793,20 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
           projectionSnapshotQuery: {
             getThreadShellById: () =>
-              Effect.succeed(
-                Option.some(
-                  makeDefaultOrchestrationThreadShell({
-                    id: threadId,
+              Effect.succeedSome(
+                makeDefaultOrchestrationThreadShell({
+                  id: threadId,
+                  updatedAt: now,
+                  session: {
+                    threadId,
+                    status: "ready",
+                    providerName: "claudeAgent",
+                    runtimeMode: "full-access",
+                    activeTurnId: null,
+                    lastError: null,
                     updatedAt: now,
-                    session: {
-                      threadId,
-                      status: "ready",
-                      providerName: "claudeAgent",
-                      runtimeMode: "full-access",
-                      activeTurnId: null,
-                      lastError: null,
-                      updatedAt: now,
-                    },
-                  }),
-                ),
+                  },
+                }),
               ),
           },
         },
@@ -10949,8 +10939,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
           projectionSnapshotQuery: {
             getThreadShellById: () =>
-              Effect.succeed(
-                Option.some(makeDefaultOrchestrationThreadShell({ id: threadId, session: null })),
+              Effect.succeedSome(
+                makeDefaultOrchestrationThreadShell({ id: threadId, session: null }),
               ),
           },
         },
@@ -11003,22 +10993,20 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             },
             projectionSnapshotQuery: {
               getThreadShellById: () =>
-                Effect.succeed(
-                  Option.some(
-                    makeDefaultOrchestrationThreadShell({
-                      id: threadId,
+                Effect.succeedSome(
+                  makeDefaultOrchestrationThreadShell({
+                    id: threadId,
+                    updatedAt: now,
+                    session: {
+                      threadId,
+                      status: "stopped",
+                      providerName: "claudeAgent",
+                      runtimeMode: "full-access",
+                      activeTurnId: null,
+                      lastError: null,
                       updatedAt: now,
-                      session: {
-                        threadId,
-                        status: "stopped",
-                        providerName: "claudeAgent",
-                        runtimeMode: "full-access",
-                        activeTurnId: null,
-                        lastError: null,
-                        updatedAt: now,
-                      },
-                    }),
-                  ),
+                    },
+                  }),
                 ),
             },
           },
@@ -11069,22 +11057,20 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
           projectionSnapshotQuery: {
             getThreadShellById: () =>
-              Effect.succeed(
-                Option.some(
-                  makeDefaultOrchestrationThreadShell({
-                    id: threadId,
+              Effect.succeedSome(
+                makeDefaultOrchestrationThreadShell({
+                  id: threadId,
+                  updatedAt: now,
+                  session: {
+                    threadId,
+                    status: "ready",
+                    providerName: "claudeAgent",
+                    runtimeMode: "full-access",
+                    activeTurnId: null,
+                    lastError: null,
                     updatedAt: now,
-                    session: {
-                      threadId,
-                      status: "ready",
-                      providerName: "claudeAgent",
-                      runtimeMode: "full-access",
-                      activeTurnId: null,
-                      lastError: null,
-                      updatedAt: now,
-                    },
-                  }),
-                ),
+                  },
+                }),
               ),
           },
         },
@@ -11172,22 +11158,20 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
           projectionSnapshotQuery: {
             getThreadShellById: () =>
-              Effect.succeed(
-                Option.some(
-                  makeDefaultOrchestrationThreadShell({
-                    id: threadId,
+              Effect.succeedSome(
+                makeDefaultOrchestrationThreadShell({
+                  id: threadId,
+                  updatedAt: now,
+                  session: {
+                    threadId,
+                    status: "ready",
+                    providerName: "claudeAgent",
+                    runtimeMode: "full-access",
+                    activeTurnId: null,
+                    lastError: null,
                     updatedAt: now,
-                    session: {
-                      threadId,
-                      status: "ready",
-                      providerName: "claudeAgent",
-                      runtimeMode: "full-access",
-                      activeTurnId: null,
-                      lastError: null,
-                      updatedAt: now,
-                    },
-                  }),
-                ),
+                  },
+                }),
               ),
           },
         },
@@ -11244,22 +11228,20 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
           projectionSnapshotQuery: {
             getThreadShellById: () =>
-              Effect.succeed(
-                Option.some(
-                  makeDefaultOrchestrationThreadShell({
-                    id: threadId,
+              Effect.succeedSome(
+                makeDefaultOrchestrationThreadShell({
+                  id: threadId,
+                  updatedAt: now,
+                  session: {
+                    threadId,
+                    status: "ready",
+                    providerName: "claudeAgent",
+                    runtimeMode: "full-access",
+                    activeTurnId: null,
+                    lastError: null,
                     updatedAt: now,
-                    session: {
-                      threadId,
-                      status: "ready",
-                      providerName: "claudeAgent",
-                      runtimeMode: "full-access",
-                      activeTurnId: null,
-                      lastError: null,
-                      updatedAt: now,
-                    },
-                  }),
-                ),
+                  },
+                }),
               ),
           },
         },
