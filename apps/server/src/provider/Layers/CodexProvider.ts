@@ -33,6 +33,7 @@ import {
   createModelCapabilities,
   readCustomModelEntries,
 } from "@t3tools/shared/model";
+import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 import {
@@ -98,6 +99,28 @@ const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
 
 const DEFAULT_SERVICE_TIER_ID = "default";
 
+/** Shorter copy for tiers whose catalog description wraps in the traits menu. */
+const SERVICE_TIER_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  ultrafast: "Even faster, more expensive",
+};
+
+// The generated app-server bindings track Codex 0.159 and require fields that
+// first shipped in 0.156 (`Thread.projectId`, `isBlocking` on user-input
+// requests), so an older CLI fails to decode partway through a session.
+const MINIMUM_CODEX_CLI_VERSION = "0.156.0";
+
+export function codexVersionFloorMessage(version: string | null | undefined): string | undefined {
+  // An unparseable version is left alone rather than guessed at.
+  if (
+    !version ||
+    parseSemver(version) === null ||
+    compareSemverVersions(version, MINIMUM_CODEX_CLI_VERSION) >= 0
+  ) {
+    return undefined;
+  }
+  return `Codex CLI v${version} is older than Pylon supports. Update Codex to v${MINIMUM_CODEX_CLI_VERSION} or newer; threads can fail to start or roll back until then.`;
+}
+
 function reasoningEffortLabel(reasoningEffort: string): string {
   return REASONING_EFFORT_LABELS[reasoningEffort] ?? reasoningEffort;
 }
@@ -123,6 +146,8 @@ export function codexPlanLabel(planType: string | null | undefined): string {
       return "ChatGPT Pro 20x Subscription";
     case "prolite":
       return "ChatGPT Pro 5x Subscription";
+    case "promax":
+      return "ChatGPT Pro Max Subscription";
     case "team":
       return "ChatGPT Team Subscription";
     case "self_serve_business_prolite":
@@ -206,12 +231,15 @@ export function mapCodexModelCapabilities(
           label: "Standard",
           ...(defaultServiceTier === DEFAULT_SERVICE_TIER_ID ? { isDefault: true } : {}),
         },
-        ...serviceTiers.map((tier) => ({
-          id: tier.id,
-          label: tier.name,
-          ...(tier.description ? { description: tier.description } : {}),
-          ...(defaultServiceTier === tier.id ? { isDefault: true } : {}),
-        })),
+        ...serviceTiers.map((tier) => {
+          const description = SERVICE_TIER_DESCRIPTIONS[tier.id] ?? tier.description;
+          return {
+            id: tier.id,
+            label: tier.name,
+            ...(description ? { description } : {}),
+            ...(defaultServiceTier === tier.id ? { isDefault: true } : {}),
+          };
+        }),
       ],
       currentValue: defaultServiceTier,
     });
@@ -552,7 +580,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
             sharedHomePath,
             accountIdentity,
             read: client
-              .request("account/rateLimits/read", undefined)
+              .request("account/rateLimits/read", null)
               .pipe(
                 Effect.option,
                 Effect.timeoutOption(CODEX_RATE_LIMITS_PROBE_TIMEOUT),
@@ -803,6 +831,10 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   const usageLimits = snapshot.rateLimits
     ? usageLimitsFromCodexRateLimits(snapshot.rateLimits, checkedAt)
     : snapshot.sharedUsageLimits;
+  const versionFloorMessage = codexVersionFloorMessage(snapshot.version);
+  const probeMessage = [accountStatus.message, versionFloorMessage]
+    .filter((message) => message !== undefined)
+    .join(" ");
 
   return buildServerProvider({
     presentation: CODEX_PRESENTATION,
@@ -821,10 +853,11 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     probe: {
       installed: true,
       version: snapshot.version ?? null,
-      status: accountStatus.status,
+      status:
+        versionFloorMessage && accountStatus.status === "ready" ? "warning" : accountStatus.status,
       auth: accountStatus.auth,
       ...(usageLimits ? { usageLimits } : {}),
-      ...(accountStatus.message ? { message: accountStatus.message } : {}),
+      ...(probeMessage ? { message: probeMessage } : {}),
     },
   });
 });

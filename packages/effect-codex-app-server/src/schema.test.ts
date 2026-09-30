@@ -7,7 +7,6 @@ const isGetAccountResponse = Schema.is(CodexSchema.V2GetAccountResponse);
 const isAccountPlanType = Schema.is(CodexSchema.V2GetAccountResponse__PlanType);
 const isThreadReadResponse = Schema.is(CodexSchema.V2ThreadReadResponse);
 const isThreadResumeResponse = Schema.is(CodexSchema.V2ThreadResumeResponse);
-const isThreadRollbackResponse = Schema.is(CodexSchema.V2ThreadRollbackResponse);
 const isThreadForkResponse = Schema.is(CodexSchema.V2ThreadForkResponse);
 const isTurnCompletedNotification = Schema.is(CodexSchema.V2TurnCompletedNotification);
 const decodeThreadResumeResponse = Schema.decodeUnknownSync(CodexSchema.V2ThreadResumeResponse);
@@ -77,6 +76,7 @@ it("accepts Codex 0.150 multi-agent values", () => {
       id: "root-thread",
       modelProvider: "openai",
       preview: "",
+      projectId: null,
       sessionId: "session-1",
       source: "cli",
       status: { type: "idle" },
@@ -113,6 +113,7 @@ it("accepts Codex rate limit errors for thread responses", () => {
     id: "thread-1",
     modelProvider: "openai",
     preview: "",
+    projectId: null,
     sessionId: "session-1",
     source: "cli",
     status: { type: "idle" },
@@ -142,7 +143,6 @@ it("accepts Codex rate limit errors for thread responses", () => {
     }),
     true,
   );
-  assert.equal(isThreadRollbackResponse({ thread: failedThread }), true);
 });
 
 it("accepts Codex misalignment policy errors for thread responses", () => {
@@ -154,6 +154,7 @@ it("accepts Codex misalignment policy errors for thread responses", () => {
     id: "thread-1",
     modelProvider: "openai",
     preview: "",
+    projectId: null,
     sessionId: "session-1",
     source: "cli",
     status: { type: "idle" },
@@ -181,7 +182,6 @@ it("accepts Codex misalignment policy errors for thread responses", () => {
   };
   assert.equal(isThreadReadResponse({ thread: failedThread }), true);
   assert.equal(isThreadResumeResponse(resumeLikeResponse), true);
-  assert.equal(isThreadRollbackResponse({ thread: failedThread }), true);
   assert.equal(isThreadForkResponse(resumeLikeResponse), true);
   const decodedResume = decodeThreadResumeResponse(resumeLikeResponse);
   assert.equal(decodedResume.thread.turns[0]?.error?.codexErrorInfo, "misalignmentPolicyViolation");
@@ -202,13 +202,14 @@ it("accepts Codex misalignment policy errors for thread responses", () => {
   );
 });
 
-it("accepts Codex 0.150 account plan values", () => {
+it("accepts Codex account plan values through 0.159", () => {
   const planTypes = [
     "self_serve_business_prolite",
     "ent26",
     "enterprise_cbp_automation",
     "edu_plus",
     "edu_pro",
+    "promax",
   ];
 
   // Every generated namespace that carries a plan, not just the one the account
@@ -283,7 +284,6 @@ it("accepts hook event names and handler types Codex has not published yet", () 
       Schema.is(CodexSchema.V2HookCompletedNotification__HookHandlerType)(handlerType),
       true,
     );
-    assert.equal(Schema.is(CodexSchema.V2HooksListResponse__HookHandlerType)(handlerType), true);
   }
 });
 
@@ -297,7 +297,6 @@ it("accepts CodexErrorInfo strings Codex has not published yet across all respon
     CodexSchema.V2ThreadMetadataUpdateResponse__CodexErrorInfo,
     CodexSchema.V2ThreadReadResponse__CodexErrorInfo,
     CodexSchema.V2ThreadResumeResponse__CodexErrorInfo,
-    CodexSchema.V2ThreadRollbackResponse__CodexErrorInfo,
     CodexSchema.V2ThreadStartedNotification__CodexErrorInfo,
     CodexSchema.V2ThreadStartResponse__CodexErrorInfo,
     CodexSchema.V2ThreadUnarchiveResponse__CodexErrorInfo,

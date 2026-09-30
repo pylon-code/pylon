@@ -4,6 +4,10 @@ For one account, use the default Codex provider with your normal Codex login.
 [Provider setup](./install.md#providers) covers installation, **Settings → Providers**, and custom
 binaries or environment variables.
 
+Pylon needs Codex CLI 0.156.0 or newer. An older CLI shows a warning on the provider, and its threads
+can fail to start or roll back until you update Codex. A thread that Codex still stores in its
+pre-0.156 history format cannot be rolled back; continue it or start a new one.
+
 ## Use multiple accounts
 
 A shared Codex home with a shadow home lets work and personal accounts continue the same threads.

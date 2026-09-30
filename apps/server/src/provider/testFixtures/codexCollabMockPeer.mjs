@@ -75,7 +75,7 @@ rl.on("line", (line) => {
     write({
       id,
       result: {
-        userAgent: "t3-collab-mock/0.0.0",
+        userAgent: "t3-collab-mock/0.156.0",
         codexHome: "/tmp",
         platformFamily: "unix",
         platformOs: "linux",
