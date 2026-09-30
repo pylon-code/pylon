@@ -3597,6 +3597,7 @@ export function makeOpenCodeAdapter(
         });
       }
 
+      let submissionSettled: Deferred.Deferred<void> | undefined;
       return yield* context.promptSemaphore.withPermit(
         Effect.gen(function* () {
           yield* requireNotQuarantined(context);
@@ -3658,6 +3659,7 @@ export function makeOpenCodeAdapter(
             },
           };
           context.promptGeneration = promptGeneration;
+          submissionSettled = promptAdmission.submissionSettled;
           context.promptAdmission = promptAdmission;
 
           context.activeTurnId = turnId;
@@ -3937,7 +3939,18 @@ export function makeOpenCodeAdapter(
               ? { resumeCursor: context.session.resumeCursor }
               : {}),
           };
-        }),
+        }).pipe(
+          // Stop waits for submission to settle even when the caller is
+          // interrupted before the prompt fiber exists. Complete only this
+          // send's admission, while it still owns the prompt permit.
+          Effect.ensuring(
+            Effect.suspend(() =>
+              submissionSettled
+                ? Deferred.succeed(submissionSettled, undefined).pipe(Effect.ignore)
+                : Effect.void,
+            ),
+          ),
+        ),
       );
     });
 
