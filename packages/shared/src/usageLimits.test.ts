@@ -29,7 +29,10 @@ import {
   remainingPercent,
   normalizeUsageWindow,
   createResetCreditAttempts,
+  nativeResetCreditInput,
+  reportResetCreditInput,
   resetCreditOutcomeText,
+  resetCreditTargetKey,
 } from "./usageLimits.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -71,6 +74,51 @@ describe("reset credit attempts", () => {
     expect(next).not.toEqual(first);
     attempts.complete(environmentId, first);
     expect(attempts.begin(environmentId, input)).toEqual(next);
+  });
+
+  it("pins a native redemption to the displayed credit only when the server can redeem it", () => {
+    const instanceId = ProviderInstanceId.make("claudeAgent");
+    const limits = (resetCredits: { availableCount: number; nextCreditId?: string }) => ({
+      checkedAt: "2026-09-22T12:00:00.000Z",
+      windows: [],
+      resetCredits,
+    });
+    // Codex names no credit and redeems account-wide, as before.
+    expect(nativeResetCreditInput(instanceId, limits({ availableCount: 1 }))).toEqual({
+      instanceId,
+    });
+    expect(
+      nativeResetCreditInput(instanceId, {
+        ...limits({ availableCount: 1, nextCreditId: "grant_a" }),
+        resetCredits: { availableCount: 1, nextCreditId: "grant_a", redeemable: true },
+      }),
+    ).toEqual({ instanceId, creditId: "grant_a" });
+    // An older server published a named credit it cannot redeem: the control stays inert.
+    const unredeemable = limits({ availableCount: 1, nextCreditId: "grant_a" });
+    expect(nativeResetCreditInput(instanceId, unredeemable)).toBeNull();
+    expect(
+      reportResetCreditInput({
+        id: "claude",
+        driver: ProviderDriverKind.make("claudeAgent"),
+        label: "Claude",
+        instanceId,
+        limits: unredeemable,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("starts a new attempt for each named credit and keeps the control's target stable", () => {
+    let sequence = 0;
+    const attempts = createResetCreditAttempts(() => `attempt-${++sequence}`);
+    const environmentId = EnvironmentId.make("one");
+    const instanceId = ProviderInstanceId.make("claudeAgent");
+    const first = attempts.begin(environmentId, { instanceId, creditId: "grant_a" });
+    expect(attempts.begin(environmentId, { instanceId, creditId: "grant_a" })).toEqual(first);
+    const next = attempts.begin(environmentId, { instanceId, creditId: "grant_b" });
+    expect(next).toEqual({ instanceId, creditId: "grant_b", requestId: "attempt-2" });
+    expect(resetCreditTargetKey(environmentId, first)).toBe(
+      resetCreditTargetKey(environmentId, next),
+    );
   });
 
   it("keeps the explicit credit identity supplied by a hub", () => {

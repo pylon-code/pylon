@@ -29,17 +29,23 @@ export const ServerProviderUsageWindow = Schema.Struct({
 export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
 
 /**
- * Reset credits a provider banks on the account. Codex grants these when it
- * has rate-limited the user unfairly; redeeming one clears the current
- * windows. Only present when the provider reports them at all.
+ * Reset credits a provider banks on the account. Codex and Claude grant
+ * these; redeeming one clears the current windows. Only present when the
+ * provider reports them at all.
  */
 export const ServerProviderResetCredits = Schema.Struct({
   availableCount: NonNegativeInt,
   /** When the balance was read, independent of later streamed window updates. */
   checkedAt: Schema.optional(IsoDateTime),
   nextExpiresAt: Schema.optional(IsoDateTime),
-  /** Pins hub redemption to the displayed credit, including retries from another client. */
+  /** Pins redemption to the displayed credit, including retries from another client. */
   nextCreditId: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Stamped by a server that can redeem `nextCreditId` for a native instance.
+   * A native balance that names a credit without it came from an older server
+   * (or a reading that server did not make), so clients leave the action inert.
+   */
+  redeemable: Schema.optional(Schema.Boolean),
 });
 export type ServerProviderResetCredits = typeof ServerProviderResetCredits.Type;
 
@@ -124,6 +130,8 @@ export const ProviderConsumeResetCreditInput = Schema.Union([
   Schema.Struct({
     instanceId: ProviderInstanceId,
     requestId: Schema.optional(TrimmedNonEmptyString),
+    /** The `nextCreditId` the client displayed. The server refuses any other credit. */
+    creditId: Schema.optional(TrimmedNonEmptyString),
   }),
   UsageLimitSourceConsumeResetCreditInput,
 ]);

@@ -16,6 +16,7 @@ import { ClaudeSettings, ProviderDriverKind } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -38,6 +39,11 @@ import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeClaudeAdapter } from "../Layers/ClaudeAdapter.ts";
+import {
+  markClaudeResetCreditsRedeemable,
+  redeemClaudeResetCredit,
+} from "../Layers/claudeResetCredits.ts";
+import * as ResetCreditCoordinator from "../Layers/resetCreditCoordinator.ts";
 import {
   checkClaudeProviderStatus,
   makePendingClaudeProvider,
@@ -69,6 +75,7 @@ import {
 } from "../providerUpdateSettings.ts";
 import { makeClaudeCapabilitiesCacheKey, makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
 import { discoverClaudeSkills } from "./ClaudeSkills.ts";
+import { fetchClaudeOAuthUsage, readClaudeResetCredential } from "../claudeOAuthUsage.ts";
 import { reconcileClaudeUsage } from "../claudeUsageReconciliation.ts";
 import { USAGE_RECONCILIATION_DELAY_MS } from "../coalescedUsageRefresh.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
@@ -107,6 +114,7 @@ const UPDATE = makePackageManagedProviderMaintenanceResolver({
 export type ClaudeDriverEnv =
   | BackgroundPolicy.BackgroundPolicy
   | ChildProcessSpawner.ChildProcessSpawner
+  | ResetCreditCoordinator.ResetCreditCoordinator
   | Crypto.Crypto
   | FileSystem.FileSystem
   | HttpClient.HttpClient
@@ -131,6 +139,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const path = yield* Path.Path;
       const { cwd } = yield* ServerConfig;
       const httpClient = yield* HttpClient.HttpClient;
+      const resetCreditCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
       const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
       const modelManifest = yield* ModelManifest.ModelManifest;
@@ -196,6 +205,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         processEnv,
       );
       const lastKnownUsage = yield* Ref.make<AccountUsageReading | undefined>(undefined);
+      // Which login each displayed reset credit was read with. A redemption is
+      // refused unless the login on disk is still that one.
+      const displayedResetCredit = yield* Ref.make<
+        { readonly creditId: string; readonly credentialKey: string } | undefined
+      >(undefined);
+      const recordDisplayedResetCredit = (
+        usageLimits: AccountUsageReading["usageLimits"] | undefined,
+        credentialKey: string | undefined,
+      ) => {
+        const creditId = usageLimits?.resetCredits?.nextCreditId;
+        return creditId && credentialKey
+          ? Ref.set(displayedResetCredit, { creditId, credentialKey })
+          : Effect.void;
+      };
       const usageProbeCache = yield* Cache.makeWith(
         () =>
           probeClaudeUsageLimits(effectiveConfig, processEnv, cwd).pipe(
@@ -237,7 +260,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
                     usageProbeCache,
                     `${capabilitiesCacheKey}:${accountIdentity ?? "unknown"}`,
                   ).pipe(
-                    Effect.map((result) => matchingAccountUsage(accountIdentity, result)),
+                    Effect.flatMap((result) => {
+                      const usageLimits = matchingAccountUsage(accountIdentity, result);
+                      return recordDisplayedResetCredit(usageLimits, result?.credentialKey).pipe(
+                        Effect.as(usageLimits && markClaudeResetCreditsRedeemable(usageLimits)),
+                      );
+                    }),
                     Effect.flatMap((usageLimits) =>
                       retainUsageLimitsForAccount(
                         lastKnownUsage,
@@ -309,21 +337,87 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             );
 
       const reconcileUsage: NonNullable<ProviderInstance["reconcileUsage"]> = ({ isCurrent }) =>
-        reconcileClaudeUsage({
-          enabled: effectiveConfig.enabled,
-          getSnapshot: snapshot.getSnapshot,
-          isCurrent,
-          read: probeClaudeUsageLimits(effectiveConfig, processEnv, cwd, {
-            freshForMs: USAGE_RECONCILIATION_DELAY_MS,
-            shareFailures: true,
-            commitGuard: isCurrent,
-          }).pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-            Effect.provideService(HttpClient.HttpClient, httpClient),
-            Effect.provideService(Path.Path, path),
-          ),
+        Effect.gen(function* () {
+          let credentialKey: string | undefined;
+          const result = yield* reconcileClaudeUsage({
+            enabled: effectiveConfig.enabled,
+            getSnapshot: snapshot.getSnapshot,
+            isCurrent,
+            read: probeClaudeUsageLimits(effectiveConfig, processEnv, cwd, {
+              freshForMs: USAGE_RECONCILIATION_DELAY_MS,
+              shareFailures: true,
+              commitGuard: isCurrent,
+            }).pipe(
+              Effect.tap((reading) =>
+                Effect.sync(() => {
+                  credentialKey = reading?.credentialKey;
+                }),
+              ),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(HttpClient.HttpClient, httpClient),
+              Effect.provideService(Path.Path, path),
+            ),
+          });
+          if (!result) return undefined;
+          yield* recordDisplayedResetCredit(result.usageLimits, credentialKey);
+          return { ...result, usageLimits: markClaudeResetCreditsRedeemable(result.usageLimits) };
         });
+
+      // Same account rules as Codex: attempts serialise on the login, and one
+      // request id is kept until Claude answers. Unlike Codex the claim names a
+      // credit, so it is also pinned to the one the client displayed.
+      const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = (input) => {
+        const isCurrent = input.isCurrent ?? Effect.succeed(true);
+        return redeemClaudeResetCredit({
+          creditId: input.creditId,
+          requestId: input.requestId,
+          attemptScope: continuationGroupKey,
+          isCurrent,
+          getSnapshot: snapshot.getSnapshot,
+          displayedCredentialKey: Ref.get(displayedResetCredit).pipe(
+            Effect.map((displayed) =>
+              displayed && displayed.creditId === input.creditId
+                ? displayed.credentialKey
+                : undefined,
+            ),
+          ),
+          readCredential: readClaudeResetCredential(effectiveConfig),
+          coordinator: resetCreditCoordinator,
+          // The reading every server on this machine shares predates the claim,
+          // so read past it once, then republish from that fresh reading.
+          refresh: (outcome) =>
+            Effect.gen(function* () {
+              const read = yield* fetchClaudeOAuthUsage(
+                effectiveConfig,
+                DateTime.formatIso(yield* DateTime.now),
+                { freshForMs: 1, commitGuard: isCurrent },
+              );
+              yield* Cache.invalidateAll(usageProbeCache);
+              const refreshed = yield* snapshot.refresh.pipe(Effect.exit);
+              return outcome === "reset" && (!read.didRead || refreshed._tag === "Failure")
+                ? "Claude answered the reset request, but its updated limits could not be read. Refresh to check."
+                : undefined;
+            }),
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+          Effect.provideService(Path.Path, path),
+          Effect.mapError(
+            (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail:
+                  cause._tag === "ClaudeResetCreditError"
+                    ? cause.message
+                    : "Claude could not redeem the reset. Retry to check the same attempt.",
+                cause,
+              }),
+          ),
+        );
+      };
 
       return {
         instanceId,
@@ -341,6 +435,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         adapter,
         textGeneration,
         reconcileUsage,
+        consumeResetCredit,
       } satisfies ProviderInstance;
     }),
 };

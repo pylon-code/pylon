@@ -1,5 +1,5 @@
 import type { EnvironmentId, UsageLimitsReport } from "@t3tools/contracts";
-import { limitsNotice } from "@t3tools/shared/usageLimits";
+import { limitsNotice, reportResetCreditInput } from "@t3tools/shared/usageLimits";
 import { GaugeIcon } from "lucide-react";
 
 import { getDriverOption } from "../settings/providerDriverMeta";
@@ -81,9 +81,7 @@ function UsageLimitsBannerBody({
     <ComposerBanner.Scroll>
       <ComposerBanner.Body className="flex flex-col gap-2 pt-1 pb-1.5 pe-2">
         {report.accounts.map((account) => {
-          const resetCreditInput =
-            account.resetCreditInput ??
-            (account.instanceId ? { instanceId: account.instanceId } : undefined);
+          const resetCreditInput = reportResetCreditInput(account);
           const notice = limitsNotice(account.limits);
           return (
             <div key={account.id} className="flex min-w-0 flex-col gap-1">

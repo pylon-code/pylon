@@ -2,12 +2,12 @@ import { expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import { CodexResetCreditCoordinator, layerTest } from "./codexResetCredit.ts";
+import { ResetCreditCoordinator, layerTest } from "./resetCreditCoordinator.ts";
 
-it.layer(layerTest)("Codex reset credit attempts", (it) => {
+it.layer(layerTest)("Reset credit attempts", (it) => {
   it.effect("uses the durable client request identity at the provider boundary", () =>
     Effect.gen(function* () {
-      const coordinator = yield* CodexResetCreditCoordinator;
+      const coordinator = yield* ResetCreditCoordinator;
       const requestId = "3171f734-07a2-4e7d-8a9f-5b7939090bbf";
       const keys: string[] = [];
       yield* coordinator.redeem("restarted-account", requestId, (key) =>
@@ -21,7 +21,7 @@ it.layer(layerTest)("Codex reset credit attempts", (it) => {
   );
   it.effect("coalesces overlapping confirmations from two instances sharing an account", () =>
     Effect.gen(function* () {
-      const coordinator = yield* CodexResetCreditCoordinator;
+      const coordinator = yield* ResetCreditCoordinator;
       const release = yield* Deferred.make<void>();
       const keys: string[] = [];
       const consume = (key: string) =>
@@ -54,7 +54,7 @@ it.layer(layerTest)("Codex reset credit attempts", (it) => {
 
   it.effect("retains the uncertain key and remembers every retried request", () =>
     Effect.gen(function* () {
-      const coordinator = yield* CodexResetCreditCoordinator;
+      const coordinator = yield* ResetCreditCoordinator;
       const keys: string[] = [];
       const failed = yield* coordinator
         .redeem("account", "first", (key) =>
@@ -75,9 +75,29 @@ it.layer(layerTest)("Codex reset credit attempts", (it) => {
     }),
   );
 
+  it.effect("releases the attempt key only for a failure the caller calls settled", () =>
+    Effect.gen(function* () {
+      const coordinator = yield* ResetCreditCoordinator;
+      const keys: string[] = [];
+      const fail = (reason: string) => (key: string) =>
+        Effect.sync(() => keys.push(key)).pipe(Effect.andThen(Effect.fail(reason)));
+      const isSettled = (reason: string) => reason === "cooldown";
+      yield* coordinator
+        .redeem("settling-account", "first", fail("timeout"), isSettled)
+        .pipe(Effect.result);
+      yield* coordinator
+        .redeem("settling-account", "second", fail("cooldown"), isSettled)
+        .pipe(Effect.result);
+      yield* coordinator
+        .redeem("settling-account", "third", fail("timeout"), isSettled)
+        .pipe(Effect.result);
+      expect(keys).toEqual(["first", "first", "third"]);
+    }),
+  );
+
   it.effect("allows independent accounts while another account waits", () =>
     Effect.gen(function* () {
-      const coordinator = yield* CodexResetCreditCoordinator;
+      const coordinator = yield* ResetCreditCoordinator;
       const release = yield* Deferred.make<void>();
       const first = yield* Effect.forkChild(
         coordinator.redeem("home-a", "click", () =>
@@ -97,7 +117,7 @@ it.layer(layerTest)("Codex reset credit attempts", (it) => {
 
   it.effect("keeps the attempt key after interruption", () =>
     Effect.gen(function* () {
-      const coordinator = yield* CodexResetCreditCoordinator;
+      const coordinator = yield* ResetCreditCoordinator;
       const keys: string[] = [];
       const interrupted = yield* Effect.forkChild(
         coordinator.redeem("home", "click", (key) =>

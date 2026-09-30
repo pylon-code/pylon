@@ -40,6 +40,10 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import { resolveProviderHomePath } from "../pathExpansion.ts";
+import {
+  CLAUDE_RESET_CREDITS_PROGRAM,
+  claudeResetCreditsToContract,
+} from "./Layers/claudeResetCredits.ts";
 import { spawnAndCollect } from "./providerSnapshot.ts";
 import {
   acquireSharedUsageLock,
@@ -93,7 +97,12 @@ const resolveClaudeCredentialConfigDir = Effect.fn("resolveClaudeCredentialConfi
   config: Pick<ClaudeSettings, "homePath">,
   environment: Record<string, string | undefined> = process.env,
 ): Effect.fn.Return<
-  { readonly configDir: string; readonly defaultConfigDir: string },
+  {
+    readonly configDir: string;
+    readonly defaultConfigDir: string;
+    /** The CLI keeps its account record beside an explicit config dir, else in the home directory. */
+    readonly accountConfigPath: string;
+  },
   never,
   Path.Path
 > {
@@ -101,14 +110,16 @@ const resolveClaudeCredentialConfigDir = Effect.fn("resolveClaudeCredentialConfi
   const defaultConfigDir = path.resolve(path.join(NodeOS.homedir(), ".claude"));
   const homePath = (config.homePath ?? "").trim();
   const inheritedConfigDir = environment.CLAUDE_CONFIG_DIR?.trim();
+  const explicitConfigDir =
+    homePath.length > 0
+      ? resolveProviderHomePath(homePath)
+      : inheritedConfigDir && inheritedConfigDir.length > 0
+        ? resolveProviderHomePath(inheritedConfigDir)
+        : undefined;
   return {
-    configDir:
-      homePath.length > 0
-        ? resolveProviderHomePath(homePath)
-        : inheritedConfigDir && inheritedConfigDir.length > 0
-          ? resolveProviderHomePath(inheritedConfigDir)
-          : defaultConfigDir,
+    configDir: explicitConfigDir ?? defaultConfigDir,
     defaultConfigDir,
+    accountConfigPath: path.join(explicitConfigDir ?? NodeOS.homedir(), ".claude.json"),
   };
 });
 
@@ -193,6 +204,37 @@ const readClaudeAccessToken = Effect.fn("readClaudeAccessToken")(function* (
     if (keychainToken) return keychainToken;
   }
   return yield* readFileAccessToken(configDir);
+});
+
+// Re-login in the same home must never serve another credential's retained scopes.
+// sharedUsageReadKey hashes all parts; credential material never enters filenames or JSON.
+const claudeCredentialKey = (configDir: string, token: string) =>
+  sharedUsageReadKey(["claude", configDir, token]);
+
+/**
+ * The credential a banked reset would be redeemed with, for one instance.
+ *
+ * `credentialKey` is the same opaque hash the shared usage cache files a
+ * reading under, so a redemption can require that the login on disk is still
+ * the one whose reading the user was shown. The token itself is returned only
+ * to be sent; it is never stored or logged.
+ */
+export const readClaudeResetCredential = Effect.fn("readClaudeResetCredential")(function* (
+  config: Pick<ClaudeSettings, "homePath">,
+): Effect.fn.Return<
+  | {
+      readonly token: string;
+      readonly credentialKey: string;
+      readonly accountConfigPath: string;
+    }
+  | undefined,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+> {
+  const token = yield* readClaudeAccessToken(config);
+  if (!token) return undefined;
+  const { configDir, accountConfigPath } = yield* resolveClaudeCredentialConfigDir(config);
+  return { token, credentialKey: claudeCredentialKey(configDir, token), accountConfigPath };
 });
 
 interface RawOAuthWindow {
@@ -328,6 +370,8 @@ export interface ClaudeOAuthUsageRead {
   readonly cacheForMs?: number | undefined;
   /** True only when this or an earlier server completed a usable capacity read. */
   readonly didRead: boolean;
+  /** Opaque identity of the login that was read; see `readClaudeResetCredential`. */
+  readonly credentialKey?: string | undefined;
 }
 
 const NOT_READ: ClaudeOAuthUsageRead = { usageLimits: undefined, didRead: false };
@@ -362,6 +406,12 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
   /** Private random cache correlation for fenced materializations. */
   readonly configRevision?: string | undefined;
   readonly commitGuard?: Effect.Effect<boolean> | undefined;
+  /**
+   * Ask for the account's banked resets in the same request and publish them
+   * with the reading. Only the Claude CLI login asks; other credentials on
+   * this endpoint have no redeem path.
+   */
+  readonly resetCredits?: boolean | undefined;
 }): Effect.fn.Return<
   ClaudeOAuthUsageRead,
   never,
@@ -421,7 +471,10 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
         })
       : Effect.succeed(NOT_READ);
     const client = yield* HttpClient.HttpClient;
-    const request = HttpClientRequest.get(OAUTH_USAGE_URL).pipe(
+    const request = HttpClientRequest.get(
+      OAUTH_USAGE_URL,
+      input.resetCredits ? { urlParams: { [CLAUDE_RESET_CREDITS_PROGRAM]: "1" } } : {},
+    ).pipe(
       HttpClientRequest.setHeader("authorization", `Bearer ${input.token}`),
       HttpClientRequest.setHeader("anthropic-beta", OAUTH_BETA_HEADER),
       HttpClientRequest.setHeader("accept", "application/json"),
@@ -461,12 +514,21 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
       return { usageLimits: undefined, cacheForMs: throttledForMs, didRead: false };
     }
 
-    const usageLimits = usageLimitsFromClaudeOAuthResponse(
+    const windowLimits = usageLimitsFromClaudeOAuthResponse(
       attempt.value.payload,
       input.checkedAt,
       input.source,
     );
-    if (!usageLimits) return yield* failedRead;
+    if (!windowLimits) return yield* failedRead;
+    const resetCredits = input.resetCredits
+      ? claudeResetCreditsToContract(
+          asRecord(attempt.value.payload)?.[CLAUDE_RESET_CREDITS_PROGRAM],
+          nowMs,
+        )
+      : undefined;
+    const usageLimits = resetCredits
+      ? { ...windowLimits, resetCredits: { ...resetCredits, checkedAt: input.checkedAt } }
+      : windowLimits;
     yield* writeSharedUsageEntry(
       cacheDir,
       input.cacheKey,
@@ -517,17 +579,17 @@ export const fetchClaudeOAuthUsage = Effect.fn("fetchClaudeOAuthUsage")(function
     Effect.provideService(FileSystem.FileSystem, fileSystem),
     Effect.provideService(Path.Path, path),
   );
+  const credentialKey = claudeCredentialKey(configDir, token);
   const result = yield* fetchOAuthUsageWithToken({
     token,
-    // Re-login in the same home must never serve another credential's retained scopes.
-    // sharedUsageReadKey hashes all parts; credential material never enters filenames or JSON.
-    cacheKey: sharedUsageReadKey(["claude", configDir, token]),
+    cacheKey: credentialKey,
     checkedAt,
     source: "claudeOAuth",
     sharedCacheDir: options?.sharedCacheDir,
     freshForMs: options?.freshForMs,
     shareFailures: options?.shareFailures,
     commitGuard: options?.commitGuard ? isCurrent : undefined,
+    resetCredits: true,
   });
-  return options?.commitGuard && !(yield* isCurrent) ? NOT_READ : result;
+  return options?.commitGuard && !(yield* isCurrent) ? NOT_READ : { ...result, credentialKey };
 });

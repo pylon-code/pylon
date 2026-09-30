@@ -1,5 +1,5 @@
 import { AntigravityInstallation } from "./AntigravityInstallation.ts";
-import * as CodexResetCredit from "./Layers/codexResetCredit.ts";
+import * as ResetCreditCoordinator from "./Layers/resetCreditCoordinator.ts";
 /**
  * End-to-end proof of the server half of account draining.
  *
@@ -137,7 +137,7 @@ const registryLayer = ProviderRegistryLive.pipe(
     ),
   ),
   Layer.provideMerge(ModelManifest.layerTest),
-  Layer.provideMerge(CodexResetCredit.layerTest),
+  Layer.provideMerge(ResetCreditCoordinator.layerTest),
   Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
   Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
 );

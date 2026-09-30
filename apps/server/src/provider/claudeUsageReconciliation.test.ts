@@ -6,11 +6,11 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse, UrlParams } from "effect/unstable/http";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import { reconcileClaudeUsage } from "./claudeUsageReconciliation.ts";
-import { fetchClaudeOAuthUsage } from "./claudeOAuthUsage.ts";
+import { fetchClaudeOAuthUsage, fetchOAuthUsageWithToken } from "./claudeOAuthUsage.ts";
 
 it.layer(NodeServices.layer)("Claude authoritative quota reconciliation", (it) => {
   it.effect(
@@ -120,6 +120,69 @@ it.layer(NodeServices.layer)("Claude authoritative quota reconciliation", (it) =
         assert.strictEqual(retired.usageLimits, undefined);
         assert.strictEqual(retired.didRead, false);
       }),
+  );
+
+  it.effect("reads banked resets with the usage reading, for the Claude login only", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homePath = yield* fs.makeTempDirectoryScoped({ prefix: "pylon-claude-reset-home-" });
+      const sharedCacheDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "pylon-claude-reset-cache-",
+      });
+      const credential = (token: string) =>
+        fs.writeFileString(
+          path.join(homePath, ".credentials.json"),
+          JSON.stringify({ claudeAiOauth: { accessToken: token } }),
+        );
+      yield* credential("synthetic-account-a");
+      const queries: string[] = [];
+      const client = HttpClient.make((request) =>
+        Effect.sync(() => {
+          queries.push(UrlParams.toString(request.urlParams));
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({
+              five_hour: { utilization: 12 },
+              cedar_ember: {
+                eligible: true,
+                next_grant_id: "grant_a",
+                grants: [{ id: "grant_a", resets_left: 2, usable_now: true }],
+              },
+            }),
+          );
+        }),
+      );
+      const checkedAt = DateTime.formatIso(yield* DateTime.now);
+      const read = fetchClaudeOAuthUsage({ homePath }, checkedAt, { sharedCacheDir }).pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.provideService(HostProcessPlatform, "linux"),
+      );
+      const first = yield* read;
+      assert.deepStrictEqual(first.usageLimits?.resetCredits, {
+        availableCount: 2,
+        nextCreditId: "grant_a",
+        checkedAt,
+      });
+      // Served from the shared reading: same credits, same login, no second request.
+      const cached = yield* read;
+      assert.deepStrictEqual(cached.usageLimits?.resetCredits, first.usageLimits?.resetCredits);
+      assert.strictEqual(cached.credentialKey, first.credentialKey);
+      // A different login in the same home is a different credential.
+      yield* credential("synthetic-account-b");
+      assert.notStrictEqual((yield* read).credentialKey, first.credentialKey);
+
+      // Another credential on this endpoint has no redeem path, so it neither asks nor publishes.
+      const other = yield* fetchOAuthUsageWithToken({
+        token: "synthetic-other",
+        cacheKey: "synthetic-other",
+        checkedAt,
+        source: "other",
+        sharedCacheDir,
+      }).pipe(Effect.provideService(HttpClient.HttpClient, client));
+      assert.strictEqual(other.usageLimits?.resetCredits, undefined);
+      assert.deepStrictEqual(queries, ["cedar_ember=1", "cedar_ember=1", ""]);
+    }),
   );
 });
 

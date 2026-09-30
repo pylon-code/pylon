@@ -17,6 +17,7 @@ import {
   normalizeUsageWindow,
   createResetCreditAttempts,
   resetCreditOutcomeText,
+  resetCreditTargetKey,
 } from "@t3tools/shared/usageLimits";
 import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
 import {
@@ -214,7 +215,7 @@ export function ResetCredits(props: {
   });
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const targetKey = JSON.stringify([environmentId, input]);
+  const targetKey = resetCreditTargetKey(environmentId, input);
   const activeTarget = useRef<string | null>(null);
   const redeeming = useRef(false);
   useEffect(() => {

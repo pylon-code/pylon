@@ -17,6 +17,7 @@ import {
   normalizeUsageWindow,
   createResetCreditAttempts,
   resetCreditOutcomeText,
+  resetCreditTargetKey,
 } from "@t3tools/shared/usageLimits";
 import { GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
 import { Fragment, useEffect, useRef, useState } from "react";
@@ -217,7 +218,7 @@ export function useResetCredit(
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const targetKey = JSON.stringify([environmentId, input]);
+  const targetKey = resetCreditTargetKey(environmentId, input);
   const activeTarget = useRef<string | null>(null);
   const redeeming = useRef(false);
   useEffect(() => {

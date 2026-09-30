@@ -146,7 +146,7 @@ import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClien
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
-import * as CodexResetCredit from "./provider/Layers/codexResetCredit.ts";
+import * as ResetCreditCoordinator from "./provider/Layers/resetCreditCoordinator.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import {
@@ -579,7 +579,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
     Layer.mergeAll(
       ProviderEventLoggers.layer,
       ModelManifest.layer,
-      CodexResetCredit.layer,
+      ResetCreditCoordinator.layer,
       // AntigravityDriver resolves its managed runtime through this service, and
       // ProviderAuthService backs the provider setup/auth RPCs.
       AntigravityInstallation.layer,

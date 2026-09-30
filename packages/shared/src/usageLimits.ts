@@ -29,25 +29,68 @@ const DAY = 24 * HOUR;
 /** Keep an uncertain native redemption's identity across retries and account-view remounts. */
 export function createResetCreditAttempts(createRequestId: () => string) {
   const pending = new Map<string, string>();
-  const key = (environmentId: EnvironmentId, instanceId: ProviderInstanceId) =>
-    JSON.stringify([environmentId, instanceId]);
+  // A named credit is its own attempt: a retry re-sends the same claim, and
+  // the next credit on the account never reuses an earlier claim's identity.
+  const key = (
+    environmentId: EnvironmentId,
+    input: Extract<ProviderConsumeResetCreditInput, { instanceId: ProviderInstanceId }>,
+  ) => JSON.stringify([environmentId, input.instanceId, input.creditId ?? null]);
   return {
     begin(
       environmentId: EnvironmentId,
       input: ProviderConsumeResetCreditInput,
     ): ProviderConsumeResetCreditInput {
       if (!("instanceId" in input)) return input;
-      const accountKey = key(environmentId, input.instanceId);
+      const accountKey = key(environmentId, input);
       const requestId = pending.get(accountKey) ?? input.requestId ?? createRequestId();
       pending.set(accountKey, requestId);
       return { ...input, requestId };
     },
     complete(environmentId: EnvironmentId, input: ProviderConsumeResetCreditInput) {
       if (!("instanceId" in input)) return;
-      const accountKey = key(environmentId, input.instanceId);
+      const accountKey = key(environmentId, input);
       if (pending.get(accountKey) === input.requestId) pending.delete(accountKey);
     },
   };
+}
+
+/**
+ * Where a native instance's displayed reset credit is redeemed, or `null`
+ * when the control must stay inert.
+ *
+ * A balance that names its next credit is redeemed by that name, so the
+ * server can refuse if the account or the credit changed since it was shown.
+ * Only a server that stamps `redeemable` accepts that; an older one leaves
+ * the action off. A balance that names no credit (Codex) redeems account-wide.
+ */
+export function nativeResetCreditInput(
+  instanceId: ProviderInstanceId,
+  limits: ServerProviderUsageLimits | undefined,
+): Extract<ProviderConsumeResetCreditInput, { instanceId: ProviderInstanceId }> | null {
+  const credits = limits?.resetCredits;
+  if (!credits?.nextCreditId) return { instanceId };
+  return credits.redeemable ? { instanceId, creditId: credits.nextCreditId } : null;
+}
+
+/** Where a report row redeems. Reports from before the target was recorded name only the instance. */
+export function reportResetCreditInput(
+  account: UsageLimitsReport["accounts"][number],
+): ProviderConsumeResetCreditInput | undefined {
+  if (account.resetCreditInput) return account.resetCreditInput;
+  if (!account.instanceId) return undefined;
+  return nativeResetCreditInput(account.instanceId, account.limits) ?? undefined;
+}
+
+/**
+ * Identifies the account a redeem control acts on. A native instance stays
+ * the same target when its next credit changes, so the outcome of a redeem
+ * survives the refresh that follows it.
+ */
+export function resetCreditTargetKey(
+  environmentId: EnvironmentId,
+  input: ProviderConsumeResetCreditInput,
+): string {
+  return JSON.stringify([environmentId, "instanceId" in input ? input.instanceId : input]);
 }
 
 /** A refresh warning must not hide a confirmed redemption outcome. */
@@ -272,6 +315,11 @@ export interface LimitAccount {
   readonly limits: ServerProviderUsageLimits;
 }
 
+const redeemTarget = (
+  environmentId: EnvironmentId,
+  input: ProviderConsumeResetCreditInput | null,
+): LimitAccount["redeem"] => (input ? { environmentId, input } : null);
+
 /**
  * Every account with usable windows across the connected environments, one
  * entry per distinct account. The freshest reads supply windows and credits;
@@ -357,7 +405,10 @@ export function collectLimitAccounts(
           accentColor: provider.accentColor,
           environments: [{ environmentId, label }],
           sourceLabel: null,
-          redeem: { environmentId, input: { instanceId: provider.instanceId } },
+          redeem: redeemTarget(
+            environmentId,
+            nativeResetCreditInput(provider.instanceId, provider.usageLimits),
+          ),
           limits: provider.usageLimits,
         },
       );
@@ -807,20 +858,21 @@ export function collectProviderUsageLimits(
       hubCredits &&
       (!provider.usageLimits.resetCredits ||
         creditReadAt(hubCredits.account.usageLimits) > creditReadAt(provider.usageLimits));
+    const resetCreditInput =
+      hubCreditId && hubCredits
+        ? {
+            sourceId: hubCredits.source.id,
+            accountId: hubCredits.account.id,
+            creditId: hubCreditId,
+          }
+        : nativeResetCreditInput(provider.instanceId, provider.usageLimits);
     accounts.push({
       id: provider.instanceId,
       driver: provider.driver,
       label: `${provider.displayName?.trim() || String(provider.driver)} [${provider.instanceId}]`,
       ...(provider.auth.label ? { plan: provider.auth.label } : {}),
       instanceId: provider.instanceId,
-      resetCreditInput:
-        hubCreditId && hubCredits
-          ? {
-              sourceId: hubCredits.source.id,
-              accountId: hubCredits.account.id,
-              creditId: hubCreditId,
-            }
-          : { instanceId: provider.instanceId },
+      ...(resetCreditInput ? { resetCreditInput } : {}),
       ...(provider.displayName ? { displayName: provider.displayName } : {}),
       ...(provider.accentColor ? { accentColor: provider.accentColor } : {}),
       ...(provider.auth.email ? { email: provider.auth.email } : {}),

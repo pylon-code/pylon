@@ -111,6 +111,10 @@ export interface ProviderInstance {
   /** Explicit account action, separate from starting or resuming a turn. */
   readonly consumeResetCredit?: (input: {
     readonly requestId?: string | undefined;
+    /** The credit the client displayed, for drivers that redeem a named credit. */
+    readonly creditId?: string | undefined;
+    /** False once the registry has replaced or retired this instance. */
+    readonly isCurrent?: Effect.Effect<boolean> | undefined;
   }) => Effect.Effect<ProviderConsumeResetCreditResult, ProviderDriverError>;
   /** Server-private replacement fence. Prime is the first fenced driver. */
   readonly runtimeFence?: ProviderRuntimeFence | undefined;

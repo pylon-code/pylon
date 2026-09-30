@@ -47,10 +47,7 @@ import {
   withCodexAppServerClient,
 } from "../Layers/CodexProvider.ts";
 import { readCodexAccountId } from "../codexAccountIdentity.ts";
-import {
-  CodexResetCreditCoordinator,
-  CODEX_RESET_CREDIT_TIMEOUT,
-} from "../Layers/codexResetCredit.ts";
+import * as ResetCreditCoordinator from "../Layers/resetCreditCoordinator.ts";
 import { usageLimitsFromCodexRateLimits } from "../providerUsageLimits.ts";
 import {
   resolveSharedUsageCacheDir,
@@ -123,7 +120,7 @@ function makeCodexMaintenanceResolver(sharedHomePath: string) {
 export type CodexDriverEnv =
   | BackgroundPolicy.BackgroundPolicy
   | ChildProcessSpawner.ChildProcessSpawner
-  | CodexResetCreditCoordinator
+  | ResetCreditCoordinator.ResetCreditCoordinator
   | Crypto.Crypto
   | FileSystem.FileSystem
   | HttpClient.HttpClient
@@ -144,7 +141,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const resetCreditCoordinator = yield* CodexResetCreditCoordinator;
+      const resetCreditCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
       const httpClient = yield* HttpClient.HttpClient;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -371,7 +368,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
                       { idempotencyKey },
                     );
                     return { client, sharedHomePath, outcome };
-                  }).pipe(Effect.timeout(CODEX_RESET_CREDIT_TIMEOUT));
+                  }).pipe(Effect.timeout("20 seconds"));
                   const reading = yield* client
                     .request("account/rateLimits/read", undefined)
                     .pipe(Effect.timeout("5 seconds"), Effect.result);

@@ -463,6 +463,8 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
       readonly usageLimits: ServerProviderUsageLimits | undefined;
       /** How long this answer stands before the endpoint should be consulted again. */
       readonly cacheForMs?: number | undefined;
+      /** Opaque identity of the login the usage was read with. */
+      readonly credentialKey?: string | undefined;
     }
   | undefined,
   never,
@@ -498,6 +500,7 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
       : undefined,
     usageLimits: usageRead?.usageLimits,
     ...(usageRead?.cacheForMs !== undefined ? { cacheForMs: usageRead.cacheForMs } : {}),
+    ...(usageRead?.credentialKey !== undefined ? { credentialKey: usageRead.credentialKey } : {}),
   };
 });
 

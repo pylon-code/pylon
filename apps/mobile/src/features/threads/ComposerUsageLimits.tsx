@@ -1,4 +1,5 @@
 import type { EnvironmentId, UsageLimitsReport } from "@t3tools/contracts";
+import { reportResetCreditInput } from "@t3tools/shared/usageLimits";
 import { Pressable, ScrollView, useWindowDimensions, View } from "react-native";
 
 import { SymbolView } from "../../components/AppSymbol";
@@ -42,9 +43,7 @@ export function ComposerUsageLimits({
         style={{ maxHeight: Math.round(height * 0.4) }}
       >
         {report.accounts.map((account, index) => {
-          const resetCreditInput =
-            account.resetCreditInput ??
-            (account.instanceId ? { instanceId: account.instanceId } : undefined);
+          const resetCreditInput = reportResetCreditInput(account);
           const driverLabel = DRIVER_LABEL[account.driver] ?? String(account.driver);
           return (
             <AccountLimits

@@ -2,14 +2,12 @@
 import type { ProviderConsumeResetCreditResult } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 
-export const CODEX_RESET_CREDIT_TIMEOUT = Duration.seconds(20);
 type Outcome = ProviderConsumeResetCreditResult;
 interface AttemptState {
   readonly generation: number;
@@ -23,24 +21,28 @@ interface AccountState {
   readonly attempt: Ref.Ref<AttemptState>;
 }
 
-export class CodexResetCreditCoordinator extends Context.Service<
-  CodexResetCreditCoordinator,
+export class ResetCreditCoordinator extends Context.Service<
+  ResetCreditCoordinator,
   {
+    /**
+     * `isSettled` names failures that are a final answer (a cooldown, or a
+     * check that refused before anything was sent). Those release the attempt
+     * key; every other failure keeps it so a retry is the same attempt.
+     */
     readonly redeem: <E, R>(
       accountKey: string,
       requestId: string | undefined,
       consume: (idempotencyKey: string) => Effect.Effect<Outcome, E, R>,
+      isSettled?: (error: E) => boolean,
     ) => Effect.Effect<Outcome, E | PlatformError.PlatformError, R>;
   }
->()("t3/provider/Layers/codexResetCredit/CodexResetCreditCoordinator") {}
+>()("t3/provider/Layers/resetCreditCoordinator") {}
 
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const statesRef = yield* Ref.make<ReadonlyMap<string, AccountState>>(new Map());
-  const stateFor = Effect.fn("CodexResetCreditCoordinator.stateFor")(function* (
-    accountKey: string,
-  ) {
+  const stateFor = Effect.fn("ResetCreditCoordinator.stateFor")(function* (accountKey: string) {
     const existing = (yield* Ref.get(statesRef)).get(accountKey);
     if (existing) return existing;
     const candidate = {
@@ -60,10 +62,11 @@ export const make = Effect.gen(function* () {
         : ([candidate, new Map(states).set(accountKey, candidate)] as const);
     });
   });
-  const redeem: CodexResetCreditCoordinator["Service"]["redeem"] = (
+  const redeem: ResetCreditCoordinator["Service"]["redeem"] = (
     accountKey,
     suppliedRequestId,
     consume,
+    isSettled,
   ) =>
     Effect.gen(function* () {
       const state = yield* stateFor(accountKey);
@@ -87,7 +90,17 @@ export const make = Effect.gen(function* () {
           const pendingRequests = new Set(before.pendingRequests).add(requestId);
           yield* Ref.set(state.attempt, { ...before, pendingKey: key, pendingRequests });
           // Failures and interruption retain the key. A retry cannot start a new spend.
-          const outcome = yield* consume(key);
+          const outcome = yield* consume(key).pipe(
+            Effect.tapError((error) =>
+              isSettled?.(error)
+                ? Ref.set(state.attempt, {
+                    ...before,
+                    pendingKey: undefined,
+                    pendingRequests: new Set<string>(),
+                  })
+                : Effect.void,
+            ),
+          );
           const receipts = new Map(before.completed);
           for (const request of pendingRequests) receipts.set(request, outcome);
           while (receipts.size > 64) receipts.delete(receipts.keys().next().value!);
@@ -102,13 +115,13 @@ export const make = Effect.gen(function* () {
         }),
       );
     });
-  return { redeem } satisfies CodexResetCreditCoordinator["Service"];
+  return { redeem } satisfies ResetCreditCoordinator["Service"];
 });
 
-export const layer = Layer.effect(CodexResetCreditCoordinator, make);
+export const layer = Layer.effect(ResetCreditCoordinator, make);
 
 export const layerTest = Layer.effect(
-  CodexResetCreditCoordinator,
+  ResetCreditCoordinator,
   Effect.gen(function* () {
     let counter = 0;
     return yield* make.pipe(

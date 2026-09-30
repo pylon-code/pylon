@@ -116,9 +116,11 @@ without starting an agent turn. Dismiss the panel, or send a message, to clear i
 with the same name keep their own behavior. On mobile, use **Usage → Limits** before creating a
 thread.
 
-When Codex reports banked reset credits, **Use reset** asks you to confirm before redeeming one. A
-confirmed result stays visible even if refreshing the balance fails, and retrying an uncertain request
-checks the same attempt.
+When Codex or Claude reports banked reset credits, **Use reset** asks you to confirm before redeeming
+one. A confirmed result stays visible even if refreshing the balance fails, and retrying an uncertain
+request checks the same attempt. A Claude reset is redeemed only for the account and credit you were
+shown: if the sign-in changed in the meantime, refresh usage and confirm again. **Use reset** does not
+appear for Claude on an environment whose Pylon server is too old to redeem it.
 
 ## Connect a CLIProxyAPI hub
 

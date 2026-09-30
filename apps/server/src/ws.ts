@@ -2769,7 +2769,18 @@ const makeWsRpcLayer = (
                   instanceId: input.instanceId,
                   detail: "This provider does not support reset credits.",
                 });
-              return yield* instance.consumeResetCredit(input).pipe(
+              // The instance closure outlives its registration, so a redemption
+              // re-checks that it is still the one the client addressed.
+              const isCurrent = providerInstances
+                .getInstance(input.instanceId)
+                .pipe(
+                  Effect.flatMap((current) =>
+                    current !== instance
+                      ? Effect.succeed(false)
+                      : (instance.runtimeFence?.isCurrent ?? Effect.succeed(true)),
+                  ),
+                );
+              return yield* instance.consumeResetCredit({ ...input, isCurrent }).pipe(
                 Effect.mapError(
                   (error) =>
                     new ProviderConsumeResetCreditError({

@@ -1,4 +1,4 @@
-import * as CodexResetCredit from "./codexResetCredit.ts";
+import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 /**
  * Multi-instance validation slices for `ProviderInstanceRegistryLive`.
@@ -259,7 +259,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
     Layer.provideMerge(TestHttpClientLive),
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
     Layer.provideMerge(ModelManifest.layerTest),
-    Layer.provideMerge(CodexResetCredit.layerTest),
+    Layer.provideMerge(ResetCreditCoordinator.layerTest),
   );
 
   it.live("boots two independent codex instances from a ProviderInstanceConfigMap", () =>
@@ -791,7 +791,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
     Layer.provideMerge(TestHttpClientLive),
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
     Layer.provideMerge(ModelManifest.layerTest),
-    Layer.provideMerge(CodexResetCredit.layerTest),
+    Layer.provideMerge(ResetCreditCoordinator.layerTest),
   );
 
   it.live("boots one instance of every shipped driver from a single config map", () =>
