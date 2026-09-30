@@ -2483,6 +2483,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 updatedAt: event.occurredAt,
               };
             }
+            // @effect-diagnostics-next-line returnEffectInGen:off - the caller runs the returned cleanup effect after the transaction; nothing to clean up here
             return Effect.void;
           }
           // Return the cleanup effect so the caller runs it after the outer transaction commits.

@@ -466,7 +466,7 @@ export const make = Effect.gen(function* () {
           Effect.provideService(Path.Path, path),
         ),
       ),
-      Effect.catchCause(() => Effect.void),
+      Effect.ignoreCause,
     );
     return manifest;
   });

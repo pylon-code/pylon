@@ -390,11 +390,11 @@ describe("DesktopClientSettings", () => {
         set: () => Effect.void,
       });
       const direct = DesktopClientSettings.DesktopClientSettings.of({
-        get: Effect.succeed(Option.some({ ...clientSettings, confirmQuit: "direct" })),
+        get: Effect.succeedSome({ ...clientSettings, confirmQuit: "direct" }),
         set: () => Effect.void,
       });
       const missing = DesktopClientSettings.DesktopClientSettings.of({
-        get: Effect.succeed(Option.none()),
+        get: Effect.succeedNone,
         set: () => Effect.void,
       });
 

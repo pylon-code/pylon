@@ -1839,6 +1839,7 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
       prompt: NonNullable<typeof activePromptRecovery>,
     ): Promise<boolean> => {
       if (prompt.promptAdmissionObserved) return Promise.resolve(true);
+      // @effect-diagnostics-next-line raceFirstWithSleepToTimeout:off - the grace window expiring is a real outcome (false), not a timeout failure
       return Effect.raceFirst(
         Effect.promise(() => prompt.admissionEvidencePromise),
         Effect.sleep(PRIME_AGENT_PROMPT_ADMISSION_EVIDENCE_GRACE_MS).pipe(Effect.as(false)),
@@ -7430,12 +7431,13 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
             },
             publicationProofEpoch,
           ).pipe(
-            Effect.catch((cause) =>
-              cause === CORRELATED_PROOF_FENCE_RETIRED
-                ? Effect.promise(() => failCorrelatedProofRecovery(undefined, "proof-lost")).pipe(
-                    Effect.flatMap(() => workerRecoveryFailure()),
-                  )
-                : Effect.fail(cause),
+            Effect.catchIf(
+              (cause): cause is typeof CORRELATED_PROOF_FENCE_RETIRED =>
+                cause === CORRELATED_PROOF_FENCE_RETIRED,
+              () =>
+                Effect.promise(() => failCorrelatedProofRecovery(undefined, "proof-lost")).pipe(
+                  Effect.flatMap(() => workerRecoveryFailure()),
+                ),
             ),
           );
           if (
@@ -7642,10 +7644,10 @@ export const makePrimeAgentDaemonSessionRuntime = Effect.fn("makePrimeAgentDaemo
         proofEpoch,
         onCommit,
       ).pipe(
-        Effect.catch((cause) =>
-          cause === CORRELATED_PROOF_FENCE_RETIRED
-            ? correlatedProofUnavailable(operation)
-            : Effect.fail(cause),
+        Effect.catchIf(
+          (cause): cause is typeof CORRELATED_PROOF_FENCE_RETIRED =>
+            cause === CORRELATED_PROOF_FENCE_RETIRED,
+          () => correlatedProofUnavailable(operation),
         ),
       );
 

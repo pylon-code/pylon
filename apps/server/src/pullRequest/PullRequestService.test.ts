@@ -3099,13 +3099,13 @@ it.effect("shares one cold viewer lookup across distinct concurrent lists", () =
       ],
     });
 
-    yield* Effect.all(
-      ["all", "authored", "reviewing"].map((involvement) =>
+    yield* Effect.forEach(
+      ["all", "authored", "reviewing"],
+      (involvement) =>
         service.list({
           state: "open",
           involvement: involvement as "all" | "authored" | "reviewing",
         }),
-      ),
       { concurrency: "unbounded" },
     );
 

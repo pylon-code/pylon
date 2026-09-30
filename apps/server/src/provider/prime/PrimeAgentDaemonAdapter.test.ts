@@ -10958,10 +10958,10 @@ describe("PrimeAgentDaemonAdapter", () => {
         }
 
         const stopFiber = yield* adapter.stopAll().pipe(Effect.forkChild);
-        yield* Effect.all(
-          captures.map((capture) => Queue.take(capture.disposeObserved!)),
-          { concurrency: "unbounded", discard: true },
-        );
+        yield* Effect.forEach(captures, (capture) => Queue.take(capture.disposeObserved!), {
+          concurrency: "unbounded",
+          discard: true,
+        });
         expect(captures.map((capture) => capture.disposeCount)).toEqual([1, 1, 1, 1]);
         expect(stopFiber.pollUnsafe()).toBeUndefined();
 
@@ -11469,7 +11469,7 @@ describe("PrimeAgentDaemonAdapter", () => {
           runtimeFactory: fakeRuntimeFactory(captures),
           recoveryLedger: {
             // Ordinary startup must reject the row before interpreting its authority.
-            get: () => Effect.succeed(Option.some({ threadId })),
+            get: () => Effect.succeedSome({ threadId }),
           } as unknown as PrimeAgentRecoveryLedgerShape,
         });
         const error = yield* adapter
@@ -11515,7 +11515,7 @@ describe("PrimeAgentDaemonAdapter", () => {
             let managedAttempts = 0;
             let discarded = false;
             const recoveryLedger = {
-              get: () => Effect.succeed(Option.none()),
+              get: () => Effect.succeedNone,
               discardPrepared: (input: { threadId: string; ownerToken: string }) =>
                 Effect.sync(() => {
                   expect(input.threadId).toBe(threadId);
@@ -11581,7 +11581,7 @@ describe("PrimeAgentDaemonAdapter", () => {
         const markIdleCalls: Array<{ readonly threadId: string; readonly ownerToken: string }> = [];
         const recoveryLedger = {
           putPrepared: () => Effect.void,
-          get: () => Effect.succeed(Option.none()),
+          get: () => Effect.succeedNone,
           listActive: () => Effect.succeed([]),
           markAdmitted: () =>
             Effect.sync(() => {
@@ -11595,7 +11595,7 @@ describe("PrimeAgentDaemonAdapter", () => {
             }).pipe(Effect.tap(() => Deferred.succeed(markIdleObserved, undefined))),
           discardPrepared: () => Effect.succeed(true),
           updateTranscriptProgress: () => Effect.succeed(true),
-          claim: () => Effect.succeed(Option.none()),
+          claim: () => Effect.succeedNone,
           releaseClaim: () => Effect.succeed(true),
           commitAdoption: () => Effect.succeed(true),
           markNativeCleanup: () => Effect.succeed(true),

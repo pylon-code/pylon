@@ -25,12 +25,12 @@ const make = Effect.gen(function* () {
   const worker = yield* makeDrainableWorker((_event: OrchestrationEvent) =>
     settings.updateSettings({}).pipe(
       Effect.asVoid,
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.failCause(cause)
-          : Effect.logWarning("legacy project settings synchronization failed", {
-              cause: Cause.pretty(cause),
-            }),
+      Effect.catchCauseIf(
+        (cause) => !Cause.hasInterruptsOnly(cause),
+        (cause) =>
+          Effect.logWarning("legacy project settings synchronization failed", {
+            cause: Cause.pretty(cause),
+          }),
       ),
     ),
   );

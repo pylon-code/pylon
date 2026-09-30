@@ -68,7 +68,7 @@ describe("provider instance host CAS receipts", () => {
   it.effect("serializes two remote clients against one host snapshot", () =>
     Effect.gen(function* () {
       const settings = yield* ServerSettingsService;
-      const exits = yield* Effect.all(
+      const exits = yield* Effect.forEach(
         [
           settings.mutateProviderInstances({
             mutationId: mutationId("client-a"),
@@ -80,7 +80,8 @@ describe("provider instance host CAS receipts", () => {
             expectedProviderInstances: {},
             patch: { providerInstances: { [bId]: b } },
           }),
-        ].map(Effect.exit),
+        ],
+        Effect.exit,
         { concurrency: "unbounded" },
       );
       expect(exits.filter(Exit.isSuccess)).toHaveLength(1);

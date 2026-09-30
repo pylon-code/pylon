@@ -1724,15 +1724,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         ) {
           // Persist native boundaries and exact idle recovery proofs before
           // publishing completion to checkpoint capture.
-          yield* Effect.gen(function* () {
-            yield* persistExactConversationSelection(
-              canonicalEvent.threadId,
-              source.adapter,
-              source.instanceId,
-              currentIncarnation,
-              "ProviderService.persistCompletedConversation",
-            );
-          }).pipe(
+          yield* persistExactConversationSelection(
+            canonicalEvent.threadId,
+            source.adapter,
+            source.instanceId,
+            currentIncarnation,
+            "ProviderService.persistCompletedConversation",
+          ).pipe(
             Effect.catch((cause) =>
               Effect.logWarning("failed to persist provider completed conversation state", {
                 provider: source.provider,
@@ -4635,7 +4633,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   // Snapshot settings once per stop operation, then resolve continuation against
   // each session's project in both the ordinary and mixed-adapter shutdown paths.
   const readStopSettings = serverSettings.getSettings.pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.orElseSucceed(() => Option.none<ServerSettingsValue>()),
   );
   const continueAfterRestartFor = Effect.fn("continueAfterRestartFor")(function* (

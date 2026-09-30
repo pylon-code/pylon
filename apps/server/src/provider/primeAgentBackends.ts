@@ -392,7 +392,7 @@ export const readPrimeAgentCapacity = Effect.fn("readPrimeAgentCapacity")(functi
   const homePath = resolvePrimeAgentHomePath(settings, path, options);
   if (!homePath) return undefined;
   const raw = yield* fileSystem.readFileString(path.join(homePath, "auth.json")).pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catchCause(() => Effect.succeed(Option.none<string>())),
   );
   if (Option.isNone(raw) || Option.isNone(decodePrimeAuthFile(raw.value))) return undefined;

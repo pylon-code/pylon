@@ -621,7 +621,7 @@ const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory
   recordImportedTranscript: () => Effect.die("unused"),
   getProvider: () =>
     Effect.die(new Error("ProviderSessionDirectory.getProvider is not used in test")),
-  getBinding: () => Effect.succeed(Option.none()),
+  getBinding: () => Effect.succeedNone,
   removeExact: () => Effect.succeed(false),
   listThreadIds: () => Effect.succeed([]),
   listBindings: () => Effect.succeed([]),

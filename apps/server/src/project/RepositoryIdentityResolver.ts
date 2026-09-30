@@ -166,7 +166,7 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
         Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
         Effect.flatMap((identity) =>
           identity !== null && options.refine
-            ? options.refine(identity).pipe(Effect.catch(() => Effect.succeed(identity)))
+            ? options.refine(identity).pipe(Effect.orElseSucceed(() => identity))
             : Effect.succeed(identity),
         ),
       ),

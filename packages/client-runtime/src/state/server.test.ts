@@ -841,37 +841,35 @@ describe("server state projection", () => {
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const savedConfigs = yield* Queue.unbounded<ServerConfig>();
       const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeed(Option.none()),
+        loadShell: () => Effect.succeedNone,
         saveShell: () => Effect.void,
-        loadThread: () => Effect.succeed(Option.none()),
+        loadThread: () => Effect.succeedNone,
         saveThread: () => Effect.void,
         removeThread: () => Effect.void,
         loadServerConfig: () =>
-          Effect.succeed(
-            Option.some({
-              ...CONFIG,
-              environmentThemes: [
-                {
-                  id: "old",
-                  name: "Old",
-                  appearance: "dark",
-                  canvas: "#111111",
-                  accent: "#ffffff",
-                },
-              ],
-              usageLimitSources: [
-                {
-                  id: UsageLimitSourceId.make("old"),
-                  kind: "cliproxy",
-                  label: "Old",
-                  checkedAt: "2026-09-07T00:00:00.000Z",
-                  accounts: [],
-                },
-              ],
-            }),
-          ),
+          Effect.succeedSome({
+            ...CONFIG,
+            environmentThemes: [
+              {
+                id: "old",
+                name: "Old",
+                appearance: "dark",
+                canvas: "#111111",
+                accent: "#ffffff",
+              },
+            ],
+            usageLimitSources: [
+              {
+                id: UsageLimitSourceId.make("old"),
+                kind: "cliproxy",
+                label: "Old",
+                checkedAt: "2026-09-07T00:00:00.000Z",
+                accounts: [],
+              },
+            ],
+          }),
         saveServerConfig: (_environmentId, config) => Queue.offer(savedConfigs, config),
-        loadVcsRefs: () => Effect.succeed(Option.none()),
+        loadVcsRefs: () => Effect.succeedNone,
         saveVcsRefs: () => Effect.void,
         removeVcsRefs: () => Effect.void,
         clearVcsRefs: () => Effect.void,
@@ -961,16 +959,14 @@ describe("server state projection", () => {
           expect(Option.getOrThrow(yield* SubscriptionRef.get(state)).sessionOwner).toBe(
             rpcSessionOwner(firstSession),
           );
-          const secondProjection = yield* SubscriptionRef.changes(state)
-            .pipe(
-              Stream.filter(
-                (value) =>
-                  Option.isSome(value) &&
-                  value.value.sessionOwner === rpcSessionOwner(secondSession),
-              ),
-              Stream.runHead,
-            )
-            .pipe(Effect.forkChild);
+          const secondProjection = yield* SubscriptionRef.changes(state).pipe(
+            Stream.filter(
+              (value) =>
+                Option.isSome(value) && value.value.sessionOwner === rpcSessionOwner(secondSession),
+            ),
+            Stream.runHead,
+            Effect.forkChild,
+          );
           yield* Queue.offer(secondEvents, snapshotEvent(sourceCapableConfig));
           const newSessionProjection = Option.getOrThrow(
             Option.getOrThrow(yield* Fiber.join(secondProjection)),
@@ -1003,14 +999,14 @@ describe("server state projection", () => {
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const savedConfigs = yield* Queue.unbounded<ServerConfig>();
       const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeed(Option.none()),
+        loadShell: () => Effect.succeedNone,
         saveShell: () => Effect.void,
-        loadThread: () => Effect.succeed(Option.none()),
+        loadThread: () => Effect.succeedNone,
         saveThread: () => Effect.void,
         removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeed(Option.some(CONFIG)),
+        loadServerConfig: () => Effect.succeedSome(CONFIG),
         saveServerConfig: (_environmentId, config) => Queue.offer(savedConfigs, config),
-        loadVcsRefs: () => Effect.succeed(Option.none()),
+        loadVcsRefs: () => Effect.succeedNone,
         saveVcsRefs: () => Effect.void,
         removeVcsRefs: () => Effect.void,
         clearVcsRefs: () => Effect.void,

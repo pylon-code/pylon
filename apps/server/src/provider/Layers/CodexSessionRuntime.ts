@@ -693,7 +693,7 @@ export function resolveCodexSkillNamesForPrompt<E>(
     E
   >,
 ): Effect.Effect<ReadonlySet<string> | undefined> {
-  if (!prompt || !hasUnicodeSkillMention(prompt)) return Effect.succeed(undefined);
+  if (!prompt || !hasUnicodeSkillMention(prompt)) return Effect.undefined;
   return request.pipe(
     Effect.timeoutOption("2 seconds"),
     Effect.flatMap(

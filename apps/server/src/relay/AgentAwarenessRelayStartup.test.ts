@@ -216,7 +216,7 @@ describe.sequential("AgentAwarenessRelay startup", () => {
                   currentThread?.id === requestedThreadId ? currentThread : null,
                 );
               }),
-            getProjectShellById: () => Effect.succeed(Option.some(project)),
+            getProjectShellById: () => Effect.succeedSome(project),
           } as unknown as ProjectionSnapshotQueryShape),
         );
 

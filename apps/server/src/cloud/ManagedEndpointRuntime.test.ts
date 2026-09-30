@@ -5,7 +5,6 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -38,7 +37,7 @@ const runtimeDependencies = (
     Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
     relayClientLayer,
     Layer.mock(ServerSecretStore.ServerSecretStore)({
-      get: () => Effect.succeed(Option.none()),
+      get: () => Effect.succeedNone,
     }),
   );
 

@@ -22,7 +22,7 @@ export function initialConfigOption<T, E>(
   initialConfig: Effect.Effect<T, E>,
 ): Effect.Effect<Option.Option<T>> {
   return initialConfig.pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catch((error) =>
       Effect.logWarning("Could not load the initial environment configuration.").pipe(
         Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),

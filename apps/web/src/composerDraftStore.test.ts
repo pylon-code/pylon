@@ -203,7 +203,7 @@ function draftByKey(key: string) {
 
 describe("PersistedComposerImageAttachment", () => {
   it("keeps a saved image whose capture metadata this build cannot decode", () => {
-    const decoded = Schema.decodeUnknownSync(PersistedComposerImageAttachment)({
+    const decoded = Schema.decodeSync(PersistedComposerImageAttachment)({
       id: "saved-window",
       name: "window.png",
       mimeType: "image/png",

@@ -204,8 +204,8 @@ export const runSqliteState = Effect.fn("runSqliteState")(function* (
     // Compared canonically so a symlink pointing at a protected home cannot
     // slip past the guard.
     const canonicalBaseDir = yield* fs.realPath(baseDir);
-    const canonicalProtectedHomes = yield* Effect.all(
-      protectedHomes.map((home) => fs.realPath(home).pipe(Effect.orElseSucceed(() => home))),
+    const canonicalProtectedHomes = yield* Effect.forEach(protectedHomes, (home) =>
+      fs.realPath(home).pipe(Effect.orElseSucceed(() => home)),
     );
     if (canonicalProtectedHomes.includes(canonicalBaseDir)) {
       return yield* new SqliteStateSharedHomeMutationError();

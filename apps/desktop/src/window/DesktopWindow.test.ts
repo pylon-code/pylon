@@ -147,7 +147,7 @@ function makeFakeBrowserWindow() {
 }
 
 const desktopClientSettingsLayer = Layer.mock(DesktopClientSettings.DesktopClientSettings)({
-  get: Effect.succeed(Option.none()),
+  get: Effect.succeedNone,
 });
 
 const electronAppLayer = Layer.mock(ElectronApp.ElectronApp)({
@@ -181,7 +181,7 @@ const desktopServerExposureLayer = Layer.succeed(DesktopServerExposure.DesktopSe
 const electronMenuLayer = Layer.succeed(ElectronMenu.ElectronMenu, {
   setApplicationMenu: () => Effect.void,
   popupTemplate: () => Effect.void,
-  showContextMenu: () => Effect.succeed(Option.none()),
+  showContextMenu: () => Effect.succeedNone,
 } satisfies ElectronMenu.ElectronMenu["Service"]);
 
 const electronThemeLayer = Layer.succeed(ElectronTheme.ElectronTheme, {
@@ -288,7 +288,7 @@ function makeTestLayer(input: {
         electronAppLayer,
         Layer.succeed(ElectronMenu.ElectronMenu, {
           setApplicationMenu: () => Effect.void,
-          showContextMenu: () => Effect.succeed(Option.none()),
+          showContextMenu: () => Effect.succeedNone,
           popupTemplate: input.onPopupTemplate ?? (() => Effect.void),
         }),
         Layer.succeed(ElectronShell.ElectronShell, {

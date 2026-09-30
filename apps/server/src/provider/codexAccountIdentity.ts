@@ -42,7 +42,7 @@ export const readCodexAccountId = Effect.fn("readCodexAccountId")(function* (
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const raw = yield* fileSystem.readFileString(path.join(sharedHomePath, "auth.json")).pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catchCause(() => Effect.succeed(Option.none<string>())),
   );
   return Option.isNone(raw) ? undefined : codexAccountIdFromAuthFile(raw.value);

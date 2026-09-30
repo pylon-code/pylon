@@ -124,7 +124,7 @@ describe("ElectronShell", () => {
   it.effect("rejects encoded or malformed Zed SSH authorities", () =>
     Effect.gen(function* () {
       const electronShell = yield* ElectronShell.ElectronShell;
-      const results = yield* Effect.all(
+      const results = yield* Effect.forEach(
         [
           "user%40example.com",
           "user%3Asecret%40example.com",
@@ -133,7 +133,8 @@ describe("ElectronShell", () => {
           "example.com%0A",
           "example.com%20",
           "example.com%",
-        ].map((host) => electronShell.openExternal(`zed://ssh/${host}/path`)),
+        ],
+        (host) => electronShell.openExternal(`zed://ssh/${host}/path`),
       );
       assert.deepEqual(results, Array(7).fill(false));
       assert.equal(openExternalMock.mock.calls.length, 0);

@@ -268,13 +268,13 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
           bootstrapThreadId = existingThreadId.value;
         }
       }).pipe(
-        Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause)
-            ? Effect.failCause(cause)
-            : Effect.logWarning("startup thread auto-bootstrap failed", {
-                bootstrapProjectId: nextProjectId,
-                cause,
-              }),
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterrupts(cause),
+          (cause) =>
+            Effect.logWarning("startup thread auto-bootstrap failed", {
+              bootstrapProjectId: nextProjectId,
+              cause,
+            }),
         ),
       );
     });
@@ -494,7 +494,7 @@ export const reconcileProviderSessions = Effect.gen(function* () {
   const rollbackRepository = yield* Effect.serviceOption(RollbackSagaRepository);
   const settings = yield* ServerSettings.ServerSettingsService;
   const restartSettings = yield* settings.getSettings.pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catch((cause) =>
       Effect.logWarning("could not read restart continuation preference", { cause }).pipe(
         Effect.as(Option.none()),
@@ -592,13 +592,13 @@ export const reconcileProviderSessions = Effect.gen(function* () {
       continue;
     }
     const binding = yield* directory.getBinding(thread.id).pipe(
-      Effect.catchCause((cause) =>
-        Cause.hasInterrupts(cause)
-          ? Effect.failCause(cause)
-          : Effect.logWarning("failed to read orphaned provider session directory binding", {
-              threadId: thread.id,
-              cause,
-            }).pipe(Effect.as(Option.none())),
+      Effect.catchCauseIf(
+        (cause) => !Cause.hasInterrupts(cause),
+        (cause) =>
+          Effect.logWarning("failed to read orphaned provider session directory binding", {
+            threadId: thread.id,
+            cause,
+          }).pipe(Effect.as(Option.none())),
       ),
     );
     const continuationMarkerPresent =
@@ -653,13 +653,13 @@ export const reconcileProviderSessions = Effect.gen(function* () {
             });
           }
         }).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.failCause(cause)
-              : Effect.logWarning(
-                  "failed to reconcile orphaned provider session directory binding",
-                  { threadId: thread.id, cause },
-                ),
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterrupts(cause),
+            (cause) =>
+              Effect.logWarning("failed to reconcile orphaned provider session directory binding", {
+                threadId: thread.id,
+                cause,
+              }),
           ),
         );
 
@@ -680,13 +680,13 @@ export const reconcileProviderSessions = Effect.gen(function* () {
           });
         }).pipe(
           Effect.retry({ times: 1 }),
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.failCause(cause)
-              : Effect.logWarning("failed to settle orphaned provider session projection", {
-                  threadId: thread.id,
-                  cause,
-                }),
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterrupts(cause),
+            (cause) =>
+              Effect.logWarning("failed to settle orphaned provider session projection", {
+                threadId: thread.id,
+                cause,
+              }),
           ),
         );
       });
@@ -831,10 +831,9 @@ export const reconcileProviderSessions = Effect.gen(function* () {
     yield* settleAsError(ORPHANED_PROVIDER_SESSION_ERROR);
   }
 }).pipe(
-  Effect.catchCause((cause) =>
-    Cause.hasInterrupts(cause)
-      ? Effect.failCause(cause)
-      : Effect.logWarning("provider session startup reconciliation failed", { cause }),
+  Effect.catchCauseIf(
+    (cause) => !Cause.hasInterrupts(cause),
+    (cause) => Effect.logWarning("provider session startup reconciliation failed", { cause }),
   ),
 );
 
@@ -905,21 +904,20 @@ export const reconcileWorktreeSetups = Effect.gen(function* () {
         createdAt: interruptedAt,
       })
       .pipe(
-        Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause)
-            ? Effect.failCause(cause)
-            : Effect.logWarning("failed to settle interrupted worktree setup", {
-                threadId,
-                cause,
-              }),
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterrupts(cause),
+          (cause) =>
+            Effect.logWarning("failed to settle interrupted worktree setup", {
+              threadId,
+              cause,
+            }),
         ),
       );
   }
 }).pipe(
-  Effect.catchCause((cause) =>
-    Cause.hasInterrupts(cause)
-      ? Effect.failCause(cause)
-      : Effect.logWarning("worktree setup startup reconciliation failed", { cause }),
+  Effect.catchCauseIf(
+    (cause) => !Cause.hasInterrupts(cause),
+    (cause) => Effect.logWarning("worktree setup startup reconciliation failed", { cause }),
   ),
 );
 

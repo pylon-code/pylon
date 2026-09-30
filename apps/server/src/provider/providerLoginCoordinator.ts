@@ -55,13 +55,13 @@ const resolveInstance = (instanceId: ProviderInstanceId) =>
     );
     const instance = settings.providerInstances[instanceId];
     if (!instance) {
-      return yield* Effect.fail(loginError(`Unknown provider instance "${instanceId}".`));
+      return yield* loginError(`Unknown provider instance "${instanceId}".`);
     }
     if (instance.driver !== CLAUDE_DRIVER) {
       // Codex has its own login protocol and the rest have none; offering a
       // flow that cannot work is worse than saying so.
-      return yield* Effect.fail(
-        loginError(`Signing in from Pylon is not supported for ${instance.driver} yet.`),
+      return yield* loginError(
+        `Signing in from Pylon is not supported for ${instance.driver} yet.`,
       );
     }
     const config = decodeClaudeSettings(instance.config ?? {});

@@ -955,19 +955,17 @@ it.live.skipIf(!configuredGraduationArtifact || !runMultipleInstanceProof)(
           yield* promptAndWait(instances[0]!, "PYLON_NATIVE_A_COLD_OK");
           yield* promptAndWait(instances[1]!, "PYLON_NATIVE_B_COLD_OK");
         } else {
-          yield* Effect.all(
-            instances.map((instance, index) =>
-              promptAndWait(instance, `PYLON_NATIVE_${index}_COLD_OK`),
-            ),
+          yield* Effect.forEach(
+            instances,
+            (instance, index) => promptAndWait(instance, `PYLON_NATIVE_${index}_COLD_OK`),
             { concurrency: "unbounded" },
           );
         }
 
         reportSafePhase("overlapping-turns");
-        yield* Effect.all(
-          instances.map((instance, index) =>
-            promptAndWait(instance, `PYLON_NATIVE_${index}_OVERLAP_OK`),
-          ),
+        yield* Effect.forEach(
+          instances,
+          (instance, index) => promptAndWait(instance, `PYLON_NATIVE_${index}_OVERLAP_OK`),
           { concurrency: "unbounded" },
         );
 
@@ -1066,10 +1064,9 @@ it.live.skipIf(!configuredGraduationArtifact || !runMultipleInstanceProof)(
         }
 
         reportSafePhase("survivors-after-removal");
-        yield* Effect.all(
-          survivors.map((instance, index) =>
-            promptAndWait(instance, `PYLON_NATIVE_SURVIVOR_${index}_OK`),
-          ),
+        yield* Effect.forEach(
+          survivors,
+          (instance, index) => promptAndWait(instance, `PYLON_NATIVE_SURVIVOR_${index}_OK`),
           { concurrency: "unbounded" },
         );
         expect(removed.map((instance) => instance.openCount.value)).toEqual(removedOpenCounts);

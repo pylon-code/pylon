@@ -238,7 +238,7 @@ const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory
   recordImportedTranscript: () => Effect.die("unused"),
   getProvider: () =>
     Effect.die(new Error("ProviderSessionDirectory.getProvider is not used in test")),
-  getBinding: () => Effect.succeed(Option.none()),
+  getBinding: () => Effect.succeedNone,
   removeExact: () => Effect.succeed(false),
   listThreadIds: () => Effect.succeed([]),
   listBindings: () => Effect.succeed([]),
@@ -390,11 +390,9 @@ validationLayer("CodexAdapterLive validation", (it) => {
 const relayValidationLayer = it.layer(
   Layer.effect(
     CodexAdapter,
-    Effect.gen(function* () {
-      return yield* makeCodexAdapter(decodeCodexSettings({}), {
-        environment: { ...process.env, PYLON_RELAY_CLI: "/tmp/pylon-relay-cli.mjs" },
-        makeRuntime: validationRuntimeFactory.factory,
-      });
+    makeCodexAdapter(decodeCodexSettings({}), {
+      environment: { ...process.env, PYLON_RELAY_CLI: "/tmp/pylon-relay-cli.mjs" },
+      makeRuntime: validationRuntimeFactory.factory,
     }),
   ).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),

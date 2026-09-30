@@ -199,7 +199,7 @@ export const readSharedUsageEntry = Effect.fn("readSharedUsageEntry")(function* 
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const raw = yield* fileSystem.readFileString(entryPath(path, dir, key)).pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catchCause(() => Effect.succeed(Option.none<string>())),
   );
   if (Option.isNone(raw)) return undefined;
@@ -231,7 +231,7 @@ export const writeSharedUsageEntry = Effect.fn("writeSharedUsageEntry")(function
       return;
     }
     yield* fileSystem.rename(temp, target);
-  }).pipe(Effect.catchCause(() => Effect.void));
+  }).pipe(Effect.ignoreCause);
 });
 
 /**

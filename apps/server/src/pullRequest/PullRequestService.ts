@@ -1749,15 +1749,13 @@ export const make = Effect.gen(function* () {
       .getViewer({ cwd: project.project.workspaceRoot, host: project.host })
       .pipe(
         Effect.mapError(toPullRequestError(operation)),
-        Effect.flatMap((viewer) =>
-          viewer === null || viewer.trim().length === 0
-            ? Effect.fail(
-                new PullRequestOperationError({
-                  operation,
-                  detail: "The signed-in account could not be verified for viewed files.",
-                }),
-              )
-            : Effect.succeed(viewer),
+        Effect.filterOrFail(
+          (viewer) => viewer !== null && viewer.trim().length > 0,
+          () =>
+            new PullRequestOperationError({
+              operation,
+              detail: "The signed-in account could not be verified for viewed files.",
+            }),
         ),
       );
   };
@@ -2628,7 +2626,7 @@ export const make = Effect.gen(function* () {
       `project:${input.projectId}`,
       refScope(input),
     ]);
-    const decoded = yield* Schema.decodeUnknownEffect(codec)(payload).pipe(Effect.option);
+    const decoded = yield* Schema.decodeEffect(codec)(payload).pipe(Effect.option);
     return Option.isSome(decoded) ? decoded.value : yield* lookup;
   });
   const summaryCodec = Schema.fromJsonString(PullRequestSummary);

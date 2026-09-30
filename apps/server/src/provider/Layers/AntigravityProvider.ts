@@ -211,7 +211,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
           Effect.map(Option.getOrUndefined),
           Effect.orElseSucceed(() => undefined),
         )
-      : Effect.succeed(undefined);
+      : Effect.undefined;
     const freshUsageLimits = yield* probeUsageLimitsEffect;
     const updatedAt = DateTime.formatIso(yield* DateTime.now);
     const next = yield* SubscriptionRef.updateAndGet(metadata, (state) => {
@@ -305,7 +305,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
           Effect.map(Option.getOrUndefined),
           Effect.orElseSucceed(() => undefined),
         )
-      : Effect.succeed(undefined);
+      : Effect.undefined;
     const freshUsageLimits = yield* probeUsageLimitsEffect;
     const updatedAt = DateTime.formatIso(yield* DateTime.now);
     yield* SubscriptionRef.update(metadata, (state) => {

@@ -153,7 +153,7 @@ const readKeychainAccessToken = Effect.fn("readKeychainAccessToken")(function* (
   );
   const result = yield* spawnAndCollect("/usr/bin/security", command).pipe(
     Effect.timeoutOption(KEYCHAIN_READ_TIMEOUT_MS),
-    Effect.catchCause(() => Effect.succeed(Option.none())),
+    Effect.catchCause(() => Effect.succeedNone),
   );
   if (Option.isNone(result) || result.value.code !== 0) return undefined;
   return accessTokenFromKeychainValue(result.value.stdout);
@@ -165,7 +165,7 @@ const readFileAccessToken = Effect.fn("readFileAccessToken")(function* (
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const contents = yield* fileSystem.readFileString(path.join(configDir, ".credentials.json")).pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catchCause(() => Effect.succeed(Option.none<string>())),
   );
   return Option.isNone(contents) ? undefined : accessTokenFromCredentialsJson(contents.value);
@@ -441,7 +441,7 @@ export const fetchOAuthUsageWithToken = Effect.fn("fetchOAuthUsageWithToken")(fu
     }).pipe(
       Effect.timeoutOption(OAUTH_USAGE_TIMEOUT_MS),
       Effect.catchCause((cause) =>
-        Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(Option.none()),
+        Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeedNone,
       ),
     );
     if (Option.isNone(attempt) || attempt.value.kind === "failed") return yield* failedRead;

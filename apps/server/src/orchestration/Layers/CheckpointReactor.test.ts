@@ -354,7 +354,7 @@ describe("CheckpointReactor", () => {
       options?.conversationRollback ?? "relative",
     );
     const historicalRollbackEvents = Effect.runSync(PubSub.unbounded<OrchestrationEvent>());
-    const historicalRollbackReady = Effect.runSync(Deferred.make<void>());
+    const historicalRollbackReady = Deferred.makeUnsafe<void>();
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(ThreadBackgroundLiveness.layer),

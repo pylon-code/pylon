@@ -1089,11 +1089,10 @@ export const makePrimeAgentDaemonManager = Effect.fn("makePrimeAgentDaemonManage
       );
       if (isRunning) {
         const healthClient = yield* connectClient({ bridge, socket, timeoutMs }).pipe(
-          Effect.map(Option.some),
-          Effect.catch((error) =>
-            error.reason === "readiness-failed"
-              ? Effect.succeed(Option.none())
-              : Effect.fail(error),
+          Effect.asSome,
+          Effect.catchIf(
+            (error) => error.reason === "readiness-failed",
+            () => Effect.succeedNone,
           ),
         );
         if (Option.isSome(healthClient)) {

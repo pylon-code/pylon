@@ -5125,6 +5125,7 @@ export function makePrimeAgentDaemonAdapter(
               recoveryStart?.kind === "adopt" && recoveryStart.authority.turnId !== null
                 ? {
                     id: TurnId.make(recoveryStart.authority.turnId),
+                    // @effect-diagnostics-next-line abortControllerInEffect:off - owned by the active turn and aborted by Stop/cancel paths outside this fiber
                     controller: new AbortController(),
                     completed: yield* Deferred.make<void>(),
                     correlationId: recoveryStart.authority.correlationId,
@@ -6137,6 +6138,7 @@ export function makePrimeAgentDaemonAdapter(
                 : undefined;
               const turn: PrimeAgentDaemonActiveTurn = {
                 id: turnId,
+                // @effect-diagnostics-next-line abortControllerInEffect:off - owned by the active turn and aborted by Stop/cancel paths outside this fiber
                 controller: new AbortController(),
                 completed: yield* Deferred.make<void>(),
                 ...(correlationId === undefined
@@ -7886,7 +7888,7 @@ export function makePrimeAgentDaemonAdapter(
                 }),
               ),
             ),
-            Effect.catchCause(() => Effect.void),
+            Effect.ignoreCause,
           );
           yield* Effect.forkIn(runCompaction, reserved.scope);
           return reserved.compaction;

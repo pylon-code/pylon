@@ -210,7 +210,7 @@ const capabilitiesLayer = Layer.effectContext(
       }),
     });
     const identity = RelayDeviceIdentity.of({
-      deviceId: Effect.succeed(Option.none()),
+      deviceId: Effect.succeedNone,
     });
     const primaryAuth = PrimaryEnvironmentAuth.of({
       bearerToken: Effect.tryPromise({

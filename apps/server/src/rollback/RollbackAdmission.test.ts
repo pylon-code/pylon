@@ -159,25 +159,21 @@ const makeHarness = (options: HarnessOptions = {}) => {
 
   const repository = {
     getCheckpointAnchor: (input: { readonly checkpointTurnCount: number }) =>
-      Effect.succeed(
-        Option.some({
-          threadId,
-          checkpointTurnCount: input.checkpointTurnCount,
-          turnId:
-            input.checkpointTurnCount === 0
-              ? null
-              : TurnId.make(`turn-${input.checkpointTurnCount}`),
-          sourceRevision: input.checkpointTurnCount,
-          providerInstanceId,
-          sessionIncarnationId,
-          checkpointRef: input.checkpointTurnCount === 0 ? baselineRef : turnOneRef,
-          checkpointOid: input.checkpointTurnCount === 0 ? "0".repeat(40) : "1".repeat(40),
-          anchor: { leafId: `PRIVATE_TARGET_${input.checkpointTurnCount}` },
-          anchorDigest: `target-${input.checkpointTurnCount}`,
-          capturedAt: now,
-        }),
-      ),
-    getActiveByThread: () => Effect.succeed(Option.none()),
+      Effect.succeedSome({
+        threadId,
+        checkpointTurnCount: input.checkpointTurnCount,
+        turnId:
+          input.checkpointTurnCount === 0 ? null : TurnId.make(`turn-${input.checkpointTurnCount}`),
+        sourceRevision: input.checkpointTurnCount,
+        providerInstanceId,
+        sessionIncarnationId,
+        checkpointRef: input.checkpointTurnCount === 0 ? baselineRef : turnOneRef,
+        checkpointOid: input.checkpointTurnCount === 0 ? "0".repeat(40) : "1".repeat(40),
+        anchor: { leafId: `PRIVATE_TARGET_${input.checkpointTurnCount}` },
+        anchorDigest: `target-${input.checkpointTurnCount}`,
+        capturedAt: now,
+      }),
+    getActiveByThread: () => Effect.succeedNone,
     findLeaseByWorkspace: () =>
       Effect.succeed(
         options.activeLease === true

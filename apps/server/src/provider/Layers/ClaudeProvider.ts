@@ -477,7 +477,7 @@ export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(functi
   const [authResult, usageRead] = yield* Effect.all(
     [
       runClaudeCommand(claudeSettings, ["auth", "status", "--json"], environment, runOptions).pipe(
-        Effect.map(Option.some),
+        Effect.asSome,
         Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
         Effect.map(Option.flatten),
         Effect.catchCause(() => Effect.succeed(Option.none<CommandResult>())),

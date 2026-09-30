@@ -315,13 +315,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         Effect.gen(function* () {
           const selectedIdentity = authenticatedUsageIdentity((yield* snapshot.getSnapshot).auth);
           if (!selectedIdentity) {
-            return yield* Effect.fail(
-              new ProviderDriverError({
-                driver: DRIVER_KIND,
-                instanceId,
-                detail: "Codex account identity is not verified.",
-              }),
-            );
+            return yield* new ProviderDriverError({
+              driver: DRIVER_KIND,
+              instanceId,
+              detail: "Codex account identity is not verified.",
+            });
           }
           // A pending or completed attempt belongs to one account, even if the
           // same CLI home signs in as another account before a retry.
@@ -335,13 +333,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
                   (yield* snapshot.getSnapshot).auth,
                 );
                 if (identityBefore !== selectedIdentity) {
-                  return yield* Effect.fail(
-                    new ProviderDriverError({
-                      driver: DRIVER_KIND,
-                      instanceId,
-                      detail: "Codex account changed before the reset credit could be used.",
-                    }),
-                  );
+                  return yield* new ProviderDriverError({
+                    driver: DRIVER_KIND,
+                    instanceId,
+                    detail: "Codex account changed before the reset credit could be used.",
+                  });
                 }
                 const result = yield* Effect.gen(function* () {
                   const { client, sharedHomePath, outcome } = yield* Effect.gen(function* () {
@@ -358,13 +354,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
                         .auth,
                     );
                     if (!identityBefore || liveIdentity !== identityBefore) {
-                      return yield* Effect.fail(
-                        new ProviderDriverError({
-                          driver: DRIVER_KIND,
-                          instanceId,
-                          detail: "Codex account changed before the reset credit could be used.",
-                        }),
-                      );
+                      return yield* new ProviderDriverError({
+                        driver: DRIVER_KIND,
+                        instanceId,
+                        detail: "Codex account changed before the reset credit could be used.",
+                      });
                     }
                     const { outcome } = yield* client.request(
                       "account/rateLimitResetCredit/consume",

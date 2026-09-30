@@ -304,7 +304,7 @@ export const issueActiveMcpCredential = (
 ): Effect.Effect<McpIssuedCredential | undefined> =>
   activeMcpSessionRegistry
     ? activeMcpSessionRegistry.issueIfCurrent(request, isCurrent)
-    : Effect.sync((): McpIssuedCredential | undefined => undefined);
+    : Effect.undefined;
 
 export const revokeActiveMcpProviderSession = (providerSessionId: string): Effect.Effect<void> =>
   activeMcpSessionRegistry

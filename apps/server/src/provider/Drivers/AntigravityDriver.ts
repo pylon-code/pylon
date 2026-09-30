@@ -393,7 +393,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         readNativeContext: (sessionId) => {
           // Native UUIDs are filenames; reject paths and unrelated database names.
           if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sessionId))
-            return Effect.succeed(undefined);
+            return Effect.undefined;
           return Effect.tryPromise(() =>
             readAntigravityLatestContext(
               path.join(profileDirectory, "antigravity-acp", "conversations", `${sessionId}.db`),
