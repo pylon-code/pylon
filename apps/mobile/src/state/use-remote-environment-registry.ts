@@ -171,19 +171,28 @@ export function useRemoteConnections() {
       if (!environment) {
         return;
       }
+      const remove = {
+        text: "Remove",
+        style: "destructive",
+        onPress: () => {
+          void controller.removeEnvironment(environmentId);
+        },
+      } as const;
+      // Removing a Pylon Connect environment here leaves its account
+      // registration and host space. Mobile has no deregister page, so point
+      // to the desktop and web account menu, where it can be deregistered.
+      if (environment.isRelayManaged) {
+        Alert.alert(
+          "Remove from this device?",
+          `Forget ${environment.environmentLabel} and its cached threads on this device.\n\nIt stays on your Pylon Connect account and keeps its host space. Deregister it from the Pylon Connect page in the account menu on desktop or web to free it.`,
+          [{ text: "Cancel", style: "cancel" }, remove],
+        );
+        return;
+      }
       Alert.alert(
         "Remove from this device?",
         `Forget ${environment.environmentLabel} and its cached threads on this device. Switch it off instead to keep it saved.`,
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Remove",
-            style: "destructive",
-            onPress: () => {
-              void controller.removeEnvironment(environmentId);
-            },
-          },
-        ],
+        [{ text: "Cancel", style: "cancel" }, remove],
       );
     },
     [connectedEnvironments, controller],
