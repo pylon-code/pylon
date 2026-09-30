@@ -1,11 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as DesktopAssets from "./DesktopAssets.ts";
@@ -40,10 +43,10 @@ const makeEnvironment = (overrides: Record<string, unknown> = {}) =>
     ...overrides,
   } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
 
-const mockProcess = (exitCode: number) =>
+const mockProcess = (exitCode: number, stalled = false) =>
   ChildProcessSpawner.makeHandle({
     pid: ChildProcessSpawner.ProcessId(1),
-    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
+    exitCode: stalled ? Effect.never : Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
     isRunning: Effect.succeed(false),
     kill: () => Effect.void,
     unref: Effect.succeed(Effect.void),
@@ -59,6 +62,9 @@ const makeHandlerLayer = (
   recorded: RecordedRegistration,
   input: {
     readonly environment?: Record<string, unknown>;
+    readonly updateDesktopDatabaseExitCode?: number;
+    readonly updateDesktopDatabaseStalled?: boolean;
+    readonly updateDesktopDatabaseStarted?: Deferred.Deferred<void>;
     readonly xdgMimeExitCode?: number;
     readonly writeError?: PlatformError.PlatformError;
     readonly existingEntry?: string;
@@ -133,11 +139,28 @@ const makeHandlerLayer = (
               readonly command: string;
               readonly args: ReadonlyArray<string>;
             };
+            const refreshesCache = childProcess.command === "update-desktop-database";
+            if (refreshesCache) {
+              assert.isTrue(
+                recorded.files.length > 0 || input.existingEntry !== undefined,
+                "the desktop entry must exist before refreshing the MIME cache",
+              );
+            }
             recorded.commands.push({
               command: childProcess.command,
               args: childProcess.args,
             });
-            return Effect.succeed(mockProcess(input.xdgMimeExitCode ?? 0));
+            const handle = mockProcess(
+              refreshesCache
+                ? (input.updateDesktopDatabaseExitCode ?? 0)
+                : (input.xdgMimeExitCode ?? 0),
+              refreshesCache && input.updateDesktopDatabaseStalled === true,
+            );
+            return refreshesCache && input.updateDesktopDatabaseStarted
+              ? Deferred.succeed(input.updateDesktopDatabaseStarted, undefined).pipe(
+                  Effect.as(handle),
+                )
+              : Effect.succeed(handle);
           }),
         ),
       ),
@@ -160,6 +183,15 @@ const emptyRecording = (): RecordedRegistration => ({
   binaryFiles: [],
   commands: [],
 });
+
+const refreshCacheCommand = {
+  command: "update-desktop-database",
+  args: ["/home/alice/.local/share/applications"],
+};
+const claimSchemeCommand = {
+  command: "xdg-mime",
+  args: ["default", "com.pylon.code.desktop", "x-scheme-handler/pylon-code"],
+};
 
 const legacyHandlerEntry = DesktopLinuxUrlHandler.renderUrlHandlerDesktopEntry({
   displayName: "Pylon (Nightly)",
@@ -216,31 +248,29 @@ describe("DesktopLinuxUrlHandler", () => {
     );
   });
 
-  it.effect("writes the handler entry and claims the scheme default via xdg-mime", () => {
-    const recorded = emptyRecording();
+  it.effect(
+    "writes the handler entry, refreshes the MIME cache, and claims the scheme default",
+    () => {
+      const recorded = emptyRecording();
 
-    return Effect.gen(function* () {
-      yield* runRegister(recorded);
+      return Effect.gen(function* () {
+        yield* runRegister(recorded);
 
-      assert.deepEqual(recorded.directories, ["/home/alice/.local/share/applications"]);
-      assert.equal(recorded.files.length, 1);
-      assert.equal(
-        recorded.files[0]?.path,
-        "/home/alice/.local/share/applications/com.pylon.code.desktop",
-      );
-      assert.include(
-        recorded.files[0]?.content,
-        'Exec="/home/alice/Applications/Pylon.AppImage" %U',
-      );
-      assert.include(recorded.files[0]?.content, "MimeType=x-scheme-handler/pylon-code;");
-      assert.deepEqual(recorded.commands, [
-        {
-          command: "xdg-mime",
-          args: ["default", "com.pylon.code.desktop", "x-scheme-handler/pylon-code"],
-        },
-      ]);
-    });
-  });
+        assert.deepEqual(recorded.directories, ["/home/alice/.local/share/applications"]);
+        assert.equal(recorded.files.length, 1);
+        assert.equal(
+          recorded.files[0]?.path,
+          "/home/alice/.local/share/applications/com.pylon.code.desktop",
+        );
+        assert.include(
+          recorded.files[0]?.content,
+          'Exec="/home/alice/Applications/Pylon.AppImage" %U',
+        );
+        assert.include(recorded.files[0]?.content, "MimeType=x-scheme-handler/pylon-code;");
+        assert.deepEqual(recorded.commands, [refreshCacheCommand, claimSchemeCommand]);
+      });
+    },
+  );
 
   it.effect("falls back to the process executable outside an AppImage", () => {
     const recorded = emptyRecording();
@@ -270,7 +300,7 @@ describe("DesktopLinuxUrlHandler", () => {
 
       assert.deepEqual(recorded.files, []);
       assert.deepEqual(recorded.directories, []);
-      assert.equal(recorded.commands.length, 1);
+      assert.deepEqual(recorded.commands, [refreshCacheCommand, claimSchemeCommand]);
     });
   });
 
@@ -318,11 +348,11 @@ describe("DesktopLinuxUrlHandler", () => {
     return Effect.gen(function* () {
       yield* runRegister(recorded, { legacyEntry: legacyHandlerEntry });
 
+      // The second refresh drops the removed entry from the cache.
       assert.deepEqual(recorded.commands, [
-        {
-          command: "xdg-mime",
-          args: ["default", "com.pylon.code.desktop", "x-scheme-handler/pylon-code"],
-        },
+        refreshCacheCommand,
+        claimSchemeCommand,
+        refreshCacheCommand,
       ]);
       assert.deepEqual(recorded.removed, [
         "/home/alice/.local/share/applications/pylon-code-url-handler.desktop",
@@ -374,10 +404,12 @@ describe("DesktopLinuxUrlHandler", () => {
   });
 
   it.effect("never fails startup when registration cannot complete", () => {
+    const desktopDatabaseFailed = emptyRecording();
     const xdgMimeFailed = emptyRecording();
     const writeFailed = emptyRecording();
 
     return Effect.gen(function* () {
+      yield* runRegister(desktopDatabaseFailed, { updateDesktopDatabaseExitCode: 1 });
       yield* runRegister(xdgMimeFailed, { xdgMimeExitCode: 1 });
       yield* runRegister(writeFailed, {
         writeError: PlatformError.systemError({
@@ -389,8 +421,26 @@ describe("DesktopLinuxUrlHandler", () => {
         }),
       });
 
+      assert.deepEqual(desktopDatabaseFailed.commands, [refreshCacheCommand, claimSchemeCommand]);
       assert.equal(xdgMimeFailed.files.length, 1);
       assert.deepEqual(writeFailed.commands, []);
     });
   });
+
+  it.effect("continues to xdg-mime when the desktop MIME cache refresh stalls", () =>
+    Effect.gen(function* () {
+      const recorded = emptyRecording();
+      const started = yield* Deferred.make<void>();
+      const registration = yield* runRegister(recorded, {
+        updateDesktopDatabaseStalled: true,
+        updateDesktopDatabaseStarted: started,
+      }).pipe(Effect.forkChild);
+
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("5 seconds");
+      yield* Fiber.join(registration);
+
+      assert.deepEqual(recorded.commands, [refreshCacheCommand, claimSchemeCommand]);
+    }),
+  );
 });
