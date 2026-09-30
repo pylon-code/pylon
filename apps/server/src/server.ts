@@ -851,7 +851,9 @@ const makeServerLayer = Layer.unwrap(
                     ),
                   }),
                   Effect.tap((recovered) =>
-                    recovered ? Effect.logInfo("Pylon Connect managed tunnel recovered") : Effect.void,
+                    recovered
+                      ? Effect.logInfo("Pylon Connect managed tunnel recovered")
+                      : Effect.void,
                   ),
                   Effect.catchCause((cause) =>
                     Cause.hasInterrupts(cause)
@@ -875,9 +877,9 @@ const makeServerLayer = Layer.unwrap(
             const wantsCliLink = hasCloudPublicConfig
               ? yield* CloudCliState.readCliDesiredCloudLink.pipe(
                   Effect.catch((cause) =>
-                    Effect.logWarning("Failed to read the desired Pylon Connect link", { cause }).pipe(
-                      Effect.as(false),
-                    ),
+                    Effect.logWarning("Failed to read the desired Pylon Connect link", {
+                      cause,
+                    }).pipe(Effect.as(false)),
                   ),
                 )
               : false;
