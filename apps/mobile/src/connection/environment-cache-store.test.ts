@@ -1,12 +1,19 @@
-import { EnvironmentId, type VcsListRefsResult } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  OrchestrationShellSnapshot,
+  type VcsListRefsResult,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { type ClientCacheKind, MobileDatabase } from "../persistence/mobile-database";
 import { make } from "./environment-cache-store";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
+const decodeShell = Schema.decodeUnknownEffect(OrchestrationShellSnapshot);
+const encodeShell = Schema.encodeEffect(OrchestrationShellSnapshot);
 const REFS: VcsListRefsResult = {
   refs: [
     {
@@ -69,6 +76,79 @@ function makeDatabase() {
 }
 
 describe("mobile SQLite environment cache store", () => {
+  it.effect("keeps shell caches compatible with the schema encoder and cold loads", () =>
+    Effect.gen(function* () {
+      const memory = makeDatabase();
+      const store = yield* make().pipe(Effect.provideService(MobileDatabase, memory.database));
+      const snapshot = yield* decodeShell({
+        snapshotSequence: 42,
+        updatedAt: "2026-09-29T00:00:00.000Z",
+        projects: [
+          {
+            id: "project-1",
+            title: "Pylon",
+            workspaceRoot: "/repo",
+            defaultModelSelection: null,
+            defaultThreadEnvMode: "worktree",
+            autoPull: true,
+            projectIcon: { kind: "monogram", text: "PY", color: "blue" },
+            scripts: [],
+            createdAt: "2026-09-29T00:00:00.000Z",
+            updatedAt: "2026-09-29T00:00:00.000Z",
+          },
+        ],
+        threads: [
+          {
+            id: "thread-1",
+            projectId: "project-1",
+            title: "Cached task",
+            modelSelection: { instanceId: "prime", model: "gpt-6.1" },
+            runtimeMode: "full-access",
+            branch: "task/cache",
+            worktreePath: "/repo-worktree",
+            latestTurn: null,
+            sourceEpoch: 3,
+            titleState: { source: "manual", version: "rename-1" },
+            continuedFromThreadId: "thread-0",
+            backgroundLiveness: "monitoring",
+            nativeBackgroundWork: true,
+            planProgress: { step: "Verify cache", completedSteps: 1, totalSteps: 2 },
+            createdAt: "2026-09-29T00:00:00.000Z",
+            updatedAt: "2026-09-29T00:00:00.000Z",
+            session: null,
+            latestUserMessageAt: null,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+            hasActionableProposedPlan: false,
+          },
+        ],
+      });
+
+      yield* store.saveShell(ENVIRONMENT_ID, snapshot);
+
+      const payload = memory.values.get(cacheId(ENVIRONMENT_ID, "shell", "snapshot"));
+      expect(payload).toBeDefined();
+      expect(JSON.parse(payload!)).toEqual({
+        schemaVersion: 1,
+        environmentId: ENVIRONMENT_ID,
+        snapshot: yield* encodeShell(snapshot),
+      });
+      expect(yield* store.loadShell(ENVIRONMENT_ID)).toEqual(Option.some(snapshot));
+    }),
+  );
+
+  it.effect("discards an invalid shell cache on cold load", () =>
+    Effect.gen(function* () {
+      const memory = makeDatabase();
+      const store = yield* make().pipe(Effect.provideService(MobileDatabase, memory.database));
+      const id = cacheId(ENVIRONMENT_ID, "shell", "snapshot");
+      memory.values.set(id, JSON.stringify({ schemaVersion: 1, environmentId: ENVIRONMENT_ID }));
+
+      expect(yield* store.loadShell(ENVIRONMENT_ID)).toEqual(Option.none());
+      expect(memory.removed).toEqual([id]);
+    }),
+  );
+
   it.effect("round-trips schema-validated VCS refs", () =>
     Effect.gen(function* () {
       const memory = makeDatabase();
