@@ -26,6 +26,7 @@ import {
   staticAndDevRouteLayer,
   browserApiCorsLayer,
   httpCompressionLayer,
+  untracedRequestsLayer,
 } from "./http.ts";
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { fixPath } from "./os-jank.ts";
@@ -649,6 +650,8 @@ export const makeRoutesLayer = Layer.mergeAll(
     Layer.provide(McpSessionRegistry.layer),
     Layer.provide(CuaService.layer.pipe(Layer.provide(ServerSettingsLayerLive))),
   ),
+  // Last, so no route layer can replace the server's one TracerDisabledWhen.
+  untracedRequestsLayer,
 ).pipe(
   Layer.provide(ComputerSetupService.layer.pipe(Layer.provide(ServerSettingsLayerLive))),
   Layer.provide(CuaDriverBackend.layer),

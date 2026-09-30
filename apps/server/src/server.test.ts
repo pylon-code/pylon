@@ -547,6 +547,7 @@ const buildAppUnderTest = (options?: {
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
     browserTraceCollector?: Partial<BrowserTraceCollector.BrowserTraceCollector["Service"]>;
+    httpClient?: HttpClient.HttpClient;
     serverLifecycleEvents?: Partial<ServerLifecycleEvents.ServerLifecycleEvents["Service"]>;
     serverRuntimeStartup?: Partial<ServerRuntimeStartup.ServerRuntimeStartup["Service"]>;
     serverEnvironment?: Partial<ServerEnvironment.ServerEnvironment["Service"]>;
@@ -1274,7 +1275,11 @@ const buildAppUnderTest = (options?: {
       Layer.provideMerge(makeAuthTestLayer()),
       Layer.provideMerge(ServerSecretStore.layer),
       Layer.provide(workspaceAndProjectServicesLayer),
-      Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(
+        options?.layers?.httpClient
+          ? Layer.succeed(HttpClient.HttpClient, options.layers.httpClient)
+          : FetchHttpClient.layer,
+      ),
       Layer.provide(GitHubCli.layer.pipe(Layer.provideMerge(VcsProcess.layer))),
       Layer.provide(layerConfig),
     );
@@ -5854,6 +5859,56 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.equal(record.resourceAttributes["service.name"], "t3-web");
         assert.equal(record.status?.code, String(span.status.code));
       }).pipe(Effect.provide(loopbackHttpServerTest)),
+  );
+
+  it.effect("does not trace browser OTLP trace exports on the server", () =>
+    Effect.gen(function* () {
+      const spanNames: Array<string> = [];
+      const forwardedUrls: Array<string> = [];
+      yield* buildAppUnderTest({
+        config: { otlpTracesUrl: "http://collector.test/v1/traces" },
+        layers: {
+          httpClient: HttpClient.make((request) =>
+            Effect.sync(() => {
+              forwardedUrls.push(request.url);
+              return HttpClientResponse.fromWeb(request, new Response(null, { status: 204 }));
+            }),
+          ),
+        },
+      }).pipe(
+        Effect.provideService(
+          Tracer.Tracer,
+          Tracer.make({
+            span: (options) => {
+              spanNames.push(options.name);
+              return new Tracer.NativeSpan(options);
+            },
+          }),
+        ),
+      );
+      const cookie = yield* getAuthenticatedSessionCookieHeader();
+      spanNames.length = 0;
+
+      // The query string must not bring back the HTTP server span.
+      for (const url of ["/api/observability/v1/traces", "/api/observability/v1/traces?x=1"]) {
+        const response = yield* HttpClient.post(url, {
+          headers: { cookie, "content-type": "application/json" },
+          body: yield* HttpBody.json({ resourceSpans: [] }),
+        });
+        assert.equal(response.status, 204);
+      }
+
+      assert.deepEqual(forwardedUrls, [
+        "http://collector.test/v1/traces",
+        "http://collector.test/v1/traces",
+      ]);
+      assert.deepEqual(spanNames, []);
+
+      // Other routes keep their HTTP server span.
+      const session = yield* HttpClient.get("/api/auth/session", { headers: { cookie } });
+      assert.equal(session.status, 200);
+      assert.include(spanNames, "http.server GET");
+    }).pipe(Effect.provide(loopbackHttpServerTest)),
   );
 
   it.effect("routes websocket rpc server.upsertKeybinding", () =>
