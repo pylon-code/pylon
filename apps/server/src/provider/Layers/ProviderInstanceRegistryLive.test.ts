@@ -198,7 +198,7 @@ const makeTildeProviderFixtures = Effect.fn(
   yield* fileSystem.writeFileString(
     codexScriptPath,
     // @effect-diagnostics-next-line preferSchemaOverJson:off - fixed script document read by the external Codex mock peer.
-    JSON.stringify({ rootThreadId: "probe-thread", notifications: [] }),
+    JSON.stringify({ rootThreadId: "probe-thread", codexVersion: "0.159.0", notifications: [] }),
   );
   yield* fileSystem.chmod(codexPath, 0o755);
 
@@ -411,7 +411,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         [codex!.snapshot.refresh, claude!.snapshot.refresh],
         { concurrency: "unbounded" },
       );
-      expect(codexSnapshot).toMatchObject({ status: "ready", installed: true, version: "0.0.0" });
+      expect(codexSnapshot).toMatchObject({ status: "ready", installed: true, version: "0.159.0" });
       expect(claudeSnapshot).toMatchObject({
         status: "ready",
         installed: true,
