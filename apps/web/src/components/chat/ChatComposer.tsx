@@ -1093,6 +1093,7 @@ import {
   supportsUnicodeSkillAliases,
 } from "@t3tools/client-runtime/providerSkills";
 import { searchProviderSkills } from "../../providerSkillSearch";
+import { useDelayedStatus } from "../../hooks/useDelayedStatus";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { serverEnvironment } from "../../state/server";
@@ -1774,8 +1775,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   } = props;
   const [isQuickQuestionOpen, setIsQuickQuestionOpen] = useState(false);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const activeTasksProgress = props.threadSyncPhase === null ? props.activeTasksProgress : null;
-  const activeTaskSteps = props.threadSyncPhase === null ? props.activeTaskSteps : null;
+  const composerDraftTargetKey = composerTargetKey(composerDraftTarget);
+  // Opening a running thread resyncs for a few frames. Show the sync row, and
+  // hide the tasks row for it, only when the sync lasts. Logic that depends on
+  // the real phase keeps reading `props.threadSyncPhase`.
+  const shownSyncPhase = useDelayedStatus(composerDraftTargetKey, props.threadSyncPhase);
+  const activeTasksProgress = shownSyncPhase === null ? props.activeTasksProgress : null;
+  const activeTaskSteps = shownSyncPhase === null ? props.activeTaskSteps : null;
   // ------------------------------------------------------------------
   // Store subscriptions (prompt / images / terminal contexts)
   // ------------------------------------------------------------------
@@ -1786,7 +1792,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Live target key, for async flows that must notice a thread switch that
   // happened while they awaited.
   const composerDraftTargetKeyRef = useRef("");
-  composerDraftTargetKeyRef.current = composerTargetKey(composerDraftTarget);
+  composerDraftTargetKeyRef.current = composerDraftTargetKey;
   // A pending question keeps its attachments in its own draft, so they never
   // mix with the thread's normal prompt draft.
   const questionAttachmentTarget =
@@ -5628,6 +5634,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     stashQueue.length > 0 &&
     !isComposerApprovalState &&
     (props.externalDrawerAttached ||
+      shownSyncPhase !== null ||
       showComposerTopDrawer ||
       isTasksDrawerOpen ||
       isComposerCollapsedMobile);
@@ -6181,8 +6188,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     visibleTaskSteps !== null &&
     visibleTasksProgress.totalSteps > 0;
   const activityStackContent = hasBannerItems ? (
-    props.threadSyncPhase ? (
-      <ComposerActivityRow phase={props.threadSyncPhase} />
+    shownSyncPhase ? (
+      <ComposerActivityRow phase={shownSyncPhase} />
     ) : !hasBlockingComposerTopDrawer && visibleTasksProgress && visibleTaskSteps ? (
       <ComposerTasksContent
         delegatedWork={activeDelegatedWork}
@@ -7351,18 +7358,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               className="relative z-0"
               items={bannerStackItems}
             />
-            {!activityStackItem && (props.threadSyncPhase || inlineTasksBadge) ? (
+            {!activityStackItem && (shownSyncPhase || inlineTasksBadge) ? (
               <ComposerBanner.Attachment>
                 <ComposerBanner.Root
                   width={
-                    props.threadSyncPhase && !showComposerTopDrawer && !isComposerCollapsedMobile
+                    shownSyncPhase && !showComposerTopDrawer && !isComposerCollapsedMobile
                       ? "content"
                       : "fill"
                   }
                   data-chat-composer-activity-strip="true"
                 >
-                  {props.threadSyncPhase ? (
-                    <ComposerActivityRow phase={props.threadSyncPhase} />
+                  {shownSyncPhase ? (
+                    <ComposerActivityRow phase={shownSyncPhase} />
                   ) : (
                     inlineTasksBadge
                   )}

@@ -10537,8 +10537,8 @@ export default function ChatView(props: ChatViewProps) {
     addFolders: (folders, unresolvedCount) =>
       composerRef.current?.addDroppedFolders(folders, unresolvedCount),
   });
-  const externalComposerDrawerAttached =
-    composerBannerItems.length > 0 || Boolean(threadSyncPhase && !activeEnvironmentUnavailable);
+  // The composer adds its own shown sync row to this; see `shownSyncPhase` there.
+  const externalComposerDrawerAttached = composerBannerItems.length > 0;
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
