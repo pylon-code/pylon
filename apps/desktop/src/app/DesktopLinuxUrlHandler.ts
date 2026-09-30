@@ -18,9 +18,9 @@ import { makeComponentLogger } from "./DesktopObservability.ts";
 // Electron's app.setAsDefaultProtocolClient resolves the desktop id from
 // setDesktopName, which cannot match those files — so the browser keeps
 // prompting "Choose an application" for every OAuth callback. Instead, write
-// our own handler entry pointing at the current AppImage and claim the
-// scheme default via xdg-mime, exactly what the file manager's "set as
-// default" checkbox would record in mimeapps.list.
+// our own handler entry pointing at the current AppImage, refresh the desktop
+// MIME cache so desktop environments recognize that entry as a handler, and
+// use xdg-mime to record it as the scheme default in mimeapps.list.
 /**
  * Hidden handler entry every packaged channel wrote before the entry became the
  * per-channel portal identity (`com.pylon.code[.nightly].desktop`). Once the
@@ -52,6 +52,23 @@ export class DesktopLinuxUrlHandlerRegistrationError extends Schema.TaggedError<
 }
 
 const isRegistrationError = Schema.is(DesktopLinuxUrlHandlerRegistrationError);
+
+export class DesktopLinuxUrlHandlerCacheRefreshError extends Schema.TaggedError<DesktopLinuxUrlHandlerCacheRefreshError>()(
+  "DesktopLinuxUrlHandlerCacheRefreshError",
+  {
+    applicationsDir: Schema.String,
+    exitCode: Schema.optionalKey(Schema.Number),
+    cause: Schema.optionalKey(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    const exitCode =
+      this.exitCode === undefined ? "" : `, update-desktop-database exit code ${this.exitCode}`;
+    return `Failed to refresh the desktop MIME cache at ${this.applicationsDir}${exitCode}.`;
+  }
+}
+
+const isCacheRefreshError = Schema.is(DesktopLinuxUrlHandlerCacheRefreshError);
 
 const sameBytes = (left: Uint8Array, right: Uint8Array): boolean =>
   left.length === right.length && left.every((byte, index) => byte === right[index]);
@@ -198,6 +215,48 @@ export const make = Effect.gen(function* () {
     ),
   );
 
+  // Some MIME implementations, including GIO, use mimeinfo.cache to verify that
+  // a desktop entry is associated with a scheme. The refresh is independently
+  // best-effort so a missing or stalled update-desktop-database does not
+  // prevent xdg-mime from recording the requested default.
+  const refreshDesktopDatabase = Effect.scoped(
+    Effect.gen(function* () {
+      const command = ChildProcess.make(
+        "update-desktop-database",
+        [environment.linuxApplicationsDir],
+        {
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+        },
+      );
+      const handle = yield* spawner.spawn(command);
+      const exitCode = Number(yield* handle.exitCode.pipe(Effect.timeout("5 seconds")));
+      if (exitCode !== 0) {
+        return yield* new DesktopLinuxUrlHandlerCacheRefreshError({
+          applicationsDir: environment.linuxApplicationsDir,
+          exitCode,
+        });
+      }
+    }),
+  ).pipe(
+    Effect.mapError((error) =>
+      isCacheRefreshError(error)
+        ? error
+        : new DesktopLinuxUrlHandlerCacheRefreshError({
+            applicationsDir: environment.linuxApplicationsDir,
+            cause: error,
+          }),
+    ),
+    Effect.catch((error) =>
+      logWarning("desktop MIME cache refresh failed", {
+        applicationsDir: environment.linuxApplicationsDir,
+        message: error.message,
+        ...(error.exitCode === undefined ? {} : { exitCode: error.exitCode }),
+      }),
+    ),
+  );
+
   const setDefaultHandler = Effect.scoped(
     Effect.gen(function* () {
       const command = ChildProcess.make(
@@ -241,11 +300,12 @@ export const make = Effect.gen(function* () {
     const legacy = yield* fileSystem
       .readFileString(legacyDesktopEntryPath)
       .pipe(Effect.orElseSucceed(() => null));
-    if (legacy === null || !isLegacyUrlHandlerDesktopEntry(legacy, scheme)) return;
+    if (legacy === null || !isLegacyUrlHandlerDesktopEntry(legacy, scheme)) return false;
     yield* fileSystem.remove(legacyDesktopEntryPath);
     yield* logInfo("removed legacy URL scheme handler entry", {
       desktopEntryPath: legacyDesktopEntryPath,
     });
+    return true;
   }).pipe(
     Effect.mapError(
       (cause) =>
@@ -270,9 +330,11 @@ export const make = Effect.gen(function* () {
     );
     yield* writeDesktopEntry;
     if (!environment.isPackaged) return;
+    yield* refreshDesktopDatabase;
     yield* setDefaultHandler;
     yield* logInfo("registered URL scheme handler", { scheme });
-    yield* removeLegacyDesktopEntry;
+    // Drop the removed entry from the cache so it stops being listed as a handler.
+    if (yield* removeLegacyDesktopEntry) yield* refreshDesktopDatabase;
   }).pipe(
     // Registration is best-effort: a missing xdg-mime or read-only home must
     // never block startup — the OS chooser remains as fallback.
