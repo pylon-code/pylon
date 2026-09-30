@@ -40,7 +40,7 @@ describe("encodeShellSnapshotForCache", () => {
         // project field whose encoding differs from the decoded value.
         projects: projects.map((project, index) =>
           index % 2 === 0
-            ? { ...project, projectIcon: { kind: "monogram", text: "T3", color: "blue" } }
+            ? { ...project, projectIcon: { kind: "monogram", text: "PY", color: "blue" } }
             : project,
         ),
         threads,
