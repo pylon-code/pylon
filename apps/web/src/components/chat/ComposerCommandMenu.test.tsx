@@ -85,7 +85,7 @@ describe("ComposerCommandMenu", () => {
     expect(markup).toContain('data-slot="badge"');
     expect(markup).toContain(">App Skill</span>");
     expect(markup).toContain("Open and control the in-app browser");
-    expect(markup).toContain("max-w-[48ch]");
+    expect(markup).not.toContain("max-w-[48ch]");
     expect(markup).toContain("text-secondary-label text-xs");
     expect(markup).toContain("ms-auto");
     expect(markup).toContain("text-current");
