@@ -130,6 +130,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "checkmark.circle": IconCircleCheck,
   circle: IconCircle,
   clock: IconClock,
+  timer: IconClock,
   cloud: IconCloud,
   laptopcomputer: IconDeviceLaptop,
   macmini: IconServer,
