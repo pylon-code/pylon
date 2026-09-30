@@ -715,3 +715,211 @@ describe("mergeUsage", () => {
     expect(merged.contributingEnvironments).toEqual(["env-v4", "env-v5", "env-v6"]);
   });
 });
+
+describe("complete and partial usage scans", () => {
+  const shared = { provider: "claude" as const, hostId: "mac", homePath: "/shared" };
+  function scan(
+    id: string,
+    buckets: readonly UsageBucket[],
+    status: "ok" | "partial" | "failed",
+    readAt: string,
+    attributed = true,
+    distinctSessions = 1,
+  ) {
+    const reading = summary(buckets, [
+      { ...shared, distinctSessions, ...(attributed ? { buckets } : {}) },
+    ]);
+    return environment(id, {
+      ...reading,
+      readAt,
+      sources: reading.sources.map((source) => ({ ...source, status })),
+    });
+  }
+  const oldTime = "2026-08-07T00:00:00.000Z";
+  const newTime = "2026-08-08T00:00:00.000Z";
+  function orders(...readings: EnvironmentUsage[]) {
+    return [readings, readings.toReversed()];
+  }
+  it.each([false, true])(
+    "retains complete cells over a newer partial or failed scan (attributed=%s)",
+    (attributed) => {
+      const complete = scan("old", [bucket()], "ok", oldTime, attributed);
+      for (const status of ["partial", "failed"] as const) {
+        const incomplete = scan(
+          "new",
+          [bucket({ costUsd: 4, records: 6 })],
+          status,
+          newTime,
+          attributed,
+          2,
+        );
+        for (const readings of orders(complete, incomplete)) {
+          const merged = mergeUsage(readings, USAGE_CONTRACT_VERSION);
+          expect(merged.costUsd).toBe(10);
+          expect(merged.records).toBe(5);
+          expect(merged.totalTokens).toBe(1160);
+          expect(merged.sessions).toBe(1);
+          expect(merged.contributingEnvironments).toEqual(["old"]);
+          expect(merged.duplicateSources).toEqual(["new: /shared"]);
+        }
+      }
+    },
+  );
+  it.each([false, true])(
+    "adds only new day, hour and model cells from newer partial scans (attributed=%s)",
+    (attributed) => {
+      const original = bucket({ hourStart: "2026-08-07T00:00:00.000Z" });
+      const day = bucket({
+        day: "2026-08-08" as UsageDay,
+        hourStart: "2026-08-08T00:00:00.000Z",
+        costUsd: 3,
+        records: 1,
+      });
+      const hour = bucket({ hourStart: "2026-08-07T01:00:00.000Z", costUsd: 2, records: 1 });
+      const model = bucket({
+        hourStart: original.hourStart,
+        model: "claude-other",
+        costUsd: 1,
+        records: 1,
+      });
+      const complete = scan("old", [original], "ok", oldTime, attributed);
+      const partial = scan(
+        "new",
+        [{ ...original, costUsd: 4 }, day, hour, model],
+        "partial",
+        newTime,
+        attributed,
+        3,
+      );
+      for (const readings of orders(complete, partial)) {
+        const merged = mergeUsage(readings, USAGE_CONTRACT_VERSION);
+        expect(merged.costUsd).toBe(16);
+        expect(merged.records).toBe(8);
+        expect(merged.sessions).toBe(3);
+        expect(merged.providers[0]?.sessions).toBe(3);
+        expect(merged.daily.map(({ day, costUsd }) => [day, costUsd])).toEqual([
+          ["2026-08-07", 13],
+          ["2026-08-08", 3],
+        ]);
+        expect(merged.hourly.map(({ hourStart, costUsd }) => [hourStart, costUsd])).toEqual([
+          [original.hourStart, 11],
+          [hour.hourStart, 2],
+          [day.hourStart, 3],
+        ]);
+        expect(merged.contributingEnvironments).toEqual(
+          readings.map(({ environmentId }) => environmentId),
+        );
+        expect(merged.duplicateSources).toEqual(["new: /shared"]);
+      }
+    },
+  );
+  it("retains complete priority without supplementing when its scan time is unknown", () => {
+    const complete = scan("complete", [bucket()], "ok", "invalid");
+    const partial = scan(
+      "partial",
+      [bucket({ day: "2026-08-08" as UsageDay, costUsd: 3 })],
+      "partial",
+      newTime,
+    );
+    for (const readings of orders(complete, partial)) {
+      expect(mergeUsage(readings, USAGE_CONTRACT_VERSION).costUsd).toBe(10);
+    }
+  });
+  it("takes each supplemental cell from the newest partial scan once", () => {
+    const old = scan("old", [bucket()], "ok", oldTime);
+    const cell = bucket({ day: "2026-08-08" as UsageDay, costUsd: 3, records: 1 });
+    const middle = scan("middle", [cell], "partial", "2026-08-08T00:00:00.000Z", true, 2);
+    const newest = scan(
+      "newest",
+      [{ ...cell, costUsd: 5 }],
+      "partial",
+      "2026-08-08T01:00:00.000Z",
+      true,
+      3,
+    );
+    for (const readings of orders(old, middle, newest)) {
+      const merged = mergeUsage(readings, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(15);
+      expect(merged.sessions).toBe(3);
+      expect(merged.contributingEnvironments).toEqual(
+        readings.filter((entry) => entry !== middle).map(({ environmentId }) => environmentId),
+      );
+    }
+  });
+  it.each([
+    { status: "partial" as const, time: oldTime },
+    { status: "partial" as const, time: "2026-08-06T00:00:00.000Z" },
+    { status: "partial" as const, time: "invalid" },
+    { status: "failed" as const, time: newTime },
+  ])("does not supplement unproven new usage from $status at $time", ({ status, time }) => {
+    const complete = scan("complete", [bucket()], "ok", oldTime);
+    const other = scan(
+      "other",
+      [bucket({ day: "2026-08-08" as UsageDay, costUsd: 3 })],
+      status,
+      time,
+      true,
+      2,
+    );
+    for (const readings of orders(complete, other)) {
+      expect(mergeUsage(readings, USAGE_CONTRACT_VERSION).costUsd).toBe(10);
+      expect(mergeUsage(readings, USAGE_CONTRACT_VERSION).sessions).toBe(1);
+    }
+  });
+  it("retains a partial scan when no complete scan is available and restores complete priority later", () => {
+    const partial = scan("partial", [bucket({ costUsd: 4 })], "partial", oldTime);
+    const failed = scan("failed", [], "failed", newTime);
+    const complete = scan("complete", [bucket()], "ok", newTime);
+    expect(mergeUsage([partial], USAGE_CONTRACT_VERSION).costUsd).toBe(4);
+    expect(mergeUsage([failed, partial], USAGE_CONTRACT_VERSION).costUsd).toBe(4);
+    expect(mergeUsage([failed, partial, complete], USAGE_CONTRACT_VERSION).costUsd).toBe(10);
+    expect(mergeUsage([failed], USAGE_CONTRACT_VERSION).costUsd).toBe(0);
+  });
+  it("supplements the shared home while retaining each host's unique attributed home", () => {
+    const original = bucket();
+    const extra = bucket({ day: "2026-08-08" as UsageDay, costUsd: 3, records: 1 });
+    const first = summary(
+      [bucket({ costUsd: 12 })],
+      [
+        { ...shared, buckets: [original] },
+        { ...shared, homePath: "/unique-a", buckets: [bucket({ costUsd: 2 })] },
+      ],
+    );
+    const second = summary(
+      [bucket({ costUsd: 9 })],
+      [
+        { ...shared, distinctSessions: 2, buckets: [{ ...original, costUsd: 1 }, extra] },
+        { ...shared, homePath: "/unique-b", buckets: [bucket({ costUsd: 5 })] },
+      ],
+    );
+    const complete = environment("a", { ...first, readAt: oldTime });
+    const partial = environment("b", {
+      ...second,
+      readAt: newTime,
+      sources: second.sources.map((source) => ({ ...source, status: "partial" as const })),
+    });
+    for (const readings of orders(complete, partial)) {
+      const merged = mergeUsage(readings, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(20);
+      expect(merged.sessions).toBe(4);
+      expect(merged.approximateEnvironments).toEqual([]);
+    }
+  });
+  it("does not invent source attribution for legacy multi-home totals", () => {
+    const complete = scan("old", [bucket()], "ok", oldTime);
+    const reading = summary(
+      [bucket({ day: "2026-08-08" as UsageDay, costUsd: 3 })],
+      [shared, { ...shared, homePath: "/unique-b" }],
+      USAGE_MERGE_COMPATIBLE_SINCE,
+    );
+    const legacy = environment("legacy", {
+      ...reading,
+      readAt: newTime,
+      sources: reading.sources.map((source) => ({ ...source, status: "partial" as const })),
+    });
+    const merged = mergeUsage([complete, legacy], USAGE_CONTRACT_VERSION);
+    expect(merged.costUsd).toBe(13);
+    expect(merged.approximateEnvironments).toEqual(["legacy"]);
+    expect(merged.sessions).toBe(2);
+  });
+});

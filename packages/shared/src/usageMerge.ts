@@ -11,6 +11,7 @@ import {
   type EnvironmentId,
   type UsageBucket,
   type UsageProviderKind,
+  type UsageSource,
   type UsageSourceFingerprint,
   type UsageSummary,
 } from "@t3tools/contracts";
@@ -124,20 +125,54 @@ function fingerprintKey(fingerprint: UsageSourceFingerprint, environmentId: Envi
   ]);
 }
 
+/** A legacy provider-wide cell is attributable only when it has one source. */
+function bucketsForSource(summary: UsageSummary, source: UsageSource) {
+  const providerSources = summary.sources.filter(
+    (entry) =>
+      entry.status !== "missing" && entry.fingerprint.provider === source.fingerprint.provider,
+  );
+  if (
+    providerSources.every(
+      (entry) =>
+        entry.buckets !== undefined &&
+        entry.buckets.every((bucket) => bucket.provider === entry.fingerprint.provider),
+    )
+  ) {
+    return source.buckets;
+  }
+  if (providerSources.length === 1) {
+    return summary.buckets.filter((bucket) => bucket.provider === source.fingerprint.provider);
+  }
+  return undefined;
+}
+
+function bucketKey(bucket: UsageBucket) {
+  return JSON.stringify([bucket.day, bucket.hourStart ?? null, bucket.provider, bucket.model]);
+}
+
 /**
  * Decides which environment owns each physical transcript directory.
  *
  * Several environments on one machine (worktree servers, for instance) resolve
  * the same provider home and would otherwise double count every token. The
- * most recently read summary claims a fingerprint; environment ids break ties
- * so ownership stays stable when two summaries have the same read time.
+ * complete scan claims a fingerprint before partial or failed scans. Within a
+ * status, the most recent scan wins, with environment ids breaking ties. A
+ * newer partial scan can add cells absent from the complete scan.
  */
 function claimSources(environments: readonly EnvironmentUsage[]): {
   readonly ownerByFingerprint: ReadonlyMap<string, EnvironmentId>;
+  readonly supplementalBucketsByEnvironment: ReadonlyMap<EnvironmentId, readonly UsageBucket[]>;
+  readonly sessionsByFingerprint: ReadonlyMap<string, number>;
   readonly duplicates: readonly string[];
   readonly uncertainEnvironments: readonly EnvironmentId[];
 } {
   const ownerByFingerprint = new Map<string, EnvironmentId>();
+  const ownerScanByFingerprint = new Map<
+    string,
+    { environment: EnvironmentUsage; source: UsageSource }
+  >();
+  const supplementalBucketsByEnvironment = new Map<EnvironmentId, UsageBucket[]>();
+  const sessionsByFingerprint = new Map<string, number>();
   const duplicates: string[] = [];
   const weakMatches = new Map<string, { environmentId: EnvironmentId; volumeId: string }[]>();
 
@@ -147,26 +182,71 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
       a.environmentId.localeCompare(b.environmentId),
   );
 
+  for (const status of ["ok", "partial", "failed"] as const) {
+    for (const environment of ordered) {
+      for (const source of environment.summary.sources) {
+        if (source.status !== status) continue;
+        const weakKey = JSON.stringify([
+          source.fingerprint.hostId,
+          source.fingerprint.provider,
+          source.fingerprint.resolvedHomePath,
+        ]);
+        const matches = weakMatches.get(weakKey) ?? [];
+        matches.push({
+          environmentId: environment.environmentId,
+          volumeId: source.fingerprint.volumeId,
+        });
+        weakMatches.set(weakKey, matches);
+        const key = fingerprintKey(source.fingerprint, environment.environmentId);
+        if (ownerByFingerprint.has(key)) {
+          duplicates.push(`${environment.label}: ${source.fingerprint.resolvedHomePath}`);
+          continue;
+        }
+        ownerByFingerprint.set(key, environment.environmentId);
+        ownerScanByFingerprint.set(key, { environment, source });
+        sessionsByFingerprint.set(key, source.distinctSessions);
+      }
+    }
+  }
+
+  // Aggregates cannot reconcile overlapping records. Retain the complete
+  // cell, and add only proven newer cells from an attributable partial scan.
+  const seenBucketKeysByFingerprint = new Map<string, Set<string>>();
   for (const environment of ordered) {
     for (const source of environment.summary.sources) {
-      if (source.status === "missing") continue;
-      const weakKey = JSON.stringify([
-        source.fingerprint.hostId,
-        source.fingerprint.provider,
-        source.fingerprint.resolvedHomePath,
-      ]);
-      const matches = weakMatches.get(weakKey) ?? [];
-      matches.push({
-        environmentId: environment.environmentId,
-        volumeId: source.fingerprint.volumeId,
-      });
-      weakMatches.set(weakKey, matches);
+      if (source.status !== "partial") continue;
       const key = fingerprintKey(source.fingerprint, environment.environmentId);
-      if (ownerByFingerprint.has(key)) {
-        duplicates.push(`${environment.label}: ${source.fingerprint.resolvedHomePath}`);
+      const owner = ownerScanByFingerprint.get(key);
+      if (owner?.source.status !== "ok") continue;
+      const readAt = Date.parse(environment.summary.readAt);
+      const ownerReadAt = Date.parse(owner.environment.summary.readAt);
+      if (!Number.isFinite(readAt) || !Number.isFinite(ownerReadAt) || readAt <= ownerReadAt)
         continue;
+      const ownerBuckets = bucketsForSource(owner.environment.summary, owner.source);
+      const partialBuckets = bucketsForSource(environment.summary, source);
+      if (ownerBuckets === undefined || partialBuckets === undefined) continue;
+      let seen = seenBucketKeysByFingerprint.get(key);
+      if (seen === undefined) {
+        seen = new Set(ownerBuckets.map(bucketKey));
+        seenBucketKeysByFingerprint.set(key, seen);
       }
-      ownerByFingerprint.set(key, environment.environmentId);
+      const supplemental = supplementalBucketsByEnvironment.get(environment.environmentId) ?? [];
+      let added = false;
+      for (const bucket of partialBuckets) {
+        const cell = bucketKey(bucket);
+        if (seen.has(cell)) continue;
+        seen.add(cell);
+        supplemental.push(bucket);
+        added = true;
+      }
+      if (!added) continue;
+      supplementalBucketsByEnvironment.set(environment.environmentId, supplemental);
+      // Per-source session counts do not carry IDs to union. Keep the largest
+      // observed count instead of recounting sessions spanning multiple cells.
+      sessionsByFingerprint.set(
+        key,
+        Math.max(sessionsByFingerprint.get(key) ?? 0, source.distinctSessions),
+      );
     }
   }
 
@@ -180,13 +260,21 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
     }
   }
 
-  return { ownerByFingerprint, duplicates, uncertainEnvironments: [...uncertainEnvironments] };
+  return {
+    ownerByFingerprint,
+    supplementalBucketsByEnvironment,
+    sessionsByFingerprint,
+    duplicates,
+    uncertainEnvironments: [...uncertainEnvironments],
+  };
 }
 
 /** Sources this environment owns after fingerprint claims, plus their buckets. */
 function ownedContribution(
   environment: EnvironmentUsage,
   ownerByFingerprint: ReadonlyMap<string, EnvironmentId>,
+  supplementalBuckets: readonly UsageBucket[],
+  sessionsByFingerprint: ReadonlyMap<string, number>,
 ): {
   readonly buckets: readonly UsageBucket[];
   readonly sessionsByProvider: ReadonlyMap<UsageProviderKind, number>;
@@ -207,7 +295,8 @@ function ownedContribution(
       // would count a session once per day and model it spans.
       sessionsByProvider.set(
         provider,
-        (sessionsByProvider.get(provider) ?? 0) + source.distinctSessions,
+        (sessionsByProvider.get(provider) ?? 0) +
+          (sessionsByFingerprint.get(key) ?? source.distinctSessions),
       );
     }
   }
@@ -247,7 +336,7 @@ function ownedContribution(
     }
   }
   return {
-    buckets,
+    buckets: [...buckets, ...supplementalBuckets],
     sessionsByProvider,
     approximate,
   };
@@ -327,7 +416,13 @@ export function mergeUsage(
     }
   }
 
-  const { ownerByFingerprint, duplicates, uncertainEnvironments } = claimSources(current);
+  const {
+    ownerByFingerprint,
+    supplementalBucketsByEnvironment,
+    sessionsByFingerprint,
+    duplicates,
+    uncertainEnvironments,
+  } = claimSources(current);
 
   let costUsd = 0;
   let uncachedInputTokens = 0;
@@ -380,6 +475,8 @@ export function mergeUsage(
     const { buckets, sessionsByProvider, approximate } = ownedContribution(
       environment,
       ownerByFingerprint,
+      supplementalBucketsByEnvironment.get(environment.environmentId) ?? [],
+      sessionsByFingerprint,
     );
     if (approximate) approximateEnvironments.add(environment.environmentId);
     if (buckets.length > 0) contributingEnvironments.push(environment.environmentId);
