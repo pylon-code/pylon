@@ -1,9 +1,16 @@
 name: Deploy Pylon Connect relay
 
 on:
+  # Only relay changes deploy. The relay also bundles shared workspace packages,
+  # but those change on nearly every merge and would redeploy production each
+  # time; when one of them matters to the relay, dispatch this workflow by hand.
+  # This file is deliberately not listed, so editing the workflow never deploys.
   push:
     branches:
       - pylon
+    paths:
+      - infra/relay/**
+      - "!infra/relay/**/*.md"
   # Infrastructure drifts and deploys fail for reasons unrelated to a commit,
   # so the stack can be reapplied without pushing one.
   workflow_dispatch:
@@ -70,7 +77,7 @@ jobs:
       # no-op after the first and survives the store being deleted.
       - name: Bootstrap Alchemy state store
         working-directory: infra/relay
-        run: node node_modules/alchemy/bin/cli.js cloudflare bootstrap
+        run: node node_modules/alchemy/bin/cli.js provider cloudflare bootstrap
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 

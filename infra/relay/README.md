@@ -128,7 +128,8 @@ Recover by deploying beta.76 or later again; do not edit `relay_migrations` by h
 ### Deployment CI
 
 The relay is versioned separately from client releases. `.github/workflows/deploy-relay.yml` deploys
-the shared Alchemy `prod` stage on every push to `pylon`. Stable and nightly release builds both
+the shared Alchemy `prod` stage when a push to `pylon` changes `infra/relay/`. A change that reaches
+the relay only through a shared workspace package needs a manual run of that workflow. Stable and nightly release builds both
 resolve their static public config from the same
 `production` GitHub environment. Pull requests do not deploy relay stages. Developers can
 deploy personal non-production stages locally with any stage name other than `prod`.
