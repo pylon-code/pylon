@@ -26,25 +26,41 @@ export function areShortcutModifierStatesEqual(
   );
 }
 
+export interface ShortcutModifierTracker {
+  handleKeyboardEvent(event: KeyboardEvent): void;
+  reset(): void;
+}
+
+// Even a no-op state dispatch can cost work in the sidebar's large tree, so the
+// tracker compares against its own copy and only reports real changes. Ordinary
+// typing must return before dispatching a React update.
+export function createShortcutModifierTracker(
+  onChange: (next: ShortcutModifierState) => void,
+): ShortcutModifierTracker {
+  let current = EMPTY_SHORTCUT_MODIFIER_STATE;
+  const update = (next: ShortcutModifierState) => {
+    if (areShortcutModifierStatesEqual(current, next)) return;
+    current = next;
+    onChange(next);
+  };
+  return {
+    handleKeyboardEvent: (event) => update(shortcutModifierStateAfterKeyboardEvent(current, event)),
+    reset: () => update(EMPTY_SHORTCUT_MODIFIER_STATE),
+  };
+}
+
 export function useShortcutModifierState(): ShortcutModifierState {
   const [state, setState] = useState(EMPTY_SHORTCUT_MODIFIER_STATE);
 
   useEffect(() => {
-    const onKeyboardEvent = (event: KeyboardEvent) => {
-      setState((current) => shortcutModifierStateAfterKeyboardEvent(current, event));
-    };
+    const tracker = createShortcutModifierTracker(setState);
+    const onKeyboardEvent = tracker.handleKeyboardEvent;
     // Dictation tools (Wispr Flow) paste with a synthetic ⌘V whose Meta keyup
     // never reaches the page, so the tracked state stays "⌘ held" forever and
     // the thread jump hints stick on screen. A paste is never jump intent, so
     // treat it like a blur and reset. A physically held modifier re-registers
     // on the next real key event.
-    const onResetEvent = () => {
-      setState((current) =>
-        areShortcutModifierStatesEqual(current, EMPTY_SHORTCUT_MODIFIER_STATE)
-          ? current
-          : EMPTY_SHORTCUT_MODIFIER_STATE,
-      );
-    };
+    const onResetEvent = tracker.reset;
 
     window.addEventListener("keydown", onKeyboardEvent, true);
     window.addEventListener("keyup", onKeyboardEvent, true);

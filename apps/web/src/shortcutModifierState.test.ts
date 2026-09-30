@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   areShortcutModifierStatesEqual,
   shortcutModifierStateAfterKeyboardEvent,
+  createShortcutModifierTracker,
   type ShortcutModifierState,
 } from "./shortcutModifierState";
 
@@ -11,6 +12,37 @@ const emptyState = (): ShortcutModifierState => ({
   ctrlKey: false,
   altKey: false,
   shiftKey: false,
+});
+
+describe("createShortcutModifierTracker", () => {
+  it.each(["keyup", "paste-or-blur"] as const)(
+    "does not report unchanged modifiers after %s resets the state",
+    (reset) => {
+      const onChange = vi.fn();
+      const tracker = createShortcutModifierTracker(onChange);
+
+      tracker.handleKeyboardEvent(keyboardEventLike("keydown", { key: "Shift", shiftKey: true }));
+      expect(onChange).toHaveBeenLastCalledWith({ ...emptyState(), shiftKey: true });
+      if (reset === "keyup") {
+        tracker.handleKeyboardEvent(keyboardEventLike("keyup", { key: "Shift" }));
+      } else {
+        tracker.reset();
+      }
+      expect(onChange).toHaveBeenLastCalledWith(emptyState());
+      onChange.mockClear();
+
+      for (const key of "typing") {
+        tracker.handleKeyboardEvent(keyboardEventLike("keydown", { key }));
+        tracker.handleKeyboardEvent(keyboardEventLike("keyup", { key }));
+      }
+      tracker.reset();
+      tracker.reset();
+      expect(onChange).not.toHaveBeenCalled();
+
+      tracker.handleKeyboardEvent(keyboardEventLike("keydown", { key: "Shift", shiftKey: true }));
+      expect(onChange).toHaveBeenCalledExactlyOnceWith({ ...emptyState(), shiftKey: true });
+    },
+  );
 });
 
 function keyboardEventLike(type: "keydown" | "keyup", init: Partial<KeyboardEvent>): KeyboardEvent {
