@@ -183,7 +183,8 @@ describe("mergeUsage", () => {
     );
 
     expect(merged.costUsd).toBe(22);
-    expect(merged.approximateEnvironments).toEqual([]);
+    // env-a's unique home is kept while its shared home goes to env-b.
+    expect(merged.approximateEnvironments).toEqual(["env-a"]);
   });
 
   it("counts overlapping Claude homes once while retaining both unique homes", () => {
@@ -223,7 +224,8 @@ describe("mergeUsage", () => {
     expect(merged.records).toBe(3);
     expect(merged.sessions).toBe(3);
     expect(merged.duplicateSources).toHaveLength(1);
-    expect(merged.approximateEnvironments).toEqual([]);
+    // env-b's unique home is kept while its shared home goes to env-a.
+    expect(merged.approximateEnvironments).toEqual(["env-b"]);
   });
 
   it("does not collapse identical paths on different hosts or filesystems", () => {
@@ -902,7 +904,8 @@ describe("complete and partial usage scans", () => {
       const merged = mergeUsage(readings, USAGE_CONTRACT_VERSION);
       expect(merged.costUsd).toBe(20);
       expect(merged.sessions).toBe(4);
-      expect(merged.approximateEnvironments).toEqual([]);
+      // b's unique home is kept while its shared home goes to a.
+      expect(merged.approximateEnvironments).toEqual(["b"]);
     }
   });
   it("does not invent source attribution for legacy multi-home totals", () => {
@@ -998,6 +1001,93 @@ describe("complete and partial usage scans", () => {
       expect(merged.costUsd).toBe(15);
       expect(merged.approximateEnvironments).toEqual([]);
       expect(merged.contributingEnvironments).toEqual(["legacy"]);
+    }
+  });
+  it("does not let an unshared failed home demote a scan's shared homes", () => {
+    const complete = summary(
+      [bucket({ costUsd: 15 })],
+      [
+        { ...shared, homePath: "/d1", buckets: [bucket({ costUsd: 10 })] },
+        { ...shared, homePath: "/d2", buckets: [bucket({ costUsd: 5 })] },
+        { ...shared, homePath: "/d3", buckets: [] },
+      ],
+    );
+    const partial = summary(
+      [bucket({ costUsd: 4 })],
+      [{ ...shared, homePath: "/d1", buckets: [bucket({ costUsd: 4 })] }],
+    );
+    for (const [completeAt, partialAt] of [
+      [newTime, oldTime],
+      [oldTime, newTime],
+    ] as const) {
+      for (const environments of orders(
+        environment("a", {
+          ...complete,
+          readAt: completeAt,
+          sources: complete.sources.map((source) =>
+            source.fingerprint.resolvedHomePath === "/d3"
+              ? { ...source, status: "failed" as const }
+              : source,
+          ),
+        }),
+        environment("b", {
+          ...partial,
+          readAt: partialAt,
+          sources: partial.sources.map((source) => ({ ...source, status: "partial" as const })),
+        }),
+      )) {
+        const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+        expect(merged.costUsd).toBe(15);
+        expect(merged.contributingEnvironments).toEqual(["a"]);
+        expect(merged.approximateEnvironments).toEqual([]);
+      }
+    }
+  });
+  it("flags scans whose homes are split between owners", () => {
+    const record = bucket();
+    const d1 = { ...shared, homePath: "/d1" };
+    const d2 = { ...shared, homePath: "/d2" };
+    const d3 = { ...shared, homePath: "/d3" };
+    // Record R exists in D1 and D3; each server credits it to a different home.
+    const a = environment("a", {
+      ...summary(
+        [record],
+        [
+          { ...d1, buckets: [record] },
+          { ...d2, buckets: [] },
+        ],
+      ),
+      readAt: "2026-08-09T00:00:00.000Z",
+    });
+    const b = environment("b", {
+      ...summary(
+        [record],
+        [
+          { ...d2, buckets: [] },
+          { ...d3, buckets: [record] },
+        ],
+      ),
+      readAt: newTime,
+    });
+    const c = environment("c", {
+      ...summary(
+        [record],
+        [
+          { ...d1, buckets: [record] },
+          { ...d3, buckets: [] },
+        ],
+      ),
+      readAt: oldTime,
+    });
+    for (const environments of orders(a, b, c)) {
+      const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(20);
+      expect([...merged.approximateEnvironments].sort()).toEqual(["b", "c"]);
+    }
+    for (const environments of orders(a, b)) {
+      const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(20);
+      expect(merged.approximateEnvironments).toEqual(["b"]);
     }
   });
 });

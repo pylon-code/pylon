@@ -130,7 +130,11 @@ interface ProviderScan {
   readonly environment: EnvironmentUsage;
   readonly provider: UsageProviderKind;
   readonly sources: readonly UsageSource[];
-  /** The least complete source status: 0 ok, 1 partial, 2 failed. */
+  /**
+   * The least complete status among sources another scan also reads: 0 ok,
+   * 1 partial, 2 failed. A home no other scan reads cannot be split between
+   * owners, so its status does not demote the scan's shared homes.
+   */
   readonly rank: number;
   readonly readAt: number;
 }
@@ -146,6 +150,15 @@ function hasSourceBuckets(sources: readonly UsageSource[]): boolean {
 }
 
 function providerScans(environments: readonly EnvironmentUsage[]): ProviderScan[] {
+  const readers = new Map<string, number>();
+  for (const environment of environments) {
+    const keys = new Set(
+      environment.summary.sources
+        .filter((source) => source.status !== "missing")
+        .map((source) => fingerprintKey(source.fingerprint, environment.environmentId)),
+    );
+    for (const key of keys) readers.set(key, (readers.get(key) ?? 0) + 1);
+  }
   const scans: ProviderScan[] = [];
   for (const environment of environments) {
     const sourcesByProvider = new Map<UsageProviderKind, UsageSource[]>();
@@ -161,8 +174,12 @@ function providerScans(environments: readonly EnvironmentUsage[]): ProviderScan[
         provider,
         sources,
         rank: Math.max(
+          0,
           ...sources.map((source) =>
-            source.status === "missing" ? 0 : STATUS_RANK[source.status],
+            source.status === "missing" ||
+            (readers.get(fingerprintKey(source.fingerprint, environment.environmentId)) ?? 0) < 2
+              ? 0
+              : STATUS_RANK[source.status],
           ),
         ),
         readAt: Date.parse(environment.summary.readAt),
@@ -224,10 +241,15 @@ function bucketKey(bucket: UsageBucket) {
  * A server attributes a record found in several of its homes to the first one
  * it could read, so two scans of the same homes can attribute one record to
  * different homes. Ownership is therefore ranked per provider scan rather than
- * per home: a scan whose every home was read completely claims its homes
- * before any scan with a partial or failed home. Within a rank the most recent
- * scan wins, with environment ids breaking ties. Homes already claimed are
- * duplicates; unclaimed ones still go to the next scan.
+ * per home: a scan whose every shared home was read completely claims its
+ * homes before any scan with a partial or failed shared home. Within a rank the
+ * most recent scan wins, with environment ids breaking ties. Homes already
+ * claimed are duplicates; unclaimed ones still go to the next scan.
+ *
+ * Scans of identical homes therefore have one owner. Scans of overlapping but
+ * unequal homes cannot: keeping each scan's unique homes splits its shared
+ * homes from them, and a record in both may be credited twice. Such scans are
+ * reported as approximate rather than dropping their unique usage.
  *
  * A newer scan can then add cells absent from a complete scan that owns all of
  * its homes, provided every home of the newer scan is owned by that complete
@@ -336,6 +358,12 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
   }
 
   const uncertainEnvironments = new Set<EnvironmentId>();
+  for (const scan of scans) {
+    const owners = new Set(
+      scan.sources.map((source) => ownerScanByFingerprint.get(keyOf(scan, source))),
+    );
+    if (owners.size > 1) uncertainEnvironments.add(scan.environment.environmentId);
+  }
   for (const matches of weakMatches.values()) {
     if (
       matches.some((match) => match.volumeId === "") &&
