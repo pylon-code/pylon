@@ -1158,3 +1158,74 @@ it.effect("settles failed opt-in recovery without retrying the provider turn", (
     });
   }),
 );
+
+it.effect("does not send a continuation when the provider restarted the conversation", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-conversation-reset");
+    const thread = makeThread("thread-conversation-reset", "running", turnId);
+    const settled = yield* Deferred.make<void>();
+    const sends: ProviderSendTurnInput[] = [];
+    const dispatched: OrchestrationCommand[] = [];
+    let binding: ProviderSessionDirectory.ProviderRuntimeBinding = {
+      threadId: thread.id,
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId,
+      status: "running",
+      resumeCursor: { threadId: thread.id },
+      runtimePayload: { activeTurnId: turnId },
+    };
+    yield* runReconciliation({
+      threads: [thread],
+      continueAfterRestart: true,
+      providerService: {
+        ...makeProviderService(),
+        startSession: (threadId, input) =>
+          fakeStartSession(threadId, input).pipe(
+            Effect.map((session) => ({ ...session, conversationReset: true })),
+          ),
+        sendTurn: (input) =>
+          Effect.sync(() => {
+            sends.push(input);
+            return { threadId: input.threadId, turnId: TurnId.make("unexpected") };
+          }),
+      },
+      directory: {
+        getBinding: () => Effect.sync(() => Option.some(binding)),
+        upsert: (next) =>
+          Effect.sync(() => {
+            binding = next;
+          }),
+        removeExact: () => Effect.die("unused"),
+        recordImportedTranscript: () => Effect.die("unused"),
+        getProvider: () => Effect.die("unused"),
+        listThreadIds: () => Effect.die("unused"),
+        listBindings: () => Effect.succeed([]),
+      },
+      dispatch: (command) =>
+        Effect.gen(function* () {
+          dispatched.push(command);
+          if (command.type === "thread.session.set" && command.session.status === "error") {
+            yield* Deferred.succeed(settled, undefined);
+          }
+          return { sequence: dispatched.length };
+        }),
+    });
+    yield* Deferred.await(settled);
+
+    // A "continue" prompt would reach a conversation with none of the
+    // interrupted turn's context, so the thread asks the user to resend.
+    assert.equal(sends.length, 0);
+    const errorSettle = dispatched.at(-1);
+    assert.equal(errorSettle?.type, "thread.session.set");
+    if (errorSettle?.type === "thread.session.set") {
+      assert.equal(errorSettle.session.status, "error");
+      assert.equal(errorSettle.session.sessionIncarnationId, recoveredIncarnationId(thread.id));
+      assert.match(errorSettle.session.lastError ?? "", /Send your message again/);
+    }
+    assert.deepStrictEqual(binding.runtimePayload, {
+      activeTurnId: null,
+      continueAfterServerUpdate: null,
+      continueAfterServerUpdatePrepared: null,
+    });
+  }),
+);

@@ -7524,7 +7524,9 @@ describe("ClaudeAdapterLive", () => {
         threadId: RESUME_THREAD_ID,
         resume: options?.sessionId,
         turnCount: 0,
+        turnStartMessageIds: [],
       });
+      assert.equal(session.conversationReset, true);
 
       yield* adapter.sendTurn({
         threadId: session.threadId,
@@ -7533,6 +7535,106 @@ describe("ClaudeAdapterLive", () => {
         attachments: [],
       });
       assert.deepEqual(harness.query.setPermissionModeCalls, ["bypassPermissions"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  const restartDuringFirstTurn = (
+    history: (
+      turnId: string,
+    ) => Awaited<ReturnType<NonNullable<ClaudeAdapterLiveOptions["getSessionMessages"]>>>,
+  ) => {
+    let recordedTurnId: string | undefined;
+    const harness = makeHarness({
+      getSessionMessages: async () => (recordedTurnId === undefined ? [] : history(recordedTurnId)),
+    });
+    const run = Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const first = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const firstSessionId = harness.getLastCreateQueryInput()?.options.sessionId;
+      // ProviderService persists the cursor sendTurn returns, before Claude
+      // has written the prompt to its transcript.
+      const turn = yield* adapter.sendTurn({
+        threadId: first.threadId,
+        input: "hello",
+        attachments: [],
+      });
+      recordedTurnId = String(turn.turnId);
+      const persistedCursor = turn.resumeCursor;
+      yield* adapter.stopSession(first.threadId);
+
+      const restarted = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        resumeCursor: persistedCursor,
+      });
+      return {
+        adapter,
+        firstSessionId,
+        persistedCursor,
+        restarted,
+        options: harness.getLastCreateQueryInput()?.options,
+        turnId: recordedTurnId,
+      };
+    });
+    return { harness, run };
+  };
+
+  it.effect("starts fresh from the cursor a restart-interrupted first turn persisted", () => {
+    const { harness, run } = restartDuringFirstTurn(() => []);
+    return Effect.gen(function* () {
+      const { adapter, firstSessionId, persistedCursor, restarted, options, turnId } = yield* run;
+      const restartedQuery = harness.queries.at(-1)!;
+
+      assert.deepEqual(persistedCursor, {
+        threadId: THREAD_ID,
+        resume: firstSessionId,
+        turnCount: 1,
+        turnStartMessageIds: [turnId],
+      });
+      assert.equal(options?.resume, undefined);
+      assert.equal(typeof options?.sessionId, "string");
+      assert.notEqual(options?.sessionId, firstSessionId);
+      assert.equal(restarted.conversationReset, true);
+      // Turn ids carry over so rollback boundaries still match Pylon's turns.
+      assert.deepEqual(restarted.resumeCursor, {
+        threadId: THREAD_ID,
+        resume: options?.sessionId,
+        turnCount: 1,
+        turnStartMessageIds: [turnId],
+      });
+
+      yield* adapter.sendTurn({
+        threadId: restarted.threadId,
+        input: "hello again",
+        interactionMode: "default",
+        attachments: [],
+      });
+      assert.equal(harness.queries.length, 2);
+      assert.deepEqual(restartedQuery.setPermissionModeCalls, ["bypassPermissions"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("resumes the restart-interrupted first turn once Claude saved its prompt", () => {
+    const { harness, run } = restartDuringFirstTurn((turnId) => [
+      claudeHistoryMessage({ type: "user", uuid: turnId, content: "hello" }),
+    ]);
+    return Effect.gen(function* () {
+      const { firstSessionId, restarted, options } = yield* run;
+
+      assert.equal(options?.resume, firstSessionId);
+      assert.equal(options?.sessionId, undefined);
+      assert.equal(restarted.conversationReset, undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -8355,8 +8457,11 @@ describe("ClaudeAdapterLive", () => {
         entered.resolve();
         await released.promise;
       };
+      // Startup checks the unproven cursor's history; hold only the rollback's reads.
+      let rollbackStarted = false;
       const harness = makeHarness({
         getSessionMessages: async (sessionId) => {
+          if (!rollbackStarted) return history(sessionId);
           if (
             (stage === "read" && sessionId === originalId) ||
             (stage === "fork-read" && sessionId === forkId)
@@ -8381,6 +8486,7 @@ describe("ClaudeAdapterLive", () => {
             turnStartMessageIds: ["user-1", "user-2"],
           },
         });
+        rollbackStarted = true;
         const rollback = yield* adapter
           .rollbackThread(THREAD_ID, 1)
           .pipe(Effect.result, Effect.forkChild);
@@ -8693,6 +8799,9 @@ describe("ClaudeAdapterLive", () => {
         runtimeMode: "full-access",
         resumeCursor: {
           resume: "550e8400-e29b-41d4-a716-446655440010",
+          // An observed assistant message proves the session, so startup
+          // skips its history check and only the rollback spawns the worker.
+          resumeSessionAt: "assistant-2",
           turnCount: 2,
           turnStartMessageIds: ["user-1", "user-2"],
         },

@@ -348,6 +348,8 @@ const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>)
 
 const ORPHANED_PROVIDER_SESSION_ERROR =
   "Provider session did not survive a server restart. Send a new message to continue.";
+const CONVERSATION_RESET_AFTER_RESTART_ERROR =
+  "The server restarted before this conversation was saved, so its context was lost. Send your message again to continue.";
 const SERVER_UPDATE_CONTINUATION_KEY = "continueAfterServerUpdate";
 const SERVER_UPDATE_CONTINUATION_PROMPT = "Continue where you left off.";
 
@@ -792,6 +794,13 @@ export const reconcileProviderSessions = Effect.gen(function* () {
               createdAt: boundAt,
             });
             boundSession = recoveredBinding;
+            // The provider lost the interrupted conversation and started a new
+            // one. A continuation prompt would reach a model with no context,
+            // so leave the fresh runtime idle and ask the user to resend.
+            if (recovered.conversationReset === true) {
+              yield* settleAsError(CONVERSATION_RESET_AFTER_RESTART_ERROR);
+              return;
+            }
             const capabilities = yield* providerService.getCapabilities(providerInstanceId);
             yield* providerService.sendTurn({
               threadId: thread.id,

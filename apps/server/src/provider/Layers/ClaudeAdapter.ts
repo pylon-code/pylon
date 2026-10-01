@@ -4866,18 +4866,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const startedAt = yield* nowIso;
     const persistedResumeState = readClaudeResumeState(input.resumeCursor);
     const threadId = input.threadId;
-    // Pylon generates the Claude session id and records it before Claude has
-    // written a transcript. A restart during the first turn can leave a cursor
-    // for a conversation Claude never saved, and resuming it fails every turn
-    // with "No conversation found". Without a completed turn or recorded
-    // message id, check the history and start fresh only when it is
-    // confirmed empty; a failed check keeps the resume.
+    // Pylon generates the Claude session id and records it, along with each
+    // turn's prompt id, before Claude has written a transcript. A restart
+    // during the first turn can leave a cursor for a conversation Claude never
+    // saved, and resuming it fails every turn with "No conversation found".
+    // Turn counters are recorded before the prompt reaches Claude, so they
+    // prove nothing; only an observed assistant message does. Without one,
+    // check the history and start fresh only when it is confirmed empty. A
+    // failed or slow check keeps the resume.
     const unprovenResumeSessionId =
       exactStart === undefined &&
       persistedResumeState?.resume !== undefined &&
-      (persistedResumeState.turnCount ?? 0) === 0 &&
-      persistedResumeState.resumeSessionAt === undefined &&
-      !(persistedResumeState.turnStartMessageIds ?? []).some((id) => id !== null)
+      persistedResumeState.resumeSessionAt === undefined
         ? persistedResumeState.resume
         : undefined;
     const resumeUnsaved =
@@ -4902,8 +4902,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }),
       ));
     const unsavedResumeSessionId = resumeUnsaved ? unprovenResumeSessionId : undefined;
-    // An unsaved session carries no turns, so it restarts as a new session.
-    const resumeState = unsavedResumeSessionId === undefined ? persistedResumeState : undefined;
+    // Claude starts a new session for an unsaved one. The recorded turn ids
+    // stay so Pylon's turn count and rollback boundaries still line up.
+    let resumeState = persistedResumeState;
+    if (unsavedResumeSessionId !== undefined && persistedResumeState !== undefined) {
+      const { resume: _unsaved, ...carried } = persistedResumeState;
+      resumeState = carried;
+    }
     const existingResumeSessionId = resumeState?.resume;
     const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
     const sessionId = existingResumeSessionId ?? newSessionId;
@@ -5537,6 +5542,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(modelSelection?.model ? { model: modelSelection.model } : {}),
       ...(threadId ? { threadId } : {}),
+      ...(unsavedResumeSessionId !== undefined ? { conversationReset: true } : {}),
       resumeCursor: {
         ...(threadId ? { threadId } : {}),
         ...(sessionId ? { resume: sessionId } : {}),
