@@ -98,8 +98,8 @@ function EmptyMobileClients() {
       <EmptyHeader>
         <EmptyTitle className="text-[1.0625rem] leading-6">No mobile clients</EmptyTitle>
         <EmptyDescription className="text-[0.8125rem] leading-4.5">
-          Sign in to Pylon on your phone to register it for push notifications and agent activity
-          updates.
+          Install Pylon on your phone and sign in to Pylon Connect to set up push notifications and
+          agent activity updates.
         </EmptyDescription>
       </EmptyHeader>
     </Empty>
@@ -116,7 +116,7 @@ export function MobileClientsUserProfilePage() {
   return (
     <ClerkUserProfilePage
       title="Mobile clients"
-      description="Devices registered to receive Pylon Connect activity from your environments."
+      description="Mobile devices that get notifications from your environments."
       action={
         <ClerkUserProfileRefreshButton
           isPending={devicesState.isPending}
