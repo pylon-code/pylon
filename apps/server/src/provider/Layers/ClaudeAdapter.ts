@@ -130,7 +130,7 @@ import {
   type ClaudeExactCursor,
   type ClaudeIdleHistory,
 } from "../claudeConversationHistory.ts";
-import { readClaudeNativeHistoryFile } from "../claudeNativeHistoryFile.ts";
+import { claudeTranscriptExists, readClaudeNativeHistoryFile } from "../claudeNativeHistoryFile.ts";
 import { spawnAndCollect } from "../providerSnapshot.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
@@ -2329,9 +2329,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               ),
         ),
       );
-    const readHistory = (historySessionId: string) => {
+    // The SDK scopes a lookup to `dir` when given; "all" searches every project
+    // the way Claude Code's resume does.
+    const readHistory = (historySessionId: string, scope: "project" | "all" = "project") => {
       const readOptions = {
-        ...(context.session.cwd ? { dir: context.session.cwd } : {}),
+        ...(scope === "project" && context.session.cwd ? { dir: context.session.cwd } : {}),
         includeSystemMessages: true,
       };
       const read = options?.getSessionMessages ?? getSessionMessages;
@@ -2375,6 +2377,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           );
     };
     return { readHistory, forkHistory };
+  });
+
+  // Proves Claude never saved a session: neither the SDK's all-project lookup
+  // nor a scan of every project directory finds it. Any read failure fails
+  // the check so the caller keeps resuming.
+  const isUnsavedClaudeSession = Effect.fn("isUnsavedClaudeSession")(function* (
+    session: Pick<ProviderSession, "cwd" | "threadId">,
+    sessionId: string,
+  ) {
+    const { readHistory } = yield* makeHistoryAccess({ session });
+    if ((yield* readHistory(sessionId, "all")).length > 0) return false;
+    return !(yield* claudeTranscriptExists({ sessionId, environment: claudeEnvironment }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    ));
   });
 
   const exactUnavailable = () =>
@@ -4874,16 +4891,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // prove nothing; only an observed assistant message does. Without one,
     // check the history and start fresh only when it is confirmed empty. A
     // failed or slow check keeps the resume.
+    // Only cursors Pylon wrote carry a turn count; imported sessions do not.
     const unprovenResumeSessionId =
       exactStart === undefined &&
       persistedResumeState?.resume !== undefined &&
+      persistedResumeState.turnCount !== undefined &&
       persistedResumeState.resumeSessionAt === undefined
         ? persistedResumeState.resume
         : undefined;
     const resumeUnsaved =
       unprovenResumeSessionId !== undefined &&
-      (yield* makeHistoryAccess({ session: input }).pipe(
-        Effect.flatMap(({ readHistory }) => readHistory(unprovenResumeSessionId)),
+      (yield* isUnsavedClaudeSession(input, unprovenResumeSessionId).pipe(
         Effect.timeout(CLAUDE_UNSAVED_RESUME_PROBE_TIMEOUT),
         Effect.matchEffect({
           onFailure: (cause) =>
@@ -4892,13 +4910,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               sessionId: unprovenResumeSessionId,
               cause,
             }).pipe(Effect.as(false)),
-          onSuccess: (messages) =>
-            messages.length > 0
-              ? Effect.succeed(false)
-              : Effect.logInfo("claude.session.resume-unsaved", {
+          onSuccess: (unsaved) =>
+            unsaved
+              ? Effect.logInfo("claude.session.resume-unsaved", {
                   threadId,
                   sessionId: unprovenResumeSessionId,
-                }).pipe(Effect.as(true)),
+                }).pipe(Effect.as(true))
+              : Effect.succeed(false),
         }),
       ));
     const unsavedResumeSessionId = resumeUnsaved ? unprovenResumeSessionId : undefined;

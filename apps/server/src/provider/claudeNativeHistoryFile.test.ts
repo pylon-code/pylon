@@ -7,9 +7,42 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import { claudeProjectDirectoryName } from "./claudeConversationHistory.ts";
-import { readClaudeNativeHistoryFile } from "./claudeNativeHistoryFile.ts";
+import { claudeTranscriptExists, readClaudeNativeHistoryFile } from "./claudeNativeHistoryFile.ts";
 
 it.layer(NodeServices.layer)("bounded Claude native history file", (it) => {
+  it.effect("finds a transcript in any project and fails when projects cannot be read", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "pylon-claude-transcript-" });
+      const config = path.join(root, "config");
+      const id = "550e8400-e29b-41d4-a716-446655440010";
+      const exists = claudeTranscriptExists({
+        sessionId: id,
+        environment: { CLAUDE_CONFIG_DIR: config },
+      });
+      // No projects directory: Claude has saved nothing.
+      assert.equal(yield* exists, false);
+      yield* fs.makeDirectory(path.join(config, "projects", "-current"), { recursive: true });
+      assert.equal(yield* exists, false);
+      yield* fs.makeDirectory(path.join(config, "projects", "-elsewhere"));
+      yield* fs.writeFileString(path.join(config, "projects", "-elsewhere", `${id}.jsonl`), "{}");
+      assert.equal(yield* exists, true);
+
+      const unreadable: FileSystem.FileSystem = {
+        ...fs,
+        readDirectory: () => fs.readDirectory(path.join(root, "missing")),
+      };
+      assert.equal(
+        (yield* exists.pipe(
+          Effect.provideService(FileSystem.FileSystem, unreadable),
+          Effect.result,
+        ))._tag,
+        "Failure",
+      );
+    }),
+  );
+
   it.effect("rejects replacement, symlinks, unknown file identity, and oversized content", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

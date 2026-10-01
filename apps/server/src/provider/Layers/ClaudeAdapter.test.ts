@@ -232,7 +232,21 @@ function makeHarness(config?: {
     layer: Layer.effect(
       ClaudeAdapter,
       Effect.gen(function* () {
-        const claudeConfig = decodeClaudeSettings(config?.claudeConfig ?? {});
+        // A history hook stands in for Claude's transcripts; give the
+        // unsaved-session scan an empty config home instead of ~/.claude.
+        const isolatedHome =
+          config?.getSessionMessages && !config.claudeConfig?.homePath && !config.environment
+            ? yield* Effect.acquireRelease(
+                Effect.sync(() =>
+                  NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-config-home-")),
+                ),
+                (home) => Effect.sync(() => NodeFS.rmSync(home, { recursive: true, force: true })),
+              )
+            : undefined;
+        const claudeConfig = decodeClaudeSettings({
+          ...(isolatedHome ? { homePath: isolatedHome } : {}),
+          ...config?.claudeConfig,
+        });
         const crypto = yield* Crypto.Crypto;
         const adapter = makeClaudeAdapter(claudeConfig, adapterOptions).pipe(
           Effect.provideService(Crypto.Crypto, config?.crypto?.(crypto) ?? crypto),
@@ -7665,6 +7679,111 @@ describe("ClaudeAdapterLive", () => {
         (session.resumeCursor as { readonly resume?: string } | undefined)?.resume,
         savedSessionId,
       );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps resuming a session Claude saved under another project", () => {
+    // The SDK lookup is scoped to the current cwd, but Claude Code resumes a
+    // session id from any project, as after a moved workspace.
+    const sessionId = "550e8400-e29b-41d4-a716-446655440024";
+    const readOptions: Array<unknown> = [];
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-config-home-"));
+    const project = NodePath.join(home, "projects", "-previous-workspace");
+    NodeFS.mkdirSync(project, { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(project, `${sessionId}.jsonl`), "{}\n");
+    const harness = makeHarness({
+      claudeConfig: { homePath: home },
+      getSessionMessages: async (_sessionId, options) => {
+        readOptions.push(options);
+        return [];
+      },
+    });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(home, { recursive: true, force: true })),
+      );
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        cwd: NodeOS.tmpdir(),
+        resumeCursor: { resume: sessionId, turnCount: 1, turnStartMessageIds: ["turn-1"] },
+        runtimeMode: "full-access",
+      });
+
+      // The check searches every project rather than only the cwd's.
+      assert.deepEqual(readOptions, [{ includeSystemMessages: true }]);
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.equal(options?.resume, sessionId);
+      assert.equal(options?.sessionId, undefined);
+      assert.equal(session.conversationReset, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("resumes an imported session without checking its history", () => {
+    // Imported cursors carry no turn count, so the session came from Claude
+    // Code itself rather than an id Pylon generated.
+    const sessionId = "550e8400-e29b-41d4-a716-446655440025";
+    const historyReads: Array<string> = [];
+    const harness = makeHarness({
+      getSessionMessages: async (id) => {
+        historyReads.push(id);
+        return [];
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: { threadId: RESUME_THREAD_ID, resume: sessionId },
+        runtimeMode: "full-access",
+      });
+
+      assert.deepEqual(historyReads, []);
+      assert.equal(harness.getLastCreateQueryInput()?.options.resume, sessionId);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps resuming when the first-turn history check times out", () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440026";
+    const historyRead = Promise.withResolvers<void>();
+    const harness = makeHarness({
+      getSessionMessages: () => {
+        historyRead.resolve();
+        return new Promise(() => undefined);
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const start = yield* adapter
+        .startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          resumeCursor: { resume: sessionId, turnCount: 1, turnStartMessageIds: ["turn-1"] },
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(() => historyRead.promise);
+      yield* TestClock.adjust("10 seconds");
+      const session = yield* Fiber.join(start);
+
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.equal(options?.resume, sessionId);
+      assert.equal(options?.sessionId, undefined);
+      assert.equal(session.conversationReset, undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

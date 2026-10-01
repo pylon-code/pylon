@@ -1163,7 +1163,8 @@ it.effect("does not send a continuation when the provider restarted the conversa
   Effect.gen(function* () {
     const turnId = TurnId.make("turn-conversation-reset");
     const thread = makeThread("thread-conversation-reset", "running", turnId);
-    const settled = yield* Deferred.make<void>();
+    const freshCursor = { threadId: thread.id, resume: "fresh-session", turnCount: 1 };
+    const cleared = yield* Deferred.make<void>();
     const sends: ProviderSendTurnInput[] = [];
     const dispatched: OrchestrationCommand[] = [];
     let binding: ProviderSessionDirectory.ProviderRuntimeBinding = {
@@ -1179,9 +1180,28 @@ it.effect("does not send a continuation when the provider restarted the conversa
       continueAfterRestart: true,
       providerService: {
         ...makeProviderService(),
+        // Like ProviderService, persist the new session's cursor and
+        // incarnation into the binding, merging the runtime payload.
         startSession: (threadId, input) =>
           fakeStartSession(threadId, input).pipe(
-            Effect.map((session) => ({ ...session, conversationReset: true })),
+            Effect.map((session) => ({
+              ...session,
+              resumeCursor: freshCursor,
+              conversationReset: true,
+            })),
+            Effect.tap((session) =>
+              Effect.sync(() => {
+                binding = {
+                  ...binding,
+                  status: "running",
+                  resumeCursor: session.resumeCursor,
+                  runtimePayload: {
+                    ...(binding.runtimePayload as Record<string, unknown>),
+                    sessionIncarnationId: session.sessionIncarnationId,
+                  },
+                };
+              }),
+            ),
           ),
         sendTurn: (input) =>
           Effect.sync(() => {
@@ -1192,8 +1212,15 @@ it.effect("does not send a continuation when the provider restarted the conversa
       directory: {
         getBinding: () => Effect.sync(() => Option.some(binding)),
         upsert: (next) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             binding = next;
+            const payload = next.runtimePayload as Record<string, unknown> | undefined;
+            if (
+              payload?.sessionIncarnationId !== undefined &&
+              payload.continueAfterServerUpdate === null
+            ) {
+              yield* Deferred.succeed(cleared, undefined);
+            }
           }),
         removeExact: () => Effect.die("unused"),
         recordImportedTranscript: () => Effect.die("unused"),
@@ -1202,15 +1229,12 @@ it.effect("does not send a continuation when the provider restarted the conversa
         listBindings: () => Effect.succeed([]),
       },
       dispatch: (command) =>
-        Effect.gen(function* () {
+        Effect.sync(() => {
           dispatched.push(command);
-          if (command.type === "thread.session.set" && command.session.status === "error") {
-            yield* Deferred.succeed(settled, undefined);
-          }
           return { sequence: dispatched.length };
         }),
     });
-    yield* Deferred.await(settled);
+    yield* Deferred.await(cleared);
 
     // A "continue" prompt would reach a conversation with none of the
     // interrupted turn's context, so the thread asks the user to resend.
@@ -1222,10 +1246,15 @@ it.effect("does not send a continuation when the provider restarted the conversa
       assert.equal(errorSettle.session.sessionIncarnationId, recoveredIncarnationId(thread.id));
       assert.match(errorSettle.session.lastError ?? "", /Send your message again/);
     }
+    // The new session's cursor and incarnation survive the settlement, so a
+    // second restart recovers the new session rather than the lost one.
+    assert.deepStrictEqual(binding.resumeCursor, freshCursor);
+    assert.equal(binding.status, "running");
     assert.deepStrictEqual(binding.runtimePayload, {
       activeTurnId: null,
       continueAfterServerUpdate: null,
       continueAfterServerUpdatePrepared: null,
+      sessionIncarnationId: recoveredIncarnationId(thread.id),
     });
   }),
 );

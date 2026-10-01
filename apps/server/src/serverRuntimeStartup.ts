@@ -458,6 +458,8 @@ export const markRunningProviderSessionsForContinuation = Effect.gen(function* (
 const clearContinuationMarkers = (
   directory: ProviderSessionDirectory.ProviderSessionDirectory["Service"],
   threadIds: ReadonlyArray<ThreadId>,
+  // Leave a binding a newer session incarnation already owns untouched.
+  expectedIncarnationId?: string,
 ) =>
   Effect.forEach(
     threadIds,
@@ -466,15 +468,26 @@ const clearContinuationMarkers = (
         Effect.flatMap(
           Option.match({
             onNone: () => Effect.void,
-            onSome: (binding) =>
-              directory.upsert({
+            onSome: (binding) => {
+              const boundIncarnationId = readRuntimePayload(
+                binding.runtimePayload,
+              ).sessionIncarnationId;
+              if (
+                expectedIncarnationId !== undefined &&
+                typeof boundIncarnationId === "string" &&
+                boundIncarnationId !== expectedIncarnationId
+              ) {
+                return Effect.void;
+              }
+              return directory.upsert({
                 ...binding,
                 runtimePayload: {
                   ...readRuntimePayload(binding.runtimePayload),
                   [SERVER_UPDATE_CONTINUATION_KEY]: null,
                   continueAfterServerUpdatePrepared: null,
                 },
-              }),
+              });
+            },
           }),
         ),
       ),
@@ -635,6 +648,33 @@ export const reconcileProviderSessions = Effect.gen(function* () {
     // must keep that id: the recovered runtime stays live, and reverting the
     // projection to the pre-restart incarnation would fence every later turn.
     let boundSession: OrchestrationSession = session;
+    const settleProjectionAsError = (lastError: string) =>
+      Effect.gen(function* () {
+        const reconciledAt = DateTime.formatIso(yield* DateTime.now);
+        yield* orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(yield* crypto.randomUUIDv4),
+          threadId: thread.id,
+          session: {
+            ...boundSession,
+            status: "error",
+            activeTurnId: null,
+            lastError,
+            updatedAt: reconciledAt,
+          },
+          createdAt: reconciledAt,
+        });
+      }).pipe(
+        Effect.retry({ times: 1 }),
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterrupts(cause),
+          (cause) =>
+            Effect.logWarning("failed to settle orphaned provider session projection", {
+              threadId: thread.id,
+              cause,
+            }),
+        ),
+      );
     const settleAsError = (lastError: string) =>
       Effect.gen(function* () {
         yield* Effect.gen(function* () {
@@ -665,32 +705,7 @@ export const reconcileProviderSessions = Effect.gen(function* () {
           ),
         );
 
-        yield* Effect.gen(function* () {
-          const reconciledAt = DateTime.formatIso(yield* DateTime.now);
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
-            commandId: CommandId.make(yield* crypto.randomUUIDv4),
-            threadId: thread.id,
-            session: {
-              ...boundSession,
-              status: "error",
-              activeTurnId: null,
-              lastError,
-              updatedAt: reconciledAt,
-            },
-            createdAt: reconciledAt,
-          });
-        }).pipe(
-          Effect.retry({ times: 1 }),
-          Effect.catchCauseIf(
-            (cause) => !Cause.hasInterrupts(cause),
-            (cause) =>
-              Effect.logWarning("failed to settle orphaned provider session projection", {
-                threadId: thread.id,
-                cause,
-              }),
-          ),
-        );
+        yield* settleProjectionAsError(lastError);
       });
 
     if (
@@ -797,9 +812,12 @@ export const reconcileProviderSessions = Effect.gen(function* () {
             // The provider lost the interrupted conversation and started a new
             // one. A continuation prompt would reach a model with no context,
             // so leave the fresh runtime idle and ask the user to resend.
+            // ProviderService already persisted the new session's cursor, so
+            // settle only the projection; the markers clear below against the
+            // current binding.
             if (recovered.conversationReset === true) {
-              yield* settleAsError(CONVERSATION_RESET_AFTER_RESTART_ERROR);
-              return;
+              yield* settleProjectionAsError(CONVERSATION_RESET_AFTER_RESTART_ERROR);
+              return recovered.sessionIncarnationId;
             }
             const capabilities = yield* providerService.getCapabilities(providerInstanceId);
             yield* providerService.sendTurn({
@@ -809,11 +827,12 @@ export const reconcileProviderSessions = Effect.gen(function* () {
                 : { input: SERVER_UPDATE_CONTINUATION_PROMPT }),
               interactionMode: thread.interactionMode,
             });
+            return recovered.sessionIncarnationId;
           });
           const continuationExit = yield* Effect.exit(continuation);
           if (Exit.isSuccess(continuationExit) || Cause.hasInterrupts(continuationExit.cause)) {
             if (Exit.isSuccess(continuationExit)) {
-              yield* clearContinuationMarkers(directory, [thread.id]).pipe(
+              yield* clearContinuationMarkers(directory, [thread.id], continuationExit.value).pipe(
                 Effect.uninterruptible,
                 Effect.catchCause((cause) =>
                   Effect.logWarning("failed to clear completed provider session continuation", {
