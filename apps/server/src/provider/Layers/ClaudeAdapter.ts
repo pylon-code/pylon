@@ -402,6 +402,8 @@ interface ClaudeTaskAgentState {
 const PENDING_TASK_ENTRY_CAP = 256;
 /** How long Stop waits for Claude to abort a turn before killing the process. */
 const CLAUDE_INTERRUPT_GRACE = "3 seconds";
+/** Bounds the check for an unsaved session; a slow check keeps the resume. */
+const CLAUDE_UNSAVED_RESUME_PROBE_TIMEOUT = "10 seconds";
 
 /**
  * Buffers a value that a later task_started reads by tool_use_id (a racing
@@ -1992,7 +1994,12 @@ function toSessionError(
   cause: unknown,
 ): ProviderAdapterSessionNotFoundError | ProviderAdapterSessionClosedError | undefined {
   const normalized = toMessage(cause, "").toLowerCase();
-  if (normalized.includes("unknown session") || normalized.includes("not found")) {
+  if (
+    normalized.includes("unknown session") ||
+    normalized.includes("not found") ||
+    // Claude Code's reply when resuming a session id it never saved.
+    normalized.includes("no conversation found")
+  ) {
     return new ProviderAdapterSessionNotFoundError({
       provider: PROVIDER,
       threadId,
@@ -4857,8 +4864,46 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     const startedAt = yield* nowIso;
-    const resumeState = readClaudeResumeState(input.resumeCursor);
+    const persistedResumeState = readClaudeResumeState(input.resumeCursor);
     const threadId = input.threadId;
+    // Pylon generates the Claude session id and records it before Claude has
+    // written a transcript. A restart during the first turn can leave a cursor
+    // for a conversation Claude never saved, and resuming it fails every turn
+    // with "No conversation found". Without a completed turn or recorded
+    // message id, check the history and start fresh only when it is
+    // confirmed empty; a failed check keeps the resume.
+    const unprovenResumeSessionId =
+      exactStart === undefined &&
+      persistedResumeState?.resume !== undefined &&
+      (persistedResumeState.turnCount ?? 0) === 0 &&
+      persistedResumeState.resumeSessionAt === undefined &&
+      !(persistedResumeState.turnStartMessageIds ?? []).some((id) => id !== null)
+        ? persistedResumeState.resume
+        : undefined;
+    const resumeUnsaved =
+      unprovenResumeSessionId !== undefined &&
+      (yield* makeHistoryAccess({ session: input }).pipe(
+        Effect.flatMap(({ readHistory }) => readHistory(unprovenResumeSessionId)),
+        Effect.timeout(CLAUDE_UNSAVED_RESUME_PROBE_TIMEOUT),
+        Effect.matchEffect({
+          onFailure: (cause) =>
+            Effect.logWarning("claude.session.resume-probe-failed", {
+              threadId,
+              sessionId: unprovenResumeSessionId,
+              cause,
+            }).pipe(Effect.as(false)),
+          onSuccess: (messages) =>
+            messages.length > 0
+              ? Effect.succeed(false)
+              : Effect.logInfo("claude.session.resume-unsaved", {
+                  threadId,
+                  sessionId: unprovenResumeSessionId,
+                }).pipe(Effect.as(true)),
+        }),
+      ));
+    const unsavedResumeSessionId = resumeUnsaved ? unprovenResumeSessionId : undefined;
+    // An unsaved session carries no turns, so it restarts as a new session.
+    const resumeState = unsavedResumeSessionId === undefined ? persistedResumeState : undefined;
     const existingResumeSessionId = resumeState?.resume;
     const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
     const sessionId = existingResumeSessionId ?? newSessionId;
@@ -5445,6 +5490,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         existingResumeSessionId !== undefined ? "resume-session" : "generated-session",
       "claude.resume.thread_id": resumeState?.threadId ?? "",
       "claude.resume.session_id": existingResumeSessionId ?? "",
+      "claude.resume.unsaved_session_id": unsavedResumeSessionId ?? "",
       "claude.resume.session_at": resumeState?.resumeSessionAt ?? "",
       "claude.resume.turn_count": resumeState?.turnCount ?? -1,
       "claude.query.cwd": input.cwd ?? "",

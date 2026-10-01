@@ -127,8 +127,11 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.setModelCalls.push(model);
   };
 
+  public permissionModeError: unknown = undefined;
+
   readonly setPermissionMode = async (mode: PermissionMode): Promise<void> => {
     this.setPermissionModeCalls.push(mode);
+    if (this.permissionModeError !== undefined) throw this.permissionModeError;
   };
 
   readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
@@ -4022,6 +4025,10 @@ describe("ClaudeAdapterLive", () => {
       Effect.gen(function* () {
         const claudeConfig = decodeClaudeSettings({});
         return yield* makeClaudeAdapter(claudeConfig, {
+          // The replacement resumes the first session, so its prompt is saved.
+          getSessionMessages: async (sessionId) => [
+            claudeHistoryMessage({ type: "user", uuid: "user-1", sessionId }),
+          ],
           createQuery: () => {
             const query = new FakeClaudeQuery();
             if (queries.length === 0) {
@@ -5261,6 +5268,10 @@ describe("ClaudeAdapterLive", () => {
       Effect.gen(function* () {
         const claudeConfig = decodeClaudeSettings({});
         return yield* makeClaudeAdapter(claudeConfig, {
+          // The replacement resumes the first session, so its prompt is saved.
+          getSessionMessages: async (sessionId) => [
+            claudeHistoryMessage({ type: "user", uuid: "user-1", sessionId }),
+          ],
           createQuery: () => {
             const query = new FakeClaudeQuery();
             queries.push(query);
@@ -7478,6 +7489,135 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(createInput?.options.resume, "550e8400-e29b-41d4-a716-446655440000");
       assert.equal(createInput?.options.sessionId, undefined);
       assert.equal(createInput?.options.resumeSessionAt, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("starts fresh when a first-turn resume id was never saved by Claude", () => {
+    const unsavedSessionId = "550e8400-e29b-41d4-a716-446655440020";
+    const historyReads: Array<string> = [];
+    const harness = makeHarness({
+      getSessionMessages: async (sessionId) => {
+        historyReads.push(sessionId);
+        return [];
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: { resume: unsavedSessionId, turnCount: 0, turnStartMessageIds: [] },
+        runtimeMode: "full-access",
+      });
+
+      assert.deepEqual(historyReads, [unsavedSessionId]);
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.equal(options?.resume, undefined);
+      assert.equal(typeof options?.sessionId, "string");
+      assert.notEqual(options?.sessionId, unsavedSessionId);
+      // The persisted cursor must name the session Claude will actually save.
+      assert.deepEqual(session.resumeCursor, {
+        threadId: RESUME_THREAD_ID,
+        resume: options?.sessionId,
+        turnCount: 0,
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello again",
+        interactionMode: "default",
+        attachments: [],
+      });
+      assert.deepEqual(harness.query.setPermissionModeCalls, ["bypassPermissions"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("resumes a first-turn session once Claude has saved the prompt", () => {
+    const savedSessionId = "550e8400-e29b-41d4-a716-446655440021";
+    const harness = makeHarness({
+      getSessionMessages: async (sessionId) => [
+        claudeHistoryMessage({ type: "user", uuid: "user-1", sessionId, content: "hello" }),
+      ],
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: { resume: savedSessionId, turnCount: 0, turnStartMessageIds: [] },
+        runtimeMode: "full-access",
+      });
+
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.equal(options?.resume, savedSessionId);
+      assert.equal(options?.sessionId, undefined);
+      assert.equal(
+        (session.resumeCursor as { readonly resume?: string } | undefined)?.resume,
+        savedSessionId,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps resuming when the first-turn history check fails", () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440022";
+    const harness = makeHarness({
+      getSessionMessages: async () => {
+        throw new Error("history unavailable");
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: { resume: sessionId, turnCount: 0, turnStartMessageIds: [] },
+        runtimeMode: "full-access",
+      });
+
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.equal(options?.resume, sessionId);
+      assert.equal(options?.sessionId, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("reports a missing Claude conversation as a session-not-found error", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.permissionModeError = new Error(
+        "No conversation found with session ID: 550e8400-e29b-41d4-a716-446655440023",
+      );
+
+      const error = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          input: "hello",
+          interactionMode: "default",
+          attachments: [],
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error._tag, "ProviderAdapterSessionNotFoundError");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -9990,7 +10130,11 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect("routes Claude resume compaction through the shared user-input UI", () => {
-    const harness = makeHarness();
+    const harness = makeHarness({
+      getSessionMessages: async (sessionId) => [
+        claudeHistoryMessage({ type: "user", uuid: "user-1", sessionId }),
+      ],
+    });
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
       const session = yield* adapter.startSession({
