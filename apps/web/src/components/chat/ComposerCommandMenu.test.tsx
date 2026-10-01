@@ -2,12 +2,37 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ComposerCommandMenu } from "./ComposerCommandMenu";
+import { ComposerCommandMenu, composerSuggestionOptionId } from "./ComposerCommandMenu";
+
+describe("composerSuggestionOptionId", () => {
+  it("keeps whitespace, escape-like paths, and malformed UTF-16 distinct", () => {
+    const paths = [
+      "docs/my file.md",
+      "docs/my_file.md",
+      "docs/my%20file.md",
+      "docs/my\tfile.md",
+      "docs/\ud800.md",
+      "docs/\ud801.md",
+      "docs/\udc00.md",
+      "docs/\ufffd.md",
+      "docs/\\ud800.md",
+      "docs/\ud83d\ude80.md",
+    ];
+    const ids = paths.map((path) => composerSuggestionOptionId("suggestions", `path:file:${path}`));
+
+    expect(new Set(ids).size).toBe(paths.length);
+    for (const id of ids) expect(id).not.toMatch(/\s|[\ud800-\udfff]/u);
+    expect(composerSuggestionOptionId("other-composer", paths[0]!)).not.toBe(
+      composerSuggestionOptionId("suggestions", paths[0]!),
+    );
+  });
+});
 
 describe("ComposerCommandMenu", () => {
   it("renders slash-command results as an attached composer drawer", () => {
     const markup = renderToStaticMarkup(
       <ComposerCommandMenu
+        listId="test-suggestions"
         items={[]}
         resolvedTheme="dark"
         isLoading={false}
@@ -25,6 +50,7 @@ describe("ComposerCommandMenu", () => {
   it("renders commands without a category heading or invented icons", () => {
     const markup = renderToStaticMarkup(
       <ComposerCommandMenu
+        listId="test-suggestions"
         items={[
           {
             id: "slash:model",
@@ -54,9 +80,54 @@ describe("ComposerCommandMenu", () => {
     expect(markup).toContain("text-left");
   });
 
+  it("names the listbox and exposes the active option to the editor", () => {
+    const markup = renderToStaticMarkup(
+      <ComposerCommandMenu
+        listId="test-suggestions"
+        items={[
+          {
+            id: "slash:model",
+            type: "slash-command",
+            command: "model",
+            label: "/model",
+            description: "Switch response model for this thread",
+          },
+          {
+            id: "slash:plan",
+            type: "slash-command",
+            command: "plan",
+            label: "/plan",
+            description: "Switch this thread into plan mode",
+          },
+        ]}
+        resolvedTheme="dark"
+        isLoading={false}
+        triggerKind="slash-command"
+        activeItemId="slash:plan"
+        onHighlightedItemChange={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+    const openingTag = (id: string) =>
+      markup.match(
+        new RegExp(`<[^>]*\\sid="${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[^>]*>`),
+      )?.[0] ?? "";
+
+    const listbox = openingTag("test-suggestions");
+    expect(listbox).toContain('role="listbox"');
+    expect(listbox).toContain('aria-label="Commands"');
+    const active = openingTag(composerSuggestionOptionId("test-suggestions", "slash:plan"));
+    expect(active).toContain('role="option"');
+    expect(active).toContain('aria-selected="true"');
+    const inactive = openingTag(composerSuggestionOptionId("test-suggestions", "slash:model"));
+    expect(inactive).toContain('role="option"');
+    expect(inactive).toContain('aria-selected="false"');
+  });
+
   it("renders the skill source icon inside its badge", () => {
     const markup = renderToStaticMarkup(
       <ComposerCommandMenu
+        listId="test-suggestions"
         items={[
           {
             id: "skill:codex:browser",
@@ -99,6 +170,7 @@ describe("ComposerCommandMenu", () => {
   it("keeps slash skills aligned with the source icon inside the badge", () => {
     const markup = renderToStaticMarkup(
       <ComposerCommandMenu
+        listId="test-suggestions"
         items={[
           {
             id: "skill:codex:ask-matt",

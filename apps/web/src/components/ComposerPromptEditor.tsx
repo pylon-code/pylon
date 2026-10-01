@@ -891,6 +891,11 @@ interface ComposerPromptEditorProps {
   allowUnicodeSkillAliases?: boolean;
   disabled: boolean;
   placeholder: string;
+  ariaLabel?: string | undefined;
+  /** Identifies an editor with suggestions, even while its list is closed. */
+  suggestionListId?: string | undefined;
+  /** References the highlighted option only while its list is rendered. */
+  activeSuggestionId?: string | undefined;
   containerClassName?: string;
   className?: string;
   placeholderClassName?: string;
@@ -1685,6 +1690,9 @@ function ComposerPromptEditorInner({
   allowUnicodeSkillAliases = false,
   disabled,
   placeholder,
+  ariaLabel,
+  suggestionListId,
+  activeSuggestionId,
   containerClassName,
   className,
   placeholderClassName,
@@ -2080,6 +2088,23 @@ function ComposerPromptEditorInner({
                   className,
                 )}
                 data-testid="composer-editor"
+                ariaMultiline
+                ariaLabel={ariaLabel}
+                // Lexical drops the autocomplete, list and active-option
+                // references (and marks the textbox read-only) while the editor
+                // is not editable.
+                {...(suggestionListId
+                  ? {
+                      ariaAutoComplete: "list" as const,
+                      "aria-haspopup": disabled ? undefined : ("listbox" as const),
+                      ...(activeSuggestionId
+                        ? {
+                            ariaControls: suggestionListId,
+                            ariaActiveDescendant: activeSuggestionId,
+                          }
+                        : {}),
+                    }
+                  : {})}
                 aria-placeholder={placeholder}
                 placeholder={<span />}
                 onKeyDown={(event) => {
@@ -2175,6 +2200,9 @@ export function ComposerPromptEditor({
   allowUnicodeSkillAliases = false,
   disabled,
   placeholder,
+  ariaLabel,
+  suggestionListId,
+  activeSuggestionId,
   containerClassName,
   className,
   placeholderClassName,
@@ -2232,6 +2260,9 @@ export function ComposerPromptEditor({
           allowUnicodeSkillAliases={allowUnicodeSkillAliases}
           disabled={disabled}
           placeholder={placeholder}
+          ariaLabel={ariaLabel}
+          suggestionListId={suggestionListId}
+          activeSuggestionId={activeSuggestionId}
           {...(containerClassName ? { containerClassName } : {})}
           onChange={onChange}
           {...(onVisibleSelectionChange ? { onVisibleSelectionChange } : {})}
