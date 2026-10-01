@@ -576,6 +576,53 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
     }),
   );
 
+  it.effect("lets a commit guard read the binding and patch only the given fields", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.make("thread-guarded-patch");
+      yield* directory.upsert({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        threadId,
+        status: "running",
+        resumeCursor: { resume: "current-session" },
+        runtimePayload: { sessionIncarnationId: "current", continueAfterServerUpdate: "turn-1" },
+      });
+      // Startup recovery checks ownership inside the write; the guard's read
+      // must not wait on the directory's own mutation permit.
+      const ownedBy = (incarnation: string) =>
+        directory.getBinding(threadId).pipe(
+          Effect.map(
+            (binding) =>
+              Option.isSome(binding) &&
+              (binding.value.runtimePayload as Record<string, unknown>).sessionIncarnationId ===
+                incarnation,
+          ),
+          Effect.orElseSucceed(() => false),
+        );
+      const clearMarker = (incarnation: string) =>
+        directory.upsert(
+          {
+            provider: ProviderDriverKind.make("claudeAgent"),
+            threadId,
+            runtimePayload: { continueAfterServerUpdate: null },
+          },
+          { commitGuard: ownedBy(incarnation) },
+        );
+
+      yield* clearMarker("retired");
+      expect(Option.getOrThrow(yield* directory.getBinding(threadId))).toMatchObject({
+        runtimePayload: { continueAfterServerUpdate: "turn-1" },
+      });
+      yield* clearMarker("current");
+      expect(Option.getOrThrow(yield* directory.getBinding(threadId))).toMatchObject({
+        status: "running",
+        resumeCursor: { resume: "current-session" },
+        runtimePayload: { sessionIncarnationId: "current", continueAfterServerUpdate: null },
+      });
+    }),
+  );
+
   it.effect("skips a session binding when its private commit guard retires", () =>
     Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;

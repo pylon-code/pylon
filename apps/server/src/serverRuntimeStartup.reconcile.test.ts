@@ -98,6 +98,29 @@ const makeProviderService = (
     streamEvents: Stream.empty,
   }) satisfies ProviderService.ProviderService["Service"];
 
+// Mirrors ProviderSessionDirectory.upsert: unset fields keep their stored
+// values and the runtime payload merges into the stored one.
+const mergeBinding = (
+  current: ProviderSessionDirectory.ProviderRuntimeBinding | undefined,
+  next: ProviderSessionDirectory.ProviderRuntimeBinding,
+): ProviderSessionDirectory.ProviderRuntimeBinding => {
+  const payload = (value: unknown) =>
+    value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const status = next.status ?? current?.status;
+  const resumeCursor = next.resumeCursor !== undefined ? next.resumeCursor : current?.resumeCursor;
+  const runtimePayload =
+    next.runtimePayload === undefined
+      ? current?.runtimePayload
+      : { ...payload(current?.runtimePayload), ...payload(next.runtimePayload) };
+  return {
+    ...current,
+    ...next,
+    ...(status !== undefined ? { status } : {}),
+    ...(resumeCursor !== undefined ? { resumeCursor } : {}),
+    ...(runtimePayload !== undefined ? { runtimePayload } : {}),
+  };
+};
+
 // A restarted server has no live runtime, so recovery mints a fresh
 // incarnation for the thread. Continuation must bind this exact id.
 const recoveredIncarnationId = (threadId: ThreadId) =>
@@ -328,7 +351,7 @@ it.effect.each(
             }),
           upsert: (binding) =>
             Effect.sync(() => {
-              bindings.set(binding.threadId, binding);
+              bindings.set(binding.threadId, mergeBinding(bindings.get(binding.threadId), binding));
               upserts.push(binding);
               const clearedCount = upserts.filter((candidate) => {
                 const payload = candidate.runtimePayload;
@@ -644,7 +667,8 @@ it.effect("reconciles multiple active and archived orphans but skips live sessio
     Effect.tap(() =>
       Effect.sync(() => {
         const orphanIds = [starting.id, running.id, staleActiveTurn.id, archived.id];
-        assert.deepStrictEqual(bindingReads, orphanIds);
+        // Each settle re-reads the binding inside the directory's write guard.
+        assert.deepStrictEqual([...new Set(bindingReads)], orphanIds);
         assert.deepStrictEqual(
           dispatched.map((command) => command.type === "thread.session.set" && command.threadId),
           orphanIds,
@@ -661,6 +685,8 @@ it.effect("reconciles multiple active and archived orphans but skips live sessio
           orphanIds.map(() => ({ status: "error" as const, activeTurnId: null })),
         );
         assert.equal(upserts.length, orphanIds.length);
+        // Settling patches only the stopped status and cleared fields; the
+        // directory merges them, so the cursor and other payload keys stay.
         for (const binding of upserts) {
           assert.equal(binding.status, "stopped");
           assert.deepStrictEqual(
@@ -668,13 +694,12 @@ it.effect("reconciles multiple active and archived orphans but skips live sessio
             binding.threadId === staleActiveTurn.id
               ? {
                   activeTurnId: null,
-                  unrelated: binding.threadId,
                   continueAfterServerUpdate: null,
                   continueAfterServerUpdatePrepared: null,
                 }
-              : { activeTurnId: null, unrelated: binding.threadId },
+              : { activeTurnId: null },
           );
-          assert.deepStrictEqual(binding.resumeCursor, { cursor: binding.threadId });
+          assert.equal(binding.resumeCursor, undefined);
         }
       }),
     ),
@@ -990,7 +1015,7 @@ for (const preparedStatus of [
           getBinding: () => Effect.sync(() => Option.some(binding)),
           upsert: (next: ProviderSessionDirectory.ProviderRuntimeBinding) =>
             Effect.gen(function* () {
-              binding = next;
+              binding = mergeBinding(binding, next);
               if (binding.status !== "starting" || sends.length === 0) return;
               yield* Deferred.succeed(cleared, undefined);
             }),
@@ -1098,7 +1123,7 @@ it.effect("settles failed opt-in recovery without retrying the provider turn", (
         getBinding: () => Effect.sync(() => Option.some(binding)),
         upsert: (next) =>
           Effect.sync(() => {
-            binding = next;
+            binding = mergeBinding(binding, next);
           }),
         removeExact: () => Effect.die("unused"),
         recordImportedTranscript: () => Effect.die("unused"),
@@ -1156,5 +1181,296 @@ it.effect("settles failed opt-in recovery without retrying the provider turn", (
       continueAfterServerUpdate: null,
       continueAfterServerUpdatePrepared: null,
     });
+  }),
+);
+
+it.effect("does not send a continuation when the provider restarted the conversation", () =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make("turn-conversation-reset");
+    const thread = makeThread("thread-conversation-reset", "running", turnId);
+    const freshCursor = { threadId: thread.id, resume: "fresh-session", turnCount: 1 };
+    const cleared = yield* Deferred.make<void>();
+    const sends: ProviderSendTurnInput[] = [];
+    const dispatched: OrchestrationCommand[] = [];
+    let binding: ProviderSessionDirectory.ProviderRuntimeBinding = {
+      threadId: thread.id,
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId,
+      status: "running",
+      resumeCursor: { threadId: thread.id },
+      runtimePayload: { activeTurnId: turnId },
+    };
+    yield* runReconciliation({
+      threads: [thread],
+      continueAfterRestart: true,
+      providerService: {
+        ...makeProviderService(),
+        // Like ProviderService, persist the new session's cursor and
+        // incarnation into the binding, merging the runtime payload.
+        startSession: (threadId, input) =>
+          fakeStartSession(threadId, input).pipe(
+            Effect.map((session) => ({
+              ...session,
+              resumeCursor: freshCursor,
+              conversationReset: true,
+            })),
+            Effect.tap((session) =>
+              Effect.sync(() => {
+                binding = {
+                  ...binding,
+                  status: "running",
+                  resumeCursor: session.resumeCursor,
+                  runtimePayload: {
+                    ...(binding.runtimePayload as Record<string, unknown>),
+                    sessionIncarnationId: session.sessionIncarnationId,
+                  },
+                };
+              }),
+            ),
+          ),
+        sendTurn: (input) =>
+          Effect.sync(() => {
+            sends.push(input);
+            return { threadId: input.threadId, turnId: TurnId.make("unexpected") };
+          }),
+      },
+      directory: {
+        getBinding: () => Effect.sync(() => Option.some(binding)),
+        upsert: (next, options) =>
+          Effect.gen(function* () {
+            if (options?.commitGuard !== undefined && !(yield* options.commitGuard)) return;
+            binding = mergeBinding(binding, next);
+            const payload = binding.runtimePayload as Record<string, unknown> | undefined;
+            if (
+              payload?.sessionIncarnationId !== undefined &&
+              payload.continueAfterServerUpdate === null
+            ) {
+              yield* Deferred.succeed(cleared, undefined);
+            }
+          }),
+        removeExact: () => Effect.die("unused"),
+        recordImportedTranscript: () => Effect.die("unused"),
+        getProvider: () => Effect.die("unused"),
+        listThreadIds: () => Effect.die("unused"),
+        listBindings: () => Effect.succeed([]),
+      },
+      dispatch: (command) =>
+        Effect.sync(() => {
+          dispatched.push(command);
+          return { sequence: dispatched.length };
+        }),
+    });
+    yield* Deferred.await(cleared);
+
+    // A "continue" prompt would reach a conversation with none of the
+    // interrupted turn's context, so the thread asks the user to resend.
+    assert.equal(sends.length, 0);
+    const errorSettle = dispatched.at(-1);
+    assert.equal(errorSettle?.type, "thread.session.set");
+    if (errorSettle?.type === "thread.session.set") {
+      assert.equal(errorSettle.session.status, "error");
+      assert.equal(errorSettle.session.sessionIncarnationId, recoveredIncarnationId(thread.id));
+      assert.match(errorSettle.session.lastError ?? "", /Send your message again/);
+    }
+    // The new session's cursor and incarnation survive the settlement, so a
+    // second restart recovers the new session rather than the lost one.
+    assert.deepStrictEqual(binding.resumeCursor, freshCursor);
+    assert.equal(binding.status, "running");
+    assert.deepStrictEqual(binding.runtimePayload, {
+      activeTurnId: null,
+      continueAfterServerUpdate: null,
+      continueAfterServerUpdatePrepared: null,
+      sessionIncarnationId: recoveredIncarnationId(thread.id),
+    });
+  }),
+);
+
+// Recovery whose provider start persists a new cursor and incarnation, the way
+// ProviderService.startSession does, through a directory that honors write
+// guards. `interleave` runs another writer right after the next binding read.
+const runRecoveryWithPersistedStart = (input: {
+  readonly threadName: string;
+  readonly onSendTurn?: (
+    interleave: (
+      update: (
+        binding: ProviderSessionDirectory.ProviderRuntimeBinding,
+      ) => ProviderSessionDirectory.ProviderRuntimeBinding,
+    ) => void,
+  ) => void;
+  readonly failRecoveredBinding?: boolean;
+}) =>
+  Effect.gen(function* () {
+    const turnId = TurnId.make(`turn-${input.threadName}`);
+    const thread = makeThread(input.threadName, "running", turnId);
+    const freshCursor = { threadId: thread.id, resume: "fresh-session" };
+    const done = yield* Deferred.make<void>();
+    const errorSettled = yield* Deferred.make<void>();
+    const dispatched: OrchestrationCommand[] = [];
+    let pendingInterleave:
+      | ((
+          binding: ProviderSessionDirectory.ProviderRuntimeBinding,
+        ) => ProviderSessionDirectory.ProviderRuntimeBinding)
+      | undefined;
+    let binding: ProviderSessionDirectory.ProviderRuntimeBinding = {
+      threadId: thread.id,
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId,
+      status: "running",
+      resumeCursor: { threadId: thread.id, resume: "lost-session" },
+      runtimePayload: { activeTurnId: turnId },
+    };
+    const readBinding = () =>
+      Effect.sync(() => {
+        const snapshot = binding;
+        const update = pendingInterleave;
+        pendingInterleave = undefined;
+        if (update) binding = update(binding);
+        return Option.some(snapshot);
+      });
+    yield* runReconciliation({
+      threads: [thread],
+      continueAfterRestart: true,
+      providerService: {
+        ...makeProviderService(),
+        getCapabilities: () =>
+          Effect.succeed({ sessionModelSwitch: "in-session", promptlessTurnContinuation: true }),
+        startSession: (threadId, startInput) =>
+          fakeStartSession(threadId, startInput).pipe(
+            Effect.map((session) => ({ ...session, resumeCursor: freshCursor })),
+            Effect.tap((session) =>
+              Effect.sync(() => {
+                binding = mergeBinding(binding, {
+                  threadId,
+                  provider: session.provider,
+                  status: "running",
+                  resumeCursor: session.resumeCursor,
+                  runtimePayload: { sessionIncarnationId: session.sessionIncarnationId },
+                });
+              }),
+            ),
+          ),
+        sendTurn: (sendInput) =>
+          Effect.sync(() => {
+            input.onSendTurn?.((update) => {
+              pendingInterleave = update;
+            });
+            return { threadId: sendInput.threadId, turnId: TurnId.make("turn-continued") };
+          }),
+      },
+      directory: {
+        getBinding: readBinding,
+        upsert: (next, options) =>
+          Effect.gen(function* () {
+            const committed = options?.commitGuard === undefined || (yield* options.commitGuard);
+            if (committed) binding = mergeBinding(binding, next);
+            // Signal once a marker clear was attempted, written or guarded off.
+            const payload = next.runtimePayload as Record<string, unknown> | undefined;
+            if (payload?.continueAfterServerUpdatePrepared === null) {
+              yield* Deferred.succeed(done, undefined);
+            }
+          }),
+        removeExact: () => Effect.die("unused"),
+        recordImportedTranscript: () => Effect.die("unused"),
+        getProvider: () => Effect.die("unused"),
+        listThreadIds: () => Effect.die("unused"),
+        listBindings: () => Effect.succeed([]),
+      },
+      dispatch: (command) =>
+        Effect.gen(function* () {
+          dispatched.push(command);
+          if (
+            input.failRecoveredBinding === true &&
+            command.type === "thread.session.set" &&
+            command.session.status === "running"
+          ) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "projection unavailable",
+            });
+          }
+          if (command.type === "thread.session.set" && command.session.status === "error") {
+            yield* Deferred.succeed(errorSettled, undefined);
+          }
+          return { sequence: dispatched.length };
+        }),
+    });
+    // A failed recovery settles the projection after its binding patch.
+    yield* Deferred.await(input.failRecoveredBinding === true ? errorSettled : done);
+    return { thread, freshCursor, dispatched, binding: () => binding };
+  });
+
+it.effect("clearing continuation markers keeps a turn that advanced the cursor meanwhile", () =>
+  Effect.gen(function* () {
+    const advancedCursor = { threadId: "advanced", resume: "fresh-session", turnCount: 2 };
+    // A user turn on the recovered incarnation persists between the clear's
+    // read and its write.
+    const run = yield* runRecoveryWithPersistedStart({
+      threadName: "thread-advanced-during-clear",
+      onSendTurn: (interleave) =>
+        interleave((current) =>
+          mergeBinding(current, {
+            ...current,
+            resumeCursor: advancedCursor,
+            runtimePayload: { activeTurnId: "turn-user" },
+          }),
+        ),
+    });
+    const binding = run.binding();
+    assert.deepStrictEqual(binding.resumeCursor, advancedCursor);
+    assert.deepStrictEqual(binding.runtimePayload, {
+      activeTurnId: "turn-user",
+      continueAfterServerUpdate: null,
+      continueAfterServerUpdatePrepared: null,
+      sessionIncarnationId: recoveredIncarnationId(run.thread.id),
+    });
+  }),
+);
+
+it.effect("clearing continuation markers leaves a replacement session's binding alone", () =>
+  Effect.gen(function* () {
+    const replacementCursor = { threadId: "replacement", resume: "replacement-session" };
+    // A replacement session persists its own incarnation and cursor between
+    // the clear's read and its write.
+    const run = yield* runRecoveryWithPersistedStart({
+      threadName: "thread-replaced-during-clear",
+      onSendTurn: (interleave) =>
+        interleave((current) =>
+          mergeBinding(current, {
+            ...current,
+            resumeCursor: replacementCursor,
+            runtimePayload: { sessionIncarnationId: "replacement-incarnation" },
+          }),
+        ),
+    });
+    const binding = run.binding();
+    assert.deepStrictEqual(binding.resumeCursor, replacementCursor);
+    assert.equal(
+      (binding.runtimePayload as Record<string, unknown>).sessionIncarnationId,
+      "replacement-incarnation",
+    );
+    // The recovered incarnation's clear was guarded off.
+    assert.equal(
+      (binding.runtimePayload as Record<string, unknown>).continueAfterServerUpdatePrepared,
+      true,
+    );
+  }),
+);
+
+it.effect("a failed recovery settle keeps the cursor the new session persisted", () =>
+  Effect.gen(function* () {
+    const run = yield* runRecoveryWithPersistedStart({
+      threadName: "thread-failed-after-start",
+      failRecoveredBinding: true,
+    });
+    const binding = run.binding();
+    // The recovered runtime is live; the pre-restart cursor must not return.
+    assert.deepStrictEqual(binding.resumeCursor, run.freshCursor);
+    assert.equal(binding.status, "running");
+    const payload = binding.runtimePayload as Record<string, unknown>;
+    assert.equal(payload.sessionIncarnationId, recoveredIncarnationId(run.thread.id));
+    assert.equal(payload.continueAfterServerUpdate, null);
+    assert.equal(payload.continueAfterServerUpdatePrepared, null);
+    const settle = run.dispatched.at(-1);
+    assert.equal(settle?.type === "thread.session.set" && settle.session.status, "error");
   }),
 );

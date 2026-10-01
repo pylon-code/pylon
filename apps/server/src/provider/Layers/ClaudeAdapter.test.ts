@@ -127,8 +127,11 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.setModelCalls.push(model);
   };
 
+  public permissionModeError: unknown = undefined;
+
   readonly setPermissionMode = async (mode: PermissionMode): Promise<void> => {
     this.setPermissionModeCalls.push(mode);
+    if (this.permissionModeError !== undefined) throw this.permissionModeError;
   };
 
   readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
@@ -229,7 +232,21 @@ function makeHarness(config?: {
     layer: Layer.effect(
       ClaudeAdapter,
       Effect.gen(function* () {
-        const claudeConfig = decodeClaudeSettings(config?.claudeConfig ?? {});
+        // A history hook stands in for Claude's transcripts; give the
+        // unsaved-session scan an empty config home instead of ~/.claude.
+        const isolatedHome =
+          config?.getSessionMessages && !config.claudeConfig?.homePath && !config.environment
+            ? yield* Effect.acquireRelease(
+                Effect.sync(() =>
+                  NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-config-home-")),
+                ),
+                (home) => Effect.sync(() => NodeFS.rmSync(home, { recursive: true, force: true })),
+              )
+            : undefined;
+        const claudeConfig = decodeClaudeSettings({
+          ...(isolatedHome ? { homePath: isolatedHome } : {}),
+          ...config?.claudeConfig,
+        });
         const crypto = yield* Crypto.Crypto;
         const adapter = makeClaudeAdapter(claudeConfig, adapterOptions).pipe(
           Effect.provideService(Crypto.Crypto, config?.crypto?.(crypto) ?? crypto),
@@ -4022,6 +4039,10 @@ describe("ClaudeAdapterLive", () => {
       Effect.gen(function* () {
         const claudeConfig = decodeClaudeSettings({});
         return yield* makeClaudeAdapter(claudeConfig, {
+          // The replacement resumes the first session, so its prompt is saved.
+          getSessionMessages: async (sessionId) => [
+            claudeHistoryMessage({ type: "user", uuid: "user-1", sessionId }),
+          ],
           createQuery: () => {
             const query = new FakeClaudeQuery();
             if (queries.length === 0) {
@@ -5261,6 +5282,10 @@ describe("ClaudeAdapterLive", () => {
       Effect.gen(function* () {
         const claudeConfig = decodeClaudeSettings({});
         return yield* makeClaudeAdapter(claudeConfig, {
+          // The replacement resumes the first session, so its prompt is saved.
+          getSessionMessages: async (sessionId) => [
+            claudeHistoryMessage({ type: "user", uuid: "user-1", sessionId }),
+          ],
           createQuery: () => {
             const query = new FakeClaudeQuery();
             queries.push(query);
@@ -7484,6 +7509,342 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("starts fresh when a first-turn resume id was never saved by Claude", () => {
+    const unsavedSessionId = "550e8400-e29b-41d4-a716-446655440020";
+    const historyReads: Array<string> = [];
+    const harness = makeHarness({
+      getSessionMessages: async (sessionId) => {
+        historyReads.push(sessionId);
+        return [];
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: { resume: unsavedSessionId, turnCount: 0, turnStartMessageIds: [] },
+        runtimeMode: "full-access",
+      });
+
+      assert.deepEqual(historyReads, [unsavedSessionId]);
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.equal(options?.resume, undefined);
+      assert.equal(typeof options?.sessionId, "string");
+      assert.notEqual(options?.sessionId, unsavedSessionId);
+      // The persisted cursor must name the session Claude will actually save.
+      assert.deepEqual(session.resumeCursor, {
+        threadId: RESUME_THREAD_ID,
+        resume: options?.sessionId,
+        turnCount: 0,
+        turnStartMessageIds: [],
+      });
+      assert.equal(session.conversationReset, true);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello again",
+        interactionMode: "default",
+        attachments: [],
+      });
+      assert.deepEqual(harness.query.setPermissionModeCalls, ["bypassPermissions"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  const restartDuringFirstTurn = (
+    history: (
+      turnId: string,
+    ) => Awaited<ReturnType<NonNullable<ClaudeAdapterLiveOptions["getSessionMessages"]>>>,
+  ) => {
+    let recordedTurnId: string | undefined;
+    const harness = makeHarness({
+      getSessionMessages: async () => (recordedTurnId === undefined ? [] : history(recordedTurnId)),
+    });
+    const run = Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const first = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const firstSessionId = harness.getLastCreateQueryInput()?.options.sessionId;
+      // ProviderService persists the cursor sendTurn returns, before Claude
+      // has written the prompt to its transcript.
+      const turn = yield* adapter.sendTurn({
+        threadId: first.threadId,
+        input: "hello",
+        attachments: [],
+      });
+      recordedTurnId = String(turn.turnId);
+      const persistedCursor = turn.resumeCursor;
+      yield* adapter.stopSession(first.threadId);
+
+      const restarted = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        resumeCursor: persistedCursor,
+      });
+      return {
+        adapter,
+        firstSessionId,
+        persistedCursor,
+        restarted,
+        options: harness.getLastCreateQueryInput()?.options,
+        turnId: recordedTurnId,
+      };
+    });
+    return { harness, run };
+  };
+
+  it.effect("starts fresh from the cursor a restart-interrupted first turn persisted", () => {
+    const { harness, run } = restartDuringFirstTurn(() => []);
+    return Effect.gen(function* () {
+      const { adapter, firstSessionId, persistedCursor, restarted, options, turnId } = yield* run;
+      const restartedQuery = harness.queries.at(-1)!;
+
+      assert.deepEqual(persistedCursor, {
+        threadId: THREAD_ID,
+        resume: firstSessionId,
+        turnCount: 1,
+        turnStartMessageIds: [turnId],
+      });
+      assert.equal(options?.resume, undefined);
+      assert.equal(typeof options?.sessionId, "string");
+      assert.notEqual(options?.sessionId, firstSessionId);
+      assert.equal(restarted.conversationReset, true);
+      // Turn ids carry over so rollback boundaries still match Pylon's turns.
+      assert.deepEqual(restarted.resumeCursor, {
+        threadId: THREAD_ID,
+        resume: options?.sessionId,
+        turnCount: 1,
+        turnStartMessageIds: [turnId],
+      });
+
+      yield* adapter.sendTurn({
+        threadId: restarted.threadId,
+        input: "hello again",
+        interactionMode: "default",
+        attachments: [],
+      });
+      assert.equal(harness.queries.length, 2);
+      assert.deepEqual(restartedQuery.setPermissionModeCalls, ["bypassPermissions"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("resumes the restart-interrupted first turn once Claude saved its prompt", () => {
+    const { harness, run } = restartDuringFirstTurn((turnId) => [
+      claudeHistoryMessage({ type: "user", uuid: turnId, content: "hello" }),
+    ]);
+    return Effect.gen(function* () {
+      const { firstSessionId, restarted, options } = yield* run;
+
+      assert.equal(options?.resume, firstSessionId);
+      assert.equal(options?.sessionId, undefined);
+      assert.equal(restarted.conversationReset, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("resumes a first-turn session once Claude has saved the prompt", () => {
+    const savedSessionId = "550e8400-e29b-41d4-a716-446655440021";
+    const harness = makeHarness({
+      getSessionMessages: async (sessionId) => [
+        claudeHistoryMessage({ type: "user", uuid: "user-1", sessionId, content: "hello" }),
+      ],
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: { resume: savedSessionId, turnCount: 0, turnStartMessageIds: [] },
+        runtimeMode: "full-access",
+      });
+
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.equal(options?.resume, savedSessionId);
+      assert.equal(options?.sessionId, undefined);
+      assert.equal(
+        (session.resumeCursor as { readonly resume?: string } | undefined)?.resume,
+        savedSessionId,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps resuming a session Claude saved under another project", () => {
+    // The SDK lookup is scoped to the current cwd, but Claude Code resumes a
+    // session id from any project, as after a moved workspace.
+    const sessionId = "550e8400-e29b-41d4-a716-446655440024";
+    const readOptions: Array<unknown> = [];
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-config-home-"));
+    const project = NodePath.join(home, "projects", "-previous-workspace");
+    NodeFS.mkdirSync(project, { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(project, `${sessionId}.jsonl`), "{}\n");
+    const harness = makeHarness({
+      claudeConfig: { homePath: home },
+      getSessionMessages: async (_sessionId, options) => {
+        readOptions.push(options);
+        return [];
+      },
+    });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(home, { recursive: true, force: true })),
+      );
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        cwd: NodeOS.tmpdir(),
+        resumeCursor: { resume: sessionId, turnCount: 1, turnStartMessageIds: ["turn-1"] },
+        runtimeMode: "full-access",
+      });
+
+      // The check searches every project rather than only the cwd's.
+      assert.deepEqual(readOptions, [{ includeSystemMessages: true }]);
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.equal(options?.resume, sessionId);
+      assert.equal(options?.sessionId, undefined);
+      assert.equal(session.conversationReset, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("resumes an imported session without checking its history", () => {
+    // Imported cursors carry no turn count, so the session came from Claude
+    // Code itself rather than an id Pylon generated.
+    const sessionId = "550e8400-e29b-41d4-a716-446655440025";
+    const historyReads: Array<string> = [];
+    const harness = makeHarness({
+      getSessionMessages: async (id) => {
+        historyReads.push(id);
+        return [];
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: { threadId: RESUME_THREAD_ID, resume: sessionId },
+        runtimeMode: "full-access",
+      });
+
+      assert.deepEqual(historyReads, []);
+      assert.equal(harness.getLastCreateQueryInput()?.options.resume, sessionId);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps resuming when the first-turn history check times out", () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440026";
+    const historyRead = Promise.withResolvers<void>();
+    const harness = makeHarness({
+      getSessionMessages: () => {
+        historyRead.resolve();
+        return new Promise(() => undefined);
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const start = yield* adapter
+        .startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          resumeCursor: { resume: sessionId, turnCount: 1, turnStartMessageIds: ["turn-1"] },
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(() => historyRead.promise);
+      yield* TestClock.adjust("10 seconds");
+      const session = yield* Fiber.join(start);
+
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.equal(options?.resume, sessionId);
+      assert.equal(options?.sessionId, undefined);
+      assert.equal(session.conversationReset, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps resuming when the first-turn history check fails", () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440022";
+    const harness = makeHarness({
+      getSessionMessages: async () => {
+        throw new Error("history unavailable");
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: { resume: sessionId, turnCount: 0, turnStartMessageIds: [] },
+        runtimeMode: "full-access",
+      });
+
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.equal(options?.resume, sessionId);
+      assert.equal(options?.sessionId, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("reports a missing Claude conversation as a session-not-found error", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      harness.query.permissionModeError = new Error(
+        "No conversation found with session ID: 550e8400-e29b-41d4-a716-446655440023",
+      );
+
+      const error = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          input: "hello",
+          interactionMode: "default",
+          attachments: [],
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error._tag, "ProviderAdapterSessionNotFoundError");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("preserves durable resume ids across Claude resume hooks", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -8215,8 +8576,11 @@ describe("ClaudeAdapterLive", () => {
         entered.resolve();
         await released.promise;
       };
+      // Startup checks the unproven cursor's history; hold only the rollback's reads.
+      let rollbackStarted = false;
       const harness = makeHarness({
         getSessionMessages: async (sessionId) => {
+          if (!rollbackStarted) return history(sessionId);
           if (
             (stage === "read" && sessionId === originalId) ||
             (stage === "fork-read" && sessionId === forkId)
@@ -8241,6 +8605,7 @@ describe("ClaudeAdapterLive", () => {
             turnStartMessageIds: ["user-1", "user-2"],
           },
         });
+        rollbackStarted = true;
         const rollback = yield* adapter
           .rollbackThread(THREAD_ID, 1)
           .pipe(Effect.result, Effect.forkChild);
@@ -8553,6 +8918,9 @@ describe("ClaudeAdapterLive", () => {
         runtimeMode: "full-access",
         resumeCursor: {
           resume: "550e8400-e29b-41d4-a716-446655440010",
+          // An observed assistant message proves the session, so startup
+          // skips its history check and only the rollback spawns the worker.
+          resumeSessionAt: "assistant-2",
           turnCount: 2,
           turnStartMessageIds: ["user-1", "user-2"],
         },
@@ -9990,7 +10358,11 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect("routes Claude resume compaction through the shared user-input UI", () => {
-    const harness = makeHarness();
+    const harness = makeHarness({
+      getSessionMessages: async (sessionId) => [
+        claudeHistoryMessage({ type: "user", uuid: "user-1", sessionId }),
+      ],
+    });
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
       const session = yield* adapter.startSession({

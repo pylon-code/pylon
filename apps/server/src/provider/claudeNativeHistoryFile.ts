@@ -15,6 +15,39 @@ export class ClaudeNativeHistoryUnavailable extends Schema.TaggedError<ClaudeNat
   {},
 ) {}
 const MAX_NATIVE_HISTORY_BYTES = 64 * 1024 * 1024;
+const MAX_TRANSCRIPT_SCAN_PROJECTS = 10_000;
+
+function claudeProjectsDirectory(path: Path.Path, environment: NodeJS.ProcessEnv) {
+  const configDir =
+    environment.CLAUDE_CONFIG_DIR ??
+    path.join(environment.HOME ?? environment.USERPROFILE ?? NodeOS.homedir(), ".claude");
+  return path.isAbsolute(configDir) ? path.join(configDir.normalize("NFC"), "projects") : undefined;
+}
+
+/**
+ * Whether any project holds a transcript for this session. Claude Code resumes
+ * a session id from any project, so only a complete scan proves a session was
+ * never saved. A directory that cannot be read fails rather than answering no.
+ */
+export const claudeTranscriptExists = Effect.fn("claudeTranscriptExists")(function* (input: {
+  readonly sessionId: string;
+  readonly environment: NodeJS.ProcessEnv;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  if (!/^[0-9a-f-]{36}$/i.test(input.sessionId)) return yield* new ClaudeNativeHistoryUnavailable();
+  const projectsDir = claudeProjectsDirectory(path, input.environment);
+  if (projectsDir === undefined) return yield* new ClaudeNativeHistoryUnavailable();
+  if (!(yield* fs.exists(projectsDir))) return false;
+  const projects = yield* fs.readDirectory(projectsDir);
+  // Bound the scan; an unexpectedly large tree answers "unknown", not "absent".
+  if (projects.length > MAX_TRANSCRIPT_SCAN_PROJECTS)
+    return yield* new ClaudeNativeHistoryUnavailable();
+  for (const project of projects) {
+    if (yield* fs.exists(path.join(projectsDir, project, `${input.sessionId}.jsonl`))) return true;
+  }
+  return false;
+});
 
 /** Read one current, regular provider-owned transcript through a bounded scoped handle. */
 export const readClaudeNativeHistoryFile = Effect.fn("readClaudeNativeHistoryFile")(
@@ -27,14 +60,9 @@ export const readClaudeNativeHistoryFile = Effect.fn("readClaudeNativeHistoryFil
     const path = yield* Path.Path;
     if (!/^[0-9a-f-]{36}$/i.test(input.sessionId))
       return yield* new ClaudeNativeHistoryUnavailable();
-    const configDir =
-      input.environment.CLAUDE_CONFIG_DIR ??
-      path.join(
-        input.environment.HOME ?? input.environment.USERPROFILE ?? NodeOS.homedir(),
-        ".claude",
-      );
-    if (!path.isAbsolute(configDir)) return yield* new ClaudeNativeHistoryUnavailable();
-    const root = yield* fs.realPath(path.join(configDir.normalize("NFC"), "projects"));
+    const projectsDir = claudeProjectsDirectory(path, input.environment);
+    if (projectsDir === undefined) return yield* new ClaudeNativeHistoryUnavailable();
+    const root = yield* fs.realPath(projectsDir);
     const keys = new Set([claudeProjectDirectoryName(input.canonicalCwd)]);
     const override = input.environment.CLAUDE_CONFIG_DIR
       ? validClaudeProjectDirectoryOverride(input.environment.CLAUDE_CODE_PROJECT_DIR_NAME)

@@ -348,6 +348,8 @@ const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>)
 
 const ORPHANED_PROVIDER_SESSION_ERROR =
   "Provider session did not survive a server restart. Send a new message to continue.";
+const CONVERSATION_RESET_AFTER_RESTART_ERROR =
+  "The server restarted before this conversation was saved, so its context was lost. Send your message again to continue.";
 const SERVER_UPDATE_CONTINUATION_KEY = "continueAfterServerUpdate";
 const SERVER_UPDATE_CONTINUATION_PROMPT = "Continue where you left off.";
 
@@ -453,28 +455,88 @@ export const markRunningProviderSessionsForContinuation = Effect.gen(function* (
   );
 }).pipe(Effect.mapError(toServerUpdateThreadContinuationError));
 
+const bindingIncarnationId = (binding: ProviderSessionDirectory.ProviderRuntimeBinding) => {
+  const value = readRuntimePayload(binding.runtimePayload).sessionIncarnationId;
+  return typeof value === "string" ? value : undefined;
+};
+
+const CLEARED_CONTINUATION_MARKERS = {
+  [SERVER_UPDATE_CONTINUATION_KEY]: null,
+  continueAfterServerUpdatePrepared: null,
+} as const;
+
+/**
+ * Writes only the given fields onto the thread's current binding, and only
+ * while `owns` holds for it. The ownership check repeats inside the
+ * directory's mutation permit, so a concurrent turn's cursor or a replacement
+ * session's binding is never overwritten with a stale copy; unlisted fields
+ * keep their current values and the runtime payload merges.
+ */
+const patchOwnedBinding = (
+  directory: ProviderSessionDirectory.ProviderSessionDirectory["Service"],
+  threadId: ThreadId,
+  patch: {
+    readonly status?: ProviderSessionDirectory.ProviderRuntimeBinding["status"];
+    readonly runtimePayload: Record<string, unknown>;
+  },
+  owns: (binding: ProviderSessionDirectory.ProviderRuntimeBinding) => boolean,
+) =>
+  directory.getBinding(threadId).pipe(
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.void,
+        onSome: (current) =>
+          owns(current)
+            ? directory.upsert(
+                {
+                  threadId,
+                  provider: current.provider,
+                  ...(current.providerInstanceId !== undefined
+                    ? { providerInstanceId: current.providerInstanceId }
+                    : {}),
+                  ...(patch.status !== undefined ? { status: patch.status } : {}),
+                  runtimePayload: patch.runtimePayload,
+                },
+                {
+                  commitGuard: directory.getBinding(threadId).pipe(
+                    Effect.map(
+                      (latest) =>
+                        Option.isSome(latest) &&
+                        latest.value.provider === current.provider &&
+                        owns(latest.value),
+                    ),
+                    Effect.orElseSucceed(() => false),
+                  ),
+                },
+              )
+            : Effect.void,
+      }),
+    ),
+  );
+
 const clearContinuationMarkers = (
   directory: ProviderSessionDirectory.ProviderSessionDirectory["Service"],
   threadIds: ReadonlyArray<ThreadId>,
+  // Leave a binding a newer session incarnation already owns untouched. Every
+  // provider start records its incarnation, so a binding without one was not
+  // replaced.
+  expectedIncarnationId?: string,
 ) =>
   Effect.forEach(
     threadIds,
     (threadId) =>
-      directory.getBinding(threadId).pipe(
-        Effect.flatMap(
-          Option.match({
-            onNone: () => Effect.void,
-            onSome: (binding) =>
-              directory.upsert({
-                ...binding,
-                runtimePayload: {
-                  ...readRuntimePayload(binding.runtimePayload),
-                  [SERVER_UPDATE_CONTINUATION_KEY]: null,
-                  continueAfterServerUpdatePrepared: null,
-                },
-              }),
-          }),
-        ),
+      patchOwnedBinding(
+        directory,
+        threadId,
+        { runtimePayload: CLEARED_CONTINUATION_MARKERS },
+        (binding) => {
+          const boundIncarnationId = bindingIncarnationId(binding);
+          return (
+            expectedIncarnationId === undefined ||
+            boundIncarnationId === undefined ||
+            boundIncarnationId === expectedIncarnationId
+          );
+        },
       ),
     { concurrency: "unbounded", discard: true },
   );
@@ -633,24 +695,61 @@ export const reconcileProviderSessions = Effect.gen(function* () {
     // must keep that id: the recovered runtime stays live, and reverting the
     // projection to the pre-restart incarnation would fence every later turn.
     let boundSession: OrchestrationSession = session;
+    const settleProjectionAsError = (lastError: string) =>
+      Effect.gen(function* () {
+        const reconciledAt = DateTime.formatIso(yield* DateTime.now);
+        yield* orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(yield* crypto.randomUUIDv4),
+          threadId: thread.id,
+          session: {
+            ...boundSession,
+            status: "error",
+            activeTurnId: null,
+            lastError,
+            updatedAt: reconciledAt,
+          },
+          createdAt: reconciledAt,
+        });
+      }).pipe(
+        Effect.retry({ times: 1 }),
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterrupts(cause),
+          (cause) =>
+            Effect.logWarning("failed to settle orphaned provider session projection", {
+              threadId: thread.id,
+              cause,
+            }),
+        ),
+      );
     const settleAsError = (lastError: string) =>
       Effect.gen(function* () {
         yield* Effect.gen(function* () {
-          if (Option.isSome(binding)) {
-            yield* directory.upsert({
-              ...binding.value,
+          if (Option.isNone(binding)) return;
+          const clearsMarkers = continuationMarkerPresent || interruptedByRestart;
+          // Recovery may already have started a new incarnation and persisted
+          // its cursor. Stop only the pre-restart binding; on a replacement,
+          // clear just the markers and leave the live session's state alone.
+          const preRestartIncarnationId = bindingIncarnationId(binding.value);
+          yield* patchOwnedBinding(
+            directory,
+            thread.id,
+            {
               status: "stopped",
               runtimePayload: {
-                ...readRuntimePayload(binding.value.runtimePayload),
                 activeTurnId: null,
-                ...(continuationMarkerPresent || interruptedByRestart
-                  ? {
-                      [SERVER_UPDATE_CONTINUATION_KEY]: null,
-                      continueAfterServerUpdatePrepared: null,
-                    }
-                  : {}),
+                ...(clearsMarkers ? CLEARED_CONTINUATION_MARKERS : {}),
               },
-            });
+            },
+            (current) => bindingIncarnationId(current) === preRestartIncarnationId,
+          );
+          if (clearsMarkers) {
+            yield* patchOwnedBinding(
+              directory,
+              thread.id,
+              { runtimePayload: CLEARED_CONTINUATION_MARKERS },
+              (current) => bindingIncarnationId(current) !== preRestartIncarnationId,
+            );
           }
         }).pipe(
           Effect.catchCauseIf(
@@ -663,32 +762,7 @@ export const reconcileProviderSessions = Effect.gen(function* () {
           ),
         );
 
-        yield* Effect.gen(function* () {
-          const reconciledAt = DateTime.formatIso(yield* DateTime.now);
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
-            commandId: CommandId.make(yield* crypto.randomUUIDv4),
-            threadId: thread.id,
-            session: {
-              ...boundSession,
-              status: "error",
-              activeTurnId: null,
-              lastError,
-              updatedAt: reconciledAt,
-            },
-            createdAt: reconciledAt,
-          });
-        }).pipe(
-          Effect.retry({ times: 1 }),
-          Effect.catchCauseIf(
-            (cause) => !Cause.hasInterrupts(cause),
-            (cause) =>
-              Effect.logWarning("failed to settle orphaned provider session projection", {
-                threadId: thread.id,
-                cause,
-              }),
-          ),
-        );
+        yield* settleProjectionAsError(lastError);
       });
 
     if (
@@ -792,6 +866,16 @@ export const reconcileProviderSessions = Effect.gen(function* () {
               createdAt: boundAt,
             });
             boundSession = recoveredBinding;
+            // The provider lost the interrupted conversation and started a new
+            // one. A continuation prompt would reach a model with no context,
+            // so leave the fresh runtime idle and ask the user to resend.
+            // ProviderService already persisted the new session's cursor, so
+            // settle only the projection; the markers clear below against the
+            // current binding.
+            if (recovered.conversationReset === true) {
+              yield* settleProjectionAsError(CONVERSATION_RESET_AFTER_RESTART_ERROR);
+              return recovered.sessionIncarnationId;
+            }
             const capabilities = yield* providerService.getCapabilities(providerInstanceId);
             yield* providerService.sendTurn({
               threadId: thread.id,
@@ -800,11 +884,12 @@ export const reconcileProviderSessions = Effect.gen(function* () {
                 : { input: SERVER_UPDATE_CONTINUATION_PROMPT }),
               interactionMode: thread.interactionMode,
             });
+            return recovered.sessionIncarnationId;
           });
           const continuationExit = yield* Effect.exit(continuation);
           if (Exit.isSuccess(continuationExit) || Cause.hasInterrupts(continuationExit.cause)) {
             if (Exit.isSuccess(continuationExit)) {
-              yield* clearContinuationMarkers(directory, [thread.id]).pipe(
+              yield* clearContinuationMarkers(directory, [thread.id], continuationExit.value).pipe(
                 Effect.uninterruptible,
                 Effect.catchCause((cause) =>
                   Effect.logWarning("failed to clear completed provider session continuation", {

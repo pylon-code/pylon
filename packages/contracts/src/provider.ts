@@ -53,6 +53,12 @@ export const ProviderSession = Schema.Struct({
   resumeCursor: Schema.optional(Schema.Unknown),
   /** True when the provider attached this runtime from a durable continuation. */
   restored: Schema.optional(Schema.Boolean),
+  /**
+   * True when the provider could not find the saved conversation and started
+   * a new one, so earlier context is gone and a continuation has nothing to
+   * continue.
+   */
+  conversationReset: Schema.optional(Schema.Boolean),
   activeTurnId: Schema.optional(TurnId),
   /** Admission request owning the active provider turn, when known. */
   activeTurnRequestId: Schema.optional(CommandId),
