@@ -32,6 +32,7 @@
         "src/service-launcher.ts!",
         "src/claudeHistoryWorker.ts!",
         "scripts/cli.ts",
+        "scripts/update-test-shard-weights.ts",
         "src/provider/testFixtures/*.mjs",
       ],
       // Keep the transitive Effect runtime pinned for standalone npm installs.
