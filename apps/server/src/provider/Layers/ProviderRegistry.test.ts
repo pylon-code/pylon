@@ -1581,6 +1581,42 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               [latestSkills],
             );
 
+            // A scan that started earlier and publishes first must not cause a
+            // later-started fresh scan (Restart, after a skill edit) to drop
+            // its newer result.
+            const earlierStarted = yield* Deferred.make<void>();
+            const releaseEarlier = yield* Deferred.make<void>();
+            yield* Ref.set(scanGate, { started: earlierStarted, release: releaseEarlier });
+            yield* Ref.set(scopedResult, scopedProvider);
+            const earlierScan = yield* registry
+              .refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace", fresh: true })
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(earlierStarted);
+            const editedSkills = [
+              ...latestSkills,
+              { name: "edited", path: "/workspace/edited/SKILL.md", enabled: true },
+            ];
+            const laterStarted = yield* Deferred.make<void>();
+            const releaseLater = yield* Deferred.make<void>();
+            yield* Ref.set(scanGate, { started: laterStarted, release: releaseLater });
+            yield* Ref.set(scopedResult, { ...scopedProvider, skills: editedSkills });
+            const laterScan = yield* registry
+              .refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace", fresh: true })
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(laterStarted);
+            yield* Deferred.succeed(releaseEarlier, undefined);
+            yield* Fiber.join(earlierScan);
+            assert.deepStrictEqual(
+              (yield* registry.getProviders)[0]?.workspaceSnapshots?.map((s) => s.skills),
+              [scopedProvider.skills],
+            );
+            yield* Deferred.succeed(releaseLater, undefined);
+            yield* Fiber.join(laterScan);
+            assert.deepStrictEqual(
+              (yield* registry.getProviders)[0]?.workspaceSnapshots?.map((s) => s.skills),
+              [editedSkills],
+            );
+
             const rebuildUpdate = yield* registry.streamChanges.pipe(
               Stream.filter((providers) => providers[0]?.checkedAt === rebuiltProvider.checkedAt),
               Stream.runHead,
