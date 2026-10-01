@@ -1034,7 +1034,13 @@ function ThreadNavigationSidebarPane(
               className="mx-4 mt-2 items-center rounded-lg border border-dashed border-border py-2.5"
               style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
             >
-              <Text className="text-xs font-t3-medium text-foreground-muted">
+              <Text
+                className={
+                  materialYouStyleLayoutActive
+                    ? "text-xs font-t3-medium text-foreground-muted"
+                    : "text-xs font-t3-medium text-drawer-foreground-muted"
+                }
+              >
                 Show more ({item.hiddenCount} settled hidden)
               </Text>
             </Pressable>
@@ -1218,7 +1224,13 @@ function ThreadNavigationSidebarPane(
   // Snoozed threads need no special case: the shelf header is a list row
   // even while collapsed.
   const listEmpty = (
-    <Text className="px-2 py-4 text-sm text-foreground-muted">
+    <Text
+      className={
+        materialYouStyleLayoutActive
+          ? "px-2 py-4 text-sm text-foreground-muted"
+          : "px-2 py-4 text-sm text-drawer-foreground-muted"
+      }
+    >
       {catalogState.isLoadingConnections
         ? "Loading threads…"
         : props.searchQuery.trim().length > 0
@@ -1401,7 +1413,11 @@ function ThreadNavigationSidebarPane(
           <SymbolView
             name="magnifyingglass"
             size={15}
-            tintColorClassName={"accent-foreground-muted"}
+            tintColorClassName={
+              materialYouStyleLayoutActive
+                ? "accent-foreground-muted"
+                : "accent-drawer-foreground-muted"
+            }
             type="monochrome"
           />
           <TextInput
@@ -1417,7 +1433,7 @@ function ThreadNavigationSidebarPane(
             className={
               materialYouStyleLayoutActive
                 ? "flex-1 px-0 py-2.5 font-sans text-base text-foreground"
-                : "h-[34px] flex-1 px-0 py-0 font-sans text-base text-foreground"
+                : "h-[34px] flex-1 px-0 py-0 font-sans text-base text-drawer-foreground"
             }
             value={props.searchQuery}
           />

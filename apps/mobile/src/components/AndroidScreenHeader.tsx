@@ -37,7 +37,7 @@ export function AndroidHeaderIconButton(props: {
       <SymbolView
         name={props.icon}
         size={Math.round(20 * scale)}
-        tintColorClassName={props.disabled ? "accent-icon-subtle" : "accent-foreground"}
+        tintColorClassName={props.disabled ? "accent-icon-subtle" : "accent-header-foreground"}
         type="monochrome"
       />
     </Pressable>
@@ -77,14 +77,14 @@ export function AndroidScreenHeader(props: {
             <SymbolView
               name="chevron.left"
               size={iconSize}
-              tintColorClassName={"accent-foreground"}
+              tintColorClassName="accent-header-foreground"
               type="monochrome"
             />
           </Pressable>
         ) : null}
 
         <View className={cn("min-w-0 flex-1", !props.onBack && "pl-1")}>
-          <Text numberOfLines={1} className="text-lg font-t3-bold text-foreground">
+          <Text numberOfLines={1} className="text-lg font-t3-bold text-header-foreground">
             {props.title}
           </Text>
           {props.subtitle ? (

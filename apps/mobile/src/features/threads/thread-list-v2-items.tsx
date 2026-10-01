@@ -102,15 +102,20 @@ export const ThreadListV2SectionDivider = memo(function ThreadListV2SectionDivid
   readonly label: string;
   readonly pane?: "screen" | "sidebar";
 }) {
-  const borderColor = useUniwindTheme()["--color-border"];
+  const sidebarPane = props.pane === "sidebar";
+  const borderColor = useUniwindTheme()[sidebarPane ? "--color-drawer-border" : "--color-border"];
   return (
     <View
-      className={cn(
-        "mb-1.5 mt-4 flex-row items-center gap-2.5",
-        props.pane === "sidebar" ? "px-3" : "px-5",
-      )}
+      className={cn("mb-1.5 mt-4 flex-row items-center gap-2.5", sidebarPane ? "px-3" : "px-5")}
     >
-      <Text className="text-xs font-t3-medium text-foreground-tertiary">{props.label}</Text>
+      <Text
+        className={cn(
+          "text-xs font-t3-medium",
+          sidebarPane ? "text-drawer-foreground-muted" : "text-foreground-tertiary",
+        )}
+      >
+        {props.label}
+      </Text>
       <View className="h-px flex-1" style={{ backgroundColor: borderColor }} />
     </View>
   );
@@ -139,14 +144,21 @@ export const ThreadListV2SnoozedShelfHeader = memo(function ThreadListV2SnoozedS
       onPress={props.onToggle}
       style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
     >
-      <Text className="text-xs font-t3-medium text-foreground-secondary">
+      <Text
+        className={cn(
+          "text-xs font-t3-medium",
+          props.pane === "sidebar" ? "text-drawer-foreground-muted" : "text-foreground-secondary",
+        )}
+      >
         {props.expanded ? "Snoozed" : `Snoozed (${props.count})`}
       </Text>
       <View className="h-px flex-1 bg-primary/20" />
       <SymbolView
         name="chevron.down"
         size={10}
-        tintColorClassName="accent-icon-muted"
+        tintColorClassName={
+          props.pane === "sidebar" ? "accent-drawer-foreground-muted" : "accent-icon-muted"
+        }
         type="monochrome"
         style={{ transform: [{ rotate: props.expanded ? "180deg" : "0deg" }] }}
       />
@@ -161,7 +173,9 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
   readonly onToggle: () => void;
   readonly pane?: "screen" | "sidebar";
 }) {
-  const mutedColor = useUniwindTheme()["--color-foreground-muted"];
+  const sidebarPane = props.pane === "sidebar";
+  const mutedColor =
+    useUniwindTheme()[sidebarPane ? "--color-drawer-foreground-muted" : "--color-foreground-muted"];
   return (
     <Pressable
       accessibilityHint={
@@ -178,10 +192,15 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
       onPress={props.onToggle}
       style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
     >
-      <Text className="text-xs font-t3-medium text-foreground-tertiary">
+      <Text
+        className={cn(
+          "text-xs font-t3-medium",
+          sidebarPane ? "text-drawer-foreground-muted" : "text-foreground-tertiary",
+        )}
+      >
         {props.expanded ? "Settled" : `Settled (${props.count})`}
       </Text>
-      <View className="h-px flex-1 bg-border" />
+      <View className={cn("h-px flex-1", sidebarPane ? "bg-drawer-border" : "bg-border")} />
       <SymbolView
         name="chevron.down"
         size={10}
@@ -257,7 +276,13 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
             workspaceRoot={props.project.workspaceRoot}
           />
         ) : null}
-        <Text className="flex-1 text-sm font-t3-medium text-foreground-muted" numberOfLines={1}>
+        <Text
+          className={cn(
+            "flex-1 text-sm font-t3-medium text-foreground-muted",
+            sidebarPane && "text-drawer-foreground-muted",
+          )}
+          numberOfLines={1}
+        >
           {projectTitle}
         </Text>
         {isDraft ? (
@@ -271,33 +296,67 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
             <Text className="text-xs text-adaptive-amber-700-300">Draft</Text>
           </View>
         ) : (
-          <Text className="text-xs text-foreground-tertiary">{deliveryPresentation.label}</Text>
+          <Text
+            className={cn(
+              "text-xs text-foreground-tertiary",
+              sidebarPane && "text-drawer-foreground-muted",
+            )}
+          >
+            {deliveryPresentation.label}
+          </Text>
         )}
       </View>
       {/* One line, unlike the two an active row allows: a queued title is
           derived from the whole prompt rather than written as a title, so the
           second line is usually a stray word or emoji rather than meaning. */}
-      <Text className="mt-1 text-base font-t3-medium text-foreground" numberOfLines={1}>
+      <Text
+        className={cn(
+          "mt-1 text-base font-t3-medium text-foreground",
+          sidebarPane && "text-drawer-foreground",
+        )}
+        numberOfLines={1}
+      >
         {pendingTask.title}
       </Text>
       {branch || props.environmentLabel ? (
         <View className="mt-1 flex-row items-center gap-1">
-          <Text className="shrink text-xs text-foreground-muted" numberOfLines={1}>
+          <Text
+            className={cn(
+              "shrink text-xs text-foreground-muted",
+              sidebarPane && "text-drawer-foreground-muted",
+            )}
+            numberOfLines={1}
+          >
             {branch ? (
-              <Text className="text-xs text-foreground-muted" style={{ fontFamily: MONO_FONT }}>
+              <Text
+                className={cn(
+                  "text-xs text-foreground-muted",
+                  sidebarPane && "text-drawer-foreground-muted",
+                )}
+                style={{ fontFamily: MONO_FONT }}
+              >
                 {branch}
               </Text>
             ) : null}
             {branch && props.environmentLabel ? "  ·  " : null}
             {props.environmentLabel ? (
-              <Text className="text-xs text-foreground-tertiary">{props.environmentLabel}</Text>
+              <Text
+                className={cn(
+                  "text-xs text-foreground-tertiary",
+                  sidebarPane && "text-drawer-foreground-muted",
+                )}
+              >
+                {props.environmentLabel}
+              </Text>
             ) : null}
           </Text>
           {props.environmentLabel && props.environmentMachine ? (
             <EnvironmentMachineSymbol
               kind={props.environmentMachine}
               size={11}
-              tintColorClassName="accent-foreground-tertiary"
+              tintColorClassName={
+                sidebarPane ? "accent-drawer-foreground-muted" : "accent-foreground-tertiary"
+              }
             />
           ) : null}
         </View>
@@ -323,7 +382,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
           }
           accessibilityLabel={pendingTask.title}
           accessibilityRole="button"
-          className={sidebarPane ? "bg-drawer active:bg-subtle" : undefined}
+          className={sidebarPane ? "bg-drawer active:bg-thread-hover" : undefined}
           onPress={() => onSelectPendingTask(pendingTask)}
           style={
             sidebarPane
@@ -470,13 +529,25 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const { materialYouStyleLayoutActive } = useAppearancePreferences();
   const screenColor = useUniwindTheme()["--color-screen"];
   const drawerColor = useUniwindTheme()["--color-drawer"];
-  const pressedBackgroundColor = useUniwindTheme()["--color-subtle"];
-  const selectedBackgroundColor =
-    useUniwindTheme()[
-      materialYouStyleLayoutActive ? "--color-thread-selected" : "--color-user-bubble"
-    ];
-  const pinTintColor = useUniwindTheme()["--color-foreground-muted"];
   const sidebarPane = props.pane === "sidebar";
+  const hoverBackgroundColor =
+    useUniwindTheme()[sidebarPane ? "--color-thread-hover" : "--color-row-hover"];
+  const selectedBackgroundColor = useUniwindTheme()["--color-thread-selected"];
+  const pinTintColor =
+    useUniwindTheme()[sidebarPane ? "--color-drawer-foreground-muted" : "--color-foreground-muted"];
+  const rowForegroundClassName = sidebarPane ? "text-drawer-foreground" : "text-foreground";
+  const rowMutedForegroundClassName = sidebarPane
+    ? "text-drawer-foreground-muted"
+    : "text-foreground-muted";
+  const rowTertiaryForegroundClassName = sidebarPane
+    ? "text-drawer-foreground-muted"
+    : "text-foreground-tertiary";
+  const rowMutedIconTintClassName = sidebarPane
+    ? "accent-drawer-foreground-muted"
+    : "accent-foreground-muted";
+  const rowTertiaryIconTintClassName = sidebarPane
+    ? "accent-drawer-foreground-muted"
+    : "accent-foreground-tertiary";
   const selected = props.selected === true;
   // The provider badge's border blends into the row's own surface, which
   // differs by pane and (for the sidebar pane) selection: the sidebar row
@@ -806,8 +877,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       ? `Opens the thread. Swipe left to ${primaryAction.label.toLowerCase()}.`
       : `Opens the thread. Swipe left for ${primaryAction.label.toLowerCase()} and snooze actions.`;
 
-  // The sidebar pane fills selected rows with the theme's message surface, so
-  // every piece of row text must use that surface's paired foreground.
+  // Sidebar rows use navigation foregrounds on their active and idle surfaces.
   const cardContent = (
     <>
       <View className="flex-row items-center gap-1.5">
@@ -824,11 +894,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         <Text
           className={cn(
             "flex-1 text-sm font-t3-medium",
-            selected
-              ? materialYouStyleLayoutActive
-                ? "text-thread-selected-foreground-muted"
-                : "text-user-bubble-foreground-muted"
-              : "text-foreground-muted",
+            selected ? "text-thread-selected-foreground-muted" : rowMutedForegroundClassName,
           )}
           numberOfLines={1}
         >
@@ -841,11 +907,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         <Text
           className={cn(
             "text-xs tabular-nums",
-            selected
-              ? materialYouStyleLayoutActive
-                ? "text-thread-selected-foreground"
-                : "text-user-bubble-foreground"
-              : (statusLabel?.className ?? "text-foreground-tertiary"),
+            statusLabel?.className ??
+              (selected ? "text-thread-selected-foreground" : rowTertiaryForegroundClassName),
           )}
         >
           {statusLabel
@@ -856,11 +919,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       <Text
         className={cn(
           "mt-1 text-base font-t3-medium",
-          selected
-            ? materialYouStyleLayoutActive
-              ? "text-thread-selected-foreground"
-              : "text-user-bubble-foreground"
-            : "text-foreground",
+          selected ? "text-thread-selected-foreground" : rowForegroundClassName,
         )}
         numberOfLines={2}
       >
@@ -869,6 +928,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       {props.searchMatch ? (
         <View className="mt-1">
           <ThreadSearchMatchExcerpt
+            sidebar={sidebarPane}
             match={props.searchMatch}
             query={props.searchQuery ?? ""}
             selected={selected}
@@ -880,11 +940,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           <Text
             className={cn(
               "flex-1 text-xs",
-              selected
-                ? materialYouStyleLayoutActive
-                  ? "text-thread-selected-foreground-muted"
-                  : "text-user-bubble-foreground-muted"
-                : "text-danger-foreground",
+              selected ? "text-thread-selected-foreground-muted" : "text-danger-foreground",
             )}
             numberOfLines={1}
           >
@@ -901,11 +957,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             <Text
               className={cn(
                 "shrink text-xs",
-                selected
-                  ? materialYouStyleLayoutActive
-                    ? "text-thread-selected-foreground-muted"
-                    : "text-user-bubble-foreground-muted"
-                  : "text-foreground-muted",
+                selected ? "text-thread-selected-foreground-muted" : rowMutedForegroundClassName,
               )}
               numberOfLines={1}
             >
@@ -914,10 +966,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                   className={cn(
                     "text-xs",
                     selected
-                      ? materialYouStyleLayoutActive
-                        ? "text-thread-selected-foreground-muted"
-                        : "text-user-bubble-foreground-muted"
-                      : "text-foreground-muted",
+                      ? "text-thread-selected-foreground-muted"
+                      : rowMutedForegroundClassName,
                   )}
                   style={{ fontFamily: MONO_FONT }}
                 >
@@ -930,10 +980,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                   className={cn(
                     "text-xs",
                     selected
-                      ? materialYouStyleLayoutActive
-                        ? "text-thread-selected-foreground-muted"
-                        : "text-user-bubble-foreground-muted"
-                      : "text-foreground-tertiary",
+                      ? "text-thread-selected-foreground-muted"
+                      : rowTertiaryForegroundClassName,
                   )}
                 >
                   {props.environmentLabel}
@@ -946,10 +994,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 size={11}
                 tintColorClassName={
                   selected
-                    ? materialYouStyleLayoutActive
-                      ? "accent-thread-selected-foreground-muted"
-                      : "accent-user-bubble-foreground-muted"
-                    : "accent-foreground-tertiary"
+                    ? "accent-thread-selected-foreground-muted"
+                    : rowTertiaryIconTintClassName
                 }
               />
             ) : null}
@@ -963,29 +1009,18 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               name={pr.kind === "stack" ? "square.3.layers.3d" : "arrow.triangle.pull"}
               size={12}
               tintColorClassName={
-                selected
-                  ? materialYouStyleLayoutActive
-                    ? "accent-thread-selected-foreground"
-                    : "accent-user-bubble-foreground"
-                  : pr.state === null || pr.isDraft
-                    ? "accent-foreground-muted"
-                    : pr.state === "open"
-                      ? "accent-adaptive-emerald-600-400"
-                      : pr.state === "closed"
-                        ? "accent-adaptive-rose-600-400"
-                        : "accent-adaptive-violet-600-400"
+                pr.state === null || pr.isDraft
+                  ? rowMutedIconTintClassName
+                  : pr.state === "open"
+                    ? "accent-adaptive-emerald-600-400"
+                    : pr.state === "closed"
+                      ? "accent-adaptive-rose-600-400"
+                      : "accent-adaptive-violet-600-400"
               }
             />
             <Text
               accessibilityLabel={pr.accessibilityLabel}
-              className={cn(
-                "text-xs",
-                selected
-                  ? materialYouStyleLayoutActive
-                    ? "text-thread-selected-foreground"
-                    : "text-user-bubble-foreground"
-                  : pr.textClassName,
-              )}
+              className={cn("text-xs", pr.textClassName)}
               style={{ fontFamily: MONO_FONT }}
             >
               {pr.label}
@@ -1025,7 +1060,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 backgroundColor: selected
                   ? selectedBackgroundColor
                   : pressed
-                    ? pressedBackgroundColor
+                    ? hoverBackgroundColor
                     : sidebarPane
                       ? drawerColor
                       : screenColor,
@@ -1069,7 +1104,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 backgroundColor: selected
                   ? selectedBackgroundColor
                   : pressed
-                    ? pressedBackgroundColor
+                    ? hoverBackgroundColor
                     : sidebarPane
                       ? drawerColor
                       : screenColor,
@@ -1101,11 +1136,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             <Text
               className={cn(
                 "text-base",
-                selected
-                  ? materialYouStyleLayoutActive
-                    ? "text-thread-selected-foreground"
-                    : "text-user-bubble-foreground"
-                  : "text-foreground-muted",
+                selected ? "text-thread-selected-foreground" : rowMutedForegroundClassName,
               )}
               numberOfLines={1}
             >
@@ -1113,6 +1144,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             </Text>
             {props.searchMatch ? (
               <ThreadSearchMatchExcerpt
+                sidebar={sidebarPane}
                 match={props.searchMatch}
                 query={props.searchQuery ?? ""}
                 selected={selected}
@@ -1124,12 +1156,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             className={cn(
               "text-sm tabular-nums",
               selected
-                ? materialYouStyleLayoutActive
-                  ? "text-thread-selected-foreground-muted"
-                  : "text-user-bubble-foreground-muted"
+                ? "text-thread-selected-foreground-muted"
                 : snoozedRow
-                  ? "text-foreground-secondary"
-                  : "text-foreground-tertiary",
+                  ? rowMutedForegroundClassName
+                  : rowTertiaryForegroundClassName,
             )}
             style={{ fontFamily: MONO_FONT }}
           >
