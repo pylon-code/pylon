@@ -1582,6 +1582,85 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("keeps a turn open past the result of a Claude-initiated turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "session.exited"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "/compact",
+        attachments: [],
+      });
+
+      // Recorded order after a resume: Claude first reports a background task
+      // the previous process left behind, then runs the queued `/compact`.
+      // The notification turn makes a model request, so Pylon's zero-turn
+      // handshake guard does not hide its result.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-1",
+        uuid: "assistant-task-notification",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-task-notification",
+          content: [{ type: "text", text: "The background build finished." }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 1,
+        origin: { kind: "task-notification" },
+        session_id: "sdk-session-1",
+        uuid: "result-task-notification",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: { trigger: "manual", pre_tokens: 959489, post_tokens: 10107 },
+        session_id: "sdk-session-1",
+        uuid: "compact-boundary",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 0,
+        user_message_uuid: turn.turnId,
+        user_message_uuids: [turn.turnId],
+        local_command: "compact",
+        session_id: "sdk-session-1",
+        uuid: "result-compact",
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const compactedIndex = runtimeEvents.findIndex(
+        (event) => event.type === "thread.state.changed" && event.payload.state === "compacted",
+      );
+      const completedIndex = runtimeEvents.findIndex((event) => event.type === "turn.completed");
+      assert.equal(runtimeEvents.filter((event) => event.type === "turn.completed").length, 1);
+      assert.equal(String(runtimeEvents[completedIndex]?.turnId), String(turn.turnId));
+      assert.equal(String(runtimeEvents[compactedIndex]?.turnId), String(turn.turnId));
+      assert.isAbove(completedIndex, compactedIndex);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("ignores system/status lifecycle notices that arrive between turns", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1877,6 +1956,84 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(String(turnStartedEvents[0]?.turnId), String(turn.turnId));
       assert.equal(turnCompletedEvents.length, 1);
       assert.equal(String(turnCompletedEvents[0]?.turnId), String(turn.turnId));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("completes a steered turn from a result that echoes its folded-in prompts", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "run 5 commands",
+        attachments: [],
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "actually run 15",
+        attachments: [],
+      });
+
+      // A result for a different prompt (here, an interrupted turn's re-run)
+      // must not close the steered turn.
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 1,
+        user_message_uuid: "previous-prompt",
+        user_message_uuids: ["previous-prompt"],
+        session_id: "sdk-session-steer-echo",
+        uuid: "result-other-prompt",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-steer-echo",
+        uuid: "assistant-steer-echo",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-steer-echo",
+          content: [{ type: "text", text: "Adjusting to 15." }],
+        },
+      } as unknown as SDKMessage);
+      // The steer has no Pylon uuid, so Claude echoes its own id for it after
+      // the turn's prompt.
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 2,
+        user_message_uuid: "claude-steer-uuid",
+        user_message_uuids: [turn.turnId, "claude-steer-uuid"],
+        session_id: "sdk-session-steer-echo",
+        uuid: "result-steered-turn",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const completions = runtimeEvents.filter((event) => event.type === "turn.completed");
+      assert.equal(completions.length, 1);
+      assert.equal(String(completions[0]?.turnId), String(turn.turnId));
+      assert.isTrue(
+        runtimeEvents.some(
+          (event) =>
+            event.type === "content.delta" &&
+            String(event.turnId) === String(turn.turnId) &&
+            event.payload.delta === "Adjusting to 15.",
+        ),
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -4645,7 +4802,7 @@ describe("ClaudeAdapterLive", () => {
 
       const taskEventsFiber = yield* adapter.streamEvents.pipe(
         Stream.filter((event) => event.type.startsWith("task.")),
-        Stream.take(2),
+        Stream.take(3),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -4679,24 +4836,27 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session",
       } as unknown as SDKMessage);
       // The subagent's assistant snapshot carries the authoritative API
-      // model id, which refines the linkage on later rows.
+      // model id. The correction is pushed at once, not on the next task row.
+      // Its tool calls arrive only here, so a task one of them launches must
+      // still resolve to this subagent as owner.
       harness.query.emit({
         type: "assistant",
         parent_tool_use_id: "toolu_agent_m",
         message: {
           model: SYNTHETIC_SUBAGENT_MODEL,
-          content: [],
+          content: [{ type: "tool_use", id: "toolu_nested", name: "Skill", input: {} }],
         },
         uuid: "subagent-snapshot-uuid",
         session_id: "sdk-session",
       } as unknown as SDKMessage);
       harness.query.emit({
         type: "system",
-        subtype: "task_progress",
-        task_id: "task-model",
-        description: "Agent M",
-        usage: { total_tokens: 100, tool_uses: 1, duration_ms: 10 },
-        uuid: "task-model-progress-uuid",
+        subtype: "task_started",
+        task_id: "task-nested",
+        description: "Nested",
+        task_type: "local_agent",
+        tool_use_id: "toolu_nested",
+        uuid: "task-nested-uuid",
         session_id: "sdk-session",
       } as unknown as SDKMessage);
 
@@ -4707,11 +4867,18 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(started.payload.model, SYNTHETIC_CLAUDE_CAPABLE_MODEL);
         assert.equal(started.payload.effort, "max");
       }
-      const progress = taskEvents[1];
-      assert.equal(progress?.type, "task.progress");
-      if (progress?.type === "task.progress") {
-        assert.equal(progress.payload.model, SYNTHETIC_SUBAGENT_MODEL);
-        assert.equal(progress.payload.effort, "max");
+      const refined = taskEvents[1];
+      assert.equal(refined?.type, "task.updated");
+      if (refined?.type === "task.updated") {
+        assert.equal(refined.payload.taskId, "task-model");
+        assert.equal(refined.payload.model, SYNTHETIC_SUBAGENT_MODEL);
+        assert.equal(refined.payload.status, undefined);
+      }
+      const nested = taskEvents[2];
+      assert.equal(nested?.type, "task.started");
+      if (nested?.type === "task.started") {
+        assert.equal(nested.payload.agentId, "task-model");
+        assert.equal(nested.payload.model, SYNTHETIC_SUBAGENT_MODEL);
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
