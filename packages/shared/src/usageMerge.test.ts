@@ -183,7 +183,8 @@ describe("mergeUsage", () => {
     );
 
     expect(merged.costUsd).toBe(22);
-    expect(merged.approximateEnvironments).toEqual([]);
+    // env-a's unique home is kept while its shared home goes to env-b.
+    expect(merged.approximateEnvironments).toEqual(["env-a"]);
   });
 
   it("counts overlapping Claude homes once while retaining both unique homes", () => {
@@ -223,7 +224,8 @@ describe("mergeUsage", () => {
     expect(merged.records).toBe(3);
     expect(merged.sessions).toBe(3);
     expect(merged.duplicateSources).toHaveLength(1);
-    expect(merged.approximateEnvironments).toEqual([]);
+    // env-b's unique home is kept while its shared home goes to env-a.
+    expect(merged.approximateEnvironments).toEqual(["env-b"]);
   });
 
   it("does not collapse identical paths on different hosts or filesystems", () => {
@@ -289,7 +291,14 @@ describe("mergeUsage", () => {
       [
         environment(
           "env-a",
-          summary([bucket({ costUsd: 4 })], [{ ...shared, buckets: [bucket({ costUsd: 4 })] }]),
+          // A unique home keeps env-b's homes from containing env-a's.
+          summary(
+            [bucket({ costUsd: 6 })],
+            [
+              { ...shared, buckets: [bucket({ costUsd: 4 })] },
+              { ...shared, homePath: "/unique-a", buckets: [bucket({ costUsd: 2 })] },
+            ],
+          ),
         ),
         environment(
           "env-b",
@@ -303,7 +312,7 @@ describe("mergeUsage", () => {
       USAGE_CONTRACT_VERSION,
     );
 
-    expect(merged.costUsd).toBe(19);
+    expect(merged.costUsd).toBe(21);
     expect(merged.approximateEnvironments).toEqual(["env-b"]);
     expect(merged.contractMismatches).toEqual([]);
   });
@@ -314,7 +323,14 @@ describe("mergeUsage", () => {
       [
         environment(
           "env-a",
-          summary([bucket({ costUsd: 4 })], [{ ...shared, buckets: [bucket({ costUsd: 4 })] }]),
+          // A unique home keeps env-b's homes from containing env-a's.
+          summary(
+            [bucket({ costUsd: 6 })],
+            [
+              { ...shared, buckets: [bucket({ costUsd: 4 })] },
+              { ...shared, homePath: "/unique-a", buckets: [bucket({ costUsd: 2 })] },
+            ],
+          ),
         ),
         environment(
           "env-b",
@@ -330,7 +346,7 @@ describe("mergeUsage", () => {
       USAGE_CONTRACT_VERSION,
     );
 
-    expect(merged.costUsd).toBe(19);
+    expect(merged.costUsd).toBe(21);
     expect(merged.providers.map((provider) => provider.provider)).toEqual(["claude"]);
     expect(merged.approximateEnvironments).toEqual(["env-b"]);
   });
@@ -713,5 +729,437 @@ describe("mergeUsage", () => {
     expect(merged.costUsd).toBe(15);
     expect(merged.contractMismatches).toEqual([]);
     expect(merged.contributingEnvironments).toEqual(["env-v4", "env-v5", "env-v6"]);
+  });
+});
+
+describe("complete and partial usage scans", () => {
+  const shared = { provider: "claude" as const, hostId: "mac", homePath: "/shared" };
+  function scan(
+    id: string,
+    buckets: readonly UsageBucket[],
+    status: "ok" | "partial" | "failed",
+    readAt: string,
+    attributed = true,
+    distinctSessions = 1,
+  ) {
+    const reading = summary(buckets, [
+      { ...shared, distinctSessions, ...(attributed ? { buckets } : {}) },
+    ]);
+    return environment(id, {
+      ...reading,
+      readAt,
+      sources: reading.sources.map((source) => ({ ...source, status })),
+    });
+  }
+  const oldTime = "2026-08-07T00:00:00.000Z";
+  const newTime = "2026-08-08T00:00:00.000Z";
+  function orders(...readings: EnvironmentUsage[]) {
+    return [readings, readings.toReversed()];
+  }
+  it.each([false, true])(
+    "retains complete cells over a newer partial or failed scan (attributed=%s)",
+    (attributed) => {
+      const complete = scan("old", [bucket()], "ok", oldTime, attributed);
+      for (const status of ["partial", "failed"] as const) {
+        const incomplete = scan(
+          "new",
+          [bucket({ costUsd: 4, records: 6 })],
+          status,
+          newTime,
+          attributed,
+          2,
+        );
+        for (const readings of orders(complete, incomplete)) {
+          const merged = mergeUsage(readings, USAGE_CONTRACT_VERSION);
+          expect(merged.costUsd).toBe(10);
+          expect(merged.records).toBe(5);
+          expect(merged.totalTokens).toBe(1160);
+          expect(merged.sessions).toBe(1);
+          expect(merged.contributingEnvironments).toEqual(["old"]);
+          expect(merged.duplicateSources).toEqual(["new: /shared"]);
+        }
+      }
+    },
+  );
+  it.each([false, true])(
+    "adds only new day, hour and model cells from newer partial scans (attributed=%s)",
+    (attributed) => {
+      const original = bucket({ hourStart: "2026-08-07T00:00:00.000Z" });
+      const day = bucket({
+        day: "2026-08-08" as UsageDay,
+        hourStart: "2026-08-08T00:00:00.000Z",
+        costUsd: 3,
+        records: 1,
+      });
+      const hour = bucket({ hourStart: "2026-08-07T01:00:00.000Z", costUsd: 2, records: 1 });
+      const model = bucket({
+        hourStart: original.hourStart,
+        model: "claude-other",
+        costUsd: 1,
+        records: 1,
+      });
+      const complete = scan("old", [original], "ok", oldTime, attributed);
+      const partial = scan(
+        "new",
+        [{ ...original, costUsd: 4 }, day, hour, model],
+        "partial",
+        newTime,
+        attributed,
+        3,
+      );
+      for (const readings of orders(complete, partial)) {
+        const merged = mergeUsage(readings, USAGE_CONTRACT_VERSION);
+        expect(merged.costUsd).toBe(16);
+        expect(merged.records).toBe(8);
+        expect(merged.sessions).toBe(3);
+        expect(merged.providers[0]?.sessions).toBe(3);
+        expect(merged.daily.map(({ day, costUsd }) => [day, costUsd])).toEqual([
+          ["2026-08-07", 13],
+          ["2026-08-08", 3],
+        ]);
+        expect(merged.hourly.map(({ hourStart, costUsd }) => [hourStart, costUsd])).toEqual([
+          [original.hourStart, 11],
+          [hour.hourStart, 2],
+          [day.hourStart, 3],
+        ]);
+        expect(merged.contributingEnvironments).toEqual(
+          readings.map(({ environmentId }) => environmentId),
+        );
+        expect(merged.duplicateSources).toEqual(["new: /shared"]);
+      }
+    },
+  );
+  it("retains complete priority without supplementing when its scan time is unknown", () => {
+    const complete = scan("complete", [bucket()], "ok", "invalid");
+    const partial = scan(
+      "partial",
+      [bucket({ day: "2026-08-08" as UsageDay, costUsd: 3 })],
+      "partial",
+      newTime,
+    );
+    for (const readings of orders(complete, partial)) {
+      expect(mergeUsage(readings, USAGE_CONTRACT_VERSION).costUsd).toBe(10);
+    }
+  });
+  it("takes each supplemental cell from the newest partial scan once", () => {
+    const old = scan("old", [bucket()], "ok", oldTime);
+    const cell = bucket({ day: "2026-08-08" as UsageDay, costUsd: 3, records: 1 });
+    const middle = scan("middle", [cell], "partial", "2026-08-08T00:00:00.000Z", true, 2);
+    const newest = scan(
+      "newest",
+      [{ ...cell, costUsd: 5 }],
+      "partial",
+      "2026-08-08T01:00:00.000Z",
+      true,
+      3,
+    );
+    for (const readings of orders(old, middle, newest)) {
+      const merged = mergeUsage(readings, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(15);
+      expect(merged.sessions).toBe(3);
+      expect(merged.contributingEnvironments).toEqual(
+        readings.filter((entry) => entry !== middle).map(({ environmentId }) => environmentId),
+      );
+    }
+  });
+  it.each([
+    { status: "partial" as const, time: oldTime },
+    { status: "partial" as const, time: "2026-08-06T00:00:00.000Z" },
+    { status: "partial" as const, time: "invalid" },
+    { status: "failed" as const, time: newTime },
+  ])("does not supplement unproven new usage from $status at $time", ({ status, time }) => {
+    const complete = scan("complete", [bucket()], "ok", oldTime);
+    const other = scan(
+      "other",
+      [bucket({ day: "2026-08-08" as UsageDay, costUsd: 3 })],
+      status,
+      time,
+      true,
+      2,
+    );
+    for (const readings of orders(complete, other)) {
+      expect(mergeUsage(readings, USAGE_CONTRACT_VERSION).costUsd).toBe(10);
+      expect(mergeUsage(readings, USAGE_CONTRACT_VERSION).sessions).toBe(1);
+    }
+  });
+  it("retains a partial scan when no complete scan is available and restores complete priority later", () => {
+    const partial = scan("partial", [bucket({ costUsd: 4 })], "partial", oldTime);
+    const failed = scan("failed", [], "failed", newTime);
+    const complete = scan("complete", [bucket()], "ok", newTime);
+    expect(mergeUsage([partial], USAGE_CONTRACT_VERSION).costUsd).toBe(4);
+    expect(mergeUsage([failed, partial], USAGE_CONTRACT_VERSION).costUsd).toBe(4);
+    expect(mergeUsage([failed, partial, complete], USAGE_CONTRACT_VERSION).costUsd).toBe(10);
+    expect(mergeUsage([failed], USAGE_CONTRACT_VERSION).costUsd).toBe(0);
+  });
+  it("supplements the shared home while retaining each host's unique attributed home", () => {
+    const original = bucket();
+    const extra = bucket({ day: "2026-08-08" as UsageDay, costUsd: 3, records: 1 });
+    const first = summary(
+      [bucket({ costUsd: 12 })],
+      [
+        { ...shared, buckets: [original] },
+        { ...shared, homePath: "/unique-a", buckets: [bucket({ costUsd: 2 })] },
+      ],
+    );
+    const second = summary(
+      [bucket({ costUsd: 9 })],
+      [
+        { ...shared, distinctSessions: 2, buckets: [{ ...original, costUsd: 1 }, extra] },
+        { ...shared, homePath: "/unique-b", buckets: [bucket({ costUsd: 5 })] },
+      ],
+    );
+    const complete = environment("a", { ...first, readAt: oldTime });
+    const partial = environment("b", {
+      ...second,
+      readAt: newTime,
+      sources: second.sources.map((source) => ({ ...source, status: "partial" as const })),
+    });
+    for (const readings of orders(complete, partial)) {
+      const merged = mergeUsage(readings, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(20);
+      expect(merged.sessions).toBe(4);
+      // b's unique home is kept while its shared home goes to a.
+      expect(merged.approximateEnvironments).toEqual(["b"]);
+    }
+  });
+  it("does not invent source attribution for legacy multi-home totals", () => {
+    const complete = scan("old", [bucket()], "ok", oldTime);
+    const reading = summary(
+      [bucket({ day: "2026-08-08" as UsageDay, costUsd: 3 })],
+      [shared, { ...shared, homePath: "/unique-b" }],
+      USAGE_MERGE_COMPATIBLE_SINCE,
+    );
+    const legacy = environment("legacy", {
+      ...reading,
+      readAt: newTime,
+      sources: reading.sources.map((source) => ({ ...source, status: "partial" as const })),
+    });
+    const merged = mergeUsage([complete, legacy], USAGE_CONTRACT_VERSION);
+    expect(merged.costUsd).toBe(13);
+    expect(merged.approximateEnvironments).toEqual(["legacy"]);
+    expect(merged.sessions).toBe(2);
+  });
+  it("keeps one owner for a provider's homes when a newer scan attributes a record elsewhere", () => {
+    // Both servers dedupe one record found in D1 and D2. The complete scan
+    // attributes it to D1; the newer scan could not read D1 and attributes it
+    // to D2. Splitting D1 and D2 between them would count it twice.
+    const record = bucket();
+    const later = bucket({ day: "2026-08-08" as UsageDay, costUsd: 3, records: 1 });
+    const complete = summary(
+      [record],
+      [
+        { ...shared, homePath: "/d1", buckets: [record] },
+        { ...shared, homePath: "/d2", buckets: [] },
+      ],
+    );
+    const newer = summary(
+      [record, later],
+      [
+        { ...shared, homePath: "/d1", buckets: [] },
+        { ...shared, homePath: "/d2", distinctSessions: 2, buckets: [record, later] },
+      ],
+    );
+    const readings = orders(
+      environment("complete", { ...complete, readAt: oldTime }),
+      environment("newer", {
+        ...newer,
+        readAt: newTime,
+        sources: newer.sources.map((source) =>
+          source.fingerprint.resolvedHomePath === "/d1"
+            ? { ...source, status: "partial" as const }
+            : source,
+        ),
+      }),
+    );
+    for (const environments of readings) {
+      const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(13);
+      expect(merged.records).toBe(6);
+      expect(merged.daily.map(({ day, costUsd }) => [day, costUsd])).toEqual([
+        ["2026-08-07", 10],
+        ["2026-08-08", 3],
+      ]);
+      expect(merged.approximateEnvironments).toEqual([]);
+      expect(merged.duplicateSources).toEqual(["newer: /d1", "newer: /d2"]);
+    }
+  });
+  it("keeps a legacy complete multi-home total exact against a newer partial scan", () => {
+    const legacy = summary(
+      [bucket({ costUsd: 15 })],
+      [
+        { ...shared, homePath: "/d1" },
+        { ...shared, homePath: "/d2" },
+      ],
+      USAGE_MERGE_COMPATIBLE_SINCE,
+    );
+    const current = summary(
+      [bucket({ costUsd: 15 })],
+      [
+        { ...shared, homePath: "/d1", buckets: [bucket({ costUsd: 10 })] },
+        { ...shared, homePath: "/d2", buckets: [bucket({ costUsd: 5 })] },
+      ],
+    );
+    for (const environments of orders(
+      environment("legacy", { ...legacy, readAt: oldTime }),
+      environment("current", {
+        ...current,
+        readAt: newTime,
+        sources: current.sources.map((source) =>
+          source.fingerprint.resolvedHomePath === "/d1"
+            ? { ...source, status: "partial" as const }
+            : source,
+        ),
+      }),
+    )) {
+      const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(15);
+      expect(merged.approximateEnvironments).toEqual([]);
+      expect(merged.contributingEnvironments).toEqual(["legacy"]);
+    }
+  });
+  it("does not let an unshared failed home demote a scan's shared homes", () => {
+    const complete = summary(
+      [bucket({ costUsd: 15 })],
+      [
+        { ...shared, homePath: "/d1", buckets: [bucket({ costUsd: 10 })] },
+        { ...shared, homePath: "/d2", buckets: [bucket({ costUsd: 5 })] },
+        { ...shared, homePath: "/d3", buckets: [] },
+      ],
+    );
+    const partial = summary(
+      [bucket({ costUsd: 4 })],
+      [{ ...shared, homePath: "/d1", buckets: [bucket({ costUsd: 4 })] }],
+    );
+    for (const [completeAt, partialAt] of [
+      [newTime, oldTime],
+      [oldTime, newTime],
+    ] as const) {
+      for (const environments of orders(
+        environment("a", {
+          ...complete,
+          readAt: completeAt,
+          sources: complete.sources.map((source) =>
+            source.fingerprint.resolvedHomePath === "/d3"
+              ? { ...source, status: "failed" as const }
+              : source,
+          ),
+        }),
+        environment("b", {
+          ...partial,
+          readAt: partialAt,
+          sources: partial.sources.map((source) => ({ ...source, status: "partial" as const })),
+        }),
+      )) {
+        const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+        expect(merged.costUsd).toBe(15);
+        expect(merged.contributingEnvironments).toEqual(["a"]);
+        expect(merged.approximateEnvironments).toEqual([]);
+      }
+    }
+  });
+  it("flags scans whose homes are split between owners", () => {
+    const record = bucket();
+    const d1 = { ...shared, homePath: "/d1" };
+    const d2 = { ...shared, homePath: "/d2" };
+    const d3 = { ...shared, homePath: "/d3" };
+    // Record R exists in D1 and D3; each server credits it to a different home.
+    const a = environment("a", {
+      ...summary(
+        [record],
+        [
+          { ...d1, buckets: [record] },
+          { ...d2, buckets: [] },
+        ],
+      ),
+      readAt: "2026-08-09T00:00:00.000Z",
+    });
+    const b = environment("b", {
+      ...summary(
+        [record],
+        [
+          { ...d2, buckets: [] },
+          { ...d3, buckets: [record] },
+        ],
+      ),
+      readAt: newTime,
+    });
+    const c = environment("c", {
+      ...summary(
+        [record],
+        [
+          { ...d1, buckets: [record] },
+          { ...d3, buckets: [] },
+        ],
+      ),
+      readAt: oldTime,
+    });
+    for (const environments of orders(a, b, c)) {
+      const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(20);
+      expect([...merged.approximateEnvironments].sort()).toEqual(["b", "c"]);
+    }
+    for (const environments of orders(a, b)) {
+      const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(20);
+      expect(merged.approximateEnvironments).toEqual(["b"]);
+    }
+  });
+  it("lets a scan of a superset of homes own them all regardless of scan order", () => {
+    const desktop = summary([bucket()], [{ ...shared, homePath: "/.claude", buckets: [bucket()] }]);
+    const dev = summary(
+      [bucket({ costUsd: 13 })],
+      [
+        { ...shared, homePath: "/.claude", buckets: [bucket()] },
+        { ...shared, homePath: "/.claude-alt", buckets: [bucket({ costUsd: 3 })] },
+      ],
+    );
+    for (const [desktopAt, devAt] of [
+      [newTime, oldTime],
+      [oldTime, newTime],
+    ] as const) {
+      for (const environments of orders(
+        environment("desktop", { ...desktop, readAt: desktopAt }),
+        environment("dev", { ...dev, readAt: devAt }),
+      )) {
+        const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+        expect(merged.costUsd).toBe(13);
+        expect(merged.contributingEnvironments).toEqual(["dev"]);
+        expect(merged.duplicateSources).toEqual(["desktop: /.claude"]);
+        expect(merged.approximateEnvironments).toEqual([]);
+      }
+    }
+    // A legacy provider-wide total over a superset of homes stays exact.
+    const legacy = summary(
+      [bucket({ costUsd: 13 })],
+      [
+        { ...shared, homePath: "/.claude" },
+        { ...shared, homePath: "/.claude-alt" },
+      ],
+      USAGE_MERGE_COMPATIBLE_SINCE,
+    );
+    for (const environments of orders(
+      environment("desktop", { ...desktop, readAt: newTime }),
+      environment("legacy", { ...legacy, readAt: oldTime }),
+    )) {
+      const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(13);
+      expect(merged.approximateEnvironments).toEqual([]);
+    }
+    // Neither home set contains the other, so the split stays flagged.
+    const other = summary(
+      [bucket({ costUsd: 12 })],
+      [
+        { ...shared, homePath: "/.claude", buckets: [bucket()] },
+        { ...shared, homePath: "/.claude-other", buckets: [bucket({ costUsd: 2 })] },
+      ],
+    );
+    for (const environments of orders(
+      environment("other", { ...other, readAt: newTime }),
+      environment("dev", { ...dev, readAt: oldTime }),
+    )) {
+      const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(15);
+      expect(merged.approximateEnvironments).toEqual(["dev"]);
+    }
   });
 });

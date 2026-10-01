@@ -290,8 +290,8 @@ export function UsageRouteScreen() {
               ) : null}
               {merged.approximateEnvironments.length > 0 ? (
                 <Text className="text-sm text-foreground-muted">
-                  Totals may count shared usage more than once because these environments run older
-                  servers or have directories whose filesystem identity could not be read:{" "}
+                  Totals for these environments are approximate because they run older servers, read
+                  overlapping history folders, or have folders whose identity could not be read:{" "}
                   {selectedEnvironments
                     .filter((environment) =>
                       merged.approximateEnvironments.includes(environment.environmentId),

@@ -117,6 +117,59 @@ afterEach(async () => {
 });
 
 describe("usage environment selection", () => {
+  it("keeps complete and supplemental partial cells when selection changes", async () => {
+    const complete = environment("complete", 10, "shared");
+    const partial = environment("partial", 4, "shared");
+    if (complete.summary === null || partial.summary === null)
+      throw new Error("Missing fixture summary");
+    const completeBuckets = complete.summary.buckets.map((cell) => ({
+      ...cell,
+      model: "shared-model",
+    }));
+    const partialBuckets = [
+      ...partial.summary.buckets.map((cell) => ({ ...cell, model: "shared-model" })),
+      { ...partial.summary.buckets[0]!, model: "new-model", costUsd: 3 },
+    ];
+    testState.environments = [
+      {
+        ...complete,
+        summary: {
+          ...complete.summary,
+          buckets: completeBuckets,
+          sources: complete.summary.sources.map((source) => ({
+            ...source,
+            buckets: completeBuckets,
+          })),
+        },
+      },
+      {
+        ...partial,
+        summary: {
+          ...partial.summary,
+          readAt: "2026-09-04T13:00:00Z",
+          buckets: partialBuckets,
+          sources: partial.summary.sources.map((source) => ({
+            ...source,
+            status: "partial" as const,
+            distinctSessions: 2,
+            buckets: partialBuckets,
+          })),
+        },
+      },
+    ];
+    await act(() => renderer?.update(<Probe selected={null} />));
+    expect(latest.merged.costUsd).toBe(13);
+    expect(latest.merged.sessions).toBe(2);
+    await select("partial");
+    expect(latest.merged.costUsd).toBe(7);
+    expect(latest.merged.duplicateSources).toEqual([]);
+    await select("complete");
+    expect(latest.merged.costUsd).toBe(10);
+    testState.environments = testState.environments.toReversed();
+    await act(() => renderer?.update(<Probe selected={null} />));
+    expect(latest.merged.costUsd).toBe(13);
+  });
+
   it("starts with all environments and adds results as they arrive", async () => {
     expect(latest.merged.costUsd).toBe(30);
     expect(latest.isPending).toBe(false);
