@@ -4,6 +4,7 @@ import {
   MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RuntimeSessionId,
   ThreadId,
   TurnId,
   type OrchestrationSession,
@@ -95,6 +96,7 @@ describe("planRestartAgentSession", () => {
       }),
     ).toEqual({
       kind: "busy",
+      sessionKey: null,
       runningTurn: true,
       turnKey: "turn-1",
       compacting: false,
@@ -135,6 +137,7 @@ describe("planRestartAgentSession", () => {
       }),
     ).toEqual({
       kind: "busy",
+      sessionKey: null,
       runningTurn: false,
       turnKey: null,
       compacting: true,
@@ -151,6 +154,7 @@ describe("planRestartAgentSession", () => {
       }),
     ).toEqual({
       kind: "busy",
+      sessionKey: null,
       runningTurn: false,
       turnKey: null,
       compacting: true,
@@ -183,6 +187,7 @@ describe("restartAgentSessionConfirmMessage", () => {
     expect(
       restartAgentSessionConfirmMessage({
         kind: "busy",
+        sessionKey: null,
         runningTurn: true,
         turnKey: "turn-1",
         compacting: true,
@@ -199,6 +204,7 @@ describe("restartAgentSessionConfirmMessage", () => {
     expect(
       restartAgentSessionConfirmMessage({
         kind: "busy",
+        sessionKey: null,
         runningTurn: false,
         turnKey: null,
         compacting: false,
@@ -212,6 +218,7 @@ describe("restartAgentSessionConfirmMessage", () => {
 describe("restartPlanExceedsConfirmed", () => {
   const confirmed = {
     kind: "busy",
+    sessionKey: null,
     runningTurn: true,
     turnKey: "turn-a",
     compacting: false,
@@ -276,5 +283,22 @@ describe("compaction identity", () => {
     const confirmedPlan = planFor(nativeCompaction("compacting", A));
     if (confirmedPlan.kind !== "busy") throw new Error("expected a busy plan");
     expect(restartPlanExceedsConfirmed(confirmedPlan, unidentified)).toBe(true);
+  });
+});
+
+describe("session identity", () => {
+  it("refuses a replacement session that reports the same compaction run", () => {
+    const runStartedAt = "2026-10-01T00:00:01.000Z";
+    const planFor = (sessionIncarnationId: string) =>
+      planRestartAgentSession({
+        session: session({ sessionIncarnationId: RuntimeSessionId.make(sessionIncarnationId) }),
+        activities: [nativeCompaction("compacting", runStartedAt)],
+      });
+    const confirmedPlan = planFor("session-a");
+    if (confirmedPlan.kind !== "busy") throw new Error("expected a busy plan");
+    expect(restartPlanExceedsConfirmed(confirmedPlan, planFor("session-a"))).toBe(false);
+    // Session A exited mid-compaction with no idle update, and its replacement
+    // reported a compaction already running under the same run start.
+    expect(restartPlanExceedsConfirmed(confirmedPlan, planFor("session-b"))).toBe(true);
   });
 });

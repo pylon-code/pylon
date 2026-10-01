@@ -22,6 +22,8 @@ export type RestartAgentSessionPlan =
   | { readonly kind: "stopping" }
   | {
       readonly kind: "busy";
+      /** The provider session incarnation, else its start time. */
+      readonly sessionKey: string | null;
       readonly runningTurn: boolean;
       /** The active turn, else the admission waiting to start one. */
       readonly turnKey: string | null;
@@ -66,7 +68,16 @@ export function planRestartAgentSession(
   const queuedMessages = (compactionQueue?.queued.length ?? 0) + sessionInputQueueCount(inputQueue);
   if (!runningTurn && !compacting && queuedMessages === 0) return { kind: "idle" };
   const turnKey = session.activeTurnId ?? session.pendingTurnRequestId ?? null;
-  return { kind: "busy", runningTurn, turnKey, compacting, compactionKey, queuedMessages };
+  const sessionKey = session.sessionIncarnationId ?? session.startedAt ?? null;
+  return {
+    kind: "busy",
+    sessionKey,
+    runningTurn,
+    turnKey,
+    compacting,
+    compactionKey,
+    queuedMessages,
+  };
 }
 
 /**
@@ -114,6 +125,9 @@ export function restartPlanExceedsConfirmed(
   current: RestartAgentSessionPlan,
 ): boolean {
   if (current.kind !== "busy") return false;
+  // A replacement session's work is never the work that was confirmed, even
+  // when it reports the same kind of activity.
+  if (current.sessionKey !== confirmed.sessionKey) return true;
   if (current.runningTurn && (!confirmed.runningTurn || current.turnKey !== confirmed.turnKey)) {
     return true;
   }
