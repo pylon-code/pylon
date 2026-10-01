@@ -1041,6 +1041,7 @@ describe("makeRelayDeviceRegistrationRequest", () => {
       type: "android",
       data: "fcm-token",
     });
+    vi.mocked(loadPreferences).mockResolvedValue({ liveActivitiesEnabled: true });
     const rejectedResponse = new Response("Unsupported device platform", { status: 400 });
     Object.defineProperty(rejectedResponse.headers, "getSetCookie", { value: undefined });
     vi.stubGlobal("fetch", (request: RequestInfo | URL) => {
