@@ -1666,7 +1666,7 @@ function SavedBackendListRow({
                 >
                   <EllipsisIcon className="size-3.5" />
                 </MenuTrigger>
-                <MenuPopup align="end" className="min-w-52">
+                <MenuPopup align="end">
                   {errorTraceId ? (
                     <MenuItem onClick={() => copyTraceId(errorTraceId)}>Copy trace ID</MenuItem>
                   ) : null}

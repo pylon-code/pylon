@@ -2287,7 +2287,7 @@ function CompactFilterMenu<Value extends string>({
           </>
         )}
       </MenuTrigger>
-      <MenuPopup align="start" side="bottom" className="min-w-40">
+      <MenuPopup align="start" side="bottom">
         <MenuRadioGroup value={value} onValueChange={(next) => onChange(next as Value)}>
           {options.map((option) => {
             const item = (
