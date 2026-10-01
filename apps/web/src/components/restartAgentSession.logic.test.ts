@@ -48,15 +48,22 @@ const inputQueue = (steeringCount: number, followUpCount: number) =>
     },
   }) as OrchestrationThreadActivity;
 
-const nativeCompaction = (status: "idle" | "compacting", id = `compaction-${status}`) =>
+// Production shape: ingestion upserts one row per instance and thread under a
+// fixed id, so the projection only ever holds the latest update.
+const nativeCompaction = (
+  status: "idle" | "compacting",
+  runStartedAt?: string,
+  createdAt = "2026-10-01T00:00:02.000Z",
+) =>
   ({
-    id: EventId.make(id),
+    id: EventId.make(`session-compaction:${instanceId}:thread-1`),
     kind: "session.compaction.updated",
     tone: "info",
     summary: "Session compaction updated",
     turnId: null,
-    createdAt: "2026-10-01T00:00:02.000Z",
+    createdAt,
     payload: {
+      ...(runStartedAt === undefined ? {} : { runStartedAt }),
       provider: ProviderDriverKind.make("primeAgent"),
       providerInstanceId: instanceId,
       available: true,
@@ -138,13 +145,16 @@ describe("planRestartAgentSession", () => {
 
   it("treats native compaction in progress as busy", () => {
     expect(
-      planRestartAgentSession({ session: session(), activities: [nativeCompaction("compacting")] }),
+      planRestartAgentSession({
+        session: session(),
+        activities: [nativeCompaction("compacting", "2026-10-01T00:00:01.000Z")],
+      }),
     ).toEqual({
       kind: "busy",
       runningTurn: false,
       turnKey: null,
       compacting: true,
-      compactionKey: "native:compaction-compacting",
+      compactionKey: "native:2026-10-01T00:00:01.000Z",
       queuedMessages: 0,
     });
     expect(
@@ -237,38 +247,34 @@ describe("restartPlanExceedsConfirmed", () => {
 });
 
 describe("compaction identity", () => {
-  it("refuses a native compaction that replaced the confirmed one", () => {
-    const confirmedPlan = planRestartAgentSession({
-      session: session(),
-      activities: [
-        nativeCompaction("compacting", "a-start"),
-        nativeCompaction("compacting", "a-progress"),
-      ],
-    });
-    expect(confirmedPlan).toMatchObject({ kind: "busy", compactionKey: "native:a-start" });
+  const A = "2026-10-01T00:00:01.000Z";
+  const B = "2026-10-01T00:00:04.000Z";
+  const planFor = (row: OrchestrationThreadActivity) =>
+    planRestartAgentSession({ session: session(), activities: [row] });
+
+  it("allows the same native run and refuses a run that replaced it", () => {
+    const confirmedPlan = planFor(nativeCompaction("compacting", A, "2026-10-01T00:00:01.000Z"));
+    expect(confirmedPlan).toMatchObject({ kind: "busy", compactionKey: `native:${A}` });
     if (confirmedPlan.kind !== "busy") throw new Error("expected a busy plan");
 
-    // Compaction A continues: same run, restart may proceed.
-    const sameRun = planRestartAgentSession({
-      session: session(),
-      activities: [
-        nativeCompaction("compacting", "a-start"),
-        nativeCompaction("compacting", "a-progress"),
-        nativeCompaction("compacting", "a-more"),
-      ],
-    });
+    // A progresses: the upserted row changes but keeps its run start.
+    const sameRun = planFor(nativeCompaction("compacting", A, "2026-10-01T00:00:02.000Z"));
     expect(restartPlanExceedsConfirmed(confirmedPlan, sameRun)).toBe(false);
 
-    // A finished and another client started B before the confirmation.
-    const replaced = planRestartAgentSession({
-      session: session(),
-      activities: [
-        nativeCompaction("compacting", "a-start"),
-        nativeCompaction("idle", "a-done"),
-        nativeCompaction("compacting", "b-start"),
-      ],
-    });
-    expect(replaced).toMatchObject({ kind: "busy", compactionKey: "native:b-start" });
+    // A completed and B started; the completion row was overwritten by B.
+    const replaced = planFor(nativeCompaction("compacting", B, "2026-10-01T00:00:04.000Z"));
+    expect(replaced).toMatchObject({ kind: "busy", compactionKey: `native:${B}` });
     expect(restartPlanExceedsConfirmed(confirmedPlan, replaced)).toBe(true);
+  });
+
+  it("refuses a running compaction it cannot identify", () => {
+    // Rows from an older server, or a run whose start was lost, have no key.
+    const unidentified = planFor(nativeCompaction("compacting"));
+    expect(unidentified).toMatchObject({ kind: "busy", compacting: true, compactionKey: null });
+    if (unidentified.kind !== "busy") throw new Error("expected a busy plan");
+    expect(restartPlanExceedsConfirmed(unidentified, unidentified)).toBe(true);
+    const confirmedPlan = planFor(nativeCompaction("compacting", A));
+    if (confirmedPlan.kind !== "busy") throw new Error("expected a busy plan");
+    expect(restartPlanExceedsConfirmed(confirmedPlan, unidentified)).toBe(true);
   });
 });

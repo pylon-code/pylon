@@ -1,15 +1,16 @@
-import { isSessionCompactionInProgress } from "@t3tools/client-runtime/state/context-compaction";
+import {
+  deriveLatestSessionCompaction,
+  isSessionCompactionInProgress,
+} from "@t3tools/client-runtime/state/context-compaction";
 import {
   deriveLatestSessionInputQueue,
   sessionInputQueueCount,
 } from "@t3tools/client-runtime/state/session-input-queue";
-import {
-  decodeOrchestrationSessionActivity,
-  type OrchestrationThread,
-  type OrchestrationThreadActivity,
-  type ProviderInstanceId,
+import type {
+  OrchestrationThread,
+  OrchestrationThreadActivity,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
-import * as Option from "effect/Option";
 
 /**
  * What a restart would interrupt. Restart dispatches the same stop as the
@@ -25,7 +26,7 @@ export type RestartAgentSessionPlan =
       /** The active turn, else the admission waiting to start one. */
       readonly turnKey: string | null;
       readonly compacting: boolean;
-      /** Identity of the running compaction, or null when none runs. */
+      /** Identity of the running compaction; null when none runs or it cannot be identified. */
       readonly compactionKey: string | null;
       /** Messages that would be cancelled: compaction queue plus provider input queue. */
       readonly queuedMessages: number;
@@ -51,15 +52,17 @@ export function planRestartAgentSession(
     instanceId === undefined ? null : deriveLatestSessionInputQueue(thread.activities, instanceId);
   // Slash-command compaction owns the durable queue; native compaction
   // reports progress through session activities.
-  const nativeCompactionKey =
-    instanceId === undefined ? null : nativeCompactionRunKey(thread.activities, instanceId);
+  const native =
+    instanceId === undefined
+      ? { compacting: false, key: null }
+      : nativeCompaction(thread.activities, instanceId);
+  const compacting = compactionQueue !== undefined || native.compacting;
   const compactionKey =
     compactionQueue !== undefined
       ? `slash:${compactionQueue.requestId}`
-      : nativeCompactionKey === null
+      : native.key === null
         ? null
-        : `native:${nativeCompactionKey}`;
-  const compacting = compactionKey !== null;
+        : `native:${native.key}`;
   const queuedMessages = (compactionQueue?.queued.length ?? 0) + sessionInputQueueCount(inputQueue);
   if (!runningTurn && !compacting && queuedMessages === 0) return { kind: "idle" };
   const turnKey = session.activeTurnId ?? session.pendingTurnRequestId ?? null;
@@ -67,27 +70,18 @@ export function planRestartAgentSession(
 }
 
 /**
- * Native compaction updates carry no compaction id, so a run is identified by
- * the activity that started it: the earliest update in the latest unbroken
- * sequence of in-progress updates for this provider instance. A compaction
- * that finishes and another that starts are separated by a finished update,
- * so they get different keys. Returns null when none is in progress.
+ * Native compaction is one upserted activity row per thread, so the row's own
+ * id cannot tell runs apart. The server stamps `runStartedAt` on every update
+ * of a run. Rows from older servers lack it and yield a null key while
+ * compacting, which the confirmation check treats as unprovable.
  */
-function nativeCompactionRunKey(
+function nativeCompaction(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   instanceId: ProviderInstanceId,
-): string | null {
-  let runStart: string | null = null;
-  for (let index = activities.length - 1; index >= 0; index -= 1) {
-    const activity = activities[index];
-    if (!activity || activity.kind !== "session.compaction.updated") continue;
-    const decoded = decodeOrchestrationSessionActivity(activity);
-    if (Option.isNone(decoded) || decoded.value.kind !== "session.compaction.updated") continue;
-    if (decoded.value.payload.providerInstanceId !== instanceId) continue;
-    if (!isSessionCompactionInProgress(decoded.value.payload)) break;
-    runStart = activity.id;
-  }
-  return runStart;
+): { readonly compacting: boolean; readonly key: string | null } {
+  const snapshot = deriveLatestSessionCompaction(activities, instanceId);
+  if (!isSessionCompactionInProgress(snapshot)) return { compacting: false, key: null };
+  return { compacting: true, key: snapshot?.runStartedAt ?? null };
 }
 
 /** Confirmation copy naming exactly what the restart will stop or cancel. */
@@ -123,6 +117,12 @@ export function restartPlanExceedsConfirmed(
   if (current.runningTurn && (!confirmed.runningTurn || current.turnKey !== confirmed.turnKey)) {
     return true;
   }
-  if (current.compacting && current.compactionKey !== confirmed.compactionKey) return true;
+  // A compaction without an identity cannot be proven to be the confirmed one.
+  if (
+    current.compacting &&
+    (current.compactionKey === null || current.compactionKey !== confirmed.compactionKey)
+  ) {
+    return true;
+  }
   return current.queuedMessages > confirmed.queuedMessages;
 }
