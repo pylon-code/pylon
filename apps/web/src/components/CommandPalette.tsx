@@ -96,6 +96,10 @@ import {
   ThemePreviewCircle,
 } from "./settings/ThemePreviewCircles";
 import { readLocalApi } from "../localApi";
+import {
+  planRestartAgentSession,
+  restartAgentSessionConfirmMessage,
+} from "./restartAgentSession.logic";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
@@ -1953,11 +1957,17 @@ function OpenCommandPaletteDialog(props: {
 
   if (activeThread !== null) {
     const thread = activeThread;
+    const restartPlan = planRestartAgentSession(thread);
     actionItems.push({
       kind: "action",
       value: "action:restart-agent-session",
       searchTerms: ["restart", "reset", "reload", "agent", "session", "skills", "plugins", "mcp"],
       title: "Restart agent session",
+      ...(restartPlan.kind === "stopping"
+        ? { description: "The session is already stopping", disabled: true }
+        : restartPlan.kind === "busy"
+          ? { description: "Stops the running work first" }
+          : {}),
       icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
       // Stopping the provider process keeps the conversation: the next message
       // spawns a fresh one that resumes it and reloads skills, plugins, and MCP
@@ -1965,6 +1975,18 @@ function OpenCommandPaletteDialog(props: {
       // Failures throw into executeItem's error toast.
       run: async () => {
         const { environmentId } = thread;
+        if (restartPlan.kind === "stopping") return;
+        // Stop ends the running turn and cancels queued messages, so a busy
+        // thread asks first. An idle one restarts without a prompt.
+        if (restartPlan.kind === "busy") {
+          const api = readLocalApi();
+          if (!api) return;
+          const confirmed = await api.dialogs.confirm(
+            restartAgentSessionConfirmMessage(restartPlan),
+            { variant: "destructive" },
+          );
+          if (!confirmed) return;
+        }
         if (thread.session && thread.session.status !== "stopped") {
           const stopped = await stopThreadSession({
             environmentId,
