@@ -120,7 +120,9 @@ export function ControlPill(props: {
       ? props.disabled
         ? "text-foreground-muted"
         : "text-primary-foreground"
-      : "",
+      : variant === "danger"
+        ? "text-danger-foreground"
+        : "text-foreground",
   );
 
   return (

@@ -18,8 +18,8 @@ export function connectionTone(state: RemoteClientConnectionState): StatusTone {
     case "connecting":
       return {
         label: "Connecting",
-        pillClassName: "bg-adaptive-sky-500-a12-a16",
-        textClassName: "text-adaptive-sky-700-300",
+        pillClassName: "bg-update",
+        textClassName: "text-update-foreground",
       };
     case "unsupported":
       return {

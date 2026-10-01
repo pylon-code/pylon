@@ -178,20 +178,23 @@ export function createNativeReviewDiffTheme(
   // Swift expects #RRGGBB/#RRGGBBAA while Android expects #RRGGBB/#AARRGGBB.
   // Flatten translucent app tokens onto the code surface so both native
   // implementations receive the one unambiguous shared format.
-  const background = opaqueNativeHexColor(appTheme["--color-sheet"], appTheme["--color-screen"]);
+  const screen = opaqueNativeHexColor(
+    appTheme["--color-screen"],
+    scheme === "dark" ? "#000000" : "#ffffff",
+  );
+  const background = opaqueNativeHexColor(appTheme["--color-md-code-bg"], screen);
   const nativeColor = (color: string) => opaqueNativeHexColor(color, background);
 
   if (scheme === "dark") {
     return {
-      // Match the app surface (--color-sheet) so code views blend with the rest of
-      // the app instead of using a distinct code-editor background.
+      // Code surfaces share the desktop palette rather than the sheet behind them.
       background,
       text: nativeColor(appTheme["--color-md-code-text"]),
       mutedText: nativeColor(appTheme["--color-foreground-muted"]),
       headerBackground: background,
       border: nativeColor(appTheme["--color-border"]),
       hunkBackground: nativeColor(appTheme["--color-subtle-strong"]),
-      hunkText: nativeColor(appTheme["--color-primary"]),
+      hunkText: nativeColor(appTheme["--color-foreground"]),
       addBackground: "#0d2f28",
       deleteBackground: "#391415",
       addBar: "#00cab1",
@@ -202,15 +205,13 @@ export function createNativeReviewDiffTheme(
   }
 
   return {
-    // Match the app surface (--color-sheet) so code views blend with the rest of the
-    // app instead of using a distinct code-editor background.
     background,
     text: nativeColor(appTheme["--color-md-code-text"]),
     mutedText: nativeColor(appTheme["--color-foreground-muted"]),
     headerBackground: background,
     border: nativeColor(appTheme["--color-border"]),
     hunkBackground: nativeColor(appTheme["--color-subtle-strong"]),
-    hunkText: nativeColor(appTheme["--color-primary"]),
+    hunkText: nativeColor(appTheme["--color-foreground"]),
     addBackground: "#e5f8f5",
     deleteBackground: "#ffe6e7",
     addBar: "#00cab1",

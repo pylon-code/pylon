@@ -391,12 +391,8 @@ export function ComposerSurface(props: {
     >
       <AnimatedGlassSurface
         chrome="none"
-        fallbackColor={
-          materialYouStyleLayoutActive ? colors["--color-composer-surface"] : colors["--color-card"]
-        }
-        fallbackClassName={
-          materialYouStyleLayoutActive ? "border border-composer-border" : "border border-border"
-        }
+        fallbackColor={colors["--color-composer-surface"]}
+        fallbackClassName="border border-composer-border"
         glassEffectStyle="regular"
         // Keep native glass out of the interactive content's layout path: the
         // content is now a sibling of this layer, not a child of it.

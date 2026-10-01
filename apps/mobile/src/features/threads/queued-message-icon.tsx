@@ -7,7 +7,7 @@ export function QueuedMessageIcon({ selected = false }: { readonly selected?: bo
       name="tray.and.arrow.up"
       size={12}
       tintColorClassName={
-        selected ? "accent-user-bubble-foreground-muted" : "accent-foreground-muted"
+        selected ? "accent-thread-selected-foreground-muted" : "accent-foreground-muted"
       }
       type="monochrome"
     />

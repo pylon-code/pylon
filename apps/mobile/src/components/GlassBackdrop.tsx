@@ -11,16 +11,15 @@ export function GlassBackdrop(props: {
   readonly fallbackColor?: ColorValue;
   readonly blurTarget?: RefObject<View | null>;
 }) {
-  const { themeAppearance } = useAppearancePreferences();
+  const { themeAppearance, themeVariables } = useAppearancePreferences();
   const inheritedBlurTarget = useContext(GlassBlurTargetContext);
   const target = props.blurTarget ?? inheritedBlurTarget;
   const supportsBlur =
     Platform.OS === "ios" ||
     (Platform.OS === "android" && Platform.Version >= 31 && target !== undefined);
-  const colorStyle =
-    props.fallbackColor === undefined
-      ? undefined
-      : { backgroundColor: themeColorWithAlpha(String(props.fallbackColor), 1) };
+  const color = props.fallbackColor ?? themeVariables["--color-glass-fallback"];
+  const opaqueColor = typeof color === "string" ? themeColorWithAlpha(color, 1) : color;
+  const colorStyle = { backgroundColor: supportsBlur ? color : opaqueColor };
 
   return (
     <>
@@ -28,7 +27,11 @@ export function GlassBackdrop(props: {
           transparent pixels in that sample from exposing the unblurred feed.
           iOS samples its actual backdrop, so a backing there would hide it. */}
       {Platform.OS === "android" ? (
-        <View pointerEvents="none" className="absolute inset-0 bg-card" style={colorStyle} />
+        <View
+          pointerEvents="none"
+          className="absolute inset-0 bg-glass-fallback"
+          style={{ backgroundColor: opaqueColor }}
+        />
       ) : null}
       {supportsBlur ? (
         <BlurView
@@ -42,11 +45,8 @@ export function GlassBackdrop(props: {
       ) : null}
       <View
         pointerEvents="none"
-        className="absolute inset-0 bg-card"
-        style={[
-          colorStyle,
-          { opacity: supportsBlur ? (themeAppearance === "dark" ? 0.25 : 0.55) : 1 },
-        ]}
+        className="absolute inset-0 bg-glass-fallback"
+        style={colorStyle}
       />
     </>
   );
