@@ -76,6 +76,7 @@ import {
 } from "../threads/threadListV2";
 import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-shelf-preferences";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
+import { useLegacyHomeListExtraData } from "./home-list-extra-data";
 import {
   buildHomeListLayout,
   DEFAULT_GROUP_DISPLAY_STATE,
@@ -1113,15 +1114,14 @@ export function HomeScreen(props: HomeScreenProps) {
     ],
   );
 
-  const extraData = useMemo(
-    () => ({
-      projectCwdByKey,
-      savedConnectionsById: props.savedConnectionsById,
-      searchQuery: props.searchQuery,
-      threadSearchMatchByKey,
-    }),
-    [projectCwdByKey, props.savedConnectionsById, props.searchQuery, threadSearchMatchByKey],
-  );
+  const extraData = useLegacyHomeListExtraData({
+    projectCwdByKey,
+    savedConnectionsById: props.savedConnectionsById,
+    searchQuery: props.searchQuery,
+    threadSearchMatchByKey,
+    autoSettleOptOutEnvironmentIds,
+    titleRegenerationEnvironmentIds,
+  });
 
   const renderItem = useCallback(
     ({ item }: LegendListRenderItemProps<HomeListItem>) => {
@@ -1189,6 +1189,8 @@ export function HomeScreen(props: HomeScreenProps) {
               onRenameThread={handleRenameThread}
               onRegenerateThreadTitle={handleRegenerateThreadTitle}
               titleRegenerationSupported={titleRegenerationEnvironmentIds.has(thread.environmentId)}
+              autoSettleOptOutSupported={autoSettleOptOutEnvironmentIds.has(thread.environmentId)}
+              onSetThreadAutoSettle={handleSetThreadAutoSettle}
               onSelectThread={props.onSelectThread}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
@@ -1211,6 +1213,8 @@ export function HomeScreen(props: HomeScreenProps) {
       handleSwipeableClose,
       handleSwipeableWillOpen,
       handleRegenerateThreadTitle,
+      handleSetThreadAutoSettle,
+      autoSettleOptOutEnvironmentIds,
       handleRenameThread,
       machineByEnvironmentId,
       projectCwdByKey,

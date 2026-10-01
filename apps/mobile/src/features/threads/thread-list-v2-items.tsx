@@ -34,6 +34,7 @@ import { useThreadPr } from "../../state/use-thread-pr";
 import { useSwipeRowDormant } from "../home/swipe-row-activation";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
+import { buildThreadAutoSettleMenuItems } from "./thread-auto-settle-menu";
 import {
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SnoozeGateExpiryMs,
@@ -610,29 +611,12 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
   // A submenu with the current option checked, matching web. This is a
   // per-thread setting, not a lifecycle verb.
-  const autoSettleMenuItems = useMemo<MenuAction[]>(
+  const autoSettleMenuItems = useMemo(
     () =>
-      props.autoSettleOptOutSupported
-        ? [
-            {
-              id: "auto-settle",
-              title: "Auto-settle behavior",
-              image: "timer",
-              subactions: [
-                {
-                  id: "auto-settle:enabled",
-                  title: "Enabled",
-                  state: thread.autoSettleDisabledAt == null ? "on" : "off",
-                },
-                {
-                  id: "auto-settle:disabled",
-                  title: "Disabled",
-                  state: thread.autoSettleDisabledAt == null ? "off" : "on",
-                },
-              ],
-            } satisfies MenuAction,
-          ]
-        : [],
+      buildThreadAutoSettleMenuItems({
+        supported: props.autoSettleOptOutSupported,
+        autoSettleDisabledAt: thread.autoSettleDisabledAt,
+      }),
     [props.autoSettleOptOutSupported, thread.autoSettleDisabledAt],
   );
   const titleMenuItems = useMemo<MenuAction[]>(
@@ -699,9 +683,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       LEGACY_MENU_ACTIONS[0]!,
       ...arrangementMenuItems,
       ...titleMenuItems,
+      ...autoSettleMenuItems,
       LEGACY_MENU_ACTIONS[1]!,
     ],
-    [arrangementMenuItems, titleMenuItems],
+    [arrangementMenuItems, autoSettleMenuItems, titleMenuItems],
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {

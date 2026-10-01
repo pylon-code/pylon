@@ -32,6 +32,7 @@ import { useThreadPr, type ThreadPrPresentation } from "../../state/use-thread-p
 import type { HomeGroupDisplayAction } from "../home/homeListItems";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
+import { buildThreadAutoSettleMenuItems } from "./thread-auto-settle-menu";
 import { QueuedMessageIcon } from "./queued-message-icon";
 import { resolveThreadStatus } from "./threadPresentation";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
@@ -484,6 +485,8 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly onRenameThread: (thread: EnvironmentThreadShell) => void;
   readonly onRegenerateThreadTitle: (thread: EnvironmentThreadShell) => void;
   readonly titleRegenerationSupported: boolean;
+  readonly autoSettleOptOutSupported: boolean;
+  readonly onSetThreadAutoSettle: (thread: EnvironmentThreadShell, enabled: boolean) => void;
   readonly onSwipeableWillOpen: (methods: SwipeableMethods) => void;
   readonly onSwipeableClose: (methods: SwipeableMethods) => void;
   readonly simultaneousSwipeGesture?: ComponentProps<
@@ -516,6 +519,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
     onRenameThread,
     onRegenerateThreadTitle,
     onNewThreadOnBranch,
+    onSetThreadAutoSettle,
   } = props;
   const status = resolveThreadStatus(thread);
   const pr = useThreadPr(thread, props.projectCwd);
@@ -582,9 +586,19 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
         supported: props.titleRegenerationSupported,
         isRegenerating: thread.titleRegeneration != null,
       }),
+      ...buildThreadAutoSettleMenuItems({
+        supported: props.autoSettleOptOutSupported,
+        autoSettleDisabledAt: thread.autoSettleDisabledAt,
+      }),
       THREAD_ROW_MENU_ACTIONS[2]!,
     ],
-    [props.titleRegenerationSupported, thread.branch, thread.titleRegeneration],
+    [
+      props.autoSettleOptOutSupported,
+      props.titleRegenerationSupported,
+      thread.autoSettleDisabledAt,
+      thread.branch,
+      thread.titleRegeneration,
+    ],
   );
   const primaryAction = useMemo(
     () => ({
@@ -604,9 +618,19 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
         copyTextWithHaptic(thread.id, { target: "thread-id" });
       }
       if (nativeEvent.event === "regenerate-title") handleRegenerateTitle();
+      if (nativeEvent.event === "auto-settle:enabled") onSetThreadAutoSettle(thread, true);
+      if (nativeEvent.event === "auto-settle:disabled") onSetThreadAutoSettle(thread, false);
       if (nativeEvent.event === "delete") handleDelete();
     },
-    [handleArchive, handleDelete, handleRegenerateTitle, handleRename, onNewThreadOnBranch, thread],
+    [
+      handleArchive,
+      handleDelete,
+      handleRegenerateTitle,
+      handleRename,
+      onNewThreadOnBranch,
+      onSetThreadAutoSettle,
+      thread,
+    ],
   );
 
   const statusPill = effectiveStatus ? (
