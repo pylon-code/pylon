@@ -1,9 +1,11 @@
 import {
   createVividThemeColors,
   getThemeModes,
+  isReservedThemeId,
   isSupportedThemeFileVersion,
   parseThemeFile,
   themeColorToHex,
+  themeIdFromName,
   THEME_FILE_VERSION,
   type ThemeAppearance,
   type ThemeColorRole,
@@ -320,9 +322,12 @@ export function parseVsCodeThemeFile(value: unknown): ThemeDefinition {
     );
   }
 
+  const name = resolveName(value);
+  const generatedId = themeIdFromName(name);
   return parseThemeFile({
     version: THEME_FILE_VERSION,
-    name: resolveName(value),
+    ...(isReservedThemeId(generatedId) ? { id: `${generatedId}-vscode` } : {}),
+    name,
     appearance,
     colors: { ...derived, ...overrides },
   });
@@ -351,9 +356,11 @@ export function pairVsCodeThemes(
   const passthrough: Array<{ theme: ThemeDefinition; order: number }> = [];
   themes.forEach((theme, order) => {
     // Only single-appearance themes with an appearance word in the name can
-    // pair; anything else is already what the user asked for.
+    // pair, and only when the rest of the name can still identify the pair
+    // ("Dark+" and "Light+" would pair as "+"); anything else is already
+    // what the user asked for.
     const key = stripAppearance(theme.label);
-    if (getThemeModes(theme).length !== 1 || key === theme.label || key.length === 0) {
+    if (getThemeModes(theme).length !== 1 || key === theme.label || !/[a-z0-9]/i.test(key)) {
       passthrough.push({ theme, order });
       return;
     }
