@@ -59,6 +59,7 @@ import {
   MoonIcon,
   PaletteIcon,
   CircleStopIcon,
+  RotateCcwIcon,
   SettingsIcon,
   SquarePenIcon,
   SunIcon,
@@ -95,16 +96,24 @@ import {
   ThemePreviewCircle,
 } from "./settings/ThemePreviewCircles";
 import { readLocalApi } from "../localApi";
+import {
+  planRestartAgentSession,
+  restartAgentSessionConfirmMessage,
+  restartPlanExceedsConfirmed,
+} from "./restartAgentSession.logic";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
+import { serverEnvironment } from "../state/server";
+import { threadEnvironment } from "../state/threads";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { vcsEnvironment } from "../state/vcs";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import {
+  readThread,
   useProject,
   useProjects,
   useServerConfigs,
@@ -737,6 +746,12 @@ function OpenCommandPaletteDialog(props: {
     reportFailure: false,
   });
   const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
+    reportFailure: false,
+  });
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
+    reportFailure: false,
+  });
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
   const { environments } = useEnvironments();
@@ -1940,6 +1955,83 @@ function OpenCommandPaletteDialog(props: {
         },
       });
     }
+  }
+
+  if (activeThread !== null) {
+    const thread = activeThread;
+    const restartPlan = planRestartAgentSession(thread);
+    actionItems.push({
+      kind: "action",
+      value: "action:restart-agent-session",
+      searchTerms: ["restart", "reset", "reload", "agent", "session", "skills", "plugins", "mcp"],
+      title: "Restart agent session",
+      ...(restartPlan.kind === "stopping"
+        ? { description: "The session is already stopping", disabled: true }
+        : restartPlan.kind === "busy"
+          ? { description: "Stops the running work first" }
+          : {}),
+      icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
+      // Stopping the provider process keeps the conversation: the next message
+      // spawns a fresh one that resumes it and reloads skills, plugins, and MCP
+      // servers. The fresh workspace scan updates the composer's slash menu.
+      // Failures throw into executeItem's error toast.
+      run: async () => {
+        const { environmentId } = thread;
+        if (restartPlan.kind === "stopping") return;
+        // Stop ends the running turn and cancels queued messages, so a busy
+        // thread asks first. An idle one restarts without a prompt.
+        let target = thread;
+        if (restartPlan.kind === "busy") {
+          const api = readLocalApi();
+          if (!api) return;
+          const confirmed = await api.dialogs.confirm(
+            restartAgentSessionConfirmMessage(restartPlan),
+            { variant: "destructive" },
+          );
+          if (!confirmed) return;
+          // The thread can change while the dialog is open (a new turn, more
+          // queued messages from another client). Stop only what was confirmed.
+          const current = readThread(scopeThreadRef(environmentId, thread.id));
+          if (!current) return;
+          const currentPlan = planRestartAgentSession(current);
+          if (currentPlan.kind === "stopping") return;
+          if (restartPlanExceedsConfirmed(restartPlan, currentPlan)) {
+            toastManager.add({
+              type: "warning",
+              title: "Agent session not restarted",
+              description: "The thread changed while you were confirming. Run Restart again.",
+            });
+            return;
+          }
+          target = current;
+        }
+        if (target.session && target.session.status !== "stopped") {
+          const stopped = await stopThreadSession({
+            environmentId,
+            input: { threadId: thread.id },
+          });
+          if (stopped._tag === "Failure") throw squashAtomCommandFailure(stopped);
+        }
+        // The server stops the process after accepting the command. A failed
+        // stop shows in the thread.
+        toastManager.add({
+          type: "success",
+          title: "Agent session will restart",
+          description: "Your next message starts a fresh session.",
+        });
+        const project = projectByKey.get(`${environmentId}:${thread.projectId}`);
+        if (!project) return;
+        const refreshed = await refreshProviders({
+          environmentId,
+          input: {
+            instanceId: target.session?.providerInstanceId ?? target.modelSelection.instanceId,
+            cwd: target.worktreePath ?? project.workspaceRoot,
+            fresh: true,
+          },
+        });
+        if (refreshed._tag === "Failure") throw squashAtomCommandFailure(refreshed);
+      },
+    });
   }
 
   actionItems.push({

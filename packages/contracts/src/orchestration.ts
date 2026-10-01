@@ -795,6 +795,13 @@ export const SessionCompactionUpdatedActivityPayload = Schema.Struct({
   ...SessionCompactionUpdatedPayload.fields,
   provider: ProviderDriverKind,
   providerInstanceId: Schema.optional(ProviderInstanceId),
+  /**
+   * When the current compaction run started. Every update in one run carries
+   * the same value, and a new run gets a new one, so clients can tell runs
+   * apart even though each thread keeps a single upserted compaction row.
+   * Absent while no compaction runs and on rows from older servers.
+   */
+  runStartedAt: Schema.optional(IsoDateTime),
 });
 export type SessionCompactionUpdatedActivityPayload =
   typeof SessionCompactionUpdatedActivityPayload.Type;

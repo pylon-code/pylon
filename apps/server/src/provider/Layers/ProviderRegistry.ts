@@ -99,6 +99,15 @@ const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean 
 
 const MAX_WORKSPACE_SNAPSHOTS_PER_PROVIDER = 16;
 
+function dropProviderWorkspaceSnapshot(provider: ServerProvider, cwd: string): ServerProvider {
+  return provider.workspaceSnapshots?.some((snapshot) => snapshot.cwd === cwd)
+    ? {
+        ...provider,
+        workspaceSnapshots: provider.workspaceSnapshots.filter((snapshot) => snapshot.cwd !== cwd),
+      }
+    : provider;
+}
+
 export function upsertProviderWorkspaceSnapshot(
   provider: ServerProvider,
   cwd: string,
@@ -396,6 +405,24 @@ export const ProviderRegistryLive = Layer.effect(
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(cachedProviders);
     const workspaceRefreshesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstance, ReadonlySet<string>>
+    >(new Map());
+    // Workspace scans are ordered by start. Each cwd remembers the generation
+    // and snapshot of the latest scan that published, so a later scan can
+    // replace an earlier scan's result and an earlier scan never replaces a
+    // later one.
+    const workspaceScanGenerationRef = yield* Ref.make(0);
+    const workspaceScanPublishLock = yield* Semaphore.make(1);
+    const workspaceScanPublishesRef = yield* Ref.make<
+      ReadonlyMap<
+        ProviderInstance,
+        ReadonlyMap<
+          string,
+          {
+            readonly generation: number;
+            readonly snapshot: NonNullable<ServerProvider["workspaceSnapshots"]>[number];
+          }
+        >
+      >
     >(new Map());
     const maintenanceActionStatesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstanceId, { readonly update?: ServerProviderUpdateState | undefined }>
@@ -1395,17 +1422,44 @@ export const ProviderRegistryLive = Layer.effect(
       return yield* Ref.get(providersRef);
     });
 
+    const updateProviders = (
+      update: (providers: ReadonlyArray<ServerProvider>) => ReadonlyArray<ServerProvider>,
+    ) =>
+      Ref.modify(providersRef, (currentProviders) => {
+        const nextProviders = update(currentProviders);
+        return [[currentProviders, nextProviders] as const, nextProviders];
+      }).pipe(
+        Effect.tap(([previousProviders, nextProviders]) =>
+          haveProvidersChanged(previousProviders, nextProviders)
+            ? PubSub.publish(changesPubSub, nextProviders)
+            : Effect.void,
+        ),
+        Effect.map(([, nextProviders]) => nextProviders),
+      );
+
     const refreshWorkspaceSnapshot = Effect.fn("refreshWorkspaceSnapshot")(function* (input: {
       readonly instanceId: ProviderInstanceId;
       readonly cwd: string;
+      readonly fresh?: boolean;
     }) {
+      // Fresh scans drop other instances' snapshots for this cwd first, so a
+      // composer on one of them scans again on next use, even when this
+      // instance is gone or cannot be scanned.
+      if (input.fresh) {
+        yield* updateProviders((providers) =>
+          providers.map((candidate) =>
+            candidate.instanceId === input.instanceId
+              ? candidate
+              : dropProviderWorkspaceSnapshot(candidate, input.cwd),
+          ),
+        );
+      }
       const providers = yield* Ref.get(providersRef);
       const provider = providers.find((candidate) => candidate.instanceId === input.instanceId);
-      if (
-        !provider ||
-        !provider.enabled ||
-        provider.workspaceSnapshots?.some((s) => s.cwd === input.cwd)
-      ) {
+      const workspaceSnapshotOf = (candidate: ServerProvider | undefined) =>
+        candidate?.workspaceSnapshots?.find((s) => s.cwd === input.cwd);
+      const scannedFrom = workspaceSnapshotOf(provider);
+      if (!provider || !provider.enabled || (!input.fresh && scannedFrom)) {
         return providers;
       }
       const instance = yield* instanceRegistry.getInstance(input.instanceId);
@@ -1417,42 +1471,97 @@ export const ProviderRegistryLive = Layer.effect(
         next.set(instance, new Set(current).add(input.cwd));
         return [true, next] as const;
       });
-      if (!claimed) return yield* Ref.get(providersRef);
-      return yield* instance.snapshotForCwd(input.cwd).pipe(
+      // A fresh scan never joins a running one, which may predate the change.
+      if (!claimed && !input.fresh) return yield* Ref.get(providersRef);
+      const generation = yield* Ref.updateAndGet(workspaceScanGenerationRef, (n) => n + 1);
+      // Fresh scans also re-read the machine snapshot: Claude's plugin
+      // commands come from it, not from the cwd scan.
+      const refreshMachineSnapshot = input.fresh
+        ? (instance.invalidateCaches ?? Effect.void).pipe(
+            Effect.andThen(refreshInstance(input.instanceId)),
+          )
+        : Effect.void;
+      return yield* refreshMachineSnapshot.pipe(
+        Effect.andThen(instance.snapshotForCwd(input.cwd)),
         Effect.flatMap((scopedSnapshot) =>
           scopedSnapshot.status === "error"
             ? Ref.get(providersRef)
             : instanceRegistry.getInstance(input.instanceId).pipe(
                 Effect.flatMap((currentInstance) => {
                   if (currentInstance !== instance) return Ref.get(providersRef);
-                  return Ref.modify(providersRef, (currentProviders) => {
-                    const nextProviders = currentProviders.map((candidate) =>
-                      candidate.instanceId === input.instanceId &&
-                      !candidate.workspaceSnapshots?.some((s) => s.cwd === input.cwd)
-                        ? upsertProviderWorkspaceSnapshot(candidate, input.cwd, scopedSnapshot)
-                        : candidate,
-                    );
-                    return [[currentProviders, nextProviders] as const, nextProviders];
-                  }).pipe(
-                    Effect.tap(([previousProviders, nextProviders]) =>
-                      haveProvidersChanged(previousProviders, nextProviders)
-                        ? PubSub.publish(changesPubSub, nextProviders)
-                        : Effect.void,
+                  // The snapshot write and its generation record commit as one
+                  // uninterruptible step. An interruption between them would
+                  // leave a published snapshot with no record, and the next
+                  // later scan would then drop its newer result.
+                  return workspaceScanPublishLock.withPermits(1)(
+                    Effect.uninterruptible(
+                      Effect.gen(function* () {
+                        const lastPublish = (yield* Ref.get(workspaceScanPublishesRef))
+                          .get(instance)
+                          ?.get(input.cwd);
+                        // A scan that started later already published.
+                        if (lastPublish && lastPublish.generation > generation) {
+                          return yield* Ref.get(providersRef);
+                        }
+                        // Write only if the cwd's snapshot did not change during the
+                        // scan, or changed only because an earlier-started scan
+                        // published. A session event that landed first is newer.
+                        const [previousProviders, nextProviders, publishedSnapshot] =
+                          yield* Ref.modify(providersRef, (currentProviders) => {
+                            let published: ServerProvider | undefined;
+                            const next = currentProviders.map((candidate) => {
+                              if (candidate.instanceId !== input.instanceId) return candidate;
+                              const current = workspaceSnapshotOf(candidate);
+                              const replaceable =
+                                Equal.equals(current, scannedFrom) ||
+                                (lastPublish !== undefined &&
+                                  Equal.equals(current, lastPublish.snapshot));
+                              if (!replaceable) return candidate;
+                              published = upsertProviderWorkspaceSnapshot(
+                                candidate,
+                                input.cwd,
+                                scopedSnapshot,
+                              );
+                              return published;
+                            });
+                            return [
+                              [currentProviders, next, workspaceSnapshotOf(published)] as const,
+                              next,
+                            ];
+                          });
+                        if (publishedSnapshot) {
+                          yield* Ref.update(workspaceScanPublishesRef, (publishes) => {
+                            const next = new Map(publishes);
+                            const forInstance = new Map(next.get(instance));
+                            forInstance.set(input.cwd, {
+                              generation,
+                              snapshot: publishedSnapshot,
+                            });
+                            next.set(instance, forInstance);
+                            return next;
+                          });
+                        }
+                        if (haveProvidersChanged(previousProviders, nextProviders)) {
+                          yield* PubSub.publish(changesPubSub, nextProviders);
+                        }
+                        return nextProviders;
+                      }),
                     ),
-                    Effect.map(([, nextProviders]) => nextProviders),
                   );
                 }),
               ),
         ),
         Effect.ensuring(
-          Ref.update(workspaceRefreshesRef, (refreshes) => {
-            const next = new Map(refreshes);
-            const current = new Set(next.get(instance));
-            current.delete(input.cwd);
-            if (current.size) next.set(instance, current);
-            else next.delete(instance);
-            return next;
-          }),
+          claimed
+            ? Ref.update(workspaceRefreshesRef, (refreshes) => {
+                const next = new Map(refreshes);
+                const current = new Set(next.get(instance));
+                current.delete(input.cwd);
+                if (current.size) next.set(instance, current);
+                else next.delete(instance);
+                return next;
+              })
+            : Effect.void,
         ),
       );
     });
