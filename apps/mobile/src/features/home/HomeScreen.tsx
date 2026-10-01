@@ -486,6 +486,27 @@ export function HomeScreen(props: HomeScreenProps) {
   );
 
   const hasSearchQuery = props.searchQuery.trim().length > 0;
+  const serverConfigs = useAtomValue(environmentServerConfigsAtom);
+  const connectedEnvironmentIds = useMemo(
+    () =>
+      new Set(
+        props.environments
+          .filter((environment) => environment.connectionState === "connected")
+          .map((environment) => environment.environmentId),
+      ),
+    [props.environments],
+  );
+  const pendingTaskDelivery = useCallback(
+    (pendingTask: PendingNewTask) =>
+      pendingTask.kind === "pending"
+        ? resolvePendingTaskDelivery({
+            message: pendingTask.message,
+            connected: connectedEnvironmentIds.has(pendingTask.environmentId),
+            serverConfig: serverConfigs.get(pendingTask.environmentId),
+          })
+        : null,
+    [connectedEnvironmentIds, serverConfigs],
+  );
   const listLayout = useMemo(
     () =>
       threadListV2Enabled
@@ -494,8 +515,15 @@ export function HomeScreen(props: HomeScreenProps) {
             groups: projectGroups,
             displayStates: effectiveGroupDisplayStates,
             showAllThreads: hasSearchQuery,
+            pendingTaskDelivery,
           }),
-    [threadListV2Enabled, projectGroups, effectiveGroupDisplayStates, hasSearchQuery],
+    [
+      threadListV2Enabled,
+      projectGroups,
+      effectiveGroupDisplayStates,
+      hasSearchQuery,
+      pendingTaskDelivery,
+    ],
   );
 
   const projectCwdByKey = useMemo(() => {
@@ -666,27 +694,6 @@ export function HomeScreen(props: HomeScreenProps) {
   );
   // Threads on servers without the settlement capability never classify as
   // settled (the user could neither un-settle nor pin them).
-  const serverConfigs = useAtomValue(environmentServerConfigsAtom);
-  const connectedEnvironmentIds = useMemo(
-    () =>
-      new Set(
-        props.environments
-          .filter((environment) => environment.connectionState === "connected")
-          .map((environment) => environment.environmentId),
-      ),
-    [props.environments],
-  );
-  const pendingTaskDelivery = useCallback(
-    (pendingTask: PendingNewTask) =>
-      pendingTask.kind === "pending"
-        ? resolvePendingTaskDelivery({
-            message: pendingTask.message,
-            connected: connectedEnvironmentIds.has(pendingTask.environmentId),
-            serverConfig: serverConfigs.get(pendingTask.environmentId),
-          })
-        : null,
-    [connectedEnvironmentIds, serverConfigs],
-  );
   const settlementEnvironmentIds = useMemo(() => {
     const supported = new Set<EnvironmentId>();
     for (const [environmentId, config] of serverConfigs) {
@@ -899,9 +906,11 @@ export function HomeScreen(props: HomeScreenProps) {
         queuedThreadKeys,
         moveAvailability: threadMoveAvailability,
         shelfPreferencesLoading: !shelfPreferencesLoaded,
+        pendingTaskDelivery,
       }),
     [
       nowMinute,
+      pendingTaskDelivery,
       queuedThreadKeys,
       threadMoveAvailability,
       settledShelfExpanded,
@@ -935,7 +944,7 @@ export function HomeScreen(props: HomeScreenProps) {
         return (
           <ThreadListV2PendingRow
             pendingTask={item.pendingTask}
-            delivery={pendingTaskDelivery(item.pendingTask)}
+            delivery={item.delivery}
             project={projectByKey.get(pendingScopeKey) ?? null}
             projectTitle={v2ProjectTitleByProjectKey.get(pendingScopeKey)}
             environmentLabel={
@@ -1060,7 +1069,6 @@ export function HomeScreen(props: HomeScreenProps) {
       pinReorderEnvironmentIds,
       projectByKey,
       projectCwdByKey,
-      pendingTaskDelivery,
       props.onArchiveThread,
       props.onDeletePendingTask,
       props.onSelectPendingTask,
@@ -1142,7 +1150,7 @@ export function HomeScreen(props: HomeScreenProps) {
             <PendingTaskListRow
               variant="compact"
               pendingTask={item.pendingTask}
-              delivery={pendingTaskDelivery(item.pendingTask)}
+              delivery={item.delivery}
               environmentLabel={
                 props.savedConnectionsById[item.pendingTask.environmentId]?.environmentLabel ?? null
               }
@@ -1207,7 +1215,6 @@ export function HomeScreen(props: HomeScreenProps) {
       machineByEnvironmentId,
       projectCwdByKey,
       queuedThreadKeys,
-      pendingTaskDelivery,
       props.onArchiveThread,
       props.onDeletePendingTask,
       props.onDeleteThread,

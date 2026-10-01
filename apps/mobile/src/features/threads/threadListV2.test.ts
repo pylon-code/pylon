@@ -2178,3 +2178,38 @@ describe("buildThreadListV2ListItems row-state stamps", () => {
     expect(threadListV2ListItemsAreEqual(shelfLoading, shelfLoaded)).toBe(false);
   });
 });
+
+describe("buildThreadListV2ListItems pending delivery", () => {
+  // Mirrors the screen's resolver: connection state alone flips the label.
+  function deliveryFor(connected: ReadonlySet<EnvironmentId>) {
+    return (pendingTask: PendingNewTask) =>
+      connected.has(pendingTask.environmentId) ? ("sending" as const) : ("offline" as const);
+  }
+
+  it("re-renders a recycled pending row when its environment disconnects or reconnects", () => {
+    // Connection state never touches the task, and a recycled cell ignores
+    // the render closure, so the delivery label has to ride on the item.
+    const pendingTask = makePendingTask("delivery-queued");
+    const build = (connected: ReadonlySet<EnvironmentId>) =>
+      buildThreadListV2ListItems({
+        items: [],
+        pendingTasks: [pendingTask],
+        pendingTaskDelivery: deliveryFor(connected),
+      }).find((item) => item.type === "v2-pending")!;
+    const online = build(new Set([environmentId]));
+    const offline = build(new Set());
+    expect(online.type === "v2-pending" && online.delivery).toBe("sending");
+    expect(offline.type === "v2-pending" && offline.delivery).toBe("offline");
+    expect(threadListV2ListItemsAreEqual(online, offline)).toBe(false);
+    expect(threadListV2ListItemsAreEqual(offline, online)).toBe(false);
+    expect(threadListV2ListItemsAreEqual(online, build(new Set([environmentId])))).toBe(true);
+  });
+
+  it("leaves delivery null without a resolver", () => {
+    const [item] = buildThreadListV2ListItems({
+      items: [],
+      pendingTasks: [makePendingTask("delivery-default")],
+    });
+    expect(item?.type === "v2-pending" && item.delivery).toBeNull();
+  });
+});

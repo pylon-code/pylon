@@ -1,5 +1,6 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 
+import type { PendingTaskDelivery } from "../../state/pending-new-tasks-model";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import type { HomeThreadGroup } from "./homeThreadList";
 
@@ -38,6 +39,10 @@ export interface HomePendingTaskListItem {
   readonly type: "pending-task";
   readonly key: string;
   readonly pendingTask: PendingNewTask;
+  /** Delivery label state, carried on the item because connection state and
+      server config change it without touching the task, and a recycled cell
+      ignores the render closure. */
+  readonly delivery: PendingTaskDelivery | null;
   readonly isLast: boolean;
 }
 
@@ -100,6 +105,7 @@ export function homeListItemsAreEqual(previous: HomeListItem, item: HomeListItem
       return (
         previous.type === "pending-task" &&
         previous.pendingTask === item.pendingTask &&
+        previous.delivery === item.delivery &&
         previous.isLast === item.isLast
       );
     case "thread":
@@ -125,6 +131,8 @@ export function buildHomeListLayout(input: {
    * When searching, pagination is suspended so every match stays visible.
    */
   readonly showAllThreads?: boolean;
+  /** Resolves each pending row's delivery label. Absent = null (tests). */
+  readonly pendingTaskDelivery?: (pendingTask: PendingNewTask) => PendingTaskDelivery | null;
 }): HomeListLayout {
   const items: HomeListItem[] = [];
   const stickyHeaderIndices: number[] = [];
@@ -175,6 +183,7 @@ export function buildHomeListLayout(input: {
         type: "pending-task",
         key: pendingTask.key,
         pendingTask,
+        delivery: input.pendingTaskDelivery?.(pendingTask) ?? null,
         isLast:
           pendingIndex === group.pendingTasks.length - 1 &&
           visibleThreads.length === 0 &&

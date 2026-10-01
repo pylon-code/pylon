@@ -21,6 +21,7 @@ import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import type { ThreadMoveAvailability } from "./threadOrder";
 
 import { relativeTime } from "../../lib/time";
+import type { PendingTaskDelivery } from "../../state/pending-new-tasks-model";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 
 import {
@@ -310,6 +311,10 @@ export interface ThreadListV2PendingListItem {
   readonly type: "v2-pending";
   readonly key: string;
   readonly pendingTask: PendingNewTask;
+  /** Delivery label state. Connection state and server config change it
+      without touching the task, and a recycled cell ignores the render
+      closure, so it rides on the item. */
+  readonly delivery: PendingTaskDelivery | null;
   /** First queued row after the active block draws the PENDING divider. */
   readonly showPendingDivider: boolean;
   /** Same rule as the thread rows: a hairline unless the next row carries its
@@ -390,6 +395,7 @@ export function threadListV2ListItemsAreEqual(
         previous.type === "v2-pending" &&
         previous.key === item.key &&
         previous.pendingTask === item.pendingTask &&
+        previous.delivery === item.delivery &&
         previous.showPendingDivider === item.showPendingDivider &&
         previous.showTrailingDivider === item.showTrailingDivider
       );
@@ -459,6 +465,9 @@ export function buildThreadListV2ListItems(input: {
   /** True while the shelf expansion preferences are still loading; stamped
       onto both shelf headers so the disabled state reaches recycled cells. */
   readonly shelfPreferencesLoading?: boolean;
+  /** Resolves each pending row's delivery label; stamped as `delivery`.
+      Absent = null (tests). */
+  readonly pendingTaskDelivery?: (pendingTask: PendingNewTask) => PendingTaskDelivery | null;
 }): ThreadListV2ListItem[] {
   const threadItems = input.items.map((item): ThreadListV2ListItem => {
     const snoozeWakeLabelText =
@@ -499,6 +508,7 @@ export function buildThreadListV2ListItems(input: {
     type: "v2-pending",
     key: `v2-${pendingTask.key}`,
     pendingTask,
+    delivery: input.pendingTaskDelivery?.(pendingTask) ?? null,
     showPendingDivider: index === 0,
     showTrailingDivider: false,
   }));

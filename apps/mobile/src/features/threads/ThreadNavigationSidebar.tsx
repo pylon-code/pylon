@@ -364,6 +364,27 @@ function ThreadNavigationSidebarPane(
     });
   }, []);
   const hasSearchQuery = props.searchQuery.trim().length > 0;
+  const serverConfigs = useAtomValue(environmentServerConfigsAtom);
+  const connectedEnvironmentIds = useMemo(
+    () =>
+      new Set(
+        workspaceEnvironments
+          .filter((environment) => environment.connectionState === "connected")
+          .map((environment) => environment.environmentId),
+      ),
+    [workspaceEnvironments],
+  );
+  const pendingTaskDelivery = useCallback(
+    (pendingTask: PendingNewTask) =>
+      pendingTask.kind === "pending"
+        ? resolvePendingTaskDelivery({
+            message: pendingTask.message,
+            connected: connectedEnvironmentIds.has(pendingTask.environmentId),
+            serverConfig: serverConfigs.get(pendingTask.environmentId),
+          })
+        : null,
+    [connectedEnvironmentIds, serverConfigs],
+  );
   const listLayout = useMemo(
     () =>
       threadListV2Enabled
@@ -372,8 +393,9 @@ function ThreadNavigationSidebarPane(
             groups,
             displayStates: groupDisplayStates,
             showAllThreads: hasSearchQuery,
+            pendingTaskDelivery,
           }),
-    [threadListV2Enabled, groups, groupDisplayStates, hasSearchQuery],
+    [threadListV2Enabled, groups, groupDisplayStates, hasSearchQuery, pendingTaskDelivery],
   );
   const projectCwdByKey = useMemo(() => {
     const map = new Map<string, string>();
@@ -429,27 +451,6 @@ function ThreadNavigationSidebarPane(
   }, [threadListV2Enabled]);
   // Threads on servers without the settlement capability never classify as
   // settled (the user could neither un-settle nor pin them).
-  const serverConfigs = useAtomValue(environmentServerConfigsAtom);
-  const connectedEnvironmentIds = useMemo(
-    () =>
-      new Set(
-        workspaceEnvironments
-          .filter((environment) => environment.connectionState === "connected")
-          .map((environment) => environment.environmentId),
-      ),
-    [workspaceEnvironments],
-  );
-  const pendingTaskDelivery = useCallback(
-    (pendingTask: PendingNewTask) =>
-      pendingTask.kind === "pending"
-        ? resolvePendingTaskDelivery({
-            message: pendingTask.message,
-            connected: connectedEnvironmentIds.has(pendingTask.environmentId),
-            serverConfig: serverConfigs.get(pendingTask.environmentId),
-          })
-        : null,
-    [connectedEnvironmentIds, serverConfigs],
-  );
   const settlementEnvironmentIds = useMemo(() => {
     const supported = new Set<EnvironmentId>();
     for (const [environmentId, config] of serverConfigs) {
@@ -658,6 +659,7 @@ function ThreadNavigationSidebarPane(
       queuedThreadKeys,
       moveAvailability: threadMoveAvailability,
       shelfPreferencesLoading: !shelfPreferencesLoaded,
+      pendingTaskDelivery,
     });
     if (settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0) {
       items.push({
@@ -671,6 +673,7 @@ function ThreadNavigationSidebarPane(
     listLayout.items,
     nowMinute,
     options.selectedEnvironmentId,
+    pendingTaskDelivery,
     pendingTasks,
     props.searchQuery,
     queuedThreadKeys,
@@ -911,7 +914,7 @@ function ThreadNavigationSidebarPane(
           return (
             <ThreadListV2PendingRow
               pendingTask={item.pendingTask}
-              delivery={pendingTaskDelivery(item.pendingTask)}
+              delivery={item.delivery}
               project={projectByKey.get(pendingScopeKey) ?? null}
               projectTitle={projectTitleByProjectKey.get(pendingScopeKey)}
               environmentLabel={
@@ -1059,7 +1062,7 @@ function ThreadNavigationSidebarPane(
             <PendingTaskListRow
               variant={materialYouStyleLayoutActive ? "compact" : "sidebar"}
               pendingTask={item.pendingTask}
-              delivery={pendingTaskDelivery(item.pendingTask)}
+              delivery={item.delivery}
               environmentLabel={
                 savedConnectionsById[item.pendingTask.environmentId]?.environmentLabel ?? null
               }
@@ -1134,7 +1137,6 @@ function ThreadNavigationSidebarPane(
       machineByEnvironmentId,
       moveThread,
       openPendingTask,
-      pendingTaskDelivery,
       pinReorderEnvironmentIds,
       pinThread,
       pinningEnvironmentIds,
