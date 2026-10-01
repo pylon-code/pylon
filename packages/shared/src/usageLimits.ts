@@ -26,6 +26,33 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
+export const CURSOR_USAGE_WINDOWS = [
+  {
+    id: "totalPercentUsed",
+    label: "Overall",
+    description: "Combined usage across both allowances, not a third quota.",
+  },
+  {
+    id: "autoPercentUsed",
+    label: "Cursor Models",
+    description: "Grok and Composer use this first. Auto can use either pool.",
+  },
+  {
+    id: "apiPercentUsed",
+    label: "Other Models",
+    description: "Claude, GPT, and Gemini use this pool. Grok and Composer fall back here.",
+  },
+] as const;
+
+export function cursorUsageWindowDetails(id: string) {
+  return CURSOR_USAGE_WINDOWS.find((window) => window.id === id);
+}
+
+function cursorUsageWindowRank(id: string): number {
+  const rank = CURSOR_USAGE_WINDOWS.findIndex((window) => window.id === id);
+  return rank < 0 ? CURSOR_USAGE_WINDOWS.length : rank;
+}
+
 /** Keep an uncertain native redemption's identity across retries and account-view remounts. */
 export function createResetCreditAttempts(createRequestId: () => string) {
   const pending = new Map<string, string>();
@@ -473,6 +500,26 @@ export interface LimitPool {
   readonly driver: ServerProvider["driver"];
   readonly accounts: readonly LimitAccount[];
   readonly windows: readonly LimitPoolWindow[];
+}
+
+/** Show Cursor's usable pools without treating their combined percentage as another quota. */
+export function displayLimitWindows(pool: LimitPool) {
+  if (pool.driver !== "cursor") return pool.windows;
+  const hasAuto = pool.windows.some((window) => window.id === "autoPercentUsed");
+  const hasApi = pool.windows.some((window) => window.id === "apiPercentUsed");
+  // Mixed-version accounts can report only Overall. Keep that card unless
+  // every account it represents also reports both individual allowances.
+  const combinedAccountsComplete = pool.accounts.every(
+    (account) =>
+      !account.limits.windows.some((window) => window.id === "totalPercentUsed") ||
+      ["autoPercentUsed", "apiPercentUsed"].every((id) =>
+        account.limits.windows.some((window) => window.id === id),
+      ),
+  );
+  const hasBothPools = hasAuto && hasApi && combinedAccountsComplete;
+  return pool.windows
+    .filter((window) => !hasBothPools || window.id !== "totalPercentUsed")
+    .sort((left, right) => cursorUsageWindowRank(left.id) - cursorUsageWindowRank(right.id));
 }
 
 const WINDOW_KIND_ORDER: Record<UsageWindowKind, number> = {

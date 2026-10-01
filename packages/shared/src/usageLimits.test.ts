@@ -19,6 +19,8 @@ import {
   collectLimitAccounts,
   collectLimitNotices,
   collectLimitPools,
+  cursorUsageWindowDetails,
+  displayLimitWindows,
   collectLimitSources,
   collectLimitsGroups,
   elapsedShare,
@@ -1124,6 +1126,100 @@ describe("pooled account columns", () => {
       ["b", "a"],
       ["b", "a"],
     ]);
+  });
+});
+
+describe("Cursor limit presentation", () => {
+  const readings = [
+    { id: "apiPercentUsed", kind: "monthly", label: "Monthly · API", usedPercent: 49 },
+    { id: "autoPercentUsed", kind: "monthly", label: "Monthly · Auto", usedPercent: 9 },
+    { id: "totalPercentUsed", kind: "monthly", label: "Monthly", usedPercent: 15 },
+  ] as const;
+  function pool(
+    providers = [
+      provider({
+        driver: ProviderDriverKind.make("cursor"),
+        usageLimits: { checkedAt: "2026-09-03T11:00:00Z", windows: readings },
+      }),
+    ],
+  ) {
+    const accounts = collectLimitAccounts(
+      new Map([
+        [
+          EnvironmentId.make("home"),
+          { entry: { target: { label: "Home" } }, serverConfig: { providers } },
+        ],
+      ]),
+    );
+    return collectLimitPools(accounts, now)[0]!;
+  }
+  it("orders the two allowances and hides their combined percentage", () => {
+    const original = pool();
+    const raw = [...original.windows];
+    Object.freeze(original.windows);
+    expect(displayLimitWindows(original).map((window) => window.id)).toEqual([
+      "autoPercentUsed",
+      "apiPercentUsed",
+    ]);
+    expect(original.windows).toEqual(raw);
+    expect(cursorUsageWindowDetails("totalPercentUsed")?.description).toContain(
+      "not a third quota",
+    );
+    expect(cursorUsageWindowDetails("future")).toBeUndefined();
+  });
+  it.each(["autoPercentUsed", "apiPercentUsed"])("retains Overall when %s is absent", (missing) => {
+    const original = pool([
+      provider({
+        driver: ProviderDriverKind.make("cursor"),
+        usageLimits: {
+          checkedAt: "2026-09-03T11:00:00Z",
+          windows: readings.filter((window) => window.id !== missing),
+        },
+      }),
+    ]);
+    expect(displayLimitWindows(original)[0]?.id).toBe("totalPercentUsed");
+  });
+  it("keeps a combined-only account across mixed-version hosts", () => {
+    const original = pool([
+      provider({
+        instanceId: ProviderInstanceId.make("new"),
+        driver: ProviderDriverKind.make("cursor"),
+        auth: { status: "authenticated", email: "new@example.com" },
+        usageLimits: { checkedAt: "2026-09-03T11:00:00Z", windows: readings },
+      }),
+      provider({
+        instanceId: ProviderInstanceId.make("old"),
+        driver: ProviderDriverKind.make("cursor"),
+        auth: { status: "authenticated", email: "old@example.com" },
+        usageLimits: { checkedAt: "2026-09-03T11:00:00Z", windows: [readings[2]] },
+      }),
+    ]);
+    expect(displayLimitWindows(original).map((window) => window.id)).toEqual([
+      "totalPercentUsed",
+      "autoPercentUsed",
+      "apiPercentUsed",
+    ]);
+    expect(original.accounts).toHaveLength(2);
+  });
+  it("keeps unfamiliar windows and other providers unchanged", () => {
+    const original = pool([
+      provider({
+        driver: ProviderDriverKind.make("cursor"),
+        usageLimits: {
+          checkedAt: "2026-09-03T11:00:00Z",
+          windows: [...readings, { id: "future", kind: "other", label: "Future", usedPercent: 20 }],
+        },
+      }),
+    ]);
+    expect(displayLimitWindows(original).map((window) => window.id)).toEqual([
+      "autoPercentUsed",
+      "apiPercentUsed",
+      "future",
+    ]);
+    const other = pool([
+      provider({ usageLimits: { checkedAt: "2026-09-03T11:00:00Z", windows: readings } }),
+    ]);
+    expect(displayLimitWindows(other)).toBe(other.windows);
   });
 });
 

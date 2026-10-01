@@ -5,6 +5,8 @@ import {
   collectLimitAccounts,
   collectLimitNotices,
   collectLimitPools,
+  cursorUsageWindowDetails,
+  displayLimitWindows,
   formatDuration,
   formatResetsIn,
   remainingPercent,
@@ -79,11 +81,15 @@ function PoolWindowCard({
   color,
   now,
   environmentIds,
+  label,
+  description,
 }: {
   readonly pool: LimitPoolWindow;
   readonly color: string;
   readonly now: number;
   readonly environmentIds: readonly string[] | null;
+  readonly label?: string | undefined;
+  readonly description?: string | undefined;
 }) {
   const navigation = useNavigation();
   const nextRefill = pool.resets.find((reset) => reset.restoresPercent > 0);
@@ -105,7 +111,7 @@ function PoolWindowCard({
     <View className="gap-3 rounded-[24px] border-continuous bg-card p-4">
       <View className="flex-row items-start justify-between gap-3">
         <View className="gap-1">
-          <Text className="text-sm font-t3-medium text-foreground">{pool.label}</Text>
+          <Text className="text-sm font-t3-medium text-foreground">{label ?? pool.label}</Text>
           <View className="flex-row items-baseline gap-1.5">
             <Text className="text-3xl font-t3-bold tabular-nums text-foreground">
               {pool.remainingPercent}%
@@ -117,6 +123,7 @@ function PoolWindowCard({
           <Text className="text-xs text-foreground-tertiary">{PACE_LABEL[pool.pace]}</Text>
         ) : null}
       </View>
+      {description ? <Text className="text-xs text-foreground-muted">{description}</Text> : null}
       {nextRefill ? (
         <Text className="text-xs tabular-nums text-foreground-muted">
           ↻ +{nextRefill.restoresPercent}%{" "}
@@ -235,15 +242,23 @@ export function UsageLimitsSection({
               {DRIVER_LABEL[pool.driver] ?? pool.driver}
             </Text>
           </View>
-          {pool.windows.map((window) => (
-            <PoolWindowCard
-              key={`${window.kind}:${window.id}`}
-              pool={window}
-              color={pool.driver === "claudeAgent" ? colors.claude : colors.codex}
-              now={now}
-              environmentIds={selectedEnvironmentIds === null ? null : [...selectedEnvironmentIds]}
-            />
-          ))}
+          {displayLimitWindows(pool).map((window) => {
+            const details =
+              pool.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
+            return (
+              <PoolWindowCard
+                key={`${window.kind}:${window.id}`}
+                pool={window}
+                color={pool.driver === "claudeAgent" ? colors.claude : colors.codex}
+                now={now}
+                environmentIds={
+                  selectedEnvironmentIds === null ? null : [...selectedEnvironmentIds]
+                }
+                label={details?.label}
+                description={details?.description}
+              />
+            );
+          })}
         </View>
       ))}
       {notices.length > 0 || failedLabels.length > 0 ? (
