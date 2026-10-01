@@ -1489,48 +1489,64 @@ export const ProviderRegistryLive = Layer.effect(
             : instanceRegistry.getInstance(input.instanceId).pipe(
                 Effect.flatMap((currentInstance) => {
                   if (currentInstance !== instance) return Ref.get(providersRef);
+                  // The snapshot write and its generation record commit as one
+                  // uninterruptible step. An interruption between them would
+                  // leave a published snapshot with no record, and the next
+                  // later scan would then drop its newer result.
                   return workspaceScanPublishLock.withPermits(1)(
-                    Effect.gen(function* () {
-                      const lastPublish = (yield* Ref.get(workspaceScanPublishesRef))
-                        .get(instance)
-                        ?.get(input.cwd);
-                      // A scan that started later already published.
-                      if (lastPublish && lastPublish.generation > generation) {
-                        return yield* Ref.get(providersRef);
-                      }
-                      // Write only if the cwd's snapshot did not change during the
-                      // scan, or changed only because an earlier-started scan
-                      // published. A session event that landed first is newer.
-                      let published: ServerProvider | undefined;
-                      const nextProviders = yield* updateProviders((currentProviders) =>
-                        currentProviders.map((candidate) => {
-                          if (candidate.instanceId !== input.instanceId) return candidate;
-                          const current = workspaceSnapshotOf(candidate);
-                          const replaceable =
-                            Equal.equals(current, scannedFrom) ||
-                            (lastPublish !== undefined &&
-                              Equal.equals(current, lastPublish.snapshot));
-                          if (!replaceable) return candidate;
-                          published = upsertProviderWorkspaceSnapshot(
-                            candidate,
-                            input.cwd,
-                            scopedSnapshot,
-                          );
-                          return published;
-                        }),
-                      );
-                      const publishedSnapshot = workspaceSnapshotOf(published);
-                      if (publishedSnapshot) {
-                        yield* Ref.update(workspaceScanPublishesRef, (publishes) => {
-                          const next = new Map(publishes);
-                          const forInstance = new Map(next.get(instance));
-                          forInstance.set(input.cwd, { generation, snapshot: publishedSnapshot });
-                          next.set(instance, forInstance);
-                          return next;
-                        });
-                      }
-                      return nextProviders;
-                    }),
+                    Effect.uninterruptible(
+                      Effect.gen(function* () {
+                        const lastPublish = (yield* Ref.get(workspaceScanPublishesRef))
+                          .get(instance)
+                          ?.get(input.cwd);
+                        // A scan that started later already published.
+                        if (lastPublish && lastPublish.generation > generation) {
+                          return yield* Ref.get(providersRef);
+                        }
+                        // Write only if the cwd's snapshot did not change during the
+                        // scan, or changed only because an earlier-started scan
+                        // published. A session event that landed first is newer.
+                        const [previousProviders, nextProviders, publishedSnapshot] =
+                          yield* Ref.modify(providersRef, (currentProviders) => {
+                            let published: ServerProvider | undefined;
+                            const next = currentProviders.map((candidate) => {
+                              if (candidate.instanceId !== input.instanceId) return candidate;
+                              const current = workspaceSnapshotOf(candidate);
+                              const replaceable =
+                                Equal.equals(current, scannedFrom) ||
+                                (lastPublish !== undefined &&
+                                  Equal.equals(current, lastPublish.snapshot));
+                              if (!replaceable) return candidate;
+                              published = upsertProviderWorkspaceSnapshot(
+                                candidate,
+                                input.cwd,
+                                scopedSnapshot,
+                              );
+                              return published;
+                            });
+                            return [
+                              [currentProviders, next, workspaceSnapshotOf(published)] as const,
+                              next,
+                            ];
+                          });
+                        if (publishedSnapshot) {
+                          yield* Ref.update(workspaceScanPublishesRef, (publishes) => {
+                            const next = new Map(publishes);
+                            const forInstance = new Map(next.get(instance));
+                            forInstance.set(input.cwd, {
+                              generation,
+                              snapshot: publishedSnapshot,
+                            });
+                            next.set(instance, forInstance);
+                            return next;
+                          });
+                        }
+                        if (haveProvidersChanged(previousProviders, nextProviders)) {
+                          yield* PubSub.publish(changesPubSub, nextProviders);
+                        }
+                        return nextProviders;
+                      }),
+                    ),
                   );
                 }),
               ),
