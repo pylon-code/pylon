@@ -159,6 +159,10 @@ The slash menu also includes skills unless you turn off **Settings â†’ General â
 menu**. Only skills enabled for the provider are listed. A skill token runs the skill wherever it
 sits in your message.
 
+After you add or change skills, plugins, or MCP servers, use **Restart agent session** in the
+command palette on web and desktop. The conversation continues, and your next message starts the
+agent again with the new setup.
+
 Provider commands must start the message to run. Pylon commands such as `/model` and `/plan`, and
 skill mentions, work on any line.
 
