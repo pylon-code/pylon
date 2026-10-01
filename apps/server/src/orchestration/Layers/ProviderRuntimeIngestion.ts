@@ -640,6 +640,8 @@ function toolLifecycleActivityTitle(
 export function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
   taskTitle?: string,
+  /** Start of the compaction run this update belongs to, when one is running. */
+  compactionRunStartedAt?: string,
 ): ReadonlyArray<OrchestrationThreadActivity> {
   const maybeSequence = (() => {
     const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
@@ -828,6 +830,9 @@ export function runtimeEventToActivities(
             ...(event.payload.autoCompactionScope === undefined
               ? {}
               : { autoCompactionScope: event.payload.autoCompactionScope }),
+            ...(compactionRunStartedAt === undefined
+              ? {}
+              : { runStartedAt: compactionRunStartedAt }),
           },
           turnId: null,
           ...maybeSequence,
@@ -1705,6 +1710,15 @@ const make = Effect.gen(function* () {
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
     );
 
+  // Start of the running native compaction per provider instance and thread.
+  // The compaction activity is one upserted row, so the run identity has to be
+  // carried here. After a server restart a running compaction gets a new start,
+  // which clients treat as a different run (the safe direction).
+  const compactionRunStartByKey = yield* Cache.make<string, string>({
+    capacity: CONTEXT_WINDOW_HISTORY_BY_THREAD_CACHE_CAPACITY,
+    timeToLive: CONTEXT_WINDOW_HISTORY_BY_THREAD_TTL,
+    lookup: () => Effect.die(new Error("compaction run start should be read through getOption")),
+  });
   const contextWindowHistoryByThreadId = yield* Cache.make<ThreadId, ContextWindowHistory>({
     capacity: CONTEXT_WINDOW_HISTORY_BY_THREAD_CACHE_CAPACITY,
     timeToLive: CONTEXT_WINDOW_HISTORY_BY_THREAD_TTL,
@@ -3412,7 +3426,21 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = runtimeEventToActivities(activityEvent, taskTitle);
+      let compactionRunStartedAt: string | undefined;
+      if (activityEvent.type === "session.compaction.updated") {
+        const runKey = `${activityEvent.providerInstanceId ?? activityEvent.provider}:${thread.id}`;
+        const status = activityEvent.payload.status;
+        if (status === "starting" || status === "compacting" || status === "abort-requested") {
+          compactionRunStartedAt = Option.getOrElse(
+            yield* Cache.getOption(compactionRunStartByKey, runKey),
+            () => activityEvent.createdAt,
+          );
+          yield* Cache.set(compactionRunStartByKey, runKey, compactionRunStartedAt);
+        } else {
+          yield* Cache.invalidate(compactionRunStartByKey, runKey);
+        }
+      }
+      const activities = runtimeEventToActivities(activityEvent, taskTitle, compactionRunStartedAt);
       // A tool start is a natural prose boundary. A provider may begin a tool
       // before it completes the assistant item, leaving an otherwise valid
       // single paragraph buffered while tool activity is already visible.

@@ -920,6 +920,43 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("stamps one run start on every update of a native compaction run", async () => {
+    const harness = await createHarness();
+    const compaction = (id: string, createdAt: string, status: "compacting" | "idle") => ({
+      type: "session.compaction.updated" as const,
+      eventId: asEventId(id),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt,
+      payload: {
+        available: true,
+        status,
+        abortable: status === "compacting",
+        autoCompactionWritable: true,
+        manualCompactionSettable: status === "idle",
+      },
+    });
+    const compactionRow = async () => {
+      await harness.drain();
+      const snapshot = await harness.readModel();
+      const rows = (
+        snapshot.threads.find((entry) => entry.id === "thread-1")?.activities ?? []
+      ).filter((activity) => activity.kind === "session.compaction.updated");
+      // Production keeps one upserted row per thread and instance.
+      expect(rows).toHaveLength(1);
+      return rows[0]?.payload;
+    };
+
+    harness.emit(compaction("evt-a-start", "2026-01-01T00:00:01.000Z", "compacting"));
+    expect(await compactionRow()).toMatchObject({ runStartedAt: "2026-01-01T00:00:01.000Z" });
+    harness.emit(compaction("evt-a-progress", "2026-01-01T00:00:02.000Z", "compacting"));
+    expect(await compactionRow()).toMatchObject({ runStartedAt: "2026-01-01T00:00:01.000Z" });
+    harness.emit(compaction("evt-a-done", "2026-01-01T00:00:03.000Z", "idle"));
+    expect(await compactionRow()).not.toHaveProperty("runStartedAt");
+    harness.emit(compaction("evt-b-start", "2026-01-01T00:00:04.000Z", "compacting"));
+    expect(await compactionRow()).toMatchObject({ runStartedAt: "2026-01-01T00:00:04.000Z" });
+  });
+
   it("maps legacy unstamped turn events into thread session updates", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
