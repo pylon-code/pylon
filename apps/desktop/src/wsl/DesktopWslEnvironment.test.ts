@@ -68,6 +68,31 @@ const runShell = (script: string) => {
 
 const sh = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
+// Readiness is observed from the owned holder, rather than a fixed delay.
+const awaitHolder = (condition: string) =>
+  `i=0; until ${condition}; do i=$((i + 1)); [ "$i" -lt 500 ] || exit 1; sleep 0.01; done`;
+
+// Bash can replace `sh -c "sleep"` with sleep, losing the runtime entry from
+// argv. Give the pipe reader that entry explicitly; closing fd 7 ends it.
+const holdRuntimeBusy = (entry: string) =>
+  [
+    `exec 7> >(exec -a ${entry} cat >/dev/null 2>&1)`,
+    "runtime_holder_pid=$!",
+    // Inspect only our PID: a broad grep would also match its own argv.
+    awaitHolder(`grep -qF -- ${entry} "/proc/$runtime_holder_pid/cmdline" 2>/dev/null`),
+  ].join("\n");
+
+const releaseRuntimeHolder = ["exec 7>&-", 'wait "$runtime_holder_pid"'].join("\n");
+
+const holdInstallLock = (lock: string) =>
+  [
+    `exec 6> >(exec 7>&-; exec 9> ${lock}; flock -x 9; cat >/dev/null 2>&1)`,
+    "install_holder_pid=$!",
+    awaitHolder(`! flock -n ${lock} true`),
+  ].join("\n");
+
+const releaseInstallHolder = ["exec 6>&-", 'wait "$install_holder_pid"'].join("\n");
+
 const readField = (stdout: string, field: string) => {
   const line = stdout.split("\n").find((candidate) => candidate.startsWith(`${field}:`));
   if (line === undefined) throw new Error(`missing ${field} in fixture output: ${stdout}`);
@@ -704,9 +729,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         `runtime_root=${sh(fixture.runtimeRoot)}`,
         `runtime_parent=${sh(fixture.runtimeParent)}`,
         'rm "$runtime_root/.t3code-wsl-runtime-ready"',
-        'sh -c "sleep 30" "$runtime_root/apps/server/dist/bin.mjs" >/dev/null 2>&1 &',
-        "active_pid=$!",
-        "sleep 0.1",
+        holdRuntimeBusy('"$runtime_root/apps/server/dist/bin.mjs"'),
         fixture.installScript(),
         'stale=$(find "$runtime_parent" -maxdepth 1 -type d -name ".sha256-*.stale.*" -print -quit)',
         'test -n "$stale"',
@@ -715,8 +738,7 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         "export HOME",
         buildWslRuntimePruneScript(fixture.runtimeId, "pylon-code"),
         'test -d "$stale"',
-        "kill $active_pid",
-        "wait $active_pid 2>/dev/null || true",
+        releaseRuntimeHolder,
         buildWslRuntimePruneScript(fixture.runtimeId, "pylon-code"),
         'test ! -e "$stale"',
       ].join("\n"),
@@ -778,15 +800,8 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         'touch -d "4 minutes ago" "$runtime_parent/sha256-active"',
         'touch -d "3 minutes ago" "$runtime_parent/sha256-old"',
         'touch -d "2 minutes ago" "$runtime_parent/sha256-locked"',
-        'sh -c "sleep 30" "$runtime_parent/sha256-active/apps/server/dist/bin.mjs" >/dev/null 2>&1 &',
-        "active_pid=$!",
-        "(",
-        '  exec 9> "$runtime_parent/.sha256-locked.install.lock"',
-        "  flock -x 9",
-        "  sleep 30",
-        ") >/dev/null 2>&1 &",
-        "lock_pid=$!",
-        "sleep 0.1",
+        holdRuntimeBusy('"$runtime_parent/sha256-active/apps/server/dist/bin.mjs"'),
+        holdInstallLock('"$runtime_parent/.sha256-locked.install.lock"'),
         `HOME="$home"`,
         "export HOME",
         buildWslRuntimePruneScript("sha256-current", "pylon-code"),
@@ -797,9 +812,8 @@ describe.skipIf(posixShellRunner === null)("WSL runtime install script (executed
         'test -d "$runtime_parent/versions"',
         'test ! -e "$runtime_parent/sha256-old"',
         'test ! -e "$runtime_parent/sha256-markerless"',
-        "kill $active_pid $lock_pid",
-        "wait $active_pid 2>/dev/null || true",
-        "wait $lock_pid 2>/dev/null || true",
+        releaseRuntimeHolder,
+        releaseInstallHolder,
         'rm -rf "$work"',
       ].join("\n"),
     );
