@@ -14,6 +14,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   planRestartAgentSession,
   restartAgentSessionConfirmMessage,
+  restartPlanExceedsConfirmed,
+  type RestartAgentSessionPlan,
 } from "./restartAgentSession.logic";
 
 const instanceId = ProviderInstanceId.make("prime-work");
@@ -84,7 +86,13 @@ describe("planRestartAgentSession", () => {
         session: session({ status: "running", activeTurnId: TurnId.make("turn-1") }),
         activities: [],
       }),
-    ).toEqual({ kind: "busy", runningTurn: true, compacting: false, queuedMessages: 0 });
+    ).toEqual({
+      kind: "busy",
+      runningTurn: true,
+      turnKey: "turn-1",
+      compacting: false,
+      queuedMessages: 0,
+    });
     expect(
       planRestartAgentSession({
         session: session({ pendingTurnRequestId: CommandId.make("request-1") }),
@@ -117,13 +125,25 @@ describe("planRestartAgentSession", () => {
         }),
         activities: [inputQueue(1, 2)],
       }),
-    ).toEqual({ kind: "busy", runningTurn: false, compacting: true, queuedMessages: 4 });
+    ).toEqual({
+      kind: "busy",
+      runningTurn: false,
+      turnKey: null,
+      compacting: true,
+      queuedMessages: 4,
+    });
   });
 
   it("treats native compaction in progress as busy", () => {
     expect(
       planRestartAgentSession({ session: session(), activities: [nativeCompaction("compacting")] }),
-    ).toEqual({ kind: "busy", runningTurn: false, compacting: true, queuedMessages: 0 });
+    ).toEqual({
+      kind: "busy",
+      runningTurn: false,
+      turnKey: null,
+      compacting: true,
+      queuedMessages: 0,
+    });
     expect(
       planRestartAgentSession({ session: session(), activities: [nativeCompaction("idle")] }),
     ).toEqual({ kind: "idle" });
@@ -136,6 +156,12 @@ describe("planRestartAgentSession", () => {
         activities: [],
       }),
     ).toEqual({ kind: "stopping" });
+    expect(
+      planRestartAgentSession({
+        session: session({ status: "stopped", pendingStopRequestId: CommandId.make("stop-1") }),
+        activities: [],
+      }),
+    ).toEqual({ kind: "stopping" });
   });
 });
 
@@ -145,6 +171,7 @@ describe("restartAgentSessionConfirmMessage", () => {
       restartAgentSessionConfirmMessage({
         kind: "busy",
         runningTurn: true,
+        turnKey: "turn-1",
         compacting: true,
         queuedMessages: 2,
       }),
@@ -159,9 +186,40 @@ describe("restartAgentSessionConfirmMessage", () => {
       restartAgentSessionConfirmMessage({
         kind: "busy",
         runningTurn: false,
+        turnKey: null,
         compacting: false,
         queuedMessages: 1,
       }),
     ).toBe(["Restart the agent session?", "1 queued message will be cancelled."].join("\n"));
+  });
+});
+
+describe("restartPlanExceedsConfirmed", () => {
+  const confirmed = {
+    kind: "busy",
+    runningTurn: true,
+    turnKey: "turn-a",
+    compacting: false,
+    queuedMessages: 0,
+  } as const satisfies RestartAgentSessionPlan;
+
+  it("allows the same or less work, including a thread that went idle", () => {
+    expect(restartPlanExceedsConfirmed(confirmed, confirmed)).toBe(false);
+    expect(restartPlanExceedsConfirmed(confirmed, { kind: "idle" })).toBe(false);
+    expect(
+      restartPlanExceedsConfirmed(confirmed, { ...confirmed, runningTurn: false, turnKey: null }),
+    ).toBe(false);
+  });
+
+  it("refuses a different turn, new compaction, or more queued messages", () => {
+    expect(restartPlanExceedsConfirmed(confirmed, { ...confirmed, turnKey: "turn-b" })).toBe(true);
+    expect(restartPlanExceedsConfirmed(confirmed, { ...confirmed, compacting: true })).toBe(true);
+    expect(restartPlanExceedsConfirmed(confirmed, { ...confirmed, queuedMessages: 1 })).toBe(true);
+    expect(
+      restartPlanExceedsConfirmed(
+        { ...confirmed, runningTurn: false, turnKey: null, queuedMessages: 2 },
+        { ...confirmed, queuedMessages: 2 },
+      ),
+    ).toBe(true);
   });
 });

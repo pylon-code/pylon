@@ -19,6 +19,8 @@ export type RestartAgentSessionPlan =
   | {
       readonly kind: "busy";
       readonly runningTurn: boolean;
+      /** The active turn, else the admission waiting to start one. */
+      readonly turnKey: string | null;
       readonly compacting: boolean;
       /** Messages that would be cancelled: compaction queue plus provider input queue. */
       readonly queuedMessages: number;
@@ -28,8 +30,11 @@ export function planRestartAgentSession(
   thread: Pick<OrchestrationThread, "session" | "activities">,
 ): RestartAgentSessionPlan {
   const session = thread.session;
-  if (!session || session.status === "stopped") return { kind: "idle" };
+  if (!session) return { kind: "idle" };
+  // The stop decider marks the session stopped together with the pending stop,
+  // so check the pending cleanup before treating a stopped session as idle.
   if (session.pendingStopRequestId !== undefined) return { kind: "stopping" };
+  if (session.status === "stopped") return { kind: "idle" };
   const runningTurn =
     session.status === "running" ||
     session.status === "starting" ||
@@ -47,7 +52,8 @@ export function planRestartAgentSession(
       isSessionCompactionInProgress(deriveLatestSessionCompaction(thread.activities, instanceId)));
   const queuedMessages = (compactionQueue?.queued.length ?? 0) + sessionInputQueueCount(inputQueue);
   if (!runningTurn && !compacting && queuedMessages === 0) return { kind: "idle" };
-  return { kind: "busy", runningTurn, compacting, queuedMessages };
+  const turnKey = session.activeTurnId ?? session.pendingTurnRequestId ?? null;
+  return { kind: "busy", runningTurn, turnKey, compacting, queuedMessages };
 }
 
 /** Confirmation copy naming exactly what the restart will stop or cancel. */
@@ -68,4 +74,21 @@ export function restartAgentSessionConfirmMessage(
     );
   }
   return lines.join("\n");
+}
+
+/**
+ * True when stopping now would end work the confirmation did not describe:
+ * a different turn, a turn or compaction that was not running, or more
+ * queued messages than were shown.
+ */
+export function restartPlanExceedsConfirmed(
+  confirmed: Extract<RestartAgentSessionPlan, { kind: "busy" }>,
+  current: RestartAgentSessionPlan,
+): boolean {
+  if (current.kind !== "busy") return false;
+  if (current.runningTurn && (!confirmed.runningTurn || current.turnKey !== confirmed.turnKey)) {
+    return true;
+  }
+  if (current.compacting && !confirmed.compacting) return true;
+  return current.queuedMessages > confirmed.queuedMessages;
 }

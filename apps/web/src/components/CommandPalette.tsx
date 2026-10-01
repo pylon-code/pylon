@@ -99,6 +99,7 @@ import { readLocalApi } from "../localApi";
 import {
   planRestartAgentSession,
   restartAgentSessionConfirmMessage,
+  restartPlanExceedsConfirmed,
 } from "./restartAgentSession.logic";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment } from "../state/filesystem";
@@ -112,6 +113,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import {
+  readThread,
   useProject,
   useProjects,
   useServerConfigs,
@@ -1978,6 +1980,7 @@ function OpenCommandPaletteDialog(props: {
         if (restartPlan.kind === "stopping") return;
         // Stop ends the running turn and cancels queued messages, so a busy
         // thread asks first. An idle one restarts without a prompt.
+        let target = thread;
         if (restartPlan.kind === "busy") {
           const api = readLocalApi();
           if (!api) return;
@@ -1986,8 +1989,23 @@ function OpenCommandPaletteDialog(props: {
             { variant: "destructive" },
           );
           if (!confirmed) return;
+          // The thread can change while the dialog is open (a new turn, more
+          // queued messages from another client). Stop only what was confirmed.
+          const current = readThread(scopeThreadRef(environmentId, thread.id));
+          if (!current) return;
+          const currentPlan = planRestartAgentSession(current);
+          if (currentPlan.kind === "stopping") return;
+          if (restartPlanExceedsConfirmed(restartPlan, currentPlan)) {
+            toastManager.add({
+              type: "warning",
+              title: "Agent session not restarted",
+              description: "The thread changed while you were confirming. Run Restart again.",
+            });
+            return;
+          }
+          target = current;
         }
-        if (thread.session && thread.session.status !== "stopped") {
+        if (target.session && target.session.status !== "stopped") {
           const stopped = await stopThreadSession({
             environmentId,
             input: { threadId: thread.id },
@@ -2006,8 +2024,8 @@ function OpenCommandPaletteDialog(props: {
         const refreshed = await refreshProviders({
           environmentId,
           input: {
-            instanceId: thread.session?.providerInstanceId ?? thread.modelSelection.instanceId,
-            cwd: thread.worktreePath ?? project.workspaceRoot,
+            instanceId: target.session?.providerInstanceId ?? target.modelSelection.instanceId,
+            cwd: target.worktreePath ?? project.workspaceRoot,
             fresh: true,
           },
         });

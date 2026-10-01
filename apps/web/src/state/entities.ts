@@ -187,6 +187,14 @@ export function readThreadShell(ref: ScopedThreadRef): EnvironmentThreadShell | 
   return appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
 }
 
+/** Current merged thread for a server thread, the imperative twin of `useThread`. */
+export function readThread(ref: ScopedThreadRef): EnvironmentThread | null {
+  return mergeEnvironmentThread(
+    appAtomRegistry.get(environmentThreadDetails.detailAtom(ref)),
+    readThreadShell(ref),
+  );
+}
+
 /** The same live connection and ordered shell sequence that owns a command receipt. */
 const threadActionProjectionAtom = Atom.family((environmentId: EnvironmentId) =>
   Atom.make((get) => {
