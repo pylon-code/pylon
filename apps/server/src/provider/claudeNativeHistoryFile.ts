@@ -15,6 +15,7 @@ export class ClaudeNativeHistoryUnavailable extends Schema.TaggedError<ClaudeNat
   {},
 ) {}
 const MAX_NATIVE_HISTORY_BYTES = 64 * 1024 * 1024;
+const MAX_TRANSCRIPT_SCAN_PROJECTS = 10_000;
 
 function claudeProjectsDirectory(path: Path.Path, environment: NodeJS.ProcessEnv) {
   const configDir =
@@ -38,7 +39,11 @@ export const claudeTranscriptExists = Effect.fn("claudeTranscriptExists")(functi
   const projectsDir = claudeProjectsDirectory(path, input.environment);
   if (projectsDir === undefined) return yield* new ClaudeNativeHistoryUnavailable();
   if (!(yield* fs.exists(projectsDir))) return false;
-  for (const project of yield* fs.readDirectory(projectsDir)) {
+  const projects = yield* fs.readDirectory(projectsDir);
+  // Bound the scan; an unexpectedly large tree answers "unknown", not "absent".
+  if (projects.length > MAX_TRANSCRIPT_SCAN_PROJECTS)
+    return yield* new ClaudeNativeHistoryUnavailable();
+  for (const project of projects) {
     if (yield* fs.exists(path.join(projectsDir, project, `${input.sessionId}.jsonl`))) return true;
   }
   return false;

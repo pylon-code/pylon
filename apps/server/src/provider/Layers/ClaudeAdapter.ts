@@ -4891,7 +4891,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // prove nothing; only an observed assistant message does. Without one,
     // check the history and start fresh only when it is confirmed empty. A
     // failed or slow check keeps the resume.
-    // Only cursors Pylon wrote carry a turn count; imported sessions do not.
+    // Imported cursors carry no turn count, so they are never checked. Any
+    // cursor the adapter has rewritten has one, so the count only narrows the
+    // check; the transcript scan is what keeps a saved session resuming.
     const unprovenResumeSessionId =
       exactStart === undefined &&
       persistedResumeState?.resume !== undefined &&
