@@ -797,8 +797,8 @@ function UsageCoverageNotice({
       ) : null}
       {approximate.length > 0 ? (
         <span>
-          Totals may include shared usage more than once because these environments run older
-          servers or have directories whose filesystem identity could not be read:{" "}
+          Totals for these environments are approximate because they run older servers, read
+          overlapping history folders, or have folders whose identity could not be read:{" "}
           {approximate.map((entry) => entry.label).join(", ")}.
         </span>
       ) : null}

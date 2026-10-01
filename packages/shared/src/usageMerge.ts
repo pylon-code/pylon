@@ -233,6 +233,39 @@ function bucketKey(bucket: UsageBucket) {
 }
 
 /**
+ * Orders ranked scans for claiming. Within a rank, a scan whose homes strictly
+ * contain another's claims first, so the nested scan is a whole duplicate
+ * rather than a split. Otherwise the ranked order holds. Strict containment
+ * is acyclic, so some remaining scan is always uncontained.
+ */
+function claimOrder(
+  scans: readonly ProviderScan[],
+  keyOf: (scan: ProviderScan, source: UsageSource) => string,
+): ProviderScan[] {
+  const keys = new Map(
+    scans.map((scan) => [scan, new Set(scan.sources.map((source) => keyOf(scan, source)))]),
+  );
+  const contains = (outer: ProviderScan, inner: ProviderScan) => {
+    const outerKeys = keys.get(outer) ?? new Set<string>();
+    const innerKeys = keys.get(inner) ?? new Set<string>();
+    return (
+      outer.rank === inner.rank &&
+      outerKeys.size > innerKeys.size &&
+      [...innerKeys].every((key) => outerKeys.has(key))
+    );
+  };
+  const remaining = [...scans];
+  const ordered: ProviderScan[] = [];
+  while (remaining.length > 0) {
+    const index = remaining.findIndex(
+      (scan) => !remaining.some((other) => other !== scan && contains(other, scan)),
+    );
+    ordered.push(...remaining.splice(Math.max(index, 0), 1));
+  }
+  return ordered;
+}
+
+/**
  * Decides which environment owns each physical transcript directory.
  *
  * Several environments on one machine (worktree servers, for instance) resolve
@@ -244,9 +277,10 @@ function bucketKey(bucket: UsageBucket) {
  * per home: a scan whose every shared home was read completely claims its
  * homes before any scan with a partial or failed shared home. Within a rank the
  * most recent scan wins, with environment ids breaking ties. Homes already
- * claimed are duplicates; unclaimed ones still go to the next scan.
+ * claimed are duplicates; unclaimed ones still go to the next scan. Within a
+ * rank, a scan whose homes strictly contain another scan's homes claims first.
  *
- * Scans of identical homes therefore have one owner. Scans of overlapping but
+ * Scans of identical or nested homes therefore have one owner. Scans of overlapping but
  * unequal homes cannot: keeping each scan's unique homes splits its shared
  * homes from them, and a record in both may be credited twice. Such scans are
  * reported as approximate rather than dropping their unique usage.
@@ -273,7 +307,7 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
   const keyOf = (scan: ProviderScan, source: UsageSource) =>
     fingerprintKey(source.fingerprint, scan.environment.environmentId);
 
-  for (const scan of scans) {
+  for (const scan of claimOrder(scans, keyOf)) {
     for (const source of scan.sources) {
       const weakKey = JSON.stringify([
         source.fingerprint.hostId,

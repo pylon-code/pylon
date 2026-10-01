@@ -291,7 +291,14 @@ describe("mergeUsage", () => {
       [
         environment(
           "env-a",
-          summary([bucket({ costUsd: 4 })], [{ ...shared, buckets: [bucket({ costUsd: 4 })] }]),
+          // A unique home keeps env-b's homes from containing env-a's.
+          summary(
+            [bucket({ costUsd: 6 })],
+            [
+              { ...shared, buckets: [bucket({ costUsd: 4 })] },
+              { ...shared, homePath: "/unique-a", buckets: [bucket({ costUsd: 2 })] },
+            ],
+          ),
         ),
         environment(
           "env-b",
@@ -305,7 +312,7 @@ describe("mergeUsage", () => {
       USAGE_CONTRACT_VERSION,
     );
 
-    expect(merged.costUsd).toBe(19);
+    expect(merged.costUsd).toBe(21);
     expect(merged.approximateEnvironments).toEqual(["env-b"]);
     expect(merged.contractMismatches).toEqual([]);
   });
@@ -316,7 +323,14 @@ describe("mergeUsage", () => {
       [
         environment(
           "env-a",
-          summary([bucket({ costUsd: 4 })], [{ ...shared, buckets: [bucket({ costUsd: 4 })] }]),
+          // A unique home keeps env-b's homes from containing env-a's.
+          summary(
+            [bucket({ costUsd: 6 })],
+            [
+              { ...shared, buckets: [bucket({ costUsd: 4 })] },
+              { ...shared, homePath: "/unique-a", buckets: [bucket({ costUsd: 2 })] },
+            ],
+          ),
         ),
         environment(
           "env-b",
@@ -332,7 +346,7 @@ describe("mergeUsage", () => {
       USAGE_CONTRACT_VERSION,
     );
 
-    expect(merged.costUsd).toBe(19);
+    expect(merged.costUsd).toBe(21);
     expect(merged.providers.map((provider) => provider.provider)).toEqual(["claude"]);
     expect(merged.approximateEnvironments).toEqual(["env-b"]);
   });
@@ -1088,6 +1102,64 @@ describe("complete and partial usage scans", () => {
       const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
       expect(merged.costUsd).toBe(20);
       expect(merged.approximateEnvironments).toEqual(["b"]);
+    }
+  });
+  it("lets a scan of a superset of homes own them all regardless of scan order", () => {
+    const desktop = summary([bucket()], [{ ...shared, homePath: "/.claude", buckets: [bucket()] }]);
+    const dev = summary(
+      [bucket({ costUsd: 13 })],
+      [
+        { ...shared, homePath: "/.claude", buckets: [bucket()] },
+        { ...shared, homePath: "/.claude-alt", buckets: [bucket({ costUsd: 3 })] },
+      ],
+    );
+    for (const [desktopAt, devAt] of [
+      [newTime, oldTime],
+      [oldTime, newTime],
+    ] as const) {
+      for (const environments of orders(
+        environment("desktop", { ...desktop, readAt: desktopAt }),
+        environment("dev", { ...dev, readAt: devAt }),
+      )) {
+        const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+        expect(merged.costUsd).toBe(13);
+        expect(merged.contributingEnvironments).toEqual(["dev"]);
+        expect(merged.duplicateSources).toEqual(["desktop: /.claude"]);
+        expect(merged.approximateEnvironments).toEqual([]);
+      }
+    }
+    // A legacy provider-wide total over a superset of homes stays exact.
+    const legacy = summary(
+      [bucket({ costUsd: 13 })],
+      [
+        { ...shared, homePath: "/.claude" },
+        { ...shared, homePath: "/.claude-alt" },
+      ],
+      USAGE_MERGE_COMPATIBLE_SINCE,
+    );
+    for (const environments of orders(
+      environment("desktop", { ...desktop, readAt: newTime }),
+      environment("legacy", { ...legacy, readAt: oldTime }),
+    )) {
+      const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(13);
+      expect(merged.approximateEnvironments).toEqual([]);
+    }
+    // Neither home set contains the other, so the split stays flagged.
+    const other = summary(
+      [bucket({ costUsd: 12 })],
+      [
+        { ...shared, homePath: "/.claude", buckets: [bucket()] },
+        { ...shared, homePath: "/.claude-other", buckets: [bucket({ costUsd: 2 })] },
+      ],
+    );
+    for (const environments of orders(
+      environment("other", { ...other, readAt: newTime }),
+      environment("dev", { ...dev, readAt: oldTime }),
+    )) {
+      const merged = mergeUsage(environments, USAGE_CONTRACT_VERSION);
+      expect(merged.costUsd).toBe(15);
+      expect(merged.approximateEnvironments).toEqual(["dev"]);
     }
   });
 });
