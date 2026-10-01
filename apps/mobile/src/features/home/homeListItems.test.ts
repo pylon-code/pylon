@@ -2,18 +2,27 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EnvironmentId,
+  MessageId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildHomeListLayout,
   DEFAULT_GROUP_DISPLAY_STATE,
   HOME_INITIAL_VISIBLE_THREADS,
+  homeListItemsAreEqual,
   HOME_SHOW_MORE_STEP,
   nextGroupDisplayState,
   type HomeGroupDisplayState,
   type HomeListItem,
 } from "./homeListItems";
+import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import type { HomeThreadGroup } from "./homeThreadList";
 import { threadJumpTarget, visibleThreadJumpCommands } from "../keyboard/threadKeyboardShortcuts";
 
@@ -277,5 +286,60 @@ describe("buildHomeListLayout", () => {
     // header + 6 threads + show-more = 8 items, so beta's header is index 8.
     expect(layout.stickyHeaderIndices).toEqual([0, 8]);
     expect(layout.items[8]).toMatchObject({ type: "header", isFirst: false });
+  });
+});
+
+function makePendingTask(id: string, projectId: ProjectId): PendingNewTask {
+  const creation = {
+    projectId,
+    workspaceMode: "worktree" as const,
+    branch: null,
+    worktreePath: null,
+  };
+  return {
+    kind: "pending",
+    key: `pending-task:${id}`,
+    environmentId,
+    projectId,
+    projectTitle: undefined,
+    projectCwd: undefined,
+    branch: null,
+    title: id,
+    createdAt: "2026-06-01T00:00:00.000Z",
+    message: {
+      environmentId,
+      threadId: ThreadId.make(`thread-${id}`),
+      messageId: MessageId.make(id),
+      commandId: CommandId.make(`command-${id}`),
+      text: id,
+      attachments: [],
+      createdAt: "2026-06-01T00:00:00.000Z",
+      creation,
+    },
+    creation,
+  };
+}
+
+describe("buildHomeListLayout pending delivery", () => {
+  it("re-renders a recycled pending row when its environment disconnects or reconnects", () => {
+    // Connection state never touches the task, and a recycled cell ignores
+    // the render closure, so the delivery label has to ride on the item.
+    const group = makeGroup("alpha", 1);
+    const groups = [
+      { ...group, pendingTasks: [makePendingTask("queued", group.representative.id)] },
+    ];
+    const build = (connected: boolean) =>
+      buildHomeListLayout({
+        groups,
+        displayStates: displayStates({}),
+        pendingTaskDelivery: () => (connected ? "sending" : "offline"),
+      }).items.find((item) => item.type === "pending-task")!;
+    const online = build(true);
+    const offline = build(false);
+    expect(online.type === "pending-task" && online.delivery).toBe("sending");
+    expect(offline.type === "pending-task" && offline.delivery).toBe("offline");
+    expect(homeListItemsAreEqual(online, offline)).toBe(false);
+    expect(homeListItemsAreEqual(offline, online)).toBe(false);
+    expect(homeListItemsAreEqual(online, build(true))).toBe(true);
   });
 });
