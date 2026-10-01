@@ -239,7 +239,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
             : workspaceLabel}
         </TooltipPopup>
       </Tooltip>
-      <MenuPopup align="start" side="top" className="w-64" {...composerFloatingLayerProps}>
+      <MenuPopup align="start" side="top" {...composerFloatingLayerProps}>
         {showEnvironmentPicker && availableEnvironments && onEnvironmentChange ? (
           <>
             <MenuGroup>

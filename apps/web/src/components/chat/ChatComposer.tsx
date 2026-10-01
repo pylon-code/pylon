@@ -8061,9 +8061,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         allowUnicodeSkillAliases={allowUnicodeSkillAliases}
                         containerClassName={cn(isComposerResting && "min-w-0 flex-1")}
                         className={cn(
-                          showMobilePendingAnswerActions && "max-sm:pb-11",
+                          showMobilePendingAnswerActions && "max-sm:pb-12",
                           isComposerResting &&
-                            "max-h-8 min-h-8 overflow-hidden whitespace-pre! leading-8",
+                            "my-0 max-h-8 min-h-8 overflow-hidden py-0 whitespace-pre! leading-8",
                         )}
                         placeholderClassName={cn(
                           isComposerResting &&

@@ -221,7 +221,8 @@ export function ContextWindowMeter(props: {
         side="top"
         align="end"
         viewportClassName="overflow-y-auto p-0"
-        className="w-64 max-w-none text-left whitespace-normal"
+        width="sm"
+        className="text-left whitespace-normal"
       >
         <div className="flex flex-col gap-2 p-(--floating-content-inset)">
           <div className="flex items-center justify-between gap-3">

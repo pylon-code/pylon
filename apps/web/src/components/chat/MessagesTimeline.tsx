@@ -2332,7 +2332,8 @@ function BackgroundWorktreeSetupChip({ snapshot }: { snapshot: WorktreeSetupSnap
       <PopoverPopup
         side="bottom"
         align="end"
-        className="surface-glass! w-[28rem] max-w-[calc(100vw-2rem)] p-0"
+        width="lg"
+        className="surface-glass! p-0"
         viewportClassName="py-3 [--viewport-inline-padding:--spacing(3)]"
       >
         <WorktreeSetupCard

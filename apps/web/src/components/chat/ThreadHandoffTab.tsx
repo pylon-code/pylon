@@ -67,7 +67,7 @@ export const ThreadHandoffTab = memo(function ThreadHandoffTab({
           </button>
         }
       />
-      <PopoverPopup align="end" side="top" className="w-80 p-3 text-sm">
+      <PopoverPopup align="end" side="top" width="md" className="p-3 text-sm">
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
             <span className="flex items-center gap-1.5 font-medium">
