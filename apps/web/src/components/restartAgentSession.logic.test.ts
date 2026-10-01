@@ -48,9 +48,9 @@ const inputQueue = (steeringCount: number, followUpCount: number) =>
     },
   }) as OrchestrationThreadActivity;
 
-const nativeCompaction = (status: "idle" | "compacting") =>
+const nativeCompaction = (status: "idle" | "compacting", id = `compaction-${status}`) =>
   ({
-    id: EventId.make(`compaction-${status}`),
+    id: EventId.make(id),
     kind: "session.compaction.updated",
     tone: "info",
     summary: "Session compaction updated",
@@ -91,6 +91,7 @@ describe("planRestartAgentSession", () => {
       runningTurn: true,
       turnKey: "turn-1",
       compacting: false,
+      compactionKey: null,
       queuedMessages: 0,
     });
     expect(
@@ -130,6 +131,7 @@ describe("planRestartAgentSession", () => {
       runningTurn: false,
       turnKey: null,
       compacting: true,
+      compactionKey: "slash:compact-1",
       queuedMessages: 4,
     });
   });
@@ -142,6 +144,7 @@ describe("planRestartAgentSession", () => {
       runningTurn: false,
       turnKey: null,
       compacting: true,
+      compactionKey: "native:compaction-compacting",
       queuedMessages: 0,
     });
     expect(
@@ -173,6 +176,7 @@ describe("restartAgentSessionConfirmMessage", () => {
         runningTurn: true,
         turnKey: "turn-1",
         compacting: true,
+        compactionKey: null,
         queuedMessages: 2,
       }),
     ).toBe(
@@ -188,6 +192,7 @@ describe("restartAgentSessionConfirmMessage", () => {
         runningTurn: false,
         turnKey: null,
         compacting: false,
+        compactionKey: null,
         queuedMessages: 1,
       }),
     ).toBe(["Restart the agent session?", "1 queued message will be cancelled."].join("\n"));
@@ -200,6 +205,7 @@ describe("restartPlanExceedsConfirmed", () => {
     runningTurn: true,
     turnKey: "turn-a",
     compacting: false,
+    compactionKey: null,
     queuedMessages: 0,
   } as const satisfies RestartAgentSessionPlan;
 
@@ -213,7 +219,13 @@ describe("restartPlanExceedsConfirmed", () => {
 
   it("refuses a different turn, new compaction, or more queued messages", () => {
     expect(restartPlanExceedsConfirmed(confirmed, { ...confirmed, turnKey: "turn-b" })).toBe(true);
-    expect(restartPlanExceedsConfirmed(confirmed, { ...confirmed, compacting: true })).toBe(true);
+    expect(
+      restartPlanExceedsConfirmed(confirmed, {
+        ...confirmed,
+        compacting: true,
+        compactionKey: "native:c-1",
+      }),
+    ).toBe(true);
     expect(restartPlanExceedsConfirmed(confirmed, { ...confirmed, queuedMessages: 1 })).toBe(true);
     expect(
       restartPlanExceedsConfirmed(
@@ -221,5 +233,42 @@ describe("restartPlanExceedsConfirmed", () => {
         { ...confirmed, queuedMessages: 2 },
       ),
     ).toBe(true);
+  });
+});
+
+describe("compaction identity", () => {
+  it("refuses a native compaction that replaced the confirmed one", () => {
+    const confirmedPlan = planRestartAgentSession({
+      session: session(),
+      activities: [
+        nativeCompaction("compacting", "a-start"),
+        nativeCompaction("compacting", "a-progress"),
+      ],
+    });
+    expect(confirmedPlan).toMatchObject({ kind: "busy", compactionKey: "native:a-start" });
+    if (confirmedPlan.kind !== "busy") throw new Error("expected a busy plan");
+
+    // Compaction A continues: same run, restart may proceed.
+    const sameRun = planRestartAgentSession({
+      session: session(),
+      activities: [
+        nativeCompaction("compacting", "a-start"),
+        nativeCompaction("compacting", "a-progress"),
+        nativeCompaction("compacting", "a-more"),
+      ],
+    });
+    expect(restartPlanExceedsConfirmed(confirmedPlan, sameRun)).toBe(false);
+
+    // A finished and another client started B before the confirmation.
+    const replaced = planRestartAgentSession({
+      session: session(),
+      activities: [
+        nativeCompaction("compacting", "a-start"),
+        nativeCompaction("idle", "a-done"),
+        nativeCompaction("compacting", "b-start"),
+      ],
+    });
+    expect(replaced).toMatchObject({ kind: "busy", compactionKey: "native:b-start" });
+    expect(restartPlanExceedsConfirmed(confirmedPlan, replaced)).toBe(true);
   });
 });
