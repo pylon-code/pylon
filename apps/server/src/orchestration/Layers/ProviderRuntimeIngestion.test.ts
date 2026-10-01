@@ -955,6 +955,36 @@ describe("ProviderRuntimeIngestion", () => {
     expect(await compactionRow()).not.toHaveProperty("runStartedAt");
     harness.emit(compaction("evt-b-start", "2026-01-01T00:00:04.000Z", "compacting"));
     expect(await compactionRow()).toMatchObject({ runStartedAt: "2026-01-01T00:00:04.000Z" });
+
+    // A session that exits mid-compaction never reports it finished. The
+    // replacement session's running compaction must get its own start.
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-exit-mid-compaction"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:05.000Z",
+      payload: { exitKind: "graceful" },
+    });
+    // The replacement session starts and reports a compaction already running.
+    await harness.drain();
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("cmd-replacement-session"),
+      threadId: asThreadId("thread-1"),
+      session: {
+        threadId: asThreadId("thread-1"),
+        status: "ready",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        activeTurnId: null,
+        updatedAt: "2026-01-01T00:00:05.500Z",
+        lastError: null,
+      },
+      createdAt: "2026-01-01T00:00:05.500Z",
+    });
+    harness.emit(compaction("evt-c-start", "2026-01-01T00:00:06.000Z", "compacting"));
+    expect(await compactionRow()).toMatchObject({ runStartedAt: "2026-01-01T00:00:06.000Z" });
   });
 
   it("maps legacy unstamped turn events into thread session updates", async () => {

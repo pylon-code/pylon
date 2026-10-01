@@ -166,6 +166,9 @@ type TurnStartRequestedDomainEvent = Extract<
   OrchestrationEvent,
   { type: "thread.turn-start-requested" }
 >;
+type IngestionDomainEvent =
+  | TurnStartRequestedDomainEvent
+  | Extract<OrchestrationEvent, { type: "thread.deleted" }>;
 
 type ProviderDiffEvent = Extract<ProviderRuntimeEvent, { type: "turn.diff.updated" }>;
 
@@ -176,7 +179,7 @@ type RuntimeIngestionInput =
     }
   | {
       source: "domain";
-      event: TurnStartRequestedDomainEvent;
+      event: IngestionDomainEvent;
     }
   | {
       /** A diff whose workspace the diff worker confirmed is a Git repository. */
@@ -1710,7 +1713,8 @@ const make = Effect.gen(function* () {
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
     );
 
-  // Start of the running native compaction per provider instance and thread.
+  // Start of the running native compaction per thread, provider instance and
+  // session incarnation (keys start with `${threadId}:`).
   // The compaction activity is one upserted row, so the run identity has to be
   // carried here. After a server restart a running compaction gets a new start,
   // which clients treat as a different run (the safe direction).
@@ -2217,6 +2221,20 @@ const make = Effect.gen(function* () {
     yield* clearBufferedProposedPlan(input.planId);
   });
 
+  // A session that exits mid-compaction never reports the compaction finished,
+  // so its run start must not carry into a replacement session.
+  const clearCompactionRunStarts = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const prefix = `${threadId}:`;
+      const keys = Array.from(yield* Cache.keys(compactionRunStartByKey));
+      yield* Effect.forEach(
+        keys,
+        (key) =>
+          key.startsWith(prefix) ? Cache.invalidate(compactionRunStartByKey, key) : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+    });
+
   const clearTurnStateForSession = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const prefix = `${threadId}:`;
@@ -2225,6 +2243,7 @@ const make = Effect.gen(function* () {
       const assistantSegmentKeys = Array.from(yield* Cache.keys(assistantSegmentStateByTurnKey));
       const proposedPlanKeys = Array.from(yield* Cache.keys(bufferedProposedPlanById));
       const taskDescriptionKeys = Array.from(yield* Cache.keys(taskDescriptionByTaskKey));
+      yield* clearCompactionRunStarts(threadId);
       yield* Effect.forEach(
         turnKeys,
         (key) =>
@@ -3428,7 +3447,7 @@ const make = Effect.gen(function* () {
 
       let compactionRunStartedAt: string | undefined;
       if (activityEvent.type === "session.compaction.updated") {
-        const runKey = `${activityEvent.providerInstanceId ?? activityEvent.provider}:${thread.id}`;
+        const runKey = `${thread.id}:${activityEvent.providerInstanceId ?? activityEvent.provider}:${activityEvent.sessionIncarnationId ?? "unstamped"}`;
         const status = activityEvent.payload.status;
         if (status === "starting" || status === "compacting" || status === "abort-requested") {
           compactionRunStartedAt = Option.getOrElse(
@@ -3485,7 +3504,10 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;
+  const processDomainEvent = (event: IngestionDomainEvent) =>
+    event.type === "thread.deleted"
+      ? clearCompactionRunStarts(event.payload.threadId)
+      : Effect.void;
 
   const processInput = (input: RuntimeIngestionInput) => {
     switch (input.source) {
@@ -3550,7 +3572,7 @@ const make = Effect.gen(function* () {
       );
       yield* forkParked(
         Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
-          if (event.type !== "thread.turn-start-requested") {
+          if (event.type !== "thread.turn-start-requested" && event.type !== "thread.deleted") {
             return Effect.void;
           }
           return worker.enqueue({ source: "domain", event });
