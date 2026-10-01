@@ -8,7 +8,7 @@
     "build": "astro build",
     "preview": "astro preview",
     "typecheck": "astro check",
-    "test": "vp test run"
+    "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {
     "@t3tools/shared": "workspace:*",
