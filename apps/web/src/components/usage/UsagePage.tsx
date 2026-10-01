@@ -38,6 +38,7 @@ import { useUsage, type EnvironmentUsageStatus } from "../../state/usage";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   enumerateDays,
+  collectUsageSourceWarnings,
   enumerateHourStarts,
   formatCount,
   formatDateTimeShort,
@@ -759,6 +760,7 @@ function UsageCoverageNotice({
   readonly contractMismatches: MergedUsage["contractMismatches"];
   readonly approximateEnvironments: readonly string[];
 }) {
+  const sourceWarnings = collectUsageSourceWarnings(environments);
   const failed = environments.filter((environment) => environment.error !== null);
   const mismatchByEnvironment = new Map(
     contractMismatches.map((mismatch) => [mismatch.environmentId, mismatch]),
@@ -774,13 +776,20 @@ function UsageCoverageNotice({
     failed.length === 0 &&
     incompatible.length === 0 &&
     duplicateSources.length === 0 &&
-    approximate.length === 0
+    approximate.length === 0 &&
+    sourceWarnings.length === 0
   ) {
     return null;
   }
 
   return (
     <div className="flex flex-col gap-1 border-t border-border px-2 py-2 text-xs text-muted-foreground">
+      {sourceWarnings.map((warning) => (
+        <span key={warning.key}>
+          {warning.environmentLabel} · {PROVIDER_PRESENTATION[warning.provider].label}:{" "}
+          {warning.message}
+        </span>
+      ))}
       {failed.map((environment) => (
         <span key={environment.label}>{environment.label} could not report usage.</span>
       ))}
@@ -839,7 +848,9 @@ function UsageEnvironmentFilter({
     (environment) =>
       environment.error === null && (environment.isPending || environment.summary === null),
   ).length;
+  const sourceWarnings = collectUsageSourceWarnings(selectedEnvironments);
   const hasIssue =
+    sourceWarnings.length > 0 ||
     selectedEnvironments.some((environment) => environment.error !== null) ||
     contractMismatches.some((mismatch) =>
       selectedEnvironments.some(
@@ -868,7 +879,11 @@ function UsageEnvironmentFilter({
             ) : showUsageStatus && hasIssue ? (
               <CircleAlertIcon
                 className="size-3.5 text-warning-foreground"
-                aria-label="Some environments could not report usage"
+                aria-label={
+                  sourceWarnings.length > 0
+                    ? "Some usage sources could not report complete usage"
+                    : "Some environments could not report usage"
+                }
               />
             ) : (
               <ChevronDownIcon
@@ -904,7 +919,9 @@ function UsageEnvironmentFilter({
                     ? "Scanning…"
                     : environment.isPending
                       ? "Refreshing…"
-                      : "Ready";
+                      : collectUsageSourceWarnings([environment]).length > 0
+                        ? "Partial history"
+                        : "Ready";
             return (
               <MenuCheckboxItem
                 key={environment.environmentId}

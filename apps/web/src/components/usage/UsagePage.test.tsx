@@ -1,5 +1,6 @@
-import { EnvironmentId, USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
+import { EnvironmentId, UsageDay, USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
 import { mergeUsage } from "@t3tools/shared/usageMerge";
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -57,6 +58,14 @@ vi.mock("../ui/select", () => ({
   SelectValue: "div",
 }));
 vi.mock("../ui/sidebar", () => ({ SidebarInset: "div" }));
+vi.mock("../ui/menu", () => ({
+  Menu: ({ children }: { children: ReactNode }) => children,
+  MenuPopup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  MenuTrigger: ({ children }: { children: ReactNode }) => <button>{children}</button>,
+  MenuCheckboxItem: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  MenuSeparator: () => null,
+  MenuItem: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
 vi.mock("../ui/toggle-group", () => ({ Toggle: "button", ToggleGroup: "div" }));
 vi.mock("../WorkspaceBreadcrumb", () => ({
   WorkspaceBreadcrumb: "div",
@@ -74,6 +83,7 @@ vi.mock("./usageProviders", async (importOriginal) => {
     PROVIDER_PRESENTATION: {
       codex: { color: "white", label: "Codex", mark: "span" },
       claude: { color: "orange", label: "Claude Code", mark: "span" },
+      opencode: { color: "purple", label: "OpenCode", mark: "span" },
     },
   };
 });
@@ -244,5 +254,81 @@ describe("UsagePage model breakdown", () => {
       "token-heavy-cheaper-model",
       "unpriced-model",
     ]);
+  });
+});
+
+describe("UsagePage source coverage", () => {
+  it("shows selected provider scan problems and clears them when sources recover", () => {
+    renderToStaticMarkup(<UsagePage />);
+    const returned = testState.useUsage.mock.results.at(-1);
+    if (returned?.type !== "return") throw new Error("Missing fixture usage view");
+    const current = returned.value;
+    const source = {
+      fingerprint: {
+        hostId: "host",
+        provider: "opencode" as const,
+        resolvedHomePath: "/opencode",
+        volumeId: "volume",
+      },
+      status: "partial" as const,
+      scannedFiles: 1,
+      skippedFiles: 1,
+      malformedRecords: 0,
+      distinctSessions: 0,
+      message: "One history file could not be read.",
+    };
+    const selected = {
+      environmentId: EnvironmentId.make("desktop"),
+      label: "Desktop",
+      isPending: false,
+      error: null,
+      summary: {
+        contractVersion: USAGE_CONTRACT_VERSION,
+        readAt: "2026-08-11T12:37:00Z",
+        timeZone: "UTC",
+        sinceDay: UsageDay.make("2026-08-10"),
+        untilDay: UsageDay.make("2026-08-11"),
+        buckets: [],
+        sources: [source],
+        pricing: { status: "fresh" as const, source: "test", fetchedAt: null, knownModels: 1 },
+        scanDurationMs: 1,
+      },
+    };
+    testState.useUsage.mockReturnValue({
+      ...current,
+      selectedEnvironments: [selected],
+      environments: [selected],
+    });
+    let markup = renderToStaticMarkup(<UsagePage />);
+    expect(markup).toContain("One history file could not be read.");
+    expect(markup).toContain("Desktop");
+    expect(markup).toContain("OpenCode");
+    expect(markup).toContain("Partial history");
+    expect(markup).toContain('aria-label="Some usage sources could not report complete usage"');
+    const recovered = {
+      ...selected,
+      summary: { ...selected.summary, sources: [{ ...source, status: "ok" as const }] },
+    };
+    testState.useUsage.mockReturnValue({
+      ...current,
+      selectedEnvironments: [recovered],
+      environments: [recovered],
+    });
+    markup = renderToStaticMarkup(<UsagePage />);
+    expect(markup).not.toContain("One history file could not be read.");
+    expect(markup).not.toContain("Partial history");
+    const excluded = {
+      ...selected,
+      environmentId: EnvironmentId.make("excluded"),
+      label: "Excluded",
+    };
+    testState.useUsage.mockReturnValue({
+      ...current,
+      selectedEnvironments: [recovered],
+      environments: [recovered, excluded],
+    });
+    expect(renderToStaticMarkup(<UsagePage />)).not.toContain(
+      "One history file could not be read.",
+    );
   });
 });

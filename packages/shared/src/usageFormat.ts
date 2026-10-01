@@ -4,8 +4,54 @@
  *
  * @module usageFormat
  */
-import { UsageDay, type UsageResolution, type UsageSummaryInput } from "@t3tools/contracts";
-import type { UsageContractMismatch } from "./usageMerge.ts";
+import {
+  UsageDay,
+  USAGE_CONTRACT_VERSION,
+  type EnvironmentId,
+  type UsageSummary,
+  type UsageResolution,
+  type UsageSummaryInput,
+} from "@t3tools/contracts";
+import { isCompatibleUsageContractVersion, type UsageContractMismatch } from "./usageMerge.ts";
+
+/** Describe scan gaps without treating an absent provider as a failed scan. */
+export function collectUsageSourceWarnings(
+  environments: readonly {
+    readonly environmentId: EnvironmentId;
+    readonly label: string;
+    readonly summary: UsageSummary | null;
+  }[],
+) {
+  const seen = new Set<string>();
+  return environments.flatMap((environment) => {
+    const summary = environment.summary;
+    if (
+      summary === null ||
+      !isCompatibleUsageContractVersion(summary.contractVersion, USAGE_CONTRACT_VERSION)
+    )
+      return [];
+    return summary.sources.flatMap((source) => {
+      if (source.status !== "partial" && source.status !== "failed") return [];
+      const message =
+        source.message?.trim() ||
+        (source.status === "partial"
+          ? "This history scan is incomplete."
+          : "This history scan could not report usage.");
+      const key = JSON.stringify([environment.environmentId, source.fingerprint.provider, message]);
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [
+        {
+          key,
+          environmentId: environment.environmentId,
+          environmentLabel: environment.label,
+          provider: source.fingerprint.provider,
+          message,
+        },
+      ];
+    });
+  });
+}
 
 const CURRENCY = new Intl.NumberFormat("en-US", {
   style: "currency",
