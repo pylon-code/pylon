@@ -1605,11 +1605,23 @@ describe("ClaudeAdapterLive", () => {
 
       // Recorded order after a resume: Claude first reports a background task
       // the previous process left behind, then runs the queued `/compact`.
+      // The notification turn makes a model request, so Pylon's zero-turn
+      // handshake guard does not hide its result.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-1",
+        uuid: "assistant-task-notification",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-task-notification",
+          content: [{ type: "text", text: "The background build finished." }],
+        },
+      } as unknown as SDKMessage);
       harness.query.emit({
         type: "result",
         subtype: "success",
         is_error: false,
-        num_turns: 0,
+        num_turns: 1,
         origin: { kind: "task-notification" },
         session_id: "sdk-session-1",
         uuid: "result-task-notification",
@@ -1944,6 +1956,84 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(String(turnStartedEvents[0]?.turnId), String(turn.turnId));
       assert.equal(turnCompletedEvents.length, 1);
       assert.equal(String(turnCompletedEvents[0]?.turnId), String(turn.turnId));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("completes a steered turn from a result that echoes its folded-in prompts", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "run 5 commands",
+        attachments: [],
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "actually run 15",
+        attachments: [],
+      });
+
+      // A result for a different prompt (here, an interrupted turn's re-run)
+      // must not close the steered turn.
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 1,
+        user_message_uuid: "previous-prompt",
+        user_message_uuids: ["previous-prompt"],
+        session_id: "sdk-session-steer-echo",
+        uuid: "result-other-prompt",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-steer-echo",
+        uuid: "assistant-steer-echo",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-steer-echo",
+          content: [{ type: "text", text: "Adjusting to 15." }],
+        },
+      } as unknown as SDKMessage);
+      // The steer has no Pylon uuid, so Claude echoes its own id for it after
+      // the turn's prompt.
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        num_turns: 2,
+        user_message_uuid: "claude-steer-uuid",
+        user_message_uuids: [turn.turnId, "claude-steer-uuid"],
+        session_id: "sdk-session-steer-echo",
+        uuid: "result-steered-turn",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const completions = runtimeEvents.filter((event) => event.type === "turn.completed");
+      assert.equal(completions.length, 1);
+      assert.equal(String(completions[0]?.turnId), String(turn.turnId));
+      assert.isTrue(
+        runtimeEvents.some(
+          (event) =>
+            event.type === "content.delta" &&
+            String(event.turnId) === String(turn.turnId) &&
+            event.payload.delta === "Adjusting to 15.",
+        ),
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
