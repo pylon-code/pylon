@@ -1,5 +1,6 @@
 package expo.modules.t3agentnotifications
 
+import android.app.Activity
 import android.app.NotificationChannel
 import android.app.Notification
 import android.app.AlarmManager
@@ -15,8 +16,6 @@ import android.text.TextPaint
 import android.text.TextUtils
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.firebase.messaging.RemoteMessage
 import expo.modules.notifications.service.ExpoFirebaseMessagingService
 
@@ -96,6 +95,26 @@ object AgentNotifications {
   /** Records the thread route the app is showing, or null when none is open. */
   @Volatile private var threadOnScreen: String? = null
 
+  // ProcessLifecycleOwner delays pause after Home/lock. Use the host Activity's
+  // immediate callbacks instead, serialized with receive and alert deduplication.
+  private var resumedActivity: Activity? = null
+
+  @Synchronized
+  fun onActivityResumed(activity: Activity) {
+    resumedActivity = activity
+  }
+
+  @Synchronized
+  fun onActivityPaused(activity: Activity) {
+    if (resumedActivity === activity) resumedActivity = null
+  }
+
+  @Synchronized
+  fun clearActivityVisibility() {
+    resumedActivity = null
+  }
+
+  @Synchronized
   fun setThreadOnScreen(path: String?) {
     threadOnScreen = path
   }
@@ -147,10 +166,10 @@ object AgentNotifications {
     val seen = prefs.getString("seenAlertsOrdered", null)?.split('\n')
       ?: prefs.getStringSet("seenAlerts", emptySet()).orEmpty().toList()
     if (alertId != null && alertId !in seen) {
-      // Consume suppressed alerts so retries cannot resurface them later.
-      val resumed = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(
-        Lifecycle.State.RESUMED
-      )
+      // Only consume a suppressed alert while the host Activity is actually
+      // resumed. A delivery after onPause must post and remain retry-safe even
+      // while ProcessLifecycleOwner still reports RESUMED.
+      val resumed = resumedActivity != null
       val visibleThread = threadOnScreen
       val onScreen = resumed && visibleThread != null && data["alert_path"] == visibleThread
       if (!onScreen) {
