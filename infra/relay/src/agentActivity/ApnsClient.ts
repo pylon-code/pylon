@@ -175,7 +175,7 @@ function makeLiveActivityRequest(input: MakeLiveActivityRequestInput): ApnsLiveA
 
 function notificationThreadId(notification: ApnsNotificationPayload): string {
   return notification.threadId.length > 0
-    ? `${notification.environmentId}/${notification.threadId}`
+    ? JSON.stringify([notification.environmentId, notification.threadId])
     : "pylon-agent-alerts";
 }
 
