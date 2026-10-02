@@ -167,9 +167,13 @@ afterEach(async () => {
 });
 
 describe("PreviewAutomationHosts open", () => {
-  it.each([false, true])(
-    "opens blank and navigates attachments as agent after attachment (existing tab: %s)",
-    async (existingTab) => {
+  it.each(
+    [false, true].flatMap((existingTab) =>
+      ["normal", "captured", "uncaptured-abort"].map((outcome) => ({ existingTab, outcome })),
+    ),
+  )(
+    "opens attachments with $outcome navigation (existing tab: $existingTab)",
+    async ({ existingTab, outcome }) => {
       const response = deferred<PreviewAutomationResponse>();
       const attachmentUrl = "https://example.com/report.csv";
       const runtimeTabId = () =>
@@ -203,9 +207,27 @@ describe("PreviewAutomationHosts open", () => {
         });
         return AsyncResult.success(snapshot);
       });
+      const download = {
+        fileName: "report.csv",
+        path: "/tmp/browser-artifacts/agent-downloads/report.csv",
+        sizeBytes: 100,
+        state: "started" as const,
+      };
+      mocks.status.mockImplementation(async (tabId) => ({
+        available: true,
+        visible: false,
+        tabId,
+        url: "about:blank",
+        title: "",
+        loading: outcome === "captured",
+      }));
       mocks.navigate.mockImplementationOnce(async () => {
         expect(mocks.status).toHaveBeenCalled();
         expect(readThreadPreviewState(threadRef).snapshot?.navStatus).toEqual({ _tag: "Idle" });
+        if (outcome === "uncaptured-abort") throw new Error("ERR_ABORTED (-3) loading attachment");
+        // Main recovers the native loadURL rejection only when will-download
+        // admitted the capture, and IPC forwards this receipt.
+        if (outcome === "captured") return { url: "about:blank", download };
       });
       mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
       await act(async () => {
@@ -232,11 +254,25 @@ describe("PreviewAutomationHosts open", () => {
         attachmentUrl,
         "agent",
       );
-      await expect(response.promise).resolves.toMatchObject({
-        requestId: "open-request",
-        ok: true,
-        result: { available: true, tabId: snapshot.tabId },
-      });
+      await expect(response.promise).resolves.toMatchObject(
+        outcome === "uncaptured-abort"
+          ? {
+              requestId: "open-request",
+              ok: false,
+              error: { _tag: "PreviewAutomationExecutionError" },
+            }
+          : {
+              requestId: "open-request",
+              ok: true,
+              result: {
+                available: true,
+                tabId: snapshot.tabId,
+                url: "about:blank",
+                loading: false,
+                ...(outcome === "captured" ? { download } : {}),
+              },
+            },
+      );
     },
   );
 
@@ -299,6 +335,73 @@ describe("PreviewAutomationHosts open", () => {
 });
 
 describe("PreviewAutomationHosts ownership", () => {
+  it.each([true, false])(
+    "reports reused-tab navigation downloads only when captured (%s)",
+    async (captured) => {
+      const response = deferred<PreviewAutomationResponse>();
+      const download = {
+        fileName: "report.csv",
+        path: "/tmp/browser-artifacts/agent-downloads/report.csv",
+        state: "started" as const,
+      };
+      const runtimeTabId = previewRuntimeTabId(threadRef, null, snapshot.tabId);
+      Object.assign(document, {
+        querySelectorAll: () => [
+          {
+            getAttribute: () => runtimeTabId,
+            closest: () => ({ getAttribute: () => "active" }),
+            executeJavaScript: async () => ({ width: 1440, height: 900 }),
+          },
+        ],
+      });
+      if (captured) mocks.navigate.mockResolvedValueOnce({ url: "https://example.com", download });
+      else mocks.navigate.mockRejectedValueOnce(new Error("ERR_ABORTED (-3) loading attachment"));
+      mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+      await act(async () => {
+        applyPreviewServerSnapshot(threadRef, snapshot);
+        applyPreviewDesktopState(threadRef, snapshot.tabId, {
+          hasWebContents: true,
+          canGoBack: false,
+          canGoForward: false,
+          loading: false,
+          zoomFactor: 1,
+          pictureInPicture: false,
+          colorScheme: "system",
+          audioMuted: false,
+          audible: false,
+          controller: "none",
+          favicon: null,
+        });
+        appAtomRegistry.set(
+          requestsAtom,
+          AsyncResult.success({
+            ...requestEvent,
+            request: {
+              ...requestEvent.request,
+              operation: "navigate",
+              tabId: snapshot.tabId,
+              input: { url: "https://example.com/report.csv" },
+            },
+          }),
+        );
+        await response.promise;
+      });
+      expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith(
+        runtimeTabId,
+        "https://example.com/report.csv",
+        "agent",
+      );
+      await expect(response.promise).resolves.toMatchObject(
+        captured
+          ? {
+              ok: true,
+              result: { url: "https://example.com", download, loading: false },
+            }
+          : { ok: false, error: { _tag: "PreviewAutomationExecutionError" } },
+      );
+    },
+  );
+
   it("reports only local live tabs and removes ownership when their web contents close", async () => {
     await act(() => {
       appAtomRegistry.set(

@@ -1,7 +1,30 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { DesktopEnvironmentBootstrapSchema } from "./ipc.ts";
+import { DesktopEnvironmentBootstrapSchema, DesktopPreviewNavigationResultSchema } from "./ipc.ts";
+
+describe("DesktopPreviewNavigationResultSchema", () => {
+  const decode = Schema.decodeUnknownSync(DesktopPreviewNavigationResultSchema);
+  it("preserves captured download receipts and legacy void navigation results", () => {
+    const result = {
+      url: "about:blank",
+      download: {
+        fileName: "report.csv",
+        path: "/tmp/artifacts/report.csv",
+        sizeBytes: 100,
+        state: "started",
+      },
+    };
+    expect(decode(result)).toEqual(result);
+    expect(decode(undefined)).toBeUndefined();
+    expect(
+      decode({
+        ...result,
+        download: { fileName: "report.csv", path: "/tmp/artifacts/report.csv", state: "started" },
+      }),
+    ).toMatchObject({ url: "about:blank" });
+  });
+});
 
 describe("DesktopEnvironmentBootstrapSchema", () => {
   const decode = Schema.decodeUnknownSync(DesktopEnvironmentBootstrapSchema);

@@ -135,6 +135,7 @@ export function createCapturedDownloads(artifactDirectory: string) {
     item.once("done", done);
     try {
       item.setSavePath(filePath);
+      return cancelled ? undefined : filePath;
     } catch {
       cancel("Preview download cancelled: unable to set artifact save path");
     }

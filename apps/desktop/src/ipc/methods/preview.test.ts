@@ -72,6 +72,32 @@ describe("preview IPC methods", () => {
     }),
   );
 
+  effectIt.effect("returns captured download receipts through navigation IPC", () =>
+    Effect.gen(function* () {
+      const result = {
+        url: "about:blank",
+        download: {
+          fileName: "report.csv",
+          path: "/tmp/browser-artifacts/agent-downloads/report.csv",
+          sizeBytes: 100,
+          state: "started" as const,
+        },
+      };
+      const manager = PreviewManager.PreviewManager.of({
+        navigate: () => Effect.succeed(result),
+      } as unknown as PreviewManager.PreviewManager["Service"]);
+      expect(
+        yield* PreviewIpc.navigate
+          .handler({
+            tabId: "tab-1",
+            url: "https://example.com/report.csv",
+            origin: "agent",
+          })
+          .pipe(Effect.provideService(PreviewManager.PreviewManager, manager)),
+      ).toEqual(result);
+    }),
+  );
+
   it("does not access the Electron session while the module loads", async () => {
     await expect(import("./preview.ts")).resolves.toBeDefined();
     expect(fromPartition).not.toHaveBeenCalled();

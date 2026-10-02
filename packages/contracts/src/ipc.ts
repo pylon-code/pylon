@@ -1171,6 +1171,24 @@ export const DesktopPreviewNavigateInputSchema = Schema.Struct({
   origin: Schema.optional(DesktopPreviewNavigationOriginSchema),
 });
 
+/** Capture has started; completion or cancellation can follow asynchronously. */
+export const DesktopPreviewCapturedDownloadSchema = Schema.Struct({
+  fileName: Schema.String,
+  path: Schema.String,
+  sizeBytes: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  state: Schema.Literal("started"),
+});
+export type DesktopPreviewCapturedDownload = typeof DesktopPreviewCapturedDownloadSchema.Type;
+
+export const DesktopPreviewNavigationResultSchema = Schema.Union([
+  Schema.Undefined,
+  Schema.Struct({
+    url: Schema.String,
+    download: DesktopPreviewCapturedDownloadSchema,
+  }),
+]);
+export type DesktopPreviewNavigationResult = typeof DesktopPreviewNavigationResultSchema.Type;
+
 export const DesktopPreviewConfigInputSchema = Schema.Struct({
   environmentId: EnvironmentId,
   /**
@@ -1419,7 +1437,11 @@ export interface DesktopPreviewBridge {
   createTab: (tabId: string, defaults?: DesktopPreviewTabDefaults) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   registerWebview: (tabId: string, webContentsId: number) => Promise<void>;
-  navigate: (tabId: string, url: string, origin: DesktopPreviewNavigationOrigin) => Promise<void>;
+  navigate: (
+    tabId: string,
+    url: string,
+    origin: DesktopPreviewNavigationOrigin,
+  ) => Promise<DesktopPreviewNavigationResult>;
   goBack: (tabId: string, origin: DesktopPreviewNavigationOrigin) => Promise<void>;
   goForward: (tabId: string, origin: DesktopPreviewNavigationOrigin) => Promise<void>;
   refresh: (tabId: string, origin: DesktopPreviewNavigationOrigin) => Promise<void>;

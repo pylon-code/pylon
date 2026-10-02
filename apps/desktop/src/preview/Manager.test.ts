@@ -4637,6 +4637,122 @@ describe("PreviewManager", () => {
       }),
     ),
   );
+  for (const scenario of [
+    { code: "ERR_ABORTED", capture: "during", origin: "agent", url: "about:blank", ok: true },
+    {
+      code: "ERR_ABORTED",
+      capture: "during",
+      origin: "agent",
+      url: "https://example.com",
+      ok: true,
+    },
+    {
+      code: "ERR_ABORTED",
+      capture: "none",
+      origin: "agent",
+      url: "https://example.com",
+      ok: false,
+    },
+    {
+      code: "ERR_ABORTED",
+      capture: "before",
+      origin: "agent",
+      url: "https://example.com",
+      ok: false,
+    },
+    {
+      code: "ERR_FAILED",
+      capture: "during",
+      origin: "agent",
+      url: "https://example.com",
+      ok: false,
+    },
+    {
+      code: "ERR_ABORTED",
+      capture: "during",
+      origin: "human",
+      url: "https://example.com",
+      ok: false,
+    },
+  ] as const) {
+    effectIt.effect(
+      `attachment navigation ${scenario.code}, capture ${scenario.capture}, ${scenario.origin}, page ${scenario.url}`,
+      () =>
+        withManager((manager) =>
+          Effect.gen(function* () {
+            const wc = makeTestPreviewWebContents(vi.fn());
+            Object.assign(wc, {
+              getURL: () => scenario.url,
+              isDevToolsOpened: () => false,
+              reload: vi.fn(),
+            });
+            fromId.mockReturnValue(wc);
+            yield* manager.getBrowserSession();
+            const willDownload = previewSession.on.mock.calls.find(
+              ([event]) => event === "will-download",
+            )![1] as (
+              event: unknown,
+              item: Electron.DownloadItem,
+              source: Electron.WebContents,
+            ) => void;
+            const setSavePath = vi.fn();
+            const capture = () => {
+              const item = Object.assign(new NodeEvents.EventEmitter(), {
+                getFilename: () => "report.csv",
+                getStartTime: () => 1_790_844_530.5,
+                getTotalBytes: () => 100,
+                getReceivedBytes: () => 100,
+                setSavePath,
+                cancel: vi.fn(),
+              });
+              willDownload({}, item as unknown as Electron.DownloadItem, wc);
+              item.emit("done", {}, "completed");
+            };
+            yield* manager.createTab("download-tab");
+            yield* manager.registerWebview("download-tab", wc.id);
+            if (scenario.capture === "before") {
+              yield* manager.refresh("download-tab", "agent");
+              capture();
+            }
+            const rejected = Object.assign(new Error(`${scenario.code} loading attachment`), {
+              code: scenario.code,
+              errno: scenario.code === "ERR_ABORTED" ? -3 : -2,
+            });
+            Object.assign(wc, {
+              loadURL: vi.fn(async () => {
+                if (scenario.capture === "during") capture();
+                throw rejected;
+              }),
+            });
+            const result = yield* Effect.exit(
+              manager.navigate("download-tab", "https://example.com/report.csv", scenario.origin),
+            );
+            if (scenario.ok) {
+              expect(Exit.isSuccess(result)).toBe(true);
+              if (Exit.isFailure(result)) return;
+              expect(result.value).toEqual({
+                url: scenario.url,
+                download: {
+                  fileName: "report.csv",
+                  path: setSavePath.mock.calls[0]![0],
+                  sizeBytes: 100,
+                  state: "started",
+                },
+              });
+            } else {
+              expect(Exit.isFailure(result)).toBe(true);
+              if (Exit.isSuccess(result)) return;
+              expect(Option.getOrThrow(Cause.findErrorOption(result.cause))).toMatchObject({
+                _tag: "PreviewOperationError",
+                operation: "navigate.loadURL",
+                cause: rejected,
+              });
+            }
+          }),
+        ),
+    );
+  }
+
   effectIt.effect("saves downloads from agent-driven pages without a Save dialog", () =>
     withManager((manager) =>
       Effect.gen(function* () {

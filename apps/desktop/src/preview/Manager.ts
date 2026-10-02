@@ -15,6 +15,8 @@ import type {
   DesktopPreviewAutomationStatus,
   DesktopPreviewColorScheme,
   DesktopPreviewNavigationOrigin,
+  DesktopPreviewCapturedDownload,
+  DesktopPreviewNavigationResult,
   DesktopPreviewFavicon,
   DesktopPreviewPointerEvent,
   PreviewAnnotationPayload,
@@ -706,6 +708,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   let downloadCount = 0;
   // Preview pages whose latest input came from an agent action, not the human.
   const agentDrivenWebContents = new WeakSet<Electron.WebContents>();
+  const navigationDownloads = new WeakMap<
+    Electron.WebContents,
+    Array<DesktopPreviewCapturedDownload>
+  >();
   let frameCaptureWindowOpen = true;
   let currentMainWindow: BrowserWindow | undefined;
   let mainWindowCleanupFiber: Fiber.Fiber<void, never> | undefined;
@@ -2532,8 +2538,32 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       );
       return;
     }
-    yield* attemptPromise({ operation: "navigate.loadURL", tabId, webContentsId: wc.id }, () =>
-      wc.loadURL(url),
+    // Only will-download events observed during this loadURL may explain its
+    // abort. Past captures and downloads from other guests cannot hide errors.
+    const downloads: Array<DesktopPreviewCapturedDownload> = [];
+    if (origin === "agent") navigationDownloads.set(wc, downloads);
+    return yield* attemptPromise(
+      { operation: "navigate.loadURL", tabId, webContentsId: wc.id },
+      () => wc.loadURL(url),
+    ).pipe(
+      Effect.as(undefined),
+      Effect.catchTag("PreviewOperationError", (error) => {
+        const cause = error.cause;
+        const aborted =
+          cause instanceof Error &&
+          (("code" in cause && (cause.code === "ERR_ABORTED" || cause.code === -3)) ||
+            ("errno" in cause && cause.errno === -3) ||
+            /\bERR_ABORTED\b/.test(cause.message));
+        const download = downloads[0];
+        return origin === "agent" && aborted && download
+          ? Effect.succeed({ url: wc.getURL() || url, download })
+          : Effect.fail(error);
+      }),
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (navigationDownloads.get(wc) === downloads) navigationDownloads.delete(wc);
+        }),
+      ),
     );
   });
 
@@ -3587,7 +3617,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // same-name downloads in one millisecond from overwriting each other.
       const id = `${Math.round(item.getStartTime() * 1000).toString(36)}-${(downloadCount++).toString(36)}`;
       const fileName = `browser-download-${id}-${path.basename(item.getFilename())}`;
-      capturedDownloads.capture(item, fileName, (error) => {
+      const capturePath = capturedDownloads.capture(item, fileName, (error) => {
         runFork(
           Effect.gen(function* () {
             const tabId = yield* tabIdForWebContents(source.id);
@@ -3606,6 +3636,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           }),
         );
       });
+      const downloads = navigationDownloads.get(source);
+      if (capturePath && downloads && downloads.length === 0)
+        downloads.push({
+          fileName: path.basename(item.getFilename()),
+          path: capturePath,
+          ...(item.getTotalBytes() > 0 ? { sizeBytes: item.getTotalBytes() } : {}),
+          state: "started",
+        });
     };
     session.on("will-download", onDownload);
     yield* Scope.addFinalizer(
@@ -5094,7 +5132,7 @@ export class PreviewManager extends Context.Service<
       tabId: string,
       url: string,
       origin: DesktopPreviewNavigationOrigin,
-    ) => Effect.Effect<void, PreviewManagerError>;
+    ) => Effect.Effect<DesktopPreviewNavigationResult, PreviewManagerError>;
     readonly goBack: (
       tabId: string,
       origin: DesktopPreviewNavigationOrigin,
