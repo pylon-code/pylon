@@ -304,39 +304,39 @@ if (context.update?.status === "pending") {
 describe("directory durability", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  for (const stage of ["open", "sync"] as const) {
-    for (const platform of ["win32", "darwin", "linux"] as const) {
-      it(`handles ${stage} EPERM only on Windows (${platform})`, async () => {
-        const denied = Object.assign(new Error("directory handle denied"), { code: "EPERM" });
-        const open = vi.mocked(NodeFSP.open);
-        if (stage === "open") {
-          open.mockRejectedValueOnce(denied);
-        } else {
-          const directory = await NodeFSP.mkdtemp(
-            NodePath.join(NodeOS.tmpdir(), "pylon-directory-sync-"),
-          );
-          const fixture = NodePath.join(directory, "handle-fixture");
-          await NodeFSP.writeFile(fixture, "");
-          const handle = await NodeFSP.open(fixture, "r+");
-          const close = vi.spyOn(handle, "close");
-          vi.spyOn(handle, "sync").mockRejectedValueOnce(denied);
-          open.mockResolvedValueOnce(handle);
-          try {
-            const operation = syncDirectory(directory, platform);
-            if (platform === "win32") await expect(operation).resolves.toBeUndefined();
-            else await expect(operation).rejects.toBe(denied);
-            expect(close).toHaveBeenCalledOnce();
-          } finally {
-            await NodeFSP.rm(directory, { recursive: true });
-          }
-          return;
-        }
-        const operation = syncDirectory("unused-directory", platform);
+  it.each(
+    (["open", "sync"] as const).flatMap((stage) =>
+      (["win32", "darwin", "linux"] as const).map((platform) => ({ stage, platform })),
+    ),
+  )("handles $stage EPERM only on Windows ($platform)", async ({ stage, platform }) => {
+    const denied = Object.assign(new Error("directory handle denied"), { code: "EPERM" });
+    const open = vi.mocked(NodeFSP.open);
+    if (stage === "open") {
+      open.mockRejectedValueOnce(denied);
+    } else {
+      const directory = await NodeFSP.mkdtemp(
+        NodePath.join(NodeOS.tmpdir(), "pylon-directory-sync-"),
+      );
+      const fixture = NodePath.join(directory, "handle-fixture");
+      await NodeFSP.writeFile(fixture, "");
+      const handle = await NodeFSP.open(fixture, "r+");
+      const close = vi.spyOn(handle, "close");
+      vi.spyOn(handle, "sync").mockRejectedValueOnce(denied);
+      open.mockResolvedValueOnce(handle);
+      try {
+        const operation = syncDirectory(directory, platform);
         if (platform === "win32") await expect(operation).resolves.toBeUndefined();
         else await expect(operation).rejects.toBe(denied);
-      });
+        expect(close).toHaveBeenCalledOnce();
+      } finally {
+        await NodeFSP.rm(directory, { recursive: true });
+      }
+      return;
     }
-  }
+    const operation = syncDirectory("unused-directory", platform);
+    if (platform === "win32") await expect(operation).resolves.toBeUndefined();
+    else await expect(operation).rejects.toBe(denied);
+  });
 
   it("preserves other directory failures on Windows", async () => {
     const failure = Object.assign(new Error("storage failed"), { code: "EIO" });

@@ -83,74 +83,70 @@ it.effect("strips credentials on signed CDN redirects and streams video ranges",
   );
 });
 
-for (const location of [
+it.effect.each([
   "https://127.0.0.1/private",
   "https://internal.example/private",
   "http://raw.githubusercontent.com/x",
   "https://raw.githubusercontent.com:8443/x",
   "https://[",
   "https://user:password@raw.githubusercontent.com/x",
-]) {
-  it.effect(`refuses an unsafe media redirect: ${location}`, () => {
-    let requests = 0;
-    return githubMediaResponse(asset, {}).pipe(
-      Effect.tap((response) =>
-        Effect.sync(() => {
-          expect(response.status).toBe(502);
-          expect(requests).toBe(1);
-        }),
-      ),
-      Effect.provide(github),
-      Effect.provideService(
-        HttpClient.HttpClient,
-        HttpClient.make((request) => {
-          requests++;
-          return Effect.succeed(
-            HttpClientResponse.fromWeb(
-              request,
-              new Response(null, { status: 302, headers: { location } }),
-            ),
-          );
-        }),
-      ),
-      Effect.scoped,
-    );
-  });
-}
+])("refuses an unsafe media redirect: %s", (location) => {
+  let requests = 0;
+  return githubMediaResponse(asset, {}).pipe(
+    Effect.tap((response) =>
+      Effect.sync(() => {
+        expect(response.status).toBe(502);
+        expect(requests).toBe(1);
+      }),
+    ),
+    Effect.provide(github),
+    Effect.provideService(
+      HttpClient.HttpClient,
+      HttpClient.make((request) => {
+        requests++;
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(null, { status: 302, headers: { location } }),
+          ),
+        );
+      }),
+    ),
+    Effect.scoped,
+  );
+});
 
-for (const scenario of [
+it.effect.each([
   { type: "text/html", status: 200, expected: 415 },
   { type: "image/svg+xml", status: 200, expected: 200 },
   { type: "text/html", status: 404, expected: 404 },
   { type: "text/html", status: 503, expected: 502 },
-]) {
-  it.effect(`handles media content type ${scenario.type} and status ${scenario.status}`, () =>
-    githubMediaResponse(asset, {}).pipe(
-      Effect.tap((response) =>
-        Effect.sync(() => {
-          expect(response.status).toBe(scenario.expected);
-          expect(response.headers["x-content-type-options"]).toBe("nosniff");
-          if (scenario.type === "image/svg+xml")
-            expect(response.headers["content-security-policy"]).toContain("sandbox");
-          else expect(response.headers["content-length"]).toBeUndefined();
-        }),
-      ),
-      Effect.provide(github),
-      Effect.provideService(
-        HttpClient.HttpClient,
-        HttpClient.make((request) =>
-          Effect.succeed(
-            HttpClientResponse.fromWeb(
-              request,
-              new Response(null, {
-                status: scenario.status,
-                headers: { "content-type": scenario.type, "content-length": "200" },
-              }),
-            ),
+])("handles media content type $type and status $status", (scenario) =>
+  githubMediaResponse(asset, {}).pipe(
+    Effect.tap((response) =>
+      Effect.sync(() => {
+        expect(response.status).toBe(scenario.expected);
+        expect(response.headers["x-content-type-options"]).toBe("nosniff");
+        if (scenario.type === "image/svg+xml")
+          expect(response.headers["content-security-policy"]).toContain("sandbox");
+        else expect(response.headers["content-length"]).toBeUndefined();
+      }),
+    ),
+    Effect.provide(github),
+    Effect.provideService(
+      HttpClient.HttpClient,
+      HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(null, {
+              status: scenario.status,
+              headers: { "content-type": scenario.type, "content-length": "200" },
+            }),
           ),
         ),
       ),
-      Effect.scoped,
     ),
-  );
-}
+    Effect.scoped,
+  ),
+);

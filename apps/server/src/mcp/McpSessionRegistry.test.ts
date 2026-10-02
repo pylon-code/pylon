@@ -199,8 +199,9 @@ it.effect("keeps the current exact credential when retired issue and cleanup arr
   }),
 );
 
-for (const action of ["thread", "all", "replace", "expire"] as const) {
-  it.effect(`retires Cua credential IDs on ${action}`, () =>
+it.effect.each(["thread", "all", "replace", "expire"] as const)(
+  "retires Cua credential IDs on %s",
+  (action) =>
     Effect.gen(function* () {
       let timestamp = 1000;
       const retired: string[] = [];
@@ -241,5 +242,4 @@ for (const action of ["thread", "all", "replace", "expire"] as const) {
       expect(retired).toContain(first.config.providerSessionId);
       expect(yield* registry.resolve(oldToken)).toBeUndefined();
     }),
-  );
-}
+);

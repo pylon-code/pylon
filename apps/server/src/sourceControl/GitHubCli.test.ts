@@ -365,8 +365,9 @@ describe("GitHubCli.listPullRequestsByHead", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  for (const failure of ["scope", "decode", "partial"] as const) {
-    it.effect(`falls back for unanswered heads after a ${failure} batch response`, () =>
+  it.effect.each(["scope", "decode", "partial"] as const)(
+    "falls back for unanswered heads after a %s batch response",
+    (failure) =>
       Effect.gen(function* () {
         const cliHeads: string[] = [];
         let documents = 0;
@@ -430,8 +431,7 @@ describe("GitHubCli.listPullRequestsByHead", () => {
           failure === "partial" ? ["feature/b"] : ["feature/a", "feature/b"],
         );
       }).pipe(Effect.provide(layer)),
-    );
-  }
+  );
 
   it.effect("asks gh pr list when gh could read another repository", () =>
     Effect.gen(function* () {

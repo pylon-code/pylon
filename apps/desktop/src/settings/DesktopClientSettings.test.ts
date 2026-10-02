@@ -158,58 +158,56 @@ describe("DesktopClientSettings", () => {
     ),
   );
 
-  for (const failure of [
+  it.effect.each([
     { label: "permission", reason: "PermissionDenied" },
     { label: "I/O", reason: "Unknown" },
-  ] as const) {
-    it.effect(`preserves saved preferences across ${failure.label} read failures and retries`, () =>
-      withClientSettings(
-        Effect.gen(function* () {
-          const environment = yield* DesktopEnvironment.DesktopEnvironment;
-          const fileSystem = yield* FileSystem.FileSystem;
-          const settings = yield* DesktopClientSettings.DesktopClientSettings;
-          const savedSettings = {
-            ...clientSettings,
-            onboardingCompletedAt: "2026-09-05T12:00:00.000Z",
-          };
-          yield* settings.set(savedSettings);
-          const savedContents = yield* fileSystem.readFileString(environment.clientSettingsPath);
-          const cause = PlatformError.systemError({
-            _tag: failure.reason,
-            module: "FileSystem",
-            method: "readFileString",
-            pathOrDescriptor: environment.clientSettingsPath,
-          });
-          let failRead = true;
-          const retryableSettings = yield* DesktopClientSettings.make.pipe(
-            Effect.provideService(
-              FileSystem.FileSystem,
-              FileSystem.FileSystem.of({
-                ...fileSystem,
-                readFileString: (path) =>
-                  Effect.suspend(() =>
-                    failRead ? Effect.fail(cause) : fileSystem.readFileString(path),
-                  ),
-              }),
-            ),
-          );
+  ] as const)("preserves saved preferences across $label read failures and retries", (failure) =>
+    withClientSettings(
+      Effect.gen(function* () {
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const settings = yield* DesktopClientSettings.DesktopClientSettings;
+        const savedSettings = {
+          ...clientSettings,
+          onboardingCompletedAt: "2026-09-05T12:00:00.000Z",
+        };
+        yield* settings.set(savedSettings);
+        const savedContents = yield* fileSystem.readFileString(environment.clientSettingsPath);
+        const cause = PlatformError.systemError({
+          _tag: failure.reason,
+          module: "FileSystem",
+          method: "readFileString",
+          pathOrDescriptor: environment.clientSettingsPath,
+        });
+        let failRead = true;
+        const retryableSettings = yield* DesktopClientSettings.make.pipe(
+          Effect.provideService(
+            FileSystem.FileSystem,
+            FileSystem.FileSystem.of({
+              ...fileSystem,
+              readFileString: (path) =>
+                Effect.suspend(() =>
+                  failRead ? Effect.fail(cause) : fileSystem.readFileString(path),
+                ),
+            }),
+          ),
+        );
 
-          const error = yield* retryableSettings.get.pipe(Effect.flip);
-          assert.instanceOf(error, DesktopClientSettings.DesktopClientSettingsReadError);
-          assert.equal(error.operation, "read-file");
-          assert.equal(error.path, environment.clientSettingsPath);
-          assert.strictEqual(error.cause, cause);
-          assert.equal(
-            yield* fileSystem.readFileString(environment.clientSettingsPath),
-            savedContents,
-          );
+        const error = yield* retryableSettings.get.pipe(Effect.flip);
+        assert.instanceOf(error, DesktopClientSettings.DesktopClientSettingsReadError);
+        assert.equal(error.operation, "read-file");
+        assert.equal(error.path, environment.clientSettingsPath);
+        assert.strictEqual(error.cause, cause);
+        assert.equal(
+          yield* fileSystem.readFileString(environment.clientSettingsPath),
+          savedContents,
+        );
 
-          failRead = false;
-          assert.deepEqual(yield* retryableSettings.get, Option.some(savedSettings));
-        }),
-      ),
-    );
-  }
+        failRead = false;
+        assert.deepEqual(yield* retryableSettings.get, Option.some(savedSettings));
+      }),
+    ),
+  );
 
   it.effect("reports the failed client settings write operation and path", () =>
     withClientSettings(
@@ -312,37 +310,35 @@ describe("DesktopClientSettings", () => {
     ),
   );
 
-  for (const document of [
+  it.effect.each([
     { label: "direct", contents: '{"fontSizeCode":"large","timestampFormat":"12-hour"}' },
     {
       label: "legacy",
       contents: '{"settings":{"fontSizeCode":"large","timestampFormat":"12-hour"}}',
     },
-  ]) {
-    it.effect(`keeps readable ${document.label} settings beside an undecodable value`, () =>
-      withClientSettings(
-        Effect.gen(function* () {
-          const environment = yield* DesktopEnvironment.DesktopEnvironment;
-          const fileSystem = yield* FileSystem.FileSystem;
-          const settings = yield* DesktopClientSettings.DesktopClientSettings;
-          yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
-          yield* fileSystem.writeFileString(environment.clientSettingsPath, document.contents);
+  ])("keeps readable $label settings beside an undecodable value", (document) =>
+    withClientSettings(
+      Effect.gen(function* () {
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const settings = yield* DesktopClientSettings.DesktopClientSettings;
+        yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+        yield* fileSystem.writeFileString(environment.clientSettingsPath, document.contents);
 
-          assert.deepEqual(
-            yield* settings.get,
-            Option.some({
-              ...(yield* decodeClientSettingsJson("{}")),
-              timestampFormat: "12-hour" as const,
-            }),
-          );
-          assert.equal(
-            yield* fileSystem.readFileString(environment.clientSettingsPath),
-            document.contents,
-          );
-        }),
-      ),
-    );
-  }
+        assert.deepEqual(
+          yield* settings.get,
+          Option.some({
+            ...(yield* decodeClientSettingsJson("{}")),
+            timestampFormat: "12-hour" as const,
+          }),
+        );
+        assert.equal(
+          yield* fileSystem.readFileString(environment.clientSettingsPath),
+          document.contents,
+        );
+      }),
+    ),
+  );
 
   it.effect("leaves an undecodable value in the file until that setting changes", () =>
     withClientSettings(

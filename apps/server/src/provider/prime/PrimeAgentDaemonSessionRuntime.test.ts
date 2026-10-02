@@ -1504,153 +1504,30 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
-  for (const role of ["toolResult", "assistant"] as const) {
-    it.effect(
-      `suppresses only exact ${role} completions already published in a correlated resync`,
-      () =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const test = fixture({
-              correlatedPromptLifecycleCapability: true,
-              rawSnapshot: { ...snapshot(), promptLifecycles: { records: [], expired: [] } },
-            });
-            const runtime = yield* test.make();
-            const received = yield* collectEvents(runtime, 7).pipe(
-              Effect.forkChild({ startImmediately: true }),
-            );
-            const result =
-              role === "assistant"
-                ? terminalAssistantMessage("recovered result", 2)
-                : {
-                    role: "toolResult",
-                    toolCallId: "tool-recovered",
-                    toolName: "read",
-                    content: [{ type: "text", text: "recovered result" }],
-                    isError: false,
-                    timestamp: 2,
-                  };
-            test.setCorrelatedPromptLifecycleProof(false);
-            yield* Effect.promise(() =>
-              test.emit({ type: "connection_status", status: "reconnecting" }),
-            );
-            test.setCorrelatedPromptLifecycleProof(true);
-            yield* Effect.promise(() =>
-              test.emit({
-                type: "session_resynced",
-                snapshot: {
-                  ...snapshot(9),
-                  state: { ...snapshot(9).state, messageCount: 1 },
-                  messages: [result],
-                  promptLifecycles: { records: [], expired: [] },
-                  replay: {
-                    status: "complete",
-                    toSequence: 9,
-                    toCursor: { generation: "daemon-1", sequence: 9 },
-                  },
-                },
-              }),
-            );
-            expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
-            yield* Effect.promise(() =>
-              test.emit({ type: "connection_status", status: "connected" }),
-            );
-            yield* Effect.promise(() =>
-              test.emit({
-                type: "session_event",
-                attribution: { scope: "session" },
-                meta: { cursor: { generation: "daemon-1", sequence: 10 } },
-                event: { type: "message_end", promptCorrelationId: null, message: result },
-              }),
-            );
-            yield* Effect.promise(() =>
-              test.emit({
-                type: "session_event",
-                attribution: { scope: "session" },
-                meta: { cursor: { generation: "daemon-1", sequence: 11 } },
-                event: {
-                  type: "message_end",
-                  promptCorrelationId: null,
-                  message: {
-                    ...result,
-                    timestamp: 2,
-                    content: [{ type: "text", text: "different result" }],
-                  },
-                },
-              }),
-            );
-            yield* Effect.promise(() =>
-              test.emit({
-                type: "session_event",
-                attribution: { scope: "session" },
-                event: {
-                  type: "message_end",
-                  promptCorrelationId: null,
-                  message: { ...result, timestamp: 3 },
-                },
-              }),
-            );
-            yield* Effect.promise(() =>
-              test.emit({
-                type: "session_event",
-                attribution: { scope: "session" },
-                event: {
-                  type: "message_end",
-                  promptCorrelationId: null,
-                  message: terminalAssistantMessage(),
-                },
-              }),
-            );
-            const events = yield* Fiber.join(received);
-            const completed = events.filter((event) => event._tag === "MessageCompleted");
-            expect(completed).toHaveLength(3);
-            expect(completed[0]).toMatchObject({
-              message: { role, text: "different result", timestamp: 2 },
-            });
-            expect(completed[1]).toMatchObject({
-              message: { role, text: "recovered result", timestamp: 3 },
-            });
-            expect(completed[2]).toMatchObject({ message: { role: "assistant" } });
-          }),
-        ),
-    );
-  }
-
-  for (const variant of [
-    "replayed",
-    "usage updated",
-    "different completion",
-    "new prompt",
-    "long stream",
-    "overflow",
-  ] as const) {
-    it.effect(`reconciles a delayed assistant segment after a snapshot: ${variant}`, () =>
+  it.effect.each(["toolResult", "assistant"] as const)(
+    "suppresses only exact %s completions already published in a correlated resync",
+    (role) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const correlationId = "recovered-prompt";
-          const lifecycle = promptLifecycle(correlationId, "delivered", 2);
-          // A streamed reply arrives as one delta per token chunk; the old
-          // pubsub-sized cap (256) closed the session mid-reply.
-          const longStreamDeltas = PRIME_AGENT_EVENT_BUFFER_CAPACITY * 4;
-          const overflowLimit = 8;
           const test = fixture({
             correlatedPromptLifecycleCapability: true,
             rawSnapshot: { ...snapshot(), promptLifecycles: { records: [], expired: [] } },
-            ...(variant === "overflow" ? { provisionalSegmentEventLimit: overflowLimit } : {}),
           });
           const runtime = yield* test.make();
-          const isReplay = variant === "replayed" || variant === "usage updated";
-          const expectedCount =
-            variant === "overflow"
-              ? 5
-              : variant === "long stream"
-                ? 6 + longStreamDeltas
-                : isReplay
-                  ? 7
-                  : 10;
-          const received = yield* collectEvents(runtime, expectedCount).pipe(
+          const received = yield* collectEvents(runtime, 7).pipe(
             Effect.forkChild({ startImmediately: true }),
           );
-          const recovered = terminalAssistantMessage("recovered result", 2);
+          const result =
+            role === "assistant"
+              ? terminalAssistantMessage("recovered result", 2)
+              : {
+                  role: "toolResult",
+                  toolCallId: "tool-recovered",
+                  toolName: "read",
+                  content: [{ type: "text", text: "recovered result" }],
+                  isError: false,
+                  timestamp: 2,
+                };
           test.setCorrelatedPromptLifecycleProof(false);
           yield* Effect.promise(() =>
             test.emit({ type: "connection_status", status: "reconnecting" }),
@@ -1662,19 +1539,8 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
               snapshot: {
                 ...snapshot(9),
                 state: { ...snapshot(9).state, messageCount: 1 },
-                messages: [
-                  variant === "usage updated"
-                    ? {
-                        ...recovered,
-                        usage: {
-                          ...recovered.usage,
-                          totalTokens: 200,
-                          cost: { ...recovered.usage.cost, total: 2 },
-                        },
-                      }
-                    : recovered,
-                ],
-                promptLifecycles: { records: [lifecycle], expired: [] },
+                messages: [result],
+                promptLifecycles: { records: [], expired: [] },
                 replay: {
                   status: "complete",
                   toSequence: 9,
@@ -1687,115 +1553,242 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           yield* Effect.promise(() =>
             test.emit({ type: "connection_status", status: "connected" }),
           );
-          const attributedId = variant === "new prompt" ? "new-prompt" : correlationId;
-          const emit = (event: Record<string, unknown>) =>
-            Effect.promise(() =>
-              test.emit({
-                type: "session_event",
-                attribution: { scope: "prompt", correlationId: attributedId },
-                event: { ...event, promptCorrelationId: attributedId },
-              }),
-            );
-          yield* emit({ type: "message_start", message: { ...recovered, content: [] } });
-          if (variant === "long stream") {
-            for (let index = 0; index < longStreamDeltas; index += 1) {
-              yield* emit({
-                type: "message_update",
-                message: recovered,
-                assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "r" },
-              });
-            }
-            yield* emit({ type: "message_end", message: { ...recovered, timestamp: 3 } });
-            const events = yield* Fiber.join(received);
-            expect(events.filter((event) => event._tag === "SessionClosed")).toHaveLength(0);
-            expect(events.filter((event) => event._tag === "AssistantStream")).toHaveLength(
-              longStreamDeltas,
-            );
-            expect(events.at(-1)).toMatchObject({
-              _tag: "MessageCompleted",
-              message: expect.objectContaining({ text: "recovered result" }),
-            });
-            return;
-          }
-          if (variant === "overflow") {
-            for (let index = 0; index < overflowLimit; index += 1) {
-              yield* emit({
-                type: "message_update",
-                message: recovered,
-                assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "r" },
-              });
-            }
-            expect(yield* Fiber.join(received)).toEqual([
-              expect.objectContaining({ _tag: "SessionResynced" }),
-              expect.objectContaining({ _tag: "ConnectionStatus" }),
-              expect.objectContaining({ _tag: "SessionResynced" }),
-              expect.objectContaining({ _tag: "ConnectionStatus" }),
-              {
-                _tag: "SessionClosed",
-                error: "Prime Agent event ingress exceeded its bounded capacity.",
-                diagnostic: expect.objectContaining({ reason: "ingress-capacity" }),
-              },
-            ]);
-            return;
-          }
-          yield* emit({
-            type: "message_update",
-            message: recovered,
-            assistantMessageEvent: {
-              type: "text_delta",
-              contentIndex: 0,
-              delta: "recovered result",
-            },
-          });
-          yield* emit({
-            type: "message_end",
-            message:
-              variant === "different completion" ? { ...recovered, timestamp: 3 } : recovered,
-          });
-          const next = terminalAssistantMessage("next genuine result", 4);
-          yield* emit({ type: "message_start", message: { ...next, content: [] } });
-          yield* emit({
-            type: "message_update",
-            message: next,
-            assistantMessageEvent: {
-              type: "text_delta",
-              contentIndex: 0,
-              delta: "next genuine result",
-            },
-          });
-          yield* emit({ type: "message_end", message: next });
-          const events = yield* Fiber.join(received);
-          const output = events.filter(
-            (event) =>
-              event._tag === "MessageStarted" ||
-              event._tag === "AssistantStream" ||
-              event._tag === "MessageCompleted",
-          );
-          const expected = [
-            expect.objectContaining({ _tag: "MessageStarted" }),
-            expect.objectContaining({ _tag: "AssistantStream", delta: "next genuine result" }),
-            expect.objectContaining({
-              _tag: "MessageCompleted",
-              message: expect.objectContaining({ text: "next genuine result" }),
+          yield* Effect.promise(() =>
+            test.emit({
+              type: "session_event",
+              attribution: { scope: "session" },
+              meta: { cursor: { generation: "daemon-1", sequence: 10 } },
+              event: { type: "message_end", promptCorrelationId: null, message: result },
             }),
-          ];
-          expect(output).toEqual(
-            isReplay
-              ? expected
-              : [
-                  expect.objectContaining({ _tag: "MessageStarted" }),
-                  expect.objectContaining({ _tag: "AssistantStream", delta: "recovered result" }),
-                  expect.objectContaining({
-                    _tag: "MessageCompleted",
-                    message: expect.objectContaining({ text: "recovered result" }),
-                  }),
-                  ...expected,
-                ],
           );
+          yield* Effect.promise(() =>
+            test.emit({
+              type: "session_event",
+              attribution: { scope: "session" },
+              meta: { cursor: { generation: "daemon-1", sequence: 11 } },
+              event: {
+                type: "message_end",
+                promptCorrelationId: null,
+                message: {
+                  ...result,
+                  timestamp: 2,
+                  content: [{ type: "text", text: "different result" }],
+                },
+              },
+            }),
+          );
+          yield* Effect.promise(() =>
+            test.emit({
+              type: "session_event",
+              attribution: { scope: "session" },
+              event: {
+                type: "message_end",
+                promptCorrelationId: null,
+                message: { ...result, timestamp: 3 },
+              },
+            }),
+          );
+          yield* Effect.promise(() =>
+            test.emit({
+              type: "session_event",
+              attribution: { scope: "session" },
+              event: {
+                type: "message_end",
+                promptCorrelationId: null,
+                message: terminalAssistantMessage(),
+              },
+            }),
+          );
+          const events = yield* Fiber.join(received);
+          const completed = events.filter((event) => event._tag === "MessageCompleted");
+          expect(completed).toHaveLength(3);
+          expect(completed[0]).toMatchObject({
+            message: { role, text: "different result", timestamp: 2 },
+          });
+          expect(completed[1]).toMatchObject({
+            message: { role, text: "recovered result", timestamp: 3 },
+          });
+          expect(completed[2]).toMatchObject({ message: { role: "assistant" } });
         }),
       ),
-    );
-  }
+  );
+
+  it.effect.each([
+    "replayed",
+    "usage updated",
+    "different completion",
+    "new prompt",
+    "long stream",
+    "overflow",
+  ] as const)("reconciles a delayed assistant segment after a snapshot: %s", (variant) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const correlationId = "recovered-prompt";
+        const lifecycle = promptLifecycle(correlationId, "delivered", 2);
+        // A streamed reply arrives as one delta per token chunk; the old
+        // pubsub-sized cap (256) closed the session mid-reply.
+        const longStreamDeltas = PRIME_AGENT_EVENT_BUFFER_CAPACITY * 4;
+        const overflowLimit = 8;
+        const test = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: { ...snapshot(), promptLifecycles: { records: [], expired: [] } },
+          ...(variant === "overflow" ? { provisionalSegmentEventLimit: overflowLimit } : {}),
+        });
+        const runtime = yield* test.make();
+        const isReplay = variant === "replayed" || variant === "usage updated";
+        const expectedCount =
+          variant === "overflow"
+            ? 5
+            : variant === "long stream"
+              ? 6 + longStreamDeltas
+              : isReplay
+                ? 7
+                : 10;
+        const received = yield* collectEvents(runtime, expectedCount).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const recovered = terminalAssistantMessage("recovered result", 2);
+        test.setCorrelatedPromptLifecycleProof(false);
+        yield* Effect.promise(() =>
+          test.emit({ type: "connection_status", status: "reconnecting" }),
+        );
+        test.setCorrelatedPromptLifecycleProof(true);
+        yield* Effect.promise(() =>
+          test.emit({
+            type: "session_resynced",
+            snapshot: {
+              ...snapshot(9),
+              state: { ...snapshot(9).state, messageCount: 1 },
+              messages: [
+                variant === "usage updated"
+                  ? {
+                      ...recovered,
+                      usage: {
+                        ...recovered.usage,
+                        totalTokens: 200,
+                        cost: { ...recovered.usage.cost, total: 2 },
+                      },
+                    }
+                  : recovered,
+              ],
+              promptLifecycles: { records: [lifecycle], expired: [] },
+              replay: {
+                status: "complete",
+                toSequence: 9,
+                toCursor: { generation: "daemon-1", sequence: 9 },
+              },
+            },
+          }),
+        );
+        expect(runtime.resolveReconnectSnapshot(1, true)).toBe(true);
+        yield* Effect.promise(() => test.emit({ type: "connection_status", status: "connected" }));
+        const attributedId = variant === "new prompt" ? "new-prompt" : correlationId;
+        const emit = (event: Record<string, unknown>) =>
+          Effect.promise(() =>
+            test.emit({
+              type: "session_event",
+              attribution: { scope: "prompt", correlationId: attributedId },
+              event: { ...event, promptCorrelationId: attributedId },
+            }),
+          );
+        yield* emit({ type: "message_start", message: { ...recovered, content: [] } });
+        if (variant === "long stream") {
+          for (let index = 0; index < longStreamDeltas; index += 1) {
+            yield* emit({
+              type: "message_update",
+              message: recovered,
+              assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "r" },
+            });
+          }
+          yield* emit({ type: "message_end", message: { ...recovered, timestamp: 3 } });
+          const events = yield* Fiber.join(received);
+          expect(events.filter((event) => event._tag === "SessionClosed")).toHaveLength(0);
+          expect(events.filter((event) => event._tag === "AssistantStream")).toHaveLength(
+            longStreamDeltas,
+          );
+          expect(events.at(-1)).toMatchObject({
+            _tag: "MessageCompleted",
+            message: expect.objectContaining({ text: "recovered result" }),
+          });
+          return;
+        }
+        if (variant === "overflow") {
+          for (let index = 0; index < overflowLimit; index += 1) {
+            yield* emit({
+              type: "message_update",
+              message: recovered,
+              assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "r" },
+            });
+          }
+          expect(yield* Fiber.join(received)).toEqual([
+            expect.objectContaining({ _tag: "SessionResynced" }),
+            expect.objectContaining({ _tag: "ConnectionStatus" }),
+            expect.objectContaining({ _tag: "SessionResynced" }),
+            expect.objectContaining({ _tag: "ConnectionStatus" }),
+            {
+              _tag: "SessionClosed",
+              error: "Prime Agent event ingress exceeded its bounded capacity.",
+              diagnostic: expect.objectContaining({ reason: "ingress-capacity" }),
+            },
+          ]);
+          return;
+        }
+        yield* emit({
+          type: "message_update",
+          message: recovered,
+          assistantMessageEvent: {
+            type: "text_delta",
+            contentIndex: 0,
+            delta: "recovered result",
+          },
+        });
+        yield* emit({
+          type: "message_end",
+          message: variant === "different completion" ? { ...recovered, timestamp: 3 } : recovered,
+        });
+        const next = terminalAssistantMessage("next genuine result", 4);
+        yield* emit({ type: "message_start", message: { ...next, content: [] } });
+        yield* emit({
+          type: "message_update",
+          message: next,
+          assistantMessageEvent: {
+            type: "text_delta",
+            contentIndex: 0,
+            delta: "next genuine result",
+          },
+        });
+        yield* emit({ type: "message_end", message: next });
+        const events = yield* Fiber.join(received);
+        const output = events.filter(
+          (event) =>
+            event._tag === "MessageStarted" ||
+            event._tag === "AssistantStream" ||
+            event._tag === "MessageCompleted",
+        );
+        const expected = [
+          expect.objectContaining({ _tag: "MessageStarted" }),
+          expect.objectContaining({ _tag: "AssistantStream", delta: "next genuine result" }),
+          expect.objectContaining({
+            _tag: "MessageCompleted",
+            message: expect.objectContaining({ text: "next genuine result" }),
+          }),
+        ];
+        expect(output).toEqual(
+          isReplay
+            ? expected
+            : [
+                expect.objectContaining({ _tag: "MessageStarted" }),
+                expect.objectContaining({ _tag: "AssistantStream", delta: "recovered result" }),
+                expect.objectContaining({
+                  _tag: "MessageCompleted",
+                  message: expect.objectContaining({ text: "recovered result" }),
+                }),
+                ...expected,
+              ],
+        );
+      }),
+    ),
+  );
 
   it.effect("blocks correlated commands until the reconnect snapshot is adapter-settled", () =>
     Effect.scoped(
@@ -2222,7 +2215,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
-  for (const variant of [
+  it.effect.each([
     "delivered",
     "default-cancel",
     "completed",
@@ -2233,125 +2226,123 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     "correlated-proof-lost",
     "abort-response-invalid",
     "abort-proof-lost",
-  ] as const) {
-    it.effect(`interrupts only the proved delivered owned session: ${variant}`, () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const correlationId = "5cfb76d6-9765-4fd0-883b-d60fbed2f7b8";
-          const phase =
-            variant === "completed"
-              ? "completed"
-              : variant === "cancelled"
-                ? "cancelled"
-                : "delivered";
-          const lifecycle = promptLifecycle(correlationId, phase, 2);
-          let ownedProofCurrent = true;
-          let retireCorrelatedProof = () => {};
-          const test = fixture({
-            correlatedPromptLifecycleCapability: true,
-            rawSnapshot: { ...snapshot(), promptLifecycles: { records: [lifecycle], expired: [] } },
-            ownedSessionContractProofImpl: () =>
-              ownedProofCurrent
+  ] as const)("interrupts only the proved delivered owned session: %s", (variant) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const correlationId = "5cfb76d6-9765-4fd0-883b-d60fbed2f7b8";
+        const phase =
+          variant === "completed"
+            ? "completed"
+            : variant === "cancelled"
+              ? "cancelled"
+              : "delivered";
+        const lifecycle = promptLifecycle(correlationId, phase, 2);
+        let ownedProofCurrent = true;
+        let retireCorrelatedProof = () => {};
+        const test = fixture({
+          correlatedPromptLifecycleCapability: true,
+          rawSnapshot: { ...snapshot(), promptLifecycles: { records: [lifecycle], expired: [] } },
+          ownedSessionContractProofImpl: () =>
+            ownedProofCurrent
+              ? {
+                  feature: "caller_owned_session_environment_cleanup_v1",
+                  status: "attached",
+                  daemon: {
+                    protocolName: "prime-agent.daemon",
+                    protocolVersion: 7,
+                    schemaRevision: 30,
+                    appVersion: "0.7.1",
+                    supervisorGeneration: "supervisor-1",
+                    transportGeneration: 0,
+                  },
+                }
+              : undefined,
+          cancelPromptLifecycleImpl: () => {
+            if (variant === "owned-proof-lost") ownedProofCurrent = false;
+            if (variant === "correlated-proof-lost") retireCorrelatedProof();
+            return Promise.resolve(
+              variant === "unknown"
                 ? {
-                    feature: "caller_owned_session_environment_cleanup_v1",
-                    status: "attached",
-                    daemon: {
-                      protocolName: "prime-agent.daemon",
-                      protocolVersion: 7,
-                      schemaRevision: 30,
-                      appVersion: "0.7.1",
-                      supervisorGeneration: "supervisor-1",
-                      transportGeneration: 0,
-                    },
+                    status: "unknown",
+                    ownershipCrossed: "unknown",
+                    deliveryCrossed: "unknown",
                   }
-                : undefined,
-            cancelPromptLifecycleImpl: () => {
-              if (variant === "owned-proof-lost") ownedProofCurrent = false;
-              if (variant === "correlated-proof-lost") retireCorrelatedProof();
-              return Promise.resolve(
-                variant === "unknown"
-                  ? {
-                      status: "unknown",
-                      ownershipCrossed: "unknown",
-                      deliveryCrossed: "unknown",
-                    }
-                  : {
-                      status: variant === "cancelled" ? "cancelled" : "too_late",
-                      ownershipCrossed: true,
-                      deliveryCrossed: lifecycle.deliveryCrossed,
-                      lifecycle:
-                        variant === "wrong-owner"
-                          ? { ...lifecycle, correlationId: "another-owner" }
-                          : lifecycle,
-                    },
-              );
-            },
-            interruptOwnedSessionImpl: () => {
-              if (variant === "abort-proof-lost") retireCorrelatedProof();
-              return Promise.resolve(
-                variant === "abort-response-invalid"
-                  ? {
-                      type: "response",
-                      command: "abort_and_clear_queue",
-                      success: false,
-                    }
-                  : {
-                      type: "response",
-                      command: "abort_and_clear_queue",
-                      success: true,
-                      data: { steering: [], followUp: [] },
-                    },
-              );
-            },
+                : {
+                    status: variant === "cancelled" ? "cancelled" : "too_late",
+                    ownershipCrossed: true,
+                    deliveryCrossed: lifecycle.deliveryCrossed,
+                    lifecycle:
+                      variant === "wrong-owner"
+                        ? { ...lifecycle, correlationId: "another-owner" }
+                        : lifecycle,
+                  },
+            );
+          },
+          interruptOwnedSessionImpl: () => {
+            if (variant === "abort-proof-lost") retireCorrelatedProof();
+            return Promise.resolve(
+              variant === "abort-response-invalid"
+                ? {
+                    type: "response",
+                    command: "abort_and_clear_queue",
+                    success: false,
+                  }
+                : {
+                    type: "response",
+                    command: "abort_and_clear_queue",
+                    success: true,
+                    data: { steering: [], followUp: [] },
+                  },
+            );
+          },
+        });
+        retireCorrelatedProof = () => test.setCorrelatedPromptLifecycleProof(false);
+        const runtime = yield* test.make();
+        yield* Stream.runDrain(runtime.events).pipe(Effect.forkChild({ startImmediately: true }));
+        const interrupted = runtime.cancelPromptLifecycle(
+          correlationId,
+          variant === "default-cancel" ? undefined : { interruptDelivered: true },
+        );
+        const expectedError = [
+          "wrong-owner",
+          "owned-proof-lost",
+          "correlated-proof-lost",
+          "abort-response-invalid",
+          "abort-proof-lost",
+        ].includes(variant);
+        if (expectedError) {
+          expect(yield* Effect.flip(interrupted)).toMatchObject({ operation: "abort" });
+        } else {
+          expect(yield* interrupted).toMatchObject({
+            status:
+              variant === "cancelled"
+                ? "cancelled"
+                : variant === "unknown"
+                  ? "unknown"
+                  : "too_late",
           });
-          retireCorrelatedProof = () => test.setCorrelatedPromptLifecycleProof(false);
-          const runtime = yield* test.make();
-          yield* Stream.runDrain(runtime.events).pipe(Effect.forkChild({ startImmediately: true }));
-          const interrupted = runtime.cancelPromptLifecycle(
-            correlationId,
-            variant === "default-cancel" ? undefined : { interruptDelivered: true },
-          );
-          const expectedError = [
-            "wrong-owner",
-            "owned-proof-lost",
-            "correlated-proof-lost",
-            "abort-response-invalid",
-            "abort-proof-lost",
-          ].includes(variant);
-          if (expectedError) {
-            expect(yield* Effect.flip(interrupted)).toMatchObject({ operation: "abort" });
-          } else {
-            expect(yield* interrupted).toMatchObject({
-              status:
-                variant === "cancelled"
-                  ? "cancelled"
-                  : variant === "unknown"
-                    ? "unknown"
-                    : "too_late",
-            });
-          }
-          const calls = test.captures.connectionCalls.filter(
-            (call) => call.method === "interruptOwnedSession",
-          );
-          expect(calls).toHaveLength(
-            ["delivered", "abort-response-invalid", "abort-proof-lost"].includes(variant) ? 1 : 0,
-          );
-          if (calls.length > 0) {
-            expect(calls[0]!.args).toEqual([
-              { type: "abort_and_clear_queue", activeSessionId: "active-secret-1" },
-              expect.any(Number),
-              { recoverable: false, recoverAcrossReconnect: false },
-            ]);
-          }
-          expect(
-            test.captures.connectionCalls.filter(
-              (call) => call.method === "abortAndClearQueue" || call.method === "abort",
-            ),
-          ).toEqual([]);
-        }),
-      ),
-    );
-  }
+        }
+        const calls = test.captures.connectionCalls.filter(
+          (call) => call.method === "interruptOwnedSession",
+        );
+        expect(calls).toHaveLength(
+          ["delivered", "abort-response-invalid", "abort-proof-lost"].includes(variant) ? 1 : 0,
+        );
+        if (calls.length > 0) {
+          expect(calls[0]!.args).toEqual([
+            { type: "abort_and_clear_queue", activeSessionId: "active-secret-1" },
+            expect.any(Number),
+            { recoverable: false, recoverAcrossReconnect: false },
+          ]);
+        }
+        expect(
+          test.captures.connectionCalls.filter(
+            (call) => call.method === "abortAndClearQueue" || call.method === "abort",
+          ),
+        ).toEqual([]);
+      }),
+    ),
+  );
 
   it.effect("rejects an awaited correlated cancellation when its proof fence changes", () =>
     Effect.scoped(
@@ -4084,8 +4075,9 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     }),
   );
 
-  for (const reconnect of [false, true]) {
-    it.effect(`marks only live-transport snapshots as ordered (reconnect: ${reconnect})`, () =>
+  it.effect.each([false, true])(
+    "marks only live-transport snapshots as ordered (reconnect: %s)",
+    (reconnect) =>
       Effect.scoped(
         Effect.gen(function* () {
           const test = fixture({
@@ -4119,8 +4111,7 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
           expect(runtime.resolveReconnectSnapshot(reconnect ? 1 : 0, true)).toBe(true);
         }),
       ),
-    );
-  }
+  );
 
   it.effect("does not replace live MCP ownership for an ordinary resync snapshot", () =>
     Effect.scoped(
@@ -12201,75 +12192,73 @@ describe("PrimeAgentDaemonSessionRuntime", () => {
     ),
   );
 
-  for (const variant of [
+  it.effect.each([
     "valid",
     "wrong leaf",
     "wrong session",
     "stale generation",
     "retired during read",
     "unavailable",
-  ] as const) {
-    it.effect(`fences compaction tree reads: ${variant}`, () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const timestamp = "2026-09-14T12:00:00.000Z";
-          const tree = {
-            leafId: variant === "wrong leaf" ? "foreign" : "c",
-            tree: [
-              {
-                entry: {
-                  id: "a",
-                  parentId: null,
-                  timestamp,
-                  type: "message",
-                  message: { role: "user", content: "before", timestamp: 1 },
-                },
-                children: [
-                  {
-                    entry: {
-                      id: "c",
-                      parentId: "a",
-                      timestamp,
-                      type: "compaction",
-                      summary: "private summary",
-                      tokensBefore: 10,
-                      firstKeptEntryId: "a",
-                    },
-                    children: [],
-                  },
-                ],
+  ] as const)("fences compaction tree reads: %s", (variant) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const timestamp = "2026-09-14T12:00:00.000Z";
+        const tree = {
+          leafId: variant === "wrong leaf" ? "foreign" : "c",
+          tree: [
+            {
+              entry: {
+                id: "a",
+                parentId: null,
+                timestamp,
+                type: "message",
+                message: { role: "user", content: "before", timestamp: 1 },
               },
-            ],
-          };
-          const test = fixture({
-            getSessionTreeImpl:
-              variant === "unavailable"
-                ? undefined
-                : async () => {
-                    if (variant === "retired during read")
-                      await test.emit({ type: "connection_status", status: "reconnecting" });
-                    return tree;
+              children: [
+                {
+                  entry: {
+                    id: "c",
+                    parentId: "a",
+                    timestamp,
+                    type: "compaction",
+                    summary: "private summary",
+                    tokensBefore: 10,
+                    firstKeptEntryId: "a",
                   },
-          });
-          const runtime = yield* test.make();
-          if (runtime.getCompactionHistory === undefined) throw new Error("missing history reader");
-          const candidate = {
-            ...runtime.initialSnapshot,
-            state: {
-              ...runtime.initialSnapshot.state,
-              leafId: "c",
-              ...(variant === "wrong session" ? { sessionId: "foreign" } : {}),
+                  children: [],
+                },
+              ],
             },
-            ...(variant === "stale generation" ? { connectionGeneration: 99 } : {}),
-          };
-          const history = yield* runtime.getCompactionHistory(candidate);
-          expect(history !== undefined).toBe(variant === "valid");
-          if (history !== undefined)
-            expect(encodePrivateHistory(history)).not.toContain("private summary");
-        }),
-      ),
-    );
-  }
+          ],
+        };
+        const test = fixture({
+          getSessionTreeImpl:
+            variant === "unavailable"
+              ? undefined
+              : async () => {
+                  if (variant === "retired during read")
+                    await test.emit({ type: "connection_status", status: "reconnecting" });
+                  return tree;
+                },
+        });
+        const runtime = yield* test.make();
+        if (runtime.getCompactionHistory === undefined) throw new Error("missing history reader");
+        const candidate = {
+          ...runtime.initialSnapshot,
+          state: {
+            ...runtime.initialSnapshot.state,
+            leafId: "c",
+            ...(variant === "wrong session" ? { sessionId: "foreign" } : {}),
+          },
+          ...(variant === "stale generation" ? { connectionGeneration: 99 } : {}),
+        };
+        const history = yield* runtime.getCompactionHistory(candidate);
+        expect(history !== undefined).toBe(variant === "valid");
+        if (history !== undefined)
+          expect(encodePrivateHistory(history)).not.toContain("private summary");
+      }),
+    ),
+  );
 
   it.effect("uses argument-free compaction controls and projects only safe state", () =>
     Effect.scoped(
@@ -14525,72 +14514,68 @@ describe("Prime Agent live activity privacy boundary", () => {
     ),
   );
 
-  for (const cleanupFails of [false, true]) {
-    it.effect(
-      `cleans failed creation only with exact owned proof (cleanup fails: ${cleanupFails})`,
-      () =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const root = yield* Effect.acquireRelease(
-              Effect.promise(() =>
-                NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "prime-failed-create-")),
-              ),
-              (directory) =>
-                Effect.promise(() => NodeFSP.rm(directory, { recursive: true, force: true })),
-            );
-            const ownershipStore = new PrimeAgentOwnershipReceiptStore(root, {
-              inspectProcessIdentity: async (pid) => `test:${pid}`,
-            });
-            const side = fixture({
-              ownershipStore,
-              recoveryMode: "create",
-              rawSnapshot: {
-                ...snapshot(),
-                lastEventCursor: { generation: "events-1", sequence: 4 },
+  it.effect.each([false, true])(
+    "cleans failed creation only with exact owned proof (cleanup fails: %s)",
+    (cleanupFails) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const root = yield* Effect.acquireRelease(
+            Effect.promise(() =>
+              NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "prime-failed-create-")),
+            ),
+            (directory) =>
+              Effect.promise(() => NodeFSP.rm(directory, { recursive: true, force: true })),
+          );
+          const ownershipStore = new PrimeAgentOwnershipReceiptStore(root, {
+            inspectProcessIdentity: async (pid) => `test:${pid}`,
+          });
+          const side = fixture({
+            ownershipStore,
+            recoveryMode: "create",
+            rawSnapshot: {
+              ...snapshot(),
+              lastEventCursor: { generation: "events-1", sequence: 4 },
+            },
+            ...(cleanupFails
+              ? {
+                  disposeImpl: async () => {
+                    throw new Error("transport lost");
+                  },
+                }
+              : {}),
+          });
+          const error = yield* side
+            .make(undefined, undefined, undefined, undefined, undefined, undefined, {
+              kind: "create",
+              requestId: "failed-create-request",
+              correlationId: "failed-create-correlation",
+              mcpOwnerId: "pylon:none:failed-create",
+              threadId: "failed-create-thread",
+              sessionIncarnationId: "failed-create-incarnation",
+              admissionRequestId: "failed-create-admission",
+              onAuthorityReady: async () => {
+                throw new Error("authority commit failed");
               },
-              ...(cleanupFails
-                ? {
-                    disposeImpl: async () => {
-                      throw new Error("transport lost");
-                    },
-                  }
-                : {}),
-            });
-            const error = yield* side
-              .make(undefined, undefined, undefined, undefined, undefined, undefined, {
-                kind: "create",
-                requestId: "failed-create-request",
-                correlationId: "failed-create-correlation",
-                mcpOwnerId: "pylon:none:failed-create",
-                threadId: "failed-create-thread",
-                sessionIncarnationId: "failed-create-incarnation",
-                admissionRequestId: "failed-create-admission",
-                onAuthorityReady: async () => {
-                  throw new Error("authority commit failed");
-                },
-                onNativeCleanupProven: async () => {
-                  expect((await ownershipStore.scan()).receipts).toHaveLength(0);
-                  side.captures.order.push("recovery-cleanup-durable");
-                },
-              })
-              .pipe(Effect.flip);
-            expect(error).toMatchObject({
-              operation: "create-session",
-              reason: "request-failed",
-              detail: "Recoverable Prime Agent authority could not be durably recorded.",
-            });
-            expect(side.captures.order.filter((entry) => entry === "dispose-owned")).toHaveLength(
-              1,
-            );
-            const scan = yield* Effect.promise(() => ownershipStore.scan());
-            expect(scan.corrupt).toBe(false);
-            expect(scan.receipts).toHaveLength(cleanupFails ? 1 : 0);
-            expect(side.captures.order.includes("release-daemon")).toBe(!cleanupFails);
-            expect(side.captures.order.includes("recovery-cleanup-durable")).toBe(!cleanupFails);
-          }),
-        ),
-    );
-  }
+              onNativeCleanupProven: async () => {
+                expect((await ownershipStore.scan()).receipts).toHaveLength(0);
+                side.captures.order.push("recovery-cleanup-durable");
+              },
+            })
+            .pipe(Effect.flip);
+          expect(error).toMatchObject({
+            operation: "create-session",
+            reason: "request-failed",
+            detail: "Recoverable Prime Agent authority could not be durably recorded.",
+          });
+          expect(side.captures.order.filter((entry) => entry === "dispose-owned")).toHaveLength(1);
+          const scan = yield* Effect.promise(() => ownershipStore.scan());
+          expect(scan.corrupt).toBe(false);
+          expect(scan.receipts).toHaveLength(cleanupFails ? 1 : 0);
+          expect(side.captures.order.includes("release-daemon")).toBe(!cleanupFails);
+          expect(side.captures.order.includes("recovery-cleanup-durable")).toBe(!cleanupFails);
+        }),
+      ),
+  );
 
   it.effect("commits adoption before replay and defers MCP replacement to the next prompt", () =>
     Effect.scoped(

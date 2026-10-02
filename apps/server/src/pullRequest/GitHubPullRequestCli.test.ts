@@ -274,82 +274,80 @@ layer("GitHubPullRequestCli.layer", (it) => {
     }),
   );
 
-  for (const [label, response] of [
-    ["missing alias", '{"data":{"s0":{"pullRequest":null}}}'],
-    [
-      "unsupported stack field",
-      '{"data":null,"errors":[{"message":"Field stack does not exist"}]}',
-    ],
-    [
-      "missing GraphQL scope",
-      '{"data":null,"errors":[{"message":"Resource not accessible by integration"}]}',
-    ],
-  ] as const) {
-    it.effect(`reads a pull request on its own after a ${label}`, () =>
-      Effect.gen(function* () {
-        mockedExecute.mockReturnValueOnce(Effect.succeed(output(response))).mockReturnValueOnce(
-          Effect.succeed(
-            output(
-              // @effect-diagnostics-next-line preferSchemaOverJson:off
-              JSON.stringify({
-                number: 7,
-                title: "Reuse the summary",
-                url: "https://github.com/acme/web/pull/7",
-                author: { login: "octocat", name: "Octo Cat" },
-                baseRefName: "main",
-                headRefName: "feat/summary",
-                state: "OPEN",
-                isDraft: false,
-                mergeable: "MERGEABLE",
-                reviewDecision: "APPROVED",
-                additions: 12,
-                deletions: 3,
-                changedFiles: 2,
-                createdAt: "2026-08-20T00:00:00.000Z",
-                updatedAt: "2026-08-24T12:34:56.000Z",
-                reviewRequests: [],
-                labels: [],
-                statusCheckRollup: [
-                  {
-                    __typename: "CheckRun",
-                    status: "COMPLETED",
-                    conclusion: "SUCCESS",
-                    name: "ci",
-                  },
-                ],
-                body: "",
-              }),
-            ),
+  it.effect.each([
+    { label: "missing alias", response: '{"data":{"s0":{"pullRequest":null}}}' },
+    {
+      label: "unsupported stack field",
+      response: '{"data":null,"errors":[{"message":"Field stack does not exist"}]}',
+    },
+    {
+      label: "missing GraphQL scope",
+      response: '{"data":null,"errors":[{"message":"Resource not accessible by integration"}]}',
+    },
+  ] as const)("reads a pull request on its own after a $label", ({ response }) =>
+    Effect.gen(function* () {
+      mockedExecute.mockReturnValueOnce(Effect.succeed(output(response))).mockReturnValueOnce(
+        Effect.succeed(
+          output(
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify({
+              number: 7,
+              title: "Reuse the summary",
+              url: "https://github.com/acme/web/pull/7",
+              author: { login: "octocat", name: "Octo Cat" },
+              baseRefName: "main",
+              headRefName: "feat/summary",
+              state: "OPEN",
+              isDraft: false,
+              mergeable: "MERGEABLE",
+              reviewDecision: "APPROVED",
+              additions: 12,
+              deletions: 3,
+              changedFiles: 2,
+              createdAt: "2026-08-20T00:00:00.000Z",
+              updatedAt: "2026-08-24T12:34:56.000Z",
+              reviewRequests: [],
+              labels: [],
+              statusCheckRollup: [
+                {
+                  __typename: "CheckRun",
+                  status: "COMPLETED",
+                  conclusion: "SUCCESS",
+                  name: "ci",
+                },
+              ],
+              body: "",
+            }),
           ),
-        );
-        const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+        ),
+      );
+      const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
 
-        const read = yield* cli
-          .getPullRequestSummary({
-            cwd: "/w",
-            repository: "acme/web",
-            host: "github.com",
-            number: 7,
-          })
-          .pipe(Effect.forkChild);
-        yield* TestClock.adjust("10 millis");
-        const summary = yield* Fiber.join(read);
+      const read = yield* cli
+        .getPullRequestSummary({
+          cwd: "/w",
+          repository: "acme/web",
+          host: "github.com",
+          number: 7,
+        })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("10 millis");
+      const summary = yield* Fiber.join(read);
 
-        assert.strictEqual(summary.headBranch, "feat/summary");
-        assert.strictEqual(summary.checksState, "passing");
-        assert.strictEqual(mockedExecute.mock.calls.length, 2);
-        expect(callAt(1).args).toEqual([
-          "pr",
-          "view",
-          "7",
-          "--repo",
-          "github.com/acme/web",
-          "--json",
-          expect.stringContaining("statusCheckRollup"),
-        ]);
-      }),
-    );
-  }
+      assert.strictEqual(summary.headBranch, "feat/summary");
+      assert.strictEqual(summary.checksState, "passing");
+      assert.strictEqual(mockedExecute.mock.calls.length, 2);
+      expect(callAt(1).args).toEqual([
+        "pr",
+        "view",
+        "7",
+        "--repo",
+        "github.com/acme/web",
+        "--json",
+        expect.stringContaining("statusCheckRollup"),
+      ]);
+    }),
+  );
 
   it.effect("does not fan out summary reads after a rejected GraphQL batch", () =>
     Effect.gen(function* () {

@@ -347,61 +347,68 @@ describe("environment RPC", () => {
     }),
   );
 
-  for (const [profileId, supported, allowed] of [
-    [undefined, undefined, true],
-    ["default", undefined, true],
-    ["work", undefined, false],
-    ["incognito", false, false],
-    ["work", true, true],
-    ["incognito", true, true],
-  ] as const) {
-    it.effect(
-      `opens profile ${profileId ?? "omitted"} only when isolation is supported (${supported})`,
-      () =>
-        Effect.gen(function* () {
-          const calls: string[] = [];
-          const snapshot: PreviewSessionSnapshot = {
-            threadId: ThreadId.make("thread-1"),
-            tabId: "tab-1",
-            navStatus: { _tag: "Idle" },
-            canGoBack: false,
-            canGoForward: false,
-            updatedAt: "2026-09-08T00:00:00Z",
-          };
-          const client = {
-            [WS_METHODS.previewOpen]: () =>
-              Effect.sync(() => {
-                calls.push("open");
-                return snapshot;
-              }),
-          } as unknown as WsRpcProtocolClient;
-          const { activeSession, supervisor } = yield* makeHarness();
-          yield* SubscriptionRef.set(
-            activeSession,
-            Option.some({
-              ...session(client),
-              initialConfig:
-                profileId === undefined || profileId === "default"
-                  ? Effect.never
-                  : Effect.succeed({
-                      environment: { capabilities: { browserProfiles: supported } },
-                    } as unknown as ServerConfig),
+  it.effect.each(
+    (
+      [
+        [undefined, undefined, true],
+        ["default", undefined, true],
+        ["work", undefined, false],
+        ["incognito", false, false],
+        ["work", true, true],
+        ["incognito", true, true],
+      ] as const
+    ).map(([profileId, supported, allowed]) => ({
+      name: profileId ?? "omitted",
+      profileId,
+      supported,
+      allowed,
+    })),
+  )(
+    "opens profile $name only when isolation is supported ($supported)",
+    ({ profileId, supported, allowed }) =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        const snapshot: PreviewSessionSnapshot = {
+          threadId: ThreadId.make("thread-1"),
+          tabId: "tab-1",
+          navStatus: { _tag: "Idle" },
+          canGoBack: false,
+          canGoForward: false,
+          updatedAt: "2026-09-08T00:00:00Z",
+        };
+        const client = {
+          [WS_METHODS.previewOpen]: () =>
+            Effect.sync(() => {
+              calls.push("open");
+              return snapshot;
             }),
-          );
-          const exit = yield* request(WS_METHODS.previewOpen, {
-            threadId: ThreadId.make("thread-1"),
-            ...(profileId === undefined ? {} : { profileId }),
-          }).pipe(
-            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-            Effect.exit,
-          );
-          expect(Exit.isSuccess(exit)).toBe(allowed);
-          expect(calls).toEqual(allowed ? ["open"] : []);
-          if (Exit.isFailure(exit))
-            expect(Cause.pretty(exit.cause)).toContain("Update this environment");
-        }),
-    );
-  }
+        } as unknown as WsRpcProtocolClient;
+        const { activeSession, supervisor } = yield* makeHarness();
+        yield* SubscriptionRef.set(
+          activeSession,
+          Option.some({
+            ...session(client),
+            initialConfig:
+              profileId === undefined || profileId === "default"
+                ? Effect.never
+                : Effect.succeed({
+                    environment: { capabilities: { browserProfiles: supported } },
+                  } as unknown as ServerConfig),
+          }),
+        );
+        const exit = yield* request(WS_METHODS.previewOpen, {
+          threadId: ThreadId.make("thread-1"),
+          ...(profileId === undefined ? {} : { profileId }),
+        }).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.exit,
+        );
+        expect(Exit.isSuccess(exit)).toBe(allowed);
+        expect(calls).toEqual(allowed ? ["open"] : []);
+        if (Exit.isFailure(exit))
+          expect(Cause.pretty(exit.cause)).toContain("Update this environment");
+      }),
+  );
 
   it.effect("rejects a queued pasted-text command when its receiving session is older", () =>
     Effect.gen(function* () {

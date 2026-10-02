@@ -166,8 +166,9 @@ describe("PrimeAgentDaemonEvents", () => {
     expect(JSON.stringify(snapshot)).not.toContain("private compaction");
   });
 
-  for (const customType of ["refinement_outcome", "refinement_notice"] as const) {
-    it(`retains ${customType} identity in live events and snapshots without private content`, () => {
+  it.each(["refinement_outcome", "refinement_notice"] as const)(
+    "retains %s identity in live events and snapshots without private content",
+    (customType) => {
       const refinement = {
         role: "custom",
         customType,
@@ -241,10 +242,10 @@ describe("PrimeAgentDaemonEvents", () => {
           decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_end", message: changed })),
         ).not.toEqual(completed);
       }
-    });
-  }
+    },
+  );
 
-  for (const customType of [
+  it.each([
     "compaction_outcome",
     "ipython_state_restored",
     "ipython_state",
@@ -254,8 +255,9 @@ describe("PrimeAgentDaemonEvents", () => {
     "rlm_child_terminal_notice",
     "async_bash_completion",
     "agent_message",
-  ] as const) {
-    it(`retains ${customType} identity in live events and snapshots without private content`, () => {
+  ] as const)(
+    "retains %s identity in live events and snapshots without private content",
+    (customType) => {
       const refinement = {
         role: "custom",
         customType,
@@ -329,8 +331,8 @@ describe("PrimeAgentDaemonEvents", () => {
           decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_end", message: changed })),
         ).not.toEqual(completed);
       }
-    });
-  }
+    },
+  );
 
   it("retains exact native branch and bash records without exposing their content", () => {
     for (const message of [
