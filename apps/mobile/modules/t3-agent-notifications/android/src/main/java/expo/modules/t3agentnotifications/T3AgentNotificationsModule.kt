@@ -1,80 +1,60 @@
 package expo.modules.t3agentnotifications
 
 import android.app.Activity
-import android.app.Application
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
-import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
 class T3AgentNotificationsModule : Module() {
   private val mainHandler = Handler(Looper.getMainLooper())
-  private var lifecycleApplication: Application? = null
-  private var hostContext: AppContext? = null
+  // Resolve at Expo lifecycle delivery, after React updates the host Activity.
+  internal var activityProvider: () -> Activity? = { appContext.currentActivity }
   @Volatile private var destroyed = false
-  private val activityCallbacks = object : Application.ActivityLifecycleCallbacks {
-    override fun onActivityResumed(activity: Activity) {
-      if (!destroyed && activity === hostContext?.currentActivity) {
-        AgentNotifications.onActivityResumed(activity)
-      }
-    }
-
-    override fun onActivityPaused(activity: Activity) {
-      AgentNotifications.onActivityPaused(activity)
-    }
-
-    override fun onActivityStopped(activity: Activity) {
-      AgentNotifications.onActivityPaused(activity)
-    }
-
-    override fun onActivityDestroyed(activity: Activity) {
-      AgentNotifications.onActivityPaused(activity)
-    }
-
-    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
-    override fun onActivityStarted(activity: Activity) = Unit
-    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
-  }
 
   override fun definition() = ModuleDefinition {
     Name("T3AgentNotifications")
 
     OnCreate {
-      // Register and seed on the main thread so initialization cannot race a
-      // pause. The module can be created after the host has already resumed.
-      val context = appContext
+      // Seed on the main thread if the module loads after the host resumed.
       mainHandler.post {
         if (destroyed) return@post
-        hostContext = context
-        val application = (context.reactContext?.applicationContext as? Application)
-          ?: context.currentActivity?.application
-          ?: return@post
-        lifecycleApplication = application
-        application.registerActivityLifecycleCallbacks(activityCallbacks)
-        val activity = context.currentActivity
+        val activity = activityProvider()
         if (activity != null &&
           (activity as? LifecycleOwner)?.lifecycle?.currentState?.isAtLeast(
             Lifecycle.State.RESUMED
           ) == true
         ) {
           AgentNotifications.onActivityResumed(activity)
+        } else {
+          AgentNotifications.clearActivityVisibility()
         }
       }
+    }
+
+    OnActivityEntersForeground {
+      if (!destroyed) {
+        val activity = activityProvider()
+        if (activity != null) {
+          AgentNotifications.onActivityResumed(activity)
+        } else {
+          // No confirmed host means alerts must remain visible.
+          AgentNotifications.clearActivityVisibility()
+        }
+      }
+    }
+
+    OnActivityEntersBackground {
+      // Expo dispatches this during host pause, without the process delay.
+      AgentNotifications.clearActivityVisibility()
     }
 
     OnDestroy {
       destroyed = true
       AgentNotifications.clearActivityVisibility()
       AgentNotifications.setThreadOnScreen(null)
-      mainHandler.post {
-        lifecycleApplication?.unregisterActivityLifecycleCallbacks(activityCallbacks)
-        lifecycleApplication = null
-        hostContext = null
-      }
     }
 
     Function("configure") {

@@ -95,8 +95,8 @@ object AgentNotifications {
   /** Records the thread route the app is showing, or null when none is open. */
   @Volatile private var threadOnScreen: String? = null
 
-  // ProcessLifecycleOwner delays pause after Home/lock. Use the host Activity's
-  // immediate callbacks instead, serialized with receive and alert deduplication.
+  // ProcessLifecycleOwner delays pause after Home/lock. Use Expo's immediate
+  // host pause/resume hooks, serialized with receive and alert deduplication.
   private var resumedActivity: Activity? = null
 
   @Synchronized

@@ -14,6 +14,8 @@ import androidx.core.app.NotificationCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.ProcessLifecycleOwner
+import expo.modules.kotlin.events.BasicEventListener
+import expo.modules.kotlin.events.EventName
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -179,13 +181,54 @@ class AgentNotificationsTest {
   }
 
   @Test
-  fun pauseOfPreviousActivityDoesNotHideTheResumedHost() {
-    val previousActivity = Activity()
-    AgentNotifications.onActivityResumed(previousActivity)
-    AgentNotifications.onActivityResumed(activity)
-    AgentNotifications.onActivityPaused(previousActivity)
-    AgentNotifications.receive(context, update("visible-host", false))
+  fun moduleForegroundHookTracksRecreatedActivityWithSurvivingRuntime() {
+    // Keep the same Expo module and listeners while React replaces its host.
+    var currentActivity: Activity? = activity
+    val module = T3AgentNotificationsModule()
+    module.activityProvider = { currentActivity }
+    val listeners = module.definition().eventListeners
+    val foreground = listeners.getValue(EventName.ACTIVITY_ENTERS_FOREGROUND) as BasicEventListener
+    val background = listeners.getValue(EventName.ACTIVITY_ENTERS_BACKGROUND) as BasicEventListener
+    lifecycle.currentState = Lifecycle.State.RESUMED
+
+    foreground.call()
+    AgentNotifications.receive(context, update("original-visible", false))
     assertTrue(manager.activeNotifications.isEmpty())
+
+    background.call()
+    // React still points to the previous host during replacement super.onResume.
+    // No visibility is asserted until Expo's foreground hook arrives.
+    AgentNotifications.receive(context, update("recreate-gap", false))
+    assertEquals("recreate-gap".hashCode(), manager.activeNotifications.single().id)
+    manager.cancelAll()
+
+    currentActivity = Activity()
+    foreground.call()
+    AgentNotifications.receive(context, update("replacement-visible", false))
+    assertTrue(manager.activeNotifications.isEmpty())
+
+    // Pause is immediate even while the process lifecycle still says RESUMED.
+    background.call()
+    val message = update("replacement-paused", false)
+    AgentNotifications.receive(context, message)
+    AgentNotifications.receive(context, message)
+    assertEquals(Lifecycle.State.RESUMED, lifecycle.currentState)
+    assertEquals("replacement-paused".hashCode(), manager.activeNotifications.single().id)
+  }
+
+  @Test
+  fun moduleForegroundHookWithoutAHostFailsOpen() {
+    var currentActivity: Activity? = activity
+    val module = T3AgentNotificationsModule()
+    module.activityProvider = { currentActivity }
+    val listeners = module.definition().eventListeners
+    val foreground = listeners.getValue(EventName.ACTIVITY_ENTERS_FOREGROUND) as BasicEventListener
+
+    foreground.call()
+    currentActivity = null
+    foreground.call()
+    AgentNotifications.receive(context, update("unknown-host", false))
+    assertEquals("unknown-host".hashCode(), manager.activeNotifications.single().id)
   }
 
   @Test
