@@ -308,6 +308,7 @@ function makeTestLayer(input: {
         Layer.mock(PreviewManager.PreviewManager)({
           getBrowserSession: () => Effect.succeed({} as Electron.Session),
           setMainWindow: () => Effect.void,
+          prepareWebview: () => Effect.void,
           isBrowserPartition: (partition) => partition.startsWith("persist:pylon-code-preview-"),
           getBrowserPartition: () => Effect.succeed("persist:pylon-code-preview-test"),
           reapplyZoom: () =>
