@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
     configure?: ReturnType<typeof vi.fn>;
     clear?: ReturnType<typeof vi.fn>;
     openLiveUpdateSettings?: ReturnType<typeof vi.fn>;
+    setThreadOnScreen?: ReturnType<typeof vi.fn>;
   } | null,
   config: {
     scheme: ["pylon-code-preview"],
@@ -42,6 +43,20 @@ beforeEach(() => {
 });
 
 describe("Android native notification capability", () => {
+  it("tracks the visible thread and clears it on leaving the route", async () => {
+    const setThreadOnScreen = vi.fn();
+    mocks.native = { configure: vi.fn(), clear: vi.fn(), setThreadOnScreen };
+    const { setAndroidThreadOnScreen } = await import("./androidNotifications");
+    setAndroidThreadOnScreen("/threads/env/thread");
+    setAndroidThreadOnScreen(null);
+    expect(setThreadOnScreen.mock.calls).toEqual([["/threads/env/thread"], [null]]);
+  });
+
+  it("supports older binaries without route tracking", async () => {
+    const { setAndroidThreadOnScreen } = await import("./androidNotifications");
+    expect(() => setAndroidThreadOnScreen("/threads/env/thread")).not.toThrow();
+  });
+
   it("uses the installed module and the build variant's deep-link scheme", async () => {
     const { configureAndroidAgentNotifications, clearAndroidAgentNotifications } =
       await import("./androidNotifications");

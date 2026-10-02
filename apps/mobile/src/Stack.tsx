@@ -551,7 +551,6 @@ function RootStackLayout(props: {
   const navigation = useNavigation();
   const { pendingShare, dismissShare } = useIncomingShare();
   const sharePresentationRef = useRef(EMPTY_INCOMING_SHARE_PRESENTATION_STATE);
-  useAgentNotificationNavigation();
   // Presents the Pylon Connect onboarding sheet after an in-session sign-in.
   useConnectOnboardingNavigation();
   // Launcher app shortcuts: routes shortcut taps and tracks opened threads.
@@ -589,6 +588,7 @@ function RootStackLayout(props: {
   // workspace layout only reacts to the underlying non-overlay route.
   const path = getPathFromState(props.state, navigationPathConfig);
   const pathname = path.startsWith("/") ? path : `/${path}`;
+  useAgentNotificationNavigation(pathname);
   const workspaceLocation = workspaceLocationFromState(props.state);
 
   return (

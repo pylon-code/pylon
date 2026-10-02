@@ -18,6 +18,10 @@ class T3AgentNotificationsModule : Module() {
       }
     }
 
+    Function("setThreadOnScreen") { path: String? ->
+      AgentNotifications.setThreadOnScreen(path)
+    }
+
     Function("clear") {
       appContext.reactContext?.let { AgentNotifications.clear(it) }
     }
