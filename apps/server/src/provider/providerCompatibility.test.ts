@@ -17,6 +17,7 @@ import type { ProviderInstance } from "./ProviderDriver.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./providerMaintenance.ts";
 import { BUILT_IN_DRIVERS } from "./builtInDrivers.ts";
 import * as Schema from "effect/Schema";
+import serverPackageJson from "../../package.json" with { type: "json" };
 import {
   applyProviderCompatibility,
   ProviderCompatibilityPolicy,
@@ -26,7 +27,7 @@ import {
 const driver = ProviderDriverKind.make("codex");
 const policy: ProviderCompatibilityPolicy = {
   driver,
-  t3CodeRange: ">=0.0.42 <0.1.0",
+  t3CodeRange: ">=0.0.31 <0.1.0",
   recommendedVersion: "2.0.0",
   recommendedRange: ">=2.0.0 <3.0.0",
   ranges: [
@@ -51,20 +52,54 @@ const provider: ServerProvider = {
   slashCommands: [],
 };
 
+// Pylon server versions the bundled policy must cover. Release builds stamp the
+// server package with the release version; the checked-in version is the dev build.
+// The first stable to ship orchestrator V2 is the next one after 0.0.33.
+const PYLON_BUILDS = [
+  ["dev", serverPackageJson.version],
+  ["checked-in dev", "0.0.31"],
+  ["nightly", "0.0.33-nightly.20261003.260"],
+  ["preview", "0.0.33-preview.20261003.1"],
+  ["next stable", "0.0.34"],
+] as const;
+
 describe("provider compatibility", () => {
-  it("bundles a compatibility policy for every built-in harness", () => {
+  it("bundles a compatibility policy for every built-in harness on every Pylon build", () => {
     for (const builtIn of BUILT_IN_DRIVERS) {
       // Registry entries are arbitrary external ACP agents, not one versioned harness.
       if (builtIn.driverKind === "acpRegistry" || builtIn.driverKind === "primeAgent") continue;
-      assert.isDefined(
-        resolveProviderCompatibility(
-          ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
-          builtIn.driverKind,
-          null,
-        ),
-        `Missing bundled compatibility policy for ${builtIn.driverKind}`,
-      );
+      for (const [channel, pylonVersion] of PYLON_BUILDS) {
+        assert.isDefined(
+          resolveProviderCompatibility(
+            ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
+            builtIn.driverKind,
+            null,
+            pylonVersion,
+          ),
+          `Missing bundled compatibility policy for ${builtIn.driverKind} on ${channel} ${pylonVersion}`,
+        );
+      }
     }
+  });
+
+  it("matches policies against Pylon's own server version, not an upstream release line", () => {
+    const opencode = ProviderDriverKind.make("opencode");
+    const resolve = (pylonVersion?: string) =>
+      resolveProviderCompatibility(
+        ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
+        opencode,
+        "2.0.18",
+        pylonVersion,
+      );
+    // The default is this build's version, and it is covered by the bundle.
+    assert.deepStrictEqual(resolve(), resolve(serverPackageJson.version));
+    assert.strictEqual(resolve()?.status, "supported");
+    // Prerelease tags are ignored, so a nightly resolves like its base version.
+    assert.deepStrictEqual(resolve("0.0.33-nightly.20261003.260"), resolve("0.0.33"));
+    // Pylon builds before 0.0.31 predate the compatibility field and get no policy.
+    assert.isUndefined(resolve("0.0.30"));
+    // Upstream T3 Code version lines are not Pylon ranges; nothing special-cases them.
+    assert.deepStrictEqual(resolve("0.0.46"), resolve("0.0.34"));
   });
 
   it("supports OpenCode 2 and gives OpenCode 1.x limited support", () => {
@@ -79,14 +114,48 @@ describe("provider compatibility", () => {
       ["1.14.19", "graceful"],
       ["1.14.18", "broken"],
     ] as const) {
-      const advisory = resolveProviderCompatibility(
-        ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
-        opencode,
-        version,
-      );
-      assert.strictEqual(advisory?.status, expected, `OpenCode ${version}`);
-      assert.strictEqual(advisory?.recommendedRange, ">=2.0.18");
+      for (const [channel, pylonVersion] of PYLON_BUILDS) {
+        const advisory = resolveProviderCompatibility(
+          ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
+          opencode,
+          version,
+          pylonVersion,
+        );
+        assert.strictEqual(
+          advisory?.status,
+          expected,
+          `OpenCode ${version} on ${channel} ${pylonVersion}`,
+        );
+        assert.strictEqual(advisory?.recommendedRange, ">=2.0.18");
+      }
     }
+    // A remote policy can still split Pylon releases onto different OpenCode lines.
+    const split: ReadonlyArray<ProviderCompatibilityPolicy> = [
+      {
+        driver: opencode,
+        t3CodeRange: ">=0.0.31 <0.0.40",
+        recommendedRange: ">=2.0.18",
+        ranges: [{ range: ">=2.0.18", status: "supported" }],
+      },
+      {
+        driver: opencode,
+        t3CodeRange: ">=0.0.40",
+        recommendedRange: ">=3.0.0",
+        ranges: [
+          { range: ">=3.0.0", status: "supported" },
+          { range: "<3.0.0", status: "broken" },
+        ],
+      },
+    ];
+    assert.strictEqual(
+      resolveProviderCompatibility(split, opencode, "2.0.18", "0.0.33-nightly.20261003.260")
+        ?.status,
+      "supported",
+    );
+    assert.strictEqual(
+      resolveProviderCompatibility(split, opencode, "2.0.18", "0.0.40")?.status,
+      "broken",
+    );
     // The advisory rides beside the probe: a ready 1.x instance stays ready and selectable.
     const ready = applyProviderCompatibility(
       { ...provider, driver: opencode, version: "1.18.33", status: "ready", message: undefined },
@@ -185,6 +254,8 @@ describe("provider compatibility", () => {
   it("relaxes remote policy without losing probe errors, and falls back when a policy is omitted", () => {
     const broken = applyProviderCompatibility(provider, [], [policy]);
     assert.strictEqual(broken.compatibilityAdvisory?.status, "broken");
+    // A manifest published before the field existed falls back the same way.
+    assert.deepStrictEqual(applyProviderCompatibility(provider, undefined, [policy]), broken);
     const relaxed = { ...policy, ranges: [{ range: ">=0.0.0", status: "supported" as const }] };
     const supported = applyProviderCompatibility(broken, [relaxed], [policy]);
     assert.strictEqual(supported.compatibilityAdvisory?.status, "supported");
@@ -213,7 +284,7 @@ describe("provider compatibility", () => {
     assert.doesNotThrow(() => decode(policy));
     const prefixed = decode({
       ...policy,
-      t3CodeRange: ">=v0.0.42 <v0.1",
+      t3CodeRange: ">=v0.0.31 <v0.1",
       recommendedRange: "^v2",
       ranges: [{ range: ">=v2.0 <v3", status: "supported" }],
     });

@@ -365,7 +365,7 @@ describe("ModelManifest service", () => {
       yield* service.refresh;
       assert.strictEqual(
         fetchedUrl,
-        "https://raw.githubusercontent.com/pylon-code/pylon-releases/main/model-catalog.json",
+        "https://raw.githubusercontent.com/pylon-code/pylon-releases/main/model-catalog-v2.json",
       );
     }).pipe(
       Effect.scoped,
@@ -678,69 +678,36 @@ describe("ModelManifest service", () => {
   );
 });
 
-// TEMPORARY V2 preview stopgap; remove with `withPreviewCompatibility` (#2829).
-describe("compatibility policy by release channel", () => {
-  const OPENCODE = ProviderDriverKind.make("opencode");
-  // Main's OpenCode policy (#14198): stable and nightly have no OpenCode 2 runtime.
-  const remote: ModelManifest.ModelManifestData = {
-    ...REMOTE_MANIFEST,
-    compatibility: [
-      {
-        driver: OPENCODE,
-        t3CodeRange: ">=0.0.42",
-        recommendedRange: ">=1.14.19 <2.0.0",
-        recommendedVersion: "1.14.19",
-        ranges: [
-          { range: ">=2.0.0", status: "broken" },
-          { range: ">=1.14.19 <2.0.0", status: "supported" },
-          { range: "<1.14.19", status: "broken" },
-        ],
-      },
-    ],
-  };
+it.effect("adopts a fetched manifest without compatibility so the bundled policy applies", () =>
+  Effect.gen(function* () {
+    const opencode = ProviderDriverKind.make("opencode");
+    const advisory = (manifest: ModelManifest.ModelManifestData) =>
+      resolveProviderCompatibility(manifest.compatibility, opencode, "2.0.18") ??
+      resolveProviderCompatibility(
+        ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
+        opencode,
+        "2.0.18",
+      );
+    const service = yield* ModelManifest.make;
+    const refreshed = yield* service.refresh;
+    // An older publication has no field; it is not an empty policy list.
+    assert.deepStrictEqual(refreshed, REMOTE_MANIFEST);
+    assert.isUndefined(refreshed.compatibility);
+    assert.strictEqual(advisory(refreshed)?.status, "supported");
 
-  it.live.each([
-    {
-      channel: "preview builds keep the bundled policy",
-      t3CodeVersion: "0.0.44-preview.20260929.1",
-      expected: { ...remote, compatibility: ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility },
-      openCode2Status: "supported",
-    },
-    {
-      channel: "stable builds adopt the fetched policy",
-      t3CodeVersion: "0.0.44",
-      expected: remote,
-      openCode2Status: "broken",
-    },
-    {
-      channel: "nightly builds adopt the fetched policy",
-      t3CodeVersion: "0.0.44-nightly.20260929.1",
-      expected: remote,
-      openCode2Status: "broken",
-    },
-  ] as const)("$channel", ({ t3CodeVersion, expected, openCode2Status }) =>
-    Effect.gen(function* () {
-      const openCode2 = (manifest: ModelManifest.ModelManifestData) =>
-        resolveProviderCompatibility(manifest.compatibility, OPENCODE, "2.0.18", t3CodeVersion)
-          ?.status;
-      const refreshed = yield* (yield* ModelManifest.makeForVersion(t3CodeVersion)).refresh;
-      assert.deepStrictEqual(refreshed, expected);
-      assert.strictEqual(openCode2(refreshed), openCode2Status);
-
-      // A restart reads the fetched manifest back from the disk cache.
-      const rebooted = yield* (yield* ModelManifest.makeForVersion(t3CodeVersion)).current;
-      assert.deepStrictEqual(rebooted, expected);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        serviceLayers({
-          prefix: "model-manifest-channel-compatibility-test",
-          response: () => Response.json(remote),
-        }),
-      ),
+    const rebooted = yield* (yield* ModelManifest.make).current;
+    assert.deepStrictEqual(rebooted, REMOTE_MANIFEST);
+    assert.strictEqual(advisory(rebooted)?.status, "supported");
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      serviceLayers({
+        prefix: "model-manifest-missing-compatibility-test",
+        response: () => Response.json(REMOTE_MANIFEST),
+      }),
     ),
-  );
-});
+  ),
+);
 
 it.effect("caches valid compatibility policies and keeps them after a malformed refresh", () => {
   const remote: ModelManifest.ModelManifestData = {
@@ -748,7 +715,7 @@ it.effect("caches valid compatibility policies and keeps them after a malformed 
     compatibility: [
       {
         driver: "codex",
-        t3CodeRange: ">=0.0.42",
+        t3CodeRange: ">=0.0.31",
         recommendedVersion: "2.0.0",
         ranges: [{ range: "=2.0.0", status: "supported" }],
       },

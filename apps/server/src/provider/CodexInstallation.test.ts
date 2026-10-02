@@ -185,7 +185,7 @@ it.effect("rechecks a cached local executable when the shared manifest policy ch
       compatibility: [
         {
           driver: "codex",
-          t3CodeRange: ">=0.0.42",
+          t3CodeRange: ">=0.0.31",
           ranges: [
             { range: ">=0.156.1", status: "supported" },
             { range: "<0.156.1", status: "broken" },
