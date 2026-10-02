@@ -3,6 +3,7 @@ import {
   EnvironmentId,
   ThreadId,
   type ClientSettings,
+  type DesktopPreviewBridge,
   type PreviewAutomationResponse,
   type PreviewAutomationStreamEvent,
   type PreviewOpenInput,
@@ -36,6 +37,8 @@ const mocks = vi.hoisted(() => ({
   ),
   list: vi.fn(async () => AsyncResult.success(emptyList)),
   resize: vi.fn(),
+  navigate: vi.fn<DesktopPreviewBridge["navigate"]>(),
+  status: vi.fn<DesktopPreviewBridge["automation"]["status"]>(),
   respond:
     vi.fn<
       (target: { environmentId: EnvironmentId; input: PreviewAutomationResponse }) => Promise<void>
@@ -66,7 +69,9 @@ vi.mock("~/state/use-atom-command", () => ({
 vi.mock("~/state/use-atom-query-runner", () => ({
   useAtomQueryRunner: () => mocks.list,
 }));
-vi.mock("./previewBridge", () => ({ previewBridge: { automation: {} } }));
+vi.mock("./previewBridge", () => ({
+  previewBridge: { navigate: mocks.navigate, automation: { status: mocks.status } },
+}));
 
 const environmentId = EnvironmentId.make("automation-environment");
 const threadId = ThreadId.make("automation-thread");
@@ -120,6 +125,15 @@ beforeEach(async () => {
   mocks.getClientSettings.mockReset().mockResolvedValue(savedSettings);
   mocks.respond.mockReset();
   mocks.focus.mockReset().mockResolvedValue(AsyncResult.success(undefined));
+  mocks.navigate.mockReset().mockResolvedValue(undefined);
+  mocks.status.mockReset().mockImplementation(async (tabId) => ({
+    available: true,
+    visible: false,
+    tabId,
+    url: "about:blank",
+    title: "",
+    loading: false,
+  }));
   __resetClientSettingsPersistenceForTests();
   resetPreviewStateForTests();
   useBrowserSurfaceStore.setState({ byTabId: {} });
@@ -153,6 +167,79 @@ afterEach(async () => {
 });
 
 describe("PreviewAutomationHosts open", () => {
+  it.each([false, true])(
+    "opens blank and navigates attachments as agent after attachment (existing tab: %s)",
+    async (existingTab) => {
+      const response = deferred<PreviewAutomationResponse>();
+      const attachmentUrl = "https://example.com/report.csv";
+      const runtimeTabId = () =>
+        previewRuntimeTabId(
+          threadRef,
+          readThreadPreviewState(threadRef).serverEpoch,
+          snapshot.tabId,
+        );
+      Object.assign(document, {
+        querySelectorAll: () => [
+          {
+            getAttribute: (name: string) => (name === "data-preview-tab" ? runtimeTabId() : null),
+            closest: () => ({ getAttribute: () => "active" }),
+            executeJavaScript: async () => ({ width: 1440, height: 900 }),
+          },
+        ],
+      });
+      mocks.open.mockImplementationOnce(async () => {
+        applyPreviewDesktopState(threadRef, snapshot.tabId, {
+          hasWebContents: true,
+          canGoBack: false,
+          canGoForward: false,
+          loading: false,
+          zoomFactor: 1,
+          pictureInPicture: false,
+          colorScheme: "system",
+          audioMuted: false,
+          audible: false,
+          controller: "none",
+          favicon: null,
+        });
+        return AsyncResult.success(snapshot);
+      });
+      mocks.navigate.mockImplementationOnce(async () => {
+        expect(mocks.status).toHaveBeenCalled();
+        expect(readThreadPreviewState(threadRef).snapshot?.navStatus).toEqual({ _tag: "Idle" });
+      });
+      mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+      await act(async () => {
+        if (existingTab) applyPreviewServerSnapshot(threadRef, { ...snapshot, tabId: "old-tab" });
+        appAtomRegistry.set(
+          requestsAtom,
+          AsyncResult.success({
+            ...requestEvent,
+            request: {
+              ...requestEvent.request,
+              ...(existingTab ? { tabId: "old-tab" } : {}),
+              input: { url: attachmentUrl, open: false, reuseExistingTab: !existingTab },
+            },
+          }),
+        );
+        await response.promise;
+      });
+      expect(mocks.open).toHaveBeenCalledExactlyOnceWith({
+        environmentId,
+        input: { threadId, viewport, profileId: "work" },
+      });
+      expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith(
+        runtimeTabId(),
+        attachmentUrl,
+        "agent",
+      );
+      await expect(response.promise).resolves.toMatchObject({
+        requestId: "open-request",
+        ok: true,
+        result: { available: true, tabId: snapshot.tabId },
+      });
+    },
+  );
+
   it("waits for saved settings before opening a tab with the configured profile and viewport", async () => {
     const readStarted = deferred<void>();
     const read = deferred<ClientSettings>();

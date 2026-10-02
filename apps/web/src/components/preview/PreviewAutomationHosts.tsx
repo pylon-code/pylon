@@ -460,7 +460,8 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 environmentId,
                 input: {
                   threadId: request.threadId,
-                  ...(resolvedInputUrl ? { url: resolvedInputUrl } : {}),
+                  // Attach blank first. An initial webview src would load before
+                  // main can mark the guest as agent-driven for download capture.
                   // An agent that didn't state a size gets the user's
                   // configured default, same as a hand-opened tab.
                   viewport: browserDefaultOpenViewport(defaults),
@@ -558,7 +559,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               // operation failure.
               await waitForPreviewPresentation(activeRuntimeTabId);
             }
-            if (reusedExistingTab && resolvedInputUrl && previewBridge) {
+            if (resolvedInputUrl && previewBridge) {
               assertPreviewRuntimeCurrent(threadRef, activeTabId, activeRuntimeTabId, request);
               await previewBridge.navigate(activeRuntimeTabId, resolvedInputUrl, "agent");
               await waitForNavigationReadiness(
