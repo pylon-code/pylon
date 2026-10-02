@@ -1,3 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Captured downloads use isolated temporary native filesystem fixtures, removed after the suite.
+import * as NodeEvents from "node:events";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as NodeVM from "node:vm";
 import { it as effectIt } from "@effect/vitest";
 import { DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER } from "@t3tools/contracts";
@@ -19,12 +24,17 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import { TestClock } from "effect/testing";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as BrowserSession from "./BrowserSession.ts";
+import { MAX_AGENT_DOWNLOAD_BYTES } from "./CapturedDownloads.ts";
 import * as PreviewManager from "./Manager.ts";
+
+const fixtureDirectory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "pylon-preview-"));
+const browserArtifactsDir = NodePath.join(fixtureDirectory, "browser-artifacts");
+afterAll(() => NodeFS.rmSync(fixtureDirectory, { recursive: true, force: true }));
 
 describe("fitPictureInPictureContentSize", () => {
   it("preserves the PiP content area across aspect-ratio changes", () => {
@@ -201,7 +211,7 @@ const {
   fromId: vi.fn<(_id?: number) => Electron.WebContents | null>((_id?: number) => null),
   getFocusedWebContents: vi.fn(() => null),
   mkdir: vi.fn((_path: string) => undefined),
-  previewSession: { on: vi.fn() },
+  previewSession: { on: vi.fn(), off: vi.fn() },
   showItemInFolder: vi.fn(),
   webviewSend: vi.fn(),
   writeFile: vi.fn((_path: string, _data: Uint8Array) => undefined),
@@ -248,7 +258,7 @@ const browserSessionLayer = Layer.succeed(
 const environmentLayer = Layer.succeed(
   DesktopEnvironment.DesktopEnvironment,
   DesktopEnvironment.DesktopEnvironment.of({
-    browserArtifactsDir: "/tmp/t3/dev/browser-artifacts",
+    browserArtifactsDir: browserArtifactsDir,
     dirname: "/tmp/t3/desktop",
     path: {
       join: (...parts: ReadonlyArray<string>) => parts.join("/"),
@@ -551,6 +561,7 @@ describe("PreviewManager", () => {
     getFocusedWebContents.mockReturnValue(null);
     mkdir.mockClear();
     previewSession.on.mockClear();
+    previewSession.off.mockClear();
     writeFile.mockClear();
     showItemInFolder.mockClear();
     clipboardItemConstructor.mockClear();
@@ -2194,7 +2205,7 @@ describe("PreviewManager", () => {
         const artifact = yield* manager.captureScreenshot("tab_1");
 
         expect(capturePage).toHaveBeenCalledOnce();
-        expect(mkdir).toHaveBeenCalledWith("/tmp/t3/dev/browser-artifacts");
+        expect(mkdir).toHaveBeenCalledWith(browserArtifactsDir);
         expect(writeFile).toHaveBeenCalledWith(artifact.path, png);
         expect(artifact).toMatchObject({
           tabId: "tab_1",
@@ -4034,10 +4045,10 @@ describe("PreviewManager", () => {
   effectIt.effect("reveals only files inside the configured browser artifact directory", () =>
     withManager((manager) =>
       Effect.gen(function* () {
-        yield* manager.revealArtifact("/tmp/t3/dev/browser-artifacts/browser-screenshot-test.png");
+        yield* manager.revealArtifact(`${browserArtifactsDir}/browser-screenshot-test.png`);
 
         expect(showItemInFolder).toHaveBeenCalledWith(
-          "/tmp/t3/dev/browser-artifacts/browser-screenshot-test.png",
+          `${browserArtifactsDir}/browser-screenshot-test.png`,
         );
         const exit = yield* Effect.exit(manager.revealArtifact("/tmp/t3/dev/settings.json"));
         expect(Exit.isFailure(exit)).toBe(true);
@@ -4046,7 +4057,7 @@ describe("PreviewManager", () => {
         expect(error).toMatchObject({
           _tag: "PreviewArtifactPathOutsideDirectoryError",
           artifactPath: "/tmp/t3/dev/settings.json",
-          artifactDirectory: "/tmp/t3/dev/browser-artifacts",
+          artifactDirectory: browserArtifactsDir,
         });
         expect("cause" in error).toBe(false);
       }),
@@ -4056,7 +4067,7 @@ describe("PreviewManager", () => {
   effectIt.effect("copies screenshot artifacts to the system clipboard", () =>
     withManager((manager) =>
       Effect.gen(function* () {
-        const artifactPath = "/tmp/t3/dev/browser-artifacts/browser-screenshot-test.png";
+        const artifactPath = `${browserArtifactsDir}/browser-screenshot-test.png`;
 
         yield* manager.copyArtifactToClipboard(artifactPath);
 
@@ -4074,7 +4085,7 @@ describe("PreviewManager", () => {
         expect(error).toMatchObject({
           _tag: "PreviewArtifactPathOutsideDirectoryError",
           artifactPath: "/tmp/t3/dev/settings.json",
-          artifactDirectory: "/tmp/t3/dev/browser-artifacts",
+          artifactDirectory: browserArtifactsDir,
         });
         expect("cause" in error).toBe(false);
 
@@ -4630,11 +4641,24 @@ describe("PreviewManager", () => {
     withManager((manager) =>
       Effect.gen(function* () {
         let humanInput: ((event: unknown, signal?: unknown) => void) | undefined;
-        const wc = makeTestPreviewWebContents(vi.fn());
+        const wc = makeTestPreviewWebContents(
+          vi.fn(async () => ({
+            toJPEG: () => Buffer.from("snapshot"),
+            toPNG: () => Buffer.from("snapshot"),
+            getSize: () => ({ width: 800, height: 600 }),
+          })),
+        );
         Object.assign(wc, {
           isDevToolsOpened: () => false,
           loadURL: vi.fn(async () => undefined),
           reload: vi.fn(),
+          reloadIgnoringCache: vi.fn(),
+          navigationHistory: {
+            canGoBack: () => true,
+            canGoForward: () => true,
+            goBack: vi.fn(),
+            goForward: vi.fn(),
+          },
         });
         Object.assign(wc.ipc, {
           on: vi.fn((channel: string, listener: typeof humanInput) => {
@@ -4648,6 +4672,18 @@ describe("PreviewManager", () => {
             if (method !== "Runtime.evaluate") return undefined;
             if (params?.expression?.includes("matched"))
               return { result: { value: { matched: true } } };
+            if (params?.expression?.includes("visibleText"))
+              return {
+                result: {
+                  value: {
+                    url: "https://example.com",
+                    title: "Example",
+                    loading: false,
+                    visibleText: "Example",
+                    interactiveElements: [],
+                  },
+                },
+              };
             if (holdEvaluate) {
               holdEvaluate = false;
               await new Promise<void>((resolve) => {
@@ -4677,20 +4713,21 @@ describe("PreviewManager", () => {
         expect(installs).toHaveLength(1);
         const willDownload = installs[0]![1] as (
           event: unknown,
-          item: {
-            getFilename: () => string;
-            getStartTime: () => number;
-            setSavePath: (path: string) => void;
-          },
+          item: Electron.DownloadItem,
           source: Electron.WebContents,
         ) => void;
-        const download = () => {
+        const download = (totalBytes = 100) => {
           const setSavePath = vi.fn();
-          willDownload(
-            {},
-            { getFilename: () => "chart.png", getStartTime: () => 1_790_844_530.5, setSavePath },
-            wc,
-          );
+          const item = Object.assign(new NodeEvents.EventEmitter(), {
+            getFilename: () => "chart.png",
+            getStartTime: () => 1_790_844_530.5,
+            getTotalBytes: () => totalBytes,
+            getReceivedBytes: () => 100,
+            setSavePath,
+            cancel: vi.fn(),
+          });
+          willDownload({}, item as unknown as Electron.DownloadItem, wc);
+          item.emit("done", {}, "completed");
           return setSavePath;
         };
         yield* manager.createTab("tab_1");
@@ -4701,11 +4738,21 @@ describe("PreviewManager", () => {
         yield* manager.automationEvaluate("tab_1", { expression: "42" });
         const startedAt = (1_790_844_530_500).toString(36);
         expect(download()).toHaveBeenCalledWith(
-          `/tmp/t3/dev/browser-artifacts/browser-download-${startedAt}-0-chart.png`,
+          `${browserArtifactsDir}/agent-downloads/browser-download-${startedAt}-0-chart.png`,
         );
         // Same name, same millisecond: still a separate file.
         expect(download()).toHaveBeenCalledWith(
-          `/tmp/t3/dev/browser-artifacts/browser-download-${startedAt}-1-chart.png`,
+          `${browserArtifactsDir}/agent-downloads/browser-download-${startedAt}-1-chart.png`,
+        );
+
+        expect(download(MAX_AGENT_DOWNLOAD_BYTES + 1)).not.toHaveBeenCalled();
+        const snapshot = yield* manager.automationSnapshot("tab_1");
+        expect(snapshot.actionTimeline).toContainEqual(
+          expect.objectContaining({
+            action: "download",
+            status: "failed",
+            error: expect.stringContaining("byte limit"),
+          }),
         );
 
         humanInput?.({}, { kind: "pointer", x: 10, y: 10, button: 0 });
@@ -4728,6 +4775,45 @@ describe("PreviewManager", () => {
         yield* Fiber.await(running);
         expect(Exit.isFailure(yield* Fiber.await(queued))).toBe(true);
         expect(download()).not.toHaveBeenCalled();
+
+        // Every toolbar action gives ownership back before it can start a download.
+        const toolbarNavigation = vi.fn(() => {
+          expect(download()).not.toHaveBeenCalled();
+        });
+        Object.assign(wc, {
+          reload: toolbarNavigation,
+          reloadIgnoringCache: toolbarNavigation,
+        });
+        Object.assign(wc.navigationHistory, {
+          goBack: toolbarNavigation,
+          goForward: toolbarNavigation,
+        });
+        for (const action of ["goBack", "goForward", "refresh", "hardReload"] as const) {
+          toolbarNavigation.mockClear();
+          yield* manager.automationEvaluate("tab_1", { expression: "42" });
+          expect(download(), action).toHaveBeenCalled();
+          yield* manager[action]("tab_1");
+          expect(toolbarNavigation, action).toHaveBeenCalledOnce();
+          expect(download(), action).not.toHaveBeenCalled();
+
+          // A running or queued action cannot reclaim ownership after navigation.
+          holdEvaluate = true;
+          yield* Effect.sync(() => {
+            releaseEvaluate = undefined;
+          });
+          const pending = yield* manager
+            .automationEvaluate("tab_1", { expression: "42" })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* settle(() => releaseEvaluate !== undefined);
+          const waiting = yield* manager
+            .automationEvaluate("tab_1", { expression: "42" })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* manager[action]("tab_1");
+          releaseEvaluate?.();
+          expect(Exit.isFailure(yield* Fiber.await(pending)), action).toBe(true);
+          expect(Exit.isFailure(yield* Fiber.await(waiting)), action).toBe(true);
+          expect(download(), action).not.toHaveBeenCalled();
+        }
 
         // URL-bar navigation hands the page back to the human.
         yield* manager.automationEvaluate("tab_1", { expression: "42" });

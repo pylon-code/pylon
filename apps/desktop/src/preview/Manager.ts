@@ -69,6 +69,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { PREVIEW_PICTURE_IN_PICTURE_FRAME_CHANNEL } from "../ipc/channels.ts";
 import * as BrowserSession from "./BrowserSession.ts";
+import { createCapturedDownloads } from "./CapturedDownloads.ts";
 import {
   ANNOTATION_CAPTURED_CHANNEL,
   ANNOTATION_THEME_CHANNEL,
@@ -2009,6 +2010,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           ? (payload as { direction?: unknown }).direction
           : undefined;
       if (direction !== "back" && direction !== "forward") return;
+      agentDrivenWebContents.delete(wc);
       runFork(
         attempt({ operation: "mouseNavigate", tabId, webContentsId: wc.id }, () => {
           if (direction === "back") {
@@ -2532,26 +2534,34 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
-  const withWebContents = Effect.fn("PreviewManager.withWebContents")(function* (
+  // These methods serve human toolbar/IPC actions. Agent tools navigate/evaluate
+  // instead; they never call these four human navigation methods.
+  const withHumanNavigation = Effect.fn("PreviewManager.withHumanNavigation")(function* (
     operation: string,
     tabId: string,
     use: (wc: Electron.WebContents) => void,
   ) {
     const wc = yield* requireWebContents(tabId);
+    agentDrivenWebContents.delete(wc);
+    yield* Ref.update(controlEpochRef, (epochs) =>
+      replaceMap(epochs, (copy) => {
+        copy.set(tabId, (epochs.get(tabId) ?? 0) + 1);
+      }),
+    );
     yield* attempt({ operation, tabId, webContentsId: wc.id }, () => use(wc));
   });
 
   const goBack = (tabId: string) =>
-    withWebContents("goBack", tabId, (wc) => {
+    withHumanNavigation("goBack", tabId, (wc) => {
       if (wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
     });
   const goForward = (tabId: string) =>
-    withWebContents("goForward", tabId, (wc) => {
+    withHumanNavigation("goForward", tabId, (wc) => {
       if (wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
     });
-  const refresh = (tabId: string) => withWebContents("refresh", tabId, (wc) => wc.reload());
+  const refresh = (tabId: string) => withHumanNavigation("refresh", tabId, (wc) => wc.reload());
   const hardReload = (tabId: string) =>
-    withWebContents("hardReload", tabId, (wc) => wc.reloadIgnoringCache());
+    withHumanNavigation("hardReload", tabId, (wc) => wc.reloadIgnoringCache());
 
   const openDevTools = Effect.fn("PreviewManager.openDevTools")(function* (tabId: string) {
     const wc = yield* requireWebContents(tabId);
@@ -3545,23 +3555,61 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     });
   };
 
+  const capturedDownloads = createCapturedDownloads(resolvedArtifactDirectory);
+  yield* Scope.addFinalizer(
+    parentScope,
+    Effect.sync(() => capturedDownloads.dispose()),
+  );
+
   // Installed once per session. Electron opens a native Save dialog for a
   // download with no save path, so every export an agent clicked while testing
   // a page put a modal over the whole app. Downloads from a page the agent drove
   // last go to the artifact directory instead. Downloads the human starts keep
   // the Save dialog.
-  const installDownloadHandler = (session: Session) => {
+  const installDownloadHandler = Effect.fn("PreviewManager.installDownloadHandler")(function* (
+    session: Session,
+  ) {
     if (downloadHandlerSessions.has(session)) return;
     downloadHandlerSessions.add(session);
-    session.on("will-download", (_event, item, source) => {
+    const onDownload = (
+      _event: Electron.Event,
+      item: Electron.DownloadItem,
+      source: Electron.WebContents,
+    ) => {
       if (!agentDrivenWebContents.has(source)) return;
       // The start time keeps names unique across restarts; the count keeps two
       // same-name downloads in one millisecond from overwriting each other.
       const id = `${Math.round(item.getStartTime() * 1000).toString(36)}-${(downloadCount++).toString(36)}`;
       const fileName = `browser-download-${id}-${path.basename(item.getFilename())}`;
-      item.setSavePath(path.join(resolvedArtifactDirectory, fileName));
-    });
-  };
+      capturedDownloads.capture(item, fileName, (error) => {
+        runFork(
+          Effect.gen(function* () {
+            const tabId = yield* tabIdForWebContents(source.id);
+            if (!tabId) return;
+            const completedAt = yield* currentIso;
+            // Downloads finish after the initiating click/evaluate returns. The
+            // next agent snapshot reads this existing action timeline channel.
+            yield* pushAction(tabId, {
+              id: `browser-download-${id}`,
+              action: "download",
+              status: "failed",
+              startedAt: completedAt,
+              completedAt,
+              error,
+            });
+          }),
+        );
+      });
+    };
+    session.on("will-download", onDownload);
+    yield* Scope.addFinalizer(
+      parentScope,
+      Effect.sync(() => {
+        session.off("will-download", onDownload);
+        downloadHandlerSessions.delete(session);
+      }),
+    );
+  });
 
   const startRecording = Effect.fn("PreviewManager.startRecording")(function* (
     tabId: string,
@@ -5154,7 +5202,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
               (cause) => new PreviewOperationError({ operation: "getBrowserSession", cause }),
             ),
           );
-        operations.installDownloadHandler(session);
+        yield* operations.installDownloadHandler(session);
         return session;
       },
     ),
