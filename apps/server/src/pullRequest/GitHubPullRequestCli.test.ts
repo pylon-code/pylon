@@ -274,11 +274,20 @@ layer("GitHubPullRequestCli.layer", (it) => {
     }),
   );
 
-  it.effect("reads a pull request the batch said nothing about on its own", () =>
-    Effect.gen(function* () {
-      mockedExecute
-        .mockReturnValueOnce(Effect.succeed(output('{"data":{"s0":{"pullRequest":null}}}')))
-        .mockReturnValueOnce(
+  for (const [label, response] of [
+    ["missing alias", '{"data":{"s0":{"pullRequest":null}}}'],
+    [
+      "unsupported stack field",
+      '{"data":null,"errors":[{"message":"Field stack does not exist"}]}',
+    ],
+    [
+      "missing GraphQL scope",
+      '{"data":null,"errors":[{"message":"Resource not accessible by integration"}]}',
+    ],
+  ] as const) {
+    it.effect(`reads a pull request on its own after a ${label}`, () =>
+      Effect.gen(function* () {
+        mockedExecute.mockReturnValueOnce(Effect.succeed(output(response))).mockReturnValueOnce(
           Effect.succeed(
             output(
               // @effect-diagnostics-next-line preferSchemaOverJson:off
@@ -313,28 +322,34 @@ layer("GitHubPullRequestCli.layer", (it) => {
             ),
           ),
         );
-      const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+        const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
 
-      const read = yield* cli
-        .getPullRequestSummary({ cwd: "/w", repository: "acme/web", host: "github.com", number: 7 })
-        .pipe(Effect.forkChild);
-      yield* TestClock.adjust("10 millis");
-      const summary = yield* Fiber.join(read);
+        const read = yield* cli
+          .getPullRequestSummary({
+            cwd: "/w",
+            repository: "acme/web",
+            host: "github.com",
+            number: 7,
+          })
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust("10 millis");
+        const summary = yield* Fiber.join(read);
 
-      assert.strictEqual(summary.headBranch, "feat/summary");
-      assert.strictEqual(summary.checksState, "passing");
-      assert.strictEqual(mockedExecute.mock.calls.length, 2);
-      expect(callAt(1).args).toEqual([
-        "pr",
-        "view",
-        "7",
-        "--repo",
-        "github.com/acme/web",
-        "--json",
-        expect.stringContaining("statusCheckRollup"),
-      ]);
-    }),
-  );
+        assert.strictEqual(summary.headBranch, "feat/summary");
+        assert.strictEqual(summary.checksState, "passing");
+        assert.strictEqual(mockedExecute.mock.calls.length, 2);
+        expect(callAt(1).args).toEqual([
+          "pr",
+          "view",
+          "7",
+          "--repo",
+          "github.com/acme/web",
+          "--json",
+          expect.stringContaining("statusCheckRollup"),
+        ]);
+      }),
+    );
+  }
 
   it.effect("does not fan out summary reads after a rejected GraphQL batch", () =>
     Effect.gen(function* () {
