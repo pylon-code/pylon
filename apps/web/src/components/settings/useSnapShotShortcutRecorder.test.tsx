@@ -101,6 +101,22 @@ it("records macOS Command without treating it as Control", async () => {
   (await start(true)).input.props.onKeyDown(event("k", "KeyK", { metaKey: true }));
   expect(recorded).toHaveBeenCalledWith(expect.objectContaining({ key: "k", modKey: true }));
 });
+it.each([
+  ["k", "KeyK"],
+  ["F5", "F5"],
+])("ignores unmodified %s and keeps recording for a global shortcut", async (key, code) => {
+  const recorder = await start();
+  recorder.input.props.onKeyDown(event(key, code));
+  expect(recorded).not.toHaveBeenCalled();
+  expect(render().recording).toBe(true);
+  expect(suppress).toHaveBeenLastCalledWith(true);
+  render().input.props.onKeyDown(event("k", "KeyK", { ctrlKey: true }));
+  expect(recorded).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ key: "k", modKey: true }),
+  );
+  expect(render().recording).toBe(false);
+  expect(suppress).toHaveBeenLastCalledWith(false);
+});
 it.each(["Escape", "blur", "unmount"])("cancels on %s without selecting keys", async (cancel) => {
   const recorder = await start();
   if (cancel === "Escape") {
