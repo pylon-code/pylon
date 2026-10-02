@@ -460,7 +460,8 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 environmentId,
                 input: {
                   threadId: request.threadId,
-                  ...(resolvedInputUrl ? { url: resolvedInputUrl } : {}),
+                  // Attach blank first. An initial webview src would load before
+                  // main can mark the guest as agent-driven for download capture.
                   // An agent that didn't state a size gets the user's
                   // configured default, same as a hand-opened tab.
                   viewport: browserDefaultOpenViewport(defaults),
@@ -558,9 +559,19 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               // operation failure.
               await waitForPreviewPresentation(activeRuntimeTabId);
             }
-            if (reusedExistingTab && resolvedInputUrl && previewBridge) {
+            if (resolvedInputUrl && previewBridge) {
               assertPreviewRuntimeCurrent(threadRef, activeTabId, activeRuntimeTabId, request);
-              await previewBridge.navigate(activeRuntimeTabId, resolvedInputUrl);
+              const navigation = await previewBridge.navigate(
+                activeRuntimeTabId,
+                resolvedInputUrl,
+                "agent",
+              );
+              if (navigation)
+                return {
+                  ...(await currentStatus(threadRef, activeTabId)),
+                  ...navigation,
+                  loading: false,
+                };
               await waitForNavigationReadiness(
                 threadRef,
                 request.requestId,
@@ -583,7 +594,17 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 url: input.url!,
               },
             );
-            await ready.bridge.navigate(ready.runtimeTabId, resolution.resolvedUrl);
+            const navigation = await ready.bridge.navigate(
+              ready.runtimeTabId,
+              resolution.resolvedUrl,
+              "agent",
+            );
+            if (navigation)
+              return {
+                ...(await currentStatus(threadRef, ready.tabId)),
+                ...navigation,
+                loading: false,
+              };
             await waitForNavigationReadiness(
               threadRef,
               request.requestId,

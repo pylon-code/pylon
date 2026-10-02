@@ -1,3 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Captured downloads use isolated temporary native filesystem fixtures, removed after the suite.
+import * as NodeEvents from "node:events";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as NodeVM from "node:vm";
 import { it as effectIt } from "@effect/vitest";
 import { DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER } from "@t3tools/contracts";
@@ -19,12 +24,17 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import { TestClock } from "effect/testing";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as BrowserSession from "./BrowserSession.ts";
+import { MAX_AGENT_DOWNLOAD_BYTES } from "./CapturedDownloads.ts";
 import * as PreviewManager from "./Manager.ts";
+
+const fixtureDirectory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "pylon-preview-"));
+const browserArtifactsDir = NodePath.join(fixtureDirectory, "browser-artifacts");
+afterAll(() => NodeFS.rmSync(fixtureDirectory, { recursive: true, force: true }));
 
 describe("fitPictureInPictureContentSize", () => {
   it("preserves the PiP content area across aspect-ratio changes", () => {
@@ -186,6 +196,7 @@ const {
   fromId,
   getFocusedWebContents,
   mkdir,
+  previewSession,
   showItemInFolder,
   webviewSend,
   writeFile,
@@ -200,6 +211,7 @@ const {
   fromId: vi.fn<(_id?: number) => Electron.WebContents | null>((_id?: number) => null),
   getFocusedWebContents: vi.fn(() => null),
   mkdir: vi.fn((_path: string) => undefined),
+  previewSession: { on: vi.fn(), off: vi.fn() },
   showItemInFolder: vi.fn(),
   webviewSend: vi.fn(),
   writeFile: vi.fn((_path: string, _data: Uint8Array) => undefined),
@@ -237,7 +249,7 @@ const browserSessionLayer = Layer.succeed(
   BrowserSession.BrowserSession.of({
     getPartition: () => Effect.succeed("persist:pylon-code-preview-test"),
     isPartition: (partition) => partition.startsWith("persist:pylon-code-preview-"),
-    getSession: () => Effect.die("unexpected getSession"),
+    getSession: () => Effect.succeed(previewSession as unknown as Electron.Session),
     clearCookies: () => Effect.void,
     clearCache: () => Effect.void,
   }),
@@ -246,7 +258,7 @@ const browserSessionLayer = Layer.succeed(
 const environmentLayer = Layer.succeed(
   DesktopEnvironment.DesktopEnvironment,
   DesktopEnvironment.DesktopEnvironment.of({
-    browserArtifactsDir: "/tmp/t3/dev/browser-artifacts",
+    browserArtifactsDir: browserArtifactsDir,
     dirname: "/tmp/t3/desktop",
     path: {
       join: (...parts: ReadonlyArray<string>) => parts.join("/"),
@@ -548,6 +560,8 @@ describe("PreviewManager", () => {
     getFocusedWebContents.mockReset();
     getFocusedWebContents.mockReturnValue(null);
     mkdir.mockClear();
+    previewSession.on.mockClear();
+    previewSession.off.mockClear();
     writeFile.mockClear();
     showItemInFolder.mockClear();
     clipboardItemConstructor.mockClear();
@@ -819,7 +833,7 @@ describe("PreviewManager", () => {
           },
         } as never);
 
-        yield* manager.navigate("tab_pending", "localhost:3200");
+        yield* manager.navigate("tab_pending", "localhost:3200", "human");
 
         expect(yield* manager.automationStatus("tab_pending")).toEqual({
           available: false,
@@ -855,7 +869,7 @@ describe("PreviewManager", () => {
         yield* manager.setColorScheme("tab_destroyed_navigation", "dark");
         preview.setDestroyed(true);
 
-        yield* manager.navigate("tab_destroyed_navigation", "https://example.com/");
+        yield* manager.navigate("tab_destroyed_navigation", "https://example.com/", "human");
 
         expect(preview.loadURL).not.toHaveBeenCalled();
         expect(preview.reload).not.toHaveBeenCalled();
@@ -923,7 +937,7 @@ describe("PreviewManager", () => {
         expect(attached).toBe(true);
         destroyed = true;
 
-        yield* manager.navigate("tab_pinned_debugger", "https://example.com/");
+        yield* manager.navigate("tab_pinned_debugger", "https://example.com/", "human");
 
         expect(debuggerOff).toHaveBeenCalledWith("message", expect.any(Function));
         expect(debuggerDetach).toHaveBeenCalledOnce();
@@ -961,7 +975,7 @@ describe("PreviewManager", () => {
           }),
         );
 
-        yield* manager.navigate("tab_destroyed_replacement_race", "https://example.com/");
+        yield* manager.navigate("tab_destroyed_replacement_race", "https://example.com/", "human");
         const registrationExit = yield* Fiber.await(replacementRegistration);
 
         expect(Exit.isSuccess(registrationExit)).toBe(true);
@@ -1143,7 +1157,7 @@ describe("PreviewManager", () => {
         );
         yield* settle(() => states.at(-1)?.favicon !== undefined);
 
-        yield* manager.navigate("tab_favicon_reload", "http://localhost:3200/");
+        yield* manager.navigate("tab_favicon_reload", "http://localhost:3200/", "human");
 
         expect(preview.reload).toHaveBeenCalledOnce();
         expect(states.at(-1)?.favicon?.dataUrl).toBe(TEST_FAVICON);
@@ -1600,7 +1614,7 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("emulates prefers-color-scheme and re-applies it across webview swaps", () =>
+  effectIt.effect("re-applies opaque base and color scheme across webview swaps", () =>
     withManager((manager) =>
       Effect.gen(function* () {
         const makeWebContents = (id: number) => {
@@ -1649,6 +1663,16 @@ describe("PreviewManager", () => {
         yield* manager.registerWebview("tab_scheme", 42);
         yield* Effect.yieldNow;
 
+        // Guests start with a transparent base; dark-scheme pages need an opaque
+        // one or Chromium skips their dark canvas.
+        const opaqueBase = {
+          color: { r: 255, g: 255, b: 255, a: 1 },
+        };
+        expect(first.sendCommand).toHaveBeenCalledWith(
+          "Emulation.setDefaultBackgroundColorOverride",
+          opaqueBase,
+        );
+
         yield* manager.setColorScheme("tab_scheme", "dark");
 
         expect(first.sendCommand).toHaveBeenCalledWith("Emulation.setEmulatedMedia", {
@@ -1661,6 +1685,10 @@ describe("PreviewManager", () => {
         yield* manager.registerWebview("tab_scheme", 43);
         yield* Effect.yieldNow;
 
+        expect(replacement.sendCommand).toHaveBeenCalledWith(
+          "Emulation.setDefaultBackgroundColorOverride",
+          opaqueBase,
+        );
         expect(replacement.sendCommand).toHaveBeenCalledWith("Emulation.setEmulatedMedia", {
           features: [{ name: "prefers-color-scheme", value: "dark" }],
         });
@@ -1941,7 +1969,7 @@ describe("PreviewManager", () => {
         yield* Effect.yieldNow;
         expect(states.at(-1)?.audible).toBe(true);
 
-        yield* manager.navigate("tab_audio_nav", "https://example.com/next");
+        yield* manager.navigate("tab_audio_nav", "https://example.com/next", "human");
         yield* Effect.yieldNow;
 
         // navigate runs before loadURL swaps the document, so the old page can
@@ -2177,7 +2205,7 @@ describe("PreviewManager", () => {
         const artifact = yield* manager.captureScreenshot("tab_1");
 
         expect(capturePage).toHaveBeenCalledOnce();
-        expect(mkdir).toHaveBeenCalledWith("/tmp/t3/dev/browser-artifacts");
+        expect(mkdir).toHaveBeenCalledWith(browserArtifactsDir);
         expect(writeFile).toHaveBeenCalledWith(artifact.path, png);
         expect(artifact).toMatchObject({
           tabId: "tab_1",
@@ -4017,10 +4045,10 @@ describe("PreviewManager", () => {
   effectIt.effect("reveals only files inside the configured browser artifact directory", () =>
     withManager((manager) =>
       Effect.gen(function* () {
-        yield* manager.revealArtifact("/tmp/t3/dev/browser-artifacts/browser-screenshot-test.png");
+        yield* manager.revealArtifact(`${browserArtifactsDir}/browser-screenshot-test.png`);
 
         expect(showItemInFolder).toHaveBeenCalledWith(
-          "/tmp/t3/dev/browser-artifacts/browser-screenshot-test.png",
+          `${browserArtifactsDir}/browser-screenshot-test.png`,
         );
         const exit = yield* Effect.exit(manager.revealArtifact("/tmp/t3/dev/settings.json"));
         expect(Exit.isFailure(exit)).toBe(true);
@@ -4029,7 +4057,7 @@ describe("PreviewManager", () => {
         expect(error).toMatchObject({
           _tag: "PreviewArtifactPathOutsideDirectoryError",
           artifactPath: "/tmp/t3/dev/settings.json",
-          artifactDirectory: "/tmp/t3/dev/browser-artifacts",
+          artifactDirectory: browserArtifactsDir,
         });
         expect("cause" in error).toBe(false);
       }),
@@ -4039,7 +4067,7 @@ describe("PreviewManager", () => {
   effectIt.effect("copies screenshot artifacts to the system clipboard", () =>
     withManager((manager) =>
       Effect.gen(function* () {
-        const artifactPath = "/tmp/t3/dev/browser-artifacts/browser-screenshot-test.png";
+        const artifactPath = `${browserArtifactsDir}/browser-screenshot-test.png`;
 
         yield* manager.copyArtifactToClipboard(artifactPath);
 
@@ -4057,7 +4085,7 @@ describe("PreviewManager", () => {
         expect(error).toMatchObject({
           _tag: "PreviewArtifactPathOutsideDirectoryError",
           artifactPath: "/tmp/t3/dev/settings.json",
-          artifactDirectory: "/tmp/t3/dev/browser-artifacts",
+          artifactDirectory: browserArtifactsDir,
         });
         expect("cause" in error).toBe(false);
 
@@ -4606,6 +4634,452 @@ describe("PreviewManager", () => {
           detailLength: text.length,
           cause: exceptionDetails,
         });
+      }),
+    ),
+  );
+  for (const scenario of [
+    { code: "ERR_ABORTED", capture: "during", origin: "agent", url: "about:blank", ok: true },
+    {
+      code: "ERR_ABORTED",
+      capture: "during",
+      origin: "agent",
+      url: "https://example.com",
+      ok: true,
+    },
+    {
+      code: "ERR_ABORTED",
+      capture: "none",
+      origin: "agent",
+      url: "https://example.com",
+      ok: false,
+    },
+    {
+      code: "ERR_ABORTED",
+      capture: "before",
+      origin: "agent",
+      url: "https://example.com",
+      ok: false,
+    },
+    {
+      code: "ERR_FAILED",
+      capture: "during",
+      origin: "agent",
+      url: "https://example.com",
+      ok: false,
+    },
+    {
+      code: "ERR_ABORTED",
+      capture: "during",
+      origin: "human",
+      url: "https://example.com",
+      ok: false,
+    },
+    { code: "ERR_ABORTED", capture: "after", origin: "agent", url: "", ok: true },
+    {
+      code: "ERR_ABORTED",
+      capture: "iframe",
+      origin: "agent",
+      url: "https://example.com",
+      ok: false,
+    },
+    {
+      code: "ERR_ABORTED",
+      capture: "old-url",
+      origin: "agent",
+      url: "https://example.com",
+      ok: false,
+    },
+  ] as const) {
+    effectIt.effect(
+      `attachment navigation ${scenario.code}, capture ${scenario.capture}, ${scenario.origin}, page ${scenario.url}`,
+      () =>
+        withManager((manager) =>
+          Effect.gen(function* () {
+            const wc = makeTestPreviewWebContents(vi.fn());
+            Object.assign(wc, {
+              getURL: () => scenario.url,
+              isDevToolsOpened: () => false,
+              reload: vi.fn(),
+            });
+            fromId.mockReturnValue(wc);
+            yield* manager.getBrowserSession();
+            const willDownload = previewSession.on.mock.calls.find(
+              ([event]) => event === "will-download",
+            )![1] as (
+              event: unknown,
+              item: Electron.DownloadItem,
+              source: Electron.WebContents,
+              frame: Electron.WebFrameMain | null,
+            ) => void;
+            const setSavePath = vi.fn();
+            const capture = () => {
+              const item = Object.assign(new NodeEvents.EventEmitter(), {
+                getURLChain: () => [
+                  scenario.capture === "old-url"
+                    ? "https://example.com/old.csv"
+                    : "https://EXAMPLE.com:443/report.csv",
+                  "https://example.com/redirected.csv",
+                ],
+                getFilename: () => "report.csv",
+                getStartTime: () => 1_790_844_530.5,
+                getTotalBytes: () => 100,
+                getReceivedBytes: () => 100,
+                setSavePath,
+                cancel: vi.fn(),
+              });
+              willDownload(
+                {},
+                item as unknown as Electron.DownloadItem,
+                wc,
+                scenario.capture === "iframe"
+                  ? makeTestPreviewWebContents(vi.fn(), 43).mainFrame
+                  : wc.mainFrame,
+              );
+              item.emit("done", {}, "completed");
+            };
+            yield* manager.createTab("download-tab");
+            yield* manager.registerWebview("download-tab", wc.id);
+            if (scenario.capture === "before") {
+              yield* manager.refresh("download-tab", "agent");
+              capture();
+            }
+            const rejected = Object.assign(new Error(`${scenario.code} loading attachment`), {
+              code: scenario.code,
+              errno: scenario.code === "ERR_ABORTED" ? -3 : -2,
+            });
+            Object.assign(wc, {
+              loadURL: vi.fn(async () => {
+                if (scenario.capture === "during") capture();
+                throw rejected;
+              }),
+            });
+            const navigation = yield* Effect.forkChild(
+              Effect.exit(
+                manager.navigate("download-tab", "https://example.com/report.csv", scenario.origin),
+              ),
+            );
+            // Advancing the test clock drains the rejected native promise before
+            // delivering a late event, and exercises the bounded grace period.
+            yield* TestClock.adjust(500);
+            if (["after", "iframe", "old-url"].includes(scenario.capture)) capture();
+            yield* TestClock.adjust(500);
+            const result = yield* Fiber.join(navigation);
+            if (scenario.ok) {
+              expect(Exit.isSuccess(result)).toBe(true);
+              if (Exit.isFailure(result)) return;
+              expect(result.value).toEqual({
+                url: scenario.url || "https://example.com/report.csv",
+                download: {
+                  fileName: "report.csv",
+                  path: setSavePath.mock.calls[0]![0],
+                  sizeBytes: 100,
+                  state: "started",
+                },
+              });
+            } else {
+              expect(Exit.isFailure(result)).toBe(true);
+              if (Exit.isSuccess(result)) return;
+              expect(Option.getOrThrow(Cause.findErrorOption(result.cause))).toMatchObject({
+                _tag: "PreviewOperationError",
+                operation: "navigate.loadURL",
+                cause: rejected,
+              });
+            }
+          }),
+        ),
+    );
+  }
+
+  effectIt.effect("does not recover a superseded attachment navigation", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const wc = makeTestPreviewWebContents(vi.fn());
+        const rejectNavigation: Array<(error: Error) => void> = [];
+        Object.assign(wc, {
+          isDevToolsOpened: () => false,
+          loadURL: vi.fn(
+            () =>
+              new Promise<void>((_resolve, reject) => {
+                rejectNavigation.push(reject);
+              }),
+          ),
+        });
+        fromId.mockReturnValue(wc);
+        yield* manager.getBrowserSession();
+        yield* manager.createTab("download-tab");
+        yield* manager.registerWebview("download-tab", wc.id);
+        const willDownload = previewSession.on.mock.calls.find(
+          ([event]) => event === "will-download",
+        )![1] as (
+          event: unknown,
+          item: Electron.DownloadItem,
+          source: Electron.WebContents,
+          frame: Electron.WebFrameMain | null,
+        ) => void;
+        const capture = (url: string) => {
+          const item = Object.assign(new NodeEvents.EventEmitter(), {
+            getURLChain: () => [url],
+            getFilename: () => "report.csv",
+            getStartTime: () => 1_790_844_530.5,
+            getTotalBytes: () => 100,
+            getReceivedBytes: () => 100,
+            setSavePath: vi.fn(),
+            cancel: vi.fn(),
+          });
+          willDownload({}, item as unknown as Electron.DownloadItem, wc, wc.mainFrame);
+          item.emit("done", {}, "completed");
+        };
+        const oldUrl = "https://example.com/old.csv";
+        const newUrl = "https://example.com/new.csv";
+        const oldNavigation = yield* Effect.forkChild(
+          Effect.exit(manager.navigate("download-tab", oldUrl, "agent")),
+        );
+        yield* TestClock.adjust(0);
+        expect(rejectNavigation).toHaveLength(1);
+        // Even a matching capture already observed for the old request cannot
+        // recover its abort once a newer navigation has taken over.
+        capture(oldUrl);
+        const newNavigation = yield* Effect.forkChild(
+          Effect.exit(manager.navigate("download-tab", newUrl, "agent")),
+        );
+        yield* TestClock.adjust(0);
+        expect(rejectNavigation).toHaveLength(2);
+        capture(oldUrl); // A delayed earlier export must not match the new request.
+        const aborted = Object.assign(new Error("ERR_ABORTED"), { code: "ERR_ABORTED" });
+        rejectNavigation[0]!(aborted);
+        rejectNavigation[1]!(aborted);
+        yield* TestClock.adjust(500);
+        capture(newUrl);
+        const oldResult = yield* Fiber.join(oldNavigation);
+        expect(Exit.isFailure(oldResult)).toBe(true);
+        const newResult = yield* Fiber.join(newNavigation);
+        expect(Exit.isSuccess(newResult)).toBe(true);
+        if (Exit.isSuccess(newResult))
+          expect(newResult.value).toMatchObject({
+            url: "https://example.com",
+            download: { fileName: "report.csv", sizeBytes: 100 },
+          });
+        // Completed tracking must not leak into a subsequent aborted request.
+        const later = yield* Effect.forkChild(
+          Effect.exit(manager.navigate("download-tab", newUrl, "agent")),
+        );
+        yield* TestClock.adjust(0);
+        expect(rejectNavigation).toHaveLength(3);
+        rejectNavigation[2]!(aborted);
+        yield* TestClock.adjust(1_000);
+        expect(Exit.isFailure(yield* Fiber.join(later))).toBe(true);
+      }),
+    ),
+  );
+
+  effectIt.effect("saves downloads from agent-driven pages without a Save dialog", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let humanInput: ((event: unknown, signal?: unknown) => void) | undefined;
+        const wc = makeTestPreviewWebContents(
+          vi.fn(async () => ({
+            toJPEG: () => Buffer.from("snapshot"),
+            toPNG: () => Buffer.from("snapshot"),
+            getSize: () => ({ width: 800, height: 600 }),
+          })),
+        );
+        Object.assign(wc, {
+          isDevToolsOpened: () => false,
+          loadURL: vi.fn(async () => undefined),
+          reload: vi.fn(),
+          reloadIgnoringCache: vi.fn(),
+          navigationHistory: {
+            canGoBack: () => true,
+            canGoForward: () => true,
+            goBack: vi.fn(),
+            goForward: vi.fn(),
+          },
+        });
+        Object.assign(wc.ipc, {
+          on: vi.fn((channel: string, listener: typeof humanInput) => {
+            if (channel === "preview:human-input") humanInput = listener;
+          }),
+        });
+        let holdEvaluate = false;
+        let releaseEvaluate: (() => void) | undefined;
+        Object.assign(wc.debugger, {
+          sendCommand: vi.fn(async (method: string, params?: { expression?: string }) => {
+            if (method !== "Runtime.evaluate") return undefined;
+            if (params?.expression?.includes("matched"))
+              return { result: { value: { matched: true } } };
+            if (params?.expression?.includes("visibleText"))
+              return {
+                result: {
+                  value: {
+                    url: "https://example.com",
+                    title: "Example",
+                    loading: false,
+                    visibleText: "Example",
+                    interactiveElements: [],
+                  },
+                },
+              };
+            if (holdEvaluate) {
+              holdEvaluate = false;
+              await new Promise<void>((resolve) => {
+                releaseEvaluate = resolve;
+              });
+            }
+            return { result: { value: 42 } };
+          }),
+        });
+        fromId.mockReturnValue(wc);
+        const takeovers = [yield* Deferred.make<void>(), yield* Deferred.make<void>()];
+        let takeoverCount = 0;
+        let controller = "none";
+        yield* manager.subscribeStateChanges((_tabId, state) => {
+          const takeover =
+            controller !== "human" && state.controller === "human"
+              ? takeovers[takeoverCount++]
+              : undefined;
+          controller = state.controller;
+          return takeover ? Deferred.succeed(takeover, undefined).pipe(Effect.asVoid) : Effect.void;
+        });
+        yield* manager.getBrowserSession();
+        yield* manager.getBrowserSession();
+        const installs = previewSession.on.mock.calls.filter(
+          ([event]) => event === "will-download",
+        );
+        expect(installs).toHaveLength(1);
+        const willDownload = installs[0]![1] as (
+          event: unknown,
+          item: Electron.DownloadItem,
+          source: Electron.WebContents,
+          frame: Electron.WebFrameMain | null,
+        ) => void;
+        const download = (totalBytes = 100) => {
+          const setSavePath = vi.fn();
+          const item = Object.assign(new NodeEvents.EventEmitter(), {
+            getURLChain: () => ["https://example.com/chart.png"],
+            getFilename: () => "chart.png",
+            getStartTime: () => 1_790_844_530.5,
+            getTotalBytes: () => totalBytes,
+            getReceivedBytes: () => 100,
+            setSavePath,
+            cancel: vi.fn(),
+          });
+          willDownload({}, item as unknown as Electron.DownloadItem, wc, wc.mainFrame);
+          item.emit("done", {}, "completed");
+          return setSavePath;
+        };
+        yield* manager.createTab("tab_1");
+        yield* manager.registerWebview("tab_1", 42);
+
+        expect(download()).not.toHaveBeenCalled();
+
+        yield* manager.automationEvaluate("tab_1", { expression: "42" });
+        const startedAt = (1_790_844_530_500).toString(36);
+        expect(download()).toHaveBeenCalledWith(
+          `${browserArtifactsDir}/agent-downloads/browser-download-${startedAt}-0-chart.png`,
+        );
+        // Same name, same millisecond: still a separate file.
+        expect(download()).toHaveBeenCalledWith(
+          `${browserArtifactsDir}/agent-downloads/browser-download-${startedAt}-1-chart.png`,
+        );
+
+        expect(download(MAX_AGENT_DOWNLOAD_BYTES + 1)).not.toHaveBeenCalled();
+        const snapshot = yield* manager.automationSnapshot("tab_1");
+        expect(snapshot.actionTimeline).toContainEqual(
+          expect.objectContaining({
+            action: "download",
+            status: "failed",
+            error: expect.stringContaining("byte limit"),
+          }),
+        );
+
+        humanInput?.({}, { kind: "pointer", x: 10, y: 10, button: 0 });
+        yield* Deferred.await(takeovers[0]!);
+        expect(download()).not.toHaveBeenCalled();
+
+        // An action still waiting for the page when the human takes over must
+        // not mark it as agent-driven again.
+        holdEvaluate = true;
+        const running = yield* manager
+          .automationEvaluate("tab_1", { expression: "42" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* settle(() => releaseEvaluate !== undefined);
+        const queued = yield* manager
+          .automationEvaluate("tab_1", { expression: "42" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        humanInput?.({}, { kind: "pointer", x: 20, y: 20, button: 0 });
+        yield* Deferred.await(takeovers[1]!);
+        releaseEvaluate?.();
+        yield* Fiber.await(running);
+        expect(Exit.isFailure(yield* Fiber.await(queued))).toBe(true);
+        expect(download()).not.toHaveBeenCalled();
+
+        // Every toolbar action gives ownership back before it can start a download.
+        let navigationCapture = false;
+        const toolbarNavigation = vi.fn(() => {
+          if (navigationCapture) expect(download()).toHaveBeenCalled();
+          else expect(download()).not.toHaveBeenCalled();
+        });
+        Object.assign(wc, {
+          reload: toolbarNavigation,
+          reloadIgnoringCache: toolbarNavigation,
+        });
+        Object.assign(wc.navigationHistory, {
+          goBack: toolbarNavigation,
+          goForward: toolbarNavigation,
+        });
+        for (const action of ["goBack", "goForward", "refresh", "hardReload"] as const) {
+          toolbarNavigation.mockClear();
+          yield* manager.automationEvaluate("tab_1", { expression: "42" });
+          expect(download(), action).toHaveBeenCalled();
+          yield* manager[action]("tab_1", "human");
+          expect(toolbarNavigation, action).toHaveBeenCalledOnce();
+          expect(download(), action).not.toHaveBeenCalled();
+
+          navigationCapture = true;
+          yield* manager[action]("tab_1", "agent");
+          expect(download(), action).toHaveBeenCalled();
+          navigationCapture = false;
+        }
+
+        // Human toolbar navigation returns while evaluate is still awaiting the
+        // debugger, and does not turn the eventual result into an interruption.
+        holdEvaluate = true;
+        yield* Effect.sync(() => {
+          releaseEvaluate = undefined;
+        });
+        const pending = yield* manager
+          .automationEvaluate("tab_1", { expression: "42" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* settle(() => releaseEvaluate !== undefined);
+        yield* manager.goBack("tab_1", "human");
+        expect(download()).not.toHaveBeenCalled();
+        releaseEvaluate?.();
+        expect(Exit.isSuccess(yield* Fiber.await(pending))).toBe(true);
+        expect(download()).not.toHaveBeenCalled();
+
+        // Agent navigation to an attachment owns the page before loadURL starts a download.
+        const attachmentNavigation = vi.fn(async () => {
+          expect(download()).toHaveBeenCalled();
+        });
+        Object.assign(wc, { loadURL: attachmentNavigation });
+        yield* manager.navigate("tab_1", "https://example.com/report.csv", "agent");
+        expect(attachmentNavigation).toHaveBeenCalledOnce();
+        expect(download()).toHaveBeenCalled();
+
+        // URL-bar navigation hands the page back to the human.
+        Object.assign(wc, {
+          loadURL: vi.fn(async () => {
+            expect(download()).not.toHaveBeenCalled();
+          }),
+        });
+        yield* manager.automationEvaluate("tab_1", { expression: "42" });
+        expect(download()).toHaveBeenCalled();
+        yield* manager.navigate("tab_1", "https://example.com/report.csv", "human");
+        expect(download()).not.toHaveBeenCalled();
+
+        // Reading the page does not make it agent-driven.
+        yield* manager.automationWaitFor("tab_1", { text: "Example" });
+        expect(download()).not.toHaveBeenCalled();
       }),
     ),
   );

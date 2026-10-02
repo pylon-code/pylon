@@ -38,6 +38,66 @@ describe("preview IPC methods", () => {
     fromPartition.mockClear();
   });
 
+  effectIt.effect("forwards navigation origins and defaults older IPC callers to human", () =>
+    Effect.gen(function* () {
+      const navigation = vi.fn(() => Effect.void);
+      const navigate = vi.fn(() => Effect.void);
+      const manager = PreviewManager.PreviewManager.of({
+        navigate,
+        goBack: navigation,
+        goForward: navigation,
+        refresh: navigation,
+        hardReload: navigation,
+      } as unknown as PreviewManager.PreviewManager["Service"]);
+      for (const action of ["navigate", "goBack", "goForward", "refresh", "hardReload"] as const) {
+        for (const origin of ["human", "agent", undefined] as const) {
+          navigation.mockClear();
+          navigate.mockClear();
+          yield* PreviewIpc[action]
+            .handler({
+              tabId: "tab-1",
+              url: "https://example.com/report.csv",
+              ...(origin === undefined ? {} : { origin }),
+            })
+            .pipe(Effect.provideService(PreviewManager.PreviewManager, manager));
+          if (action === "navigate")
+            expect(navigate).toHaveBeenCalledExactlyOnceWith(
+              "tab-1",
+              "https://example.com/report.csv",
+              origin ?? "human",
+            );
+          else expect(navigation).toHaveBeenCalledExactlyOnceWith("tab-1", origin ?? "human");
+        }
+      }
+    }),
+  );
+
+  effectIt.effect("returns captured download receipts through navigation IPC", () =>
+    Effect.gen(function* () {
+      const result = {
+        url: "about:blank",
+        download: {
+          fileName: "report.csv",
+          path: "/tmp/browser-artifacts/agent-downloads/report.csv",
+          sizeBytes: 100,
+          state: "started" as const,
+        },
+      };
+      const manager = PreviewManager.PreviewManager.of({
+        navigate: () => Effect.succeed(result),
+      } as unknown as PreviewManager.PreviewManager["Service"]);
+      expect(
+        yield* PreviewIpc.navigate
+          .handler({
+            tabId: "tab-1",
+            url: "https://example.com/report.csv",
+            origin: "agent",
+          })
+          .pipe(Effect.provideService(PreviewManager.PreviewManager, manager)),
+      ).toEqual(result);
+    }),
+  );
+
   it("does not access the Electron session while the module loads", async () => {
     await expect(import("./preview.ts")).resolves.toBeDefined();
     expect(fromPartition).not.toHaveBeenCalled();

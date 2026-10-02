@@ -14,6 +14,9 @@ import type {
   DesktopPreviewAnnotationTheme,
   DesktopPreviewAutomationStatus,
   DesktopPreviewColorScheme,
+  DesktopPreviewNavigationOrigin,
+  DesktopPreviewCapturedDownload,
+  DesktopPreviewNavigationResult,
   DesktopPreviewFavicon,
   DesktopPreviewPointerEvent,
   PreviewAnnotationPayload,
@@ -69,6 +72,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { PREVIEW_PICTURE_IN_PICTURE_FRAME_CHANNEL } from "../ipc/channels.ts";
 import * as BrowserSession from "./BrowserSession.ts";
+import { createCapturedDownloads } from "./CapturedDownloads.ts";
 import {
   ANNOTATION_CAPTURED_CHANNEL,
   ANNOTATION_THEME_CHANNEL,
@@ -527,6 +531,9 @@ interface ExpectedAgentInput {
  */
 const POPUP_PROTOCOLS = new Set(["http:", "https:"]);
 
+/** Control actions that only read the page, so they do not make it agent-driven. */
+const READ_ONLY_CONTROL_ACTIONS = new Set(["snapshot", "waitFor"]);
+
 const isPopupUrl = (rawUrl: string): boolean => {
   try {
     return POPUP_PROTOCOLS.has(new URL(rawUrl).protocol);
@@ -697,6 +704,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   // (electron#44618) and now always rejects with NotAllowedError.
   let pendingRecording: PendingRecording | null = null;
   const displayMediaHandlerSessions = new WeakSet<Session>();
+  const downloadHandlerSessions = new WeakSet<Session>();
+  let downloadCount = 0;
+  // Preview pages whose latest input came from an agent action, not the human.
+  const agentDrivenWebContents = new WeakSet<Electron.WebContents>();
+  let navigationRequestId = 0;
+  const navigationDownloads = new WeakMap<
+    Electron.WebContents,
+    {
+      requestId: number;
+      url: string;
+      download: Deferred.Deferred<DesktopPreviewCapturedDownload>;
+    }
+  >();
   let frameCaptureWindowOpen = true;
   let currentMainWindow: BrowserWindow | undefined;
   let mainWindowCleanupFiber: Fiber.Fiber<void, never> | undefined;
@@ -1423,6 +1443,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 ),
               { concurrency: "unbounded", discard: true },
             );
+            // Electron gives `<webview>` guests a transparent base background, and
+            // Chromium only paints a dark canvas for dark color-scheme pages over an
+            // opaque base. Without this, dark-scheme pages with no background of
+            // their own (text/plain, e.g. .md files) render white text on white.
+            // White matches the webview's existing white backing, so light pages look
+            // the same; Chromium still swaps in its dark canvas for dark-scheme pages.
+            yield* attemptPromise(
+              { operation: "initializeDebugger.defaultBackground", webContentsId: wc.id },
+              () =>
+                wcDebugger.sendCommand("Emulation.setDefaultBackgroundColorOverride", {
+                  color: { r: 255, g: 255, b: 255, a: 1 },
+                }),
+            );
             return [
               control,
               replaceMap(sessions, (copy) => {
@@ -1499,7 +1532,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const epoch = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
     const control = yield* ensureControlSession(wc);
     const execute = Effect.fn("PreviewManager.executeControlAction")(function* () {
-      yield* update(tabId, { controller: "agent" });
       const checkControl = Effect.gen(function* () {
         const currentEpoch = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
         if (currentEpoch !== epoch) {
@@ -1510,6 +1542,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           });
         }
       });
+      // A human who took over while this action waited for the permit owns
+      // the page; marking it agent-driven would hide their Save dialog.
+      yield* checkControl;
+      if (!READ_ONLY_CONTROL_ACTIONS.has(action)) agentDrivenWebContents.add(wc);
+      yield* update(tabId, { controller: "agent" });
       const send: SendCommand = Effect.fn("PreviewManager.sendCommand")(
         function* (method, commandParams, sessionId) {
           yield* checkControl;
@@ -1939,6 +1976,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (isPreviewInputSignal(rawSignal) && (yield* consumeExpectedAgentInput(tabId, rawSignal))) {
         return;
       }
+      agentDrivenWebContents.delete(wc);
       yield* Ref.update(controlEpochRef, (epochs) =>
         replaceMap(epochs, (copy) => {
           copy.set(tabId, (epochs.get(tabId) ?? 0) + 1);
@@ -1984,6 +2022,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           ? (payload as { direction?: unknown }).direction
           : undefined;
       if (direction !== "back" && direction !== "forward") return;
+      agentDrivenWebContents.delete(wc);
       runFork(
         attempt({ operation: "mouseNavigate", tabId, webContentsId: wc.id }, () => {
           if (direction === "back") {
@@ -2407,7 +2446,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
-  const navigate = Effect.fn("PreviewManager.navigate")(function* (tabId: string, rawUrl: string) {
+  const navigate = Effect.fn("PreviewManager.navigate")(function* (
+    tabId: string,
+    rawUrl: string,
+    origin: DesktopPreviewNavigationOrigin,
+  ) {
     const url = yield* attempt({ operation: "navigate.normalizeUrl", tabId }, () =>
       normalizePreviewUrl(rawUrl),
     );
@@ -2493,37 +2536,86 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       );
       return;
     }
+    setNavigationOrigin(wc, origin);
+    // Every newer navigation supersedes recovery for the previous request,
+    // including human navigation and reloads of the current URL.
+    navigationDownloads.delete(wc);
     if (wc.getURL() === url) {
       yield* attempt({ operation: "navigate.reload", tabId, webContentsId: wc.id }, () =>
         wc.reload(),
       );
       return;
     }
-    yield* attemptPromise({ operation: "navigate.loadURL", tabId, webContentsId: wc.id }, () =>
-      wc.loadURL(url),
+    const navigation = {
+      requestId: ++navigationRequestId,
+      url,
+      download: yield* Deferred.make<DesktopPreviewCapturedDownload>(),
+    };
+    if (origin === "agent") navigationDownloads.set(wc, navigation);
+    const isCurrentRequest = () => navigationDownloads.get(wc)?.requestId === navigation.requestId;
+    return yield* attemptPromise(
+      { operation: "navigate.loadURL", tabId, webContentsId: wc.id },
+      () => wc.loadURL(url),
+    ).pipe(
+      Effect.as(undefined),
+      Effect.catchTag("PreviewOperationError", (error) => {
+        const cause = error.cause;
+        const aborted =
+          cause instanceof Error &&
+          (("code" in cause && (cause.code === "ERR_ABORTED" || cause.code === -3)) ||
+            ("errno" in cause && cause.errno === -3) ||
+            /\bERR_ABORTED\b/.test(cause.message));
+        if (origin !== "agent" || !aborted || !isCurrentRequest()) return Effect.fail(error);
+        // Electron may reject loadURL before emitting will-download. Allow only
+        // a short window for a matching main-frame download of this request.
+        return Deferred.await(navigation.download).pipe(
+          Effect.timeoutOption(1_000),
+          Effect.flatMap((download) =>
+            Option.isSome(download) && isCurrentRequest()
+              ? Effect.succeed({ url: wc.getURL() || url, download: download.value })
+              : Effect.fail(error),
+          ),
+        );
+      }),
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (isCurrentRequest()) navigationDownloads.delete(wc);
+        }),
+      ),
     );
   });
 
-  const withWebContents = Effect.fn("PreviewManager.withWebContents")(function* (
+  const setNavigationOrigin = (
+    wc: Electron.WebContents,
+    origin: DesktopPreviewNavigationOrigin,
+  ) => {
+    if (origin === "agent") agentDrivenWebContents.add(wc);
+    else agentDrivenWebContents.delete(wc);
+  };
+
+  const withNavigation = Effect.fn("PreviewManager.withNavigation")(function* (
     operation: string,
     tabId: string,
+    origin: DesktopPreviewNavigationOrigin,
     use: (wc: Electron.WebContents) => void,
   ) {
     const wc = yield* requireWebContents(tabId);
+    setNavigationOrigin(wc, origin);
     yield* attempt({ operation, tabId, webContentsId: wc.id }, () => use(wc));
   });
 
-  const goBack = (tabId: string) =>
-    withWebContents("goBack", tabId, (wc) => {
+  const goBack = (tabId: string, origin: DesktopPreviewNavigationOrigin) =>
+    withNavigation("goBack", tabId, origin, (wc) => {
       if (wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
     });
-  const goForward = (tabId: string) =>
-    withWebContents("goForward", tabId, (wc) => {
+  const goForward = (tabId: string, origin: DesktopPreviewNavigationOrigin) =>
+    withNavigation("goForward", tabId, origin, (wc) => {
       if (wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
     });
-  const refresh = (tabId: string) => withWebContents("refresh", tabId, (wc) => wc.reload());
-  const hardReload = (tabId: string) =>
-    withWebContents("hardReload", tabId, (wc) => wc.reloadIgnoringCache());
+  const refresh = (tabId: string, origin: DesktopPreviewNavigationOrigin) =>
+    withNavigation("refresh", tabId, origin, (wc) => wc.reload());
+  const hardReload = (tabId: string, origin: DesktopPreviewNavigationOrigin) =>
+    withNavigation("hardReload", tabId, origin, (wc) => wc.reloadIgnoringCache());
 
   const openDevTools = Effect.fn("PreviewManager.openDevTools")(function* (tabId: string) {
     const wc = yield* requireWebContents(tabId);
@@ -3516,6 +3608,81 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       callback({ video: armed.webContents.mainFrame });
     });
   };
+
+  const capturedDownloads = createCapturedDownloads(resolvedArtifactDirectory);
+  yield* Scope.addFinalizer(
+    parentScope,
+    Effect.sync(() => capturedDownloads.dispose()),
+  );
+
+  // Installed once per session. Electron opens a native Save dialog for a
+  // download with no save path, so every export an agent clicked while testing
+  // a page put a modal over the whole app. Downloads from a page the agent drove
+  // last go to the artifact directory instead. Downloads the human starts keep
+  // the Save dialog.
+  const installDownloadHandler = Effect.fn("PreviewManager.installDownloadHandler")(function* (
+    session: Session,
+  ) {
+    if (downloadHandlerSessions.has(session)) return;
+    downloadHandlerSessions.add(session);
+    const onDownload = (
+      _event: Electron.Event,
+      item: Electron.DownloadItem,
+      source: Electron.WebContents,
+      frame: Electron.WebFrameMain | null,
+    ) => {
+      if (!agentDrivenWebContents.has(source)) return;
+      // The start time keeps names unique across restarts; the count keeps two
+      // same-name downloads in one millisecond from overwriting each other.
+      const id = `${Math.round(item.getStartTime() * 1000).toString(36)}-${(downloadCount++).toString(36)}`;
+      const fileName = `browser-download-${id}-${path.basename(item.getFilename())}`;
+      const capturePath = capturedDownloads.capture(item, fileName, (error) => {
+        runFork(
+          Effect.gen(function* () {
+            const tabId = yield* tabIdForWebContents(source.id);
+            if (!tabId) return;
+            const completedAt = yield* currentIso;
+            // Downloads finish after the initiating click/evaluate returns. The
+            // next agent snapshot reads this existing action timeline channel.
+            yield* pushAction(tabId, {
+              id: `browser-download-${id}`,
+              action: "download",
+              status: "failed",
+              startedAt: completedAt,
+              completedAt,
+              error,
+            });
+          }),
+        );
+      });
+      const navigation = navigationDownloads.get(source);
+      if (!capturePath || !navigation || frame !== source.mainFrame) return;
+      const matchesUrl = item.getURLChain().some((downloadUrl) => {
+        try {
+          return normalizePreviewUrl(downloadUrl) === navigation.url;
+        } catch {
+          return false;
+        }
+      });
+      if (!matchesUrl) return;
+      runFork(
+        Deferred.succeed(navigation.download, {
+          fileName: path.basename(item.getFilename()),
+          path: capturePath,
+          ...(item.getTotalBytes() > 0 ? { sizeBytes: item.getTotalBytes() } : {}),
+          state: "started",
+        }),
+      );
+    };
+    session.on("will-download", onDownload);
+    yield* Scope.addFinalizer(
+      parentScope,
+      Effect.sync(() => {
+        session.off("will-download", onDownload);
+        downloadHandlerSessions.delete(session);
+      }),
+    );
+  });
 
   const startRecording = Effect.fn("PreviewManager.startRecording")(function* (
     tabId: string,
@@ -4649,6 +4816,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     goBack,
     goForward,
     hardReload,
+    installDownloadHandler,
     navigate,
     openPictureInPicture,
     openDevTools,
@@ -4989,17 +5157,33 @@ export class PreviewManager extends Context.Service<
       tabId: string,
       webContentsId: number,
     ) => Effect.Effect<void, PreviewManagerError>;
-    readonly navigate: (tabId: string, url: string) => Effect.Effect<void, PreviewManagerError>;
-    readonly goBack: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
-    readonly goForward: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
-    readonly refresh: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+    readonly navigate: (
+      tabId: string,
+      url: string,
+      origin: DesktopPreviewNavigationOrigin,
+    ) => Effect.Effect<DesktopPreviewNavigationResult, PreviewManagerError>;
+    readonly goBack: (
+      tabId: string,
+      origin: DesktopPreviewNavigationOrigin,
+    ) => Effect.Effect<void, PreviewManagerError>;
+    readonly goForward: (
+      tabId: string,
+      origin: DesktopPreviewNavigationOrigin,
+    ) => Effect.Effect<void, PreviewManagerError>;
+    readonly refresh: (
+      tabId: string,
+      origin: DesktopPreviewNavigationOrigin,
+    ) => Effect.Effect<void, PreviewManagerError>;
     readonly zoomIn: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly zoomOut: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly resetZoom: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     // Re-applies every attached guest's own zoom factor, undoing the zoom level
     // Chromium inherits from the embedder when the app UI zooms.
     readonly reapplyZoom: () => Effect.Effect<void>;
-    readonly hardReload: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+    readonly hardReload: (
+      tabId: string,
+      origin: DesktopPreviewNavigationOrigin,
+    ) => Effect.Effect<void, PreviewManagerError>;
     readonly setColorScheme: (
       tabId: string,
       colorScheme: DesktopPreviewColorScheme,
@@ -5100,13 +5284,15 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     setMainWindow: operations.setMainWindow,
     getBrowserSession: Effect.fn("PreviewManager.getBrowserSession")(
       function* (scope, persistent, namespace) {
-        return yield* browserSession
+        const session = yield* browserSession
           .getSession(scope, persistent, namespace)
           .pipe(
             Effect.mapError(
               (cause) => new PreviewOperationError({ operation: "getBrowserSession", cause }),
             ),
           );
+        yield* operations.installDownloadHandler(session);
+        return session;
       },
     ),
     isBrowserPartition: browserSession.isPartition,
