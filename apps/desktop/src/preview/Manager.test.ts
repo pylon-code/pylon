@@ -4674,6 +4674,21 @@ describe("PreviewManager", () => {
       url: "https://example.com",
       ok: false,
     },
+    { code: "ERR_ABORTED", capture: "after", origin: "agent", url: "", ok: true },
+    {
+      code: "ERR_ABORTED",
+      capture: "iframe",
+      origin: "agent",
+      url: "https://example.com",
+      ok: false,
+    },
+    {
+      code: "ERR_ABORTED",
+      capture: "old-url",
+      origin: "agent",
+      url: "https://example.com",
+      ok: false,
+    },
   ] as const) {
     effectIt.effect(
       `attachment navigation ${scenario.code}, capture ${scenario.capture}, ${scenario.origin}, page ${scenario.url}`,
@@ -4694,10 +4709,17 @@ describe("PreviewManager", () => {
               event: unknown,
               item: Electron.DownloadItem,
               source: Electron.WebContents,
+              frame: Electron.WebFrameMain | null,
             ) => void;
             const setSavePath = vi.fn();
             const capture = () => {
               const item = Object.assign(new NodeEvents.EventEmitter(), {
+                getURLChain: () => [
+                  scenario.capture === "old-url"
+                    ? "https://example.com/old.csv"
+                    : "https://EXAMPLE.com:443/report.csv",
+                  "https://example.com/redirected.csv",
+                ],
                 getFilename: () => "report.csv",
                 getStartTime: () => 1_790_844_530.5,
                 getTotalBytes: () => 100,
@@ -4705,7 +4727,14 @@ describe("PreviewManager", () => {
                 setSavePath,
                 cancel: vi.fn(),
               });
-              willDownload({}, item as unknown as Electron.DownloadItem, wc);
+              willDownload(
+                {},
+                item as unknown as Electron.DownloadItem,
+                wc,
+                scenario.capture === "iframe"
+                  ? makeTestPreviewWebContents(vi.fn(), 43).mainFrame
+                  : wc.mainFrame,
+              );
               item.emit("done", {}, "completed");
             };
             yield* manager.createTab("download-tab");
@@ -4724,14 +4753,22 @@ describe("PreviewManager", () => {
                 throw rejected;
               }),
             });
-            const result = yield* Effect.exit(
-              manager.navigate("download-tab", "https://example.com/report.csv", scenario.origin),
+            const navigation = yield* Effect.forkChild(
+              Effect.exit(
+                manager.navigate("download-tab", "https://example.com/report.csv", scenario.origin),
+              ),
             );
+            // Advancing the test clock drains the rejected native promise before
+            // delivering a late event, and exercises the bounded grace period.
+            yield* TestClock.adjust(500);
+            if (["after", "iframe", "old-url"].includes(scenario.capture)) capture();
+            yield* TestClock.adjust(500);
+            const result = yield* Fiber.join(navigation);
             if (scenario.ok) {
               expect(Exit.isSuccess(result)).toBe(true);
               if (Exit.isFailure(result)) return;
               expect(result.value).toEqual({
-                url: scenario.url,
+                url: scenario.url || "https://example.com/report.csv",
                 download: {
                   fileName: "report.csv",
                   path: setSavePath.mock.calls[0]![0],
@@ -4752,6 +4789,88 @@ describe("PreviewManager", () => {
         ),
     );
   }
+
+  effectIt.effect("does not recover a superseded attachment navigation", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const wc = makeTestPreviewWebContents(vi.fn());
+        const rejectNavigation: Array<(error: Error) => void> = [];
+        Object.assign(wc, {
+          isDevToolsOpened: () => false,
+          loadURL: vi.fn(
+            () =>
+              new Promise<void>((_resolve, reject) => {
+                rejectNavigation.push(reject);
+              }),
+          ),
+        });
+        fromId.mockReturnValue(wc);
+        yield* manager.getBrowserSession();
+        yield* manager.createTab("download-tab");
+        yield* manager.registerWebview("download-tab", wc.id);
+        const willDownload = previewSession.on.mock.calls.find(
+          ([event]) => event === "will-download",
+        )![1] as (
+          event: unknown,
+          item: Electron.DownloadItem,
+          source: Electron.WebContents,
+          frame: Electron.WebFrameMain | null,
+        ) => void;
+        const capture = (url: string) => {
+          const item = Object.assign(new NodeEvents.EventEmitter(), {
+            getURLChain: () => [url],
+            getFilename: () => "report.csv",
+            getStartTime: () => 1_790_844_530.5,
+            getTotalBytes: () => 100,
+            getReceivedBytes: () => 100,
+            setSavePath: vi.fn(),
+            cancel: vi.fn(),
+          });
+          willDownload({}, item as unknown as Electron.DownloadItem, wc, wc.mainFrame);
+          item.emit("done", {}, "completed");
+        };
+        const oldUrl = "https://example.com/old.csv";
+        const newUrl = "https://example.com/new.csv";
+        const oldNavigation = yield* Effect.forkChild(
+          Effect.exit(manager.navigate("download-tab", oldUrl, "agent")),
+        );
+        yield* TestClock.adjust(0);
+        expect(rejectNavigation).toHaveLength(1);
+        // Even a matching capture already observed for the old request cannot
+        // recover its abort once a newer navigation has taken over.
+        capture(oldUrl);
+        const newNavigation = yield* Effect.forkChild(
+          Effect.exit(manager.navigate("download-tab", newUrl, "agent")),
+        );
+        yield* TestClock.adjust(0);
+        expect(rejectNavigation).toHaveLength(2);
+        capture(oldUrl); // A delayed earlier export must not match the new request.
+        const aborted = Object.assign(new Error("ERR_ABORTED"), { code: "ERR_ABORTED" });
+        rejectNavigation[0]!(aborted);
+        rejectNavigation[1]!(aborted);
+        yield* TestClock.adjust(500);
+        capture(newUrl);
+        const oldResult = yield* Fiber.join(oldNavigation);
+        expect(Exit.isFailure(oldResult)).toBe(true);
+        const newResult = yield* Fiber.join(newNavigation);
+        expect(Exit.isSuccess(newResult)).toBe(true);
+        if (Exit.isSuccess(newResult))
+          expect(newResult.value).toMatchObject({
+            url: "https://example.com",
+            download: { fileName: "report.csv", sizeBytes: 100 },
+          });
+        // Completed tracking must not leak into a subsequent aborted request.
+        const later = yield* Effect.forkChild(
+          Effect.exit(manager.navigate("download-tab", newUrl, "agent")),
+        );
+        yield* TestClock.adjust(0);
+        expect(rejectNavigation).toHaveLength(3);
+        rejectNavigation[2]!(aborted);
+        yield* TestClock.adjust(1_000);
+        expect(Exit.isFailure(yield* Fiber.join(later))).toBe(true);
+      }),
+    ),
+  );
 
   effectIt.effect("saves downloads from agent-driven pages without a Save dialog", () =>
     withManager((manager) =>
@@ -4831,10 +4950,12 @@ describe("PreviewManager", () => {
           event: unknown,
           item: Electron.DownloadItem,
           source: Electron.WebContents,
+          frame: Electron.WebFrameMain | null,
         ) => void;
         const download = (totalBytes = 100) => {
           const setSavePath = vi.fn();
           const item = Object.assign(new NodeEvents.EventEmitter(), {
+            getURLChain: () => ["https://example.com/chart.png"],
             getFilename: () => "chart.png",
             getStartTime: () => 1_790_844_530.5,
             getTotalBytes: () => totalBytes,
@@ -4842,7 +4963,7 @@ describe("PreviewManager", () => {
             setSavePath,
             cancel: vi.fn(),
           });
-          willDownload({}, item as unknown as Electron.DownloadItem, wc);
+          willDownload({}, item as unknown as Electron.DownloadItem, wc, wc.mainFrame);
           item.emit("done", {}, "completed");
           return setSavePath;
         };

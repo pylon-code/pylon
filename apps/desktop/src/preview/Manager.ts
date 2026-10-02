@@ -708,9 +708,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   let downloadCount = 0;
   // Preview pages whose latest input came from an agent action, not the human.
   const agentDrivenWebContents = new WeakSet<Electron.WebContents>();
+  let navigationRequestId = 0;
   const navigationDownloads = new WeakMap<
     Electron.WebContents,
-    Array<DesktopPreviewCapturedDownload>
+    {
+      requestId: number;
+      url: string;
+      download: Deferred.Deferred<DesktopPreviewCapturedDownload>;
+    }
   >();
   let frameCaptureWindowOpen = true;
   let currentMainWindow: BrowserWindow | undefined;
@@ -2532,16 +2537,22 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       return;
     }
     setNavigationOrigin(wc, origin);
+    // Every newer navigation supersedes recovery for the previous request,
+    // including human navigation and reloads of the current URL.
+    navigationDownloads.delete(wc);
     if (wc.getURL() === url) {
       yield* attempt({ operation: "navigate.reload", tabId, webContentsId: wc.id }, () =>
         wc.reload(),
       );
       return;
     }
-    // Only will-download events observed during this loadURL may explain its
-    // abort. Past captures and downloads from other guests cannot hide errors.
-    const downloads: Array<DesktopPreviewCapturedDownload> = [];
-    if (origin === "agent") navigationDownloads.set(wc, downloads);
+    const navigation = {
+      requestId: ++navigationRequestId,
+      url,
+      download: yield* Deferred.make<DesktopPreviewCapturedDownload>(),
+    };
+    if (origin === "agent") navigationDownloads.set(wc, navigation);
+    const isCurrentRequest = () => navigationDownloads.get(wc)?.requestId === navigation.requestId;
     return yield* attemptPromise(
       { operation: "navigate.loadURL", tabId, webContentsId: wc.id },
       () => wc.loadURL(url),
@@ -2554,14 +2565,21 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           (("code" in cause && (cause.code === "ERR_ABORTED" || cause.code === -3)) ||
             ("errno" in cause && cause.errno === -3) ||
             /\bERR_ABORTED\b/.test(cause.message));
-        const download = downloads[0];
-        return origin === "agent" && aborted && download
-          ? Effect.succeed({ url: wc.getURL() || url, download })
-          : Effect.fail(error);
+        if (origin !== "agent" || !aborted || !isCurrentRequest()) return Effect.fail(error);
+        // Electron may reject loadURL before emitting will-download. Allow only
+        // a short window for a matching main-frame download of this request.
+        return Deferred.await(navigation.download).pipe(
+          Effect.timeoutOption(1_000),
+          Effect.flatMap((download) =>
+            Option.isSome(download) && isCurrentRequest()
+              ? Effect.succeed({ url: wc.getURL() || url, download: download.value })
+              : Effect.fail(error),
+          ),
+        );
       }),
       Effect.ensuring(
         Effect.sync(() => {
-          if (navigationDownloads.get(wc) === downloads) navigationDownloads.delete(wc);
+          if (isCurrentRequest()) navigationDownloads.delete(wc);
         }),
       ),
     );
@@ -3611,6 +3629,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       _event: Electron.Event,
       item: Electron.DownloadItem,
       source: Electron.WebContents,
+      frame: Electron.WebFrameMain | null,
     ) => {
       if (!agentDrivenWebContents.has(source)) return;
       // The start time keeps names unique across restarts; the count keeps two
@@ -3636,14 +3655,24 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           }),
         );
       });
-      const downloads = navigationDownloads.get(source);
-      if (capturePath && downloads && downloads.length === 0)
-        downloads.push({
+      const navigation = navigationDownloads.get(source);
+      if (!capturePath || !navigation || frame !== source.mainFrame) return;
+      const matchesUrl = item.getURLChain().some((downloadUrl) => {
+        try {
+          return normalizePreviewUrl(downloadUrl) === navigation.url;
+        } catch {
+          return false;
+        }
+      });
+      if (!matchesUrl) return;
+      runFork(
+        Deferred.succeed(navigation.download, {
           fileName: path.basename(item.getFilename()),
           path: capturePath,
           ...(item.getTotalBytes() > 0 ? { sizeBytes: item.getTotalBytes() } : {}),
           state: "started",
-        });
+        }),
+      );
     };
     session.on("will-download", onDownload);
     yield* Scope.addFinalizer(
