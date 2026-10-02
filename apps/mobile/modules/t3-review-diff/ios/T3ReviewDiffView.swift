@@ -931,6 +931,13 @@ private struct ReviewDiffScrollAnchor {
 }
 
 private final class ReviewDiffContentView: UIView, UIGestureRecognizerDelegate {
+  // Traits can have an unspecified scale before this view joins a scene.
+  // Prefer the scene's screen then; always keep renderer scales positive.
+  private var resolvedDisplayScale: CGFloat {
+    let traitScale = traitCollection.displayScale
+    return traitScale > 0 ? traitScale : max(window?.screen.scale ?? UIScreen.main.scale, 1)
+  }
+
   var rows: [ReviewDiffNativeRow] = [] {
     didSet {
       stopHorizontalDeceleration()
@@ -1923,7 +1930,7 @@ private final class ReviewDiffContentView: UIView, UIGestureRecognizerDelegate {
     theme.headerBackground.setFill()
     context.fill(cardRect)
 
-    let hairline = 1 / traitCollection.displayScale
+    let hairline = 1 / resolvedDisplayScale
     theme.border.setFill()
     context.fill(CGRect(x: cardRect.minX, y: cardRect.maxY - hairline, width: cardRect.width, height: hairline))
 
@@ -1982,7 +1989,7 @@ private final class ReviewDiffContentView: UIView, UIGestureRecognizerDelegate {
     theme.background.setFill()
     context.fill(rect)
 
-    let hairline = 1 / traitCollection.displayScale
+    let hairline = 1 / resolvedDisplayScale
     theme.border.withAlphaComponent(0.65).setFill()
     context.fill(CGRect(x: 0, y: rect.maxY - hairline, width: rect.width, height: hairline))
 
