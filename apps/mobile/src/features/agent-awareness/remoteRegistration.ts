@@ -82,6 +82,10 @@ const activityPushTokenListeners = new WeakSet<LiveActivity<AgentActivityProps>>
 // foreground after real time away still triggers a replay. Cleared on
 // sign-out/identity change alongside the device registration state.
 const ACTIVITY_TOKEN_REREGISTER_INTERVAL_MS = 60_000;
+// Match the relay's stale window (STALE_AFTER_SECONDS in ApnsClient.ts), even
+// when registration fails and the locally seeded card never receives a push.
+const LIVE_ACTIVITY_STALE_AFTER_MS = 10 * 60_000;
+const liveActivityStaleDate = () => new Date(Date.now() + LIVE_ACTIVITY_STALE_AFTER_MS);
 const registeredActivityPushTokens = new Map<string, number>();
 let androidDeviceReplayedAt: number | null = null;
 let pushTokenSubscription: { remove: () => void } | null = null;
@@ -541,25 +545,29 @@ function armAgentAwarenessLiveActivityForLocalWorkNow(input: {
       return;
     }
     const nowIso = new Date(Date.now()).toISOString();
-    const activity = AgentActivity.start({
-      title: "Pylon",
-      subtitle: "Agent work in progress",
-      activeCount: 1,
-      updatedAt: nowIso,
-      activities: [
-        {
-          environmentId: "",
-          threadId: "",
-          projectTitle: input.projectTitle,
-          threadTitle: input.threadTitle,
-          modelTitle: "",
-          phase: "starting",
-          status: "Connecting",
-          updatedAt: nowIso,
-          deepLink: "/",
-        },
-      ],
-    });
+    const activity = AgentActivity.start(
+      {
+        title: "Pylon",
+        subtitle: "Agent work in progress",
+        activeCount: 1,
+        updatedAt: nowIso,
+        activities: [
+          {
+            environmentId: "",
+            threadId: "",
+            projectTitle: input.projectTitle,
+            threadTitle: input.threadTitle,
+            modelTitle: "",
+            phase: "starting",
+            status: "Connecting",
+            updatedAt: nowIso,
+            deepLink: "/",
+          },
+        ],
+      },
+      undefined,
+      liveActivityStaleDate(),
+    );
     logRegistrationDebug("live activity card armed for local work", {
       threadTitle: input.threadTitle,
     });
@@ -1145,13 +1153,17 @@ export function refreshActiveLiveActivityRemoteRegistration(): Effect.Effect<
           const aggregate = snapshot.aggregate;
           const primed = yield* Effect.try({
             try: () =>
-              AgentActivity.start({
-                title: aggregate.title,
-                subtitle: aggregate.subtitle,
-                activeCount: aggregate.activeCount,
-                updatedAt: aggregate.updatedAt,
-                activities: aggregate.activities,
-              }),
+              AgentActivity.start(
+                {
+                  title: aggregate.title,
+                  subtitle: aggregate.subtitle,
+                  activeCount: aggregate.activeCount,
+                  updatedAt: aggregate.updatedAt,
+                  activities: aggregate.activities,
+                },
+                undefined,
+                liveActivityStaleDate(),
+              ),
             catch: (cause) =>
               new AgentAwarenessOperationError({
                 operation: "prime-live-activity",
