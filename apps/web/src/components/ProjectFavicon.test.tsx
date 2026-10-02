@@ -146,6 +146,19 @@ describe("ProjectFavicon", () => {
     expect(element.props.projectName).toBe("agent-runtime");
   });
 
+  it("renders a saved custom monogram ahead of a resolved favicon", () => {
+    const element = ProjectFavicon({
+      project: makeProject({
+        workspaceRoot: "/workspace/test",
+        title: "test",
+        projectIcon: { kind: "monogram", text: "PY", color: "violet" },
+      }),
+    }) as ReactElement<{ readonly text: string; readonly color: string }>;
+
+    expect(element.props.text).toBe("PY");
+    expect(element.props.color).toBe("violet");
+  });
+
   it("renders a saved Lucide icon and color ahead of an uploaded favicon", () => {
     const element = ProjectFavicon({
       project: makeProject({
