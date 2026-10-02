@@ -173,4 +173,23 @@ describe("captured preview download limits", () => {
     expect(transfer.item.setSavePath).not.toHaveBeenCalled();
     expect(cancelled).toHaveBeenCalledWith(expect.stringContaining("unable to reserve"));
   });
+
+  it("refuses a symlinked download directory without pruning or writing its target", () => {
+    captures.dispose();
+    const outside = NodePath.join(root, "outside");
+    NodeFS.mkdirSync(outside);
+    const retained = NodePath.join(outside, "browser-download-keep");
+    NodeFS.writeFileSync(retained, "keep");
+    NodeFS.utimesSync(retained, 0, 0);
+    NodeFS.symlinkSync(outside, NodePath.join(root, "agent-downloads"), "dir");
+    captures = createCapturedDownloads(root);
+    const transfer = download();
+    const cancelled = vi.fn();
+    captures.capture(transfer.native, "browser-download-escape", cancelled);
+    expect(transfer.item.cancel).toHaveBeenCalledOnce();
+    expect(transfer.item.setSavePath).not.toHaveBeenCalled();
+    expect(cancelled).toHaveBeenCalledWith(expect.stringContaining("unable to reserve"));
+    expect(NodeFS.readdirSync(outside)).toEqual(["browser-download-keep"]);
+    expect(NodeFS.readFileSync(retained, "utf8")).toBe("keep");
+  });
 });

@@ -10,6 +10,8 @@ import {
   DesktopPreviewAutomationWaitForInputSchema,
   DesktopPreviewConfigInputSchema,
   DesktopPreviewNavigateInputSchema,
+  DesktopPreviewNavigationInputSchema,
+  type DesktopPreviewNavigationOrigin,
   DesktopPreviewRecordingArtifactSchema,
   DesktopPreviewRecordingSaveInputSchema,
   DesktopPreviewRegisterWebviewInputSchema,
@@ -98,9 +100,9 @@ export const navigate = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_NAVIGATE_CHANNEL,
   payload: DesktopPreviewNavigateInputSchema,
   result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.preview.navigate")(function* ({ tabId, url }) {
+  handler: Effect.fn("desktop.ipc.preview.navigate")(function* ({ tabId, url, origin }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.navigate(tabId, url);
+    yield* manager.navigate(tabId, url, origin ?? "human");
   }),
 });
 
@@ -122,20 +124,39 @@ const tabMethod = (
     }),
   });
 
-export const goBack = tabMethod(
+const navigationMethod = (
+  channel: string,
+  name: string,
+  invoke: (
+    manager: PreviewManager.PreviewManager["Service"],
+    tabId: string,
+    origin: DesktopPreviewNavigationOrigin,
+  ) => Effect.Effect<void, PreviewManager.PreviewManagerError>,
+) =>
+  DesktopIpc.makeIpcMethod({
+    channel,
+    payload: DesktopPreviewNavigationInputSchema,
+    result: Schema.Void,
+    handler: Effect.fn(name)(function* ({ tabId, origin }) {
+      const manager = yield* PreviewManager.PreviewManager;
+      yield* invoke(manager, tabId, origin ?? "human");
+    }),
+  });
+
+export const goBack = navigationMethod(
   IpcChannels.PREVIEW_GO_BACK_CHANNEL,
   "desktop.ipc.preview.goBack",
-  (manager, tabId) => manager.goBack(tabId),
+  (manager, tabId, origin) => manager.goBack(tabId, origin),
 );
-export const goForward = tabMethod(
+export const goForward = navigationMethod(
   IpcChannels.PREVIEW_GO_FORWARD_CHANNEL,
   "desktop.ipc.preview.goForward",
-  (manager, tabId) => manager.goForward(tabId),
+  (manager, tabId, origin) => manager.goForward(tabId, origin),
 );
-export const refresh = tabMethod(
+export const refresh = navigationMethod(
   IpcChannels.PREVIEW_REFRESH_CHANNEL,
   "desktop.ipc.preview.refresh",
-  (manager, tabId) => manager.refresh(tabId),
+  (manager, tabId, origin) => manager.refresh(tabId, origin),
 );
 export const zoomIn = tabMethod(
   IpcChannels.PREVIEW_ZOOM_IN_CHANNEL,
@@ -152,10 +173,10 @@ export const resetZoom = tabMethod(
   "desktop.ipc.preview.resetZoom",
   (manager, tabId) => manager.resetZoom(tabId),
 );
-export const hardReload = tabMethod(
+export const hardReload = navigationMethod(
   IpcChannels.PREVIEW_HARD_RELOAD_CHANNEL,
   "desktop.ipc.preview.hardReload",
-  (manager, tabId) => manager.hardReload(tabId),
+  (manager, tabId, origin) => manager.hardReload(tabId, origin),
 );
 export const setColorScheme = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_SET_COLOR_SCHEME_CHANNEL,

@@ -560,7 +560,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             }
             if (reusedExistingTab && resolvedInputUrl && previewBridge) {
               assertPreviewRuntimeCurrent(threadRef, activeTabId, activeRuntimeTabId, request);
-              await previewBridge.navigate(activeRuntimeTabId, resolvedInputUrl);
+              await previewBridge.navigate(activeRuntimeTabId, resolvedInputUrl, "agent");
               await waitForNavigationReadiness(
                 threadRef,
                 request.requestId,
@@ -583,7 +583,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 url: input.url!,
               },
             );
-            await ready.bridge.navigate(ready.runtimeTabId, resolution.resolvedUrl);
+            await ready.bridge.navigate(ready.runtimeTabId, resolution.resolvedUrl, "agent");
             await waitForNavigationReadiness(
               threadRef,
               request.requestId,

@@ -16,8 +16,28 @@ export function createCapturedDownloads(artifactDirectory: string) {
   const active = new Map<string, () => void>();
   let disposed = false;
 
+  const validateDirectory = (create: boolean) => {
+    if (create) NodeFS.mkdirSync(artifactDirectory, { recursive: true });
+    let stat = NodeFS.lstatSync(directory, { throwIfNoEntry: false });
+    if (!stat) {
+      if (!create) return false;
+      NodeFS.mkdirSync(directory);
+      stat = NodeFS.lstatSync(directory);
+    }
+    if (
+      !stat.isDirectory() ||
+      stat.isSymbolicLink() ||
+      NodeFS.realpathSync(directory) !==
+        NodePath.join(NodeFS.realpathSync(artifactDirectory), "agent-downloads")
+    )
+      throw new Error(
+        "Captured download storage must be a real directory inside the artifact root",
+      );
+    return true;
+  };
+
   const prune = (maximumFiles: number) => {
-    if (!NodeFS.existsSync(directory)) return;
+    if (!validateDirectory(false)) return;
     const files = NodeFS.readdirSync(directory)
       .filter((name) => name.startsWith("browser-download-"))
       .map((name) => {
@@ -71,7 +91,7 @@ export function createCapturedDownloads(artifactDirectory: string) {
     }
     const filePath = NodePath.join(directory, NodePath.basename(fileName));
     try {
-      NodeFS.mkdirSync(directory, { recursive: true });
+      validateDirectory(true);
       prune(MAX_AGENT_DOWNLOAD_FILES - active.size - 1);
       if (active.has(filePath) || NodeFS.existsSync(filePath)) {
         reject("Preview download cancelled: artifact name already exists");
@@ -102,7 +122,7 @@ export function createCapturedDownloads(artifactDirectory: string) {
       active.delete(filePath);
       if (state !== "completed" || cancelled || tooLarge()) {
         try {
-          NodeFS.rmSync(filePath, { force: true });
+          if (validateDirectory(false)) NodeFS.rmSync(filePath, { force: true });
         } catch {
           // Admission retries pruning oversized/expired files before accepting more.
         }

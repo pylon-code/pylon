@@ -109,7 +109,10 @@ export function PreviewMoreMenu({
         <TooltipPopup>More</TooltipPopup>
       </Tooltip>
       <MenuPopup align="end" sideOffset={6}>
-        <MenuItem onClick={callTab(bridge.hardReload)} disabled={tabDisabled}>
+        <MenuItem
+          onClick={callTab((tabId) => bridge.hardReload(tabId, "human"))}
+          disabled={tabDisabled}
+        >
           Hard reload
         </MenuItem>
         <MenuItem onClick={callTab(bridge.openDevTools)} disabled={tabDisabled}>

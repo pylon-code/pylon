@@ -191,7 +191,7 @@ export function PreviewView({
     async (resolvedUrl: string) => {
       if (runtimeTabId && previewBridge) {
         // The bridge mirrors the resolved URL back to the server.
-        await previewBridge.navigate(runtimeTabId, resolvedUrl);
+        await previewBridge.navigate(runtimeTabId, resolvedUrl, "human");
         rememberPreviewUrl(threadRef, resolvedUrl);
         return true;
       }
@@ -240,7 +240,7 @@ export function PreviewView({
   );
 
   const handleRefresh = useCallback(() => {
-    if (previewBridge && runtimeTabId) void previewBridge.refresh(runtimeTabId);
+    if (previewBridge && runtimeTabId) void previewBridge.refresh(runtimeTabId, "human");
   }, [runtimeTabId]);
 
   const handleZoomIn = useCallback(() => {
@@ -303,11 +303,11 @@ export function PreviewView({
   }, [handleViewportChange, runtimeTabId]);
 
   const handleBack = useCallback(() => {
-    if (previewBridge && runtimeTabId) void previewBridge.goBack(runtimeTabId);
+    if (previewBridge && runtimeTabId) void previewBridge.goBack(runtimeTabId, "human");
   }, [runtimeTabId]);
 
   const handleForward = useCallback(() => {
-    if (previewBridge && runtimeTabId) void previewBridge.goForward(runtimeTabId);
+    if (previewBridge && runtimeTabId) void previewBridge.goForward(runtimeTabId, "human");
   }, [runtimeTabId]);
 
   const handleOpenInBrowser = useCallback(() => {

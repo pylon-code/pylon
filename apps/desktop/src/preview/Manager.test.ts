@@ -833,7 +833,7 @@ describe("PreviewManager", () => {
           },
         } as never);
 
-        yield* manager.navigate("tab_pending", "localhost:3200");
+        yield* manager.navigate("tab_pending", "localhost:3200", "human");
 
         expect(yield* manager.automationStatus("tab_pending")).toEqual({
           available: false,
@@ -869,7 +869,7 @@ describe("PreviewManager", () => {
         yield* manager.setColorScheme("tab_destroyed_navigation", "dark");
         preview.setDestroyed(true);
 
-        yield* manager.navigate("tab_destroyed_navigation", "https://example.com/");
+        yield* manager.navigate("tab_destroyed_navigation", "https://example.com/", "human");
 
         expect(preview.loadURL).not.toHaveBeenCalled();
         expect(preview.reload).not.toHaveBeenCalled();
@@ -937,7 +937,7 @@ describe("PreviewManager", () => {
         expect(attached).toBe(true);
         destroyed = true;
 
-        yield* manager.navigate("tab_pinned_debugger", "https://example.com/");
+        yield* manager.navigate("tab_pinned_debugger", "https://example.com/", "human");
 
         expect(debuggerOff).toHaveBeenCalledWith("message", expect.any(Function));
         expect(debuggerDetach).toHaveBeenCalledOnce();
@@ -975,7 +975,7 @@ describe("PreviewManager", () => {
           }),
         );
 
-        yield* manager.navigate("tab_destroyed_replacement_race", "https://example.com/");
+        yield* manager.navigate("tab_destroyed_replacement_race", "https://example.com/", "human");
         const registrationExit = yield* Fiber.await(replacementRegistration);
 
         expect(Exit.isSuccess(registrationExit)).toBe(true);
@@ -1157,7 +1157,7 @@ describe("PreviewManager", () => {
         );
         yield* settle(() => states.at(-1)?.favicon !== undefined);
 
-        yield* manager.navigate("tab_favicon_reload", "http://localhost:3200/");
+        yield* manager.navigate("tab_favicon_reload", "http://localhost:3200/", "human");
 
         expect(preview.reload).toHaveBeenCalledOnce();
         expect(states.at(-1)?.favicon?.dataUrl).toBe(TEST_FAVICON);
@@ -1969,7 +1969,7 @@ describe("PreviewManager", () => {
         yield* Effect.yieldNow;
         expect(states.at(-1)?.audible).toBe(true);
 
-        yield* manager.navigate("tab_audio_nav", "https://example.com/next");
+        yield* manager.navigate("tab_audio_nav", "https://example.com/next", "human");
         yield* Effect.yieldNow;
 
         // navigate runs before loadURL swaps the document, so the old page can
@@ -4777,8 +4777,10 @@ describe("PreviewManager", () => {
         expect(download()).not.toHaveBeenCalled();
 
         // Every toolbar action gives ownership back before it can start a download.
+        let navigationCapture = false;
         const toolbarNavigation = vi.fn(() => {
-          expect(download()).not.toHaveBeenCalled();
+          if (navigationCapture) expect(download()).toHaveBeenCalled();
+          else expect(download()).not.toHaveBeenCalled();
         });
         Object.assign(wc, {
           reload: toolbarNavigation,
@@ -4792,33 +4794,50 @@ describe("PreviewManager", () => {
           toolbarNavigation.mockClear();
           yield* manager.automationEvaluate("tab_1", { expression: "42" });
           expect(download(), action).toHaveBeenCalled();
-          yield* manager[action]("tab_1");
+          yield* manager[action]("tab_1", "human");
           expect(toolbarNavigation, action).toHaveBeenCalledOnce();
           expect(download(), action).not.toHaveBeenCalled();
 
-          // A running or queued action cannot reclaim ownership after navigation.
-          holdEvaluate = true;
-          yield* Effect.sync(() => {
-            releaseEvaluate = undefined;
-          });
-          const pending = yield* manager
-            .automationEvaluate("tab_1", { expression: "42" })
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          yield* settle(() => releaseEvaluate !== undefined);
-          const waiting = yield* manager
-            .automationEvaluate("tab_1", { expression: "42" })
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          yield* manager[action]("tab_1");
-          releaseEvaluate?.();
-          expect(Exit.isFailure(yield* Fiber.await(pending)), action).toBe(true);
-          expect(Exit.isFailure(yield* Fiber.await(waiting)), action).toBe(true);
-          expect(download(), action).not.toHaveBeenCalled();
+          navigationCapture = true;
+          yield* manager[action]("tab_1", "agent");
+          expect(download(), action).toHaveBeenCalled();
+          navigationCapture = false;
         }
 
+        // Human toolbar navigation returns while evaluate is still awaiting the
+        // debugger, and does not turn the eventual result into an interruption.
+        holdEvaluate = true;
+        yield* Effect.sync(() => {
+          releaseEvaluate = undefined;
+        });
+        const pending = yield* manager
+          .automationEvaluate("tab_1", { expression: "42" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* settle(() => releaseEvaluate !== undefined);
+        yield* manager.goBack("tab_1", "human");
+        expect(download()).not.toHaveBeenCalled();
+        releaseEvaluate?.();
+        expect(Exit.isSuccess(yield* Fiber.await(pending))).toBe(true);
+        expect(download()).not.toHaveBeenCalled();
+
+        // Agent navigation to an attachment owns the page before loadURL starts a download.
+        const attachmentNavigation = vi.fn(async () => {
+          expect(download()).toHaveBeenCalled();
+        });
+        Object.assign(wc, { loadURL: attachmentNavigation });
+        yield* manager.navigate("tab_1", "https://example.com/report.csv", "agent");
+        expect(attachmentNavigation).toHaveBeenCalledOnce();
+        expect(download()).toHaveBeenCalled();
+
         // URL-bar navigation hands the page back to the human.
+        Object.assign(wc, {
+          loadURL: vi.fn(async () => {
+            expect(download()).not.toHaveBeenCalled();
+          }),
+        });
         yield* manager.automationEvaluate("tab_1", { expression: "42" });
         expect(download()).toHaveBeenCalled();
-        yield* manager.navigate("tab_1", "https://example.com/report.csv");
+        yield* manager.navigate("tab_1", "https://example.com/report.csv", "human");
         expect(download()).not.toHaveBeenCalled();
 
         // Reading the page does not make it agent-driven.

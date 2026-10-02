@@ -1156,9 +1156,19 @@ export const DesktopPreviewRegisterWebviewInputSchema = Schema.Struct({
   webContentsId: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 
+export const DesktopPreviewNavigationOriginSchema = Schema.Literals(["human", "agent"]);
+export type DesktopPreviewNavigationOrigin = typeof DesktopPreviewNavigationOriginSchema.Type;
+
+export const DesktopPreviewNavigationInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  // Older renderers omit origin and keep human navigation behavior.
+  origin: Schema.optional(DesktopPreviewNavigationOriginSchema),
+});
+
 export const DesktopPreviewNavigateInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   url: Schema.String,
+  origin: Schema.optional(DesktopPreviewNavigationOriginSchema),
 });
 
 export const DesktopPreviewConfigInputSchema = Schema.Struct({
@@ -1409,15 +1419,15 @@ export interface DesktopPreviewBridge {
   createTab: (tabId: string, defaults?: DesktopPreviewTabDefaults) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   registerWebview: (tabId: string, webContentsId: number) => Promise<void>;
-  navigate: (tabId: string, url: string) => Promise<void>;
-  goBack: (tabId: string) => Promise<void>;
-  goForward: (tabId: string) => Promise<void>;
-  refresh: (tabId: string) => Promise<void>;
+  navigate: (tabId: string, url: string, origin: DesktopPreviewNavigationOrigin) => Promise<void>;
+  goBack: (tabId: string, origin: DesktopPreviewNavigationOrigin) => Promise<void>;
+  goForward: (tabId: string, origin: DesktopPreviewNavigationOrigin) => Promise<void>;
+  refresh: (tabId: string, origin: DesktopPreviewNavigationOrigin) => Promise<void>;
   zoomIn: (tabId: string) => Promise<void>;
   zoomOut: (tabId: string) => Promise<void>;
   resetZoom: (tabId: string) => Promise<void>;
   /** Reload bypassing the HTTP cache. */
-  hardReload: (tabId: string) => Promise<void>;
+  hardReload: (tabId: string, origin: DesktopPreviewNavigationOrigin) => Promise<void>;
   /**
    * Emulate `prefers-color-scheme` on the guest page ("system" clears the
    * override). Persists per tab and is re-applied across webview swaps.
