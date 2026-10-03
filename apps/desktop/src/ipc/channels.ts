@@ -120,3 +120,6 @@ export const SEND_TEST_NOTIFICATION_CHANNEL = "desktop:send-test-notification";
 export const DISMISS_AGENT_NOTIFICATION_CHANNEL = "desktop:dismiss-agent-notification";
 export const GET_NOTIFICATION_NAVIGATION_CHANNEL = "desktop:get-notification-navigation";
 export const COMPLETE_NOTIFICATION_NAVIGATION_CHANNEL = "desktop:complete-notification-navigation";
+
+export const RECEIVE_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:receive-provider-auth-callback";
+export const CANCEL_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:cancel-provider-auth-callback";
