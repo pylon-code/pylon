@@ -520,6 +520,7 @@ describe("presentPendingBackgroundWork", () => {
     expect(presentation).toEqual({
       title: "Waiting on subagent Luna Window Properties",
       items: [{ taskId: "luna", kind: "subagent", label: "Luna Window Properties", childThreadId }],
+      waiting: true,
     });
   });
 
