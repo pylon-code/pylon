@@ -3,12 +3,15 @@ import {
   type EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
+  SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON,
+  ServerProviderUpdateError,
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import {
+  buildConnectedEnvironmentUpdatePlan,
   buildLocalEnvironmentUpdateGroups,
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
@@ -21,14 +24,17 @@ import {
   getProviderUpdateInitialToastView,
   getProviderUpdateProgressToastView,
   getProviderUpdateRejectedToastView,
+  getProviderUpdateRunToastView,
   getProviderUpdateSidebarPillView,
   hasOneClickUpdateProviderCandidate,
   isProviderUpdateCandidate,
   isTerminalProviderUpdatePhase,
   localEnvironmentUpdateNotificationKey,
+  PROVIDER_UPDATE_RUN_TIMED_OUT,
   providerUpdateNotificationKey,
   resolveEnvironmentUpdateRowStatus,
   shouldShowPrimaryProviderUpdateToast,
+  type ConnectedEnvironmentProvidersInput,
   type LocalEnvironmentProvidersInput,
   type LocalEnvironmentUpdateGroup,
   type LocalProviderUpdateOutcome,
@@ -1036,5 +1042,303 @@ describe("provider update launch notification logic", () => {
         }),
       ).toMatchObject({ kind: "idle", text: "Codex" });
     });
+  });
+});
+
+describe("getProviderUpdateRunToastView", () => {
+  const updateState = (
+    status: "succeeded" | "failed" | "unchanged" | "running",
+    message: string,
+  ): ServerProvider["updateState"] => ({
+    status,
+    startedAt: checkedAt,
+    finishedAt: status === "running" ? null : laterCheckedAt,
+    message,
+    output: null,
+  });
+  const updated = (providerDriver: string, state: ServerProvider["updateState"]) =>
+    AsyncResult.success({
+      providers: [provider({ driver: driver(providerDriver), updateState: state })],
+    });
+  const run = (
+    machineLabel: string,
+    providerDriver: string,
+    result: Parameters<typeof getProviderUpdateRunToastView>[0][number]["result"],
+  ) => ({
+    machineLabel,
+    driver: driver(providerDriver),
+    instanceId: instanceId(providerDriver),
+    result,
+  });
+
+  it("lists every failed and interrupted update with its machine", () => {
+    const view = getProviderUpdateRunToastView([
+      run("Mac Studio", "codex", updated("codex", updateState("succeeded", "Provider updated."))),
+      run(
+        "Mac Studio",
+        "claudeAgent",
+        updated("claudeAgent", updateState("failed", "npm exited with code 1.")),
+      ),
+      run("Laptop", "codex", AsyncResult.failure(Cause.die(new Error("WebSocket closed")))),
+      run("Server", "codex", AsyncResult.failure(Cause.interrupt())),
+    ]);
+
+    expect(view).toEqual({
+      type: "error",
+      title: "3 of 4 provider updates did not finish",
+      description: [
+        "Mac Studio · Claude: npm exited with code 1.",
+        "Laptop · Codex: WebSocket closed",
+        "Server · Codex: The request was interrupted. Check the provider's status or retry.",
+      ].join("\n"),
+    });
+  });
+
+  it("keeps upstream's failure wording when every problem is a failure", () => {
+    expect(
+      getProviderUpdateRunToastView([
+        run("Mac Studio", "codex", updated("codex", updateState("succeeded", "Provider updated."))),
+        run(
+          "Laptop",
+          "codex",
+          updated("codex", updateState("unchanged", "Pylon still detects an outdated version.")),
+        ),
+      ]),
+    ).toEqual({
+      type: "error",
+      title: "1 of 2 provider updates failed",
+      description: "Laptop · Codex: Pylon still detects an outdated version.",
+    });
+  });
+
+  it("reports interrupted runs instead of dropping them", () => {
+    expect(
+      getProviderUpdateRunToastView([
+        run("Server", "codex", AsyncResult.failure(Cause.interrupt())),
+      ]),
+    ).toEqual({
+      type: "warning",
+      title: "Provider update did not finish",
+      description:
+        "Server · Codex: The request was interrupted. Check the provider's status or retry.",
+    });
+  });
+
+  it("does not count a result without a terminal snapshot as a success", () => {
+    const missingTarget = AsyncResult.success({
+      providers: [
+        provider({
+          driver: driver("codex"),
+          instanceId: instanceId("codex_other"),
+          updateState: updateState("succeeded", "Provider updated."),
+        }),
+      ],
+    });
+    expect(
+      getProviderUpdateRunToastView([
+        run("Laptop", "codex", missingTarget),
+        run("Server", "codex", updated("codex", updateState("running", "Updating provider."))),
+      ]),
+    ).toEqual({
+      type: "warning",
+      title: "Provider updates did not finish",
+      description: [
+        "Laptop · Codex: The update did not report a result. Check the provider's status.",
+        "Server · Codex: The update did not report a result. Check the provider's status.",
+      ].join("\n"),
+    });
+  });
+
+  it("reports timed-out and already-running updates as unfinished", () => {
+    expect(
+      getProviderUpdateRunToastView([
+        run("Laptop", "codex", PROVIDER_UPDATE_RUN_TIMED_OUT),
+        run(
+          "Server",
+          "codex",
+          AsyncResult.failure(
+            Cause.fail(
+              new ServerProviderUpdateError({
+                provider: driver("unknown"),
+                reason: SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON,
+              }),
+            ),
+          ),
+        ),
+      ]),
+    ).toEqual({
+      type: "warning",
+      title: "Provider updates did not finish",
+      description: [
+        "Laptop · Codex: No response from the environment. Check the provider's status or retry.",
+        "Server · Codex: Another update for this provider is already running. Check its status.",
+      ].join("\n"),
+    });
+  });
+
+  it("reports success when every update succeeded and nothing for an empty run", () => {
+    const succeeded = updated("codex", updateState("succeeded", "Provider updated."));
+    expect(
+      getProviderUpdateRunToastView([
+        run("Mac Studio", "codex", succeeded),
+        run("Laptop", "codex", succeeded),
+      ]),
+    ).toEqual({
+      type: "success",
+      title: "2 providers updated",
+      description: "New sessions will use the updated providers.",
+    });
+    expect(getProviderUpdateRunToastView([])).toBeNull();
+  });
+});
+
+describe("buildConnectedEnvironmentUpdatePlan", () => {
+  const environment = (
+    id: string,
+    input: Partial<Omit<ConnectedEnvironmentProvidersInput, "environmentId">> = {},
+  ): ConnectedEnvironmentProvidersInput => ({
+    environmentId: id as EnvironmentId,
+    label: input.label ?? id,
+    isPrimary: input.isPrimary ?? false,
+    connectionPhase: input.connectionPhase ?? "connected",
+    providers:
+      input.providers === undefined ? [provider({ driver: driver("codex") })] : input.providers,
+    operateAccess: input.operateAccess ?? "granted",
+  });
+
+  it("targets every connected, operable environment with its own instances", () => {
+    const plan = buildConnectedEnvironmentUpdatePlan([
+      environment("local", {
+        isPrimary: true,
+        providers: [
+          provider({ driver: driver("codex") }),
+          provider({ driver: driver("claudeAgent") }),
+        ],
+      }),
+      environment("wsl", {
+        providers: [provider({ driver: driver("codex"), instanceId: instanceId("codex_wsl") })],
+      }),
+      environment("tunnel"),
+    ]);
+
+    expect(plan.targets.map((group) => String(group.environmentId))).toEqual([
+      "local",
+      "wsl",
+      "tunnel",
+    ]);
+    expect(plan.targets[1]!.candidates.map((candidate) => String(candidate.instanceId))).toEqual([
+      "codex_wsl",
+    ]);
+    expect(plan.providerCount).toBe(4);
+    expect(plan.skipped).toEqual([]);
+    expect(plan.manual).toEqual([]);
+  });
+
+  it("skips disconnected, loading, read-only, and still-checking environments", () => {
+    const plan = buildConnectedEnvironmentUpdatePlan([
+      environment("offline", { connectionPhase: "offline" }),
+      environment("reconnecting", { connectionPhase: "reconnecting" }),
+      environment("booting", { providers: null }),
+      environment("viewer", { operateAccess: "denied" }),
+      environment("checking", { operateAccess: "pending" }),
+      environment("ok"),
+    ]);
+
+    expect(plan.targets.map((group) => String(group.environmentId))).toEqual(["ok"]);
+    expect(plan.groups.map((group) => String(group.environmentId))).toEqual(["ok"]);
+    expect(plan.skipped.map((entry) => [String(entry.environmentId), entry.reason])).toEqual([
+      ["offline", "not-connected"],
+      ["reconnecting", "not-connected"],
+      ["booting", "loading"],
+      ["viewer", "read-only"],
+      ["checking", "checking-access"],
+    ]);
+  });
+
+  it("does not ask for access on environments with nothing to update", () => {
+    const plan = buildConnectedEnvironmentUpdatePlan([
+      environment("current", {
+        operateAccess: "pending",
+        providers: [provider({ driver: driver("codex"), advisoryStatus: "current" })],
+      }),
+    ]);
+
+    expect(plan.skipped).toEqual([]);
+    expect(plan.targets).toEqual([]);
+    expect(plan.groups).toHaveLength(1);
+  });
+
+  it("reports manual-only providers and differing instance commands for manual follow-up", () => {
+    const plan = buildConnectedEnvironmentUpdatePlan([
+      environment("server", {
+        providers: [
+          provider({ driver: driver("codex") }),
+          provider({ driver: driver("cursor"), canUpdate: false, updateCommand: null }),
+          provider({
+            driver: driver("claudeAgent"),
+            instanceId: instanceId("claude_personal"),
+            updateCommand: "npm install -g @anthropic-ai/claude-code",
+          }),
+          provider({
+            driver: driver("claudeAgent"),
+            instanceId: instanceId("claude_work"),
+            updateCommand: "brew upgrade claude-code",
+          }),
+        ],
+      }),
+    ]);
+
+    expect(plan.targets[0]!.candidates.map((candidate) => String(candidate.driver))).toEqual([
+      "codex",
+    ]);
+    expect(plan.manual).toHaveLength(1);
+    expect(plan.manual[0]!.providers.map((entry) => String(entry.driver)).toSorted()).toEqual([
+      "claudeAgent",
+      "cursor",
+    ]);
+  });
+
+  it("leaves Prime Agent to Prime maintenance and ignores an unavailable Prime", () => {
+    const updatablePrime = buildConnectedEnvironmentUpdatePlan([
+      environment("mac", {
+        providers: [provider({ driver: driver("primeAgent"), canUpdate: true })],
+      }),
+    ]);
+    expect(updatablePrime.targets).toEqual([]);
+    expect(updatablePrime.providerCount).toBe(0);
+    expect(updatablePrime.manual[0]!.providers.map((entry) => String(entry.driver))).toEqual([
+      "primeAgent",
+    ]);
+
+    const unavailablePrime = buildConnectedEnvironmentUpdatePlan([
+      environment("windows", {
+        providers: [provider({ driver: driver("primeAgent"), enabled: false })],
+      }),
+    ]);
+    expect(unavailablePrime.targets).toEqual([]);
+    expect(unavailablePrime.manual).toEqual([]);
+  });
+
+  it("keeps an environment's row while its updates are queued", () => {
+    const plan = buildConnectedEnvironmentUpdatePlan([
+      environment("server", {
+        providers: [
+          provider({
+            driver: driver("codex"),
+            updateState: {
+              status: "queued",
+              startedAt: null,
+              finishedAt: null,
+              message: "Waiting for another provider update to finish.",
+              output: null,
+            },
+          }),
+        ],
+      }),
+    ]);
+
+    expect(plan.targets).toEqual([]);
+    expect(plan.manual).toEqual([]);
+    expect(plan.groups.map((group) => String(group.environmentId))).toEqual(["server"]);
   });
 });

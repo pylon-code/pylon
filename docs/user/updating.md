@@ -85,6 +85,20 @@ fails:
 2. Check that you updated the server's machine, not only the device you are using.
 3. For a command-line server, stop it and relaunch the exact version shown in the notice.
 
+## Update providers
+
+Each provider card in **Settings → Providers** updates that provider on the device selected there.
+To update every connected environment at once, use **Update all connected environments** at the top
+of the page. It lists the machines and providers it will update before anything runs, along with
+environments it leaves out: ones that are offline, still loading, or where this session can only view
+providers. Providers without a one-click update, and Prime Agent, which updates through its own
+Prime maintenance, are listed for you to update separately.
+
+Each environment installs its own updates and reports its own result, so a failure on one machine
+does not hide successes on the others. Retry a failed environment from the same list. New
+sessions use the updated providers. The mobile app updates one environment at a time, as described
+below.
+
 ## Mobile updates
 
 In the mobile app, open **Settings → Environments → Manage updates** and choose a connected

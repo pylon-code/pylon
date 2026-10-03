@@ -119,6 +119,7 @@ import {
   resolveProviderSettingsTargetEnvironment,
 } from "./ProviderSettingsPanel.logic";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
+import { ProviderUpdateAllEnvironmentsAction } from "./ProviderUpdateAllEnvironments";
 
 /** The configured binary path, if the driver config carries one. */
 function configuredBinaryPath(config: unknown): string {
@@ -424,6 +425,8 @@ function ProviderSettingsPanelContent(target: ProviderSettingsTarget) {
           />
         </SettingsSection>
       ) : null}
+
+      {target.scoped ? null : <ProviderUpdateAllEnvironmentsAction />}
 
       {selectedEnvironment ? (
         <SelectedEnvironmentProviderSettings
