@@ -6496,6 +6496,9 @@ export default function ChatView(props: ChatViewProps) {
     optimisticUserMessages,
   ]);
 
+  // Keyed on the thread, not the draft: a draft's promotion to its server
+  // route keeps this instance and drops `draftId`, and the send it is still
+  // dispatching must survive that swap.
   useEffect(() => {
     setOptimisticUserMessages((existing) => {
       for (const message of existing) {
@@ -6505,7 +6508,7 @@ export default function ChatView(props: ChatViewProps) {
     });
     resetLocalDispatch();
     setExpandedImage(null);
-  }, [draftId, resetLocalDispatch, threadId]);
+  }, [resetLocalDispatch, threadId]);
 
   const closeExpandedImage = useCallback(() => {
     setExpandedImage(null);
