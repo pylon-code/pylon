@@ -32,7 +32,12 @@ import {
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 
-import { useEnvironmentServerConfig, useProjects, useThreadShells } from "../../state/entities";
+import {
+  useEnvironmentServerConfig,
+  useProjects,
+  useServerConfigs,
+  useThreadShells,
+} from "../../state/entities";
 import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
@@ -94,8 +99,11 @@ import {
 } from "../../state/use-thread-outbox";
 import {
   setPendingConnectionError,
+  useRemoteConnectionStatus,
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
+import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+import { scratchOfferingEnvironmentIds } from "./new-task-project-selection";
 import { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { type VcsRef } from "@t3tools/client-runtime/state/vcs";
 import {
@@ -153,9 +161,17 @@ export function branchBadgeLabel(input: {
 type NewTaskFlowContextValue = {
   readonly projectScopes: ReadonlyArray<HomeProjectScope>;
   readonly selectedEnvironmentId: EnvironmentId | null;
+  /**
+   * The machine the user explicitly chose (by picking a project or machine),
+   * or null. Unlike `selectedEnvironmentId` it never falls back to the first
+   * project's machine, so it is what "the current machine" means for Scratch.
+   */
+  readonly chosenEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
   readonly selectedModelKey: string | null;
   readonly workspaceMode: WorkspaceMode;
+  /** False for threads without a project: their folder has no branch or worktree. */
+  readonly canChooseWorkspace: boolean;
   readonly selectedBranchName: string | null;
   readonly selectedBranchRemoteName: string | null;
   readonly selectedWorktreePath: string | null;
@@ -182,6 +198,8 @@ type NewTaskFlowContextValue = {
     readonly environmentLabel: string;
   }>;
   readonly selectedProject: EnvironmentProject | null;
+  /** True when the draft is a thread without a project (its machine's Scratch project). */
+  readonly isScratchDraft: boolean;
   readonly modelOptions: ReadonlyArray<ModelOption>;
   readonly selectedModel: ModelSelection | null;
   readonly selectedModelOption: ModelOption | null;
@@ -262,11 +280,12 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const [selectedEnvironmentIdOverride, setSelectedEnvironmentId] = useState<EnvironmentId | null>(
     null,
   );
-  const selectedEnvironmentId =
+  const chosenEnvironmentId =
     selectedEnvironmentIdOverride !== null &&
     projects.some((project) => project.environmentId === selectedEnvironmentIdOverride)
       ? selectedEnvironmentIdOverride
-      : (projects[0]?.environmentId ?? null);
+      : null;
+  const selectedEnvironmentId = chosenEnvironmentId ?? projects[0]?.environmentId ?? null;
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
   // The new-task draft the composer is bound to. Null until a project is
   // chosen; each New Task entry mints its own, so a project can hold several.
@@ -348,6 +367,21 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       ? editingPendingProject
       : (projectsForEnvironment[0] ?? null));
 
+  const selectedEnvironmentServerConfig = useEnvironmentServerConfig(
+    selectedProject?.environmentId ?? null,
+  );
+  const isScratchDraft =
+    selectedProject !== null &&
+    isScratchProject(selectedProject, selectedEnvironmentServerConfig?.scratchWorkspaceRoot);
+  const serverConfigs = useServerConfigs();
+  const { connectedEnvironments } = useRemoteConnectionStatus();
+  // A thread without a project can move to any connected machine that offers
+  // one; its Scratch project there is created on the switch if it is missing.
+  const scratchEnvironments = useMemo(() => {
+    const offering = new Set(scratchOfferingEnvironmentIds(connectedEnvironments, serverConfigs));
+    return connectedEnvironments.filter((environment) => offering.has(environment.environmentId));
+  }, [connectedEnvironments, serverConfigs]);
+
   // Only offer machines that actually host the currently selected repository, so
   // switching computers moves the same repo across machines instead of jumping to
   // whatever unrelated project happens to be first on the other machine. Repository
@@ -359,6 +393,12 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const selectedWorkspaceBasename = selectedProject?.workspaceRoot.split("/").at(-1) || null;
   const selectedProjectTitle = selectedProject?.title ?? null;
   const environments = useMemo(() => {
+    if (isScratchDraft) {
+      return scratchEnvironments.map((environment) => ({
+        environmentId: environment.environmentId,
+        environmentLabel: environment.environmentLabel,
+      }));
+    }
     const seen = new Set<EnvironmentId>();
     const result: Array<{
       readonly environmentId: EnvironmentId;
@@ -396,16 +436,15 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     }
     return result;
   }, [
+    isScratchDraft,
     projects,
     savedConnectionsById,
+    scratchEnvironments,
     selectedRepositoryKey,
     selectedWorkspaceBasename,
     selectedProjectTitle,
   ]);
 
-  const selectedEnvironmentServerConfig = useEnvironmentServerConfig(
-    selectedProject?.environmentId ?? null,
-  );
   // While a queued pending task is being edited its draft lives under a key
   // scoped to the queued message, so new-task drafts stay intact.
   const selectedProjectDraftKey = editingPendingTask
@@ -463,11 +502,16 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     projectSettings.sources.defaultThreadEnvMode === "project"
       ? projectSettings.settings.defaultThreadEnvMode
       : undefined;
-  const defaultWorkspaceMode: WorkspaceMode = resolveDefaultThreadEnvMode({
-    projectSetting: projectThreadEnvMode,
-    projectFile: t3ProjectFileDefaultMode,
-    globalDefault: projectSettings.settings.defaultThreadEnvMode,
-  });
+  // A thread without a project runs in a plain folder, so worktree mode
+  // would leave it unsendable: it is always local and offers no choice.
+  const canChooseWorkspace = !isScratchDraft;
+  const defaultWorkspaceMode: WorkspaceMode = canChooseWorkspace
+    ? resolveDefaultThreadEnvMode({
+        projectSetting: projectThreadEnvMode,
+        projectFile: t3ProjectFileDefaultMode,
+        globalDefault: projectSettings.settings.defaultThreadEnvMode,
+      })
+    : "local";
   // While unsettled the resolved default is provisional. Nothing may write
   // it into the draft during that window (the auto-branch effect does), or
   // the frozen interim value beats the t3.json default once it loads.
@@ -476,7 +520,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     projectSetting: projectThreadEnvMode,
     projectFilePending: t3ProjectFileQuery.isPending,
   });
-  const workspaceMode = selectedProjectDraft.workspaceSelection?.mode ?? defaultWorkspaceMode;
+  const workspaceMode: WorkspaceMode = canChooseWorkspace
+    ? (selectedProjectDraft.workspaceSelection?.mode ?? defaultWorkspaceMode)
+    : "local";
   const selectedBranchName = selectedProjectDraft.workspaceSelection?.branch ?? null;
   const selectedBranchRemoteName = selectedProjectDraft.workspaceSelection?.baseRemoteName ?? null;
   const selectedWorktreePath = selectedProjectDraft.workspaceSelection?.worktreePath ?? null;
@@ -1031,7 +1077,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       if (text.length === 0 || !draftModelSelection) {
         return null;
       }
-      const workspaceSelection = draft.workspaceSelection;
+      // A saved choice from before the project went no-project must not
+      // survive: those threads always run locally in their own folder.
+      const workspaceSelection = canChooseWorkspace ? draft.workspaceSelection : undefined;
       // Fall back to the resolved mode (server default) so queued tasks drain
       // with the same mode the composer displayed.
       const mode = workspaceSelection?.mode ?? workspaceMode;
@@ -1104,6 +1152,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       };
     },
     [
+      canChooseWorkspace,
       defaultRuntimeMode,
       editingPendingProject,
       editingPendingTask,
@@ -1224,9 +1273,11 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     () => ({
       projectScopes,
       selectedEnvironmentId,
+      chosenEnvironmentId,
       selectedProjectKey,
       selectedModelKey,
       workspaceMode,
+      canChooseWorkspace,
       selectedBranchName,
       selectedBranchRemoteName,
       selectedWorktreePath,
@@ -1250,6 +1301,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       expandedProvider,
       environments,
       selectedProject,
+      isScratchDraft,
       modelOptions,
       selectedModel,
       selectedModelOption,
@@ -1315,6 +1367,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       selectedBranchRemoteName,
       hasMoreBranches,
       selectedEnvironmentId,
+      chosenEnvironmentId,
       selectedModel,
       selectedModelKey,
       selectedModelOption,
@@ -1323,6 +1376,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       showInteractionModeToggle,
       setSelectedModelOptions,
       selectedProject,
+      isScratchDraft,
       selectedProjectKey,
       selectedWorktreePath,
       setProject,
@@ -1338,6 +1392,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       startFromOrigin,
       submitting,
       workspaceMode,
+      canChooseWorkspace,
       appendAttachments,
       clearAttachments,
       removeAttachment,

@@ -9,7 +9,9 @@
  *
  * @module ManagedProjectFolders
  */
-import { CommandId, ProjectId, type ThreadId } from "@t3tools/contracts";
+import * as NodeCrypto from "node:crypto";
+
+import { CommandId, ProjectId } from "@t3tools/contracts";
 import { newProjectFolderName } from "@t3tools/shared/path";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -26,6 +28,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
+import { makeKeyedSerialExecutor } from "../orchestration-v2/KeyedSerialExecutor.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProjectService from "./ProjectService.ts";
@@ -99,12 +102,15 @@ export class ManagedProjectFolders extends Context.Service<
     /** Finds or creates the Scratch project and (re)creates its folder. */
     readonly ensureScratchProject: Effect.Effect<{ readonly projectId: ProjectId }, ScratchError>;
     /**
-     * Claims a fresh folder for a new thread in the Scratch project, named from
-     * the date, its first message, and its id. None for every other project.
+     * The folder of a new thread in the Scratch project, named from the date,
+     * its first message, and a tag derived from `claimKey`. None for every
+     * other project. Idempotent per `claimKey` (the launch's client-supplied
+     * thread id, else its command id): a retried, replayed, or concurrent
+     * launch gets the folder its first attempt made, never a second one.
      */
     readonly folderForThread: (input: {
       readonly projectId: ProjectId;
-      readonly threadId: ThreadId;
+      readonly claimKey: string;
       readonly text: string;
     }) => Effect.Effect<Option.Option<string>, ScratchFolderError>;
     /** The folder that holds projects started from just a name. */
@@ -160,6 +166,15 @@ const ICON_BACKGROUNDS = [
 ] as const;
 
 const MAX_NAMED_FOLDER_ATTEMPTS = 100;
+
+/**
+ * The stable tail of a Scratch thread folder's name. Derived only from the
+ * claim key, so every attempt of one launch looks for the same tag, and a
+ * prefix shared by many ids ("thread:...") cannot make two keys collide.
+ */
+export function scratchFolderTag(claimKey: string): string {
+  return NodeCrypto.createHash("sha256").update(claimKey).digest("hex").slice(0, 12);
+}
 
 function escapeXml(value: string): string {
   return value
@@ -233,9 +248,8 @@ const make = Effect.gen(function* () {
    * Claims the first free folder among `folderFor(1)`, `folderFor(2)`, ...,
    * stopping with None when `folderFor` runs out of names. Each folder is
    * created without `recursive`, so creating it is the claim: of two racers
-   * for one name, one gets AlreadyExists and moves on to the next. Scratch
-   * thread folders and named projects both claim through this, so no two
-   * threads or projects ever share a folder.
+   * for one name, one gets AlreadyExists and moves on to the next, so no two
+   * named projects ever share a folder.
    */
   const claimFreeFolder = Effect.fnUntraced(function* <E>(
     folderFor: (attempt: number) => Effect.Effect<Option.Option<string>, E>,
@@ -258,21 +272,23 @@ const make = Effect.gen(function* () {
 
   // Inside a checkout (a dev worktree's .t3, a dotfiles home) the folder would
   // inherit the repo's git status and checkpoints, so Scratch is offered only
-  // when the data dir is outside any work tree. Probed once; detection
-  // failures hide Scratch rather than failing callers. An interrupted probe
-  // invalidates the cache so the next caller probes again.
+  // when the data dir is outside any work tree. Only a definite answer is
+  // cached: a failed or interrupted probe hides Scratch for that caller and is
+  // dropped, so the next caller probes again instead of every later thread
+  // silently running in the shared root.
   const [probe, invalidate] = yield* Effect.cachedInvalidateWithTTL(
-    gitWorkflow.isRepository(config.baseDir).pipe(
-      Effect.map((isRepository) =>
-        isRepository ? Option.none<string>() : Option.some(path.resolve(config.baseDir, "scratch")),
-      ),
-      Effect.catchCause((cause) =>
-        Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(Option.none<string>()),
-      ),
-    ),
+    gitWorkflow.isRepository(config.baseDir),
     Duration.infinity,
   );
-  const scratchRoot = probe.pipe(Effect.onInterrupt(() => invalidate));
+  const scratchRoot = probe.pipe(
+    Effect.onError(() => invalidate),
+    Effect.map((isRepository) =>
+      isRepository ? Option.none<string>() : Option.some(path.resolve(config.baseDir, "scratch")),
+    ),
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(Option.none<string>()),
+    ),
+  );
 
   const makeScratchFolder = (folder: string) =>
     fileSystem
@@ -338,35 +354,56 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => false),
     );
 
+  // Serializes claims of one key, so concurrent attempts of one launch cannot
+  // both miss the existing folder and make two (say, across midnight).
+  const claimLocks = yield* makeKeyedSerialExecutor<string>();
+
   const folderForThread: ManagedProjectFolders["Service"]["folderForThread"] = Effect.fn(
     "ManagedProjectFolders.folderForThread",
   )(function* (input) {
     const root = yield* scratchRoot;
     if (Option.isNone(root)) return Option.none();
     if (!(yield* isScratchProject(input.projectId, root.value))) return Option.none();
-    const date = DateTime.formatIso(yield* DateTime.now).slice(0, 10);
-    const words = folderWords(input.text);
-    const id = input.threadId.toLowerCase().replace(/[^a-z0-9]/g, "");
-    const folderFor = (idPart: string) =>
-      path.join(root.value, [date, words, idPart].filter(Boolean).join("-"));
-    yield* makeScratchFolder(root.value);
-    const fullFolder = folderFor(id);
-    // Thread ids often share a prefix ("thread:..."), so the first name uses
-    // the id's tail. A taken short name falls back to the full id, which only
-    // this thread holds. Ids that normalize alike, or a launch retried without
-    // its receipt, can find the full name taken too, so later attempts add a
-    // fresh random suffix; the names never run out.
-    return yield* claimFreeFolder(
-      (attempt) =>
-        attempt === 1
-          ? Effect.succeed(Option.some(folderFor(id.slice(-8))))
-          : attempt === 2
-            ? Effect.succeed(Option.some(fullFolder))
-            : crypto.randomUUIDv4.pipe(
-                Effect.map((uuid) => Option.some(`${fullFolder}-${uuid.slice(0, 8)}`)),
-                Effect.mapError((cause) => new ScratchFolderError({ folder: fullFolder, cause })),
-              ),
-      (folder, cause) => new ScratchFolderError({ folder, cause }),
+    const tag = scratchFolderTag(input.claimKey);
+    return yield* claimLocks.withLock(
+      tag,
+      Effect.gen(function* () {
+        yield* makeScratchFolder(root.value);
+        // The folder is the reservation: an earlier attempt of this launch,
+        // even one whose create was never accepted, already made it.
+        const entries = yield* fileSystem
+          .readDirectory(root.value)
+          .pipe(Effect.mapError((cause) => new ScratchFolderError({ folder: root.value, cause })));
+        const realRoot = yield* fileSystem
+          .realPath(root.value)
+          .pipe(Effect.orElseSucceed(() => root.value));
+        for (const name of entries.toSorted()) {
+          if (name !== tag && !name.endsWith(`-${tag}`)) continue;
+          const folder = path.join(root.value, name);
+          // Only a real directory directly in the root counts. A symlink
+          // resolves elsewhere and could point anywhere, so it is never reused.
+          const real = yield* fileSystem.realPath(folder).pipe(Effect.option);
+          if (Option.isNone(real) || real.value !== path.join(realRoot, name)) continue;
+          const info = yield* fileSystem.stat(folder).pipe(Effect.option);
+          if (Option.isSome(info) && info.value.type === "Directory") return Option.some(folder);
+        }
+        const date = DateTime.formatIso(yield* DateTime.now).slice(0, 10);
+        const folder = path.join(
+          root.value,
+          [date, folderWords(input.text), tag].filter(Boolean).join("-"),
+        );
+        yield* makeScratchFolder(folder);
+        // `recursive` accepts an existing entry, so make sure it is not a
+        // symlink planted under the name this launch was about to take.
+        const made = yield* fileSystem.realPath(folder).pipe(Effect.option);
+        if (Option.isNone(made) || made.value !== path.join(realRoot, path.basename(folder))) {
+          return yield* new ScratchFolderError({
+            folder,
+            cause: "The thread folder is a link to somewhere else.",
+          });
+        }
+        return Option.some(folder);
+      }),
     );
   });
 

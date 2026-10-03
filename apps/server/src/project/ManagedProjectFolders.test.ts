@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { CommandId, GitCommandError, ProjectId, ThreadId } from "@t3tools/contracts";
+import { CommandId, GitCommandError, ProjectId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -58,6 +58,8 @@ const realGitLayer = GitVcsDriver.layer.pipe(Layer.provide(VcsProcess.layer));
 interface HarnessOptions {
   /** A git driver for failures real git cannot produce on demand. */
   readonly git?: Layer.Layer<GitVcsDriver.GitVcsDriver>;
+  /** Repository detection, for probe failures real git cannot produce on demand. */
+  readonly gitWorkflow?: Layer.Layer<GitWorkflow.GitWorkflowService>;
   /** Wraps the real ProjectService, for failures it cannot produce on demand. */
   readonly projects?: (
     real: ProjectService.ProjectService["Service"],
@@ -81,7 +83,7 @@ const makeLayer = (baseDir: string, options?: HarnessOptions) =>
     Layer.provideMerge(ProjectServiceLayerLive),
     Layer.provideMerge(enrichmentLayer),
     Layer.provideMerge(WorkspacePaths.layer),
-    Layer.provideMerge(gitWorkflowLayer),
+    Layer.provideMerge(options?.gitWorkflow ?? gitWorkflowLayer),
     Layer.provideMerge(options?.git ?? realGitLayer),
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfig.layerTest(baseDir, baseDir)),
@@ -190,7 +192,7 @@ it.effect("recreates the Scratch folder after it is deleted", () =>
       yield* fileSystem.remove(root, { recursive: true });
       const folder = yield* scratch.folderForThread({
         projectId,
-        threadId: ThreadId.make("thread-after-delete"),
+        claimKey: "thread-after-delete",
         text: "Still works",
       });
       assert.isTrue(yield* fileSystem.exists(Option.getOrThrow(folder)));
@@ -207,47 +209,138 @@ it.effect("gives each Scratch thread its own folder, named from its message", ()
       const { projectId } = yield* scratch.ensureScratchProject;
       const root = yield* requireRoot;
       const text = "Convert these PNGs to WebP, please!";
-      // Two ids with the same tail would collide on the short name.
-      const first = Option.getOrThrow(
-        yield* scratch.folderForThread({
-          projectId,
-          threadId: ThreadId.make("thread:a:0123456789abcdef"),
-          text,
-        }),
-      );
-      const second = Option.getOrThrow(
-        yield* scratch.folderForThread({
-          projectId,
-          threadId: ThreadId.make("thread:b:0123456789abcdef"),
-          text,
-        }),
-      );
+      // Ids sharing a prefix or a tail, or normalizing to the same characters,
+      // still get distinct folders: the tag hashes the whole key.
+      const keys = [
+        "thread:a:0123456789abcdef",
+        "thread:b:0123456789abcdef",
+        "thread:b0123456789abcdef",
+      ];
+      const folders: Array<string> = [];
+      for (const claimKey of keys) {
+        folders.push(
+          Option.getOrThrow(yield* scratch.folderForThread({ projectId, claimKey, text })),
+        );
+      }
 
-      // Ids that normalize to the same characters take both of its names.
-      const third = Option.getOrThrow(
-        yield* scratch.folderForThread({
-          projectId,
-          threadId: ThreadId.make("thread:b0123456789abcdef"),
-          text,
-        }),
-      );
-
-      assert.equal(new Set([first, second, third]).size, 3);
-      for (const folder of [first, second, third]) {
+      assert.equal(new Set(folders).size, 3);
+      for (const [index, folder] of folders.entries()) {
         assert.equal(path.dirname(folder), root);
-        assert.match(path.basename(folder), /^\d{4}-\d{2}-\d{2}-convert-these-pngs-to-webp-/);
+        assert.equal(
+          path.basename(folder),
+          `${path.basename(folder).slice(0, 10)}-convert-these-pngs-to-webp-${ManagedProjectFolders.scratchFolderTag(keys[index]!)}`,
+        );
+        assert.match(path.basename(folder), /^\d{4}-\d{2}-\d{2}-/);
         assert.isTrue(yield* fileSystem.exists(folder));
       }
 
       const pasted = Option.getOrThrow(
         yield* scratch.folderForThread({
           projectId,
-          threadId: ThreadId.make("thread-pasted"),
+          claimKey: "thread-pasted",
           text: `${"word ".repeat(10_000)}../../etc`,
         }),
       );
       assert.equal(path.dirname(pasted), root);
       assert.isAtMost(path.basename(pasted).length, 80);
+
+      // A key that tries to climb out of the root only ever reaches the tag.
+      const escape = Option.getOrThrow(
+        yield* scratch.folderForThread({ projectId, claimKey: "../../escape", text: "" }),
+      );
+      assert.equal(path.dirname(escape), root);
+    }),
+  ),
+);
+
+it.effect("reuses a Scratch thread's folder for every attempt of the same launch", () =>
+  withScratch(() =>
+    Effect.gen(function* () {
+      const scratch = yield* ManagedProjectFolders.ManagedProjectFolders;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { projectId } = yield* scratch.ensureScratchProject;
+      const root = yield* requireRoot;
+      const claim = (text: string) =>
+        scratch
+          .folderForThread({ projectId, claimKey: "thread:retried", text })
+          .pipe(Effect.map(Option.getOrThrow));
+
+      // Racing attempts (a double submit, a reconnect replay) share one folder.
+      const racers = yield* Effect.all(
+        Array.from({ length: 8 }, () => claim("Rename the photos")),
+        { concurrency: "unbounded" },
+      );
+      assert.equal(new Set(racers).size, 1);
+      const first = racers[0]!;
+
+      // So does a retry after the first attempt's create never landed, even
+      // when its text (and so the name it would pick) differs, and even once
+      // the agent has written files there.
+      yield* fileSystem.writeFileString(path.join(first, "notes.txt"), "kept");
+      assert.equal(yield* claim("Something else entirely"), first);
+      assert.deepEqual(yield* fileSystem.readDirectory(root), [path.basename(first)]);
+      assert.equal(yield* fileSystem.readFileString(path.join(first, "notes.txt")), "kept");
+    }),
+  ),
+);
+
+it.effect("probes for a checkout again after a failed probe instead of caching it", () => {
+  let probes = 0;
+  const flakyGitWorkflow = Layer.mock(GitWorkflow.GitWorkflowService)({
+    isRepository: () =>
+      Effect.suspend(() =>
+        ++probes === 1
+          ? Effect.fail(
+              new GitCommandError({
+                operation: "isRepository",
+                command: "git rev-parse",
+                cwd: "/",
+                detail: "transient",
+              }),
+            )
+          : Effect.succeed(false),
+      ),
+  });
+  return withScratch(
+    ({ baseDir }) =>
+      Effect.gen(function* () {
+        const scratch = yield* ManagedProjectFolders.ManagedProjectFolders;
+        const path = yield* Path.Path;
+        // The failed probe hides Scratch for this caller only.
+        assert.isTrue(Option.isNone(yield* scratch.scratchRoot));
+        assert.equal(
+          Option.getOrThrow(yield* scratch.scratchRoot),
+          path.resolve(baseDir, "scratch"),
+        );
+        // A definite answer is cached.
+        yield* scratch.scratchRoot;
+        assert.equal(probes, 2);
+      }),
+    { gitWorkflow: flakyGitWorkflow },
+  );
+});
+
+it.effect("never reuses a symlink that carries a launch's tag", () =>
+  withScratch(({ baseDir }) =>
+    Effect.gen(function* () {
+      const scratch = yield* ManagedProjectFolders.ManagedProjectFolders;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { projectId } = yield* scratch.ensureScratchProject;
+      const root = yield* requireRoot;
+      const elsewhere = path.join(baseDir, "elsewhere");
+      yield* fileSystem.makeDirectory(elsewhere);
+      const tag = ManagedProjectFolders.scratchFolderTag("thread:linked");
+      yield* fileSystem.symlink(elsewhere, path.join(root, `planted-${tag}`));
+
+      const folder = Option.getOrThrow(
+        yield* scratch.folderForThread({ projectId, claimKey: "thread:linked", text: "Hi" }),
+      );
+      assert.notEqual(path.basename(folder), `planted-${tag}`);
+      assert.equal(path.dirname(folder), root);
+      assert.equal((yield* fileSystem.stat(folder)).type, "Directory");
+      assert.deepEqual(yield* fileSystem.readDirectory(elsewhere), []);
     }),
   ),
 );
@@ -270,7 +363,7 @@ it.effect("leaves threads in other projects alone", () =>
 
       const folder = yield* scratch.folderForThread({
         projectId: other.id,
-        threadId: ThreadId.make("thread-other"),
+        claimKey: "thread-other",
         text: "Hello",
       });
       assert.isTrue(Option.isNone(folder));

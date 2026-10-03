@@ -9,6 +9,9 @@ import {
   getProjectScopeSelectionTarget,
   resolveDraftProjectSelection,
   resolveEnvironmentProjectMatch,
+  resolveScratchStartEnvironmentId,
+  scratchOfferingEnvironmentIds,
+  withoutScratchProjectScopes,
 } from "./new-task-project-selection";
 
 describe("filterProjectScopes", () => {
@@ -197,5 +200,97 @@ describe("resolveDraftProjectSelection", () => {
       kind: "select",
       project,
     });
+  });
+});
+
+describe("Scratch (No project) picker", () => {
+  const mac = EnvironmentId.make("mac");
+  const server = EnvironmentId.make("server");
+  const scratchConfigs = new Map([
+    [mac, { scratchWorkspaceRoot: "/Users/alice/.pylon/userdata/scratch" }],
+    [server, { scratchWorkspaceRoot: "/home/bot/.pylon/scratch" }],
+  ]);
+  const connected = (environmentId: EnvironmentId) => ({
+    environmentId,
+    connectionState: "connected" as const,
+  });
+
+  it("drops scopes made only of Scratch projects but keeps real ones", () => {
+    const scratch = makeProject("scratch", "mac", {
+      workspaceRoot: "/Users/alice/.pylon/userdata/scratch",
+    });
+    const real = makeProject("pylon", "mac");
+    const scratchOnly = { ...makeScope([scratch]), key: "scratch" };
+    const realScope = { ...makeScope([real]), key: "real" };
+    expect(withoutScratchProjectScopes([scratchOnly, realScope], scratchConfigs)).toEqual([
+      realScope,
+    ]);
+    // A folder that only looks like Scratch elsewhere stays an ordinary row.
+    expect(withoutScratchProjectScopes([scratchOnly], new Map())).toEqual([scratchOnly]);
+  });
+
+  it("offers only connected machines that advertise a Scratch root", () => {
+    expect(
+      scratchOfferingEnvironmentIds(
+        [
+          connected(mac),
+          { environmentId: server, connectionState: "connecting" },
+          connected(EnvironmentId.make("inside-checkout")),
+        ],
+        scratchConfigs,
+      ),
+    ).toEqual([mac]);
+  });
+
+  it("keeps the current machine and never falls back to another one", () => {
+    const environments = [connected(mac), connected(server)];
+    expect(
+      resolveScratchStartEnvironmentId({
+        currentEnvironmentId: server,
+        environments,
+        serverConfigs: scratchConfigs,
+      }),
+    ).toBe(server);
+    // The current machine offers no Scratch: no row, not the first other one.
+    expect(
+      resolveScratchStartEnvironmentId({
+        currentEnvironmentId: server,
+        environments,
+        serverConfigs: new Map([[mac, scratchConfigs.get(mac)!]]),
+      }),
+    ).toBeNull();
+  });
+
+  it("finds Scratch on the one machine that has it beside an older server", () => {
+    // The flow's fallback machine (the first project's) is not "current", so
+    // pairing with an older or Git-checkout server never hides the row.
+    const older = EnvironmentId.make("older");
+    expect(
+      resolveScratchStartEnvironmentId({
+        currentEnvironmentId: null,
+        environments: [connected(older), connected(server)],
+        serverConfigs: new Map<EnvironmentId, { readonly scratchWorkspaceRoot?: string }>([
+          [older, {}],
+          [server, { scratchWorkspaceRoot: "/home/bot/.pylon/scratch" }],
+        ]),
+      }),
+    ).toBe(server);
+  });
+
+  it("picks a machine without a current one only when exactly one offers Scratch", () => {
+    expect(
+      resolveScratchStartEnvironmentId({
+        currentEnvironmentId: null,
+        environments: [connected(mac)],
+        serverConfigs: scratchConfigs,
+      }),
+    ).toBe(mac);
+    expect(
+      resolveScratchStartEnvironmentId({
+        currentEnvironmentId: null,
+        environments: [connected(mac), connected(server)],
+        serverConfigs: scratchConfigs,
+      }),
+    ).toBeNull();
   });
 });
