@@ -52,11 +52,6 @@ export const ClaudeConversationAnchor = Schema.Struct({
   turnStartMessageIndices: Schema.Array(Schema.NullOr(NonNegativeInt)),
 });
 export type ClaudeConversationAnchor = typeof ClaudeConversationAnchor.Type;
-const decodeAnchor = Schema.decodeUnknownExit(ClaudeConversationAnchor);
-export function readClaudeConversationAnchor(raw: unknown) {
-  const decoded = decodeAnchor(raw);
-  return Exit.isSuccess(decoded) ? decoded.value : undefined;
-}
 
 export const ClaudeIdleHistory = Schema.Struct({
   nativeSessionId: Uuid,
@@ -79,11 +74,6 @@ export const ClaudeExactCursor = Schema.Struct({
   anchors: Schema.Array(ClaudeConversationAnchor),
 });
 export type ClaudeExactCursor = typeof ClaudeExactCursor.Type;
-const decodeCursor = Schema.decodeUnknownExit(ClaudeExactCursor);
-export function readClaudeExactCursor(raw: unknown) {
-  const decoded = decodeCursor(raw);
-  return Exit.isSuccess(decoded) ? decoded.value : undefined;
-}
 
 const decodeNativeEntry = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.JsonObject));
 const isUuid = Schema.is(Uuid);

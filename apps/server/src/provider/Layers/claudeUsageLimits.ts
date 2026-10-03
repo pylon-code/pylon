@@ -17,7 +17,6 @@ import type {
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
@@ -188,12 +187,3 @@ export function claudeUsageResponseToLimits(input: {
     names: { overageIncluded },
   };
 }
-
-/** Probe-side helper: map the response and remember the scoped names for events. */
-export const recordClaudeUsageResponse = (
-  namesRef: Ref.Ref<ClaudeScopedLimitNames>,
-  input: Parameters<typeof claudeUsageResponseToLimits>[0],
-): Effect.Effect<ServerProviderUsageLimits> => {
-  const { limits, names } = claudeUsageResponseToLimits(input);
-  return Ref.set(namesRef, names).pipe(Effect.as(limits));
-};

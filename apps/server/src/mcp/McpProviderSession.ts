@@ -1,18 +1,5 @@
-import {
-  PREVIEW_RECORDING_STOP_TIMEOUT_MS,
-  type EnvironmentId,
-  type ProviderInstanceId,
-  type ThreadId,
-} from "@t3tools/contracts";
+import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import type { ProviderRuntimeFence } from "../provider/ProviderDriver.ts";
-
-/**
- * Per-call timeout to configure for Pylon's MCP server where a provider accepts one.
- * It outlasts `preview_recording_stop`, the slowest tool, so a provider does not
- * abandon a recording transfer the server is still allowed to finish. Older Codex
- * releases default to 60 or 120 seconds and OpenCode to 60.
- */
-export const MCP_PROVIDER_TOOL_TIMEOUT_MS = PREVIEW_RECORDING_STOP_TIMEOUT_MS + 60_000;
 
 export interface McpProviderSessionConfig {
   readonly environmentId: EnvironmentId;
@@ -69,11 +56,6 @@ export function setMcpProviderSession(
 
 export function readMcpProviderSession(threadId: ThreadId): McpProviderSessionConfig | undefined {
   return sessionsByThread.get(threadId);
-}
-
-/** Whether the thread's live provider MCP session was granted a capability. */
-export function hasMcpProviderCapability(threadId: ThreadId, capability: string): boolean {
-  return readMcpProviderSession(threadId)?.capabilities?.has(capability) === true;
 }
 
 export function isMcpProviderSessionOwnedByGeneration(

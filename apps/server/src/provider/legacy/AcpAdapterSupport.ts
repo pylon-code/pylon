@@ -1,8 +1,4 @@
-import {
-  type ProviderApprovalDecision,
-  type ProviderDriverKind,
-  type ThreadId,
-} from "@t3tools/contracts";
+import type { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as EffectAcpErrors from "effect-acp/errors";
 
@@ -42,17 +38,4 @@ export function mapAcpToAdapterError(
     detail: error.message,
     cause: error,
   });
-}
-
-export function acpPermissionOutcome(decision: ProviderApprovalDecision): string {
-  switch (decision) {
-    case "acceptForSession":
-    case "acceptAlways":
-      return "allow-always";
-    case "accept":
-      return "allow-once";
-    case "decline":
-    default:
-      return "reject-once";
-  }
 }

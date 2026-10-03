@@ -7,7 +7,6 @@
  *
  * @module provider/Layers/claudeResetCredits
  */
-import * as NodeOS from "node:os";
 import type {
   ProviderConsumeResetCreditOutcome,
   ServerProviderResetCredits,
@@ -188,12 +187,6 @@ export const readClaudeResetCredits = Effect.fn("readClaudeResetCredits")(
   Effect.timeout("10 seconds"),
   Effect.orElseSucceed(() => undefined),
 );
-
-/** The CLI keeps the account record beside its settings, or in the home directory by default. */
-export const claudeAccountConfigPath = (configDir: string | undefined) =>
-  Effect.map(Path.Path, (path) =>
-    configDir ? path.join(configDir, ".claude.json") : path.join(NodeOS.homedir(), ".claude.json"),
-  );
 
 const CLAIM_OUTCOMES = {
   reset: "reset",

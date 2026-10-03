@@ -9,7 +9,7 @@ import { satisfiesSemverRange } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
 // Compatibility policies describe the adopted T3 provider integration, whose
 // release line is independent from Pylon's product version. de34391427 uses 0.0.45.
-export const UPSTREAM_PROVIDER_COMPATIBILITY_VERSION = "0.0.45";
+const UPSTREAM_PROVIDER_COMPATIBILITY_VERSION = "0.0.45";
 
 // Deliberately uses the shared CLI gate syntax: comparator groups joined by ||.
 // Prereleases and unrecognized release tags remain unknown.
