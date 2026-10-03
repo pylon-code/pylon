@@ -114,7 +114,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import {
-  readThread,
+  readThreadShell,
   useProject,
   useProjects,
   useServerConfigs,
@@ -1983,7 +1983,7 @@ function OpenCommandPaletteDialog(props: {
           if (!confirmed) return;
           // The thread can change while the dialog is open (a new turn, more
           // queued messages from another client). Stop only what was confirmed.
-          const current = readThread(scopeThreadRef(environmentId, thread.id));
+          const current = readThreadShell(scopeThreadRef(environmentId, thread.id));
           if (!current || readThreadActionProjection(environmentId)?.owner !== restartOwner) return;
           const currentPlan = planRestartAgentSession(
             current,

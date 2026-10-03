@@ -11,8 +11,8 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import { deriveComposerUsage } from "../providerUsageAccounts";
 import { usageStaleAfterMs } from "./providerUsage/ProviderUsageMatrix.logic";
+import { readFileAsDataUrl } from "../lib/readFileAsDataUrl";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
-import { restorePlanFollowUpComposer } from "./ChatView.logic";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { prepareQueuedEditAttachments, recoverQueuedMessageEdit } from "./chat/queuedMessageEdit";
 import {
@@ -360,6 +360,7 @@ import {
   markPromotedDraftThreadByRef,
   restoreFailedBackgroundDraftThread,
   composerDraftHasUserContent,
+  composerTargetKey,
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
@@ -521,13 +522,15 @@ import {
   PullRequestDialogState,
   cloneComposerImageForRetry,
   deriveLockedProvider,
-  readFileAsDataUrl,
   resolveFileAttachmentUrl,
   prepareRevertedMessageAttachments,
   waitForRevertedMessage,
   reconcileMountedTerminalThreadIds,
   resolveComposerInteractionMode,
   resolveComposerProviderSelection,
+  recoverFailedComposerSend,
+  mergeFailedComposerDraft,
+  composerViewOwnsTarget,
   getAntigravitySendBlockReason,
   observeProactivePanelUserChoice,
   resolveProactiveTurnDiffAction,
@@ -1631,6 +1634,14 @@ export default function ChatView(props: ChatViewProps) {
     editingQueuedRun === null
       ? baseComposerDraftTarget
       : queuedEditDraftTargetFor(editingQueuedRun.runId);
+  const composerDraftKey = composerTargetKey(composerDraftTarget);
+  const currentComposerDraftKeyRef = useRef<string | null>(composerDraftKey);
+  useLayoutEffect(() => {
+    currentComposerDraftKeyRef.current = composerDraftKey;
+    return () => {
+      currentComposerDraftKeyRef.current = null;
+    };
+  }, [composerDraftKey]);
   const draftThread = useComposerDraftStore((store) =>
     routeKind === "server"
       ? store.getDraftSessionByRef(routeThreadRef)
@@ -1761,6 +1772,9 @@ export default function ChatView(props: ChatViewProps) {
     (store) => store.setInteractionMode,
   );
   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
+  const restoreFailedComposerContent = useComposerDraftStore(
+    (store) => store.restoreFailedComposerContent,
+  );
   const transferComposerContentSnapshotForProviderConflict = useComposerDraftStore(
     (store) => store.transferComposerContentSnapshotForProviderConflict,
   );
@@ -3154,17 +3168,19 @@ export default function ChatView(props: ChatViewProps) {
           activeThread?.modelSelection.instanceId,
           activeProjectDefaultModelSelection?.instanceId,
         ],
-        lockedProvider,
-        lockedInstanceId:
-          activeRuntime?.providerInstanceId ?? activeThread?.modelSelection.instanceId,
+        lockedProvider: modelPickerLockedProvider,
+        lockedInstanceId: supportsProviderSwitchingViaHandoff
+          ? null
+          : (activeRuntime?.providerInstanceId ?? activeThread?.modelSelection.instanceId),
       }),
     [
       activeProjectDefaultModelSelection?.instanceId,
       activeThread?.modelSelection.instanceId,
       activeRuntime?.providerInstanceId,
-      lockedProvider,
+      modelPickerLockedProvider,
       providerInstanceEntries,
       selectedProviderByThreadId,
+      supportsProviderSwitchingViaHandoff,
     ],
   );
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
@@ -8426,6 +8442,13 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
+    if (composerImages.length + composerFiles.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+      setThreadError(
+        activeThread.id,
+        `A message can have at most ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments.`,
+      );
+      return;
+    }
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
@@ -8540,27 +8563,47 @@ export default function ChatView(props: ChatViewProps) {
         interactionMode: followUp.interactionMode,
       });
       if (!followUpSent) {
-        promptRef.current = followUpPromptSnapshot;
-        composerTerminalContextsRef.current = [...followUpTerminalContexts];
-        restorePlanFollowUpComposer({
-          snapshot: {
+        const currentDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+        const recoveryOwnsComposer = composerViewOwnsTarget({
+          routeThreadKey,
+          currentRouteThreadKey: currentRouteThreadKeyRef.current,
+          composerDraftKey,
+          currentComposerDraftKey: currentComposerDraftKeyRef.current,
+        });
+        const recovered = mergeFailedComposerDraft({
+          failed: {
             prompt: followUpPromptSnapshot,
+            images: [],
+            persistedAttachments: [],
+            files: [],
             terminalContexts: followUpTerminalContexts,
             reviewComments: followUpReviewComments,
             previewAnnotations: followUpPreviewAnnotations,
             threadContexts: followUpThreadContexts,
           },
-          writePrompt: (prompt) => setComposerDraftPrompt(composerDraftTarget, prompt),
-          writeTerminalContexts: (contexts) =>
-            setComposerDraftTerminalContexts(composerDraftTarget, [...contexts]),
-          writeReviewComments: (comments) =>
-            setComposerDraftReviewComments(composerDraftTarget, [...comments]),
-          writePreviewAnnotations: (annotations) =>
-            setComposerDraftPreviewAnnotations(composerDraftTarget, [...annotations]),
-          writeThreadContexts: (records) =>
-            setComposerDraftThreadContexts(composerDraftTarget, [...records]),
-          resetCursor: (options) => composerRef.current?.resetCursorState(options),
+          current: {
+            prompt: recoveryOwnsComposer ? promptRef.current : (currentDraft?.prompt ?? ""),
+            images: currentDraft?.images ?? [],
+            persistedAttachments: currentDraft?.persistedAttachments ?? [],
+            files: currentDraft?.files ?? [],
+            terminalContexts: currentDraft?.terminalContexts ?? [],
+            previewAnnotations: currentDraft?.previewAnnotations ?? [],
+            reviewComments: currentDraft?.reviewComments ?? [],
+            threadContexts: currentDraft?.threadContexts ?? [],
+          },
         });
+        restoreFailedComposerContent(composerDraftTarget, recovered);
+        if (recoveryOwnsComposer) {
+          promptRef.current = recovered.prompt;
+          composerImagesRef.current = recovered.images;
+          composerFilesRef.current = recovered.files;
+          composerTerminalContextsRef.current = recovered.terminalContexts;
+          composerRef.current?.resetCursorState({
+            cursor: collapseExpandedComposerCursor(recovered.prompt, recovered.prompt.length),
+            prompt: recovered.prompt,
+            detectTrigger: true,
+          });
+        }
       }
       return;
     }
@@ -8625,6 +8668,10 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     const composerImagesSnapshot = [...composerImages];
+    const composerPersistedAttachmentsSnapshot = [
+      ...(useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)
+        ?.persistedAttachments ?? []),
+    ];
     const composerFilesSnapshot = [...composerFiles];
     const composerAttachmentsSnapshot = [...composerImagesSnapshot, ...composerFilesSnapshot];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
@@ -8734,6 +8781,13 @@ export default function ChatView(props: ChatViewProps) {
 
     sendInFlightRef.current = true;
     const sendGeneration = ++composerSendGenerationRef.current;
+    const ownsSendingComposer = () =>
+      composerViewOwnsTarget({
+        routeThreadKey,
+        currentRouteThreadKey: currentRouteThreadKeyRef.current,
+        composerDraftKey,
+        currentComposerDraftKey: currentComposerDraftKeyRef.current,
+      });
     const attachmentCapabilitiesBeforeUpload = readLiveAttachmentCapabilities();
     if (attachmentCapabilitiesBeforeUpload.fileBlockReason !== null) {
       sendInFlightRef.current = false;
@@ -8766,6 +8820,10 @@ export default function ChatView(props: ChatViewProps) {
       }
     }
 
+    if (!ownsSendingComposer()) {
+      if (composerSendGenerationRef.current === sendGeneration) sendInFlightRef.current = false;
+      return;
+    }
     if (
       multipleModelSelections === null &&
       shouldDockDraftHeroForSubmission({ isDraftHeroState, activeThreadKey, submissionIntent }) &&
@@ -8777,10 +8835,12 @@ export default function ChatView(props: ChatViewProps) {
       });
       const dockTransition = runMobileComposerTransition(
         () => {
-          flushSync(() => {
-            captureDraftHeroComposerRect();
-            setDockedDraftHeroThreadKey(activeThreadKey);
-          });
+          if (ownsSendingComposer()) {
+            flushSync(() => {
+              captureDraftHeroComposerRect();
+              setDockedDraftHeroThreadKey(activeThreadKey);
+            });
+          }
           resolveDockStarted?.();
         },
         {
@@ -8790,6 +8850,11 @@ export default function ChatView(props: ChatViewProps) {
       );
       void dockTransition.catch(() => resolveDockStarted?.());
       await dockStarted;
+    }
+    if (!ownsSendingComposer()) {
+      if (composerSendGenerationRef.current === sendGeneration) sendInFlightRef.current = false;
+      setDockedDraftHeroThreadKey((current) => (current === activeThreadKey ? null : current));
+      return;
     }
     beginLocalDispatch({
       preparingWorktree: multipleModelSelections !== null || Boolean(baseBranchForWorktree),
@@ -8836,6 +8901,7 @@ export default function ChatView(props: ChatViewProps) {
       let startedCount = 0;
       try {
         const attachments = await turnAttachmentsPromise;
+        if (!ownsSendingComposer()) return;
         const fileBlockReason = readLiveAttachmentCapabilities().fileBlockReason;
         if (fileBlockReason !== null) throw new Error(fileBlockReason);
         const context = buildOutgoingMessageContext(
@@ -9381,45 +9447,59 @@ export default function ChatView(props: ChatViewProps) {
         );
         clearBackgroundDraftSubmissionByRef(scopeThreadRef(environmentId, threadIdForSend));
       }
-      if (
-        backgroundDraftOpened
-          ? !composerDraftHasUserContent(
-              useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
-            )
-          : promptRef.current.length === 0 &&
-            composerImagesRef.current.length === 0 &&
-            composerFilesRef.current.length === 0 &&
-            composerTerminalContextsRef.current.length === 0 &&
-            (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)
-              ?.previewAnnotations.length ?? 0) === 0 &&
-            (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
-              .length ?? 0) === 0 &&
-            (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.threadContexts
-              .length ?? 0) === 0
-      ) {
-        setOptimisticUserMessages((existing) => {
-          const removed = existing.filter((message) => message.id === messageIdForSend);
-          for (const message of removed) {
-            revokeUserMessagePreviewUrls(message);
-          }
-          const next = existing.filter((message) => message.id !== messageIdForSend);
-          return next.length === existing.length ? existing : next;
+      const currentDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+      const recoveryOwnsComposer =
+        !backgroundDraftOpened &&
+        composerViewOwnsTarget({
+          routeThreadKey,
+          currentRouteThreadKey: currentRouteThreadKeyRef.current,
+          composerDraftKey,
+          currentComposerDraftKey: currentComposerDraftKeyRef.current,
         });
-        promptRef.current = messageTextForSend;
-        const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
-        composerImagesRef.current = retryComposerImages;
-        composerFilesRef.current = composerFilesSnapshot;
-        composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
-        setComposerDraftPrompt(composerDraftTarget, messageTextForSend);
-        addComposerDraftImages(composerDraftTarget, retryComposerImages);
-        addComposerDraftFiles(composerDraftTarget, composerFilesSnapshot);
-        setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
-        setComposerDraftPreviewAnnotations(composerDraftTarget, composerPreviewAnnotationsSnapshot);
-        setComposerDraftReviewComments(composerDraftTarget, composerReviewCommentsSnapshot);
-        setComposerDraftThreadContexts(composerDraftTarget, composerThreadContextsSnapshot);
-        composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(messageTextForSend, messageTextForSend.length),
+      const recovered = recoverFailedComposerSend({
+        failedMessageId: messageIdForSend,
+        failed: {
           prompt: messageTextForSend,
+          images: composerImagesSnapshot,
+          persistedAttachments: composerPersistedAttachmentsSnapshot,
+          files: composerFilesSnapshot,
+          terminalContexts: composerTerminalContextsSnapshot,
+          previewAnnotations: composerPreviewAnnotationsSnapshot,
+          reviewComments: composerReviewCommentsSnapshot,
+          threadContexts: composerThreadContextsSnapshot,
+        },
+        current: {
+          prompt: recoveryOwnsComposer ? promptRef.current : (currentDraft?.prompt ?? ""),
+          images: currentDraft?.images ?? [],
+          persistedAttachments: currentDraft?.persistedAttachments ?? [],
+          files: currentDraft?.files ?? [],
+          terminalContexts: currentDraft?.terminalContexts ?? [],
+          previewAnnotations: currentDraft?.previewAnnotations ?? [],
+          reviewComments: currentDraft?.reviewComments ?? [],
+          threadContexts: currentDraft?.threadContexts ?? [],
+        },
+        removeOptimisticMessage: (failedMessageId) => {
+          setOptimisticUserMessages((existing) => {
+            const removed = existing.filter((message) => message.id === failedMessageId);
+            for (const message of removed) {
+              revokeUserMessagePreviewUrls(message);
+            }
+            const next = existing.filter((message) => message.id !== failedMessageId);
+            return next.length === existing.length ? existing : next;
+          });
+        },
+        writeDraft: (draft) => {
+          restoreFailedComposerContent(composerDraftTarget, draft);
+        },
+      });
+      if (recoveryOwnsComposer) {
+        promptRef.current = recovered.prompt;
+        composerImagesRef.current = recovered.images;
+        composerFilesRef.current = recovered.files;
+        composerTerminalContextsRef.current = recovered.terminalContexts;
+        composerRef.current?.resetCursorState({
+          cursor: collapseExpandedComposerCursor(recovered.prompt, recovered.prompt.length),
+          prompt: recovered.prompt,
           detectTrigger: true,
         });
       }
@@ -11098,6 +11178,9 @@ export default function ChatView(props: ChatViewProps) {
                           ) : null}
                           {!composerMounted ? null : (
                             <ChatComposer
+                              supportsProviderSwitchingViaHandoff={
+                                supportsProviderSwitchingViaHandoff
+                              }
                               multipleModelSelections={multipleModelSelections}
                               supportsMultipleModels={
                                 serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===

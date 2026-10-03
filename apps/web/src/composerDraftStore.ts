@@ -1,5 +1,6 @@
 import { stripInlineContextReferences } from "./lib/composerContextReferences";
 import { elementContextToPreviewAnnotation } from "./lib/elementContext";
+import { readFileAsDataUrl } from "./lib/readFileAsDataUrl";
 import {
   ElementContextDetails,
   DEFAULT_MODEL,
@@ -436,6 +437,18 @@ export interface ComposerThreadDraftState {
   interactionMode: ProviderInteractionMode | null;
 }
 
+export type ComposerDraftContent = Pick<
+  ComposerThreadDraftState,
+  | "prompt"
+  | "images"
+  | "persistedAttachments"
+  | "files"
+  | "terminalContexts"
+  | "previewAnnotations"
+  | "reviewComments"
+  | "threadContexts"
+>;
+
 /**
  * True when the user has invested real content in the draft: typed text or
  * any attachment/context. Model selection and mode choices alone do not
@@ -754,6 +767,11 @@ interface ComposerDraftStoreState {
     attachments: PersistedComposerImageAttachment[],
   ) => Promise<void>;
   clearComposerContent: (threadRef: ComposerThreadTarget) => void;
+  /** Restore retained user content without applying new-attachment admission limits. */
+  restoreFailedComposerContent: (
+    threadRef: ComposerThreadTarget,
+    content: ComposerDraftContent,
+  ) => Promise<void>;
   /**
    * Clears the prompt text and attachments, preserving terminal /
    * element contexts, preview annotations, and review comments. Used by the
@@ -4442,6 +4460,77 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           });
           await Promise.resolve();
           verifyPersistedAttachments(threadKey, attachments, set);
+        },
+        restoreFailedComposerContent: async (threadRef, content) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef);
+          const threadId = resolveComposerThreadId(get(), threadRef);
+          if (!threadKey || !threadId) return;
+          set((state) => {
+            const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            const restoredImages = new Map(content.images.map((image) => [image.id, image]));
+            const persistedAttachments = content.persistedAttachments.filter((attachment) =>
+              restoredImages.has(attachment.id),
+            );
+            const persistedImageIds = new Set(
+              persistedAttachments.map((attachment) => attachment.id),
+            );
+            const nextDraft = {
+              ...existing,
+              ...content,
+              images: [...content.images],
+              files: [...content.files],
+              terminalContexts: content.terminalContexts.map((context) => ({
+                ...context,
+                threadId,
+              })),
+              previewAnnotations: [...content.previewAnnotations],
+              reviewComments: [...content.reviewComments],
+              threadContexts: [...content.threadContexts],
+              persistedAttachments,
+              nonPersistedImageIds: content.images
+                .filter((image) => !persistedImageIds.has(image.id))
+                .map((image) => image.id),
+            } satisfies ComposerThreadDraftState;
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) delete nextDraftsByThreadKey[threadKey];
+            else nextDraftsByThreadKey[threadKey] = nextDraft;
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+          const serializedById = new Map(
+            content.persistedAttachments.map((attachment) => [attachment.id, attachment]),
+          );
+          await Promise.all(
+            content.images.map(async (image) => {
+              if (serializedById.has(image.id)) return;
+              try {
+                serializedById.set(image.id, {
+                  id: image.id,
+                  name: image.name,
+                  mimeType: image.mimeType,
+                  sizeBytes: image.sizeBytes,
+                  dataUrl: await readFileAsDataUrl(image.file),
+                  ...(image.source ? { source: image.source } : {}),
+                });
+              } catch {
+                // The draft keeps the file and marks it non-persisted when its bytes cannot be read.
+              }
+            }),
+          );
+          const current = get().draftsByThreadKey[threadKey];
+          if (!current) return;
+          const sourceImageById = new Map(content.images.map((image) => [image.id, image]));
+          const currentPersistedById = new Map(
+            current.persistedAttachments.map((attachment) => [attachment.id, attachment]),
+          );
+          const serialized = current.images.flatMap((image) => {
+            const attachment =
+              currentPersistedById.get(image.id) ??
+              (sourceImageById.get(image.id)?.file === image.file
+                ? serializedById.get(image.id)
+                : undefined);
+            return attachment ? [attachment] : [];
+          });
+          await get().syncPersistedAttachments(threadRef, serialized);
         },
         clearComposerContent: (threadRef) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";

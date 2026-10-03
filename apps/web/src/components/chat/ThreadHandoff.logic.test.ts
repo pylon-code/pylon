@@ -441,6 +441,34 @@ describe("getThreadHandoffOffer", () => {
     expect(offer?.resetsAt).toBe("2026-08-05T21:00:00.000Z");
   });
 
+  it("skips uninstalled, unauthenticated, and errored peers for the next admissible account", () => {
+    const unhealthy: ServerProvider[] = [
+      {
+        ...account({ instanceId: "claude_uninstalled", displayName: "Uninstalled" }),
+        installed: false,
+      },
+      {
+        ...account({ instanceId: "claude_signed_out", displayName: "Signed out" }),
+        auth: { status: "unauthenticated" },
+      },
+      {
+        ...account({ instanceId: "claude_error", displayName: "Failed probe" }),
+        status: "error",
+      },
+    ];
+
+    expect(offerFor([DRAINED_WORK(), ...unhealthy])).toBeNull();
+    expect(offerFor([DRAINED_WORK(), ...unhealthy, HEALTHY_PERSONAL()])?.targetInstanceId).toBe(
+      "claude_personal",
+    );
+  });
+
+  it("admits a healthy account with a warning as the server does", () => {
+    expect(
+      offerFor([DRAINED_WORK(), { ...HEALTHY_PERSONAL(), status: "warning" }])?.targetInstanceId,
+    ).toBe("claude_personal");
+  });
+
   it("says the transcript crosses whole when it fits", () => {
     const offer = offerFor([DRAINED_WORK(), HEALTHY_PERSONAL()]);
 

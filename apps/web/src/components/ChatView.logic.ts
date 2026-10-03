@@ -12,14 +12,12 @@ import {
   type MessageId,
   type ModelSelection,
   type OrchestrationV2ProjectedTurnItem,
-  type PreviewAnnotationPayload,
   type ProviderInteractionMode,
   ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
   type ScopedProjectRef,
   type ScopedThreadRef,
-  type ThreadContextRecord,
   type ThreadId,
   type ThreadLinkedPullRequest,
   type RunId,
@@ -47,7 +45,11 @@ import {
   type Thread,
   type TurnDiffSummary,
 } from "../types";
-import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
+import {
+  type ComposerImageAttachment,
+  type ComposerDraftContent,
+  type DraftThreadState,
+} from "../composerDraftStore";
 import * as Schema from "effect/Schema";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentThreadShells, environmentThreadDetails } from "../state/threads";
@@ -55,8 +57,7 @@ import { waitForAtomValue } from "../state/waitForAtomValue";
 import { filterTerminalContextsWithText, type TerminalContextDraft } from "../lib/terminalContext";
 import { stripInlineContextReferences } from "~/lib/composerContextReferences";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
-import { collapseExpandedComposerCursor, type ComposerSubmissionIntent } from "../composer-logic";
-import type { ReviewCommentContext } from "../reviewCommentContext";
+import type { ComposerSubmissionIntent } from "../composer-logic";
 import type { TimelineEntry } from "../session-logic";
 import type { PreviewMiniPlayerSource } from "../previewMiniPlayerStore";
 import type { DesktopPreviewOverlay } from "../previewStateStore";
@@ -820,23 +821,6 @@ export interface PullRequestDialogState {
   key: number;
 }
 
-export function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => {
-      if (typeof reader.result === "string") {
-        resolve(reader.result);
-        return;
-      }
-      reject(new Error("Could not read image data."));
-    });
-    reader.addEventListener("error", () => {
-      reject(reader.error ?? new Error("Failed to read image."));
-    });
-    reader.readAsDataURL(file);
-  });
-}
-
 export function resolveSendEnvMode(input: {
   requestedEnvMode: DraftThreadEnvMode;
   isGitRepo: boolean;
@@ -1327,44 +1311,6 @@ export function shouldRefocusComposerOnWindowFocus(
   );
 }
 
-export interface PlanFollowUpComposerSnapshot {
-  readonly prompt: string;
-  readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
-  readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
-  readonly previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
-  readonly threadContexts: ReadonlyArray<ThreadContextRecord>;
-}
-
-/**
- * Puts back everything a plan follow-up send cleared when the send fails. The
- * caller clears the composer before awaiting the send, so every field it held
- * has to be written back here: a dropped field silently discards user context.
- */
-export function restorePlanFollowUpComposer(input: {
-  readonly snapshot: PlanFollowUpComposerSnapshot;
-  readonly writePrompt: (prompt: string) => void;
-  readonly writeTerminalContexts: (contexts: ReadonlyArray<TerminalContextDraft>) => void;
-  readonly writeReviewComments: (comments: ReadonlyArray<ReviewCommentContext>) => void;
-  readonly writePreviewAnnotations: (annotations: ReadonlyArray<PreviewAnnotationPayload>) => void;
-  readonly writeThreadContexts: (records: ReadonlyArray<ThreadContextRecord>) => void;
-  readonly resetCursor: (options: {
-    cursor: number;
-    prompt: string;
-    detectTrigger: boolean;
-  }) => void;
-}): void {
-  input.writePrompt(input.snapshot.prompt);
-  input.writeTerminalContexts(input.snapshot.terminalContexts);
-  input.writeReviewComments(input.snapshot.reviewComments);
-  input.writePreviewAnnotations(input.snapshot.previewAnnotations);
-  input.writeThreadContexts(input.snapshot.threadContexts);
-  input.resetCursor({
-    cursor: collapseExpandedComposerCursor(input.snapshot.prompt, input.snapshot.prompt.length),
-    prompt: input.snapshot.prompt,
-    detectTrigger: true,
-  });
-}
-
 export function mergeFailedComposerSend<T extends { readonly id: string }>(input: {
   readonly failedText: string;
   readonly currentText: string;
@@ -1386,4 +1332,90 @@ ${input.currentText}`,
       ...input.currentAttachments,
     ],
   };
+}
+
+/** Keep the sent snapshot alongside edits made while the request was in flight. */
+export function mergeFailedComposerDraft(input: {
+  readonly failed: ComposerDraftContent;
+  readonly current: ComposerDraftContent;
+}) {
+  const currentImageIds = new Set(input.current.images.map((image) => image.id));
+  const failedImageById = new Map(input.failed.images.map((image) => [image.id, image]));
+  const promptAndImages = mergeFailedComposerSend({
+    failedText: input.failed.prompt,
+    currentText: input.current.prompt,
+    failedAttachments: input.failed.images
+      .filter((image) => !currentImageIds.has(image.id))
+      .map(cloneComposerImageForRetry),
+    currentAttachments: input.current.images.map((image) =>
+      failedImageById.get(image.id)?.previewUrl === image.previewUrl
+        ? cloneComposerImageForRetry(image)
+        : image,
+    ),
+  });
+  const mergeAttachments = <T extends { readonly id: string }>(
+    failed: ReadonlyArray<T>,
+    current: ReadonlyArray<T>,
+  ) =>
+    mergeFailedComposerSend({
+      failedText: "",
+      currentText: "",
+      failedAttachments: failed,
+      currentAttachments: current,
+    }).attachments;
+  const currentThreadContextIds = new Set(
+    input.current.threadContexts.map((context) => context.contextId),
+  );
+  return {
+    prompt: promptAndImages.text,
+    images: promptAndImages.attachments,
+    persistedAttachments: [
+      ...input.failed.persistedAttachments.filter(
+        (attachment) => !currentImageIds.has(attachment.id),
+      ),
+      ...input.current.persistedAttachments,
+    ],
+    files: mergeAttachments(input.failed.files, input.current.files),
+    terminalContexts: mergeAttachments(
+      input.failed.terminalContexts,
+      input.current.terminalContexts,
+    ),
+    previewAnnotations: mergeAttachments(
+      input.failed.previewAnnotations,
+      input.current.previewAnnotations,
+    ),
+    reviewComments: mergeAttachments(input.failed.reviewComments, input.current.reviewComments),
+    threadContexts: [
+      ...input.failed.threadContexts.filter(
+        (context) => !currentThreadContextIds.has(context.contextId),
+      ),
+      ...input.current.threadContexts,
+    ],
+  };
+}
+
+export function composerViewOwnsTarget(input: {
+  readonly routeThreadKey: string;
+  readonly currentRouteThreadKey: string | null;
+  readonly composerDraftKey: string;
+  readonly currentComposerDraftKey: string | null;
+}): boolean {
+  return (
+    input.currentRouteThreadKey === input.routeThreadKey &&
+    input.currentComposerDraftKey === input.composerDraftKey
+  );
+}
+
+/** A rejected optimistic row must disappear even when newer draft content exists. */
+export function recoverFailedComposerSend(input: {
+  readonly failedMessageId: MessageId;
+  readonly failed: ComposerDraftContent;
+  readonly current: ComposerDraftContent;
+  readonly removeOptimisticMessage: (messageId: MessageId) => void;
+  readonly writeDraft: (draft: ComposerDraftContent) => void;
+}) {
+  const draft = mergeFailedComposerDraft(input);
+  input.removeOptimisticMessage(input.failedMessageId);
+  input.writeDraft(draft);
+  return draft;
 }

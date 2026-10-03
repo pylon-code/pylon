@@ -31,7 +31,7 @@ import {
   getDesktopSnapShotBridge,
   type DesktopSnapShotBridge,
 } from "../../lib/desktopSnapShot";
-import { readFileAsDataUrl } from "../ChatView.logic";
+import { readFileAsDataUrl } from "../../lib/readFileAsDataUrl";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 
 type CaptureTarget = DraftId | ScopedThreadRef;

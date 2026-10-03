@@ -248,9 +248,6 @@ export function readThreadProjection(ref: ScopedThreadRef) {
   return appAtomRegistry.get(liveThreadProjectionAtom(ref))?.projection ?? null;
 }
 
-/** Imperative shell read for lifecycle actions. */
-export const readThread = readThreadShell;
-
 export function waitForThreadShell(ref: ScopedThreadRef, timeoutMs = 5_000): Promise<boolean> {
   return waitForAtomValue({
     registry: appAtomRegistry,

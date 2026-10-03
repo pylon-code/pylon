@@ -40,6 +40,7 @@ import { getDiffLineStat, getRenderablePatch, resolveFileDiffPath } from "../../
 import { resolveAppModelSelectionForInstance } from "../../modelSelection";
 import {
   getDefaultProviderInstanceModel,
+  isProviderInstancePickerReady,
   isProviderInstanceDrained,
   sortProviderInstancesForRouting,
   type ProviderInstanceEntry,
@@ -337,7 +338,7 @@ export function getThreadHandoffOffer(input: {
         entry.driverKind === bound.driverKind &&
         entry.instanceId !== bound.instanceId &&
         entry.enabled &&
-        entry.isAvailable &&
+        isProviderInstancePickerReady(entry) &&
         !isProviderInstanceDrained(entry, input.nowMs),
     ),
     input.nowMs,

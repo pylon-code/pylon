@@ -7,8 +7,8 @@
  * showing one account while the composer sends to another.
  *
  * Priority:
- *   1. The thread's live session binding. Once present it is the only routing
- *      target for this thread.
+ *   1. The thread's live session binding while native portable handoff is
+ *      unavailable. Otherwise the draft selects the next turn's account.
  *   2. The composer draft's `activeProvider` while the thread is unbound.
  *   3. The thread's persisted model selection.
  *   4. The project default's instance id.
@@ -53,6 +53,8 @@ export interface ComposerInstanceSelectionInput {
   readonly projectInstanceId: ProviderInstanceId | null | undefined;
   /** Driver kind a started thread is locked to, or null while unlocked. */
   readonly lockedProvider: ProviderDriverKind | null;
+  /** The native projection explicitly permits a portable account change on the next turn. */
+  readonly supportsProviderSwitchingViaHandoff?: boolean | undefined;
   /**
    * Drain windows run for hours, so callers read `Date.now()` once per
    * recompute rather than ticking; the composer already recomputes on every
@@ -100,8 +102,11 @@ export interface ComposerInstanceSelection {
 export function resolveComposerInstanceSelection(
   input: ComposerInstanceSelectionInput,
 ): ComposerInstanceSelection {
-  const { entries, lockedProvider, nowMs } = input;
-  const sessionInstanceId = input.sessionInstanceId ?? null;
+  const { entries, nowMs } = input;
+  const lockedProvider = input.supportsProviderSwitchingViaHandoff ? null : input.lockedProvider;
+  const sessionInstanceId = input.supportsProviderSwitchingViaHandoff
+    ? null
+    : (input.sessionInstanceId ?? null);
   const providers = entries.map((entry) => entry.snapshot);
   const draftTransition =
     sessionInstanceId !== null &&
