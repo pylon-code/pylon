@@ -1,21 +1,65 @@
-// @vitest-environment jsdom
-
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { runPreviewClickKeepingHostFocus } from "./previewClickFocus";
 
 const TAB = "runtime-tab";
 
+// Pylon's web unit suite runs without a DOM, so this models just the focus
+// behavior the helper relies on: focusable elements, attributes and blur.
+class FakeElement {
+  readonly attributes = new Map<string, string>();
+  isConnected = true;
+
+  constructor(
+    readonly localName: string,
+    private readonly owner: FakeDocument,
+  ) {}
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
+
+  removeAttribute(name: string): void {
+    this.attributes.delete(name);
+  }
+
+  focus(): void {
+    if (this === this.owner.body || this.attributes.has("tabindex")) {
+      this.owner.activeElement = this;
+    }
+  }
+
+  blur(): void {
+    if (this.owner.activeElement === this) this.owner.activeElement = this.owner.body;
+  }
+}
+
+class FakeDocument {
+  readonly body: FakeElement = new FakeElement("body", this);
+  activeElement: FakeElement = this.body;
+}
+
+let document: FakeDocument;
+
 const mount = (tagName: string, previewTab?: string) => {
-  const element = document.createElement(tagName);
-  element.tabIndex = -1;
+  const element = new FakeElement(tagName, document);
+  element.setAttribute("tabindex", "-1");
   if (previewTab) element.setAttribute("data-preview-tab", previewTab);
-  document.body.append(element);
   return element;
 };
 
+beforeEach(() => {
+  document = new FakeDocument();
+  vi.stubGlobal("document", document);
+  vi.stubGlobal("HTMLElement", FakeElement);
+});
+
 afterEach(() => {
-  document.body.replaceChildren();
+  vi.unstubAllGlobals();
 });
 
 describe("runPreviewClickKeepingHostFocus", () => {
