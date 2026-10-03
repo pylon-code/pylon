@@ -34,12 +34,14 @@ import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 import { USAGE_PRICE_FIELDS } from "./usagePriceForm";
 import {
   isEmptyUsagePriceDraft,
+  PREFILLED_PRICE_DRAFT_ID,
   usagePriceCell,
   usagePriceRows,
   usagePriceTableChanges,
   usagePriceTableErrors,
   type UsagePriceDraft,
   type UsagePriceField,
+  withoutSupersededPrefill,
 } from "./usagePriceTable";
 import {
   writeUsagePrices,
@@ -109,15 +111,10 @@ export function UsagePriceOverrides({
   const selected = environments.filter(
     (environment) => selectedIds === null || selectedIds.has(environment.environmentId),
   );
-  // A model that already has a custom price somewhere is edited in its existing row.
-  const [drafts, setDrafts] = useState<readonly UsagePriceDraft[]>(() =>
-    initialModel === undefined ||
-    selected.some(
-      (environment) =>
-        environment.prices !== null && Object.hasOwn(environment.prices, initialModel),
-    )
+  const [draftState, setDrafts] = useState<readonly UsagePriceDraft[]>(() =>
+    initialModel === undefined
       ? []
-      : [{ id: "new:initial", model: initialModel, isNew: true, values: {} }],
+      : [{ id: PREFILLED_PRICE_DRAFT_ID, model: initialModel, isNew: true, values: {} }],
   );
   const [pending, setPending] = useState(false);
   const [attempt, setAttempt] = useState<SaveAttempt | null>(null);
@@ -137,6 +134,8 @@ export function UsagePriceOverrides({
         .flatMap((environment) => environment.summary?.buckets.map((bucket) => bucket.model) ?? []),
     ]),
   ].sort();
+  // A model that already has a custom price somewhere is edited in its existing row.
+  const drafts = withoutSupersededPrefill(draftState, customModels);
   const rows = usagePriceRows(customModels, drafts, { saving: attempt !== null });
   const stagedDrafts = drafts.filter((draft) => !isEmptyUsagePriceDraft(draft));
   const errors = usagePriceTableErrors(selected, stagedDrafts);

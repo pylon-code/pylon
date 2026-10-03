@@ -49,6 +49,10 @@ export function speedCostSegments(
   ];
 }
 
+/** Servers from before the speed split count all of their cost as standard. */
+export const SPEED_COST_FOOTNOTE =
+  "Servers that predate speed tracking count all cost as Standard.";
+
 /** The speed bar only appears once some cost ran faster than standard. */
 export function hasFasterSpeedCost(cost: SpeedCost): boolean {
   return cost.fast + cost.ultrafast > 0;

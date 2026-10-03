@@ -18,11 +18,13 @@ export function UsageShareBar({
   segments,
   format,
   aside,
+  footnote,
 }: {
   readonly label: string;
   readonly segments: readonly ShareSegment[];
   readonly format: (value: number) => string;
   readonly aside?: ReactNode;
+  readonly footnote?: string;
 }) {
   const visible = segments.filter((segment) => segment.value > 0);
   const total = visible.reduce((sum, segment) => sum + segment.value, 0);
@@ -68,6 +70,7 @@ export function UsageShareBar({
           </span>
         ))}
       </div>
+      {footnote ? <p className="text-xs text-muted-foreground">{footnote}</p> : null}
     </div>
   );
 }

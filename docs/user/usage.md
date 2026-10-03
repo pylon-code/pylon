@@ -9,7 +9,8 @@ desktop when the terminal is not focused. Customize `usage.open` in
 **Usage** combines Codex, Claude Code, Grok Build, Antigravity, and local OpenCode session history from your connected
 environments. It shows token use, cache savings, provider shares, model breakdowns, and estimated
 API-equivalent cost, split by token type and by speed. These estimates are not your subscription bill.
-**Premium** is what Fast and Ultrafast requests cost above standard rates. Cost that cannot be
+**Premium** is what Fast and Ultrafast requests cost above standard rates. Servers that predate
+speed tracking report no speed split, so all of their cost counts as Standard. Cost that cannot be
 split, such as a provider-reported cost for a model without public rates, shows as **Other**.
 Select a model under **Breakdown** to see its trend, cache hit rate, and cost per million tokens.
 

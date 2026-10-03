@@ -446,6 +446,24 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
   };
 }
 
+/**
+ * Narrows a summary to the buckets `keep` accepts, for example one model.
+ * Per-source buckets (v7+) are narrowed too: the merge prefers them over the
+ * provider-wide list, so filtering only `buckets` would leave the slice whole.
+ */
+export function narrowUsageSummary(
+  summary: UsageSummary,
+  keep: (bucket: UsageBucket) => boolean,
+): UsageSummary {
+  return {
+    ...summary,
+    buckets: summary.buckets.filter(keep),
+    sources: summary.sources.map((source) =>
+      source.buckets === undefined ? source : { ...source, buckets: source.buckets.filter(keep) },
+    ),
+  };
+}
+
 /** Sources this environment owns after fingerprint claims, plus their buckets. */
 function ownedContribution(
   environment: EnvironmentUsage,

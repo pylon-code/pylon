@@ -10,7 +10,12 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { isModelCostUnknown, mergeUsage, type EnvironmentUsage } from "./usageMerge.ts";
+import {
+  isModelCostUnknown,
+  mergeUsage,
+  narrowUsageSummary,
+  type EnvironmentUsage,
+} from "./usageMerge.ts";
 
 const decodeSummary = Schema.decodeUnknownSync(UsageSummary);
 const encodeSummary = Schema.encodeSync(UsageSummary);
@@ -580,6 +585,33 @@ describe("mergeUsage", () => {
     expect(merged.models.filter(isModelCostUnknown).map((model) => model.model)).toEqual([
       "unknown-model",
     ]);
+  });
+
+  it("narrows per-source buckets so a one-model slice excludes other models", () => {
+    const a = bucket({ model: "model-a", costUsd: 1 });
+    const b = bucket({ model: "model-b", costUsd: 5 });
+    const full = summary(
+      [a, b],
+      [{ provider: "claude", hostId: "mac", homePath: "/a/.claude", buckets: [a, b] }],
+    );
+    const onlyA = (usage: typeof full) =>
+      mergeUsage(
+        [
+          environment(
+            "env-a",
+            narrowUsageSummary(usage, (entry) => entry.model === "model-a"),
+          ),
+        ],
+        USAGE_CONTRACT_VERSION,
+      );
+
+    // v7+ servers: the merge reads the per-source buckets.
+    expect(onlyA(full).costUsd).toBe(1);
+    expect(onlyA(full).models.map((model) => model.model)).toEqual(["model-a"]);
+    // Older servers without per-source buckets narrow through the provider-wide list.
+    const legacy = summary([a, b], [{ provider: "claude", hostId: "mac", homePath: "/a/.claude" }]);
+    expect(onlyA(legacy).costUsd).toBe(1);
+    expect(narrowUsageSummary(legacy, () => true).sources[0]).not.toHaveProperty("buckets");
   });
 
   it("splits cost by category and speed, counting older servers as unsplit standard cost", () => {

@@ -40,6 +40,7 @@ import type { UsageChartMetric } from "./usageChartData";
 import {
   costTypeSegments,
   hasFasterSpeedCost,
+  SPEED_COST_FOOTNOTE,
   speedCostSegments,
   visibleCostSegments,
   type CostMixSegment,
@@ -619,6 +620,7 @@ function CostSection(props: { readonly merged: MergedUsage }) {
             label="By speed"
             segments={speedCostSegments(speedCost, colors)}
             aside={`${formatUsd(speedCost.premium)} premium`}
+            footnote={SPEED_COST_FOOTNOTE}
           />
         </View>
       ) : null}
@@ -631,6 +633,7 @@ function ShareBar(props: {
   readonly label: string;
   readonly segments: readonly CostMixSegment[];
   readonly aside?: string;
+  readonly footnote?: string;
 }) {
   const visible = visibleCostSegments(props.segments);
   if (visible.length === 0) return null;
@@ -661,6 +664,9 @@ function ShareBar(props: {
           </View>
         ))}
       </View>
+      {props.footnote ? (
+        <Text className="text-xs text-foreground-muted">{props.footnote}</Text>
+      ) : null}
     </View>
   );
 }

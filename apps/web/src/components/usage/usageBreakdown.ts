@@ -67,6 +67,13 @@ export function tokenTypeSegments(
   ];
 }
 
+/**
+ * Servers from before the speed split report no speed figures, and the merge
+ * counts all of their cost as standard.
+ */
+export const SPEED_COST_FOOTNOTE =
+  "Servers that predate speed tracking count all cost as Standard.";
+
 /** Speeds are ordered by price, so they brighten from standard to ultrafast. */
 export function speedCostSegments(cost: SpeedCost): readonly ShareSegment[] {
   return [

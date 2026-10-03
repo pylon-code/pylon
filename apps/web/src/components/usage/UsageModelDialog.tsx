@@ -20,6 +20,7 @@ import {
   cacheHitRate,
   costPerMillionTokens,
   costTypeSegments,
+  SPEED_COST_FOOTNOTE,
   speedCostSegments,
   tokenTypeSegments,
 } from "./usageBreakdown";
@@ -135,6 +136,7 @@ export function UsageModelDialog({
               {usage.speedCost.fast + usage.speedCost.ultrafast > 0 ? (
                 <UsageShareBar
                   label="Cost by speed"
+                  footnote={SPEED_COST_FOOTNOTE}
                   segments={speedCostSegments(usage.speedCost)}
                   format={formatUsd}
                   aside={<SpeedPremium premiumUsd={usage.speedCost.premium} />}

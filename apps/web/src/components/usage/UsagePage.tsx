@@ -81,6 +81,7 @@ import { UsageShareBar } from "./UsageShareBar";
 import {
   costTypeSegments,
   sortModelsByTokens,
+  SPEED_COST_FOOTNOTE,
   speedCostSegments,
   tokenTypeSegments,
 } from "./usageBreakdown";
@@ -609,6 +610,7 @@ export function UsagePage() {
                         {merged.speedCost.fast + merged.speedCost.ultrafast > 0 ? (
                           <UsageShareBar
                             label="Cost by speed"
+                            footnote={SPEED_COST_FOOTNOTE}
                             segments={speedCostSegments(merged.speedCost)}
                             format={formatUsd}
                             aside={<SpeedPremium premiumUsd={merged.speedCost.premium} />}
