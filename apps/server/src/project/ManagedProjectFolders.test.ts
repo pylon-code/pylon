@@ -570,3 +570,389 @@ it.effect("removes the folder when the repository cannot be made", () =>
     },
   ),
 );
+
+/**
+ * Runs `effect` with extra git config entries layered after the suite's
+ * pinned ones (gitConfig.setup.ts), so they win for single-valued keys.
+ */
+const withExtraGitConfig = <A, E, R>(
+  entries: ReadonlyArray<readonly [key: string, value: string]>,
+  effect: Effect.Effect<A, E, R>,
+) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const count = Number(process.env.GIT_CONFIG_COUNT ?? "0");
+      entries.forEach(([key, value], index) => {
+        process.env[`GIT_CONFIG_KEY_${count + index}`] = key;
+        process.env[`GIT_CONFIG_VALUE_${count + index}`] = value;
+      });
+      process.env.GIT_CONFIG_COUNT = String(count + entries.length);
+      return count;
+    }),
+    () => effect,
+    (count) =>
+      Effect.sync(() => {
+        entries.forEach((_, index) => {
+          delete process.env[`GIT_CONFIG_KEY_${count + index}`];
+          delete process.env[`GIT_CONFIG_VALUE_${count + index}`];
+        });
+        process.env.GIT_CONFIG_COUNT = String(count);
+      }),
+  );
+
+const projectsFolder = (baseDir: string) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    return (yield* fileSystem.readDirectory(path.resolve(baseDir, "projects"))).toSorted();
+  });
+
+it.effect("starts a named project on the configured default branch", () =>
+  withScratch(() =>
+    withGitEnv(
+      TEST_IDENTITY,
+      withExtraGitConfig(
+        [["init.defaultBranch", "trunk"]],
+        Effect.gen(function* () {
+          const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+          const result = yield* folders.createNamedProject({ name: "Trunk Based" });
+
+          assert.isUndefined(result.commitError);
+          assert.equal(
+            yield* gitOutput(result.workspaceRoot, ["rev-parse", "--abbrev-ref", "HEAD"]),
+            "trunk",
+          );
+        }),
+      ),
+    ),
+  ),
+);
+
+it.effect("keeps a named project and reports why when commit signing fails", () =>
+  withScratch(({ baseDir }) =>
+    withGitEnv(
+      TEST_IDENTITY,
+      withExtraGitConfig(
+        [
+          ["commit.gpgsign", "true"],
+          ["gpg.program", "pylon-test-missing-gpg"],
+        ],
+        Effect.gen(function* () {
+          const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+          const projects = yield* ProjectService.ProjectService;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+
+          const result = yield* folders.createNamedProject({ name: "Signed" });
+
+          assert.isString(result.commitError);
+          assert.isTrue(Option.isSome(yield* projects.getById(result.projectId)));
+          assert.isTrue(yield* fileSystem.exists(path.join(result.workspaceRoot, "README.md")));
+          assert.deepEqual(yield* projectsFolder(baseDir), ["signed"]);
+        }),
+      ),
+    ),
+  ),
+);
+
+it.effect("names folders for Unicode and Windows device names portably", () =>
+  withScratch(({ baseDir }) =>
+    withGitEnv(
+      TEST_IDENTITY,
+      Effect.gen(function* () {
+        const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+        const projects = yield* ProjectService.ProjectService;
+
+        const unicode = yield* folders.createNamedProject({ name: "Café Crème" });
+        const cjk = yield* folders.createNamedProject({ name: "日本語" });
+        const device = yield* folders.createNamedProject({ name: "CON" });
+
+        assert.deepEqual(yield* projectsFolder(baseDir), ["cafe-creme", "con-project", "project"]);
+        // The title keeps the name as typed; only the folder is folded.
+        const title = (id: ProjectId) =>
+          projects.getById(id).pipe(Effect.map((project) => Option.getOrThrow(project).title));
+        assert.equal(yield* title(unicode.projectId), "Café Crème");
+        assert.equal(yield* title(cjk.projectId), "日本語");
+        assert.equal(yield* title(device.projectId), "CON");
+      }),
+    ),
+  ),
+);
+
+it.effect("replays a retried create with the same project id instead of duplicating it", () =>
+  withScratch(({ baseDir }) =>
+    withGitEnv(
+      TEST_IDENTITY,
+      Effect.gen(function* () {
+        const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+        const projects = yield* ProjectService.ProjectService;
+        const projectId = ProjectId.make("project:client-chosen");
+
+        const first = yield* folders.createNamedProject({ name: "Retry Me", projectId });
+        // The response was lost; the client sends the same create again.
+        const retry = yield* folders.createNamedProject({ name: "Retry Me", projectId });
+
+        assert.equal(first.projectId, projectId);
+        assert.deepEqual(retry, first);
+        assert.deepEqual(yield* projectsFolder(baseDir), ["retry-me"]);
+        assert.equal((yield* projects.snapshot).projects.length, 1);
+      }),
+    ),
+  ),
+);
+
+it.effect("joins concurrent duplicates of one create into a single project", () =>
+  withScratch(({ baseDir }) =>
+    withGitEnv(
+      TEST_IDENTITY,
+      Effect.gen(function* () {
+        const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+        const projects = yield* ProjectService.ProjectService;
+        const projectId = ProjectId.make("project:double-submit");
+
+        const results = yield* Effect.all(
+          Array.from({ length: 3 }, () =>
+            folders.createNamedProject({ name: "Double", projectId }),
+          ),
+          { concurrency: "unbounded" },
+        );
+
+        assert.equal(new Set(results.map((result) => result.workspaceRoot)).size, 1);
+        assert.deepEqual(yield* projectsFolder(baseDir), ["double"]);
+        assert.equal((yield* projects.snapshot).projects.length, 1);
+      }),
+    ),
+  ),
+);
+
+it.effect("replays a missing first commit as a warning on retry", () =>
+  withScratch(({ baseDir }) =>
+    withGitEnv(
+      {},
+      Effect.gen(function* () {
+        const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fileSystem.writeFileString(
+          path.join(baseDir, "no-identity.gitconfig"),
+          "[user]\n\tuseConfigOnly = true\n",
+        );
+        process.env.GIT_CONFIG_GLOBAL = path.join(baseDir, "no-identity.gitconfig");
+        const projectId = ProjectId.make("project:no-identity-retry");
+
+        const first = yield* folders.createNamedProject({ name: "Unborn", projectId });
+        const retry = yield* folders.createNamedProject({ name: "Unborn", projectId });
+
+        assert.include(first.commitError ?? "", "no name or email");
+        assert.equal(retry.workspaceRoot, first.workspaceRoot);
+        assert.include(retry.commitError ?? "", "no commits yet");
+      }),
+    ),
+  ),
+);
+
+it.effect("refuses a project id that another project already uses", () =>
+  withScratch(({ baseDir }) =>
+    withGitEnv(
+      TEST_IDENTITY,
+      Effect.gen(function* () {
+        const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+        const projects = yield* ProjectService.ProjectService;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const elsewhere = path.join(baseDir, "elsewhere");
+        yield* projects.create({
+          commandId: CommandId.make("command:elsewhere"),
+          projectId: ProjectId.make("project:elsewhere"),
+          title: "Elsewhere",
+          workspaceRoot: elsewhere,
+          createWorkspaceRootIfMissing: true,
+        });
+        yield* fileSystem.makeDirectory(path.resolve(baseDir, "projects"), { recursive: true });
+
+        const failure = yield* Effect.flip(
+          folders.createNamedProject({
+            name: "Hijack",
+            projectId: ProjectId.make("project:elsewhere"),
+          }),
+        );
+
+        assert.equal(failure._tag, "NamedProjectIdInUseError");
+        assert.deepEqual(yield* projectsFolder(baseDir), []);
+      }),
+    ),
+  ),
+);
+
+it.effect("retries a rejected create with the same project id as a fresh attempt", () =>
+  Effect.gen(function* () {
+    let calls = 0;
+    yield* withScratch(
+      ({ baseDir }) =>
+        withGitEnv(
+          TEST_IDENTITY,
+          Effect.gen(function* () {
+            const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+            const projectId = ProjectId.make("project:rejected-once");
+
+            const failure = yield* Effect.flip(
+              folders.createNamedProject({ name: "Second Try", projectId }),
+            );
+            assert.equal(failure._tag, "NamedProjectCreateError");
+            assert.deepEqual(yield* projectsFolder(baseDir), []);
+
+            const retry = yield* folders.createNamedProject({ name: "Second Try", projectId });
+            assert.equal(retry.projectId, projectId);
+            assert.deepEqual(yield* projectsFolder(baseDir), ["second-try"]);
+          }),
+        ),
+      {
+        // The store refuses the first create only.
+        projects: (real) =>
+          ProjectService.ProjectService.of({
+            ...real,
+            create: (input) => {
+              calls += 1;
+              return calls === 1
+                ? Effect.fail(
+                    new ProjectService.ProjectOperationError({
+                      operation: "dispatch-project-command",
+                      projectId: input.projectId,
+                      cause: "store unavailable",
+                    }),
+                  )
+                : real.create(input);
+            },
+          }),
+      },
+    );
+  }),
+);
+
+it.effect("removes the folder when the create is interrupted before it commits", () =>
+  Effect.gen(function* () {
+    const dispatching = yield* Deferred.make<void>();
+    yield* withScratch(
+      ({ baseDir }) =>
+        withGitEnv(
+          TEST_IDENTITY,
+          Effect.gen(function* () {
+            const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+            const projects = yield* ProjectService.ProjectService;
+
+            const fiber = yield* folders
+              .createNamedProject({ name: "Never Committed" })
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(dispatching);
+            assert.deepEqual(yield* projectsFolder(baseDir), ["never-committed"]);
+            yield* Fiber.interrupt(fiber);
+
+            assert.deepEqual(yield* projectsFolder(baseDir), []);
+            assert.deepEqual((yield* projects.snapshot).projects, []);
+          }),
+        ),
+      {
+        // Holds the dispatch open before anything is committed.
+        projects: (real) =>
+          ProjectService.ProjectService.of({
+            ...real,
+            create: () =>
+              Deferred.succeed(dispatching, undefined).pipe(Effect.andThen(Effect.never)),
+          }),
+      },
+    );
+  }),
+);
+
+it.effect("keeps the folder when the create is interrupted after it commits", () =>
+  Effect.gen(function* () {
+    const committed = yield* Deferred.make<void>();
+    yield* withScratch(
+      ({ baseDir }) =>
+        withGitEnv(
+          TEST_IDENTITY,
+          Effect.gen(function* () {
+            const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+            const projects = yield* ProjectService.ProjectService;
+            const projectId = ProjectId.make("project:committed-then-interrupted");
+
+            const fiber = yield* folders
+              .createNamedProject({ name: "Committed", projectId })
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(committed);
+            yield* Fiber.interrupt(fiber);
+
+            assert.deepEqual(yield* projectsFolder(baseDir), ["committed"]);
+            assert.isTrue(Option.isSome(yield* projects.getById(projectId)));
+            // The client never saw a response; its retry returns the project.
+            const retry = yield* folders.createNamedProject({ name: "Committed", projectId });
+            assert.equal(retry.projectId, projectId);
+            assert.deepEqual(yield* projectsFolder(baseDir), ["committed"]);
+          }),
+        ),
+      {
+        // Commits the create, then never answers, as a dropped response would.
+        projects: (real) =>
+          ProjectService.ProjectService.of({
+            ...real,
+            create: (input) =>
+              real
+                .create(input)
+                .pipe(
+                  Effect.andThen(Deferred.succeed(committed, undefined)),
+                  Effect.andThen(Effect.never),
+                ),
+          }),
+      },
+    );
+  }),
+);
+
+it.effect("removes the scaffold when its id turns out to belong to a project elsewhere", () =>
+  withScratch(
+    ({ baseDir }) =>
+      withGitEnv(
+        TEST_IDENTITY,
+        Effect.gen(function* () {
+          const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+          const projects = yield* ProjectService.ProjectService;
+          const path = yield* Path.Path;
+          const projectId = ProjectId.make("project:taken-meanwhile");
+
+          const failure = yield* Effect.flip(
+            folders.createNamedProject({ name: "Lost Race", projectId }),
+          );
+
+          assert.equal(failure._tag, "NamedProjectCreateError");
+          // The id's owner lives elsewhere, so the new folder had no owner.
+          const owner = Option.getOrThrow(yield* projects.getById(projectId));
+          assert.equal(owner.workspaceRoot, path.join(baseDir, "elsewhere"));
+          assert.deepEqual(yield* projectsFolder(baseDir), []);
+        }),
+      ),
+    {
+      // Another create takes the id at a different folder between the replay
+      // check and this create's commit, so this create is rejected.
+      projects: (real) =>
+        ProjectService.ProjectService.of({
+          ...real,
+          create: (input) =>
+            Effect.gen(function* () {
+              const path = yield* Path.Path;
+              const elsewhere = path.join(
+                path.dirname(path.dirname(input.workspaceRoot)),
+                "elsewhere",
+              );
+              yield* real.create({
+                commandId: CommandId.make("command:meanwhile"),
+                projectId: input.projectId,
+                title: "Meanwhile",
+                workspaceRoot: elsewhere,
+                createWorkspaceRootIfMissing: true,
+              });
+              return yield* real.create(input);
+            }).pipe(Effect.provide(NodeServices.layer)),
+        }),
+    },
+  ),
+);

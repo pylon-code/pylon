@@ -17,8 +17,13 @@ import {
   getCloneDestinationPath,
   getCloneDirectoryName,
   getDefaultCloneUrl,
+  getNewProjectGitHubRepository,
+  getNewProjectGitHubTarget,
+  getNewProjectPathPreview,
   normalizePastedCloneUrl,
   resolveAddProjectPath,
+  createNewProjectAttemptStore,
+  isNewProjectIdInUseFailure,
   sortAddProjectProviderSources,
 } from "./projects.ts";
 import type { EnvironmentProject } from "../state/models.ts";
@@ -273,5 +278,102 @@ describe("add project shared logic", () => {
       createWorkspaceRootIfMissing: true,
       defaultModelSelection: null,
     });
+  });
+
+  it("previews the new project folder under the environment's projects root", () => {
+    expect(getNewProjectPathPreview("/home/me/.pylon-code/projects", "Pinball Stats")).toBe(
+      "/home/me/.pylon-code/projects/pinball-stats",
+    );
+    expect(getNewProjectPathPreview("C:\\Users\\me\\.pylon-code\\projects", "CON")).toBe(
+      "C:\\Users\\me\\.pylon-code\\projects\\con-project",
+    );
+  });
+
+  it("publishes a new project under the actual, possibly suffixed folder", () => {
+    expect(
+      getNewProjectGitHubRepository({ account: "octo" }, "/root/projects/pinball-stats-2"),
+    ).toBe("octo/pinball-stats-2");
+    expect(getNewProjectGitHubRepository({ account: null }, "C:\\projects\\pinball-stats")).toBe(
+      "pinball-stats",
+    );
+  });
+
+  it("offers GitHub publishing only when GitHub is ready on that environment", () => {
+    const github = (
+      auth: "authenticated" | "unauthenticated",
+    ): SourceControlDiscoveryResult["sourceControlProviders"][number] => ({
+      kind: "github",
+      label: "GitHub",
+      status: "available",
+      installHint: "Install gh",
+      version: Option.some("1.0.0"),
+      detail: Option.none(),
+      auth: {
+        status: auth,
+        account: auth === "authenticated" ? Option.some("octo") : Option.none(),
+        host: Option.some("github.com"),
+        detail: Option.none(),
+      },
+    });
+    expect(getNewProjectGitHubTarget(null)).toBeNull();
+    expect(
+      getNewProjectGitHubTarget({
+        versionControlSystems: [],
+        sourceControlProviders: [github("unauthenticated")],
+      }),
+    ).toBeNull();
+    expect(
+      getNewProjectGitHubTarget({
+        versionControlSystems: [],
+        sourceControlProviders: [github("authenticated")],
+      }),
+    ).toEqual({ account: "octo" });
+  });
+
+  it("reuses the unfinished New project attempt so a retry cannot duplicate it", () => {
+    const local = EnvironmentId.make("environment-local");
+    const remote = EnvironmentId.make("environment-remote");
+    const store = createNewProjectAttemptStore();
+    let minted = 0;
+    const mint = () => ProjectId.make(`project-${++minted}`);
+
+    const first = store.attemptFor({ environmentId: local, name: "Pinball" }, mint);
+    expect(first.projectId).toBe(ProjectId.make("project-1"));
+    // Same name on the same machine, even retyped with stray spaces or a
+    // differently composed accent: the retry carries the same id.
+    expect(store.attemptFor({ environmentId: local, name: " Pinball " }, mint)).toBe(first);
+    const accented = store.attemptFor({ environmentId: local, name: "Caf\u00e9" }, mint);
+    expect(store.attemptFor({ environmentId: local, name: "Cafe\u0301" }, mint)).toBe(accented);
+    // A new name or another machine is another project, and each keeps its
+    // own pending attempt.
+    const arcade = store.attemptFor({ environmentId: local, name: "Arcade" }, mint);
+    expect(arcade.projectId).not.toBe(first.projectId);
+    const remoteAttempt = store.attemptFor({ environmentId: remote, name: "Pinball" }, mint);
+    expect(remoteAttempt.projectId).not.toBe(first.projectId);
+    expect(store.attemptFor({ environmentId: local, name: "Pinball" }, mint)).toBe(first);
+  });
+
+  it("starts a fresh attempt only once the earlier one is settled", () => {
+    const local = EnvironmentId.make("environment-local");
+    const store = createNewProjectAttemptStore();
+    let minted = 0;
+    const mint = () => ProjectId.make(`project-${++minted}`);
+
+    const first = store.attemptFor({ environmentId: local, name: "Pinball" }, mint);
+    store.settle(first);
+    const second = store.attemptFor({ environmentId: local, name: "Pinball" }, mint);
+    expect(second.projectId).toBe(ProjectId.make("project-2"));
+    // Settling a stale attempt leaves the newer one pending.
+    store.settle(first);
+    expect(store.attemptFor({ environmentId: local, name: "Pinball" }, mint)).toBe(second);
+  });
+
+  it("recognizes a refused project id as final", () => {
+    expect(
+      isNewProjectIdInUseFailure({ _tag: "ProjectCreateNewIdInUseError", projectId: "p" }),
+    ).toBe(true);
+    expect(isNewProjectIdInUseFailure({ _tag: "OrchestrationDispatchCommandError" })).toBe(false);
+    expect(isNewProjectIdInUseFailure(new Error("socket closed"))).toBe(false);
+    expect(isNewProjectIdInUseFailure(null)).toBe(false);
   });
 });

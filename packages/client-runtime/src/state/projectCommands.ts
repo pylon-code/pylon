@@ -102,5 +102,14 @@ export function createProjectEnvironmentAtoms<R, E>(
           JSON.stringify([environmentId, input.cwd, input.relativePath]),
       },
     }),
+    // Makes a new folder and repository from just a name, then the project.
+    // Keyed by the client-chosen project id, so a retried create joins the
+    // first rather than making a second folder.
+    createNew: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:create-new",
+      tag: WS_METHODS.projectsCreateNew,
+      scheduler: projectScheduler,
+      concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
+    }),
   };
 }

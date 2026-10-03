@@ -63,8 +63,10 @@ export function normalizeProjectPathForComparison(value: string): string {
   return normalized;
 }
 
-// Windows refuses these as file names, with or without an extension.
-const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
+// Windows refuses these as file names, with or without an extension. COM0 and
+// LPT0 are reserved too; the superscript forms (COM¹) reach here as digits
+// because NFKD decomposes them.
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/;
 
 /**
  * Folder name for a project started from just a name ("Pinball Stats" becomes

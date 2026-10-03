@@ -69,4 +69,29 @@ describe("path helpers", () => {
     expect(newProjectFolderName("LPT1")).toBe("lpt1-project");
     expect(newProjectFolderName("console")).toBe("console");
   });
+
+  it("folds Unicode names to a portable, bounded folder name", () => {
+    // Compatibility forms and ligatures decompose to plain letters.
+    expect(newProjectFolderName("ＡＢＣ Ｔｏｏｌｓ")).toBe("abc-tools");
+    expect(newProjectFolderName("ﬁnance")).toBe("finance");
+    expect(newProjectFolderName("Ångström Über")).toBe("angstrom-uber");
+    // Scripts with no Latin form keep what Latin there is, else the fallback.
+    expect(newProjectFolderName("日本語 app")).toBe("app");
+    expect(newProjectFolderName("日本語")).toBe("project");
+    // Separators, dots, and control characters never survive into the name.
+    expect(newProjectFolderName("a/b\\c:d*e?f\u0000g")).toBe("a-b-c-d-e-f-g");
+    expect(newProjectFolderName("...")).toBe("project");
+    // Bounded by characters, never cut mid-word into a trailing dash.
+    const long = newProjectFolderName("word ".repeat(40));
+    expect(long.length).toBeLessThanOrEqual(64);
+    expect(long.endsWith("-")).toBe(false);
+  });
+
+  it("never yields a Windows device name", () => {
+    for (const name of ["AUX", "nul", "PRN", "com0", "COM9", "lpt0", "LPT9", "COM¹", "con."]) {
+      expect(newProjectFolderName(name)).toMatch(/-project$/);
+    }
+    expect(newProjectFolderName("con.txt")).toBe("con-txt");
+    expect(newProjectFolderName("com10")).toBe("com10");
+  });
 });

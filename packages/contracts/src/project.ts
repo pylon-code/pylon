@@ -503,6 +503,12 @@ export type ProjectEnsureScratchResult = typeof ProjectEnsureScratchResult.Type;
 /** A project started from just a name, in a new folder the server makes. */
 export const ProjectCreateNewInput = Schema.Struct({
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  /**
+   * Client-chosen id for the new project. A retry with the same id (after a
+   * lost response, say) returns the project the first attempt made rather
+   * than creating a suffixed duplicate. Servers without it ignore the field.
+   */
+  projectId: Schema.optionalKey(ProjectId),
 });
 export type ProjectCreateNewInput = typeof ProjectCreateNewInput.Type;
 
@@ -513,6 +519,21 @@ export const ProjectCreateNewResult = Schema.Struct({
   commitError: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type ProjectCreateNewResult = typeof ProjectCreateNewResult.Type;
+
+/**
+ * The client-chosen `projectId` of a `projects.createNew` already belongs to
+ * a project this create cannot replay (one elsewhere, or one since deleted).
+ * Retrying with the same id can never succeed, so the client drops it and
+ * starts a new attempt. Only sent for creates that carry a `projectId`, so
+ * clients that predate it never see it.
+ */
+export class ProjectCreateNewIdInUseError extends Schema.TaggedError<ProjectCreateNewIdInUseError>()(
+  "ProjectCreateNewIdInUseError",
+  {
+    projectId: ProjectId,
+    message: TrimmedNonEmptyString,
+  },
+) {}
 
 export class ProjectWriteFileError extends Schema.TaggedError<ProjectWriteFileError>()(
   "ProjectWriteFileError",

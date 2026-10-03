@@ -92,7 +92,7 @@ describe("sidebar search header", () => {
     expect(input.onNewThread).toHaveBeenCalledWith(clickEvent);
     root
       .findAllByType("button")
-      .find((button) => button.props["aria-label"] === "New project")!
+      .find((button) => button.props["aria-label"] === "Add project")!
       .props.onClick();
     expect(input.onNewProject).toHaveBeenCalledOnce();
   });
@@ -108,7 +108,7 @@ describe("sidebar search header", () => {
     expect(root.findByType("input").props["aria-activedescendant"]).toBeUndefined();
     const buttons = root.findAllByType("button");
     expect(buttons.some((button) => button.props["aria-label"] === "Project scope")).toBe(false);
-    expect(buttons.some((button) => button.props["aria-label"] === "New project")).toBe(false);
+    expect(buttons.some((button) => button.props["aria-label"] === "Add project")).toBe(false);
     expect(
       buttons.find((button) => button.props["aria-label"] === "New thread")!.props.disabled,
     ).toBe(true);
