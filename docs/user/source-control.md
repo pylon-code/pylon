@@ -149,9 +149,11 @@ comment when closing or reopening a review, and change labels on GitHub with tri
 GitLab, and Azure DevOps support auto-merge while checks are outstanding. GitHub also supports
 approving waiting fork workflows and opening a revert pull request for a merged change.
 
-Opening the diff panel shows the working tree. Use its scope menu for branch changes or a specific
-turn; reopening the panel returns to the working tree. Large working-tree and branch diffs list all
-changed files and complete line counts while loading file previews as needed. Select a file in the
+Opening the diff panel shows **Changes**: everything the checkout changed since its base branch,
+including uncommitted and untracked files. Use its scope menu for **Uncommitted** edits only or a
+specific turn; reopening the panel returns to Changes. The thread's Changes line counts match that
+view. Large uncommitted and branch diffs list all changed files and complete line counts while
+loading file previews as needed. Select a file in the
 tree to jump directly to it. Individual file previews still have a size limit.
 
 Choose stacked or side-by-side diffs in **Settings → General → Diff layout**. Files start collapsed;
