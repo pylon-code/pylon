@@ -723,7 +723,7 @@ function OpenCommandPaletteDialog(props: {
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
-  const { scratchEnvironmentId, scratchWorkspaceRootFor, startScratchThread } = useScratchProject();
+  const { scratchEnvironmentId, scratchIdentityRootFor, startScratchThread } = useScratchProject();
   const lookupRepository = useAtomQueryRunner(sourceControlEnvironment.repository, {
     reportFailure: false,
   });
@@ -1176,9 +1176,7 @@ function OpenCommandPaletteDialog(props: {
   // Where "without a project" threads start: the current machine when it
   // offers them, never another one; with no current machine, the sole
   // connected machine that offers them (see useScratchProject).
-  const scratchTargetEnvironmentId = scratchEnvironmentId(
-    currentProjectEnvironmentId ?? primaryEnvironmentId,
-  );
+  const scratchTargetEnvironmentId = scratchEnvironmentId(currentProjectEnvironmentId);
   const currentProjectCwd = currentProjectId
     ? (projectCwdById.get(currentProjectId) ?? null)
     : null;
@@ -1353,7 +1351,7 @@ function OpenCommandPaletteDialog(props: {
         ...buildProjectActionItems({
           // The no-project home shows once, as the "No project" item below.
           projects: pickerProjects.filter(
-            (project) => !isScratchProject(project, scratchWorkspaceRootFor(project.environmentId)),
+            (project) => !isScratchProject(project, scratchIdentityRootFor(project.environmentId)),
           ),
           valuePrefix: "new-thread-in",
           searchTerms: (project) => {
@@ -1426,7 +1424,7 @@ function OpenCommandPaletteDialog(props: {
       projectEnvironmentLocationById,
       projectGroupByTargetKey,
       scratchTargetEnvironmentId,
-      scratchWorkspaceRootFor,
+      scratchIdentityRootFor,
       startScratchThread,
     ],
   );

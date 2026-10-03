@@ -47,6 +47,18 @@ export function useScratchProject() {
     [environments],
   );
 
+  /**
+   * The Scratch root an environment last advertised, connected or not. Used
+   * to recognize its Scratch project (so it is never listed as a project of
+   * its own), never to decide where a thread may start.
+   */
+  const scratchIdentityRootFor = useCallback(
+    (environmentId: EnvironmentId | null): string | null =>
+      environments.find((entry) => entry.environmentId === environmentId)?.serverConfig
+        ?.scratchWorkspaceRoot ?? null,
+    [environments],
+  );
+
   // A thread without a project starts on the machine the user is working on,
   // and only there. With no current machine (the hosted app with nothing
   // open), it starts on the one machine that offers it, never a silent pick.
@@ -95,5 +107,11 @@ export function useScratchProject() {
     [handleNewThread, openScratchProject],
   );
 
-  return { scratchWorkspaceRootFor, scratchEnvironmentId, openScratchProject, startScratchThread };
+  return {
+    scratchWorkspaceRootFor,
+    scratchIdentityRootFor,
+    scratchEnvironmentId,
+    openScratchProject,
+    startScratchThread,
+  };
 }

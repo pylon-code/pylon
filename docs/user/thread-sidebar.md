@@ -31,10 +31,17 @@ message, and a short tag, like `2026-10-03-convert-these-pngs-to-webp-3f9c2a1b7d
 thread keeps the folder, so the files the agent wrote stay until you remove them yourself. These
 folders are not Git repositories, so branches, worktrees, and Git diffs do not apply to them.
 
-**No project** starts on the machine you are working on. When nothing is open, it starts on the only
-connected machine that offers it; with several such machines, open a thread or project on the one
-you want first. Threads without a project are unavailable on a machine whose Pylon data directory
-sits inside a Git checkout.
+**No project** starts on the machine you are working on: the machine of the open thread or draft, or
+on mobile, the machine of the project or machine you last picked for the new task. It never switches
+to another machine. When nothing is open or picked, it starts on the only connected machine that
+offers it, which can be a remote one; with several such machines, open a thread or pick a project on
+the one you want first. On mobile you can then move the draft with its machine picker. Threads
+without a project are unavailable on a machine whose Pylon data directory sits inside a Git checkout.
+
+Older Pylon apps connected to the same machine list these threads under an ordinary project named
+**No project**, and starting one there in **New worktree** mode fails because the folder is not a
+Git repository. If Pylon cannot record a new thread after making its folder, the empty folder stays
+in `scratch`; you can delete it.
 
 ### Start in the background
 

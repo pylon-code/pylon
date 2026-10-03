@@ -115,38 +115,53 @@ describe("formatWorktreePathForDisplay", () => {
 });
 
 describe("canOfferWorktreeDeletion", () => {
-  const scratchWorkspaceRoot = "/Users/alice/.pylon/userdata/scratch";
+  const scratchWorkspaceRoot = "/Users/alice/.pylon-code/scratch";
+  const serverConfig = { scratchWorkspaceRoot };
+  const scratchFolder = `${scratchWorkspaceRoot}/2026-10-03-sort-receipts-0a1b2c3d4e5f`;
+  const ordinary = {
+    worktreePath: "/Users/alice/.pylon-code/worktrees/pylon/feature",
+    project: { workspaceRoot: "/Users/alice/code/pylon" },
+  };
 
   it("never offers to delete a Scratch thread's folder, so its files are kept", () => {
     expect(
       canOfferWorktreeDeletion({
-        worktreePath: `${scratchWorkspaceRoot}/2026-10-03-sort-receipts-0a1b2c3d4e5f`,
+        worktreePath: scratchFolder,
         project: { workspaceRoot: `${scratchWorkspaceRoot}/` },
-        scratchWorkspaceRoot,
+        serverConfig,
+      }),
+    ).toBe(false);
+    // A folder under the Scratch root is never a worktree, whatever its project.
+    expect(
+      canOfferWorktreeDeletion({ ...ordinary, worktreePath: scratchFolder, serverConfig }),
+    ).toBe(false);
+  });
+
+  it("fails closed while the environment's config is not loaded", () => {
+    expect(canOfferWorktreeDeletion({ ...ordinary, serverConfig: null })).toBe(false);
+  });
+
+  it("still recognizes the Scratch project once its root is no longer advertised", () => {
+    expect(
+      canOfferWorktreeDeletion({
+        worktreePath: scratchFolder,
+        project: {
+          workspaceRoot: scratchWorkspaceRoot,
+          projectIcon: { kind: "lucide", name: "message-square-dashed", color: "gray" },
+        },
+        serverConfig: {},
       }),
     ).toBe(false);
   });
 
   it("still offers an orphaned worktree of an ordinary project", () => {
-    expect(
-      canOfferWorktreeDeletion({
-        worktreePath: "/Users/alice/.pylon/worktrees/pylon/feature",
-        project: { workspaceRoot: "/Users/alice/code/pylon" },
-        scratchWorkspaceRoot,
-      }),
-    ).toBe(true);
-    expect(
-      canOfferWorktreeDeletion({
-        worktreePath: "/Users/alice/.pylon/worktrees/pylon/feature",
-        project: { workspaceRoot: "/Users/alice/code/pylon" },
-        scratchWorkspaceRoot: undefined,
-      }),
-    ).toBe(true);
+    expect(canOfferWorktreeDeletion({ ...ordinary, serverConfig })).toBe(true);
+    expect(canOfferWorktreeDeletion({ ...ordinary, serverConfig: {} })).toBe(true);
   });
 
   it("offers nothing without a folder or a project", () => {
-    expect(
-      canOfferWorktreeDeletion({ worktreePath: null, project: null, scratchWorkspaceRoot }),
-    ).toBe(false);
+    expect(canOfferWorktreeDeletion({ worktreePath: null, project: null, serverConfig })).toBe(
+      false,
+    );
   });
 });

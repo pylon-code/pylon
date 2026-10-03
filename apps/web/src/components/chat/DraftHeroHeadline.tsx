@@ -68,7 +68,12 @@ export function DraftHeroHeadline({
   const applyStickyState = useComposerDraftStore((store) => store.applyStickyState);
   const setModelSelection = useComposerDraftStore((store) => store.setModelSelection);
   const openAddProject = useCallback(() => openCommandPalette({ open: "add-project" }), []);
-  const { scratchEnvironmentId, scratchWorkspaceRootFor, openScratchProject } = useScratchProject();
+  const {
+    scratchEnvironmentId,
+    scratchIdentityRootFor,
+    scratchWorkspaceRootFor,
+    openScratchProject,
+  } = useScratchProject();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
 
   const environmentLabelById = useMemo(
@@ -149,7 +154,7 @@ export function DraftHeroHeadline({
   // "No project" item, not as a project row.
   const menuEntries = projectPickerEntries.filter(
     ({ targetProject }) =>
-      !isScratchProject(targetProject, scratchWorkspaceRootFor(targetProject.environmentId)),
+      !isScratchProject(targetProject, scratchIdentityRootFor(targetProject.environmentId)),
   );
   const activeProject =
     activeProjectRef === null
@@ -159,12 +164,12 @@ export function DraftHeroHeadline({
             project.environmentId === activeProjectRef.environmentId &&
             project.id === activeProjectRef.projectId,
         ) ?? null);
-  const scratchTargetEnvironmentId = scratchEnvironmentId(
-    activeProjectRef?.environmentId ?? primaryEnvironmentId,
-  );
+  // A draft without a project yet has no current machine.
+  const scratchTargetEnvironmentId = scratchEnvironmentId(activeProjectRef?.environmentId ?? null);
   const scratchWorkspaceRoot = scratchWorkspaceRootFor(scratchTargetEnvironmentId);
   const isScratchDraft =
-    activeProject !== null && isScratchProject(activeProject, scratchWorkspaceRoot);
+    activeProject !== null &&
+    isScratchProject(activeProject, scratchIdentityRootFor(activeProject.environmentId));
 
   // The picker can change the draft's target while the no-project home is
   // still being opened; a stale continuation must not retarget it again.
@@ -263,7 +268,7 @@ export function DraftHeroHeadline({
             selectProject(entry.targetProject, entry.group.projectKey);
           }}
         >
-          {scratchWorkspaceRoot === null ? null : (
+          {scratchWorkspaceRoot === null && !isScratchDraft ? null : (
             <MenuRadioItem value={NO_PROJECT_VALUE} closeOnClick>
               <span className="flex min-w-0 items-center gap-2">
                 {/* Boxed like ProjectFavicon so the label lines up with project rows. */}
@@ -379,7 +384,7 @@ export function DraftHeroHeadline({
       </h1>
       {/* Reserved whenever threads can skip a project, so the heading does not
           move. Without a project, the picker moves here to choose one. */}
-      {scratchWorkspaceRoot === null ? null : (
+      {scratchWorkspaceRoot === null && !isScratchDraft ? null : (
         <p className="mt-2 flex h-6 items-center text-sm">
           {isScratchDraft ? projectSelector : orStartWithoutProject}
         </p>

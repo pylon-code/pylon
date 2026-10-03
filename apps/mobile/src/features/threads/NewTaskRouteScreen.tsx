@@ -104,7 +104,8 @@ function deriveProjectEmptyState(catalogState: WorkspaceState): {
 export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRouteParams | undefined>) {
   const projects = useProjects();
   const [searchText, setSearchText] = useState("");
-  const { projectScopes, selectedEnvironmentId, setProject } = useNewTaskFlow();
+  const { chosenEnvironmentId, projectScopes, selectedEnvironmentId, setProject } =
+    useNewTaskFlow();
   const { state: catalogState } = useWorkspaceState();
   const navigation = useNavigation();
   const isFocused = useIsFocused();
@@ -140,7 +141,9 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
     reportFailure: false,
   });
   const scratchEnvironmentId = resolveScratchStartEnvironmentId({
-    currentEnvironmentId: selectedEnvironmentId,
+    // Only a machine the user chose counts as current; the flow's fallback to
+    // the first project's machine is arbitrary and could hide Scratch.
+    currentEnvironmentId: chosenEnvironmentId,
     environments: connectedEnvironments,
     serverConfigs,
   });
