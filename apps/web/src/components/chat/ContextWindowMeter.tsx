@@ -6,7 +6,11 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
-import { formatContextWindowCompactionMessage } from "./ContextWindowMeter.logic";
+import { Minimize2Icon } from "lucide-react";
+import {
+  formatContextWindowCompactionMessage,
+  formatContextWindowCost,
+} from "./ContextWindowMeter.logic";
 
 function formatPercentage(value: number | null): string | null {
   if (value === null || !Number.isFinite(value)) {
@@ -143,7 +147,10 @@ export function ContextCompactionControls(props: {
 export function ContextWindowMeter(props: {
   usage: ContextWindowSnapshot | null;
   modelDisplayName?: string | null;
-  timestampFormat: TimestampFormat;
+  timestampFormat?: TimestampFormat;
+  onCompact?: (() => void) | undefined;
+  compactDisabled?: boolean | undefined;
+  compactDisabledReason?: string | null | undefined;
   compaction?: ContextCompactionControlProps | null;
   harnessRefinement?: HarnessRefinementControlProps | null;
 }) {
@@ -173,7 +180,7 @@ export function ContextWindowMeter(props: {
             variant="ghost-muted"
             className="size-7 rounded-full hover:text-muted-foreground data-pressed:text-muted-foreground"
             aria-label={
-              usage?.maxTokens !== null && usage !== null && usedPercentage
+              usage?.maxTokens != null && usage !== null && usedPercentage
                 ? `Context window ${usedPercentage} used`
                 : usage !== null
                   ? `Context window ${formatContextWindowTokens(usage.usedTokens)} tokens used`
@@ -227,7 +234,7 @@ export function ContextWindowMeter(props: {
         <div className="flex flex-col gap-2 p-(--floating-content-inset)">
           <div className="flex items-center justify-between gap-3">
             <div className="font-medium text-muted-foreground text-xs">Context Window</div>
-            {usage?.maxTokens !== null && usage !== null && usedPercentage ? (
+            {usage?.maxTokens != null && usage !== null && usedPercentage ? (
               <div className="text-secondary-label text-2xs tabular-nums">
                 <span>{usedPercentage}</span>
                 <span className="mx-1">·</span>
@@ -267,12 +274,39 @@ export function ContextWindowMeter(props: {
               </span>
             </div>
           ) : null}
+          {usage?.cost != null ? (
+            <div className="flex items-center justify-between gap-3 text-2xs leading-4">
+              <span className="text-secondary-label">Cost</span>
+              <span className="font-medium tabular-nums text-secondary-label">
+                {formatContextWindowCost(usage.cost)}
+              </span>
+            </div>
+          ) : null}
           {usage?.compactsAutomatically && !props.compaction ? (
             <div className="mt-1 text-pretty text-secondary-label text-2xs font-medium">
               {formatContextWindowCompactionMessage(modelDisplayName, usage.autoCompactThreshold)}
             </div>
           ) : null}
-          {props.compaction ? <ContextCompactionControls control={props.compaction} /> : null}
+          {props.compaction ? (
+            <ContextCompactionControls control={props.compaction} />
+          ) : props.onCompact ? (
+            <>
+              <Button
+                size="xs"
+                variant="outline"
+                className="mt-1 w-full justify-center"
+                disabled={props.compactDisabled}
+                onClick={props.onCompact}
+              >
+                <Minimize2Icon aria-hidden="true" /> Compact context
+              </Button>
+              {props.compactDisabled && props.compactDisabledReason ? (
+                <div className="text-pretty text-secondary-label text-2xs">
+                  {props.compactDisabledReason}
+                </div>
+              ) : null}
+            </>
+          ) : null}
           {props.harnessRefinement ? (
             <HarnessRefinementControls control={props.harnessRefinement} />
           ) : null}

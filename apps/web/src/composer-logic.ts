@@ -1,4 +1,5 @@
-import type { AssistantCitation } from "@t3tools/contracts";
+import type { ClientSettings } from "@t3tools/contracts/settings";
+import type { AssistantCitation, ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import {
   serializeAssistantCitation,
   withAssistantCitationComment,
@@ -8,9 +9,11 @@ import {
   type ComposerPromptSegment,
 } from "./composer-editor-mentions";
 
+import { resolveShortcutCommand, type ShortcutEventLike } from "./keybindings";
+
 export type ComposerTriggerKind = "path" | "pull-request" | "slash-command" | "skill";
 export type ComposerSlashCommand = "model" | "plan" | "default";
-export type ComposerSubmissionIntent = "foreground" | "background";
+export type ComposerSubmissionIntent = "foreground" | "background" | "alternate";
 
 export interface ComposerTrigger {
   kind: ComposerTriggerKind;
@@ -23,16 +26,47 @@ export function formatAssistantCitationForComposer(citation: AssistantCitation, 
   return `${serializeAssistantCitation(withAssistantCitationComment(citation, comment))} `;
 }
 
-export function composerSubmissionIntentForEnter(input: {
+function composerRequiresModifier(
+  sendShortcut: ClientSettings["sendShortcut"] | undefined,
+  prompt: string,
+) {
+  return (
+    sendShortcut === "mod-enter" ||
+    (sendShortcut === "mod-enter-multiline" && /[\r\n]/.test(prompt))
+  );
+}
+
+export function composerSubmissionIntentForKey(input: {
+  event: ShortcutEventLike & { isComposing?: boolean; keyCode?: number; repeat?: boolean };
+  keybindings: ResolvedKeybindingsConfig;
+  platform?: string;
   isMobileViewport: boolean;
-  shiftKey: boolean;
-  modifierKey: boolean;
   isDraftThread: boolean;
+  isRunning?: boolean;
+  sendShortcut?: ClientSettings["sendShortcut"];
+  prompt?: string;
 }): ComposerSubmissionIntent | null {
-  if (input.isMobileViewport || input.shiftKey) {
+  const { event } = input;
+  if (input.isMobileViewport || event.isComposing || event.keyCode === 229 || event.repeat)
     return null;
-  }
-  return input.modifierKey && input.isDraftThread ? "background" : "foreground";
+  const command = resolveShortcutCommand(event, input.keybindings, {
+    ...(input.platform === undefined ? {} : { platform: input.platform }),
+    context: {
+      composerFocus: true,
+      draftThreadRoute: input.isDraftThread,
+      turnRunning: input.isRunning === true,
+    },
+  });
+  if (command === "composer.sendAlternate" && input.isRunning) return "alternate";
+  if (command === "composer.sendBackground" && input.isDraftThread) return "background";
+  if (command !== null || event.key !== "Enter" || event.shiftKey || event.altKey) return null;
+  if (
+    composerRequiresModifier(input.sendShortcut, input.prompt ?? "") &&
+    !event.metaKey &&
+    !event.ctrlKey
+  )
+    return null;
+  return "foreground";
 }
 
 const isInlineTokenSegment = (segment: ComposerPromptSegment): boolean => segment.type !== "text";
@@ -314,12 +348,35 @@ export function composerStateAtPromptEnd(
   };
 }
 
+export function parseStandaloneComposerSlashCommand(
+  text: string,
+): Exclude<ComposerSlashCommand, "model"> | null {
+  const match = /^\/(plan|default)\s*$/i.exec(text.trim());
+  if (!match) {
+    return null;
+  }
+  const command = match[1]?.toLowerCase();
+  if (command === "plan") return "plan";
+  return "default";
+}
+
+export function replaceTextRange(
+  text: string,
+  rangeStart: number,
+  rangeEnd: number,
+  replacement: string,
+): { text: string; cursor: number } {
+  const safeStart = Math.max(0, Math.min(text.length, rangeStart));
+  const safeEnd = Math.max(safeStart, Math.min(text.length, rangeEnd));
+  const nextText = `${text.slice(0, safeStart)}${replacement}${text.slice(safeEnd)}`;
+  return { text: nextText, cursor: safeStart + replacement.length };
+}
+
 export interface ComposerAliasPolicy {
   readonly allowUnicodeSkillAliases: boolean;
   readonly unicodeSkillNames: ReadonlySet<string>;
 }
 
-/** Stable readers for callbacks that outlive a provider or skill-catalog selection. */
 export function createComposerAliasPolicyReaders(getPolicy: () => ComposerAliasPolicy) {
   return {
     clampCollapsedComposerCursor: (text: string, cursor: number) => {
@@ -360,28 +417,4 @@ export function createComposerAliasPolicyReaders(getPolicy: () => ComposerAliasP
       );
     },
   };
-}
-
-export function parseStandaloneComposerSlashCommand(
-  text: string,
-): Exclude<ComposerSlashCommand, "model"> | null {
-  const match = /^\/(plan|default)\s*$/i.exec(text.trim());
-  if (!match) {
-    return null;
-  }
-  const command = match[1]?.toLowerCase();
-  if (command === "plan") return "plan";
-  return "default";
-}
-
-export function replaceTextRange(
-  text: string,
-  rangeStart: number,
-  rangeEnd: number,
-  replacement: string,
-): { text: string; cursor: number } {
-  const safeStart = Math.max(0, Math.min(text.length, rangeStart));
-  const safeEnd = Math.max(safeStart, Math.min(text.length, rangeEnd));
-  const nextText = `${text.slice(0, safeStart)}${replacement}${text.slice(safeEnd)}`;
-  return { text: nextText, cursor: safeStart + replacement.length };
 }

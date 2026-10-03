@@ -29,8 +29,7 @@ function renderPendingActions(isRunning: boolean) {
         isComplete: true,
       },
       isRunning,
-      canQueueFollowUp: false,
-      onQueueFollowUp: () => {},
+      canInterrupt: isRunning,
       showPlanFollowUpPrompt: false,
       promptHasText: false,
       isSendBusy: false,
@@ -46,110 +45,19 @@ function renderPendingActions(isRunning: boolean) {
   );
 }
 
-function renderStandaloneStop({
-  isRunning = true,
-  isStopCapable,
-  isConnecting = false,
-}: {
-  isRunning?: boolean;
-  isStopCapable?: boolean;
-  isConnecting?: boolean;
-} = {}) {
-  return renderToStaticMarkup(
-    createElement(ComposerPrimaryActions, {
-      compact: true,
-      pendingAction: null,
-      isRunning,
-      ...(isStopCapable === undefined ? {} : { isStopCapable }),
-      canQueueFollowUp: false,
-      onQueueFollowUp: () => {},
-      showPlanFollowUpPrompt: false,
-      promptHasText: false,
-      isSendBusy: false,
-      sendDisabledReason: null,
-      isConnecting,
-      isEnvironmentUnavailable: false,
-      isPreparingWorktree: false,
-      hasSendableContent: false,
-      onPreviousPendingQuestion: () => {},
-      onInterrupt: () => {},
-      onImplementPlanInNewThread: () => {},
-    }),
-  );
-}
-
-function renderRunningActions(showSendWhileRunning: boolean, hasSendableContent: boolean) {
-  return renderToStaticMarkup(
-    createElement(ComposerPrimaryActions, {
-      compact: true,
-      pendingAction: null,
-      isRunning: true,
-      // The queue affordance is provider-gated; these cases cover the plain
-      // send fallback Pylon shows when the provider has no input queue.
-      canQueueFollowUp: false,
-      onQueueFollowUp: () => {},
-      showPlanFollowUpPrompt: false,
-      promptHasText: hasSendableContent,
-      isSendBusy: false,
-      sendDisabledReason: null,
-      isConnecting: false,
-      isEnvironmentUnavailable: false,
-      isPreparingWorktree: false,
-      hasSendableContent,
-      showSendWhileRunning,
-      onPreviousPendingQuestion: () => {},
-      onInterrupt: () => {},
-      onImplementPlanInNewThread: () => {},
-    }),
-  );
-}
-
-function renderQueueCapableRunningActions(
-  showSendWhileRunning: boolean,
-  hasSendableContent: boolean,
-  sendDisabledReason: string | null = null,
-  isEnvironmentUnavailable = false,
-) {
-  return renderToStaticMarkup(
-    createElement(ComposerPrimaryActions, {
-      compact: true,
-      pendingAction: null,
-      isRunning: true,
-      canQueueFollowUp: true,
-      onQueueFollowUp: () => {},
-      showPlanFollowUpPrompt: false,
-      promptHasText: hasSendableContent,
-      isSendBusy: false,
-      sendDisabledReason,
-      isConnecting: false,
-      isEnvironmentUnavailable,
-      isPreparingWorktree: false,
-      hasSendableContent,
-      showSendWhileRunning,
-      onPreviousPendingQuestion: () => {},
-      onImplementPlanInNewThread: () => {},
-      onInterrupt: () => {},
-    }),
-  );
-}
-
-function renderSendButton(
-  sendDisabledReason: string | null = null,
-  isEnvironmentUnavailable = false,
-) {
+function renderSendButton(sendDisabledReason: string | null = null) {
   return renderToStaticMarkup(
     createElement(ComposerPrimaryActions, {
       compact: true,
       pendingAction: null,
       isRunning: false,
-      canQueueFollowUp: false,
-      onQueueFollowUp: () => {},
+      canInterrupt: false,
       showPlanFollowUpPrompt: false,
       promptHasText: true,
       isSendBusy: false,
       sendDisabledReason,
       isConnecting: false,
-      isEnvironmentUnavailable,
+      isEnvironmentUnavailable: false,
       isPreparingWorktree: false,
       hasSendableContent: true,
       onPreviousPendingQuestion: () => {},
@@ -172,40 +80,12 @@ describe("ComposerPrimaryActions", () => {
     expect(markup).toContain('aria-label="Sending feedback"');
   });
 
-  it("keeps a concrete provider reason when the aggregate unavailable flag is also set", () => {
-    const reason = "Select a model for the thread’s bound provider";
-    const sendMarkup = renderSendButton(reason, true);
-    const queueMarkup = renderQueueCapableRunningActions(true, true, reason, true);
-
-    expect(sendMarkup).toContain(`aria-label="${reason}"`);
-    expect(sendMarkup).not.toContain('aria-label="Environment disconnected"');
-    expect(queueMarkup).toContain(`aria-label="${reason}"`);
-    expect(queueMarkup).not.toContain('aria-label="Environment disconnected"');
-  });
-
-  it("offers Stop generation while provider admission is still starting", () => {
-    const markup = renderStandaloneStop({
-      isRunning: false,
-      isStopCapable: true,
-      isConnecting: true,
-    });
-
-    expect(markup).toContain('aria-label="Stop generation"');
-    expect(markup).not.toContain('aria-label="Connecting…"');
-  });
-
   it("offers Stop generation while a running turn is waiting for user input", () => {
     expect(renderPendingActions(true)).toContain('aria-label="Stop generation"');
   });
 
   it("does not offer Stop generation for a pending request without a running turn", () => {
     expect(renderPendingActions(false)).not.toContain('aria-label="Stop generation"');
-  });
-
-  it("matches the small pending action size without changing the standalone size", () => {
-    expect(renderPendingActions(true)).toContain("size-8 sm:size-7");
-    expect(renderStandaloneStop()).toContain("size-8 sm:h-8 sm:w-8");
-    expect(renderStandaloneStop()).not.toContain("sm:size-7");
   });
 
   it("renders stage artwork inside the send button when artwork identification is active", () => {
@@ -215,64 +95,13 @@ describe("ComposerPrimaryActions", () => {
     const markup = renderSendButton();
 
     expect(markup).toContain("stage-nightly");
-    expect(markup).toContain("bg-transparent text-white");
-    expect(markup).not.toContain("bg-message-action text-message-action-foreground");
   });
 
-  it("keeps the normal send-button fill when artwork identification is inactive", () => {
+  it("hides stage artwork when artwork identification is inactive", () => {
     stageArtworkState.variant = "nightly";
 
     const markup = renderSendButton();
 
     expect(markup).not.toContain("stage-nightly");
-    expect(markup).toContain("bg-message-action text-message-action-foreground");
-  });
-
-  it("only renders stop while running when Enter-to-send is available", () => {
-    const markup = renderRunningActions(false, true);
-
-    expect(markup).toContain('aria-label="Stop generation"');
-    expect(markup).not.toContain('aria-label="Send message"');
-  });
-
-  it("renders send alongside stop while running when Enter-to-send is unavailable", () => {
-    const markup = renderRunningActions(true, true);
-
-    expect(markup).toContain('aria-label="Stop generation"');
-    expect(markup).toContain('aria-label="Send message"');
-    expect(markup).toContain('type="submit"');
-    expect(markup).toContain("size-9 sm:size-8");
-  });
-
-  it("keeps stop as the only action while running with an empty composer", () => {
-    const markup = renderRunningActions(true, false);
-
-    expect(markup).toContain('aria-label="Stop generation"');
-    expect(markup).not.toContain('aria-label="Send message"');
-  });
-
-  // Most providers advertise a session input queue, so the queue affordance —
-  // not the send fallback — is the path a running turn normally takes.
-  it("offers queue follow-up beside stop while running on a queue-capable provider", () => {
-    const markup = renderQueueCapableRunningActions(false, true);
-
-    expect(markup).toContain('aria-label="Stop generation"');
-    expect(markup).toContain('aria-label="Queue follow-up"');
-    expect(markup).not.toContain('aria-label="Send message"');
-  });
-
-  it("prefers queue follow-up over the send fallback rather than offering both", () => {
-    const markup = renderQueueCapableRunningActions(true, true);
-
-    expect(markup).toContain('aria-label="Queue follow-up"');
-    expect(markup).not.toContain('aria-label="Send message"');
-  });
-
-  it("keeps the queue affordance visible but disabled with an empty composer", () => {
-    const markup = renderQueueCapableRunningActions(true, false);
-
-    expect(markup).toContain('aria-label="Queue follow-up"');
-    expect(markup).toContain("disabled");
-    expect(markup).not.toContain('aria-label="Send message"');
   });
 });

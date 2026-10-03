@@ -22,13 +22,9 @@
  *
  * @module components/chat/ThreadHandoff.logic
  */
-import type {
-  OrchestrationMessage,
-  ProviderInstanceId,
-  ServerProvider,
-  ThreadHandoffEstimate,
-} from "@t3tools/contracts";
+import type { ProviderInstanceId, ServerProvider, ThreadHandoffEstimate } from "@t3tools/contracts";
 import { estimateThreadHandoff, formatHandoffTokenCost } from "@t3tools/contracts";
+import type { ChatMessage } from "../../types";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 
 import { getDiffLineStat, getRenderablePatch, resolveFileDiffPath } from "../../lib/diffRendering";
@@ -119,7 +115,7 @@ export function summarizeHandoffDiff(patch: string | undefined): string | undefi
 }
 
 export interface ThreadHandoffSeedInput {
-  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly messages: ReadonlyArray<ChatMessage>;
   readonly estimate: ThreadHandoffEstimate;
   /** Human-readable summary of the checkpoint diff, when one is available. */
   readonly diffSummary?: string | undefined;
@@ -127,10 +123,10 @@ export interface ThreadHandoffSeedInput {
   readonly targetAccountName?: string | undefined;
 }
 
-const roleLabel = (role: OrchestrationMessage["role"]): string =>
+const roleLabel = (role: ChatMessage["role"]): string =>
   role === "user" ? "User" : role === "assistant" ? "Assistant" : role;
 
-const renderTurns = (messages: ReadonlyArray<OrchestrationMessage>): string =>
+const renderTurns = (messages: ReadonlyArray<ChatMessage>): string =>
   messages
     .filter((message) => message.text.trim().length > 0)
     .map((message) => `**${roleLabel(message.role)}:** ${message.text.trim()}`)
@@ -143,10 +139,10 @@ const renderTurns = (messages: ReadonlyArray<OrchestrationMessage>): string =>
  * much is being dropped without re-deriving it.
  */
 export function selectHandoffMessages(input: {
-  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly messages: ReadonlyArray<ChatMessage>;
   readonly estimate: ThreadHandoffEstimate;
 }): {
-  readonly carried: ReadonlyArray<OrchestrationMessage>;
+  readonly carried: ReadonlyArray<ChatMessage>;
   readonly omittedCount: number;
 } {
   const substantive = input.messages.filter((message) => message.text.trim().length > 0);
@@ -317,7 +313,7 @@ export interface ThreadHandoffOffer {
 export function getThreadHandoffOffer(input: {
   readonly entries: ReadonlyArray<ProviderInstanceEntry>;
   readonly boundInstanceId: string | undefined;
-  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly messages: ReadonlyArray<ChatMessage>;
   readonly usedTokens?: number | undefined;
   readonly maxTokens?: number | undefined;
   readonly nowMs: number;

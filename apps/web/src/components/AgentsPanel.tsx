@@ -7,22 +7,15 @@
  * - Spawn order is stable within active and inactive sections.
  * - Agent rows reserve three fixed lines for identity, activity, and metrics;
  *   changing data must never change their height.
- * - Finished work moves to a collapsed history section; workflows retain
- *   their phase context and script access there.
+ * - Finished work moves to a collapsed history section.
  * - Static status dots, DOM-write elapsed timers, plain token counters.
  */
-import { useAtomValue } from "@effect/atom-react";
-import type {
-  AgentPanelModel,
-  AgentPanelWorkflowGroup,
-  RuntimeSubagent,
-} from "@t3tools/client-runtime/state/subagentRuntime";
+import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   sessionAgentLiveActivitySelectionIsOpen,
   type SessionAgentLiveActivitySelection,
 } from "@t3tools/client-runtime/state/session-agent-live-activity";
 import {
-  formatSubagentModelLabel,
   formatSubagentTokenCount,
   isActiveSubagentStatus,
 } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -31,21 +24,10 @@ import {
   type EnvironmentId,
   type ThreadId,
 } from "@t3tools/contracts";
-import {
-  Bot,
-  Braces,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Eye,
-  MessageSquare,
-  Square,
-  X,
-} from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, Eye, MessageSquare, Square } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
-import { orchestrationEnvironment } from "~/state/orchestration";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
 import {
@@ -200,7 +182,8 @@ function AgentRow({
   const statusLabel =
     agent.kind === "subagent_batch" && agent.status === "idle" ? "Idle" : visuals.label;
   const activity = agentActivityText(agent);
-  const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
+  const modelLabel =
+    agent.model === null ? null : agent.effort ? `${agent.model} · ${agent.effort}` : agent.model;
   const role =
     agent.role?.trim().toLocaleLowerCase() === agent.title.trim().toLocaleLowerCase()
       ? null
@@ -209,7 +192,6 @@ function AgentRow({
     modelLabel,
     agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok",
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
-    agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
   const active = isActiveSubagentStatus(agent.status);
   const messageable =
@@ -302,428 +284,6 @@ function AgentRow({
   );
 }
 
-function workflowIsLive(group: AgentPanelWorkflowGroup): boolean {
-  const status = group.workflow.status;
-  return (
-    status !== "completed" &&
-    status !== "failed" &&
-    status !== "cancelled" &&
-    status !== "interrupted"
-  );
-}
-
-function workflowMembers(group: AgentPanelWorkflowGroup): ReadonlyArray<RuntimeSubagent> {
-  return [...group.phases.flatMap((phase) => phase.members), ...group.unphasedMembers];
-}
-
-/**
- * Phase rail: the run's shape at a glance. One segment per phase in order,
- * separated by chevrons; each segment shows title + one dot per member.
- * The whole arc (done → live → pending) is visible without scrolling the
- * member list.
- */
-function PhaseRail({ group }: { group: AgentPanelWorkflowGroup }) {
-  if (group.phases.length === 0) {
-    return null;
-  }
-  return (
-    <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-1.5 pb-1 pt-1.5">
-      {group.phases.map((phase, index) => (
-        <div key={phase.index} className="flex items-center gap-1">
-          {index > 0 ? (
-            <ChevronRight aria-hidden className="size-3 text-muted-foreground/40" />
-          ) : null}
-          <div
-            className={cn(
-              "flex items-center gap-1 rounded-sm border px-1.5 py-0.5",
-              phase.state === "running"
-                ? "border-info/40"
-                : phase.state === "done"
-                  ? "border-success/30"
-                  : "border-border/50",
-            )}
-          >
-            <span
-              className={cn(
-                "font-mono text-3xs",
-                phase.state === "running"
-                  ? "text-info-foreground"
-                  : phase.state === "done"
-                    ? "text-success-foreground"
-                    : "text-muted-foreground/70",
-              )}
-            >
-              {phase.state === "done" ? "✓ " : ""}
-              {phase.title}
-            </span>
-            <span className="flex items-center gap-0.5">
-              {phase.members.length === 0 ? (
-                <span className="font-mono text-3xs text-muted-foreground/50">–</span>
-              ) : (
-                phase.members.map((member) => <StatusDot key={member.id} status={member.status} />)
-              )}
-            </span>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/**
- * Read-only workflow script viewer, fetched through the contained
- * getWorkflowScript RPC (never a raw filesystem read from the client).
- */
-function WorkflowScriptView({
-  environmentId,
-  threadId,
-  scriptPath,
-  onClose,
-}: {
-  environmentId: EnvironmentId;
-  threadId: ThreadId;
-  scriptPath: string;
-  onClose: () => void;
-}) {
-  const result = useAtomValue(
-    orchestrationEnvironment.workflowScript({ environmentId, input: { threadId, scriptPath } }),
-  );
-  return (
-    <div className="mx-1.5 mb-1 rounded-md border border-border/60 bg-background/60">
-      <div className="flex items-center gap-2 border-b border-border/50 px-2 py-1">
-        <Braces aria-hidden className="size-3 text-muted-foreground" />
-        <span className="truncate font-mono text-3xs text-muted-foreground">
-          {scriptPath.split("/").at(-1)}
-        </span>
-        <Button
-          size="icon-micro"
-          variant="ghost-muted"
-          onClick={onClose}
-          aria-label="Close script"
-          className="ml-auto"
-        >
-          <X aria-hidden className="size-3" />
-        </Button>
-      </div>
-      <div className="max-h-72 overflow-auto p-2">
-        {result._tag === "Success" ? (
-          <pre className="whitespace-pre-wrap break-words font-mono text-2xs leading-relaxed text-foreground/90">
-            {result.value.contents}
-            {result.value.truncated ? "\n… (truncated)" : ""}
-          </pre>
-        ) : result._tag === "Failure" ? (
-          <p className="text-xs text-destructive-foreground">Could not load the script.</p>
-        ) : (
-          <p className="text-xs text-muted-foreground">Loading…</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Collapsible phase section. A phase opens when it becomes active, then keeps
- * that shape as it settles so completion never yanks rows out from under the
- * user. Manual toggles stick until a later activation begins.
- */
-function PhaseSection({
-  phase,
-  cancelControls,
-  messageControls,
-  liveActivityControls,
-  defaultOpen = false,
-}: {
-  phase: AgentPanelWorkflowGroup["phases"][number];
-  cancelControls: AgentCancelControls;
-  messageControls: AgentMessageControls;
-  liveActivityControls: AgentLiveActivityControls;
-  defaultOpen?: boolean;
-}) {
-  const [open, setOpen] = useState(defaultOpen || phase.state === "running");
-  const previousState = useRef(phase.state);
-  const activeMembers = phase.members.filter((member) => isActiveSubagentStatus(member.status));
-  const inactiveMembers = phase.members.filter((member) => !isActiveSubagentStatus(member.status));
-
-  useEffect(() => {
-    if (previousState.current !== "running" && phase.state === "running") {
-      setOpen(true);
-    }
-    previousState.current = phase.state;
-  }, [phase.state]);
-
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        className={cn(
-          "mt-2 flex w-full items-center gap-1.5 rounded-sm px-1.5 text-left text-3xs font-medium uppercase tracking-wider hover:bg-accent/40",
-          phase.state === "done"
-            ? "text-success-foreground"
-            : phase.state === "running"
-              ? "text-info-foreground"
-              : "text-muted-foreground/70",
-        )}
-      >
-        {open ? (
-          <ChevronDown aria-hidden className="size-3 shrink-0" />
-        ) : (
-          <ChevronRight aria-hidden className="size-3 shrink-0" />
-        )}
-        {phase.state === "done" ? <Check aria-hidden className="size-3" /> : null}
-        <span>{phase.title}</span>
-        <span className="font-normal normal-case text-muted-foreground/70">
-          {phase.state === "pending" && phase.members.length === 0
-            ? "pending"
-            : phase.state === "done"
-              ? `${phase.settledCount} done`
-              : `${phase.activeCount} active · ${phase.settledCount} done`}
-        </span>
-        {!open && phase.members.length > 0 ? (
-          <span className="ml-auto flex items-center gap-0.5">
-            {phase.members.map((member) => (
-              <StatusDot key={member.id} status={member.status} />
-            ))}
-          </span>
-        ) : null}
-      </button>
-      {open
-        ? activeMembers.map((member) => (
-            <AgentRow
-              key={member.id}
-              agent={member}
-              cancelControls={cancelControls}
-              messageControls={messageControls}
-              liveActivityControls={liveActivityControls}
-            />
-          ))
-        : null}
-      {open && inactiveMembers.length > 0 ? (
-        <InactiveAgents count={inactiveMembers.length}>
-          {inactiveMembers.map((member) => (
-            <AgentRow
-              key={member.id}
-              agent={member}
-              cancelControls={cancelControls}
-              messageControls={messageControls}
-              liveActivityControls={liveActivityControls}
-            />
-          ))}
-        </InactiveAgents>
-      ) : null}
-    </div>
-  );
-}
-
-/** Expanded workflow: phase rail + full phase tree. */
-function ExpandedWorkflowSection({
-  group,
-  environmentId,
-  threadId,
-  cancelControls,
-  messageControls,
-  liveActivityControls,
-  onCollapse,
-}: {
-  group: AgentPanelWorkflowGroup;
-  environmentId: EnvironmentId | null;
-  threadId: ThreadId | null;
-  cancelControls: AgentCancelControls;
-  messageControls: AgentMessageControls;
-  liveActivityControls: AgentLiveActivityControls;
-  onCollapse: () => void;
-}) {
-  const [scriptOpen, setScriptOpen] = useState(false);
-  const members = workflowMembers(group);
-  const settled = members.filter(
-    (member) =>
-      member.status === "completed" ||
-      member.status === "failed" ||
-      member.status === "cancelled" ||
-      member.status === "interrupted",
-  ).length;
-  const scriptPath = group.workflow.runHandles?.scriptPath;
-  const canShowScript = scriptPath !== undefined && environmentId !== null && threadId !== null;
-  return (
-    <section className="rounded-lg border border-border/50 bg-card/30 p-1.5">
-      <div className="flex items-center gap-2 px-1.5 pt-0.5 text-3xs font-medium uppercase tracking-wider text-muted-foreground">
-        <StatusDot status={group.workflow.status} />
-        <span className="min-w-0 truncate">
-          {group.workflow.workflowName ?? group.workflow.title}
-        </span>
-        {canShowScript ? (
-          <button
-            type="button"
-            onClick={() => setScriptOpen((value) => !value)}
-            className={cn(
-              "rounded-sm border border-border/60 px-1 font-mono normal-case hover:text-foreground",
-              scriptOpen && "text-foreground",
-            )}
-            aria-expanded={scriptOpen}
-          >
-            {"{}"} script
-          </button>
-        ) : null}
-        <span className="ml-auto font-mono normal-case text-muted-foreground/80">
-          {settled}/{members.length} settled
-        </span>
-        <Button
-          size="icon-micro"
-          variant="ghost-muted"
-          onClick={onCollapse}
-          aria-label="Collapse workflow"
-        >
-          <ChevronDown aria-hidden className="size-3" />
-        </Button>
-      </div>
-      <PhaseRail group={group} />
-      {scriptOpen && canShowScript ? (
-        <WorkflowScriptView
-          environmentId={environmentId}
-          threadId={threadId}
-          scriptPath={scriptPath}
-          onClose={() => setScriptOpen(false)}
-        />
-      ) : null}
-      {group.phases.map((phase) => (
-        <PhaseSection
-          key={phase.index}
-          phase={phase}
-          cancelControls={cancelControls}
-          messageControls={messageControls}
-          liveActivityControls={liveActivityControls}
-          defaultOpen={!workflowIsLive(group)}
-        />
-      ))}
-      {group.unphasedMembers
-        .filter((member) => isActiveSubagentStatus(member.status))
-        .map((member) => (
-          <AgentRow
-            key={member.id}
-            agent={member}
-            cancelControls={cancelControls}
-            messageControls={messageControls}
-            liveActivityControls={liveActivityControls}
-          />
-        ))}
-      {group.unphasedMembers.some((member) => !isActiveSubagentStatus(member.status)) ? (
-        <InactiveAgents
-          count={
-            group.unphasedMembers.filter((member) => !isActiveSubagentStatus(member.status)).length
-          }
-        >
-          {group.unphasedMembers
-            .filter((member) => !isActiveSubagentStatus(member.status))
-            .map((member) => (
-              <AgentRow
-                key={member.id}
-                agent={member}
-                cancelControls={cancelControls}
-                messageControls={messageControls}
-                liveActivityControls={liveActivityControls}
-              />
-            ))}
-        </InactiveAgents>
-      ) : null}
-      {group.phases.length === 0 && group.unphasedMembers.length === 0 ? (
-        <AgentRow
-          agent={group.workflow}
-          cancelControls={cancelControls}
-          messageControls={messageControls}
-          liveActivityControls={liveActivityControls}
-        />
-      ) : null}
-    </section>
-  );
-}
-
-/**
- * Collapsed workflow: one summary line. The parent owns expansion so a live
- * workflow keeps its shape when it settles.
- */
-function CollapsedWorkflowSection({
-  group,
-  onExpand,
-}: {
-  group: AgentPanelWorkflowGroup;
-  onExpand: () => void;
-}) {
-  const members = workflowMembers(group);
-  const failed = members.filter((member) => member.status === "failed").length;
-  // Coordinator usage may already aggregate members (panel-footer rule):
-  // count it only when there are no member rows to sum.
-  const totalTokens = members.reduce(
-    (sum, member) => sum + (member.usage?.totalTokens ?? 0),
-    members.length === 0 ? (group.workflow.usage?.totalTokens ?? 0) : 0,
-  );
-  const elapsed =
-    group.workflow.startedAt && group.workflow.completedAt
-      ? elapsedBetween(group.workflow.startedAt, group.workflow.completedAt)
-      : null;
-  return (
-    <section>
-      <button
-        type="button"
-        onClick={onExpand}
-        className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/40"
-        aria-expanded={false}
-      >
-        <StatusDot status={failed > 0 ? "failed" : group.workflow.status} />
-        <span className="truncate text-sm">
-          {group.workflow.workflowName ?? group.workflow.title}
-        </span>
-        <span className="ml-auto flex items-center gap-1.5 font-mono text-2xs text-muted-foreground/80">
-          {failed > 0 ? <span className="text-destructive-foreground">{failed} failed</span> : null}
-          <span>{members.length} agents</span>
-          <span className="tabular-nums">· {formatSubagentTokenCount(totalTokens)} tok</span>
-          {elapsed ? <span className="tabular-nums">· {elapsed}</span> : null}
-          <ChevronRight aria-hidden className="size-3" />
-        </span>
-      </button>
-    </section>
-  );
-}
-
-/** A workflow's open state is presentation state, not a status derivative. */
-function WorkflowSection({
-  group,
-  environmentId,
-  threadId,
-  cancelControls,
-  messageControls,
-  liveActivityControls,
-}: {
-  group: AgentPanelWorkflowGroup;
-  environmentId: EnvironmentId | null;
-  threadId: ThreadId | null;
-  cancelControls: AgentCancelControls;
-  messageControls: AgentMessageControls;
-  liveActivityControls: AgentLiveActivityControls;
-}) {
-  const [open, setOpen] = useState(() => workflowIsLive(group) || workflowHasActiveAgents(group));
-  return open ? (
-    <ExpandedWorkflowSection
-      group={group}
-      environmentId={environmentId}
-      threadId={threadId}
-      cancelControls={cancelControls}
-      messageControls={messageControls}
-      liveActivityControls={liveActivityControls}
-      onCollapse={() => setOpen(false)}
-    />
-  ) : (
-    <CollapsedWorkflowSection group={group} onExpand={() => setOpen(true)} />
-  );
-}
-
-function workflowHasActiveAgents(group: AgentPanelWorkflowGroup): boolean {
-  return (
-    isActiveSubagentStatus(group.workflow.status) ||
-    workflowMembers(group).some((agent) => isActiveSubagentStatus(agent.status))
-  );
-}
-
 function InactiveAgents({ children, count }: { children: ReactNode; count: number }) {
   return (
     <details className="border-t border-border/60 pt-2 [&[open]>summary>svg:first-child]:hidden [&[open]>summary>svg:last-of-type]:block">
@@ -737,11 +297,16 @@ function InactiveAgents({ children, count }: { children: ReactNode; count: numbe
   );
 }
 
-function agentPanelAgents(model: AgentPanelModel): ReadonlyArray<RuntimeSubagent> {
-  return [
-    ...model.directAgents,
-    ...model.workflows.flatMap((group) => [group.workflow, ...workflowMembers(group)]),
-  ];
+/** Flat roster supported by authoritative orchestration v2 subagent entities. */
+export interface AgentPanelModel {
+  readonly directAgents: ReadonlyArray<RuntimeSubagent>;
+  readonly runningCount: number;
+  readonly waitingCount: number;
+  readonly idleCount: number;
+  readonly settledCount: number;
+  readonly totalTokens: number;
+  readonly hasAgents: boolean;
+  readonly liveCount: number;
 }
 
 const EMPTY_CANCELLING_AGENT_IDS: ReadonlySet<string> = new Set();
@@ -802,8 +367,7 @@ export function AgentsPanel({
   const selectedLiveActivityAgent =
     liveActivitySelection === null
       ? null
-      : (agentPanelAgents(model).find((agent) => agent.id === liveActivitySelection.agentId) ??
-        null);
+      : (model.directAgents.find((agent) => agent.id === liveActivitySelection.agentId) ?? null);
   const liveActivityOpen = sessionAgentLiveActivitySelectionIsOpen({
     selection: liveActivitySelection,
     currentScopeKey: liveActivityScopeKey,
@@ -901,25 +465,7 @@ export function AgentsPanel({
   const inactiveDirect = model.directAgents.filter(
     (agent) => !isActiveSubagentStatus(agent.status),
   );
-  const activeWorkflows = model.workflows.filter(workflowHasActiveAgents);
-  const inactiveWorkflows = model.workflows.filter((group) => !workflowHasActiveAgents(group));
-  const inactiveCount =
-    inactiveDirect.length +
-    inactiveWorkflows.reduce(
-      (count, group) => count + Math.max(1, workflowMembers(group).length),
-      0,
-    );
-  const renderWorkflow = (group: AgentPanelWorkflowGroup) => (
-    <WorkflowSection
-      key={group.workflow.id}
-      group={group}
-      environmentId={environmentId}
-      threadId={threadId}
-      cancelControls={cancelControls}
-      messageControls={messageControls}
-      liveActivityControls={liveActivityControls}
-    />
-  );
+  const inactiveCount = inactiveDirect.length;
   const renderAgent = (agent: RuntimeSubagent) => (
     <AgentRow
       key={agent.id}
@@ -935,8 +481,7 @@ export function AgentsPanel({
         <Bot aria-hidden className="size-6 text-muted-foreground/60" />
         <p className="text-sm font-medium">No agents yet</p>
         <p className="max-w-56 text-xs text-muted-foreground">
-          When this thread spawns subagents or runs a workflow, they show up here with live status,
-          activity, and token usage.
+          When this thread spawns subagents, they show up here with their live status and activity.
         </p>
       </div>
     );
@@ -964,15 +509,13 @@ export function AgentsPanel({
           <section aria-label="Active agents" className="flex flex-col gap-2">
             <h3 className="px-1.5 pt-1 text-xs font-medium text-muted-foreground">Active</h3>
             {activeDirect.map(renderAgent)}
-            {activeWorkflows.map(renderWorkflow)}
-            {activeDirect.length === 0 && activeWorkflows.length === 0 ? (
+            {activeDirect.length === 0 ? (
               <p className="px-1.5 text-xs text-muted-foreground">No active agents</p>
             ) : null}
           </section>
           {inactiveCount > 0 ? (
             <InactiveAgents key={JSON.stringify([environmentId, threadId])} count={inactiveCount}>
               {inactiveDirect.map(renderAgent)}
-              {inactiveWorkflows.map(renderWorkflow)}
             </InactiveAgents>
           ) : null}
         </div>

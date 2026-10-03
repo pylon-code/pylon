@@ -1,13 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import type {
-  AgentPanelModel,
-  RuntimeSubagent,
-} from "@t3tools/client-runtime/state/subagentRuntime";
+import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { ProviderSessionAgentActivitySnapshot } from "@t3tools/contracts";
 import { AgentLiveActivitySnapshot } from "./AgentLiveActivity";
-import { AgentsPanel } from "./AgentsPanel";
+import { AgentsPanel, type AgentPanelModel } from "./AgentsPanel";
 
 function agent(id: string, title: string, status: RuntimeSubagent["status"]): RuntimeSubagent {
   return {
@@ -45,7 +42,6 @@ function agent(id: string, title: string, status: RuntimeSubagent["status"]): Ru
 const active = agent("agent-active", "Active reviewer", "running");
 const completed = agent("agent-completed", "Finished reviewer", "completed");
 const model: AgentPanelModel = {
-  workflows: [],
   directAgents: [active, completed],
   runningCount: 1,
   waitingCount: 0,
@@ -91,41 +87,28 @@ describe("AgentsPanel agent cancellation", () => {
     expect(markup).toContain("Waiting");
   });
 
-  it("keeps a resumed member active even when its coordinator is settled", () => {
-    const coordinator = { ...completed, id: "workflow", kind: "workflow" as const };
-    const finished = { ...completed, parentAgentId: coordinator.id };
-    const resumed = { ...active, parentAgentId: coordinator.id };
-    const markup = renderToStaticMarkup(
-      <AgentsPanel
-        model={{
-          ...model,
-          directAgents: [],
-          workflows: [{ workflow: coordinator, phases: [], unphasedMembers: [finished, resumed] }],
-        }}
-      />,
-    );
-    expect(markup.indexOf("Active reviewer")).toBeLessThan(markup.indexOf("<details"));
-    expect(markup.lastIndexOf("Finished reviewer")).toBeGreaterThan(markup.indexOf("<details"));
-  });
-
-  it("keeps memberless active workflows visible and reports an entirely inactive roster", () => {
-    const coordinator = { ...active, kind: "workflow" as const, title: "Starting workflow" };
-    const markup = renderToStaticMarkup(
-      <AgentsPanel
-        model={{
-          ...model,
-          directAgents: [],
-          workflows: [{ workflow: coordinator, phases: [], unphasedMembers: [] }],
-        }}
-      />,
-    );
-    expect(markup).toContain("Starting workflow");
-    expect(markup).not.toContain("No active agents");
+  it("reports an inactive roster and keeps the empty state readable", () => {
     const settled = renderToStaticMarkup(
-      <AgentsPanel model={{ ...model, directAgents: [completed] }} />,
+      <AgentsPanel
+        model={{ ...model, directAgents: [completed], runningCount: 0, liveCount: 0 }}
+      />,
     );
     expect(settled).toContain("No active agents");
     expect(settled).toContain("Finished reviewer");
+    const empty = renderToStaticMarkup(
+      <AgentsPanel
+        model={{
+          ...model,
+          directAgents: [],
+          hasAgents: false,
+          runningCount: 0,
+          settledCount: 0,
+          liveCount: 0,
+        }}
+      />,
+    );
+    expect(empty).toContain("No agents yet");
+    expect(empty).not.toContain("workflow");
   });
 
   it("offers cancellation only for active agents when the capability is enabled", () => {

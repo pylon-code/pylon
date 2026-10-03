@@ -3,18 +3,19 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { PrimeAgentIcon } from "../Icons";
 import { PROVIDER_ICON_BY_PROVIDER } from "./providerIconUtils";
-import { PROVIDER_OPTIONS } from "../../session-logic";
+import { DRIVER_OPTIONS as PROVIDER_OPTIONS } from "../settings/providerDriverMeta";
 
 describe("Prime Agent provider presentation", () => {
   const primeAgent = ProviderDriverKind.make("primeAgent");
 
   it("is available in the provider picker", () => {
-    expect(PROVIDER_OPTIONS).toContainEqual({
-      value: primeAgent,
-      label: "Prime Agent",
-      available: true,
-      pickerSidebarBadge: "new",
-    });
+    expect(PROVIDER_OPTIONS).toContainEqual(
+      expect.objectContaining({
+        value: primeAgent,
+        label: "Prime Agent",
+        badgeLabel: "Early Access",
+      }),
+    );
   });
 
   it("uses the official Prime Agent butterfly mark", () => {

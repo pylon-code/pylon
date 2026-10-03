@@ -1,8 +1,9 @@
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
-import { EnvironmentId, ThreadId, TurnId, ProviderInstanceId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, ProviderInstanceId } from "@t3tools/contracts";
 import type {
   AgentAwarenessState,
-  ProjectThreadAwarenessInput,
+  ProjectThreadAwarenessV2Input,
 } from "@t3tools/shared/agentAwareness";
 
 import {
@@ -207,79 +208,49 @@ describe("reconcileAwarenessNotifications", () => {
   });
 });
 
-describe("projectAwarenessStates (real phase cascade)", () => {
-  // Shell fixtures use only the fields ProjectThreadAwarenessInput picks.
-  const baseThread: ProjectThreadAwarenessInput["thread"] & { projectId: string } = {
+describe("projectAwarenessStates (v2 phase cascade)", () => {
+  const baseThread: ProjectThreadAwarenessV2Input["thread"] & { projectId: string } = {
     id: ThreadId.make("t1"),
     title: "Fix the sidebar",
     projectId: "p1",
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "some-model" },
-    updatedAt: "2026-09-08T00:00:00.000Z",
-    hasPendingApprovals: false,
-    hasPendingUserInput: false,
-    latestTurn: null,
-    session: null,
+    updatedAt: DateTime.makeUnsafe("2026-09-08T00:00:00.000Z"),
+    activityRunStatus: null,
+    status: "running",
+    pendingRuntimeRequest: null,
+    pendingBackgroundTasks: [],
+    lineage: {
+      rootThreadId: ThreadId.make("t1"),
+      parentThreadId: null,
+      relationshipToParent: null,
+    },
   };
   const titles = new Map([["env-1:p1", "Pylon"]]);
-  const session = (
-    status: NonNullable<ProjectThreadAwarenessInput["thread"]["session"]>["status"],
-  ): NonNullable<ProjectThreadAwarenessInput["thread"]["session"]> => ({
-    threadId: ThreadId.make("t1"),
-    status,
-    providerName: "Codex",
-    runtimeMode: "full-access",
-    activeTurnId: null,
-    lastError: null,
-    updatedAt: baseThread.updatedAt,
-  });
-  const turn = (
-    state: "running" | "completed",
-  ): NonNullable<ProjectThreadAwarenessInput["thread"]["latestTurn"]> => ({
-    turnId: TurnId.make("turn-1"),
-    state,
-    requestedAt: baseThread.updatedAt,
-    startedAt: baseThread.updatedAt,
-    completedAt: state === "completed" ? "2026-09-08T00:01:00.000Z" : null,
-    assistantMessageId: null,
-  });
-
-  it("a session flicker running -> ready while the turn is still running is not a completion", () => {
-    const running = {
-      ...baseThread,
-      session: session("running"),
-      latestTurn: turn("running"),
-    };
-    const flicker = { ...running, session: session("ready") };
-    const states = projectAwarenessStates({
-      threads: [{ environmentId: EnvironmentId.make("env-1"), ...flicker }],
-      projectTitleByKey: titles,
-    });
-    // latestTurn.state === "running" outranks session ready in the cascade.
-    expect(states[0]?.phase).toBe("running");
-  });
-
-  it("session ready with a completed turn is a completion", () => {
-    const done = {
-      ...baseThread,
-      session: session("ready"),
-      latestTurn: turn("completed"),
-    };
-    const states = projectAwarenessStates({
-      threads: [{ environmentId: EnvironmentId.make("env-1"), ...done }],
-      projectTitleByKey: titles,
-    });
-    expect(states[0]?.phase).toBe("completed");
-  });
-
-  it("falls back to the thread title alone when the project is unknown", () => {
+  it("keeps active activity running when the latest run is completed", () => {
     const states = projectAwarenessStates({
       threads: [
         {
           environmentId: EnvironmentId.make("env-1"),
           ...baseThread,
-          projectId: "unknown",
-          session: session("ready"),
+          status: "completed",
+          activityRunStatus: "running",
         },
+      ],
+      projectTitleByKey: titles,
+    });
+    expect(states[0]?.phase).toBe("running");
+  });
+  it("projects a completed run as completion", () => {
+    const states = projectAwarenessStates({
+      threads: [{ environmentId: EnvironmentId.make("env-1"), ...baseThread, status: "completed" }],
+      projectTitleByKey: titles,
+    });
+    expect(states[0]?.phase).toBe("completed");
+  });
+  it("falls back to the thread title alone when the project is unknown", () => {
+    const states = projectAwarenessStates({
+      threads: [
+        { environmentId: EnvironmentId.make("env-1"), ...baseThread, projectId: "unknown" },
       ],
       projectTitleByKey: titles,
     });

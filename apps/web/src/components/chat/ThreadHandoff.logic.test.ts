@@ -3,11 +3,11 @@ import {
   MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
-  type OrchestrationMessage,
   type ServerProvider,
   type ThreadHandoffEstimate,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
+import type { ChatMessage } from "../../types";
 import { describe, expect, it } from "vite-plus/test";
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
@@ -23,13 +23,13 @@ import {
 } from "./ThreadHandoff.logic";
 
 let messageCounter = 0;
-const message = (role: OrchestrationMessage["role"], text: string): OrchestrationMessage => {
+const message = (role: ChatMessage["role"], text: string): ChatMessage => {
   messageCounter += 1;
   return {
     id: MessageId.make(`msg-${messageCounter}`),
     role,
     text,
-    turnId: null,
+    runId: null,
     streaming: false,
     createdAt: "2026-08-05T00:00:00.000Z",
     updatedAt: "2026-08-05T00:00:00.000Z",
@@ -49,7 +49,7 @@ const CONDENSED: ThreadHandoffEstimate = {
   isEmpty: false,
 };
 
-const conversation = (turns: number): OrchestrationMessage[] =>
+const conversation = (turns: number): ChatMessage[] =>
   Array.from({ length: turns }, (_, index) =>
     index % 2 === 0 ? message("user", `ask ${index}`) : message("assistant", `reply ${index}`),
   );
@@ -141,7 +141,7 @@ describe("summarizeHandoffDiff", () => {
 });
 
 describe("buildThreadHandoffSeed", () => {
-  const seedFor = (messages: OrchestrationMessage[], estimate = VERBATIM, diffSummary?: string) =>
+  const seedFor = (messages: ChatMessage[], estimate = VERBATIM, diffSummary?: string) =>
     buildThreadHandoffSeed({
       messages,
       estimate,
@@ -211,7 +211,7 @@ describe("buildThreadHandoffSeed", () => {
     ["no messages", []],
     ["only blank messages", [message("user", "  ")]],
   ])("returns null for %s", (_label, messages) => {
-    expect(seedFor(messages as OrchestrationMessage[])).toBeNull();
+    expect(seedFor(messages as ChatMessage[])).toBeNull();
   });
 
   it("reads without account names when they are unknown", () => {
@@ -405,7 +405,7 @@ describe("getThreadHandoffOffer", () => {
 
   const offerFor = (
     providers: ReadonlyArray<ServerProvider>,
-    overrides: { usedTokens?: number; maxTokens?: number; messages?: OrchestrationMessage[] } = {},
+    overrides: { usedTokens?: number; maxTokens?: number; messages?: ChatMessage[] } = {},
   ) =>
     getThreadHandoffOffer({
       entries: deriveProviderInstanceEntries(providers),
