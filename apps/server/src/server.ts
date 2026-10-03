@@ -4,11 +4,6 @@ import * as Random from "effect/Random";
 import * as Semaphore from "effect/Semaphore";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
-// @effect-diagnostics nodeBuiltinImport:off
-import * as NodeHttp from "node:http";
-
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentHttpApi, type RepositoryIdentity } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -50,6 +45,7 @@ import * as ResetCreditCoordinator from "./provider/Layers/resetCreditCoordinato
 import * as CodexResetCredit from "./provider/Layers/codexResetCredit.ts";
 import * as LegacyAdapterV2Maintenance from "./provider/legacy/LegacyAdapterV2Maintenance.ts";
 import * as PrimeAgentRecoveryLedger from "./provider/prime/PrimeAgentRecoveryLedger.ts";
+import * as PrimeManagedMaintenance from "./provider/prime/PrimeManagedMaintenance.ts";
 import { ComputerSetupService } from "./computer/ComputerSetupService.ts";
 import * as CuaService from "./computer/CuaService.ts";
 import { CuaDriverBackend } from "./computer/CuaDriverBackend.ts";
@@ -666,7 +662,8 @@ const RuntimeCoreDependenciesLive = RuntimeCoreDependenciesBaseLive.pipe(
   ),
 );
 
-const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
+const RuntimeDependenciesLive = PrimeManagedMaintenance.layer.pipe(
+  Layer.provideMerge(RuntimeCoreDependenciesLive),
   // Misc.
   Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(ResourceDiagnosticsLayerLive),

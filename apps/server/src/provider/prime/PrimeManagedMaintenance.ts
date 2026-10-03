@@ -9,10 +9,10 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Stream from "effect/Stream";
 
 import { loadPrimeAgentDaemonBridge } from "./PrimeAgentDaemonBridge.ts";
 import { recoverPrimeAgentLegacySettlement } from "./PrimeAgentLegacySettlement.ts";
+import * as PrimeManagedMaintenanceDrain from "./PrimeManagedMaintenanceDrain.ts";
 import { PrimeAgentOwnershipReceiptStore } from "./PrimeAgentOwnershipReceipt.ts";
 
 import { ServerConfig } from "../../config.ts";
@@ -242,10 +242,20 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
         }),
       ),
     );
-  yield* providerMaintenance.streamDrainedInstances.pipe(
-    Stream.runForEach(refreshAfterDrain),
-    Effect.forkScoped,
-  );
+  yield* PrimeManagedMaintenanceDrain.start({
+    subscribe: providerMaintenance.subscribeDrainedInstances,
+    initialInstances: listPrimeAgentBinaryBindings.pipe(
+      Effect.map((bindings) =>
+        bindings.map(({ instanceId }) => ProviderInstanceId.make(instanceId)),
+      ),
+      Effect.catch((cause) =>
+        Effect.logWarning("Scheduled Prime maintenance startup bindings could not be read.", {
+          cause,
+        }).pipe(Effect.as([])),
+      ),
+    ),
+    drain: refreshAfterDrain,
+  });
 
   const status: PrimeManagedMaintenanceShape["status"] = (instanceId) =>
     Effect.tryPromise({

@@ -19,6 +19,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderUserInputAnswers,
   type SessionInteractionRequest,
+  type TurnTokenUsage,
   type TurnId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -55,6 +56,42 @@ function text(value: unknown): string | undefined {
 
 function nonNegativeNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function primeTurnUsage(value: unknown, hasSubagents: boolean): TurnTokenUsage {
+  const unavailable = {
+    usageStatus: "unavailable",
+    usageScope: "main_agent",
+    hasSubagents,
+  } as const;
+  // Native quiescence can report descendant-inclusive usage. It cannot be
+  // labelled as main-agent usage without a separate authoritative breakdown.
+  if (hasSubagents) return unavailable;
+  const usage = record(value);
+  const input = nonNegativeNumber(usage.inputTokens);
+  const output = nonNegativeNumber(usage.outputTokens);
+  const cached = nonNegativeNumber(usage.cachedInputTokens);
+  const written = nonNegativeNumber(usage.cacheWriteTokens);
+  const total = nonNegativeNumber(usage.totalTokens);
+  if (
+    input === undefined ||
+    output === undefined ||
+    cached === undefined ||
+    written === undefined ||
+    total === undefined
+  )
+    return unavailable;
+  const inputTokens = input + cached + written;
+  if (!Number.isSafeInteger(inputTokens) || inputTokens + output !== total) return unavailable;
+  return {
+    usageStatus: "complete",
+    usageScope: "main_agent",
+    hasSubagents,
+    inputTokens,
+    outputTokens: output,
+    cachedInputTokens: cached,
+    cacheCreationTokens: written,
+  };
 }
 
 function decision(value: unknown): ProviderApprovalDecision | undefined {
@@ -139,6 +176,7 @@ export function makeLegacyRuntimeEventProjector(input: {
   const itemParents = new Map<TurnItemId, NodeId>();
   const seenEvents = new Set<string>();
   const terminals = new Set<ProviderTurnId>();
+  const runsWithNativeChildren = new Set<string>();
   let queuedInputs = false;
   let compacting = false;
   let refiningHarness = false;
@@ -271,6 +309,31 @@ export function makeLegacyRuntimeEventProjector(input: {
       },
       output,
     );
+  };
+
+  const settleNativeChildTools = (
+    id: NodeId,
+    status: OrchestrationV2Subagent["status"],
+    now: DateTime.Utc,
+    output: ProviderAdapterV2Event[],
+  ) => {
+    // Each native child has its own terminal receipt. A parent's completion
+    // closes its own tools while separately running descendants stay open.
+    for (const item of items.values()) {
+      if (item.type === "subagent" || itemParents.get(item.id) !== id) continue;
+      if (item.status !== "running" && item.status !== "waiting" && item.status !== "pending")
+        continue;
+      publishItem(
+        {
+          ...item,
+          status,
+          completedAt: now,
+          updatedAt: now,
+          ...("streaming" in item ? { streaming: false } : {}),
+        },
+        output,
+      );
+    }
   };
 
   const lifecycleItem = (event: ItemEvent, output: ProviderAdapterV2Event[]) => {
@@ -578,15 +641,26 @@ export function makeLegacyRuntimeEventProjector(input: {
           ...turn,
           status,
           completedAt: now,
-          ...(event.payload.tokenUsage === undefined
-            ? {}
-            : { turnTokenUsage: event.payload.tokenUsage }),
+          ...(event.payload.tokenUsage !== undefined
+            ? { turnTokenUsage: event.payload.tokenUsage }
+            : driver === "primeAgent" && event.type === "turn.completed"
+              ? {
+                  turnTokenUsage: primeTurnUsage(
+                    event.payload.usage,
+                    runsWithNativeChildren.has(context.runId),
+                  ),
+                }
+              : {}),
         };
         if (event.turnId !== undefined) turns.set(event.turnId, updated);
         activeTurn = updated;
+        // Native children and their tools can outlive the root turn. Their
+        // own lifecycle frames, rather than the root terminal, settle them.
         for (const item of items.values()) {
           if (
             item.providerTurnId !== turn.id ||
+            item.type === "subagent" ||
+            itemParents.has(item.id) ||
             (item.status !== "running" && item.status !== "waiting" && item.status !== "pending")
           )
             continue;
@@ -856,6 +930,11 @@ export function makeLegacyRuntimeEventProjector(input: {
       case "task.progress":
       case "task.updated":
       case "task.completed": {
+        if (context !== undefined) runsWithNativeChildren.add(context.runId);
+        const activeContext = contextFor(activeTurn);
+        if (activeContext !== undefined && activeTurn?.status === "running")
+          runsWithNativeChildren.add(activeContext.runId);
+        if (pendingTurn !== undefined) runsWithNativeChildren.add(pendingTurn.runId);
         const parentNodeId =
           event.payload.parentAgentId === undefined
             ? (turn?.nodeId ?? context?.rootNodeId)
@@ -931,6 +1010,7 @@ export function makeLegacyRuntimeEventProjector(input: {
           },
           output,
         );
+        if (terminal) settleNativeChildTools(id, status, now, output);
         break;
       }
       case "turn.plan.updated": {
@@ -1067,6 +1147,13 @@ export function makeLegacyRuntimeEventProjector(input: {
     project,
     prepareTurn: (turnInput: ProviderAdapterV2TurnInput) => {
       pendingTurn = turnInput;
+      if (
+        Array.from(subagents.values()).some(
+          (agent) =>
+            agent.status === "running" || agent.status === "waiting" || agent.status === "pending",
+        )
+      )
+        runsWithNativeChildren.add(turnInput.runId);
     },
     getProviderSession: () => providerSession,
     getProviderThread: () => providerThread,

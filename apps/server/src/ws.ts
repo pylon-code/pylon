@@ -27,14 +27,12 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Encoding from "effect/Encoding";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
@@ -220,7 +218,6 @@ import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts
 import * as ProjectService from "./project/ProjectService.ts";
 import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
 import { projectMutationOperation } from "./project/ProjectMutation.ts";
-import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
@@ -1149,7 +1146,6 @@ const makeWsRpcLayer = (
             );
       const usage = yield* UsageService.UsageService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
-      const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
@@ -3941,6 +3937,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const primeManagedMaintenance = yield* PrimeManagedMaintenance.PrimeManagedMaintenance;
     const agentSessionScanner = yield* AgentSessionScanner.make;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
@@ -3999,7 +3996,12 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                 Layer.succeed(AgentSessionScanner.AgentSessionScanner, agentSessionScanner),
               ),
               Layer.provide(Layer.succeed(ComputerSetupService, computerSetup)),
-              Layer.provide(PrimeManagedMaintenance.layer),
+              Layer.provide(
+                Layer.succeed(
+                  PrimeManagedMaintenance.PrimeManagedMaintenance,
+                  primeManagedMaintenance,
+                ),
+              ),
               Layer.provide(
                 ProviderLoginCoordinatorLive.pipe(Layer.provide(ProviderLoginSessionsLive)),
               ),

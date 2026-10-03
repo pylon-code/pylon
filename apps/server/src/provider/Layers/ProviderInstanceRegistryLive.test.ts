@@ -78,7 +78,6 @@ import * as OpenCodeRuntime from "../opencodeRuntime.ts";
 import * as OpenCodeServerLedger from "../OpenCodeServerLedger.ts";
 import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
-import * as LegacyAdapterV2Maintenance from "../legacy/LegacyAdapterV2Maintenance.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
 import { ProviderOrchestrationAdapterInfrastructureLive } from "./ProviderOrchestrationAdapterInfrastructure.ts";
 import { makeTextGenerationFromRegistry } from "../../textGeneration/TextGeneration.ts";
@@ -282,7 +281,6 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
     Layer.provideMerge(ModelManifest.layerTest),
     Layer.provideMerge(CodexResetCredit.layerTest),
     Layer.provideMerge(ResetCreditCoordinator.layerTest),
-    Layer.provideMerge(LegacyAdapterV2Maintenance.layer),
   );
   const testLayer = ProviderOrchestrationAdapterInfrastructureLive.pipe(
     Layer.provideMerge(baseLayer),
@@ -834,7 +832,6 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
     Layer.provideMerge(ModelManifest.layerTest),
     Layer.provideMerge(CodexResetCredit.layerTest),
     Layer.provideMerge(ResetCreditCoordinator.layerTest),
-    Layer.provideMerge(LegacyAdapterV2Maintenance.layer),
   );
   const testLayer = ProviderOrchestrationAdapterInfrastructureLive.pipe(
     Layer.provideMerge(baseLayer),

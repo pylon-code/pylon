@@ -14,7 +14,9 @@ import {
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -35,16 +37,16 @@ import {
   type ProviderAdapterV2SessionRuntime,
   type ProviderAdapterV2Shape,
 } from "../../orchestration-v2/ProviderAdapter.ts";
-import {
-  ProviderAdapterDriverCreateError,
-  type ProviderAdapterDriver,
-  type ProviderAdapterDriverCreateInput,
-} from "../../orchestration-v2/ProviderAdapterDriver.ts";
 import { makeProviderTextDeltaCoalescer } from "../../orchestration-v2/Adapters/ProviderTextDeltaCoalescer.ts";
 import type { ProviderAdapterShape } from "./ProviderAdapter.ts";
 import { makeLegacyRuntimeEventProjector } from "./LegacyRuntimeEventProjector.ts";
 import type { LegacyAdapterV2MaintenanceShape } from "./LegacyAdapterV2Maintenance.ts";
 const decodeInteractionResponse = Schema.decodeUnknownEffect(SessionInteractionResponse);
+
+type LegacyStreamMessage =
+  | { readonly type: "event"; readonly event: ProviderAdapterV2Event }
+  | { readonly type: "end" }
+  | { readonly type: "failure"; readonly error: ProviderAdapterProtocolError };
 
 /** Capability declarations shared by the bridge and contract regression tests. */
 export function legacyAdapterV2Capabilities<Error>(
@@ -214,10 +216,13 @@ export function makeLegacyAdapterV2<Error>(options: {
         updatedAt: now,
       };
       const projector = makeLegacyRuntimeEventProjector({ providerSession, providerThread });
-      const events = yield* PubSub.unbounded<ProviderAdapterV2Event>({ replay: 32 });
+      const events = yield* PubSub.unbounded<LegacyStreamMessage>({ replay: 32 });
       yield* Effect.addFinalizer(() => PubSub.shutdown(events));
       const publish = (event: ProviderRuntimeEvent) =>
-        PubSub.publishAll(events, projector.project(event)).pipe(Effect.asVoid);
+        PubSub.publishAll(
+          events,
+          projector.project(event).map((event) => ({ type: "event" as const, event })),
+        ).pipe(Effect.asVoid);
       const pendingTextEvents = new Map<string, ProviderRuntimeEvent>();
       const emittedText = new Map<string, string>();
       const seenLegacyEvents = new Set<string>();
@@ -285,6 +290,25 @@ export function makeLegacyAdapterV2<Error>(options: {
       // admission events before the corresponding method returns.
       yield* adapter.streamEvents.pipe(
         Stream.runForEach(onLegacyEvent),
+        Effect.onExit((exit) =>
+          Effect.gen(function* () {
+            const turnIds = new Set(
+              Array.from(pendingTextEvents.values(), (event) => event.turnId),
+            );
+            for (const turnId of turnIds)
+              if (turnId !== undefined) yield* textCoalescer.flushTurn(turnId);
+            if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause))
+              yield* PubSub.publish(events, {
+                type: "failure",
+                error: new ProviderAdapterProtocolError({
+                  driver,
+                  detail: "Legacy provider event stream failed",
+                  cause: exit.cause,
+                }),
+              });
+            yield* PubSub.publish(events, { type: "end" });
+          }),
+        ),
         Effect.forkScoped({ startImmediately: true }),
       );
       const startInput: ProviderSessionStartInput = {
@@ -311,15 +335,21 @@ export function makeLegacyAdapterV2<Error>(options: {
       );
       yield* Effect.addFinalizer(() =>
         adapter.stopSession(input.threadId).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("Legacy provider session cleanup failed.", {
-              driver,
-              providerSessionId: input.providerSessionId,
-              cause,
-            }),
+          Effect.catchCause((cause) =>
+            (options.maintenance?.quarantineRuntime(options.instanceId) ?? Effect.void).pipe(
+              Effect.andThen(
+                Effect.logWarning("Legacy provider session cleanup failed.", {
+                  driver,
+                  providerSessionId: input.providerSessionId,
+                  cause,
+                }),
+              ),
+            ),
           ),
         ),
       );
+      if (options.maintenance !== undefined)
+        yield* options.maintenance.observeRuntimeOwnership(options.instanceId);
       // Prime's recoverable daemon holds retained frames until the consumer
       // has installed incarnation fencing; this runtime is now that consumer.
       if (adapter.activateRecoveredSession !== undefined)
@@ -349,7 +379,12 @@ export function makeLegacyAdapterV2<Error>(options: {
         driver,
         providerSessionId: input.providerSessionId,
         providerSession: readySession,
-        events: Stream.fromPubSub(events),
+        events: Stream.fromPubSub(events).pipe(
+          Stream.takeWhile((message) => message.type !== "end"),
+          Stream.mapEffect((message) =>
+            message.type === "event" ? Effect.succeed(message.event) : Effect.fail(message.error),
+          ),
+        ),
         hasPendingBackgroundWork: Effect.sync(projector.hasPendingBackgroundWork),
         hasPendingBackgroundWorkForThread: () => Effect.sync(projector.hasPendingBackgroundWork),
         ensureThread: (ensureInput) =>
@@ -603,34 +638,5 @@ export function makeLegacyAdapterV2<Error>(options: {
       };
       return runtime;
     }),
-  };
-}
-
-/** Bridges a legacy driver factory without importing v1 orchestration wiring. */
-export function makeLegacyAdapterV2Driver<Config, Error, Environment>(legacyDriver: {
-  readonly driverKind: ProviderAdapterDriver<Config, Environment>["driverKind"];
-  readonly configSchema: ProviderAdapterDriver<Config, Environment>["configSchema"];
-  readonly defaultConfig: () => Config;
-  readonly create: (
-    input: ProviderAdapterDriverCreateInput<Config>,
-  ) => Effect.Effect<ProviderAdapterShape<Error>, Error, Environment>;
-}): ProviderAdapterDriver<Config, Environment> {
-  return {
-    driverKind: legacyDriver.driverKind,
-    configSchema: legacyDriver.configSchema,
-    defaultConfig: legacyDriver.defaultConfig,
-    create: (input) =>
-      legacyDriver.create(input).pipe(
-        Effect.map((adapter) => makeLegacyAdapterV2({ instanceId: input.instanceId, adapter })),
-        Effect.mapError(
-          (cause) =>
-            new ProviderAdapterDriverCreateError({
-              driver: legacyDriver.driverKind,
-              instanceId: input.instanceId,
-              detail: "Legacy adapter construction failed.",
-              cause,
-            }),
-        ),
-      ),
   };
 }
