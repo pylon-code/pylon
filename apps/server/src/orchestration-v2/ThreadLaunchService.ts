@@ -674,14 +674,16 @@ const make = Effect.gen(function* () {
         }
 
         // A Scratch thread launched at the project root runs in a folder of its
-        // own. Only the first attempt claims one; a retry replays its create.
+        // own. An accepted launch replays its create; any other attempt finds
+        // the folder by its stable key (the client's thread id, else the
+        // command id), so a retry whose create never landed reuses it.
         const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
           input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
             ? Option.match(
                 yield* managedFolders
                   .folderForThread({
                     projectId: input.projectId,
-                    threadId: candidateThreadId,
+                    claimKey: input.threadId ?? input.commandId,
                     text: input.initialMessage?.text ?? input.title,
                   })
                   .pipe(Effect.mapError(mapError(input, "provision-worktree", candidateThreadId))),

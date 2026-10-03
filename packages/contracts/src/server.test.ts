@@ -388,6 +388,24 @@ describe("server config forward compatibility", () => {
   });
 });
 
+describe("ServerConfig Scratch root", () => {
+  // Pick just the field: the full config needs every other snapshot field.
+  const ScratchConfig = Schema.Struct({
+    scratchWorkspaceRoot: ServerConfig.fields.scratchWorkspaceRoot,
+  });
+
+  it("carries the advertised Scratch root through the wire", () => {
+    const encoded = Schema.encodeSync(ScratchConfig)({ scratchWorkspaceRoot: "/srv/scratch" });
+    expect(Schema.decodeSync(ScratchConfig)(encoded)).toEqual({
+      scratchWorkspaceRoot: "/srv/scratch",
+    });
+  });
+
+  it("reads a server that offers no Scratch (or predates it) as having none", () => {
+    expect(Schema.decodeSync(ScratchConfig)({})).toEqual({});
+  });
+});
+
 describe("ServerObservability", () => {
   it("reads a server from before the log signal as exporting no logs", () => {
     const parsed = decodeServerObservability({

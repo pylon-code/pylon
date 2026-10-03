@@ -117,6 +117,8 @@ Put a more specific rule after a general one when they share a shortcut.
 
 `chat.new` may ask you to choose a project when there is more than one. `chat.newLocal` skips that
 chooser. Both use your [new-thread defaults](./thread-sidebar.md#start-a-thread).
+`chat.newWithoutProject` (`mod+alt+n`) starts a thread
+[without a project](./thread-sidebar.md#start-without-a-project).
 
 `filePicker.toggle` (`mod+p`) opens file search for the active project, and `projectSearch.toggle`
 (`mod+shift+f`) searches inside its files. Repeating either shortcut closes that search.
