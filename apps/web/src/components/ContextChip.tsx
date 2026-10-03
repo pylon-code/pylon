@@ -113,21 +113,4 @@ function ContextChipLabel({ className, ...props }: React.ComponentProps<"span">)
   );
 }
 
-/** An icon action inside a chip, such as editing a citation's comment. Tints with the chip's kind. */
-function ContextChipAction({ className, render, ...props }: useRender.ComponentProps<"button">) {
-  const defaultProps = {
-    className: cn(
-      "ml-[0.17em] inline-flex size-[1.17em] shrink-0 cursor-pointer items-center justify-center rounded-sm text-current transition-colors hover:bg-(--context-chip-accent,var(--color-foreground))/17 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring motion-reduce:transition-none [&_svg]:size-[0.85em]",
-      className,
-    ),
-    "data-slot": "context-chip-action",
-    type: render ? undefined : ("button" as const),
-  };
-  return useRender({
-    defaultTagName: "button",
-    props: mergeProps<"button">(defaultProps, props),
-    render,
-  });
-}
-
-export { ContextChip, ContextChipAction, ContextChipLabel, type ContextChipKind };
+export { ContextChip, ContextChipLabel, type ContextChipKind };

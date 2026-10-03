@@ -14,7 +14,6 @@ import type { RightPanelSurface } from "../rightPanelStore";
 import {
   CommandId,
   EnvironmentId,
-  EventId,
   MessageId,
   ProjectId,
   ProviderInstanceId,
@@ -28,7 +27,7 @@ import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifa
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { Atom, AsyncResult } from "effect/unstable/reactivity";
+import { Atom } from "effect/unstable/reactivity";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentThreadDetails } from "../state/threads";
 
@@ -40,7 +39,7 @@ import {
   getAntigravitySendBlockReason,
   resolveBackgroundDraftWorkspaceOptions,
   resolveComposerInteractionMode,
-  restorePlanFollowUpComposer,
+  mergeFailedComposerSend,
   resolveComposerProviderSelection,
   resolveProactiveTurnDiffAction,
   resolveDraftHeroState,
@@ -84,7 +83,6 @@ import {
   shouldShowPlanFollowUpPrompt,
   shouldWriteThreadErrorToCurrentServerThread,
   waitForRevertedMessage,
-  prepareRevertedMessageAttachments,
 } from "./ChatView.logic";
 
 const environmentId = EnvironmentId.make("environment-local");
@@ -263,6 +261,64 @@ describe("resolveThreadMetadataUpdateForNextTurn", () => {
         nextBranch: "feature/current",
       }),
     ).toBeNull();
+  });
+});
+
+describe("mergeFailedComposerSend", () => {
+  it("restores the sent content alongside text and attachments added while sending", () => {
+    const failedAttachments = [{ id: "sent", name: "sent.png" }];
+    const currentAttachments = [{ id: "new", name: "new.png" }];
+
+    expect(
+      mergeFailedComposerSend({
+        failedText: "Review the sent screenshot",
+        currentText: "Then review the new screenshot",
+        failedAttachments,
+        currentAttachments,
+      }),
+    ).toEqual({
+      text: "Review the sent screenshot\n\nThen review the new screenshot",
+      attachments: [...failedAttachments, ...currentAttachments],
+    });
+    expect(failedAttachments).toEqual([{ id: "sent", name: "sent.png" }]);
+    expect(currentAttachments).toEqual([{ id: "new", name: "new.png" }]);
+  });
+
+  it("keeps the newer attachment or context when the restored snapshot shares its id", () => {
+    expect(
+      mergeFailedComposerSend({
+        failedText: "Sent text",
+        currentText: "New draft text",
+        failedAttachments: [
+          { id: "old", text: "sent context" },
+          { id: "shared", text: "snapshot context" },
+        ],
+        currentAttachments: [
+          { id: "shared", text: "updated context" },
+          { id: "new", text: "new context" },
+        ],
+      }),
+    ).toEqual({
+      text: "Sent text\n\nNew draft text",
+      attachments: [
+        { id: "old", text: "sent context" },
+        { id: "shared", text: "updated context" },
+        { id: "new", text: "new context" },
+      ],
+    });
+  });
+
+  it.each([
+    { failedText: "Sent text", currentText: "", expected: "Sent text" },
+    { failedText: "", currentText: "New draft text", expected: "New draft text" },
+  ])("preserves the nonempty prompt without adding separators: $expected", (input) => {
+    expect(
+      mergeFailedComposerSend({
+        ...input,
+        failedAttachments: [],
+        currentAttachments: [],
+      }).text,
+    ).toBe(input.expected);
   });
 });
 

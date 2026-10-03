@@ -1365,49 +1365,6 @@ export function restorePlanFollowUpComposer(input: {
   });
 }
 
-export const MAX_HIDDEN_MOUNTED_PREVIEW_THREADS = 3;
-const NO_LOCAL_TIMELINE_MESSAGE_IDS: ReadonlySet<MessageId> = new Set();
-
-export function collectLocalTimelineMessageIds(
-  optimisticUserMessages: ReadonlyArray<Pick<ChatMessage, "id">>,
-): ReadonlySet<MessageId> {
-  if (optimisticUserMessages.length === 0) {
-    return NO_LOCAL_TIMELINE_MESSAGE_IDS;
-  }
-  return new Set(optimisticUserMessages.map((message) => message.id));
-}
-
-export function reconcileRetainedMountedThreadIds(input: {
-  currentThreadIds: ReadonlyArray<string>;
-  openThreadIds: ReadonlyArray<string>;
-  activeThreadId: string | null;
-  activeThreadOpen: boolean;
-  maxHiddenThreadCount: number;
-  retainInactiveActiveThread?: boolean;
-}): string[] {
-  const openThreadIdSet = new Set(input.openThreadIds);
-  const hiddenThreadIds = input.currentThreadIds.filter(
-    (threadId) =>
-      (threadId !== input.activeThreadId || input.retainInactiveActiveThread === true) &&
-      openThreadIdSet.has(threadId),
-  );
-  const maxHiddenThreadCount = Math.max(0, input.maxHiddenThreadCount);
-  const nextThreadIds =
-    hiddenThreadIds.length > maxHiddenThreadCount
-      ? hiddenThreadIds.slice(-maxHiddenThreadCount)
-      : hiddenThreadIds;
-
-  if (
-    input.activeThreadId &&
-    input.activeThreadOpen &&
-    !nextThreadIds.includes(input.activeThreadId)
-  ) {
-    nextThreadIds.push(input.activeThreadId);
-  }
-
-  return nextThreadIds;
-}
-
 export function mergeFailedComposerSend<T extends { readonly id: string }>(input: {
   readonly failedText: string;
   readonly currentText: string;

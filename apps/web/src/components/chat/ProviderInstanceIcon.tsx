@@ -12,6 +12,7 @@ import {
   OpenAI,
   OpenCodeIcon,
   PiAgentIcon,
+  PrimeAgentIcon,
 } from "../Icons";
 
 import { cn } from "~/lib/utils";
@@ -29,6 +30,7 @@ const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>> = {
   [ProviderDriverKind.make("grok")]: GrokIcon,
   [ProviderDriverKind.make("antigravity")]: AntigravityIcon,
   [ProviderDriverKind.make("pi")]: PiAgentIcon,
+  [ProviderDriverKind.make("primeAgent")]: PrimeAgentIcon,
 };
 
 const PROVIDER_TEXT_COLOR_BY_PROVIDER: Partial<Record<ProviderDriverKind, string>> = {

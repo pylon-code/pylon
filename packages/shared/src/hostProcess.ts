@@ -54,18 +54,6 @@ export const HostProcessArguments = Context.Reference<ReadonlyArray<string>>(
 );
 
 /**
- * The command the shell was given, before Node resolved it to the binary:
- * `t3` for a PATH lookup, `./t3` or the launcher symlink for an explicit
- * path. `process.argv[0]` and `execPath` are always the resolved binary.
- */
-export const HostProcessInvokedAs = Context.Reference<string>(
-  "@t3tools/shared/hostProcess/HostProcessInvokedAs",
-  {
-    defaultValue: () => process.argv0,
-  },
-);
-
-/**
  * Whether this process is a Node single-executable rather than a script run
  * by a Node on the machine. Code that needs a sibling file or a Node to run
  * one branches on this: an executable hosts such things as hidden

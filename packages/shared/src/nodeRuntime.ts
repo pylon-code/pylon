@@ -20,7 +20,7 @@ const NodeRuntimeFeature = Schema.Literals([
   "Antigravity sign-in",
 ]);
 
-export const nodeRuntimeUnavailableMessage = (feature: typeof NodeRuntimeFeature.Type): string =>
+const nodeRuntimeUnavailableMessage = (feature: typeof NodeRuntimeFeature.Type): string =>
   `${feature} requires Node.js. Install Node.js and make sure node is on PATH, then retry.`;
 
 export class NodeRuntimeUnavailableError extends Schema.TaggedError<NodeRuntimeUnavailableError>()(
