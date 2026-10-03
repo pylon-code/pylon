@@ -44,6 +44,13 @@ complete usage, no observed subagents, and no mixed models; compare matching mod
 interaction mode, and terminal status. Aggregate output/input ratios should divide the summed
 totals. Averaging per-turn ratios lets small-input turns dominate.
 
+## Delivery
+
+A send can fail after PostHog has stored the batch, so every retry is a copy.
+[Delivery](../../apps/server/src/telemetry/AnalyticsService.ts) gives each event a
+uuid when it is recorded, backs off after a failed send, and drops a batch after a
+few tries. Without these limits, one stuck batch was sent every second for days.
+
 ## Collection boundary
 
 Keep analytics payloads to product metadata and normalized measurements. Do not send prompts,
