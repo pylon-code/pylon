@@ -376,7 +376,10 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
           </View>
         ) : null}
         {listScopes.length === 0 ? (
-          <View collapsable={false} className="items-center gap-3 rounded-[24px] bg-grouped-card px-6 py-8">
+          <View
+            collapsable={false}
+            className="items-center gap-3 rounded-[24px] bg-grouped-card px-6 py-8"
+          >
             {projectEmptyState.loading ? (
               <ActivityIndicator colorClassName={"accent-icon-muted"} />
             ) : null}
