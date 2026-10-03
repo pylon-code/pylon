@@ -130,6 +130,7 @@ interface HarnessOptions {
   readonly project?: OrchestrationProjectShell | null;
   readonly disappearOnDispatch?: boolean;
   readonly reject?: (command: OrchestrationCommand) => string | null;
+  readonly rejectWith?: (command: OrchestrationCommand) => Orchestrator.OrchestratorV2Error;
   /** Other threads in the environment, as the projection lists them for the watch cap. */
   readonly otherThreads?: ReadonlyArray<ProjectionStore.ProjectionThreadPullRequests>;
 }
@@ -143,6 +144,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
   const dispatch: Orchestrator.OrchestratorV2Shape["dispatch"] = (command) =>
     Effect.gen(function* () {
       if (options.disappearOnDispatch) thread = null;
+      if (options.rejectWith) return yield* options.rejectWith(command);
       const rejection = options.reject?.(command) ?? null;
       if (rejection !== null)
         return yield* new Orchestrator.OrchestratorDispatchError({
@@ -336,6 +338,69 @@ describe("pull request toolkit handlers", () => {
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.watch", number: 3, watching: true },
       ]);
+    }),
+  );
+
+  it.effect("does not count watches on closed or merged pull requests towards the cap", () =>
+    Effect.gen(function* () {
+      const watch = {
+        startedAt: "2026-08-20T00:00:00.000Z",
+        headSha: null,
+        failedChecks: [],
+        passed: false,
+        remarksThrough: "2026-08-20T00:00:00.000Z",
+        remarkIds: [],
+        conflicting: false,
+        wakes: 0,
+      };
+      const ending = (index: number) => {
+        const link = makeLink(200 + index, { headBranch: `ending-${index}`, watch });
+        return {
+          ...link,
+          snapshot: link.snapshot && {
+            ...link.snapshot,
+            state: index % 2 === 0 ? ("closed" as const) : ("merged" as const),
+          },
+        };
+      };
+      const harness = yield* makeHarness({
+        otherThreads: [
+          {
+            id: ThreadId.make("thread-settled-elsewhere"),
+            projectId: PROJECT_ID,
+            settledOverride: "settled",
+            settledAt: null,
+            pullRequests: Array.from({ length: MAX_ACTIVE_PULL_REQUEST_WATCHES }, (_, index) =>
+              ending(index),
+            ),
+          },
+        ],
+      });
+      yield* harness.call("watch_pull_request", {
+        url: "https://github.com/t3tools/t3code/pull/9",
+      });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.watch", number: 9, watching: true },
+      ]);
+    }),
+  );
+
+  it.effect("reports the orchestrator's cap refusal as the tool's limit error", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        rejectWith: (command) =>
+          new Orchestrator.OrchestratorPullRequestWatchLimitError({
+            commandId: command.commandId,
+            limit: MAX_ACTIVE_PULL_REQUEST_WATCHES,
+          }),
+      });
+      const error = yield* harness
+        .call("watch_pull_request", { url: "https://github.com/t3tools/t3code/pull/9" })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "PullRequestWatchLimitError",
+        limit: MAX_ACTIVE_PULL_REQUEST_WATCHES,
+      });
     }),
   );
 

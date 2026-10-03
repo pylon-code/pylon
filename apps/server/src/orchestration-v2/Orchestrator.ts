@@ -56,6 +56,7 @@ import {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Semaphore from "effect/Semaphore";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
@@ -64,6 +65,10 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import {
+  countActivePullRequestWatches,
+  MAX_ACTIVE_PULL_REQUEST_WATCHES,
+} from "./pullRequestWatch.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import {
   isCheckpointRestoreIsolated,
@@ -183,6 +188,26 @@ export class OrchestratorSubagentThreadReadOnlyError extends Schema.TaggedError<
   }
 }
 
+/** An agent asked to start a pull request watch while the environment is at its cap. */
+export class OrchestratorPullRequestWatchLimitError extends Schema.TaggedError<OrchestratorPullRequestWatchLimitError>()(
+  "OrchestratorPullRequestWatchLimitError",
+  { commandId: CommandId, limit: Schema.Number },
+) {
+  override get message(): string {
+    return `This environment already watches ${this.limit} pull requests, its limit for agents.`;
+  }
+}
+
+/** A pull request watch's wake reached a thread that takes no messages now (settled, archived). */
+export class OrchestratorPullRequestWatchWakeRefusedError extends Schema.TaggedError<OrchestratorPullRequestWatchWakeRefusedError>()(
+  "OrchestratorPullRequestWatchWakeRefusedError",
+  { commandId: CommandId, threadId: ThreadId },
+) {
+  override get message(): string {
+    return "The thread settled or stopped taking messages while its pull request was read.";
+  }
+}
+
 export class OrchestratorCommandPreviouslyRejectedError extends Schema.TaggedError<OrchestratorCommandPreviouslyRejectedError>()(
   "OrchestratorCommandPreviouslyRejectedError",
   {
@@ -232,6 +257,8 @@ export const OrchestratorV2Error = Schema.Union([
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorCommandIdConflictError,
   OrchestratorSubagentThreadReadOnlyError,
+  OrchestratorPullRequestWatchLimitError,
+  OrchestratorPullRequestWatchWakeRefusedError,
 ]);
 export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 
@@ -474,6 +501,23 @@ function legacyPullRequestLink(
       stack: null,
     },
     threadPullRequestsOf(thread).find((link) => threadPullRequestKeysEqual(link, key))?.watch,
+  );
+}
+
+/**
+ * An agent starting a watch: the pull requests toolkit is the only caller that links as
+ * "agent" in the same command. Watches a user starts from a client are not capped.
+ */
+function isCappedPullRequestWatchStart(
+  command: OrchestrationV2ServerCommand,
+): command is Extract<
+  OrchestrationV2ServerCommand,
+  { readonly type: "thread.pull-request.watch" }
+> {
+  return (
+    command.type === "thread.pull-request.watch" &&
+    command.watching &&
+    command.link?.source === "agent"
   );
 }
 
@@ -743,6 +787,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor;
+  // Serializes agent pull request watch starts across threads, through their commit, so the
+  // environment-wide cap is counted against committed state no other start can race.
+  const pullRequestWatchCapLock = yield* Semaphore.make(1);
 
   const mapDispatchError =
     (command: OrchestrationV2ServerCommand) =>
@@ -2250,11 +2297,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         thread.settledOverride === "settled" ||
         thread.settledAt !== null ||
         isProviderNativeSubagentThread(thread);
-      if (link?.watch?.startedAt !== command.startedAt || (command.wake && inactive)) {
+      if (link?.watch?.startedAt !== command.startedAt) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: "The pull request watch ended or its thread settled while it was read.",
+          cause: "The pull request watch ended while it was read.",
+        });
+      }
+      if (command.wake && inactive) {
+        return yield* new OrchestratorPullRequestWatchWakeRefusedError({
+          commandId: command.commandId,
+          threadId: command.threadId,
         });
       }
       yield* dispatchThreadMutation(command, events, effects);
@@ -2337,6 +2390,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandId: command.commandId,
         threadId: command.threadId,
       });
+    }
+    // Checked here, with every agent watch start serialized by `pullRequestWatchCapLock` through
+    // its commit, so two agents racing for the last slot cannot both get it.
+    if (isCappedPullRequestWatchStart(command)) {
+      const key = normalizeThreadPullRequestKey(command);
+      const alreadyWatched = threadPullRequestsOf(thread).some(
+        (link) =>
+          link.source !== "stack-dismissed" &&
+          link.watch !== undefined &&
+          threadPullRequestKeysEqual(link, key),
+      );
+      if (!alreadyWatched) {
+        const threads = yield* projectionStore
+          .getThreadsWithPullRequests()
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          );
+        if (countActivePullRequestWatches(threads) >= MAX_ACTIVE_PULL_REQUEST_WATCHES) {
+          return yield* new OrchestratorPullRequestWatchLimitError({
+            commandId: command.commandId,
+            limit: MAX_ACTIVE_PULL_REQUEST_WATCHES,
+          });
+        }
+      }
     }
     if (
       command.type === "thread.metadata.update" &&
@@ -2973,12 +3052,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     conflicting: false,
                     wakes: 0,
                   });
-          if (watch === existing.watch && links === linked) return thread;
+          // A watch that starts clears why the last one ended; one the server ends on its own
+          // records why, for clients to show.
+          const ended =
+            command.type === "thread.pull-request-watch.sync" &&
+            command.ended !== undefined &&
+            watch === undefined &&
+            existing.watch?.startedAt === command.startedAt
+              ? { endedAt: DateTime.formatIso(now), reason: command.ended }
+              : undefined;
+          const clearsEnded = watch !== undefined && existing.watchEnded !== undefined;
+          if (watch === existing.watch && links === linked && ended === undefined && !clearsEnded) {
+            return thread;
+          }
           return {
             ...thread,
-            pullRequests: links.map((link) =>
-              link === existing ? withPullRequestWatch(link, watch) : link,
-            ),
+            pullRequests: links.map((link) => {
+              if (link !== existing) return link;
+              const watched = withPullRequestWatch(link, watch);
+              if (ended !== undefined) return { ...watched, watchEnded: ended };
+              if (!clearsEnded) return watched;
+              const { watchEnded: _cleared, ...rest } = watched;
+              return rest;
+            }),
             // A user or agent starting or stopping a watch is activity; recorded progress is not.
             updatedAt: command.type === "thread.pull-request.watch" ? now : thread.updatedAt,
           };
@@ -9627,7 +9723,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   const dispatchWithReceipt = (command: OrchestrationV2ServerCommand) =>
-    threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
+    threadDispatch.withLock(
+      commandThreadId(command),
+      isCappedPullRequestWatchStart(command)
+        ? pullRequestWatchCapLock.withPermits(1)(dispatchWithReceiptEffect(command))
+        : dispatchWithReceiptEffect(command),
+    );
 
   const handleTerminalRun = (stored: OrchestrationV2StoredEvent) =>
     Effect.gen(function* () {

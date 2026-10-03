@@ -2885,6 +2885,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
     startedAt: IsoDateTime,
     /** The watch to record, or null to end it. */
     watch: Schema.NullOr(ThreadPullRequestWatch),
+    /** Why a watch ending without a wake ended, recorded on the link for clients to show. */
+    ended: Schema.optional(Schema.Literals(["wakes-refused"])),
     wake: Schema.optional(
       Schema.Struct({
         messageId: MessageId,

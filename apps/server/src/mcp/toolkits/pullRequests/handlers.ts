@@ -25,7 +25,10 @@ import * as Option from "effect/Option";
 
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
-import { MAX_ACTIVE_PULL_REQUEST_WATCHES } from "../../../orchestration-v2/pullRequestWatch.ts";
+import {
+  countActivePullRequestWatches,
+  MAX_ACTIVE_PULL_REQUEST_WATCHES,
+} from "../../../orchestration-v2/pullRequestWatch.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
@@ -234,19 +237,12 @@ const make = Effect.gen(function* () {
       return yield* new PullRequestNotOpenError({ state });
     }
     // A new watch must fit under the environment's cap; re-watching one already on is free.
+    // This answers early with the tool's own error; the orchestrator re-checks atomically.
     if (watching && before?.watch === undefined) {
       const threads = yield* projections
         .getThreadsWithPullRequests()
         .pipe(Effect.mapError((cause) => new PullRequestWatchFailedError({ cause })));
-      const active = threads.reduce(
-        (count, candidate) =>
-          count +
-          visibleThreadPullRequests(candidate.pullRequests ?? []).filter(
-            (link) => link.watch !== undefined,
-          ).length,
-        0,
-      );
-      if (active >= MAX_ACTIVE_PULL_REQUEST_WATCHES) {
+      if (countActivePullRequestWatches(threads) >= MAX_ACTIVE_PULL_REQUEST_WATCHES) {
         return yield* new PullRequestWatchLimitError({ limit: MAX_ACTIVE_PULL_REQUEST_WATCHES });
       }
     }
@@ -261,7 +257,24 @@ const make = Effect.gen(function* () {
         watching,
         ...(watching ? { link: { url: target.url, source: "agent" as const } } : {}),
       })
-      .pipe(Effect.catchCause(dispatchFailure(PullRequestWatchFailedError)));
+      .pipe(
+        Effect.catchCause(
+          (
+            cause,
+          ): Effect.Effect<
+            never,
+            | PullRequestWatchLimitError
+            | PullRequestLinkFailedError
+            | PullRequestUnlinkFailedError
+            | PullRequestWatchFailedError
+          > => {
+            const error = Option.getOrUndefined(Cause.findErrorOption(cause));
+            return error?._tag === "OrchestratorPullRequestWatchLimitError"
+              ? Effect.fail(new PullRequestWatchLimitError({ limit: error.limit }))
+              : dispatchFailure(PullRequestWatchFailedError)(cause);
+          },
+        ),
+      );
     const after = yield* requireThread(PullRequestWatchFailedError);
     return {
       host: target.host,

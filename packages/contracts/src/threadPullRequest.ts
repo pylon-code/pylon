@@ -116,6 +116,16 @@ export const ThreadPullRequestWatch = Schema.Struct({
 });
 export type ThreadPullRequestWatch = typeof ThreadPullRequestWatch.Type;
 
+/**
+ * Why the server ended a watch on its own when it could not tell the agent: `wakes-refused` is a
+ * thread that refused its wakes several passes in a row. Cleared when a watch starts again.
+ */
+export const ThreadPullRequestWatchEnd = Schema.Struct({
+  endedAt: IsoDateTime,
+  reason: Schema.Literals(["wakes-refused"]),
+});
+export type ThreadPullRequestWatchEnd = typeof ThreadPullRequestWatchEnd.Type;
+
 export const ThreadPullRequestLink = Schema.Struct({
   ...ThreadPullRequestKey.fields,
   url: TrimmedNonEmptyString,
@@ -124,5 +134,6 @@ export const ThreadPullRequestLink = Schema.Struct({
   snapshot: Schema.NullOr(ThreadPullRequestSnapshot),
   stack: Schema.NullOr(ThreadPullRequestStack),
   watch: Schema.optional(ThreadPullRequestWatch),
+  watchEnded: Schema.optional(ThreadPullRequestWatchEnd),
 });
 export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;

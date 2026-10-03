@@ -1,8 +1,10 @@
+import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import type {
   OrchestrationV2Notification,
   PullRequestCheck,
   PullRequestComment,
   PullRequestDetail,
+  ThreadPullRequestLink,
   ThreadPullRequestWatch,
 } from "@t3tools/contracts";
 
@@ -16,6 +18,26 @@ export const PULL_REQUEST_WATCH_WAKE_LIMIT = 10;
  * outside the batched list polling, so a cap keeps a busy workspace inside host rate limits.
  */
 export const MAX_ACTIVE_PULL_REQUEST_WATCHES = 10;
+
+/** Pull request sync last saw it merged or closed; such a watch is ending, not watching. */
+export const isPullRequestWatchEnding = (link: Pick<ThreadPullRequestLink, "snapshot">) =>
+  link.snapshot?.state === "merged" || link.snapshot?.state === "closed";
+
+/** Watches that count towards `MAX_ACTIVE_PULL_REQUEST_WATCHES`. */
+export function countActivePullRequestWatches(
+  threads: ReadonlyArray<{
+    readonly pullRequests?: ReadonlyArray<ThreadPullRequestLink> | undefined;
+  }>,
+): number {
+  return threads.reduce(
+    (count, thread) =>
+      count +
+      visibleThreadPullRequests(thread.pullRequests ?? []).filter(
+        (link) => link.watch !== undefined && !isPullRequestWatchEnding(link),
+      ).length,
+    0,
+  );
+}
 const LISTED_ITEMS = 10;
 const SNIPPET_LENGTH = 200;
 

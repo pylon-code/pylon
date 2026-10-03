@@ -18,6 +18,7 @@ import {
   type OrchestrationV2Run,
   ProjectId,
   type PullRequestDetail,
+  type OrchestrationV2ServerCommand,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
@@ -31,6 +32,8 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -61,6 +64,10 @@ import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryServic
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as PullRequestWatchReactor from "./PullRequestWatchReactor.ts";
+import {
+  countActivePullRequestWatches,
+  MAX_ACTIVE_PULL_REQUEST_WATCHES,
+} from "./pullRequestWatch.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import type { ProviderAdapterV2SessionRuntime, ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
@@ -2616,10 +2623,34 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           },
         })
         .pipe(Effect.flip);
-      assert.equal(refused._tag, "OrchestratorDispatchError");
+      assert.equal(refused._tag, "OrchestratorPullRequestWatchWakeRefusedError");
       assert.deepEqual(
         (yield* orchestrator.getThreadRecords(settledThreadId, ["messages"])).messages,
         [],
+      );
+
+      // Closed on the host while settled (auto-settle follows a close): pull request sync's
+      // closed state ends the watch without a read, so it does not hold a watch slot forever.
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request-link.sync",
+        commandId: CommandId.make("pr-watch-settled-closed-sync"),
+        threadId: settledThreadId,
+        ...key,
+        snapshot: {
+          state: "closed",
+          title: "Closed pull request",
+          headBranch: "feature",
+          baseBranch: "main",
+          isDraft: false,
+          updatedAt: "2026-10-02T12:00:00.000Z",
+          syncedAt: "2026-10-02T12:00:00.000Z",
+        },
+        stack: null,
+      });
+      yield* reactor.sweep;
+      assert.equal(hostReads, 0);
+      assert.isUndefined(
+        (yield* orchestrator.getThreadShell(settledThreadId))?.pullRequests?.[0]?.watch,
       );
     }),
   );
@@ -2754,51 +2785,200 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           mergeCapabilities: { merge: true, squash: true, rebase: true },
           viewer: "agent-user",
         };
-        let refusedWakes = 0;
-        const refusing = yield* PullRequestWatchReactor.make.pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              NodeServices.layer,
-              Layer.succeed(Orchestrator.OrchestratorV2, {
-                ...orchestrator,
-                dispatch: (command) =>
-                  command.type === "thread.pull-request-watch.sync" && command.wake !== undefined
-                    ? Effect.suspend(() => {
-                        refusedWakes += 1;
-                        return Effect.fail(
-                          new Orchestrator.OrchestratorDispatchError({
-                            commandId: command.commandId,
-                            commandType: command.type,
-                            cause: "refused",
-                          }),
-                        );
-                      })
-                    : orchestrator.dispatch(command),
-              }),
-              Layer.mock(PullRequestService.PullRequestService)({
-                rateLimitedUntil: () => Effect.succeed(null),
-                freshDetail: () => Effect.succeed(conflicting),
-                activity: () =>
-                  Effect.succeed({
-                    comments: [],
-                    commentCount: 0,
-                    commentsTruncated: false,
-                    reviewThreads: [],
-                    commits: [],
-                  }),
-              }),
+        // A wake turned away for an infrastructure error counts like a failed read; one the
+        // orchestrator refuses because the thread takes no messages counts towards its own limit,
+        // and ending for that reason is recorded on the link for clients to show.
+        let wakeAttempts = 0;
+        const reactorFailingWakes = (
+          failure: (
+            command: OrchestrationV2ServerCommand,
+          ) =>
+            | Orchestrator.OrchestratorDispatchError
+            | Orchestrator.OrchestratorPullRequestWatchWakeRefusedError,
+        ) =>
+          PullRequestWatchReactor.make.pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                NodeServices.layer,
+                Layer.succeed(Orchestrator.OrchestratorV2, {
+                  ...orchestrator,
+                  dispatch: (command) =>
+                    command.type === "thread.pull-request-watch.sync" && command.wake !== undefined
+                      ? Effect.suspend(() => {
+                          wakeAttempts += 1;
+                          return Effect.fail(failure(command));
+                        })
+                      : orchestrator.dispatch(command),
+                }),
+                Layer.mock(PullRequestService.PullRequestService)({
+                  rateLimitedUntil: () => Effect.succeed(null),
+                  freshDetail: () => Effect.succeed(conflicting),
+                  activity: () =>
+                    Effect.succeed({
+                      comments: [],
+                      commentCount: 0,
+                      commentsTruncated: false,
+                      reviewThreads: [],
+                      commits: [],
+                    }),
+                }),
+              ),
             ),
-          ),
+          );
+        const infrastructure = yield* reactorFailingWakes(
+          (command) =>
+            new Orchestrator.OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "database is locked",
+            }),
+        );
+        for (let pass = 0; pass < 10; pass += 1) yield* infrastructure.sweep;
+        assert.equal(wakeAttempts, 10);
+        assert.isDefined(yield* watchOf);
+
+        wakeAttempts = 0;
+        const refusing = yield* reactorFailingWakes(
+          (command) =>
+            new Orchestrator.OrchestratorPullRequestWatchWakeRefusedError({
+              commandId: command.commandId,
+              threadId,
+            }),
         );
         for (let pass = 0; pass < 4; pass += 1) yield* refusing.sweep;
         assert.isDefined(yield* watchOf);
         yield* refusing.sweep;
-        assert.equal(refusedWakes, 5);
+        assert.equal(wakeAttempts, 5);
         assert.isUndefined(yield* watchOf);
+        assert.equal(
+          (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.watchEnded?.reason,
+          "wakes-refused",
+        );
         yield* refusing.sweep;
-        assert.equal(refusedWakes, 5);
+        assert.equal(wakeAttempts, 5);
         assert.equal(yield* messageCount, 0);
+
+        // Watching again clears the recorded end.
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request.watch",
+          commandId: CommandId.make("pr-watch-limits-restart"),
+          threadId,
+          ...key,
+          watching: true,
+        });
+        const restarted = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0];
+        assert.isDefined(restarted?.watch);
+        assert.isUndefined(restarted?.watchEnded);
       }),
+  );
+
+  it.effect("caps agent watch starts atomically, not counting ending watches", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projectId = ProjectId.make("pr-watch-cap-project");
+      const threadId = ThreadId.make("runtime-pull-request-watch-cap");
+      const racers = Array.from({ length: 6 }, (_, index) =>
+        ThreadId.make(`runtime-pull-request-watch-cap-racer-${index}`),
+      );
+      for (const id of [threadId, ...racers]) {
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${id}-create`),
+          threadId: id,
+          projectId,
+          title: "Watch cap",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+      }
+      const repository = "pingdotgg/watch-cap";
+      const agentWatch = (number: number, onThread: ThreadId = threadId) =>
+        orchestrator.dispatch({
+          type: "thread.pull-request.watch",
+          commandId: CommandId.make(`pr-watch-cap-${number}`),
+          threadId: onThread,
+          host: "github.com",
+          repository,
+          number,
+          watching: true,
+          link: { url: `https://github.com/${repository}/pull/${number}`, source: "agent" },
+        });
+      const activeWatches = Effect.map(
+        orchestrator.getThreadShell(threadId),
+        (thread) => (thread?.pullRequests ?? []).filter((link) => link.watch !== undefined).length,
+      );
+      // Other tests' watches share this environment, so fill up to the cap from wherever it is.
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const before = countActivePullRequestWatches(yield* projections.getThreadsWithPullRequests());
+      const free = MAX_ACTIVE_PULL_REQUEST_WATCHES - before;
+      for (let number = 1; number < free; number += 1) yield* agentWatch(number);
+
+      // Agents on different threads race for the last slot: exactly one gets it.
+      const raced = yield* Effect.all(
+        racers.map((racer, index) => Effect.exit(agentWatch(500 + index, racer))),
+        {
+          concurrency: "unbounded",
+        },
+      );
+      assert.equal(raced.filter(Exit.isSuccess).length, 1);
+      const rejected = raced.find(Exit.isFailure);
+      assert.equal(raced.filter(Exit.isFailure).length, racers.length - 1);
+      assert.isDefined(rejected);
+      if (rejected === undefined || Exit.isSuccess(rejected)) return;
+      assert.equal(
+        Option.getOrUndefined(Cause.findErrorOption(rejected.cause))?._tag,
+        "OrchestratorPullRequestWatchLimitError",
+      );
+      const otherWatches = Effect.map(
+        Effect.forEach(racers, (racer) => orchestrator.getThreadShell(racer)),
+        (threads) =>
+          threads.reduce(
+            (count, thread) =>
+              count +
+              (thread?.pullRequests ?? []).filter((link) => link.watch !== undefined).length,
+            0,
+          ),
+      );
+      assert.equal((yield* activeWatches) + (yield* otherWatches), free);
+
+      // A watch whose pull request sync saw it closed is ending and frees its slot.
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request-link.sync",
+        commandId: CommandId.make("pr-watch-cap-closed"),
+        threadId,
+        host: "github.com",
+        repository,
+        number: 1,
+        snapshot: {
+          state: "closed",
+          title: "Closed",
+          headBranch: "closed",
+          baseBranch: "main",
+          isDraft: false,
+          updatedAt: "2026-10-02T12:00:00.000Z",
+          syncedAt: "2026-10-02T12:00:00.000Z",
+        },
+        stack: null,
+      });
+      yield* agentWatch(600);
+      // A user starting one from a client is not capped.
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request.watch",
+        commandId: CommandId.make("pr-watch-cap-user"),
+        threadId,
+        host: "github.com",
+        repository,
+        number: 601,
+        watching: true,
+        link: { url: `https://github.com/${repository}/pull/601`, source: "manual" },
+      });
+      assert.equal((yield* activeWatches) + (yield* otherWatches), free + 2);
+    }),
   );
 
   it.effect("persists rejected command receipts across retries", () =>

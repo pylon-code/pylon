@@ -141,6 +141,19 @@ function LinkRow({
                       conflicts
                     </TooltipPopup>
                   </Tooltip>
+                ) : link.watchEnded?.reason === "wakes-refused" ? (
+                  <Tooltip>
+                    <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
+                      <EyeOffIcon
+                        role="img"
+                        aria-label="Stopped watching"
+                        className="size-3.5 text-muted-foreground"
+                      />
+                    </TooltipTrigger>
+                    <TooltipPopup>
+                      Stopped watching: the thread could not take the agent's wake-ups
+                    </TooltipPopup>
+                  </Tooltip>
                 ) : null}
                 {snapshot?.checksState ? <ChecksGlyph state={snapshot.checksState} /> : null}
                 {snapshot?.reviewDecision ? (
