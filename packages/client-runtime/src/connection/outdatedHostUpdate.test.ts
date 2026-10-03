@@ -11,6 +11,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
@@ -18,7 +19,7 @@ import * as Socket from "effect/unstable/socket/Socket";
 
 import type { ConnectionCatalogEntry } from "./catalog.ts";
 import { orchestrationProtocolCompatibilityError } from "./compatibility.ts";
-import { PrimaryConnectionTarget } from "./model.ts";
+import { type NetworkStatus, PrimaryConnectionTarget } from "./model.ts";
 import {
   type OutdatedHostUpdatePlan,
   outdatedHostUpdateConfirmation,
@@ -117,6 +118,37 @@ class OutdatedHostSocket {
   }
 }
 
+type RegistryService = EnvironmentRegistry.EnvironmentRegistry["Service"];
+
+/**
+ * A full registry whose unused methods die, so a test only supplies the
+ * entries and the calls the update is expected to make.
+ */
+const makeTestRegistry = Effect.fn("makeTestRegistry")(function* (
+  entries: ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>,
+  overrides: Partial<Pick<RegistryService, "setCompatibility" | "setEnabled">> = {},
+) {
+  const unused = (method: string) => Effect.die(new Error(`Unexpected registry.${method}.`));
+  return EnvironmentRegistry.EnvironmentRegistry.of({
+    entries: yield* SubscriptionRef.make(entries),
+    networkStatus: yield* SubscriptionRef.make<NetworkStatus>("online"),
+    start: unused("start"),
+    register: () => unused("register"),
+    registerPlatform: () => unused("registerPlatform"),
+    reconcilePlatform: () => unused("reconcilePlatform"),
+    remove: () => unused("remove"),
+    removeRelayEnvironments: () => unused("removeRelayEnvironments"),
+    retryNow: () => unused("retryNow"),
+    setEnabled: overrides.setEnabled ?? (() => unused("setEnabled")),
+    setCompatibility: overrides.setCompatibility ?? (() => unused("setCompatibility")),
+    state: () => unused("state"),
+    stateChanges: () => Stream.die(new Error("Unexpected registry.stateChanges.")),
+    run: () => unused("run"),
+    runStream: () => Stream.die(new Error("Unexpected registry.runStream.")),
+    followStream: () => Stream.die(new Error("Unexpected registry.followStream.")),
+  });
+});
+
 describe("updateOutdatedHost", () => {
   it.effect("updates a protocol-1 host over a bare socket, then switches it back on", () =>
     Effect.gen(function* () {
@@ -125,9 +157,8 @@ describe("updateOutdatedHost", () => {
 
       const sockets: Array<OutdatedHostSocket> = [];
       let served: ExecutionEnvironmentDescriptor = descriptor(undefined, "0.0.45");
-      const entries = yield* SubscriptionRef.make<
-        ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
-      >(
+      const calls: Array<string> = [];
+      const registry = yield* makeTestRegistry(
         new Map([
           [
             TARGET.environmentId,
@@ -140,15 +171,17 @@ describe("updateOutdatedHost", () => {
             },
           ],
         ]),
+        {
+          setCompatibility: (_environmentId, error) =>
+            Effect.sync(() => {
+              calls.push(`compatibility:${error === null ? "clear" : "block"}`);
+            }),
+          setEnabled: (_environmentId, enabled) =>
+            Effect.sync(() => {
+              calls.push(`enabled:${enabled}`);
+            }),
+        },
       );
-      const calls: Array<string> = [];
-      const registry = EnvironmentRegistry.EnvironmentRegistry.of({
-        entries,
-        setCompatibility: (_environmentId: EnvironmentId, error: unknown) =>
-          Effect.sync(() => calls.push(`compatibility:${error === null ? "clear" : "block"}`)),
-        setEnabled: (_environmentId: EnvironmentId, enabled: boolean) =>
-          Effect.sync(() => calls.push(`enabled:${enabled}`)),
-      } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]);
       const resolver = ConnectionResolver.ConnectionResolver.of({
         prepare: () => Effect.die(new Error("The update must bypass the protocol gate.")),
         prepareForUpdate: () =>
@@ -244,18 +277,14 @@ describe("updateOutdatedHost", () => {
           Layer.mergeAll(
             Layer.succeed(
               EnvironmentRegistry.EnvironmentRegistry,
-              EnvironmentRegistry.EnvironmentRegistry.of({
-                entries: yield* SubscriptionRef.make<
-                  ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
-                >(
-                  new Map([
-                    [
-                      TARGET.environmentId,
-                      { target: TARGET, profile: Option.none(), enabled: false },
-                    ],
-                  ]),
-                ),
-              } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]),
+              yield* makeTestRegistry(
+                new Map([
+                  [
+                    TARGET.environmentId,
+                    { target: TARGET, profile: Option.none(), enabled: false },
+                  ],
+                ]),
+              ),
             ),
             Layer.succeed(
               ConnectionResolver.ConnectionResolver,
@@ -329,20 +358,24 @@ describe("updateOutdatedHost", () => {
           Layer.mergeAll(
             Layer.succeed(
               EnvironmentRegistry.EnvironmentRegistry,
-              EnvironmentRegistry.EnvironmentRegistry.of({
-                entries: yield* SubscriptionRef.make<
-                  ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
-                >(
-                  new Map([
-                    [
-                      TARGET.environmentId,
-                      { target: TARGET, profile: Option.none(), enabled: false },
-                    ],
-                  ]),
-                ),
-                setCompatibility: () => Effect.sync(() => registryCalls.push("compatibility")),
-                setEnabled: () => Effect.sync(() => registryCalls.push("enabled")),
-              } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]),
+              yield* makeTestRegistry(
+                new Map([
+                  [
+                    TARGET.environmentId,
+                    { target: TARGET, profile: Option.none(), enabled: false },
+                  ],
+                ]),
+                {
+                  setCompatibility: () =>
+                    Effect.sync(() => {
+                      registryCalls.push("compatibility");
+                    }),
+                  setEnabled: () =>
+                    Effect.sync(() => {
+                      registryCalls.push("enabled");
+                    }),
+                },
+              ),
             ),
             Layer.succeed(
               ConnectionResolver.ConnectionResolver,
