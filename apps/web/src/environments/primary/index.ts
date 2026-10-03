@@ -23,7 +23,7 @@ export {
   __resetServerAuthBootstrapForTests,
 } from "./auth";
 
-export { usePrimarySessionState } from "./sessionState";
+export { primarySessionStateAtom, usePrimarySessionState } from "./sessionState";
 
 export {
   DesktopEnvironmentBootstrapIncompleteError,

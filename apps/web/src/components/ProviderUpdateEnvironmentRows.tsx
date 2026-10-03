@@ -1,6 +1,8 @@
 import { CheckIcon } from "lucide-react";
 import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 import type { EnvironmentId, ServerProvider } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/unstable/reactivity";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -22,6 +24,7 @@ import {
   type LocalProviderUpdateOutcome,
   type ProviderUpdateRowStatus,
   type ProviderUpdateRowStatusKind,
+  type ProviderUpdateRun,
   type ProviderUpdateToastView,
 } from "./ProviderUpdateLaunchNotification.logic";
 import { Button } from "./ui/button";
@@ -106,7 +109,7 @@ function rowToneClass(kind: ProviderUpdateRowStatusKind): string {
   }
 }
 
-function EnvironmentUpdateRow({
+export function EnvironmentUpdateRow({
   group,
   status,
   onUpdate,
@@ -151,18 +154,35 @@ function EnvironmentUpdateRow({
   );
 }
 
+export interface EnvironmentUpdateRowView {
+  readonly group: LocalEnvironmentUpdateGroup;
+  readonly status: ProviderUpdateRowStatus;
+}
+
 /**
- * The launch popover's body when WSL is present: one row per local environment
- * (Windows + WSL), each with its own "update all" trigger that targets only
- * that environment's backend.
+ * Per-environment provider update dispatch with row feedback. Each call to
+ * `updateEnvironment` updates every one-click candidate of one environment on
+ * that environment's own backend, guarded against re-entry and fenced by a
+ * request version so a superseded attempt never clobbers a newer one. It
+ * resolves with one run per dispatched provider, or null when nothing was sent
+ * (no candidates, or that environment's update is already in flight).
+ *
+ * Shared by the launch popover (local environments) and Settings → Providers
+ * "Update all connected environments".
  */
-export function ProviderUpdateEnvironmentRows({
-  onInteract,
-}: {
-  /** Called the first time the user triggers an update, so the host can stop refreshing the prompt. */
-  readonly onInteract?: () => void;
-}) {
-  const { groups } = useLocalEnvironmentUpdateGroups();
+export function useEnvironmentProviderUpdates(
+  groups: ReadonlyArray<LocalEnvironmentUpdateGroup>,
+  options?: {
+    /** Called the first time the user triggers an update, so the host can stop refreshing the prompt. */
+    readonly onInteract?: (() => void) | undefined;
+  },
+): {
+  readonly rows: ReadonlyArray<EnvironmentUpdateRowView>;
+  readonly updateEnvironment: (
+    environmentId: EnvironmentId,
+  ) => Promise<ReadonlyArray<ProviderUpdateRun> | null>;
+} {
+  const onInteract = options?.onInteract;
   const updateProvider = useAtomCommand(serverEnvironment.updateProvider, {
     reportFailure: false,
   });
@@ -210,13 +230,13 @@ export function ProviderUpdateEnvironmentRows({
   }, []);
 
   const handleUpdate = useCallback(
-    async (environmentId: EnvironmentId) => {
+    async (environmentId: EnvironmentId): Promise<ReadonlyArray<ProviderUpdateRun> | null> => {
       const group = groupByEnvironment.get(environmentId);
       if (!group || group.candidates.length === 0) {
-        return;
+        return null;
       }
       if (inFlightEnvironmentsRef.current.has(environmentId)) {
-        return;
+        return null;
       }
       inFlightEnvironmentsRef.current.add(environmentId);
       const requestVersion = (requestVersionRef.current.get(environmentId) ?? 0) + 1;
@@ -264,34 +284,49 @@ export function ProviderUpdateEnvironmentRows({
           new Map(previous).set(environmentId, "Update timed out — try again."),
         );
       }, PENDING_EXPIRY_MS);
+      const runs: ProviderUpdateRun[] = [];
       try {
         // Dispatch each candidate's update to this environment's own backend and
         // normalize every settled outcome into the multi-backend reducer shape.
         const results = await Promise.all(
-          targets.map(async (target): Promise<PromiseSettledResult<LocalProviderUpdateOutcome>> => {
-            try {
-              const result = await updateProvider({
-                environmentId,
-                input: { provider: target.driver, instanceId: target.instanceId },
-              });
-              return toProviderUpdateOutcome({
-                environmentId,
-                isPrimary: group.isPrimary,
-                target,
-                result,
-              });
-            } catch (error) {
-              return {
-                status: "rejected",
-                reason: error instanceof Error ? error : new Error("Provider update failed."),
-              };
-            }
-          }),
+          targets.map(
+            async (target, index): Promise<PromiseSettledResult<LocalProviderUpdateOutcome>> => {
+              try {
+                const result = await updateProvider({
+                  environmentId,
+                  input: { provider: target.driver, instanceId: target.instanceId },
+                });
+                runs[index] = {
+                  machineLabel: group.label,
+                  driver: target.driver,
+                  instanceId: target.instanceId,
+                  result,
+                };
+                return toProviderUpdateOutcome({
+                  environmentId,
+                  isPrimary: group.isPrimary,
+                  target,
+                  result,
+                });
+              } catch (error) {
+                runs[index] = {
+                  machineLabel: group.label,
+                  driver: target.driver,
+                  instanceId: target.instanceId,
+                  result: AsyncResult.failure(Cause.die(error)),
+                };
+                return {
+                  status: "rejected",
+                  reason: error instanceof Error ? error : new Error("Provider update failed."),
+                };
+              }
+            },
+          ),
         );
         if (!isCurrentRequest()) {
           // A newer attempt superseded this one while it was in flight; leave
           // the newer attempt's state intact.
-          return;
+          return runs;
         }
         // The request resolved (not a transport hang), so clear any stale
         // timeout error the expiry may have set -- otherwise a late success
@@ -311,14 +346,14 @@ export function ProviderUpdateEnvironmentRows({
               "This environment isn’t connected — try again once it reconnects.",
             ),
           );
-          return;
+          return runs;
         }
         const rejectedMessage = firstRejectedProviderUpdateMessage(results);
         if (rejectedMessage) {
           setErrorByEnvironment((previous) =>
             new Map(previous).set(environmentId, rejectedMessage),
           );
-          return;
+          return runs;
         }
         const view = getProviderUpdateProgressToastView({
           providers: collectProviderUpdateOutcomeSnapshots(results),
@@ -336,6 +371,7 @@ export function ProviderUpdateEnvironmentRows({
         if (isTerminalProviderUpdatePhase(view.phase)) {
           setResultByEnvironment((previous) => new Map(previous).set(environmentId, view));
         }
+        return runs;
       } catch (error) {
         if (isCurrentRequest()) {
           setErrorByEnvironment((previous) =>
@@ -345,6 +381,7 @@ export function ProviderUpdateEnvironmentRows({
             ),
           );
         }
+        return runs;
       } finally {
         clearTimeout(expiry);
         // Only the current attempt owns the shared spinner and in-flight guard;
@@ -378,6 +415,23 @@ export function ProviderUpdateEnvironmentRows({
     }))
     .filter(({ group, status }) => group.candidates.length > 0 || status.kind !== "idle");
 
+  return { rows, updateEnvironment: handleUpdate };
+}
+
+/**
+ * The launch popover's body when WSL is present: one row per local environment
+ * (Windows + WSL), each with its own "update all" trigger that targets only
+ * that environment's backend.
+ */
+export function ProviderUpdateEnvironmentRows({
+  onInteract,
+}: {
+  /** Called the first time the user triggers an update, so the host can stop refreshing the prompt. */
+  readonly onInteract?: () => void;
+}) {
+  const { groups } = useLocalEnvironmentUpdateGroups();
+  const { rows, updateEnvironment } = useEnvironmentProviderUpdates(groups, { onInteract });
+
   if (rows.length === 0) {
     return null;
   }
@@ -389,7 +443,7 @@ export function ProviderUpdateEnvironmentRows({
           key={group.environmentId}
           group={group}
           status={status}
-          onUpdate={() => handleUpdate(group.environmentId)}
+          onUpdate={() => void updateEnvironment(group.environmentId)}
         />
       ))}
     </div>

@@ -7,10 +7,14 @@ import {
   type ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
+import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import {
+  isAtomCommandInterrupted,
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+
+import type { ProviderOperateAccess } from "./settings/ProviderSettingsPanel.logic";
 
 export type ProviderUpdateCandidate = ServerProvider & {
   readonly versionAdvisory: NonNullable<ServerProvider["versionAdvisory"]> & {
@@ -324,6 +328,106 @@ export function getProviderUpdateProgressToastView(input: {
   }
 
   return getProviderUpdateRunningToastView(input.providerCount);
+}
+
+/**
+ * One provider update dispatched by "Update all connected environments",
+ * paired with the command result for its targeted instance.
+ */
+export interface ProviderUpdateRun {
+  readonly machineLabel: string;
+  readonly driver: ProviderDriverKind;
+  readonly instanceId: ProviderInstanceId;
+  readonly result: AtomCommandResult<
+    { readonly providers: ReadonlyArray<ServerProvider> },
+    unknown
+  >;
+}
+
+type ProviderUpdateRunOutcome =
+  | { readonly kind: "succeeded" }
+  | { readonly kind: "failed"; readonly message: string }
+  | { readonly kind: "unfinished"; readonly message: string };
+
+function classifyProviderUpdateRun(run: ProviderUpdateRun): ProviderUpdateRunOutcome {
+  if (run.result._tag === "Failure") {
+    if (isAtomCommandInterrupted(run.result)) {
+      // The request was cut off (reconnect, superseded dispatch), so the
+      // client never learned the outcome. The server may still be running it.
+      return {
+        kind: "unfinished",
+        message: "The request was interrupted. Check the provider's status or retry.",
+      };
+    }
+    const error = squashAtomCommandFailure(run.result);
+    return {
+      kind: "failed",
+      message: error instanceof Error ? error.message : "Provider update failed.",
+    };
+  }
+  const updateState = run.result.value.providers.find(
+    (provider) => provider.instanceId === run.instanceId,
+  )?.updateState;
+  switch (updateState?.status) {
+    case "succeeded":
+      return { kind: "succeeded" };
+    case "failed":
+    case "unchanged":
+      return { kind: "failed", message: updateState.message ?? "Provider update failed." };
+    default:
+      // No terminal snapshot for the targeted instance: the result cannot
+      // confirm what happened, so it must not be counted as a success.
+      return {
+        kind: "unfinished",
+        message: "The update did not report a result. Check the provider's status.",
+      };
+  }
+}
+
+/**
+ * Summarize an "Update all connected environments" run as one toast. Every
+ * update that did not succeed gets its own machine-labelled line, so a failure
+ * or an interrupted request on one machine is never hidden by successes on the
+ * others. Interrupted requests are reported rather than dropped, because their
+ * outcome is unknown. Returns null only when nothing was dispatched.
+ */
+export function getProviderUpdateRunToastView(
+  runs: ReadonlyArray<ProviderUpdateRun>,
+): Pick<ProviderUpdateToastView, "type" | "title" | "description"> | null {
+  if (runs.length === 0) {
+    return null;
+  }
+  let failedCount = 0;
+  const problemLines: string[] = [];
+  for (const run of runs) {
+    const outcome = classifyProviderUpdateRun(run);
+    if (outcome.kind === "succeeded") {
+      continue;
+    }
+    if (outcome.kind === "failed") {
+      failedCount += 1;
+    }
+    const label = `${run.machineLabel} · ${PROVIDER_DISPLAY_NAMES[run.driver] ?? run.driver}`;
+    problemLines.push(`${label}: ${outcome.message}`);
+  }
+  if (problemLines.length === 0) {
+    return {
+      type: "success",
+      title: runs.length === 1 ? "Provider updated" : `${runs.length} providers updated`,
+      description: getProviderUpdatedDescription(runs.length),
+    };
+  }
+  const verb = failedCount === problemLines.length ? "failed" : "did not finish";
+  return {
+    type: failedCount > 0 ? "error" : "warning",
+    title:
+      problemLines.length < runs.length
+        ? `${problemLines.length} of ${runs.length} provider updates ${verb}`
+        : runs.length === 1
+          ? `Provider update ${verb}`
+          : `Provider updates ${verb}`,
+    description: problemLines.join("\n"),
+  };
 }
 
 export function collectUpdatedProviderSnapshots(input: {
@@ -779,4 +883,173 @@ export function resolveEnvironmentUpdateRowStatus(input: {
     return { kind: "loading", text: "Updating…" };
   }
   return { kind: "idle", text: environmentProviderNames(input.group) };
+}
+
+// ===========================================================================
+// Update all connected environments
+//
+// Settings → Providers can update every connected environment in one action
+// (local, WSL, SSH, relay/tunnel). The plan is reviewed before dispatch, so it
+// lists what will be updated and why anything is left out. Each environment's
+// backend still owns deduplication, installer serialization, and authorization;
+// this only chooses which environment-addressed commands to send.
+// ===========================================================================
+
+const PRIME_AGENT_DRIVER = "primeAgent";
+
+/**
+ * Prime Agent builds are maintained by Prime maintenance (managed builds,
+ * channels, rollback), not by the generic provider update command, so the
+ * bulk action never dispatches one even if a server reports it as updatable.
+ */
+function isPrimeAgentProvider(provider: Pick<ServerProvider, "driver">): boolean {
+  return provider.driver === PRIME_AGENT_DRIVER;
+}
+
+export interface ConnectedEnvironmentProvidersInput {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly isPrimary: boolean;
+  readonly connectionPhase: EnvironmentConnectionPhase;
+  /** Null when the environment has not reported its configuration yet. */
+  readonly providers: ReadonlyArray<ServerProvider> | null;
+  /** Whether this session may operate the environment (see ProviderSettingsPanel.logic). */
+  readonly operateAccess: ProviderOperateAccess;
+}
+
+export type ConnectedEnvironmentUpdateSkipReason =
+  | "not-connected"
+  | "loading"
+  | "checking-access"
+  | "read-only";
+
+export interface ConnectedEnvironmentUpdateSkip {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly reason: ConnectedEnvironmentUpdateSkipReason;
+}
+
+export interface ConnectedEnvironmentManualUpdate {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  /** Outdated providers that need a manual update (or Prime maintenance). */
+  readonly providers: ReadonlyArray<ProviderUpdateCandidate>;
+}
+
+export interface ConnectedEnvironmentUpdatePlan {
+  /**
+   * Every connected, operable environment, including those with nothing to
+   * update, so an environment keeps its row while its update runs (queued
+   * providers stop being candidates).
+   */
+  readonly groups: ReadonlyArray<LocalEnvironmentUpdateGroup>;
+  /** Groups that have at least one one-click update, in display order. */
+  readonly targets: ReadonlyArray<LocalEnvironmentUpdateGroup>;
+  readonly skipped: ReadonlyArray<ConnectedEnvironmentUpdateSkip>;
+  readonly manual: ReadonlyArray<ConnectedEnvironmentManualUpdate>;
+  /** Total provider updates the action would dispatch. */
+  readonly providerCount: number;
+}
+
+/**
+ * Decide what "Update all connected environments" would do. Only connected
+ * environments whose session may operate them are targeted; read-only,
+ * still-checking, and disconnected environments are reported as skipped, and
+ * providers without a one-click update (manual-only, differing commands
+ * across instances, Prime Agent) are reported for manual follow-up.
+ */
+export function buildConnectedEnvironmentUpdatePlan(
+  environments: ReadonlyArray<ConnectedEnvironmentProvidersInput>,
+): ConnectedEnvironmentUpdatePlan {
+  const groups: LocalEnvironmentUpdateGroup[] = [];
+  const skipped: ConnectedEnvironmentUpdateSkip[] = [];
+  const manual: ConnectedEnvironmentManualUpdate[] = [];
+
+  for (const environment of environments) {
+    const skip = (reason: ConnectedEnvironmentUpdateSkipReason) =>
+      skipped.push({
+        environmentId: environment.environmentId,
+        label: environment.label,
+        reason,
+      });
+    if (environment.connectionPhase !== "connected") {
+      skip("not-connected");
+      continue;
+    }
+    if (environment.providers === null) {
+      skip("loading");
+      continue;
+    }
+    const providers = environment.providers;
+    const outdated = collectProviderUpdateCandidates(providers);
+    if (outdated.length === 0) {
+      groups.push({
+        environmentId: environment.environmentId,
+        label: environment.label,
+        isPrimary: environment.isPrimary,
+        isSettling: false,
+        candidates: [],
+        providers,
+      });
+      continue;
+    }
+    if (environment.operateAccess === "pending") {
+      skip("checking-access");
+      continue;
+    }
+    if (environment.operateAccess === "denied") {
+      skip("read-only");
+      continue;
+    }
+    const candidates = outdated.filter(
+      (candidate) =>
+        !isPrimeAgentProvider(candidate) &&
+        canOneClickUpdateProviderCandidate(candidate, providers),
+    );
+    const manualProviders = outdated.filter(
+      (candidate) =>
+        !isProviderUpdateActive(candidate) &&
+        (isPrimeAgentProvider(candidate) ||
+          !hasOneClickUpdateProviderCandidate(candidate, providers)),
+    );
+    if (manualProviders.length > 0) {
+      manual.push({
+        environmentId: environment.environmentId,
+        label: environment.label,
+        providers: manualProviders,
+      });
+    }
+    groups.push({
+      environmentId: environment.environmentId,
+      label: environment.label,
+      isPrimary: environment.isPrimary,
+      isSettling: false,
+      candidates,
+      providers,
+    });
+  }
+
+  const targets = environmentGroupsWithUpdates(groups);
+  return {
+    groups,
+    targets,
+    skipped,
+    manual,
+    providerCount: targets.reduce((count, group) => count + group.candidates.length, 0),
+  };
+}
+
+export function describeConnectedEnvironmentUpdateSkip(
+  reason: ConnectedEnvironmentUpdateSkipReason,
+): string {
+  switch (reason) {
+    case "not-connected":
+      return "Not connected";
+    case "loading":
+      return "Waiting for provider status";
+    case "checking-access":
+      return "Checking permissions";
+    case "read-only":
+      return "This session can't change providers here";
+  }
 }
