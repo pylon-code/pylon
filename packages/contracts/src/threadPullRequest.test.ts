@@ -54,3 +54,22 @@ it.effect("decodes thread pull request links with snapshot and stack", () =>
     assert.strictEqual(links[1]?.snapshot?.state, "open");
   }),
 );
+
+it.effect("decodes a watch end with a reason this client does not know", () =>
+  Effect.gen(function* () {
+    const [link] = yield* decodeLinks([
+      {
+        host: "github.com",
+        repository: "pingdotgg/t3code",
+        number: 44,
+        url: "https://github.com/pingdotgg/t3code/pull/44",
+        source: "agent",
+        linkedAt: "2026-01-01T00:00:00.000Z",
+        snapshot: null,
+        stack: null,
+        watchEnded: { endedAt: "2026-01-02T00:00:00.000Z", reason: "some-future-reason" },
+      },
+    ]);
+    assert.strictEqual(link?.watchEnded?.reason, "some-future-reason");
+  }),
+);

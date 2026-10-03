@@ -117,12 +117,14 @@ export const ThreadPullRequestWatch = Schema.Struct({
 export type ThreadPullRequestWatch = typeof ThreadPullRequestWatch.Type;
 
 /**
- * Why the server ended a watch on its own when it could not tell the agent: `wakes-refused` is a
- * thread that refused its wakes several passes in a row. Cleared when a watch starts again.
+ * Why the server ended a watch on its own when it could not tell the agent. Cleared when a watch
+ * starts again. Known reasons: `wakes-refused`, a thread that refused its wakes several passes in
+ * a row. Typed as a string so a reason a newer server adds still decodes; clients show the ones
+ * they know and treat the rest generically.
  */
 export const ThreadPullRequestWatchEnd = Schema.Struct({
   endedAt: IsoDateTime,
-  reason: Schema.Literals(["wakes-refused"]),
+  reason: TrimmedNonEmptyString,
 });
 export type ThreadPullRequestWatchEnd = typeof ThreadPullRequestWatchEnd.Type;
 

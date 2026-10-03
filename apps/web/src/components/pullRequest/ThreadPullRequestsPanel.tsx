@@ -141,7 +141,7 @@ function LinkRow({
                       conflicts
                     </TooltipPopup>
                   </Tooltip>
-                ) : link.watchEnded?.reason === "wakes-refused" ? (
+                ) : link.watchEnded !== undefined ? (
                   <Tooltip>
                     <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
                       <EyeOffIcon
@@ -151,7 +151,9 @@ function LinkRow({
                       />
                     </TooltipTrigger>
                     <TooltipPopup>
-                      Stopped watching: the thread could not take the agent's wake-ups
+                      {link.watchEnded.reason === "wakes-refused"
+                        ? "Stopped watching: the thread could not take the agent's wake-ups"
+                        : "Stopped watching"}
                     </TooltipPopup>
                   </Tooltip>
                 ) : null}
