@@ -5,6 +5,7 @@ import { consumeLastAgentNotificationResponse } from "./notificationResponseCons
 
 import {
   extractAgentNotificationDeepLink,
+  threadDeepLinkOnScreen,
   routeAgentNotificationResponseOnce,
 } from "./notificationPayload";
 
@@ -175,5 +176,19 @@ describe("routeAgentNotificationResponseOnce", () => {
     });
 
     expect(navigations).toEqual(["/threads/env/thread"]);
+  });
+});
+
+describe("threadDeepLinkOnScreen", () => {
+  it.each([
+    ["/threads/env/thread", "/threads/env/thread"],
+    ["/threads/env/thread/files/path", "/threads/env/thread"],
+    ["/threads/env/thread?focusComposer=true", "/threads/env/thread"],
+    ["/threads/env%2F1/thread%202/review", "/threads/env%2F1/thread%202"],
+    ["/", null],
+    ["/settings", null],
+    ["/threads/env", null],
+  ])("tracks the visible thread for %s", (pathname, expected) => {
+    expect(threadDeepLinkOnScreen(pathname)).toBe(expected);
   });
 });

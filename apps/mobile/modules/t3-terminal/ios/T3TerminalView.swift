@@ -322,7 +322,8 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
 
     applyTheme()
     clipsToBounds = true
-    contentScaleFactor = UIScreen.main.scale
+    // The real scale arrives with the window; layoutSubviews corrects it.
+    contentScaleFactor = resolvedDisplayScale
 
     terminalViewport.clipsToBounds = true
     terminalViewport.contentScaleFactor = contentScaleFactor
@@ -687,8 +688,17 @@ public final class T3TerminalView: ExpoView, UITextFieldDelegate {
     ])
   }
 
+  // Traits can have an unspecified scale before this view joins a scene.
+  // Prefer the scene's screen then; always keep renderer scales positive.
+  private var resolvedDisplayScale: CGFloat {
+    let traitScale = traitCollection.displayScale
+    return traitScale > 0 ? traitScale : max(window?.screen.scale ?? UIScreen.main.scale, 1)
+  }
+
   private func updateContentScale() {
-    let scale = window?.screen.scale ?? UIScreen.main.scale
+    // The trait collection follows the scene the view is in, which matters once
+    // iPhone apps run resizable and on external displays; UIScreen.main does not.
+    let scale = resolvedDisplayScale
     if contentScaleFactor != scale {
       contentScaleFactor = scale
     }

@@ -30,6 +30,7 @@ import {
   saveAgentAwarenessRegistrationRecord,
 } from "../../persistence/imperative";
 import type { Preferences } from "../../persistence/mobile-preferences";
+import type { AgentActivityProps } from "../../widgets/AgentActivity";
 import { makeRelayDeviceRegistrationRequest, resolveApsEnvironment } from "./registrationPayload";
 import {
   AgentAwarenessOperationError,
@@ -65,7 +66,7 @@ vi.mock("./androidNotifications", () => ({
 const secureStore = vi.hoisted(() => new Map<string, string>());
 const widgetMocks = vi.hoisted(() => ({
   getInstances: vi.fn(() => []),
-  start: vi.fn(() => ({})),
+  start: vi.fn((_props: AgentActivityProps, _url?: string, _staleDate?: Date) => ({})),
 }));
 const environmentConfigsMock = vi.hoisted(() => ({
   configs: new Map<
@@ -967,6 +968,12 @@ describe("makeRelayDeviceRegistrationRequest", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(widgetMocks.start).toHaveBeenCalledTimes(1);
+    const [seed, url, staleDate] = widgetMocks.start.mock.calls[0]!;
+    expect(url).toBeUndefined();
+    expect(staleDate).toBeInstanceOf(Date);
+    if (!staleDate) throw new Error("Expected a stale date on the seeded activity");
+    expect(staleDate.getTime() - Date.parse(seed.updatedAt)).toBeGreaterThanOrEqual(10 * 60_000);
+    expect(staleDate.getTime() - Date.parse(seed.updatedAt)).toBeLessThan(10 * 60_000 + 1_000);
 
     // An environment without the capability may run an older server that
     // still publishes; only an explicit false skips the seed.

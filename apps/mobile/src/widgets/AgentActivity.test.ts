@@ -105,6 +105,49 @@ describe("AgentActivity widget layout", () => {
     expect(banner).toContain("#fcd34d"); // amber-300: waiting_for_approval
   });
 
+  it("degrades in-flight rows once the system marks the activity stale", () => {
+    const layout = AgentActivity(
+      {
+        ...props,
+        activeCount: 2,
+        activities: [
+          makeRow({}),
+          makeRow({ threadId: "thread-2", phase: "completed", status: "Done" }),
+        ],
+      },
+      { ...environment, isStale: true } as never,
+    );
+    const banner = JSON.stringify(layout.banner);
+    expect(banner).toContain("Agent status out of date");
+    expect(banner).toContain("Out of date");
+    expect(banner).not.toContain("#7dd3fc"); // sky-300: running
+    expect(banner).toContain("Done");
+    expect(JSON.stringify(layout.minimal)).toContain("clock.arrow.circlepath");
+    expect(JSON.stringify(layout.expandedLeading)).toContain("Out of date");
+  });
+
+  it("keeps finished outcomes when stale and restores attention when refreshed", () => {
+    const input = {
+      ...props,
+      activities: [makeRow({ phase: "waiting_for_input", status: "Input" })],
+    };
+    const stale = AgentActivity(input, { ...environment, isStale: true } as never);
+    expect(JSON.stringify(stale)).not.toContain("needs attention");
+    expect(JSON.stringify(stale.compactTrailing)).toContain("Out of date");
+    const refreshed = AgentActivity(input, environment as never);
+    expect(JSON.stringify(refreshed.compactTrailing)).toContain("Input");
+    const finished = AgentActivity(
+      {
+        ...props,
+        activeCount: 0,
+        activities: [makeRow({ phase: "failed", status: "Failed" })],
+      },
+      { ...environment, isStale: true } as never,
+    );
+    expect(JSON.stringify(finished.compactTrailing)).toContain("Failed");
+    expect(JSON.stringify(finished.banner)).not.toContain("Out of date");
+  });
+
   it("switches to the web sidebar's light palette when the scheme is light", () => {
     // macOS (iPhone Mirroring / Mac notification center) renders the activity
     // on a light background; the dark-material palette is illegible there.

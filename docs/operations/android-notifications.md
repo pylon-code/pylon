@@ -135,17 +135,18 @@ background the app, and test a notification tap. Also test dismissal, disabling 
 sign-out, token rotation, and delivery after the app process has exited. Android Settings
 **Force stop** intentionally prevents delivery until the app is opened again.
 
-Android suppresses ordinary alerts while the app is foregrounded, matching iOS notification
-presentation. Activity cards still update in the foreground and retain finished results silently.
-Check that completion stays quiet with the app open, that a later completion alerts after
-backgrounding, and that retrying a foreground-suppressed alert does not show it later. This uses the
-app lifecycle on the receiving phone, not thread visibility on other clients.
+With the app in the foreground, Android suppresses an alert only for the thread currently on
+screen; alerts for other threads still show. Activity cards still update in the foreground and
+retain finished results silently. Check that completion stays quiet while its thread is open,
+alerts while another screen is open, alerts after backgrounding, and that retrying a suppressed
+alert does not show it later. This uses the app lifecycle and route on the receiving phone, not
+thread visibility on other clients.
 
 With ongoing activity enabled, verify two threads entering approval/input together produce one
 `2 agents need attention` alert, and two observed active threads completing/failing together produce
 one `2 agents finished` alert. The body lists their titles. The relay shares iOS transition
 selection and retains its delivered baseline when work finishes; publishing the same states again
-must not produce another alert. Grouped alerts open the aggregate's priority thread; individual
+must not produce another alert. Grouped alerts open the overview; individual
 alerts retain their thread link.
 
 Verify an expanded card with five threads, attention/failure priority, project names and statuses.

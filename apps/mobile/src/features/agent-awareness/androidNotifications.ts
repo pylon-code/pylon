@@ -6,6 +6,7 @@ interface AndroidAgentNotifications {
   configure(deviceId: string, userId: string, scheme: string, ongoingEnabled: boolean): void;
   clear(): void;
   openLiveUpdateSettings?(): boolean;
+  setThreadOnScreen?(path: string | null): void;
 }
 
 const native =
@@ -60,4 +61,9 @@ export function supportsAndroidLiveUpdateSettings(): boolean {
 
 export async function openAndroidLiveUpdateSettings(): Promise<void> {
   if (!native?.openLiveUpdateSettings?.()) await Linking.openSettings();
+}
+
+/** Tells the FCM handler which thread route is on screen so its alerts stay quiet. */
+export function setAndroidThreadOnScreen(path: string | null): void {
+  native?.setThreadOnScreen?.(path);
 }

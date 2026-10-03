@@ -187,11 +187,33 @@ describe("ApnsClient", () => {
             body: "Input: Project",
           },
           sound: "default",
+          "thread-id": '["env","thread"]',
         },
         environmentId: "env",
         threadId: "thread",
         deepLink: "/threads/env/thread",
       });
+    }).pipe(Effect.provide(TestLayer)),
+  );
+
+  it.effect("keeps thread groups distinct when identifiers contain slashes", () =>
+    Effect.gen(function* () {
+      const apns = yield* ApnsClient.ApnsClient;
+      const group = (environmentId: string, threadId: string) =>
+        apns.makePushNotificationRequest({
+          token: "push-token",
+          notification: { title: "Thread", body: "Done", environmentId, threadId, deepLink: "/" },
+        }).payload;
+      expect(group("a/b", "c")).toMatchObject({
+        aps: { "thread-id": '["a/b","c"]' },
+      });
+      expect(group("a", "b/c")).toMatchObject({
+        aps: { "thread-id": '["a","b/c"]' },
+      });
+      expect(group("a/b", "c")).not.toMatchObject({
+        aps: { "thread-id": '["a","b/c"]' },
+      });
+      expect(group("", "")).toMatchObject({ aps: { "thread-id": "pylon-agent-alerts" } });
     }).pipe(Effect.provide(TestLayer)),
   );
 

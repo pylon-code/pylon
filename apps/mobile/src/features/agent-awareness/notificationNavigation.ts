@@ -1,12 +1,17 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import * as Notifications from "expo-notifications";
 import { useLinkTo } from "@react-navigation/native";
 
-import { routeAgentNotificationResponseOnce } from "./notificationPayload";
+import { setAndroidThreadOnScreen } from "./androidNotifications";
+import { routeAgentNotificationResponseOnce, threadDeepLinkOnScreen } from "./notificationPayload";
 import { consumeLastAgentNotificationResponse } from "./notificationResponseConsumer";
 
-export function useAgentNotificationNavigation(): void {
+export function useAgentNotificationNavigation(pathname: string): void {
   const linkTo = useLinkTo();
+  useLayoutEffect(() => {
+    setAndroidThreadOnScreen(threadDeepLinkOnScreen(pathname));
+    return () => setAndroidThreadOnScreen(null);
+  }, [pathname]);
   const handledResponseIds = useRef(new Set<string>());
 
   useEffect(() => {

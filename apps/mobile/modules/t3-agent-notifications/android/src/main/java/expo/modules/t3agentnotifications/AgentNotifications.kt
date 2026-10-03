@@ -1,5 +1,6 @@
 package expo.modules.t3agentnotifications
 
+import android.app.Activity
 import android.app.NotificationChannel
 import android.app.Notification
 import android.app.AlarmManager
@@ -15,8 +16,6 @@ import android.text.TextPaint
 import android.text.TextUtils
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.firebase.messaging.RemoteMessage
 import expo.modules.notifications.service.ExpoFirebaseMessagingService
 
@@ -86,8 +85,38 @@ object AgentNotifications {
     cancelActivity(context)
     context.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit().clear().apply()
     val manager = manager(context)
-    manager.activeNotifications.filter { it.tag == ACTIVITY_TAG || it.tag == ALERT_TAG }
+    manager.activeNotifications.filter {
+      it.tag == ACTIVITY_TAG || it.tag == ALERT_TAG ||
+        it.tag?.startsWith("$ALERT_TAG-summary:") == true
+    }
       .forEach { manager.cancel(it.tag, it.id) }
+  }
+
+  /** Records the thread route the app is showing, or null when none is open. */
+  @Volatile private var threadOnScreen: String? = null
+
+  // ProcessLifecycleOwner delays pause after Home/lock. Use Expo's immediate
+  // host pause/resume hooks, serialized with receive and alert deduplication.
+  private var resumedActivity: Activity? = null
+
+  @Synchronized
+  fun onActivityResumed(activity: Activity) {
+    resumedActivity = activity
+  }
+
+  @Synchronized
+  fun onActivityPaused(activity: Activity) {
+    if (resumedActivity === activity) resumedActivity = null
+  }
+
+  @Synchronized
+  fun clearActivityVisibility() {
+    resumedActivity = null
+  }
+
+  @Synchronized
+  fun setThreadOnScreen(path: String?) {
+    threadOnScreen = path
   }
 
   @Synchronized
@@ -137,25 +166,60 @@ object AgentNotifications {
     val seen = prefs.getString("seenAlertsOrdered", null)?.split('\n')
       ?: prefs.getStringSet("seenAlerts", emptySet()).orEmpty().toList()
     if (alertId != null && alertId !in seen) {
-      // Match iOS foreground presentation. Consume suppressed alerts as well,
-      // so a delivery retry cannot surface them after the app backgrounds.
-      if (!ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
-        val title = data["alert_title"].orEmpty().take(120)
-        // Grouped alerts list up to five 120-character thread titles.
-        val body = data["alert_body"].orEmpty().take(608)
-        val id = alertId.hashCode()
-        val notification = base(context, ALERT_CHANNEL)
-          .setContentTitle(title).setContentText(body)
-          .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-          .setAutoCancel(true)
-          .setContentIntent(contentIntent(context, scheme, data["alert_path"], id))
-          .build()
-        manager(context).notify(ALERT_TAG, id, notification)
+      // Only consume a suppressed alert while the host Activity is actually
+      // resumed. A delivery after onPause must post and remain retry-safe even
+      // while ProcessLifecycleOwner still reports RESUMED.
+      val resumed = resumedActivity != null
+      val visibleThread = threadOnScreen
+      val onScreen = resumed && visibleThread != null && data["alert_path"] == visibleThread
+      if (!onScreen) {
+        postAlert(context, scheme, data, alertId)
       }
       prefs.edit().remove("seenAlerts").putString(
         "seenAlertsOrdered",
         (seen.takeLast(63) + alertId).joinToString("\n")
       ).apply()
+    }
+  }
+
+  private fun postAlert(
+    context: Context,
+    scheme: String,
+    data: Map<String, String>,
+    alertId: String
+  ) {
+    val title = data["alert_title"].orEmpty().take(120)
+    // Grouped alerts list up to five 120-character thread titles.
+    val body = data["alert_body"].orEmpty().take(608)
+    val id = alertId.hashCode()
+    val group = data["alert_group"]?.takeIf { it.isNotBlank() } ?: ALERT_TAG
+    val notification = base(context, ALERT_CHANNEL)
+      .setContentTitle(title).setContentText(body)
+      .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+      .setAutoCancel(true)
+      .setGroup(group)
+      .setContentIntent(contentIntent(context, scheme, data["alert_path"], id))
+      .build()
+    manager(context).notify(ALERT_TAG, id, notification)
+    val children = manager(context).activeNotifications.filter {
+      it.tag == ALERT_TAG && it.notification.group == group
+    }
+    if (children.size > 1) {
+      val style = NotificationCompat.InboxStyle()
+      children.forEach {
+        style.addLine(it.notification.extras.getCharSequence(android.app.Notification.EXTRA_TEXT))
+      }
+      val summary = base(context, ALERT_CHANNEL)
+        .setContentTitle(title)
+        .setContentText(body)
+        .setStyle(style)
+        .setGroup(group)
+        .setGroupSummary(true)
+        .setSilent(true)
+        .setAutoCancel(true)
+        .setContentIntent(contentIntent(context, scheme, data["alert_path"], 0))
+        .build()
+      manager(context).notify("$ALERT_TAG-summary:$group", 0, summary)
     }
   }
 
