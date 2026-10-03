@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 
 import * as CodexClient from "./client.ts";
+import * as CodexError from "./errors.ts";
 import * as Replay from "./replay.ts";
 
 const initialize = {
@@ -61,5 +62,20 @@ it.effect.each([
       (yield* Ref.get(driver.state)).failure,
       Replay.CodexAppServerReplayFrameMismatchError,
     );
+  }),
+);
+
+it.effect("reports the app-server exit to clients waiting on termination", () =>
+  Effect.gen(function* () {
+    const driver = yield* Replay.makeReplayDriver({
+      ...transcript,
+      entries: [...transcript.entries, { type: "runtime_exit", status: "success" }],
+    });
+    const termination = yield* Effect.gen(function* () {
+      const client = yield* CodexClient.CodexAppServerClient;
+      yield* client.request("initialize", initialize);
+      return yield* client.awaitTermination;
+    }).pipe(Effect.provide(Replay.layerReplayWithDriver(driver)));
+    assert.instanceOf(termination, CodexError.CodexAppServerProcessExitedError);
   }),
 );

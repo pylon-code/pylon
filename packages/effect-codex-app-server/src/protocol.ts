@@ -68,6 +68,8 @@ export interface CodexAppServerPatchedProtocol {
     requestId: string | number,
     error: CodexError.CodexAppServerRequestError,
   ) => Effect.Effect<void, CodexError.CodexAppServerError>;
+  /** Waits until the app-server transport terminates and returns why. */
+  readonly awaitTermination: Effect.Effect<CodexError.CodexAppServerError>;
 }
 
 interface CodexAppServerPendingRequest {
@@ -480,6 +482,15 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       notify,
       respond,
       respondError,
+      awaitTermination: Deferred.await(terminationSignal).pipe(
+        Effect.andThen(Ref.get(terminationFailure)),
+        Effect.map(
+          Option.getOrElse(
+            (): CodexError.CodexAppServerError =>
+              new CodexError.CodexAppServerInputStreamEndedError({}),
+          ),
+        ),
+      ),
     } satisfies CodexAppServerPatchedProtocol;
   },
 );
