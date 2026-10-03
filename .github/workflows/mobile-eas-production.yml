@@ -5,6 +5,9 @@ name: Mobile EAS Production
 # in the same OS/pnpm as the EAS build; a macOS `eas build` computes a different
 # fingerprint (platform-specific deps + pnpm version) and errors. On this Linux
 # runner, with corepack pinning pnpm 10.24 in eas.json, local == build.
+# The app's major version is part of that fingerprint
+# (apps/mobile/fingerprint.config.js), so a production OTA only reaches store
+# binaries of the same major; a new major reaches users with its store build.
 on:
   workflow_dispatch:
     inputs:

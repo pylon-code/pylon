@@ -27,7 +27,10 @@ after initialization succeeds.
 Every Pylon variant keeps the fingerprint runtime-version policy and its Pylon URL scheme. A
 dependency patch can change the native fingerprint even when its implementation changes only
 JavaScript, so build a compatible binary before publishing an over-the-air update for a changed
-fingerprint.
+fingerprint. [`fingerprint.config.js`](../../apps/mobile/fingerprint.config.js) also hashes the
+app's major version, so an update never crosses a major-version boundary even when native code is
+unchanged. The fingerprint loader ignores errors in that file, so its unit test is what keeps the
+version readable from `app.config.ts`.
 
 Modules exposed through `file:` dependencies (such as `t3-markdown-text`) under
 `apps/mobile/modules/` are copied by pnpm into
