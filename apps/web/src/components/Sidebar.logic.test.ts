@@ -3173,6 +3173,29 @@ describe("Working shelf (beta)", () => {
     ).toBe(false);
   });
 
+  it("keeps an unread reply in the inbox while background work stays open", () => {
+    // The run finished at 10:05 with a monitor still open: V2 parks at idle.
+    const replied = {
+      ...waiting,
+      pendingBackgroundTasks: [{ taskId: "monitor-1", kind: "monitor" as const }],
+      lastVisitedAt: "2026-03-09T10:00:00.000Z",
+    };
+    expect(resolveSidebarThreadStatus(replied)).toBe("waiting");
+    expect(isSidebarThreadWorking(replied)).toBe(false);
+  });
+
+  it("folds the thread once its reply is visited", () => {
+    const replied = {
+      ...waiting,
+      pendingBackgroundTasks: [{ taskId: "agent-1", kind: "subagent" as const }],
+    };
+    expect(isSidebarThreadWorking({ ...replied, lastVisitedAt: "2026-03-09T10:10:00.000Z" })).toBe(
+      true,
+    );
+    // Never visited counts as read, matching the row's Done indicator.
+    expect(isSidebarThreadWorking({ ...replied, lastVisitedAt: undefined })).toBe(true);
+  });
+
   it("keeps pinned, snoozed, and settled precedence over the Working shelf", () => {
     const base = { snoozed: false, settled: false, pinned: false };
     expect(resolveSidebarThreadSection({ ...base, working: true })).toBe("working");

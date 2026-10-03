@@ -126,7 +126,8 @@ collapsed, and search still finds threads inside it.
 While this is on, the active list is ordered by when each thread last came back to you, so you
 cannot drag to reorder it, and **Working** rows cannot be dragged. Your saved order returns when
 you turn it off. Return times for approvals and background work that ends are tracked by each
-device and reset when the app reloads. Folding a thread does not change its notifications or when
+device and reset when the app reloads. Because those times come from your device's clock, a
+remote environment whose clock differs can shift where its threads appear in the list. Folding a thread does not change its notifications or when
 it settles. The section is not available on mobile or with the legacy sidebar.
 
 On web and desktop, you can also drag files from your computer onto any thread row, including search

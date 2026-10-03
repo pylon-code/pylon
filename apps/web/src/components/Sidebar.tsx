@@ -308,7 +308,13 @@ const WORKING_SHELF_EXPANDED_KEY = "t3code:sidebar:working-expanded";
 // it is device-local and resets on reload (server timestamps still apply).
 let sidebarInboxReturns = EMPTY_SIDEBAR_INBOX_RETURN_STATE;
 
-function observeInboxReturns(threads: readonly EnvironmentThreadShell[] | null): void {
+// Stamps use this device's clock; max() then compares them with server
+// timestamps, so a remote or tunnel server with a skewed clock can shift a
+// row's place by that skew. Ordering only: sections are unaffected.
+function observeInboxReturns(
+  threads: readonly EnvironmentThreadShell[] | null,
+  isWorking: (thread: EnvironmentThreadShell) => boolean,
+): void {
   sidebarInboxReturns =
     threads === null
       ? EMPTY_SIDEBAR_INBOX_RETURN_STATE
@@ -316,7 +322,7 @@ function observeInboxReturns(threads: readonly EnvironmentThreadShell[] | null):
           sidebarInboxReturns,
           threads.map((thread) => ({
             key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-            working: isSidebarThreadWorking(thread),
+            working: isWorking(thread),
           })),
           Date.now(),
         );
@@ -2753,6 +2759,9 @@ export default function Sidebar() {
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
+  // Unread replies stay in the inbox, judged by the same visited watermark
+  // as each row's Done indicator.
+  const localThreadLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const {
     settleThread,
@@ -3134,16 +3143,29 @@ export default function Sidebar() {
     // Subagent child threads live in the parent's Agents surface, not the
     // sidebar roster (v2 models them as real threads with lineage).
     const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys);
+    const isWorking = (thread: EnvironmentThreadShell) =>
+      isSidebarThreadWorking({
+        ...thread,
+        lastVisitedAt: resolveThreadLastVisitedAt(
+          thread.lastVisitedAt,
+          localThreadLastVisitedAtById[
+            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))
+          ],
+        ),
+      });
     // Presentation only: folding a row never touches lifecycle or notices.
     // Observe the whole roster so a project-scope change keeps every stamp.
-    observeInboxReturns(workingShelfEnabled ? threads : null);
+    // Updating module state inside this memo is safe: an observation only
+    // stamps threads whose working flag changed since the previous one, so a
+    // repeated run (StrictMode, re-render) with the same input is a no-op.
+    observeInboxReturns(workingShelfEnabled ? threads : null, isWorking);
     const pinned: EnvironmentThreadShell[] = [];
     const active: EnvironmentThreadShell[] = [];
     const working: EnvironmentThreadShell[] = [];
     // Working beta: only inbox threads fold away. Pins stay where the user
     // put them, and snoozed or settled threads keep their shelves.
     const inbox = (thread: EnvironmentThreadShell) =>
-      workingShelfEnabled && isSidebarThreadWorking(thread) ? working : active;
+      workingShelfEnabled && isWorking(thread) ? working : active;
     const snoozed: EnvironmentThreadShell[] = [];
     const settled: EnvironmentThreadShell[] = [];
     const draggable = new Set<string>();
@@ -3185,7 +3207,7 @@ export default function Sidebar() {
           snoozed: supportsSnooze && effectiveSnoozed(thread, { now: preciseNow }),
           settled: supportsSettlement && thread.settledOverride === "settled",
           pinned: thread.pinnedAt != null,
-          working: workingShelfEnabled && isSidebarThreadWorking(thread),
+          working: workingShelfEnabled && isWorking(thread),
         });
         (section === "snoozed"
           ? snoozed
@@ -3242,6 +3264,7 @@ export default function Sidebar() {
       snoozeNow: preciseNow,
     };
   }, [
+    localThreadLastVisitedAtById,
     nowMinute,
     optimisticDrop,
     scopedProjectKeys,

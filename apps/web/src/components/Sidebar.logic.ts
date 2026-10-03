@@ -1060,8 +1060,11 @@ export function shouldShowSidebarV2Duration(status: SidebarThreadStatus): boolea
     as open background tasks, which resolve to "waiting"; the delegating and
     monitoring statuses are folded too so the shelf keeps Pylon's meaning if
     those statuses are produced again. Approvals, questions, plan prompts,
-    failures, and usage limits stay in the inbox. Presentation only: this
-    never feeds settlement or notifications. */
+    failures, usage limits, and unread replies stay in the inbox: a run that
+    finishes with background work still open parks at "waiting", and its
+    reply must not hide until the thread is visited. Pass the effective
+    `lastVisitedAt` (see resolveThreadLastVisitedAt). Presentation only:
+    this never feeds settlement or notifications. */
 export function isSidebarThreadWorking(thread: ThreadStatusInput): boolean {
   const status = resolveSidebarThreadStatus(thread);
   if (
@@ -1072,6 +1075,7 @@ export function isSidebarThreadWorking(thread: ThreadStatusInput): boolean {
   ) {
     return false;
   }
+  if (hasUnseenCompletion(thread)) return false;
   // A plan prompt outranks lingering background work: the user has to act on it.
   return !(
     thread.interactionMode === "plan" &&

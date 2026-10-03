@@ -2362,7 +2362,11 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           {...searchableSetting("working-shelf")}
-          description="Fold working, delegating, and monitoring threads into a collapsible Working section on web and desktop. They return to the top of the active list when they need you."
+          description={
+            settings.legacySidebarEnabled
+              ? "Unavailable with the legacy sidebar. Turn off Sidebar (legacy) to fold working, delegating, and monitoring threads into a Working section."
+              : "Fold working, delegating, and monitoring threads into a collapsible Working section on web and desktop. They return to the top of the active list when they need you."
+          }
           resetAction={
             settings.sidebarWorkingShelfEnabled !==
             DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled ? (
@@ -2379,6 +2383,7 @@ export function GeneralSettingsPanel() {
           control={
             <Switch
               checked={settings.sidebarWorkingShelfEnabled}
+              disabled={settings.legacySidebarEnabled}
               onCheckedChange={(checked) =>
                 updateSettings({ sidebarWorkingShelfEnabled: Boolean(checked) })
               }
