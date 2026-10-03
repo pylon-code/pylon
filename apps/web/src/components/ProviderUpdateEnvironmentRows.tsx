@@ -18,7 +18,9 @@ import {
   firstRejectedProviderUpdateMessage,
   getProviderUpdateProgressToastView,
   getProviderUpdateSidebarPillView,
+  isProviderUpdateAlreadyRunningFailure,
   isTerminalProviderUpdatePhase,
+  PROVIDER_UPDATE_RUN_TIMED_OUT,
   resolveEnvironmentUpdateRowStatus,
   type LocalEnvironmentUpdateGroup,
   type LocalProviderUpdateOutcome,
@@ -51,9 +53,14 @@ function toProviderUpdateOutcome(input: {
   readonly result: ProviderUpdateCommandResult;
 }): PromiseSettledResult<LocalProviderUpdateOutcome> {
   if (input.result._tag === "Failure") {
-    if (isAtomCommandInterrupted(input.result)) {
+    if (
+      isAtomCommandInterrupted(input.result) ||
+      isProviderUpdateAlreadyRunningFailure(input.result)
+    ) {
       // An interrupted dispatch (e.g. superseded) is neither a success nor a
       // hard failure — surface it as a non-contributing, non-rejecting outcome.
+      // The same holds when the server reports this instance is already being
+      // updated from elsewhere: the live provider state reports that update.
       return {
         status: "fulfilled",
         value: {
@@ -95,6 +102,7 @@ function toProviderUpdateOutcome(input: {
 // update (npm installs routinely run tens of seconds) is never cut off and left
 // showing a dead, unresponsive Update button.
 const PENDING_EXPIRY_MS = 6 * 60_000;
+const EXPIRED = Symbol("provider-update-expired");
 
 function rowToneClass(kind: ProviderUpdateRowStatusKind): string {
   switch (kind) {
@@ -268,7 +276,15 @@ export function useEnvironmentProviderUpdates(
         return next;
       });
 
+      // Resolves when the expiry fires, so a caller awaiting this dispatch (the
+      // bulk "Update all connected environments" run) is not wedged by a
+      // request that never answers.
+      let markExpired!: () => void;
+      const expired = new Promise<typeof EXPIRED>((resolve) => {
+        markExpired = () => resolve(EXPIRED);
+      });
       const expiry = setTimeout(() => {
+        markExpired();
         // A newer attempt may have superseded this one; if so, leave its state
         // untouched.
         if (!isCurrentRequest()) {
@@ -285,112 +301,129 @@ export function useEnvironmentProviderUpdates(
         );
       }, PENDING_EXPIRY_MS);
       const runs: ProviderUpdateRun[] = [];
-      try {
-        // Dispatch each candidate's update to this environment's own backend and
-        // normalize every settled outcome into the multi-backend reducer shape.
-        const results = await Promise.all(
-          targets.map(
-            async (target, index): Promise<PromiseSettledResult<LocalProviderUpdateOutcome>> => {
-              try {
-                const result = await updateProvider({
-                  environmentId,
-                  input: { provider: target.driver, instanceId: target.instanceId },
-                });
-                runs[index] = {
-                  machineLabel: group.label,
-                  driver: target.driver,
-                  instanceId: target.instanceId,
-                  result,
-                };
-                return toProviderUpdateOutcome({
-                  environmentId,
-                  isPrimary: group.isPrimary,
-                  target,
-                  result,
-                });
-              } catch (error) {
-                runs[index] = {
-                  machineLabel: group.label,
-                  driver: target.driver,
-                  instanceId: target.instanceId,
-                  result: AsyncResult.failure(Cause.die(error)),
-                };
-                return {
-                  status: "rejected",
-                  reason: error instanceof Error ? error : new Error("Provider update failed."),
-                };
-              }
-            },
-          ),
-        );
-        if (!isCurrentRequest()) {
-          // A newer attempt superseded this one while it was in flight; leave
-          // the newer attempt's state intact.
-          return runs;
-        }
-        // The request resolved (not a transport hang), so clear any stale
-        // timeout error the expiry may have set -- otherwise a late success
-        // would be masked, since an error takes priority in the row status.
-        setErrorByEnvironment((previous) => {
-          if (!previous.has(environmentId)) {
-            return previous;
+      const settled = (async (): Promise<ReadonlyArray<ProviderUpdateRun>> => {
+        try {
+          // Dispatch each candidate's update to this environment's own backend and
+          // normalize every settled outcome into the multi-backend reducer shape.
+          const results = await Promise.all(
+            targets.map(
+              async (target, index): Promise<PromiseSettledResult<LocalProviderUpdateOutcome>> => {
+                try {
+                  const result = await updateProvider({
+                    environmentId,
+                    input: { provider: target.driver, instanceId: target.instanceId },
+                  });
+                  runs[index] = {
+                    machineLabel: group.label,
+                    driver: target.driver,
+                    instanceId: target.instanceId,
+                    result,
+                  };
+                  return toProviderUpdateOutcome({
+                    environmentId,
+                    isPrimary: group.isPrimary,
+                    target,
+                    result,
+                  });
+                } catch (error) {
+                  runs[index] = {
+                    machineLabel: group.label,
+                    driver: target.driver,
+                    instanceId: target.instanceId,
+                    result: AsyncResult.failure(Cause.die(error)),
+                  };
+                  return {
+                    status: "rejected",
+                    reason: error instanceof Error ? error : new Error("Provider update failed."),
+                  };
+                }
+              },
+            ),
+          );
+          if (!isCurrentRequest()) {
+            // A newer attempt superseded this one while it was in flight; leave
+            // the newer attempt's state intact.
+            return runs;
           }
-          const next = new Map(previous);
-          next.delete(environmentId);
-          return next;
-        });
-        if (results.length === 0) {
-          setErrorByEnvironment((previous) =>
-            new Map(previous).set(
-              environmentId,
-              "This environment isn’t connected — try again once it reconnects.",
-            ),
-          );
+          // The request resolved (not a transport hang), so clear any stale
+          // timeout error the expiry may have set -- otherwise a late success
+          // would be masked, since an error takes priority in the row status.
+          setErrorByEnvironment((previous) => {
+            if (!previous.has(environmentId)) {
+              return previous;
+            }
+            const next = new Map(previous);
+            next.delete(environmentId);
+            return next;
+          });
+          if (results.length === 0) {
+            setErrorByEnvironment((previous) =>
+              new Map(previous).set(
+                environmentId,
+                "This environment isn’t connected — try again once it reconnects.",
+              ),
+            );
+            return runs;
+          }
+          const rejectedMessage = firstRejectedProviderUpdateMessage(results);
+          if (rejectedMessage) {
+            setErrorByEnvironment((previous) =>
+              new Map(previous).set(environmentId, rejectedMessage),
+            );
+            return runs;
+          }
+          const view = getProviderUpdateProgressToastView({
+            providers: collectProviderUpdateOutcomeSnapshots(results),
+            providerCount,
+          });
+          // Only persist a terminal outcome. A non-terminal ("running"/"initial")
+          // view means this dispatch could not confirm completion — e.g. a snapshot
+          // came back without its targeted instance (collectProviderUpdateOutcome-
+          // Snapshots drops null providers), which happens when the command is
+          // interrupted as a second backend connects and supersedes the in-flight
+          // update. A stored view never re-polls, so persisting it would pin the
+          // row's spinner forever once the pending flag expires. Drop it and let
+          // the live per-environment provider state (pill) plus the pending expiry
+          // drive the row, so it self-heals to whatever the backend actually did.
+          if (isTerminalProviderUpdatePhase(view.phase)) {
+            setResultByEnvironment((previous) => new Map(previous).set(environmentId, view));
+          }
           return runs;
-        }
-        const rejectedMessage = firstRejectedProviderUpdateMessage(results);
-        if (rejectedMessage) {
-          setErrorByEnvironment((previous) =>
-            new Map(previous).set(environmentId, rejectedMessage),
-          );
+        } catch (error) {
+          if (isCurrentRequest()) {
+            setErrorByEnvironment((previous) =>
+              new Map(previous).set(
+                environmentId,
+                error instanceof Error ? error.message : "Provider update failed.",
+              ),
+            );
+          }
           return runs;
+        } finally {
+          clearTimeout(expiry);
+          // Only the current attempt owns the shared spinner and in-flight guard;
+          // a superseded attempt resolving late must not clear a newer one's.
+          if (isCurrentRequest()) {
+            clearPending(environmentId);
+            inFlightEnvironmentsRef.current.delete(environmentId);
+          }
         }
-        const view = getProviderUpdateProgressToastView({
-          providers: collectProviderUpdateOutcomeSnapshots(results),
-          providerCount,
-        });
-        // Only persist a terminal outcome. A non-terminal ("running"/"initial")
-        // view means this dispatch could not confirm completion — e.g. a snapshot
-        // came back without its targeted instance (collectProviderUpdateOutcome-
-        // Snapshots drops null providers), which happens when the command is
-        // interrupted as a second backend connects and supersedes the in-flight
-        // update. A stored view never re-polls, so persisting it would pin the
-        // row's spinner forever once the pending flag expires. Drop it and let
-        // the live per-environment provider state (pill) plus the pending expiry
-        // drive the row, so it self-heals to whatever the backend actually did.
-        if (isTerminalProviderUpdatePhase(view.phase)) {
-          setResultByEnvironment((previous) => new Map(previous).set(environmentId, view));
-        }
-        return runs;
-      } catch (error) {
-        if (isCurrentRequest()) {
-          setErrorByEnvironment((previous) =>
-            new Map(previous).set(
-              environmentId,
-              error instanceof Error ? error.message : "Provider update failed.",
-            ),
-          );
-        }
-        return runs;
-      } finally {
-        clearTimeout(expiry);
-        // Only the current attempt owns the shared spinner and in-flight guard;
-        // a superseded attempt resolving late must not clear a newer one's.
-        if (isCurrentRequest()) {
-          clearPending(environmentId);
-          inFlightEnvironmentsRef.current.delete(environmentId);
-        }
+      })();
+      const outcome = await Promise.race([settled, expired]);
+      if (outcome !== EXPIRED) {
+        return outcome;
       }
+      // Report what has answered so far; everything else timed out. A late
+      // answer still updates the row through `settled`.
+      return targets.map(
+        (target, index): ProviderUpdateRun =>
+          runs[index] ?? {
+            machineLabel: group.label,
+            driver: target.driver,
+            instanceId: target.instanceId,
+            result: PROVIDER_UPDATE_RUN_TIMED_OUT,
+          },
+      );
     },
     [clearPending, groupByEnvironment, onInteract, updateProvider],
   );

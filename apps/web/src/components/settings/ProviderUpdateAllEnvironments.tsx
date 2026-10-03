@@ -1,4 +1,8 @@
-import { PROVIDER_DISPLAY_NAMES, type ServerProvider } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  PROVIDER_DISPLAY_NAMES,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { useMemo, useRef, useState } from "react";
 
 import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
@@ -170,11 +174,31 @@ export function ProviderUpdateAllEnvironmentsAction() {
   const runInFlightRef = useRef(false);
   const [isRunning, setIsRunning] = useState(false);
   const [hasStarted, setHasStarted] = useState(false);
+  // Read when a run settles, which can happen after the dialog closed.
+  const openRef = useRef(false);
+  // The run's summary toast describes the initial attempt only; a per-row
+  // retry closes it so it never reports a failure the retry may have fixed.
+  const summaryToastIdRef = useRef<ReturnType<typeof toastManager.add> | null>(null);
 
   const hasRowActivity = rows.some((row) => row.status.kind !== "idle");
   if (plan.targets.length === 0 && !isRunning && !hasRowActivity && !open) {
     return null;
   }
+
+  const setDialogOpen = (next: boolean) => {
+    openRef.current = next;
+    setOpen(next);
+    // Closing after a finished run returns the next opening to review.
+    if (!next && !runInFlightRef.current) setHasStarted(false);
+  };
+
+  const retryEnvironment = (environmentId: EnvironmentId) => {
+    if (summaryToastIdRef.current !== null) {
+      toastManager.close(summaryToastIdRef.current);
+      summaryToastIdRef.current = null;
+    }
+    void updateEnvironment(environmentId);
+  };
 
   const runAll = async () => {
     if (runInFlightRef.current) return;
@@ -190,7 +214,7 @@ export function ProviderUpdateAllEnvironmentsAction() {
       );
       const view = getProviderUpdateRunToastView(results.flatMap((runs) => runs ?? []));
       if (view) {
-        toastManager.add(
+        summaryToastIdRef.current = toastManager.add(
           stackedThreadToast({
             ...view,
             description: <span className="whitespace-pre-line">{view.description}</span>,
@@ -200,6 +224,9 @@ export function ProviderUpdateAllEnvironmentsAction() {
     } finally {
       runInFlightRef.current = false;
       setIsRunning(false);
+      // Finished while the dialog was closed: the next opening reviews the
+      // current targets rather than showing this run's progress.
+      if (!openRef.current) setHasStarted(false);
     }
   };
 
@@ -215,19 +242,12 @@ export function ProviderUpdateAllEnvironmentsAction() {
             : "Updates are in progress or finished. Review each environment's result."
         }
         control={
-          <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
+          <Button size="sm" variant="outline" onClick={() => setDialogOpen(true)}>
             {plan.targets.length > 0 ? "Update all connected environments" : "View results"}
           </Button>
         }
       />
-      <Dialog
-        open={open}
-        onOpenChange={(next) => {
-          setOpen(next);
-          // Closing after a finished run returns the next opening to review.
-          if (!next && !runInFlightRef.current) setHasStarted(false);
-        }}
-      >
+      <Dialog open={open} onOpenChange={setDialogOpen}>
         <DialogPopup className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Update providers on all connected environments</DialogTitle>
@@ -245,7 +265,7 @@ export function ProviderUpdateAllEnvironmentsAction() {
                       key={group.environmentId}
                       group={group}
                       status={status}
-                      onUpdate={() => void updateEnvironment(group.environmentId)}
+                      onUpdate={() => retryEnvironment(group.environmentId)}
                     />
                   ))}
                 </div>
@@ -258,13 +278,7 @@ export function ProviderUpdateAllEnvironmentsAction() {
             )}
           </DialogPanel>
           <DialogFooter variant="bare">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setOpen(false);
-                if (!runInFlightRef.current) setHasStarted(false);
-              }}
-            >
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>
               {showProgress ? "Close" : "Cancel"}
             </Button>
             {showProgress ? null : (

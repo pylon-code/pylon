@@ -3,6 +3,8 @@ import {
   type EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
+  SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON,
+  ServerProviderUpdateError,
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -28,6 +30,7 @@ import {
   isProviderUpdateCandidate,
   isTerminalProviderUpdatePhase,
   localEnvironmentUpdateNotificationKey,
+  PROVIDER_UPDATE_RUN_TIMED_OUT,
   providerUpdateNotificationKey,
   resolveEnvironmentUpdateRowStatus,
   shouldShowPrimaryProviderUpdateToast,
@@ -1142,6 +1145,33 @@ describe("getProviderUpdateRunToastView", () => {
       description: [
         "Laptop · Codex: The update did not report a result. Check the provider's status.",
         "Server · Codex: The update did not report a result. Check the provider's status.",
+      ].join("\n"),
+    });
+  });
+
+  it("reports timed-out and already-running updates as unfinished", () => {
+    expect(
+      getProviderUpdateRunToastView([
+        run("Laptop", "codex", PROVIDER_UPDATE_RUN_TIMED_OUT),
+        run(
+          "Server",
+          "codex",
+          AsyncResult.failure(
+            Cause.fail(
+              new ServerProviderUpdateError({
+                provider: driver("unknown"),
+                reason: SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON,
+              }),
+            ),
+          ),
+        ),
+      ]),
+    ).toEqual({
+      type: "warning",
+      title: "Provider updates did not finish",
+      description: [
+        "Laptop · Codex: No response from the environment. Check the provider's status or retry.",
+        "Server · Codex: Another update for this provider is already running. Check its status.",
       ].join("\n"),
     });
   });

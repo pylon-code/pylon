@@ -1,6 +1,7 @@
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
+  SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON,
   ServerProviderUpdateError,
   type ProviderInstanceId,
   type ServerProvider,
@@ -228,7 +229,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
     makeAlreadyRunningError: () =>
       new ServerProviderUpdateError({
         provider: ProviderDriverKind.make("unknown"),
-        reason: "An update is already running for this provider.",
+        reason: SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON,
       }),
   });
 

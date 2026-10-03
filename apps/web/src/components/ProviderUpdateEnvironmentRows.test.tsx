@@ -4,8 +4,11 @@ import {
   type EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
+  SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON,
+  ServerProviderUpdateError,
   type ServerProvider,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import type {
@@ -101,7 +104,10 @@ vi.mock("./ProviderUpdateLaunchNotification.environments", () => ({
   }),
 }));
 
-import { ProviderUpdateEnvironmentRows } from "./ProviderUpdateEnvironmentRows";
+import {
+  ProviderUpdateEnvironmentRows,
+  useEnvironmentProviderUpdates,
+} from "./ProviderUpdateEnvironmentRows";
 
 const environmentId = "env-wsl" as EnvironmentId;
 const pendingExpiryMs = 6 * 60_000;
@@ -222,5 +228,85 @@ describe("ProviderUpdateEnvironmentRows", () => {
     await flushPromises();
 
     expect(renderRow().props.status.kind).toBe("success");
+  });
+});
+
+describe("useEnvironmentProviderUpdates", () => {
+  const renderHook = () => {
+    hooks.beginRender();
+    return useEnvironmentProviderUpdates(testState.groups);
+  };
+  const statusKind = () => renderHook().rows[0]?.status.kind;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    hooks.reset();
+    testState.updateProvider.mockReset();
+    const candidate = provider() as ProviderUpdateCandidate;
+    testState.groups = [
+      {
+        environmentId,
+        label: "WSL",
+        isPrimary: false,
+        isSettling: false,
+        candidates: [candidate],
+        providers: [candidate],
+      },
+    ];
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("resolves a hung dispatch at its timeout and fences the late result", async () => {
+    const hung = deferred<AsyncResult.AsyncResult<{ providers: ServerProvider[] }, unknown>>();
+    const successor =
+      deferred<ReturnType<typeof AsyncResult.success<{ providers: ServerProvider[] }>>>();
+    testState.updateProvider
+      .mockReturnValueOnce(hung.promise)
+      .mockReturnValueOnce(successor.promise);
+
+    const first = renderHook().updateEnvironment(environmentId);
+    // A repeated call while in flight sends nothing.
+    await expect(renderHook().updateEnvironment(environmentId)).resolves.toBeNull();
+    expect(testState.updateProvider).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(pendingExpiryMs);
+    const firstRuns = await first;
+    expect(firstRuns?.map((run) => run.result._tag)).toEqual(["TimedOut"]);
+    expect(statusKind()).toBe("failed");
+
+    const second = renderHook().updateEnvironment(environmentId);
+    expect(testState.updateProvider).toHaveBeenCalledTimes(2);
+    expect(statusKind()).toBe("loading");
+
+    // The timed-out request answering late must not clobber the retry.
+    hung.resolve(AsyncResult.failure(Cause.die(new Error("late failure"))));
+    await flushPromises();
+    expect(statusKind()).toBe("loading");
+
+    successor.resolve(AsyncResult.success({ providers: [provider("succeeded")] }));
+    const secondRuns = await second;
+    expect(secondRuns?.map((run) => run.result._tag)).toEqual(["Success"]);
+    expect(statusKind()).toBe("success");
+  });
+
+  it("does not show an update already running elsewhere as a failure", async () => {
+    testState.updateProvider.mockResolvedValueOnce(
+      AsyncResult.failure(
+        Cause.fail(
+          new ServerProviderUpdateError({
+            provider: ProviderDriverKind.make("unknown"),
+            reason: SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON,
+          }),
+        ),
+      ),
+    );
+
+    const runs = await renderHook().updateEnvironment(environmentId);
+
+    expect(runs).toHaveLength(1);
+    expect(statusKind()).not.toBe("failed");
   });
 });

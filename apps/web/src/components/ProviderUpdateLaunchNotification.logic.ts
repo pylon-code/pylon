@@ -1,6 +1,8 @@
 import {
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
+  SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON,
+  ServerProviderUpdateError,
   type EnvironmentId,
   type ExecutionEnvironmentPlatformOs,
   type ProviderDriverKind,
@@ -8,6 +10,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
+import * as Schema from "effect/Schema";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -338,10 +341,37 @@ export interface ProviderUpdateRun {
   readonly machineLabel: string;
   readonly driver: ProviderDriverKind;
   readonly instanceId: ProviderInstanceId;
-  readonly result: AtomCommandResult<
-    { readonly providers: ReadonlyArray<ServerProvider> },
-    unknown
-  >;
+  readonly result:
+    | AtomCommandResult<{ readonly providers: ReadonlyArray<ServerProvider> }, unknown>
+    | ProviderUpdateRunTimedOut;
+}
+
+/** The request gave no answer before the client stopped waiting for it. */
+export interface ProviderUpdateRunTimedOut {
+  readonly _tag: "TimedOut";
+}
+
+export const PROVIDER_UPDATE_RUN_TIMED_OUT: ProviderUpdateRunTimedOut = { _tag: "TimedOut" };
+
+// Structural check: the error arrives decoded from the environment's RPC.
+const isServerProviderUpdateError = Schema.is(ServerProviderUpdateError);
+
+/**
+ * The server rejected the update because the same instance is already being
+ * updated (from another prompt, card, or client). That update's outcome is
+ * still pending, so this is not a failure.
+ */
+export function isProviderUpdateAlreadyRunningFailure(
+  result: AtomCommandResult<unknown, unknown>,
+): boolean {
+  if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) {
+    return false;
+  }
+  const error = squashAtomCommandFailure(result);
+  return (
+    isServerProviderUpdateError(error) &&
+    error.reason === SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON
+  );
 }
 
 type ProviderUpdateRunOutcome =
@@ -350,6 +380,18 @@ type ProviderUpdateRunOutcome =
   | { readonly kind: "unfinished"; readonly message: string };
 
 function classifyProviderUpdateRun(run: ProviderUpdateRun): ProviderUpdateRunOutcome {
+  if (run.result._tag === "TimedOut") {
+    return {
+      kind: "unfinished",
+      message: "No response from the environment. Check the provider's status or retry.",
+    };
+  }
+  if (isProviderUpdateAlreadyRunningFailure(run.result)) {
+    return {
+      kind: "unfinished",
+      message: "Another update for this provider is already running. Check its status.",
+    };
+  }
   if (run.result._tag === "Failure") {
     if (isAtomCommandInterrupted(run.result)) {
       // The request was cut off (reconnect, superseded dispatch), so the

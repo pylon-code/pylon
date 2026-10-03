@@ -4,6 +4,8 @@ import {
   type EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
+  SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON,
+  ServerProviderUpdateError,
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -25,6 +27,7 @@ const testState = vi.hoisted(() => ({
   access: new Map<string, ProviderOperateAccess>(),
   updateProvider: vi.fn(),
   addToast: vi.fn(),
+  closeToast: vi.fn(),
 }));
 
 const hooks = vi.hoisted(() => {
@@ -111,7 +114,7 @@ vi.mock("./providerOperateAccess", () => ({
 
 vi.mock("../ui/toast", () => ({
   stackedThreadToast: <T,>(toast: T) => toast,
-  toastManager: { add: testState.addToast },
+  toastManager: { add: testState.addToast, close: testState.closeToast },
 }));
 
 import { EnvironmentUpdateRow } from "../ProviderUpdateEnvironmentRows";
@@ -244,6 +247,8 @@ describe("ProviderUpdateAllEnvironmentsAction", () => {
     hooks.reset();
     testState.updateProvider.mockReset();
     testState.addToast.mockReset();
+    testState.addToast.mockReturnValue("summary-toast");
+    testState.closeToast.mockReset();
     testState.access = new Map([
       ["local", "granted"],
       ["remote", "granted"],
@@ -296,6 +301,7 @@ describe("ProviderUpdateAllEnvironmentsAction", () => {
         environmentId === "local" ? local.promise : remote.promise,
     );
 
+    findButton(render(), "Update all connected environments").onClick();
     findButton(render(), "Update 2 providers").onClick();
 
     // Both environments are sent before either answers, each with its own instance.
@@ -360,6 +366,8 @@ describe("ProviderUpdateAllEnvironmentsAction", () => {
     testState.updateProvider.mockReset();
     testState.updateProvider.mockReturnValue(new Promise(() => {}));
     statuses[1]!.onUpdate();
+    // The summary described the first attempt; the retry supersedes it.
+    expect(testState.closeToast).toHaveBeenCalledWith("summary-toast");
     expect(testState.updateProvider).toHaveBeenCalledTimes(1);
     expect(testState.updateProvider.mock.calls[0]![0]).toMatchObject({ environmentId: "remote" });
   });
@@ -418,5 +426,70 @@ describe("ProviderUpdateAllEnvironmentsAction", () => {
     expect(testState.updateProvider.mock.calls.map(([call]) => String(call.environmentId))).toEqual(
       ["local", "remote"],
     );
+  });
+  it("finishes the run at the request timeout and returns to review", async () => {
+    testState.updateProvider.mockReturnValue(new Promise(() => {}));
+
+    findButton(render(), "Update 2 providers").onClick();
+    await vi.advanceTimersByTimeAsync(6 * 60_000);
+    await flushPromises();
+
+    expect(testState.addToast).toHaveBeenCalledTimes(1);
+    const toast = testState.addToast.mock.calls[0]![0] as {
+      readonly type: string;
+      readonly title: string;
+      readonly description: ReactElement<{ readonly children: string }>;
+    };
+    expect(toast.type).toBe("warning");
+    expect(toast.title).toBe("Provider updates did not finish");
+    expect(toast.description.props.children).toBe(
+      [
+        "Mac Studio · Codex: No response from the environment. Check the provider's status or retry.",
+        "Laptop · Codex: No response from the environment. Check the provider's status or retry.",
+      ].join("\n"),
+    );
+    // The dialog was closed when the run ended, so it reopens on review with
+    // a working confirm button instead of a stale progress view.
+    expect(() => findButton(render(), "Update 2 providers")).not.toThrow();
+  });
+
+  it("reports an update already running elsewhere as unfinished, not failed", async () => {
+    testState.updateProvider.mockImplementation(
+      async ({ environmentId }: { readonly environmentId: string }) =>
+        environmentId === "local"
+          ? AsyncResult.failure(
+              Cause.fail(
+                new ServerProviderUpdateError({
+                  provider: ProviderDriverKind.make("unknown"),
+                  reason: SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON,
+                }),
+              ),
+            )
+          : AsyncResult.success({
+              providers: [
+                provider({
+                  driver: "codex",
+                  instanceId: "codex_laptop",
+                  updateState: finished("succeeded", "Provider updated."),
+                }),
+              ],
+            }),
+    );
+
+    findButton(render(), "Update 2 providers").onClick();
+    await flushPromises();
+
+    const toast = testState.addToast.mock.calls[0]![0] as {
+      readonly type: string;
+      readonly title: string;
+      readonly description: ReactElement<{ readonly children: string }>;
+    };
+    expect(toast.type).toBe("warning");
+    expect(toast.title).toBe("1 of 2 provider updates did not finish");
+    expect(toast.description.props.children).toBe(
+      "Mac Studio · Codex: Another update for this provider is already running. Check its status.",
+    );
+    const local = rows(render()).find((row) => String(row.group.environmentId) === "local");
+    expect(local?.status.kind).not.toBe("failed");
   });
 });
