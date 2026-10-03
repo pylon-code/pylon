@@ -1216,6 +1216,14 @@ export class ServerProviderMutationBusyError extends Schema.TaggedError<ServerPr
   }
 }
 
+/**
+ * `ServerProviderUpdateError.reason` when the target instance already has an
+ * update in flight (started from another client, card, or prompt). Clients
+ * treat it as "in progress elsewhere", not as a failed update.
+ */
+export const SERVER_PROVIDER_UPDATE_ALREADY_RUNNING_REASON =
+  "An update is already running for this provider.";
+
 export class ServerProviderUpdateError extends Schema.TaggedError<ServerProviderUpdateError>()(
   "ServerProviderUpdateError",
   {
