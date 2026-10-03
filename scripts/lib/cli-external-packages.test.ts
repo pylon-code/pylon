@@ -12,7 +12,8 @@ import serverPackageJson from "../../apps/server/package.json" with { type: "jso
 import { findEsmImportsOfExternalPackages } from "./cli-executable-imports.ts";
 
 import {
-  CLI_RUNTIME_EXTERNAL_PREFIXES,
+  isExternalCliDependency,
+  isRuntimeExternalCliDependency,
   findInlinedExternalPackages,
   selectCliRuntimeExternalDependencies,
   shouldBundleCliDependency,
@@ -60,6 +61,9 @@ describe("shouldBundleCliDependency", () => {
   it("leaves bun-only entry points external", () => {
     assert.strictEqual(shouldBundleCliDependency("@effect/platform-bun"), false);
     assert.strictEqual(shouldBundleCliDependency("@effect/sql-sqlite-bun"), false);
+    assert.strictEqual(shouldBundleCliDependency("bun:sqlite"), false);
+    assert.strictEqual(isExternalCliDependency("bun:sqlite"), true);
+    assert.strictEqual(isRuntimeExternalCliDependency("bun:sqlite"), false);
   });
 
   // The real package is `node-gyp-build-optional-packages`, reached by prefix.
@@ -89,7 +93,7 @@ describe("selectCliRuntimeExternalDependencies", () => {
   it("selects every external root declared by the server", () => {
     assert.deepStrictEqual(
       Object.keys(selectCliRuntimeExternalDependencies(serverPackageJson.dependencies)).sort(),
-      ["@ff-labs/fff-node", "msgpackr-extract", "node-pty"],
+      ["@cursor/sdk", "@ff-labs/fff-node", "msgpackr-extract", "node-pty"],
     );
   });
 });
@@ -152,8 +156,7 @@ it.layer(NodeServices.layer)("external package dependency closure", (it) => {
 
   // Runtime-external only. The build-only entries resolve `bun:*` and are never
   // loaded by Node, so their closure genuinely does not need to be external.
-  const isRuntimeExternal = (name: string) =>
-    CLI_RUNTIME_EXTERNAL_PREFIXES.some((prefix) => name.startsWith(prefix));
+  const isRuntimeExternal = isRuntimeExternalCliDependency;
 
   // A cold walk of the pnpm store can exceed the root timeout when the Windows
   // lane runs four filesystem-heavy workspace suites at once.

@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "build (+ auto-submit to TestFlight) or update (OTA)"
+        description: "build (+ auto-submit to TestFlight / Google Play) or update (OTA)"
         required: true
         type: choice
         default: build
@@ -20,7 +20,7 @@ on:
         description: "Target platform"
         required: true
         type: choice
-        default: ios
+        default: all
         options:
           - ios
           - android
