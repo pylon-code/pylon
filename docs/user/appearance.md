@@ -22,6 +22,21 @@ other themes, it can be selected separately for light and dark appearances, and 
 wallpaper when you return to Pylon. **Material You Layout** changes shapes and surfaces to match
 Android's style. It is off by default and works with any theme.
 
+## Composer context
+
+Git-backed projects show branch and worktree controls below the composer while you create a thread.
+The controls retreat as the composer docks after you send the first message.
+
+Turn on **Composer context** to keep those controls visible after the thread starts. This preference
+applies to the web and desktop clients.
+
+## Motion
+
+The main sidebar, right panel, and terminal drawer open and close immediately by default. Move the
+**Panel animations** slider above 0 ms to add motion, up to 400 ms, unless reduced motion is enabled
+in your operating system. Moving between threads always snaps to the selected thread's panel state
+without replaying its transitions.
+
 ## Custom themes
 
 On web and desktop, choose **Create theme** to adjust a palette, or import a Pylon or VS Code

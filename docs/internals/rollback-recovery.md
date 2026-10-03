@@ -1,4 +1,6 @@
-# Exact conversation rollback state model
+# Historical v1 exact conversation rollback state model
+
+This design describes the retired v1 rollback implementation. The initial v2 landing removes the durable saga and Codex absolute rollback, retains migration 51 in the database ledger, and uses upstream v2 rollback. Recovery controls and workspace leases described below are unavailable in v2. See [current rollback behavior](../user/conversation-rollback.md).
 
 Exact rollback is a durable server-owned saga. Clients can request a target, choose whether to restore files, or resume an action that the server explicitly permits. They cannot provide provider anchors, clear the fence, or forge completion.
 

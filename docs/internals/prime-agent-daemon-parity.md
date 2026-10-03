@@ -1,5 +1,7 @@
 # Prime Agent daemon parity ledger
 
+V2 cutover note: this ledger describes Prime's retained native runtime capabilities. The initial v1→v2 bridge does not expose absolute conversation rollback, native fork/steer, or v1-only controls and diagnostics. Active pre-cutover Prime sessions must be drained before upgrade; exact v1 recovery authority cannot be auto-adopted by the v2 importer. See the [user guide](../user/providers-prime-agent.md).
+
 This ledger records Pylon's treatment of the public `DaemonAgentConnection` surface shipped by
 Prime Agent 0.9.4 (daemon protocol 7, schema 27) and Pylon's optional fork extension at protocol 7,
 schema 33. Parity here means that every useful public outcome is either integrated through a typed

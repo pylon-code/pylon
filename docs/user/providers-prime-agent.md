@@ -40,6 +40,18 @@ The 0.9.4 live catalog omits Cloudflare AI Gateway's Workers AI mirror IDs and u
 `claude-sonnet-4.5` as that provider's default; Pylon discovers the installed catalog rather than pinning those
 models.
 
+### Upgrading Pylon to orchestrator v2
+
+Finish or cancel every Prime turn, then stop its session before upgrading the environment host to
+the first Pylon build with orchestrator v2. The initial v2 integration cannot adopt an active Prime
+execution retained by the earlier orchestrator. Its private recovery identity is not part of the v2
+thread import.
+
+If an earlier Prime execution is still owned, use the previous Pylon build to finish or stop it.
+For a quarantined instance, the managed-build settlement recovery described below may prove cleanup
+before switching builds. Pylon keeps the instance unavailable when it cannot prove cleanup; do not
+delete ownership records or change Agent home to bypass that check.
+
 ### Enable native mode with the Pylon Prime build
 
 Stock Prime Agent runs in ACP compatibility mode with these limits: one account, Full access only, no
@@ -227,16 +239,10 @@ notification arrives, provided Prime identifies your prompt as delivered. It can
 tool calls with matching results, or one missed terminal response after an already observed user message.
 Recovered messages appear once even if their live notifications arrive later. Unreconciled output closes the uncertain
 session rather than guessing whether it was your answer or unrelated background work.
-An active Full access turn can also survive a Pylon server restart when the exact Prime installation is
-Pylon managed and the replacement server can prove the same retained native execution and complete
-event history. Pylon restores the turn's scoped browser/MCP access before showing recovered activity and
-never sends your prompt again. The recovery identity and handle remain private to the server and are not
-sent to clients or written to public thread history.
-
-Supervised or other approval-required sessions do not use restart adoption. Neither do ACP sessions,
-stock or manually installed Prime distributions, native Windows, a replaced Prime supervisor, or any turn
-whose identity or complete event continuity cannot be proven. Those cases keep the existing orphaned
-session result rather than guessing, replaying the prompt, or exposing partial native work.
+The initial orchestrator v2 integration does not automatically adopt an active Prime turn after a Pylon
+server restart. This applies to Pylon-managed native builds as well as ACP sessions. Stop and drain
+Prime before restarting or upgrading the server; see [the v2 upgrade guidance](#upgrading-pylon-to-orchestrator-v2).
+Temporary Prime transport reconnects within a running Pylon server still use the checks described above.
 
 Native Windows is not a Prime Agent provider runtime. Pylon does not fall back to ACP there. Use
 WSL2, where the server runs as Linux, or connect this client to another supported environment.

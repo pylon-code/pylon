@@ -1,44 +1,17 @@
 # Revert a conversation to an earlier message
 
-Pylon can revert an eligible thread to an earlier user message. The action moves the provider conversation and Pylon history to the same verified point. When you choose to restore files, it also moves the project workspace to that point.
+Pylon v2 uses the selected provider's rollback support and saved workspace checkpoints. On web and desktop, choose **Edit from here** beneath a sent message. Mobile offers the rollback action from the conversation.
 
-## When the action is available
+Choose **Revert and keep changes** to preserve workspace files, or **Revert files too** to restore the checkpoint as well. File restore is offered only for an isolated worktree. Pylon refuses it when another thread or agent session uses the same directory or an overlapping directory.
 
-**Revert to this message** appears only when all of these conditions are true:
+The selected prompt, attachments, and inline context return to the web or desktop composer for editing. Any unsent draft stays above the restored prompt. Later conversation leaves the active history after rollback succeeds. This does not undo external actions or separate provider memory.
 
-- the thread uses an idle, Pylon-managed native Prime session;
-- Pylon saved an immutable workspace checkpoint and matching exact conversation anchor for the target;
-- no turn, provider input, approval, queued message, or other workspace rollback is active.
+Rollback availability depends on the active provider, its conversation history, and the saved checkpoint. Prime's initial v2 bridge does not support native conversation rollback, so Prime does not offer this action.
 
-ACP sessions, supervised or unmanaged Prime sessions, other providers, and checkpoints without an exact anchor do not show the action. Pylon does not fall back to an approximate provider rollback.
+## Failure and queued messages
 
-## What a revert changes
+The server records each rollback request and any terminal failure. If the provider cannot roll back, Pylon shows the failure; retry after checking the provider and server logs.
 
-Before Pylon starts, the confirmation names the selected message and explains the choice. Every revert rewrites:
+Pylon v2 does not expose the former durable rollback saga, workspace lease, **Retry verification**, or **Resume compensation** controls. It cannot promise compensation to the original provider conversation after a partial failure.
 
-- the provider conversation;
-- Pylon message and turn history.
-
-**Restore files** also rewrites:
-
-- the worktree and Git index;
-- staged and unstaged changes;
-- untracked files.
-
-**Keep changes** leaves the current files and Git index in place while rewinding only the provider conversation and Pylon history. Threads that share the project directory keep files in place.
-
-Newer history is retained until the rollback commits. Pylon then removes it only after the provider conversation and, when files are restored, the workspace match the selected point.
-
-## Queued messages
-
-Pylon does not start a local rollback while that thread has queued messages. Send or cancel them first.
-
-If another client completes a rollback while this device is offline, messages composed here before the rollback remain saved on this device. Pylon holds them instead of sending or deleting them. Review each held message, then explicitly reconfirm it against the current thread or edit or cancel it.
-
-## Progress and recovery
-
-Every connected web, desktop, or mobile client shows the same durable status. Sending messages, changing provider settings, and running Git actions stay blocked while the operation is pending or recovering.
-
-If the original state can be restored safely, Pylon reports that the rollback failed without removing thread content. If Pylon cannot prove either the target or the restored source state, it keeps the thread fenced and shows **Manual recovery required**.
-
-Use **Retry verification** or **Resume compensation** only when Pylon offers that action. These controls resume the server-owned operation. They do not let a client declare the rollback complete. If no action is offered, keep the environment running and contact support with the thread title and the visible recovery message. Do not delete checkpoint refs or edit Pylon's runtime data.
+Messages retained on a disconnected device remain subject to its local delivery and ownership checks. Review a held draft before sending it against a changed conversation.

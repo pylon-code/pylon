@@ -30,7 +30,7 @@
 - [Running in the background](./user/background-service.md)
 - [Updating Pylon](./user/updating.md)
 - [Triaging a broken install](./user/triage.md)
-- Provider guides: [Codex](./user/providers-codex.md) · [Claude](./user/providers-claude.md) · [OpenCode](./user/providers-opencode.md) · [Antigravity](./user/providers-antigravity.md) · [Prime Agent](./user/providers-prime-agent.md)
+- Provider guides: [Codex](./user/providers-codex.md) · [Claude](./user/providers-claude.md) · [OpenCode](./user/providers-opencode.md) · [Antigravity](./user/providers-antigravity.md) · [Prime Agent](./user/providers-prime-agent.md) · [Pi](./user/providers-pi.md)
 
 ---
 
@@ -50,7 +50,6 @@ source alone does not explain. Most code changes do not need an internal documen
 - [Providers](./internals/providers.md)
 - [Pull request file revisions](./internals/pull-request-file-revisions.md)
 - [Model classification](./internals/model-manifest.md)
-- [Exact conversation rollback](./internals/rollback-recovery.md)
 - [Remote environments](./internals/remote.md)
 - [Server updates](./internals/server-updates.md)
 - [Resource telemetry](./internals/resource-telemetry.md)
