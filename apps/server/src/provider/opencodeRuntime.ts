@@ -1,6 +1,11 @@
 import * as NodeURL from "node:url";
 
-import type { ChatAttachment, ProviderApprovalDecision, RuntimeMode } from "@t3tools/contracts";
+import {
+  PREVIEW_RECORDING_STOP_TIMEOUT_MS,
+  type ChatAttachment,
+  type ProviderApprovalDecision,
+  type RuntimeMode,
+} from "@t3tools/contracts";
 import {
   createOpencodeClient,
   type Agent,
@@ -43,6 +48,8 @@ const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
 
 export const MINIMUM_OPENCODE_VERSION = "1.14.19";
 const OPENCODE_HEALTH_TIMEOUT = "5 seconds";
+const PYLON_MCP_TOOL_TIMEOUT_MS = PREVIEW_RECORDING_STOP_TIMEOUT_MS + 60_000;
+const OPENCODE_CONFIG_QUERY_TIMEOUT_MS = 5_000;
 
 const OpenCodeHealthSchema = Schema.Struct({
   healthy: Schema.Literal(true),
@@ -684,8 +691,8 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       ),
     );
 
-  const createOpenCodeSdkClient: OpenCodeRuntimeShape["createOpenCodeSdkClient"] = (input) =>
-    createOpencodeClient({
+  const createOpenCodeSdkClient: OpenCodeRuntimeShape["createOpenCodeSdkClient"] = (input) => {
+    const client = createOpencodeClient({
       baseUrl: input.baseUrl,
       directory: input.directory,
       ...(input.serverPassword
@@ -697,6 +704,62 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         : {}),
       throwOnError: true,
     });
+    const addMcpServer = client.mcp.add.bind(client.mcp);
+    // Keep the SDK's throwOnError-dependent return contract on the decorator.
+    function addWithPylonTimeout<ThrowOnError extends boolean = false>(
+      parameters?: Parameters<typeof addMcpServer>[0],
+      options?: Parameters<typeof addMcpServer<ThrowOnError>>[1],
+    ): ReturnType<typeof addMcpServer<ThrowOnError>>;
+    async function addWithPylonTimeout(
+      parameters?: Parameters<typeof addMcpServer>[0],
+      options?: Parameters<typeof addMcpServer>[1],
+    ) {
+      if (
+        parameters?.name !== "t3-code" ||
+        parameters.config?.type !== "remote" ||
+        parameters.config.timeout !== undefined
+      ) {
+        return addMcpServer(parameters, options);
+      }
+      const config = parameters.config;
+      // Protect recording transfers without overriding the provider's resolved
+      // per-server or global budget. The resolved config includes its files and
+      // OPENCODE_CONFIG_CONTENT; checking only Pylon's environment misses both.
+      const signal = AbortSignal.timeout(OPENCODE_CONFIG_QUERY_TIMEOUT_MS);
+      const resolved = await client.config
+        .get(
+          {
+            ...(parameters.directory === undefined ? {} : { directory: parameters.directory }),
+            ...(parameters.workspace === undefined ? {} : { workspace: parameters.workspace }),
+          },
+          {
+            ...options,
+            throwOnError: true,
+            signal: options?.signal ? AbortSignal.any([options.signal, signal]) : signal,
+          },
+        )
+        .catch(() => undefined);
+      // A failed optional read cannot establish whether a custom budget
+      // exists. Preserve the original registration rather than replace it.
+      if (resolved?.data === undefined) return addMcpServer(parameters, options);
+      const configuredServer = resolved.data.mcp?.["t3-code"];
+      const serverTimeout =
+        configuredServer && "timeout" in configuredServer ? configuredServer.timeout : undefined;
+      return addMcpServer(
+        {
+          ...parameters,
+          config: {
+            ...config,
+            timeout:
+              serverTimeout ?? resolved.data.experimental?.mcp_timeout ?? PYLON_MCP_TOOL_TIMEOUT_MS,
+          },
+        },
+        options,
+      );
+    }
+    client.mcp.add = addWithPylonTimeout;
+    return client;
+  };
 
   const startOpenCodeServerProcess: OpenCodeRuntimeShape["startOpenCodeServerProcess"] = (input) =>
     Effect.gen(function* () {
